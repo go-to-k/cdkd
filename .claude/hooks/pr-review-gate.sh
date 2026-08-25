@@ -133,29 +133,14 @@ pr_number=""
 # then reads an unrelated integer as the PR number. Measured 2026-08-25:
 # `sleep 30 && gh -R go-to-k/cdkd pr merge 2195 --squash` resolved PR #30,
 # so an unrelated PR's size decided the review tier.
-args="$(gate_pr_selector_rest "$cmd" "$GATE_RE_GH_PR_MERGE")"
-# shellcheck disable=SC2086
-set -- $args
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --*=*) shift; continue ;;
-    --auto|--admin|--delete-branch|--squash|--merge|--rebase)
-      shift; continue ;;
-    -*)
-      # Flag that may take a value; skip the next token defensively.
-      shift
-      [ $# -gt 0 ] && shift
-      continue
-      ;;
-    *)
-      if printf '%s' "$1" | grep -qE '^[0-9]+$'; then
-        pr_number="$1"
-        break
-      fi
-      shift
-      ;;
-  esac
-done
+# Call the shared selector rather than hand-walking its `_rest` output. The
+# first version of this fix replaced the literal STRIP and left the walk, and a
+# review measured the consequence: the local valueless list carried only LONG
+# spellings, so `gh pr merge -d 2195` took the value-consuming arm, ate the
+# number, and the gate judged the CURRENT BRANCH's PR instead. The fence for
+# exactly that shape already existed -- inside `gate_pr_selector`, which this
+# gate did not call. A fence in a helper protects only the callers that use it.
+pr_number="$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE")"
 
 # --- Fetch PR stats via gh. --------------------------------------------
 # Pass-through on any gh error so an unrelated infra outage doesn't

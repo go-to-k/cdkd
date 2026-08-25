@@ -662,8 +662,15 @@ gate_pr_selector_rest() {
 
 # gate_pr_selector_ate_number <command> <verb-ere>
 #
-# Exit 0 when the walk CONSUMED a numeric token as some flag's value, i.e. the
-# selector is empty because a flag ATE it rather than because none was given.
+# Exit 0 when the walk CONSUMED a numeric token as some flag's value.
+#
+# It reports what the WALK did, NOT that the selector is empty -- and the two
+# differ: `gh pr merge -t 42 552` yields selector `552` AND ate=YES, because 42
+# was eaten by `-t` and 552 was still found. A caller must therefore check
+# emptiness FIRST and consult this only then; treating ate=YES alone as a
+# refusal would reject valid commands. An earlier version of this comment said
+# "the selector is empty because a flag ate it", which is false in exactly that
+# case.
 #
 # A separate FUNCTION, not a variable, and that is forced rather than stylistic:
 # every caller reads the selector as `$(gate_pr_selector …)`, and a subshell
@@ -696,6 +703,11 @@ gate_pr_selector() {
     # selector comes back empty. Empty is the safe direction, but it is still a
     # miss, and it is the same tokenisation defect that let a `-C` inside a
     # quoted value become a target.
+    # Save the caller's noglob setting rather than forcing it off: an
+    # unconditional `set +f` below turned globbing ON for a caller that had it
+    # off.
+    local _gate_noglob=off
+    case "$-" in *f*) _gate_noglob=on ;; esac
     set -f
     # shellcheck disable=SC2086
     set --
@@ -704,7 +716,7 @@ gate_pr_selector() {
       rest="${BASH_REMATCH[4]}"
       [ -n "$rest" ] || break
     done
-    set +f
+    [ "$_gate_noglob" = "on" ] || set +f
     while [ $# -gt 0 ]; do
       case "$1" in
         # VALUELESS flags are enumerated; everything else that looks like a flag
@@ -737,6 +749,12 @@ gate_pr_selector() {
         # `-m/--merge`, `-r/--rebase`, `-d/--delete-branch`; listing only the
         # long forms sent every short one down the value-consuming arm, which
         # ATE the PR number: `gh pr merge -s 2195` returned an empty selector.
+        # `--flag=value` carries its value INSIDE the token, so it must not
+        # also consume the next one -- `gh pr merge --repo=go-to-k/cdkd 552`
+        # returned empty before this arm. The hand-walk this helper replaced
+        # had it; dropping it was a regression the replacement introduced.
+        --*=*)
+          shift; continue ;;
         --squash|-s|--merge|-m|--rebase|-r|--delete-branch|-d)
           # `-m` COLLIDES across the two verbs this list serves: it is
           # `--merge` (valueless) for `gh pr merge` and `--milestone`
@@ -852,20 +870,40 @@ gate_leading_c_value() {
   [[ "$seg" =~ ^[[:space:]]*(git|gh)[[:space:]]+(.*)$ ]] || return 1
   rest="${BASH_REMATCH[2]}"
   while [ -n "$rest" ]; do
-    [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]] || break
-    tok="${BASH_REMATCH[1]}"
-    rest="${BASH_REMATCH[4]}"
+    # Embedding token first; fall back to the plain one when it cannot match.
+    # The embedding class excludes bare quote characters, so an UNBALANCED
+    # apostrophe -- a path like `/tmp/o'neill/repo`, or `user.name=O'Brien` --
+    # made the whole token fail and this function returned NOTHING. Measured:
+    # `git -C /tmp/o'neill/repo commit` resolved the target on origin/main and
+    # fell back to the session cwd here, and `gate_target_dir_strict` cannot
+    # refuse it because it cannot tell "no -C" from "unparsable -C". That is
+    # the silent-fallback class go-to-k/cdkd#2200 was reverted for.
+    if [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
+      tok="${BASH_REMATCH[1]}"
+      rest="${BASH_REMATCH[4]}"
+    elif [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
+      tok="${BASH_REMATCH[1]}"
+      rest="${BASH_REMATCH[4]}"
+    else
+      break
+    fi
     case "$tok" in
       -C)
         # The next token is the value, whatever it looks like.
-        [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]] || break
-        val="${BASH_REMATCH[1]}"
-        rest="${BASH_REMATCH[4]}"
+        if [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
+          val="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[4]}"
+        elif [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
+          val="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[4]}"
+        else break; fi
         ;;
       -c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|-R|--repo)
         # Flags that consume the following token; skip it so a value is never
         # mistaken for the verb.
-        [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]] && rest="${BASH_REMATCH[4]}"
+        if [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
+          rest="${BASH_REMATCH[4]}"
+        elif [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
+          rest="${BASH_REMATCH[4]}"
+        fi
         ;;
       -*) : ;;
       *) break ;;   # the verb: leading flags are over

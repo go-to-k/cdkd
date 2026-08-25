@@ -693,6 +693,23 @@ want_sel 2195 "selector: --match-head-commit value consumed"  'gh pr merge --mat
 want_sel 2195 "selector: --body-file numeric value consumed"  'gh pr merge --body-file 7 2195 --squash'
 want_sel 2195 "selector: a QUOTED flag value is one token"    'gh pr merge --subject "chore: x" 2195 --squash'
 
+# `--flag=value` carries its value inside the token. The hand-walk this helper
+# replaced had this arm; dropping it was a regression the replacement made.
+want_sel 552  "selector: --repo=<slug> before the number"  'gh pr merge --repo=go-to-k/cdkd 552'
+want_sel 2195 "selector: --body-file=<path> before it"     'gh pr merge --body-file=/tmp/b 2195'
+
+# An UNBALANCED apostrophe in a path made GATE_EMBEDDING_TOKEN fail outright,
+# so gate_leading_c_value returned NOTHING and the caller silently judged the
+# session cwd -- and gate_target_dir_strict cannot refuse it, because it cannot
+# tell "no -C" from "unparsable -C". Same silent-fallback class as the reverted
+# go-to-k/cdkd#2200. Built with a variable because a literal apostrophe inside
+# these already-quoted case strings is what broke this file once.
+APO=$(printf "\047")
+want_dir "/tmp/o${APO}neill/repo" "an apostrophe in the -C path still resolves" \
+  "git -C /tmp/o${APO}neill/repo commit -m x" FALLBACK "$C"
+want_dir "/w/t" "an apostrophe in an earlier flag VALUE does not lose it" \
+  "git -c user.name=O${APO}Brien -C /w/t commit -m x" FALLBACK "$C"
+
 # A `-C` embedded in a quoted FLAG VALUE must not become the target. Measured on
 # origin/main: `git -c core.pager="less -C /evil" commit` resolved `/evil`, and
 # through branch-gate on `main` that turned rc=2 into rc=0 -- a bypass driven by
