@@ -238,6 +238,16 @@ Z2l0
 Z2g=
 Cg==
 Z2l0IC1DIC9hYnMvcmVwbw==
+Z2l0IC1jIHVzZXIubmFtZT0iSmFuZSBEb2UiIGNvbW1pdCAtbSB4
+Z2l0IC1jIHVzZXIubmFtZT0nSmFuZSBEb2UnIGNvbW1pdCAtbSB4
+Z2l0IC0tYXV0aG9yPSJKYW5lIERvZSIgY29tbWl0IC1tIHg=
+Z2l0IC1jIGNvcmUuZWRpdG9yPSJ2aW0gLWYiIGNvbW1pdCAtbSB4
+Z2l0IC1jIHVzZXIubmFtZT0iSmFuZSBEb2UiIHN0YXR1cw==
+Z2l0IC1jIGs9ImFcIiBiIiBjb21taXQgLW0geA==
+Z2ggLS1yZXBvICJnbyB0by9rIiBwciBtZXJnZSAx
+Z2l0IC1jIHVzZXIubmFtZT0iSmFuZSBEb2UiIC1DIC9hYnMvcmVwbyBjb21taXQgLW0geA==
+Z2l0IGNoZWNrb3V0IG1haW4gJiYgZ2l0IGNoZWNrb3V0IC0tIGYudHh0
+Z2l0IGNoZWNrb3V0IC1iIHdpcCAmJiBnaXQgcmVzdG9yZSAtLSBmLnR4dA==
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -402,6 +412,19 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 110	m:GATE_RE_GIT_COMMIT	0	NOW_MISS	issue body with -C
 110	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	NOW_MISS	issue body with -C
 111	segcount	1	SEGCOUNT	pr body multi-para
+128	m:GATE_RE_GIT_COMMIT	1	NOW_MATCH	flag value with a space, double quotes
+128	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	NOW_MATCH	flag value with a space, double quotes
+129	m:GATE_RE_GIT_COMMIT	1	NOW_MATCH	flag value with a space, single quotes
+129	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	NOW_MATCH	flag value with a space, single quotes
+133	m:GATE_RE_GIT_COMMIT	1	NOW_MATCH	escaped quote inside a flag value
+133	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	NOW_MATCH	escaped quote inside a flag value
+134	m:GATE_RE_GH_PR_MERGE	1	NOW_MATCH	gh repo flag with a spaced value
+134	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	NOW_MATCH	gh repo flag with a spaced value
+134	m:GATE_RE_GH_PR_WRITE	1	NOW_MATCH	gh repo flag with a spaced value
+135	m:GATE_RE_GIT_COMMIT	1	NOW_MATCH	spaced value then a real -C
+135	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	NOW_MATCH	spaced value then a real -C
+135	t:GATE_RE_GIT_COMMIT	/abs/repo	NOW_MATCH	spaced value then a real -C resolves the target
+135	t:GATE_RE_GIT_COMMIT_OR_PUSH	/abs/repo	NOW_MATCH	spaced value then a real -C resolves the target
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \

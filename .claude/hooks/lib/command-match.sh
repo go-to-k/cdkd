@@ -590,9 +590,11 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # The durable half is that NO caller indexes into this pattern any more. The two
 # that did now strip the matched prefix by LENGTH via `gate_verb_rest` /
 # `gate_pr_selector`, so the group count is internal to this file and the next
-# widening cannot shift anything. `gate_flags_group_count` below exists to keep
-# that true: the suite pins it, so a change here fails with a message naming
-# this paragraph rather than silently re-opening a gate.
+# widening cannot shift anything. Fence 4 of unresolved-target-class.test.sh
+# keeps that true: it refuses any hook that builds its own match from a shared
+# GATE_ constant and then reads a numbered group out of it, so a change here
+# fails with a message naming this paragraph rather than silently re-opening a
+# gate.
 #
 # A flag TOKEN and a flag VALUE both embed quoted spans now, so
 # `--author="Jane Doe"` and `-c user.name="Jane Doe"` are each a single token.
@@ -600,19 +602,39 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # `git -C /tmp -q commit` reads `-q` as `-C`'s value.
 # One shell word that may EMBED quoted spans: `user.name="Jane Doe"` is one
 # token, `"Jane Doe"` is one token, and a bare space still ends it.
-_GATE_WORD_CHAR='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'])'
+# `\"` inside a double-quoted span is an ESCAPED quote, not the end of it.
+# Without the escape alternative `git -c k="a\" b" commit -m x` gave branch-gate
+# rc=0 on `main` while the plain form gave rc=2 -- the same bypass this whole
+# change is about, one escape deeper (found in review of go-to-k/cdkd#2200).
+# Single quotes take no escapes in shell, so only the double-quoted span needs
+# one.
+_GATE_WORD_CHAR='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'])'
 # The same, but the FIRST character may not be `-`, so a following flag is never
 # swallowed as the previous flag's value.
-_GATE_WORD_CHAR_NODASH='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'-])'
+_GATE_WORD_CHAR_NODASH='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'-])'
 # Each half keeps the OLD quote-blind alternative as a fallback, and it is
 # load-bearing rather than belt-and-braces: the embedding form treats a bare
 # `'"'"'` as opening a quoted span, so a path with an UNBALANCED apostrophe
 # (`git -C /tmp/o'"'"'neill/repo commit`) stops matching entirely. Dropping it
 # cost exactly the two apostrophe cases go-to-k/cdkd#2199 added, which is how
-# this was caught. Leftmost-longest picks the embedding form whenever the quotes
-# do balance, so the fallback only fires where the strict form has nothing.
-_GATE_WORD_BLIND='[^[:space:]]*'
-_GATE_WORD_BLIND_NODASH='[^[:space:]-][^[:space:]]*'
+# this was caught. The two forms are not ranked -- POSIX leftmost-longest is
+# about the WHOLE match, so a command can legitimately take the blind parse even
+# with balanced quotes (`git -c foo="x commit -m y" status` does). That is fine
+# here because every alternative is a strict SUPERSET of the old pattern at each
+# position, so the widening can only add matches, never remove one. Do not
+# rewrite this as "the strict form wins when quotes balance"; it does not.
+# The blind form deliberately excludes `"`. Allowing it made the fallback able
+# to parse HALF of a double-quoted token, and POSIX leftmost-longest then
+# PREFERS that reading whenever it produces a match the strict reading does not:
+# `git -c alias.x="run commit later" status` matched GATE_RE_GIT_COMMIT, taking
+# the `commit` inside the quoted value as the verb. A gate firing on an
+# unrelated command is far less dangerous than a bypass -- it refuses with an
+# actionable message -- but it is still wrong, and it was found by a polarity
+# control rather than reasoned about. Apostrophes stay in, because the whole
+# reason this alternative exists is an UNBALANCED one (`/tmp/o'neill/repo`);
+# double quotes have the strict form to fall back on.
+_GATE_WORD_BLIND='[^[:space:]"]*'
+_GATE_WORD_BLIND_NODASH='[^[:space:]"-][^[:space:]"]*'
 GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND})([[:space:]]+(${_GATE_WORD_CHAR_NODASH}${_GATE_WORD_CHAR}*|${_GATE_WORD_BLIND_NODASH}))?)*"
 # Every gh GLOBAL FLAG before the subcommand, not just `-C`. The `-C`-only form
 # meant a repo flag ahead of the verb made the verb unreachable, so
@@ -694,7 +716,7 @@ GATE_RE_DELSTACK='^delstack([[:space:]]|$)'
 # The regexes are anchored at `^`, so the match always starts at offset 0 and
 # its LENGTH is a safe strip — `${segment#${BASH_REMATCH[0]}}` is not, because
 # the matched text is then treated as a glob pattern.
-# gate_pr_selector_rest <command> <verb-ere>
+# gate_verb_rest <command> <verb-ere>
 # Everything AFTER the matched verb, for callers that run their own token walk.
 # Same rationale and the same anchored-match strip as gate_pr_selector.
 gate_verb_rest() {
@@ -707,14 +729,33 @@ gate_verb_rest() {
   return 0
 }
 
-# gate_pr_selector_rest <command> <verb-ere>
+# gate_verb_rest_each <command> <verb-ere>
 #
-# Historical name for gate_verb_rest, kept because the shape is not
-# PR-specific: any gate that wants "everything after the verb it matched" wants
-# this, and two of them (dirty-path-restore-gate, non-english-text-gate) reached
-# for a positional BASH_REMATCH index instead, which is what go-to-k/cdkd#2200
-# is about.
-gate_pr_selector_rest() { gate_verb_rest "$@"; }
+# Every matching segment's tail, one per line, instead of only the first.
+#
+# The FIRST-ONLY form is a trap for any gate whose verdict depends on the
+# arguments, and dirty-path-restore-gate fell into it during review of
+# go-to-k/cdkd#2200: it probed `checkout`, got segment 1 of
+# `git checkout main && git checkout -- f.txt`, saw no `--`, and exited 0 --
+# never looking at the segment that actually discards the file. The raw-command
+# match it replaced had a greedy `(.*)$` that ran past the operator, so it still
+# saw the later `--`. Measured old-vs-new on a repo with a dirty `f.txt`:
+#
+#   git checkout main && git checkout -- f.txt    BLOCK -> pass
+#   git checkout -b wip && git restore -- f.txt   BLOCK -> pass
+#   git checkout main; git restore -- f.txt       BLOCK -> pass
+#
+# So a gate that ASKS A QUESTION ABOUT THE ARGUMENTS must use this and consider
+# every segment; `gate_verb_rest` is only safe when the first match settles the
+# answer (resolving one PR number, say).
+gate_verb_rest_each() {
+  local cmd="$1" re="$2" segment
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] || continue
+    printf '%s\n' "${segment:${#BASH_REMATCH[0]}}"
+  done < <(gate_segments "$cmd")
+  return 0
+}
 
 # gate_pr_selector_ate_number <command> <verb-ere>
 #

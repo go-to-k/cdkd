@@ -58,6 +58,28 @@ run() {
 # --- dirty path: must BLOCK ------------------------------------------------
 R=$(make_repo); echo "modified" > "$R/tracked.txt"
 run "checkout -- <dirty path> blocks" "$R" "git checkout -- tracked.txt" 2
+
+# CHAINED shapes. None of the cases below this file's original 18 was chained,
+# which is why a live regression stayed green through a full review round:
+# converting the gate from a raw-command match to a per-segment one made it
+# read only the FIRST segment matching each verb, so a branch switch ahead of a
+# discard ended the probe. Measured at the time, all three went BLOCK -> pass.
+# A branch switch chained ahead of a discard is an everyday shape.
+run "branch switch THEN discard blocks"        "$R" "git checkout main && git checkout -- tracked.txt" 2
+run "checkout -b THEN restore blocks"          "$R" "git checkout -b wip && git restore -- tracked.txt" 2
+run "semicolon-chained discard blocks"         "$R" "git checkout main; git restore -- tracked.txt" 2
+run "discard THEN branch switch blocks"        "$R" "git restore tracked.txt && git checkout main" 2
+
+# Polarity controls for those four. Without them "it blocks" is satisfied by a
+# gate that blocks everything, which is the shape this session hit four times.
+run "branch switch alone passes"               "$R" "git checkout main" 0
+run "checkout -b alone passes"                 "$R" "git checkout -b wip" 0
+
+# `--staged` is per-SEGMENT, not per-command. The old form exited 0 for the
+# whole command on seeing `--staged`, so a staged restore chained ahead of a
+# worktree restore passed the worktree one through untested.
+run "staged restore alone passes"              "$R" "git restore --staged tracked.txt" 0
+run "staged THEN worktree restore blocks"      "$R" "git restore --staged tracked.txt && git restore tracked.txt" 2
 run "restore <dirty path> blocks" "$R" "git restore tracked.txt" 2
 run "restore -- <dirty path> blocks" "$R" "git restore -- tracked.txt" 2
 run "escape hatch is honored" "$R" "CDKD_ALLOW_DIRTY_RESTORE=1 git checkout -- tracked.txt" 2

@@ -125,36 +125,54 @@ paths=""
 # blocking `git checkout -- <dirty path>` in 7 of its 18 cases
 # (go-to-k/cdkd#2200). The helper strips the matched prefix by LENGTH, so the
 # group count is no longer part of the contract.
-rest="$(gate_verb_rest "$command" "$GATE_RE_GIT_CHECKOUT")"
-if [[ -n "$rest" ]]; then
-  case " $rest " in
-    *" -- "*) paths="${rest#*-- }" ;;
-    *) exit 0 ;;
+# EVERY matching segment, and both verbs, rather than "probe checkout, else
+# probe restore". The first-match form this replaces had a live regression found
+# in review: `git checkout main && git checkout -- f.txt` returned segment 1,
+# which has no `--`, so the gate exited 0 and never saw the segment that
+# discards the file. Measured old-vs-new on a repo with a dirty `f.txt`, all
+# three of these went BLOCK -> pass:
+#
+#   git checkout main && git checkout -- f.txt
+#   git checkout -b wip && git restore -- f.txt
+#   git checkout main; git restore -- f.txt
+#
+# A branch switch chained ahead of a discard is an everyday shape, so the arm
+# that finds nothing must FALL THROUGH, never exit.
+paths=""
+while IFS= read -r seg; do
+  [ -n "$seg" ] || continue
+  # `git checkout` is a path restore only when `--` is present; without it the
+  # segment is a branch switch and simply contributes nothing.
+  case " $seg " in
+    *" -- "*) paths="$paths ${seg#*-- }" ;;
   esac
-else
-  rest="$(gate_verb_rest "$command" "$GATE_RE_GIT_RESTORE")"
-  [[ -n "$rest" ]] || exit 0
-  # The subject is padded (`" $rest "`), so a trailing-space pattern covers the
-  # end-of-string case too — the unpadded `*" --staged"` variants would be dead
-  # patterns that can never match.
-  case " $rest " in
-    *" --staged "*|*" -S "*) exit 0 ;;
-  esac
-  if [[ " $rest " == *" -- "* ]]; then
-    paths="${rest#*-- }"
-  else
-    paths="$rest"
-  fi
-fi
+done < <(gate_verb_rest_each "$command" "$GATE_RE_GIT_CHECKOUT")
 
-# Stop at the first shell operator so a chained command's tokens are not
-# mistaken for paths.
-paths="${paths%%&&*}"
-paths="${paths%%||*}"
-paths="${paths%%;*}"
-paths="${paths%%|*}"
+while IFS= read -r seg; do
+  [ -n "$seg" ] || continue
+  # The subject is padded (`" $seg "`), so a trailing-space pattern covers the
+  # end-of-string case too — the unpadded `*" --staged"` variants would be dead
+  # patterns that can never match. `continue`, not `exit 0`: a staged restore in
+  # one segment says nothing about a worktree restore in the next.
+  case " $seg " in
+    *" --staged "*|*" -S "*) continue ;;
+  esac
+  if [[ " $seg " == *" -- "* ]]; then
+    paths="$paths ${seg#*-- }"
+  else
+    paths="$paths $seg"
+  fi
+done < <(gate_verb_rest_each "$command" "$GATE_RE_GIT_RESTORE")
 
 [[ -n "${paths// /}" ]] || exit 0
+
+# NO operator-stripping here any more, and its absence is deliberate. The old
+# form matched the RAW command with a greedy `(.*)$`, so the tail ran past
+# `&&` / `;` and had to be truncated; that truncation is also what made a
+# chained discard look like one command. The tails now come from
+# `gate_verb_rest_each`, which yields already-split segments, so there is no
+# operator left to strip -- and stripping anyway would silently drop a path
+# containing one of those characters.
 
 dirty_paths=()
 for raw in $paths; do

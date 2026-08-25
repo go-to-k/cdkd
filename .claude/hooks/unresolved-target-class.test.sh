@@ -422,11 +422,103 @@ for hook in "$HOOKS_DIR"/*.sh; do
   # reads a numbered group out of it. Either half alone is fine -- the `gate_*`
   # helpers take the pattern as an argument and index their own local patterns,
   # which no widening here can shift.
-  grep -qE '=~[^#]*\$\{?GATE_' "$hook" || continue
-  if grep -qE '\$\{BASH_REMATCH\[[0-9]+\]\}' "$hook"; then
+  # The hazard is: this file MATCHES a shared GATE_ pattern with `=~` itself,
+  # and reads BASH_REMATCH by subscript. Both halves need care.
+  #
+  # On the match side, three spellings evaded earlier versions of this scan and
+  # all three are real rather than hypothetical: the pattern inline on the `=~`
+  # line; the pattern assigned to a variable on one line and matched on another
+  # (`restore-backup.sh` already writes that assignment); and the same with the
+  # variable quoted on the `=~`. So variables assigned from a GATE_ constant are
+  # collected first, then looked for on an `=~`.
+  #
+  # But "mentions a GATE_ constant" alone is far too broad, and the difference
+  # is not cosmetic: four hooks -- commit-prefix-scope-gate, integ-local-gate,
+  # post-merge-orphan-push-gate, pr-title-prefix-scope-gate -- assign a
+  # `GATE_RE_*` and pass it as an ARGUMENT to `gate_target_dir_strict`, never
+  # matching it themselves, while indexing BASH_REMATCH out of their own local
+  # patterns. Those are correct code. Flagging them would make a clean state
+  # unreachable without an exemption list, and an exemption list is the thing
+  # that rots.
+  #
+  # On the index side the subscript is not required to be a literal: an earlier
+  # version demanded `[0-9]+` and `idx=4; ${BASH_REMATCH[$idx]}` walked past it.
+  hook_matches_shared=0
+  grep -qE '=~[^#]*\$\{?GATE_' "$hook" && hook_matches_shared=1
+  if [ "$hook_matches_shared" -eq 0 ]; then
+    for gv in $(grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^=]*\$\{?GATE_' "$hook" \
+                | grep -oE '[A-Za-z_][A-Za-z0-9_]*=' | tr -d '='); do
+      if grep -qE "=~[[:space:]]*\"?\\\$\{?${gv}\}?\"?" "$hook"; then
+        hook_matches_shared=1
+        break
+      fi
+    done
+  fi
+  [ "$hook_matches_shared" -eq 1 ] || continue
+  if grep -qE '\$\{BASH_REMATCH\[' "$hook"; then
     coupled="$coupled\n    - $(basename "$hook")"
   fi
 done
+
+# Guard the guard. `coupled` being empty is the PASS condition, so an
+# always-empty scan -- a broken grep, a bad path, a quoting slip -- reads as a
+# clean repo. Fence 1 plants variants to prove it detects; this does the same,
+# against a throwaway file carrying each evasion spelling.
+probe_dir="$TMPDIR/fence4-probe"
+mkdir -p "$probe_dir"
+cat > "$probe_dir/inline.sh" <<'P1'
+if [[ "$c" =~ git${GATE_FLAGS}[[:space:]]+checkout ]]; then x="${BASH_REMATCH[4]}"; fi
+P1
+cat > "$probe_dir/split.sh" <<'P2'
+re="^git${GATE_FLAGS}[[:space:]]+checkout"
+[[ "$c" =~ $re ]] && x="${BASH_REMATCH[4]}"
+P2
+cat > "$probe_dir/indirect.sh" <<'P3'
+if [[ "$c" =~ git${GATE_GH_C}[[:space:]]+pr ]]; then idx=4; x="${BASH_REMATCH[$idx]}"; fi
+P3
+cat > "$probe_dir/quoted.sh" <<'P4'
+re="^git${GATE_FLAGS}[[:space:]]+push"
+if [[ "$c" =~ "$re" ]]; then x="${BASH_REMATCH[2]}"; fi
+P4
+# The two shapes that must stay CLEAR. `passthrough` is the real one: four hooks
+# in this repo look exactly like it, and an over-broad scan flags them.
+cat > "$probe_dir/clean.sh" <<'P5'
+rest="$(gate_verb_rest "$c" "$GATE_RE_GIT_CHECKOUT")"
+P5
+cat > "$probe_dir/passthrough.sh" <<'P6'
+__verb_ere="$GATE_RE_GIT_PUSH"
+target=$(gate_target_dir_strict "$c" "$PWD" "$__verb_ere")
+if [[ "$c" =~ [[:space:]]push([[:space:]]+(.*))?$ ]]; then a="${BASH_REMATCH[2]}"; fi
+P6
+
+fence4_hazard() {
+  local f="$1" gv m=0
+  grep -qE '=~[^#]*\$\{?GATE_' "$f" && m=1
+  if [ "$m" -eq 0 ]; then
+    for gv in $(grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^=]*\$\{?GATE_' "$f" \
+                | grep -oE '[A-Za-z_][A-Za-z0-9_]*=' | tr -d '='); do
+      grep -qE "=~[[:space:]]*\"?\\\$\{?${gv}\}?\"?" "$f" && { m=1; break; }
+    done
+  fi
+  [ "$m" -eq 1 ] || return 1
+  grep -qE '\$\{BASH_REMATCH\[' "$f"
+}
+
+undetected=""
+for probe in inline split indirect quoted; do
+  fence4_hazard "$probe_dir/$probe.sh" || undetected="$undetected $probe"
+done
+false_positive=""
+for probe in clean passthrough; do
+  fence4_hazard "$probe_dir/$probe.sh" && false_positive="$false_positive $probe"
+done
+if [ -n "$undetected" ]; then
+  ng "fence 4 (guard the guard): the scan does not detect these coupling spellings, so its clean verdict on the real hooks means nothing:$undetected"
+elif [ -n "$false_positive" ]; then
+  ng "fence 4 (guard the guard): the scan flags$false_positive, which pass a GATE_ pattern to a helper instead of matching it. Four real hooks look like this; flagging them makes a clean state unreachable without an exemption list."
+else
+  ok "fence 4 (guard the guard): the scan detects all 4 coupling spellings and clears both non-coupling ones"
+fi
 
 if [ "$scanned" -lt 20 ]; then
   ng "fence 4: only $scanned hooks load command-match.sh -- the scan is not seeing the hook directory, so a green result here would mean nothing"
