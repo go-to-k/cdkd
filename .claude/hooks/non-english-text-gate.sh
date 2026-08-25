@@ -117,11 +117,25 @@ if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 # gh missing or unauthenticated — fail open.
+#
+# NOTE: `gh` has NO `-C` flag. `gh -C <dir> auth status` exits 1 with
+# `unknown shorthand flag: 'C' in -C` (measured, gh 2.89.0), so the guard below
+# used to fire UNCONDITIONALLY and this hook exited 0 before scanning anything —
+# the OSS English-only rule had no diff-side enforcement at all. The suite did
+# not see it because the injected `$GH_BIN` stub STRIPPED `-C`: a mock strictly
+# more permissive than production, which is what hid the defect rather than
+# exposing it. `gh` takes its repo from the CWD, so every call runs in a
+# subshell that cds there. Found while porting a different gate to a sibling
+# repo, where the same shape had made the same hook inert.
 if ! command -v "${GH_BIN:-gh}" >/dev/null 2>&1; then
   exit 0
 fi
 GH="${GH_BIN:-gh}"
-if ! "$GH" -C "$target_dir" auth status >/dev/null 2>&1; then
+# ONE top-level cd, then bare `gh` calls -- the convention pr-review-gate.sh,
+# integ-broad-gate.sh and ci-green-gate.sh already use. Five per-call subshells
+# worked but gave the next editor five places to get wrong.
+cd "$target_dir" 2>/dev/null || exit 0
+if ! "$GH" auth status >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -140,7 +154,7 @@ if [[ "$cmd" =~ gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(merge|edit)[[:space:]]+
 fi
 
 if [[ -z "$pr_number" ]]; then
-  pr_number=$("$GH" -C "$target_dir" pr view --json number -q .number 2>/dev/null || true)
+  pr_number=$("$GH" pr view --json number -q .number 2>/dev/null || true)
 fi
 
 # No PR yet (typical `gh pr create` on a fresh branch) — fall back to
@@ -161,7 +175,7 @@ if [[ "$use_local_diff" -eq 1 ]]; then
   fi
   changed_files=$(git -C "$target_dir" diff "$merge_base..HEAD" --name-only --diff-filter=AM 2>/dev/null || true)
 else
-  changed_files=$("$GH" -C "$target_dir" pr diff "$pr_number" --name-only 2>/dev/null || true)
+  changed_files=$("$GH" pr diff "$pr_number" --name-only 2>/dev/null || true)
 fi
 
 if [[ -z "$changed_files" ]]; then
@@ -195,7 +209,7 @@ MAX_REPORT=20
 # sha once.
 pr_head_sha=""
 if [[ "$use_local_diff" -eq 0 ]]; then
-  pr_head_sha=$("$GH" -C "$target_dir" pr view "$pr_number" --json headRefOid -q .headRefOid 2>/dev/null || true)
+  pr_head_sha=$("$GH" pr view "$pr_number" --json headRefOid -q .headRefOid 2>/dev/null || true)
 fi
 
 read_file_content() {
@@ -209,7 +223,7 @@ read_file_content() {
       git -C "$target_dir" show "$pr_head_sha:$f" 2>/dev/null && return 0
     fi
     # Fall back to fetching from the API.
-    "$GH" -C "$target_dir" api "repos/{owner}/{repo}/contents/$f?ref=${pr_head_sha:-HEAD}" -q .content 2>/dev/null | base64 -d 2>/dev/null
+    "$GH" api "repos/{owner}/{repo}/contents/$f?ref=${pr_head_sha:-HEAD}" -q .content 2>/dev/null | base64 -d 2>/dev/null
   fi
 }
 
@@ -272,7 +286,7 @@ scope_label="PR #$pr_number"
   echo "  - Open a follow-up commit on the same branch and push; this"
   echo "    hook re-runs against the new HEAD."
   echo
-  echo "Memory: ~/.claude/projects/-Users-goto-pc-github-cdkd/memory/feedback_oss_english_only.md"
+  echo "Memory: ~/.claude/projects/-Users-goto-github-cdkd/memory/feedback_oss_english_only.md"
 } >&2
 
 exit 2

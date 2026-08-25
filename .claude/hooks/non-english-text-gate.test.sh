@@ -43,27 +43,35 @@ commit_all() {
 #   gh -C <dir> auth status            -> rc 0 = authed
 #   gh -C <dir> pr view --json number  -> "" (no PR; local-diff fallback)
 #   gh -C <dir> pr view <N> --json...  -> rejects (we use local-diff)
-#   gh -C <dir> pr diff <N> --name-only -> N/A here
+#   gh pr diff <N> --name-only -> N/A here
+#   (NO `-C`: real gh has no such flag, and the stub now refuses it too)
 make_gh_stub() {
   local out="$TMPDIR/gh-stub"
   cat > "$out" <<'EOF'
 #!/usr/bin/env bash
-# Strip optional `-C <dir>` so we can pattern-match against the
-# remaining args.
-args=()
-i=1
-while [[ $i -le $# ]]; do
-  if [[ "${!i}" == "-C" ]]; then
-    i=$((i + 2))
-    continue
+# REJECT `-C` exactly as the real `gh` does. This stub used to STRIP it, with
+# a comment saying so, and that single line hid the defect this suite exists to
+# catch: `gh` has no `-C` flag, so `gh -C <dir> auth status` exits 1 with
+# `unknown shorthand flag: 'C' in -C` (measured, gh 2.89.0), the hook's
+# "unauthenticated -> fail open" guard fired unconditionally, and the gate
+# scanned nothing while this suite reported 15/15.
+#
+# A mock more permissive than production does not merely fail to catch a bug --
+# it certifies the bug as fixed. Any future stub here must reject what real gh
+# rejects.
+for a in "$@"; do
+  if [[ "$a" == "-C" || "$a" == -C* ]]; then
+    echo "unknown shorthand flag: 'C' in -C" >&2
+    exit 1
   fi
-  args+=("${!i}")
-  i=$((i + 1))
 done
+args=("$@")
 
 case "${args[*]}" in
   "auth status") exit 0 ;;
-  "pr view --json number -q .number") echo "" ;;
+  "pr view --json number -q .number") echo "${STUB_PR_NUMBER:-}" ;;
+  "pr diff "*" --name-only") echo "${STUB_PR_FILES:-}" ;;
+  "pr view "*" --json headRefOid -q .headRefOid") echo "${STUB_PR_SHA:-deadbeef}" ;;
   *) echo "" ;;
 esac
 EOF
@@ -73,7 +81,7 @@ EOF
 
 run_hook() {
   local dir="$1"
-  local cmd="${2:-gh -C $dir pr create}"
+  local cmd="${2:-gh pr create}"
   local payload
   payload=$(jq -n --arg cmd "$cmd" --arg cwd "$dir" \
     '{"tool_input":{"command":$cmd},"cwd":$cwd}')
@@ -211,6 +219,33 @@ case_label "gh missing --> fail-open pass"
 D="$TMPDIR/case15"; init_repo "$D"
 printf '\n// %s\n' "$(printf '\343\201\202')" >> "$D/src/foo.ts"
 commit_all "$D"
+# --- PR MODE: exercise the call sites the local-diff branch never reaches ----
+# KNOWN COVERAGE GAP, stated rather than left to be discovered.
+#
+# This suite drives only 2 of the 5 `gh` call sites in the hook. The stub
+# returns "" for `pr view --json number`, so every case below takes the
+# LOCAL-DIFF branch; `pr diff` (line ~178), `headRefOid` (~212) and
+# `api ... | base64 -d` (~226) are never executed. They were rewritten in the
+# same change that made this hook work at all, and they were verified BY HAND
+# with a PR-mode stub -- not by this suite.
+#
+# That is uncomfortably close to the defect this suite exists to prevent, so it
+# is written down rather than implied. Two attempts to add a PR-mode case are
+# recorded because each failed in an instructive way:
+#
+#   1. A case expecting exit 0 passed whether or not `pr diff` was reached --
+#      a call returning no files finds no offending text either. Measured:
+#      breaking the `pr diff` call left the suite green. It fenced nothing.
+#   2. A case expecting exit 2 on committed hiragana never reached the scan;
+#      driving the fixture into the PR branch needs more stub surface than the
+#      local-diff helpers here provide.
+#
+# The lesson from (1) is the general one: for a case to fence a CALL SITE, the
+# expectation must be one that is only reachable THROUGH that call site.
+#
+# Tracked as go-to-k/cdkd#2197.
+
+
 # Override GH_BIN to a non-existent binary.
 payload=$(jq -n --arg cmd "gh -C $D pr create" --arg cwd "$D" \
   '{"tool_input":{"command":$cmd},"cwd":$cwd}')
