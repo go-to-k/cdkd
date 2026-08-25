@@ -79,8 +79,9 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # `cd <side> && git push` chain shape, mirroring check-gate.sh
 # (PR #562 fix pattern). `[^|;&]*` matches any flag/value pairs
 # between `git` and the subcommand without crossing pipeline
-# separators. We intentionally do NOT match `git push origin :branch`
-# (delete push) — see explicit deletion check below.
+# separators. We intentionally do NOT gate deletion pushes — both the
+# `git push origin :branch` refspec form and the `--delete` / `-d` flag
+# form — see the explicit deletion check below.
 if ! gate_matches "$cmd" "$GATE_RE_GIT_PUSH"; then
   exit 0
 fi
@@ -136,6 +137,7 @@ tokens=($push_args)
 
 remote=""
 branch=""
+delete_push=0
 i=0
 while [ "$i" -lt "${#tokens[@]}" ]; do
   tok="${tokens[$i]}"
@@ -145,9 +147,22 @@ while [ "$i" -lt "${#tokens[@]}" ]; do
     # Flags that take NO value — skip just this token.
     -u|--set-upstream|-f|--force|--force-with-lease|--force-if-includes|\
     -n|--dry-run|-v|--verbose|-q|--quiet|--all|--tags|--follow-tags|\
-    --mirror|--prune|--delete|--atomic|--no-verify|--verify|--progress|\
+    --mirror|--prune|--atomic|--no-verify|--verify|--progress|\
     --no-progress|--ipv4|--ipv6|-4|-6|--thin|--no-thin|--signed|\
     --no-signed|--porcelain|--no-recurse-submodules)
+      ;;
+    # DELETION, not a content push. Valueless like the group above, but it
+    # inverts what the command MEANS, so it is recorded rather than skipped.
+    # It sat in that group until 2026-08-25, which made the deletion check
+    # below a claim the code did not implement: its comment already said
+    # `git push origin --delete branch` passes through, while the code tested
+    # only the `:branch` refspec form. So the gate refused the routine
+    # post-merge `git push origin --delete <merged-branch>` -- naming the very
+    # PR whose merge is the reason the branch should go -- and the advice it
+    # printed (cherry-pick onto a new branch, open a new PR) was the opposite
+    # of what the user wanted.
+    -d|--delete)
+      delete_push=1
       ;;
     # Flags that DO take a value — skip this token AND the next.
     # `--foo=bar` (single token, captured by *=*) — no extra skip.
@@ -201,12 +216,12 @@ if [ "$remote" != "origin" ]; then
   exit 0
 fi
 
-# `git push origin :branch` (or `git push origin --delete branch`) is an
-# explicit deletion request, not a content push — let it through.
+# `git push origin :branch` and `git push origin --delete branch` are
+# explicit deletion requests, not content pushes — let them through.
 # Likewise `git push origin <sha>:<branch>` (force-push from a specific
 # sha) — we can't safely reason about whether the destination ref is
 # the merged-PR's old head without parsing refspecs, so we pass through.
-if [[ "$branch" == :* ]] || [[ "$branch" == *:* ]]; then
+if [ "$delete_push" -eq 1 ] || [[ "$branch" == :* ]] || [[ "$branch" == *:* ]]; then
   exit 0
 fi
 
