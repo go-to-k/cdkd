@@ -36,6 +36,12 @@ make_repo() {
   # non-paths and the gate passed on a dirty file -- a silent discard, which is
   # the failure direction this gate exists to prevent.
   echo "original" > "$dir/sp ace.txt"
+  # An apostrophe in a filename is ordinary; it opened a quoted span that ran to
+  # end-of-input in the hand-written tokenizer, swallowing every later path.
+  # The apostrophe goes through a variable: writing it inline needs the
+  # `'"'"'` dance, which is what broke this file once already.
+  apos="'"
+  echo "original" > "$dir/O${apos}Brien.txt"
   git -C "$dir" add -A
   git -C "$dir" commit -qm init
   echo "$dir"
@@ -91,6 +97,26 @@ run "staged AND worktree restore blocks"       "$R" "git restore --staged --work
 run "short -S -W restore blocks"               "$R" "git restore -S -W tracked.txt" 2
 run "combined -SW restore blocks"              "$R" "git restore -SW tracked.txt" 2
 run "worktree-only restore blocks"             "$R" "git restore -W tracked.txt" 2
+
+# The `-W` cluster spellings an ENUMERATION misses. `git restore -S -qW f` is
+# legal, matched none of `" -W "|" -SW "|" -WS "`, hit the `-S` arm, and was
+# skipped -- reverting the file while the gate reported rc=0. Short flags
+# cluster in any order with any other flag, so the set is not enumerable.
+run "clustered -qW after -S blocks"            "$R" "git restore -S -qW tracked.txt" 2
+run "clustered -Wq after -S blocks"            "$R" "git restore -S -Wq tracked.txt" 2
+run "long --worktree after --staged blocks"    "$R" "git restore --staged --worktree tracked.txt" 2
+# Control: a cluster with NO W must still be skipped, or the predicate has
+# simply stopped skipping anything.
+run "clustered -qS with no W passes"           "$R" "git restore -qS tracked.txt" 0
+
+# BACKSLASH escapes. Without them an escaped quote opens a span that runs to
+# end-of-input, so every later path merges into one token git does not know and
+# the gate passes on a dirty file.
+RBS=$(make_repo); echo "modified" > "$RBS/tracked.txt"
+run "escaped apostrophe then a dirty path blocks" "$RBS" "git checkout -- O\\'Brien.txt tracked.txt" 2
+run "escaped quote then a dirty path blocks"      "$RBS" "git checkout -- say\\\"hi.txt tracked.txt" 2
+RBS2=$(make_repo); echo "modified" > "$RBS2/sp ace.txt"
+run "backslash-escaped space is one path"         "$RBS2" "git restore sp\\ ace.txt" 2
 
 # QUOTED paths containing a space. `for raw in $paths` split these into `"sp`
 # and `ace.txt"`, neither of which git knows, so the gate passed.

@@ -161,10 +161,30 @@ while IFS= read -r seg; do
   # and `git restore -S -W f`, while `git restore -SW f` and
   # `git restore -W f` correctly blocked. Pre-existing, found reviewing the
   # rewrite of this arm.
-  case " $seg " in
-    *" --worktree "*|*" -W "*|*" -SW "*|*" -WS "*) ;;   # discards the worktree: do NOT skip
-    *" --staged "*|*" -S "*) continue ;;
-  esac
+  # NOT an enumeration of `-W` clusters. `" -W "|" -SW "|" -WS "` was one, and
+  # it was stale on arrival: `git restore -S -qW f` is legal, matches none of
+  # them, hits the `-S` arm and skipped -- reverting the file with the gate
+  # reporting rc=0. Short flags cluster in any order with any other flag, so
+  # the set of spellings is not enumerable. Ask each WORD instead.
+  seg_has_worktree=0
+  seg_has_staged=0
+  for w in $seg; do
+    case "$w" in
+      --worktree) seg_has_worktree=1 ;;
+      --staged)   seg_has_staged=1 ;;
+      --*)        ;;
+      -*)
+        [[ "${w#-}" == *W* ]] && seg_has_worktree=1
+        [[ "${w#-}" == *S* ]] && seg_has_staged=1
+        ;;
+    esac
+  done
+  # `--staged` alone rewrites the INDEX, so it is skipped. With `--worktree`
+  # alongside it the same command ALSO discards worktree content, so the skip
+  # has to be conditional on `--worktree` being absent.
+  if [ "$seg_has_staged" -eq 1 ] && [ "$seg_has_worktree" -eq 0 ]; then
+    continue
+  fi
   if [[ " $seg " == *" -- "* ]]; then
     paths="$paths ${seg#*-- }"
   else
@@ -192,6 +212,18 @@ split_paths() {
   n=${#text}
   for (( i = 0; i < n; i++ )); do
     ch="${text:i:1}"
+    # A backslash escapes the NEXT character, in a span or out of one. Without
+    # this, `git checkout -- O\'"'"'Brien.txt dirty.txt` opened a quoted span at
+    # the apostrophe that ran to end-of-input, merging every later path into one
+    # token git does not know -- so the gate passed on a dirty file. Same class
+    # as the `\"` hole the lib half of this change fixes, in the tokenizer
+    # written to fix a different one. It also makes the commonest CLI spelling
+    # of a spaced path, `sp\ ace.txt`, a single token.
+    if [[ "$ch" == '\' ]]; then
+      i=$((i + 1))
+      tok="$tok${text:i:1}"
+      continue
+    fi
     if [[ -n "$quote" ]]; then
       if [[ "$ch" == "$quote" ]]; then quote=""; else tok="$tok$ch"; fi
     elif [[ "$ch" == '"' || "$ch" == "'" ]]; then
