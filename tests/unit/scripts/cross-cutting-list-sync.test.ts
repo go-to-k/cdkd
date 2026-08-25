@@ -40,22 +40,32 @@ import { dirname, join } from 'node:path';
  * added without being wired in here is likewise invisible; the extractor list
  * above is itself hand-maintained.
  *
- * TWO COPIES ARE DELIBERATELY EXCLUDED, both in
- * `.claude/skills/work-issues/SKILL.md`, which carries not one such list but
- * TWO, and they do not agree with each other:
- *   - lines ~165-176, the worktree-collision section's cross-cutting file list:
- *     `deploy-engine.ts`, `intrinsic-function-resolver.ts`, `dag-builder.ts`,
- *     `template-parser.ts`, `register-providers.ts`, `deploy.ts`, `destroy.ts`.
- *   - lines ~385-387, the triage heuristic, which calls itself "(the section-2
- *     list)" while naming `destroy-runner.ts` and `export.ts` and omitting
- *     `deploy.ts` / `destroy.ts` -- so it is not that list, and its own label
- *     is false.
- * Neither is the gate scope: both omit the three files this PR added, the
- * second names `export.ts`, which no gate scopes at all. They serve issue
- * TRIAGE (can two issues be worked as parallel lanes?), not merge gating, so
- * folding either in would assert an equality that was never true. Tracked
- * separately rather than fixed here; reconciling them is a decision about what
- * that heuristic should say.
+ * A SIXTH COPY IS FENCED DIFFERENTLY, and the difference is the point.
+ * `.claude/skills/work-issues/SKILL.md` section 2 carries a cross-cutting file
+ * list of its own, and it answers a DIFFERENT question: not "does this change
+ * need a broad real-AWS integ before merge" (runtime blast radius) but "does
+ * this file admit only one lane at a time" (edit contention). So it is compared
+ * by CONTAINMENT rather than by equality -- it must be a SUPERSET of the gate
+ * scope, and today it is the gate scope plus `src/cli/commands/export.ts`,
+ * which is contested without being gate-relevant.
+ *
+ * Containment is the right relation because the two errors do not cost the
+ * same. Over-inclusion there serializes one pair of lanes that could have run
+ * in parallel; under-inclusion lets two lanes edit one file and costs one of
+ * them its uncommitted work. Asserting EQUALITY would force a choice between
+ * dropping `export.ts` (losing real contention information) and pushing it into
+ * the merge gate (forcing a broad integ on export-only PRs) -- which is why an
+ * earlier revision of this comment excluded the copy outright rather than
+ * folding it in. go-to-k/cdkd#2076 settled it the other way: exclusion left the
+ * exact drift the gate scope's own history predicts, since go-to-k/cdkd#2042
+ * added `retry.ts` / `retryable-errors.ts` / `rollback-executor.ts` to both
+ * integ gates while that list kept none of them.
+ *
+ * That same file used to carry a SECOND, divergent copy in its triage heuristic
+ * -- one that named `destroy-runner.ts` and `export.ts`, omitted `deploy.ts` and
+ * `destroy.ts`, and still labelled itself "the section-2 list". It is gone: the
+ * triage bullet now points at section 2 instead of restating it, so there is
+ * one list in that file and a reference cannot drift from its referent.
  *
  * HOW the prose copies are read, stated as MEASURED rather than as intended.
  * Every extractor is a PREFIX SCAN from a fixed anchor: it consumes consecutive
@@ -87,6 +97,7 @@ const BROAD_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-broad-gate.sh');
 const DESTROY_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-destroy-gate.sh');
 const VERIFY_PR = join(repoRoot, '.claude', 'skills', 'verify-pr', 'SKILL.md');
 const PICK_INTEG = join(repoRoot, '.claude', 'skills', 'pick-integ', 'SKILL.md');
+const WORK_ISSUES = join(repoRoot, '.claude', 'skills', 'work-issues', 'SKILL.md');
 const RUN_INTEG = join(repoRoot, '.claude', 'skills', 'run-integ', 'SKILL.md');
 const MARKGATE_YML = join(repoRoot, '.markgate.yml');
 const CLAUDE_MD = join(repoRoot, 'CLAUDE.md');
@@ -165,6 +176,38 @@ const CROSS_CUTTING_PIN = [
   'src/deployment/rollback-executor.ts',
   'src/provisioning/register-providers.ts',
 ];
+
+/**
+ * The `/work-issues` section-2 CONTENTION list, pinned as literals.
+ *
+ * Deliberately NOT written as `[...CROSS_CUTTING_PIN, '<extra>']`. A table
+ * driven off the very constant it is validating against cannot see a DELETION:
+ * removing an entry from `CROSS_CUTTING_PIN` would silently remove it from the
+ * expected contention list too, and both assertions would stay green while the
+ * file lost an entry. The containment test below compares against the LIVE gate
+ * regex, so the two guards fail for different reasons -- this one on a shrink of
+ * the prose list, that one on the gate growing past it.
+ */
+const CONTENTION_PIN = [
+  'src/analyzer/dag-builder.ts',
+  'src/analyzer/template-parser.ts',
+  'src/cli/commands/deploy.ts',
+  'src/cli/commands/destroy-runner.ts',
+  'src/cli/commands/destroy.ts',
+  'src/cli/commands/export.ts',
+  'src/deployment/deploy-engine.ts',
+  'src/deployment/intrinsic-function-resolver.ts',
+  'src/deployment/retry.ts',
+  'src/deployment/retryable-errors.ts',
+  'src/deployment/rollback-executor.ts',
+  'src/provisioning/register-providers.ts',
+];
+
+const CONTENTION_RATIONALE =
+  'The `/work-issues` section-2 contested-file list decides whether two issues can be worked as ' +
+  'parallel lanes. It is PINNED: adding an entry is cheap and correct, but REMOVING one means ' +
+  'two lanes may now edit that file at once, so say in the PR body why it stopped being ' +
+  'contested.';
 
 const DESTROY_SCOPE_PIN = [
   'src/analyzer/dag-builder.ts',
@@ -337,6 +380,51 @@ function pathsFromPickInteg(): string[] {
     }
   }
   assertFloor(out, 'pick-integ/SKILL.md BROAD-set row', MIN_PATHS);
+  return out;
+}
+
+/**
+ * (f) the `/work-issues` section-2 CONTENTION list.
+ *
+ * Same prefix scan as the others, with one addition the other prose copies do
+ * not need: these bullets carry an explanatory clause after the path and are
+ * hard-wrapped, so a bullet spans several lines. The scan therefore accepts two
+ * line shapes and stops at the first BLANK line -- an entry line
+ * (`- \`<path>\` -- ...`) and a two-space-indented continuation. Anything else
+ * inside the span makes the parse FAIL rather than truncate, because unlike the
+ * gate copies this list's terminator is a blank line rather than a shape
+ * change, and a silently short list here would compare as a subset failure with
+ * a misleading name.
+ */
+function pathsFromWorkIssuesContested(): string[] {
+  const m =
+    /\*\*cross-cutting deploy\/destroy\*\* ones that almost every non-trivial fix\s+eventually\s+touches:\n\n((?:.+\n)+)/.exec(
+      read(WORK_ISSUES),
+    );
+  expect(
+    m,
+    'work-issues/SKILL.md: could not find the section-2 contested-file list. Its anchor ' +
+      'sentence ("...cross-cutting deploy/destroy ones that almost every non-trivial fix ' +
+      'eventually touches:") was reworded, or a blank line now separates it from the bullets. ' +
+      'The extractor asserts here rather than returning [], which would compare equal to ' +
+      'another [] and report green having compared nothing.',
+  ).not.toBeNull();
+  const out: string[] = [];
+  for (const line of m![1].split('\n')) {
+    if (line === '') break;
+    const entry = /^- `([^`]+)` /.exec(line);
+    if (entry !== null) {
+      out.push(entry[1]);
+      continue;
+    }
+    expect(
+      /^ {2}\S/.test(line),
+      `work-issues/SKILL.md: line ${JSON.stringify(line)} inside the contested-file list is ` +
+        'neither a "- `<path>` ..." entry nor a two-space-indented continuation of one. Keep ' +
+        'one path per bullet so the list stays machine-readable.',
+    ).toBe(true);
+  }
+  assertFloor(out, 'work-issues/SKILL.md section-2 contested list', MIN_PATHS);
   return out;
 }
 
@@ -639,6 +727,37 @@ describe('cross-cutting file list stays in sync across its five copies', () => {
 
   it('holds exactly the pinned scope', () => {
     expect(canonical(pathsFromHookRegex()), PIN_RATIONALE).toEqual(canonical(CROSS_CUTTING_PIN));
+  });
+});
+
+describe('work-issues contention list CONTAINS the integ-broad gate scope', () => {
+  it('names every file the live gate regex names', () => {
+    const contested = new Set(pathsFromWorkIssuesContested());
+    const missing = pathsFromHookRegex().filter((p) => !contested.has(p));
+    expect(
+      missing,
+      `these files are in integ-broad-gate.sh's CROSS_CUTTING_REGEX but not in ` +
+        `/work-issues section 2's contested-file list. A file with enough runtime blast radius ` +
+        `to force a broad real-AWS integ is also one most fixes touch, so it admits only one ` +
+        `lane at a time -- and a lane that does not know that will edit it alongside another. ` +
+        `This is a CONTAINMENT check, not an equality one: the contested list may name more ` +
+        `(it names src/cli/commands/export.ts, which no gate scopes), never fewer.`,
+    ).toEqual([]);
+  });
+
+  it('holds exactly the pinned contention list', () => {
+    expect(canonical(pathsFromWorkIssuesContested()), CONTENTION_RATIONALE).toEqual(
+      canonical(CONTENTION_PIN),
+    );
+  });
+
+  it('names only paths that exist', () => {
+    const missing = pathsFromWorkIssuesContested().filter((p) => !existsSync(join(repoRoot, p)));
+    expect(
+      missing,
+      `these contested-file entries name files that no longer exist, so a lane mapping its ` +
+        `issue to a target file can never match them and the entry silently protects nothing`,
+    ).toEqual([]);
   });
 });
 
