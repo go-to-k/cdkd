@@ -32,6 +32,10 @@ make_repo() {
   git -C "$dir" config user.name t
   echo "original" > "$dir/tracked.txt"
   echo "original" > "$dir/other.txt"
+  # A path with a SPACE, because `for raw in $paths` word-split it into two
+  # non-paths and the gate passed on a dirty file -- a silent discard, which is
+  # the failure direction this gate exists to prevent.
+  echo "original" > "$dir/sp ace.txt"
   git -C "$dir" add -A
   git -C "$dir" commit -qm init
   echo "$dir"
@@ -78,8 +82,26 @@ run "checkout -b alone passes"                 "$R" "git checkout -b wip" 0
 # `--staged` is per-SEGMENT, not per-command. The old form exited 0 for the
 # whole command on seeing `--staged`, so a staged restore chained ahead of a
 # worktree restore passed the worktree one through untested.
-run "staged restore alone passes"              "$R" "git restore --staged tracked.txt" 0
 run "staged THEN worktree restore blocks"      "$R" "git restore --staged tracked.txt && git restore tracked.txt" 2
+
+# `--staged` alone rewrites the index; WITH `--worktree` the same command also
+# discards worktree content, so the skip has to be conditional. Both spellings
+# passed on a dirty file until this was fenced.
+run "staged AND worktree restore blocks"       "$R" "git restore --staged --worktree tracked.txt" 2
+run "short -S -W restore blocks"               "$R" "git restore -S -W tracked.txt" 2
+run "combined -SW restore blocks"              "$R" "git restore -SW tracked.txt" 2
+run "worktree-only restore blocks"             "$R" "git restore -W tracked.txt" 2
+
+# QUOTED paths containing a space. `for raw in $paths` split these into `"sp`
+# and `ace.txt"`, neither of which git knows, so the gate passed.
+RSP=$(make_repo); echo "modified" > "$RSP/sp ace.txt"
+run "quoted path with a space, checkout blocks"  "$RSP" "git checkout -- \"sp ace.txt\"" 2
+run "quoted path with a space, restore blocks"   "$RSP" "git restore \"sp ace.txt\"" 2
+run "single-quoted path with a space blocks"     "$RSP" "git restore 'sp ace.txt'" 2
+# Control: the same repo with that file CLEAN must pass, or the three above are
+# satisfied by a gate that blocks whenever it sees a quote.
+RSPC=$(make_repo)
+run "quoted path with a space, clean, passes"    "$RSPC" "git checkout -- \"sp ace.txt\"" 0
 run "restore <dirty path> blocks" "$R" "git restore tracked.txt" 2
 run "restore -- <dirty path> blocks" "$R" "git restore -- tracked.txt" 2
 run "escape hatch is honored" "$R" "CDKD_ALLOW_DIRTY_RESTORE=1 git checkout -- tracked.txt" 2

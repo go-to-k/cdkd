@@ -443,27 +443,52 @@ for hook in "$HOOKS_DIR"/*.sh; do
   #
   # On the index side the subscript is not required to be a literal: an earlier
   # version demanded `[0-9]+` and `idx=4; ${BASH_REMATCH[$idx]}` walked past it.
-  hook_matches_shared=0
-  grep -qE '=~[^#]*\$\{?GATE_' "$hook" && hook_matches_shared=1
-  if [ "$hook_matches_shared" -eq 0 ]; then
-    for gv in $(grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^=]*\$\{?GATE_' "$hook" \
-                | grep -oE '[A-Za-z_][A-Za-z0-9_]*=' | tr -d '='); do
-      if grep -qE "=~[[:space:]]*\"?\\\$\{?${gv}\}?\"?" "$hook"; then
-        hook_matches_shared=1
-        break
-      fi
-    done
-  fi
-  [ "$hook_matches_shared" -eq 1 ] || continue
-  if grep -qE '\$\{BASH_REMATCH\[' "$hook"; then
-    coupled="$coupled\n    - $(basename "$hook")"
-  fi
+  fence4_hazard "$hook" && coupled="$coupled\n    - $(basename "$hook")"
 done
 
 # Guard the guard. `coupled` being empty is the PASS condition, so an
 # always-empty scan -- a broken grep, a bad path, a quoting slip -- reads as a
 # clean repo. Fence 1 plants variants to prove it detects; this does the same,
 # against a throwaway file carrying each evasion spelling.
+# ONE definition, used by both the guard-the-guard probes and the real scan.
+# It was written out twice, so the probes validated a COPY of the predicate
+# rather than the code that runs -- a guard-the-guard that guards a duplicate
+# proves only that the duplicate works.
+#
+# Indirections the collector must survive, all confirmed live against the
+# earlier version: `printf -v re ...`; a variable copied through another
+# (`a="$GATE_..."; b="$a"`); a command substitution (`re=$(pick)`); an indirect
+# expansion (`name=GATE_RE_...; [[ $c =~ ${!name} ]]`); and an assignment
+# sharing a line with a function opener (`setup() { re="$GATE_..."; }`), which
+# a `^[[:space:]]*NAME=` anchor misses. The scan is deliberately generous here:
+# a false positive is one comment away from being cleared, a false negative is
+# a silently re-opened gate.
+fence4_hazard() {
+  local f="$1" gv m=0
+  grep -qE '=~[^#]*\$\{?GATE_' "$f" && m=1
+  if [ "$m" -eq 0 ]; then
+    # Names assigned a GATE_ pattern, anywhere on a line, plus `printf -v`.
+    for gv in $(
+      { grep -oE '[A-Za-z_][A-Za-z0-9_]*=[^=]*\$\{?GATE_' "$f" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*'
+        grep -oE 'printf[[:space:]]+-v[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$f" | grep -oE '[A-Za-z_][A-Za-z0-9_]*$'
+      } | sort -u
+    ); do
+      grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv}\}?\"?" "$f" && { m=1; break; }
+      # A name copied into another name, one hop -- enough for the shapes seen.
+      for gv2 in $(grep -oE "[A-Za-z_][A-Za-z0-9_]*=\"?\\\$\{?${gv}\}?\"?" "$f" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*'); do
+        grep -qE "=~[[:space:]]*\"?\\\$\{?!?${gv2}\}?\"?" "$f" && { m=1; break 2; }
+      done
+    done
+  fi
+  # An indirect expansion names its target as a plain STRING, so the collector
+  # above cannot see it; catch the shape directly.
+  if [ "$m" -eq 0 ] && grep -qE '=[[:space:]]*"?GATE_RE_[A-Z_]+' "$f" && grep -qE '=~[^#]*\$\{![A-Za-z_]' "$f"; then
+    m=1
+  fi
+  [ "$m" -eq 1 ] || return 1
+  grep -qE '\$\{BASH_REMATCH\[' "$f"
+}
+
 probe_dir="$TMPDIR/fence4-probe"
 mkdir -p "$probe_dir"
 cat > "$probe_dir/inline.sh" <<'P1'
@@ -485,27 +510,32 @@ P4
 cat > "$probe_dir/clean.sh" <<'P5'
 rest="$(gate_verb_rest "$c" "$GATE_RE_GIT_CHECKOUT")"
 P5
+cat > "$probe_dir/printfv.sh" <<'P7'
+printf -v re '%s' "$GATE_RE_GIT_PUSH"
+[[ "$c" =~ $re ]] && x="${BASH_REMATCH[2]}"
+P7
+cat > "$probe_dir/copied.sh" <<'P8'
+a="$GATE_RE_GIT_PUSH"
+b="$a"
+[[ "$c" =~ $b ]] && x="${BASH_REMATCH[2]}"
+P8
+cat > "$probe_dir/indirect_name.sh" <<'P9'
+name=GATE_RE_GIT_PUSH
+[[ "$c" =~ ${!name} ]] && x="${BASH_REMATCH[2]}"
+P9
+cat > "$probe_dir/inline_fn.sh" <<'P10'
+setup() { re="$GATE_RE_GIT_PUSH"; }
+[[ "$c" =~ $re ]] && x="${BASH_REMATCH[2]}"
+P10
 cat > "$probe_dir/passthrough.sh" <<'P6'
 __verb_ere="$GATE_RE_GIT_PUSH"
 target=$(gate_target_dir_strict "$c" "$PWD" "$__verb_ere")
 if [[ "$c" =~ [[:space:]]push([[:space:]]+(.*))?$ ]]; then a="${BASH_REMATCH[2]}"; fi
 P6
 
-fence4_hazard() {
-  local f="$1" gv m=0
-  grep -qE '=~[^#]*\$\{?GATE_' "$f" && m=1
-  if [ "$m" -eq 0 ]; then
-    for gv in $(grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^=]*\$\{?GATE_' "$f" \
-                | grep -oE '[A-Za-z_][A-Za-z0-9_]*=' | tr -d '='); do
-      grep -qE "=~[[:space:]]*\"?\\\$\{?${gv}\}?\"?" "$f" && { m=1; break; }
-    done
-  fi
-  [ "$m" -eq 1 ] || return 1
-  grep -qE '\$\{BASH_REMATCH\[' "$f"
-}
 
 undetected=""
-for probe in inline split indirect quoted; do
+for probe in inline split indirect quoted printfv copied indirect_name inline_fn; do
   fence4_hazard "$probe_dir/$probe.sh" || undetected="$undetected $probe"
 done
 false_positive=""
@@ -517,7 +547,7 @@ if [ -n "$undetected" ]; then
 elif [ -n "$false_positive" ]; then
   ng "fence 4 (guard the guard): the scan flags$false_positive, which pass a GATE_ pattern to a helper instead of matching it. Four real hooks look like this; flagging them makes a clean state unreachable without an exemption list."
 else
-  ok "fence 4 (guard the guard): the scan detects all 4 coupling spellings and clears both non-coupling ones"
+  ok "fence 4 (guard the guard): the scan detects all 8 coupling spellings and clears both non-coupling ones"
 fi
 
 if [ "$scanned" -lt 20 ]; then

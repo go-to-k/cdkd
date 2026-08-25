@@ -248,6 +248,11 @@ Z2ggLS1yZXBvICJnbyB0by9rIiBwciBtZXJnZSAx
 Z2l0IC1jIHVzZXIubmFtZT0iSmFuZSBEb2UiIC1DIC9hYnMvcmVwbyBjb21taXQgLW0geA==
 Z2l0IGNoZWNrb3V0IG1haW4gJiYgZ2l0IGNoZWNrb3V0IC0tIGYudHh0
 Z2l0IGNoZWNrb3V0IC1iIHdpcCAmJiBnaXQgcmVzdG9yZSAtLSBmLnR4dA==
+Z2l0IC1jIHVzZXIubmFtZT1PXCJCcmllbiBjb21taXQgLW0geA==
+Z2l0IC1jIGFsaWFzLng9InJ1biBjb21taXQgbGF0ZXIiIHN0YXR1cw==
+Z2l0IC1jIGZvbz0ieCBjb21taXQgLW0geSIgc3RhdHVz
+Z2l0IC1DIC90bXAvb1wibmVpbGwvcmVwbyBjb21taXQgLW0geA==
+Z2l0IC1jIGs9YVwiYiBjaGVja291dCAtLSBmLnR4dA==
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -423,8 +428,12 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 134	m:GATE_RE_GH_PR_WRITE	1	NOW_MATCH	gh repo flag with a spaced value
 135	m:GATE_RE_GIT_COMMIT	1	NOW_MATCH	spaced value then a real -C
 135	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	NOW_MATCH	spaced value then a real -C
-135	t:GATE_RE_GIT_COMMIT	/abs/repo	NOW_MATCH	spaced value then a real -C resolves the target
-135	t:GATE_RE_GIT_COMMIT_OR_PUSH	/abs/repo	NOW_MATCH	spaced value then a real -C resolves the target
+135	t:GATE_RE_GIT_COMMIT	/abs/repo	TARGET	spaced value then a real -C resolves the target
+135	t:GATE_RE_GIT_COMMIT_OR_PUSH	/abs/repo	TARGET	spaced value then a real -C resolves the target
+139	m:GATE_RE_GIT_COMMIT	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
+139	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
+140	m:GATE_RE_GIT_COMMIT	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
+140	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \

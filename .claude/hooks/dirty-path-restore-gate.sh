@@ -138,7 +138,6 @@ paths=""
 #
 # A branch switch chained ahead of a discard is an everyday shape, so the arm
 # that finds nothing must FALL THROUGH, never exit.
-paths=""
 while IFS= read -r seg; do
   [ -n "$seg" ] || continue
   # `git checkout` is a path restore only when `--` is present; without it the
@@ -154,7 +153,16 @@ while IFS= read -r seg; do
   # end-of-string case too — the unpadded `*" --staged"` variants would be dead
   # patterns that can never match. `continue`, not `exit 0`: a staged restore in
   # one segment says nothing about a worktree restore in the next.
+  #
+  # `--staged` alone rewrites the INDEX only, which is why it is skipped. With
+  # `--worktree` alongside it, the same command ALSO discards worktree content
+  # -- so the skip has to be conditional on `--worktree` being absent. Both
+  # spellings were passing on a dirty file: `git restore --staged --worktree f`
+  # and `git restore -S -W f`, while `git restore -SW f` and
+  # `git restore -W f` correctly blocked. Pre-existing, found reviewing the
+  # rewrite of this arm.
   case " $seg " in
+    *" --worktree "*|*" -W "*|*" -SW "*|*" -WS "*) ;;   # discards the worktree: do NOT skip
     *" --staged "*|*" -S "*) continue ;;
   esac
   if [[ " $seg " == *" -- "* ]]; then
@@ -174,17 +182,41 @@ done < <(gate_verb_rest_each "$command" "$GATE_RE_GIT_RESTORE")
 # operator left to strip -- and stripping anyway would silently drop a path
 # containing one of those characters.
 
+# Split QUOTE-AWARE, not on whitespace. `for raw in $paths` word-splits, so
+# `git checkout -- "sp ace.txt"` yielded `"sp` and `ace.txt"`, neither of which
+# is a path git knows, and the gate passed on a dirty file. A path with a space
+# is ordinary and the failure direction is the bad one -- a silent discard of
+# uncommitted work, which is this gate's entire subject.
+split_paths() {
+  local text="$1" tok="" ch quote="" i n
+  n=${#text}
+  for (( i = 0; i < n; i++ )); do
+    ch="${text:i:1}"
+    if [[ -n "$quote" ]]; then
+      if [[ "$ch" == "$quote" ]]; then quote=""; else tok="$tok$ch"; fi
+    elif [[ "$ch" == '"' || "$ch" == "'" ]]; then
+      quote="$ch"
+    elif [[ "$ch" == ' ' || "$ch" == $'\t' ]]; then
+      [[ -n "$tok" ]] && printf '%s\n' "$tok"
+      tok=""
+    else
+      tok="$tok$ch"
+    fi
+  done
+  [[ -n "$tok" ]] && printf '%s\n' "$tok"
+  return 0
+}
+
 dirty_paths=()
-for raw in $paths; do
-  [[ "$raw" == -* ]] && continue
-  [[ "$raw" == "--" ]] && continue
-  p="${raw%\"}"; p="${p#\"}"; p="${p%\'}"; p="${p#\'}"
+while IFS= read -r p; do
+  [[ "$p" == -* ]] && continue
+  [[ "$p" == "--" ]] && continue
   [[ -n "$p" ]] || continue
   # `git status --porcelain <path>` prints nothing when the path is clean.
   if status_out=$(git -C "$cwd" status --porcelain -- "$p" 2>/dev/null); then
     [[ -n "$status_out" ]] && dirty_paths+=("$p")
   fi
-done
+done < <(split_paths "$paths")
 
 [[ ${#dirty_paths[@]} -gt 0 ]] || exit 0
 

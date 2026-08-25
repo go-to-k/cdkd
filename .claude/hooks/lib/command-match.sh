@@ -602,16 +602,24 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # `git -C /tmp -q commit` reads `-q` as `-C`'s value.
 # One shell word that may EMBED quoted spans: `user.name="Jane Doe"` is one
 # token, `"Jane Doe"` is one token, and a bare space still ends it.
-# `\"` inside a double-quoted span is an ESCAPED quote, not the end of it.
+# `\"` is an escaped quote wherever it appears -- INSIDE a double-quoted span it
+# does not end the span, and OUTSIDE one it is an ordinary character rather than
+# an opener. Both alternatives are needed and the second is easy to forget: an
+# earlier version of this change added the in-span form and, in the same commit,
+# narrowed the blind fallback to exclude `"`, which is what used to cover the
+# out-of-span case. Nothing matched `\"` any more, and
+# `git -c user.name=O\"Brien checkout -- f.txt` went from rc=2 to rc=0 --
+# a bypass introduced by the commit that was closing one. Removing a false
+# POSITIVE and removing a match are the same edit from the pattern's side.
 # Without the escape alternative `git -c k="a\" b" commit -m x` gave branch-gate
 # rc=0 on `main` while the plain form gave rc=2 -- the same bypass this whole
 # change is about, one escape deeper (found in review of go-to-k/cdkd#2200).
 # Single quotes take no escapes in shell, so only the double-quoted span needs
 # one.
-_GATE_WORD_CHAR='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'])'
+_GATE_WORD_CHAR='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|\\.|[^[:space:]"'"'"'])'
 # The same, but the FIRST character may not be `-`, so a following flag is never
 # swallowed as the previous flag's value.
-_GATE_WORD_CHAR_NODASH='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'-])'
+_GATE_WORD_CHAR_NODASH='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|\\.|[^[:space:]"'"'"'-])'
 # Each half keeps the OLD quote-blind alternative as a fallback, and it is
 # load-bearing rather than belt-and-braces: the embedding form treats a bare
 # `'"'"'` as opening a quoted span, so a path with an UNBALANCED apostrophe
@@ -620,9 +628,15 @@ _GATE_WORD_CHAR_NODASH='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'-]
 # this was caught. The two forms are not ranked -- POSIX leftmost-longest is
 # about the WHOLE match, so a command can legitimately take the blind parse even
 # with balanced quotes (`git -c foo="x commit -m y" status` does). That is fine
-# here because every alternative is a strict SUPERSET of the old pattern at each
-# position, so the widening can only add matches, never remove one. Do not
-# rewrite this as "the strict form wins when quotes balance"; it does not.
+# here because the blind form covers whatever the strict one cannot parse.
+#
+# Do NOT rewrite this as "the strict form wins when quotes balance" (it does
+# not), and do NOT reason that these alternatives are a strict SUPERSET of the
+# old pattern so the change can only ADD matches. An earlier version of this
+# comment said exactly that, three lines above a change that narrowed the blind
+# form -- and that claim is precisely what makes a reviewer skip checking for
+# LOST matches. Every edit here needs the differential fence run in both
+# directions.
 # The blind form deliberately excludes `"`. Allowing it made the fallback able
 # to parse HALF of a double-quoted token, and POSIX leftmost-longest then
 # PREFERS that reading whenever it produces a match the strict reading does not:
