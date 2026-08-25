@@ -241,6 +241,36 @@ C="$GATE_RE_GIT_COMMIT"
 P="$GATE_RE_GIT_PUSH"
 M="$GATE_RE_GH_PR_MERGE"
 
+# --- a FLAG VALUE CONTAINING A SPACE (go-to-k/cdkd#2200) ---------------------
+#
+# `git -c user.name="Jane Doe" commit` is an everyday shape and it walked past
+# EVERY gate keyed on GATE_FLAGS -- measured at the branch-gate level, not just
+# here: on a repo sitting on `main`, `git commit -m x` gave rc=2 while
+# `git -c user.name="Jane Doe" commit -m x` gave rc=0. A commit straight to main,
+# ungated. The value alternative stopped at the first space, so the flag loop
+# ended mid-value and the verb was never reached.
+#
+# Both quote styles, both the separate-value (`-c k=v`) and glued (`--flag=v`)
+# forms, and a value whose quoted span itself contains a DASH -- that last one
+# is what a naive "value may not start with -" fix breaks.
+want_match 0 "flag value with a space, double quotes" 'git -c user.name="Jane Doe" commit -m x' "$C"
+want_match 0 "flag value with a space, single quotes" "git -c user.name='Jane Doe' commit -m x" "$C"
+want_match 0 "glued flag value with a space"          'git --author="Jane Doe" commit -m x' "$C"
+want_match 0 "quoted span containing a dash"          'git -c core.editor="vim -f" commit -m x' "$C"
+want_match 0 "two flags, first value spaced"          'git -c user.name="Jane Doe" -C /tmp commit -m x' "$C"
+want_match 0 "gh repo flag with a spaced value"       'gh --repo "go to/k" pr merge 1' "$M"
+
+# Polarity controls. Widening a flag absorber is exactly the change that makes a
+# gate fire on commands it should ignore, and "it blocks" is satisfied by a gate
+# that blocks for any reason at all -- so the widening has to be shown NOT to
+# reach a different verb.
+want_match 1 "spaced flag value, non-commit verb"     'git -c user.name="Jane Doe" status' "$C"
+want_match 1 "spaced flag value, log not commit"      'git -c user.name="Jane Doe" log --oneline' "$C"
+
+# A following FLAG must not be eaten as the previous flag's value: with that
+# restriction dropped, `-q` becomes `-C`'s value and `/tmp` becomes the verb.
+want_match 0 "flag after a valueless flag"            'git -C /tmp -q commit -m x' "$C"
+
 # --- the spellings that used to bypass ---------------------------------------
 want_match 0 "bare git commit"              'git commit -m x' "$C"
 want_match 0 "git add -A && git commit"     'git add -A && git commit -m x' "$C"

@@ -384,6 +384,58 @@ else
   ng "fence 3: gates miss a determinate quoted target path:$(printf '%b' "$space_leaks")"
 fi
 
+# --- fence 4: nobody indexes into a SHARED flag pattern by position ----------
+#
+# go-to-k/cdkd#2200. `GATE_FLAGS` had to be widened so a flag value containing a
+# space (`git -c user.name="Jane Doe" commit`) stopped ending the flag loop
+# mid-value -- an ungated commit straight to `main`, in every gate keyed on it.
+# But widening a regex ADDS CAPTURE GROUPS, and two gates read the argument tail
+# as a positional `BASH_REMATCH[N]` into that shared pattern. The first attempt
+# shipped the widening alone: `dirty-path-restore-gate` silently stopped
+# blocking `git checkout -- <dirty path>` in 7 of its 18 cases, and fence 3
+# above reported it "gone quiet". Trading a `git -c` bypass for a
+# `git checkout --` bypass is not a fix, so it was reverted.
+#
+# Both callers now strip the matched prefix by LENGTH (`gate_verb_rest` /
+# `gate_pr_selector`), so the group count is internal to command-match.sh. This
+# fence keeps it that way. It is deliberately a SOURCE scan rather than a
+# behavioural one: the behavioural symptom is a gate going quiet, which fence 3
+# already reports -- but only for the shapes it happens to exercise, and only
+# AFTER someone has written the coupling. This catches the coupling itself, in a
+# hook written next month by someone copying a neighbour.
+#
+# The population is the directory listing, never a hand-written list, for the
+# reason stated at the top of this file.
+coupled=""
+scanned=0
+for hook in "$HOOKS_DIR"/*.sh; do
+  case "$(basename "$hook")" in *.test.sh) continue ;; esac
+  # POPULATION: every hook that loads the shared matcher. Not "every hook that
+  # currently embeds a GATE_ constant in a `=~`" -- that set is the DEFECT, and
+  # taking the population from the defect is how a fence goes inert the moment
+  # it succeeds. Measured while writing this: after the fix that subset is 1,
+  # so a floor on it would be unreachable and a clean run would prove nothing.
+  # A hook in the population that has no coupling simply passes.
+  grep -q 'command-match.sh' "$hook" || continue
+  scanned=$((scanned + 1))
+  # HAZARD: this file builds its OWN match out of a shared constant, and then
+  # reads a numbered group out of it. Either half alone is fine -- the `gate_*`
+  # helpers take the pattern as an argument and index their own local patterns,
+  # which no widening here can shift.
+  grep -qE '=~[^#]*\$\{?GATE_' "$hook" || continue
+  if grep -qE '\$\{BASH_REMATCH\[[0-9]+\]\}' "$hook"; then
+    coupled="$coupled\n    - $(basename "$hook")"
+  fi
+done
+
+if [ "$scanned" -lt 20 ]; then
+  ng "fence 4: only $scanned hooks load command-match.sh -- the scan is not seeing the hook directory, so a green result here would mean nothing"
+elif [ -z "$coupled" ]; then
+  ok "fence 4: none of the $scanned matcher-using hooks index a shared pattern positionally"
+else
+  ng "fence 4: these hooks read a positional BASH_REMATCH out of a match they built from a SHARED GATE_ constant, so widening that constant shifts their index and silently re-opens them (go-to-k/cdkd#2200):$(printf '%b' "$coupled")\n    Use gate_verb_rest / gate_pr_selector, which strip the matched prefix by LENGTH."
+fi
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

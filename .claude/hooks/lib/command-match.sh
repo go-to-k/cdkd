@@ -579,15 +579,41 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # a commit straight to main, ungated, and the same hole in EVERY gate keyed on
 # GATE_FLAGS.
 #
-# NOT FIXED HERE, deliberately, and tracked as its own issue. GATE_FLAGS
-# contributes a fixed number of CAPTURE GROUPS, and callers index them:
-# `dirty-path-restore-gate.sh:123` reads `BASH_REMATCH[4]`. Widening the value
-# alternative adds groups, shifts every such index, and that gate silently
-# stopped blocking `git checkout -- <dirty path>` -- 7 of its 18 cases, and the
-# class fence reported it "gone quiet". Fixing it means widening the pattern AND
-# auditing every BASH_REMATCH index built on it, which is a different change
-# from this one and needs its own review.
-GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]-][^[:space:]]*))?)*'
+# FIXED, go-to-k/cdkd#2200. Both halves were needed and the first attempt
+# shipped only one: widening the value alternative adds CAPTURE GROUPS, and
+# callers used to index them positionally (`dirty-path-restore-gate.sh` read
+# `BASH_REMATCH[4]`), so the widening alone made that gate stop blocking
+# `git checkout -- <dirty path>` in 7 of its 18 cases and the class fence
+# reported it "gone quiet". Trading a `git -c` bypass for a `git checkout --`
+# bypass is not a fix, so that attempt was reverted.
+#
+# The durable half is that NO caller indexes into this pattern any more. The two
+# that did now strip the matched prefix by LENGTH via `gate_verb_rest` /
+# `gate_pr_selector`, so the group count is internal to this file and the next
+# widening cannot shift anything. `gate_flags_group_count` below exists to keep
+# that true: the suite pins it, so a change here fails with a message naming
+# this paragraph rather than silently re-opening a gate.
+#
+# A flag TOKEN and a flag VALUE both embed quoted spans now, so
+# `--author="Jane Doe"` and `-c user.name="Jane Doe"` are each a single token.
+# A value still may not BEGIN with `-`: without that restriction
+# `git -C /tmp -q commit` reads `-q` as `-C`'s value.
+# One shell word that may EMBED quoted spans: `user.name="Jane Doe"` is one
+# token, `"Jane Doe"` is one token, and a bare space still ends it.
+_GATE_WORD_CHAR='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'])'
+# The same, but the FIRST character may not be `-`, so a following flag is never
+# swallowed as the previous flag's value.
+_GATE_WORD_CHAR_NODASH='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'-])'
+# Each half keeps the OLD quote-blind alternative as a fallback, and it is
+# load-bearing rather than belt-and-braces: the embedding form treats a bare
+# `'"'"'` as opening a quoted span, so a path with an UNBALANCED apostrophe
+# (`git -C /tmp/o'"'"'neill/repo commit`) stops matching entirely. Dropping it
+# cost exactly the two apostrophe cases go-to-k/cdkd#2199 added, which is how
+# this was caught. Leftmost-longest picks the embedding form whenever the quotes
+# do balance, so the fallback only fires where the strict form has nothing.
+_GATE_WORD_BLIND='[^[:space:]]*'
+_GATE_WORD_BLIND_NODASH='[^[:space:]-][^[:space:]]*'
+GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND})([[:space:]]+(${_GATE_WORD_CHAR_NODASH}${_GATE_WORD_CHAR}*|${_GATE_WORD_BLIND_NODASH}))?)*"
 # Every gh GLOBAL FLAG before the subcommand, not just `-C`. The `-C`-only form
 # meant a repo flag ahead of the verb made the verb unreachable, so
 # `gh -R owner/repo pr merge 1 --squash` matched NOTHING and walked past every
@@ -595,7 +621,7 @@ GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'
 # verify-pr-gate / integ-destroy-gate / pr-review-gate; go-to-k/cdkd#2027 review
 # round 4). `gate_leading_c_value` already treated `-R` / `--repo` as gh flags,
 # so the two halves of this file disagreed with each other. Same shape as
-# GATE_FLAGS, and like it this contributes THREE capture groups.
+# GATE_FLAGS, and like it its group count is nobody else's business.
 GATE_GH_C="$GATE_FLAGS"
 GATE_RE_GIT_COMMIT="^git${GATE_FLAGS}[[:space:]]+commit([[:space:]]|$)"
 GATE_RE_GIT_PUSH="^git${GATE_FLAGS}[[:space:]]+push([[:space:]]|$)"
@@ -607,9 +633,16 @@ GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+merge([[:space:]]|
 GATE_RE_GIT_COMMIT_OR_PUSH="^git${GATE_FLAGS}[[:space:]]+(commit|push)([[:space:]]|$)"
 GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
 GATE_RE_GIT_SWITCH="^git${GATE_FLAGS}[[:space:]]+(switch|checkout)([[:space:]]|$)"
+# The two halves of GATE_RE_GIT_CHECKOUT_RESTORE, separately. A caller that
+# needs the ARGUMENT TAIL has to know which verb fired -- `git checkout` is a
+# path restore only when `--` is present, while `git restore` is path-scoped by
+# default -- so it cannot use the combined form.
+GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS}[[:space:]]+checkout([[:space:]]|$)"
+GATE_RE_GIT_RESTORE="^git${GATE_FLAGS}[[:space:]]+restore([[:space:]]|$)"
 GATE_RE_GIT_CHECKOUT_RESTORE="^git${GATE_FLAGS}[[:space:]]+(checkout|restore)([[:space:]]|$)"
 GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)"
 # non-english-text-gate guards every way PR prose reaches GitHub.
+GATE_RE_GH_PR_MERGE_OR_EDIT="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(merge|edit)([[:space:]]|$)"
 GATE_RE_GH_PR_WRITE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|edit|merge)([[:space:]]|$)"
 # gh-label-validity-gate: the two commands that can carry --label / --add-label.
 GATE_RE_GH_LABEL_CARRIER="^gh${GATE_GH_C}[[:space:]]+(issue|pr)[[:space:]]+(create|edit)([[:space:]]|$)"
@@ -664,7 +697,7 @@ GATE_RE_DELSTACK='^delstack([[:space:]]|$)'
 # gate_pr_selector_rest <command> <verb-ere>
 # Everything AFTER the matched verb, for callers that run their own token walk.
 # Same rationale and the same anchored-match strip as gate_pr_selector.
-gate_pr_selector_rest() {
+gate_verb_rest() {
   local cmd="$1" re="$2" segment
   while IFS= read -r segment; do
     [[ "$segment" =~ $re ]] || continue
@@ -673,6 +706,15 @@ gate_pr_selector_rest() {
   done < <(gate_segments "$cmd")
   return 0
 }
+
+# gate_pr_selector_rest <command> <verb-ere>
+#
+# Historical name for gate_verb_rest, kept because the shape is not
+# PR-specific: any gate that wants "everything after the verb it matched" wants
+# this, and two of them (dirty-path-restore-gate, non-english-text-gate) reached
+# for a positional BASH_REMATCH index instead, which is what go-to-k/cdkd#2200
+# is about.
+gate_pr_selector_rest() { gate_verb_rest "$@"; }
 
 # gate_pr_selector_ate_number <command> <verb-ere>
 #

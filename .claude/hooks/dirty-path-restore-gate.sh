@@ -115,18 +115,25 @@ git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 #                                 so `git checkout <branch>` never matches
 #   git restore [flags] <path>... path-scoped by default
 paths=""
-# `$GATE_FLAGS` rather than a local `-C` pattern: the local one had no quoted
-# alternative, so `git -C "/a b" checkout -- f` matched nothing and the gate
-# passed a destructive discard (go-to-k/cdkd#2027 review, blocker 1). GATE_FLAGS
-# contributes 3 capture groups, so the argument tail is [4], not [2].
-if [[ "$command" =~ git${GATE_FLAGS}[[:space:]]+checkout[[:space:]]+(.*)$ ]]; then
-  rest="${BASH_REMATCH[4]}"
+# `gate_verb_rest` rather than a local `=~` with a positional BASH_REMATCH
+# index. Both halves of that old form were hazards. The hand-rolled `-C` pattern
+# it originally used had no quoted alternative, so `git -C "/a b" checkout -- f`
+# matched nothing and the gate passed a destructive discard (go-to-k/cdkd#2027
+# review, blocker 1). Switching to `$GATE_FLAGS` fixed that but made the tail
+# `BASH_REMATCH[4]` -- an index into a SHARED pattern, so widening GATE_FLAGS
+# for `git -c user.name="Jane Doe"` shifted it and this gate silently stopped
+# blocking `git checkout -- <dirty path>` in 7 of its 18 cases
+# (go-to-k/cdkd#2200). The helper strips the matched prefix by LENGTH, so the
+# group count is no longer part of the contract.
+rest="$(gate_verb_rest "$command" "$GATE_RE_GIT_CHECKOUT")"
+if [[ -n "$rest" ]]; then
   case " $rest " in
     *" -- "*) paths="${rest#*-- }" ;;
     *) exit 0 ;;
   esac
-elif [[ "$command" =~ git${GATE_FLAGS}[[:space:]]+restore[[:space:]]+(.*)$ ]]; then
-  rest="${BASH_REMATCH[4]}"
+else
+  rest="$(gate_verb_rest "$command" "$GATE_RE_GIT_RESTORE")"
+  [[ -n "$rest" ]] || exit 0
   # The subject is padded (`" $rest "`), so a trailing-space pattern covers the
   # end-of-string case too — the unpadded `*" --staged"` variants would be dead
   # patterns that can never match.
@@ -138,8 +145,6 @@ elif [[ "$command" =~ git${GATE_FLAGS}[[:space:]]+restore[[:space:]]+(.*)$ ]]; t
   else
     paths="$rest"
   fi
-else
-  exit 0
 fi
 
 # Stop at the first shell operator so a chained command's tokens are not
