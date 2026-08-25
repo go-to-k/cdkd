@@ -25,7 +25,8 @@
 # Not from the hook text, in any spelling. All three textual predicates were
 # tried on origin/main and all three are wrong:
 #
-#   - `grep -l 'markgate verify'` finds 5 of the 7. Gates invoke the binary as
+#   - `grep -l 'markgate verify'` matches 4 of the 8, and EVERY hit is a comment
+#     or a message string rather than a live call site. Gates invoke the binary as
 #     `"${markgate[@]}" verify <gate>`, and `stop-warn.sh` builds that array as
 #     `markgate=(markgate)` or `markgate=(mise exec -- markgate)`, so no literal
 #     `markgate verify` appears on any line of it.
@@ -58,12 +59,20 @@
 #   fence 2  the table and the observed population agree in BOTH directions.
 #            Catches a new markgate-backed hook added with no table entry, and
 #            a table entry for a hook that no longer verifies anything.
-# TWO VERBS carry the question, not one. `check-gate` asks with
-# `markgate status <gate>` (it parses the parenthesised staleness reason out of
-# the output to put in its refusal), while the others ask with
-# `markgate verify <gate>`. A fence keyed on `verify` alone reports `check-gate`
-# as reaching nothing -- measured, and it is the same "the scan does not see its
-# subject" shape as deriving a population from a grep.
+# The matcher accepts `status` as well as `verify`, but NOT for the reason an
+# earlier version of this comment gave. It claimed `check-gate` asks its
+# question with `markgate status <gate>` and that a `verify`-only fence reports
+# it as reaching nothing. That is false: `check-gate.sh` asks with
+# `verify check` / `verify docs`, and its `status` call (`gate_reason`) runs
+# only AFTER a verify returns non-zero, to pull the parenthesised staleness
+# reason into the refusal. The shim's default `MG_VERDICT=fresh` never produces
+# that, so the `status` arm has never executed here -- re-keying both matchers
+# to `^verify` alone leaves the file 3/3 green.
+#
+# What actually made `check-gate` unreachable was the `--version` probe below,
+# and the two were conflated. The `status` alternative stays because that call
+# IS live in production (a stale marker reaches it) and a future probe may drive
+# a stale verdict; it is kept as coverage, not as an explanation.
 #
 #   fence 3  the probes actually REACH the markgate call. Four gates scope-check
 #            the PR diff first and return before verifying anything; a fence
@@ -308,6 +317,18 @@ while IFS='|' read -r hook gates key; do
       *) wrong="$wrong\n    - $hook asked about [${asked% }] but the table says it must verify '$want'" ;;
     esac
   done
+  # And nothing BEYOND the table. Subset-only was the whole assertion until
+  # review: adding `verify check` ALONGSIDE `verify verify-pr` in
+  # verify-pr-gate.sh left the file 3/3 green, so a gate that ACQUIRES a second
+  # marker -- `verify integ-destroy || verify check`, the shape that turns a
+  # specific gate into a permissive one -- was unfenced. Only replacement was
+  # caught.
+  for got in $asked; do
+    case " $gates " in
+      *" $got "*) ;;
+      *) wrong="$wrong\n    - $hook ALSO asked about '$got', which the table does not list. A gate that acquires a second marker passes whenever EITHER is fresh." ;;
+    esac
+  done
 done <<< "$(printf '%s' "$TABLE" | sed '/^$/d')"
 
 if [ -z "$wrong" ]; then
@@ -318,12 +339,19 @@ fi
 
 # --- fence 2: table and observed population agree, both directions ----------
 observed=""
-for base in $(python3 -c '
+# The candidate list, computed ONCE: every hook `.claude/settings.json`
+# declares. Both halves of fence 2 read it, so they cannot drift apart.
+CANDIDATES=$(python3 -c '
 import json, re, sys
 d = json.load(open(sys.argv[1]))
 names = sorted(set(re.findall(r"\.claude/hooks/([a-z0-9-]+)\.sh", json.dumps(d))))
 print(" ".join(names))
-' "$REPO_ROOT/.claude/settings.json"); do
+' "$REPO_ROOT/.claude/settings.json")
+if [ "$(printf '%s' "$CANDIDATES" | wc -w | tr -d ' ')" -lt 20 ]; then
+  ng "fence 2: settings.json yielded only $(printf '%s' "$CANDIDATES" | wc -w | tr -d ' ') hook candidates; the parse is broken, so every comparison below is vacuous"
+fi
+
+for base in $CANDIDATES; do
   [ -f "$HOOKS_DIR/$base.sh" ] || continue
   # Drive with EVERY probe key, since a hook only reveals itself under a payload
   # whose verb it gates.
@@ -343,6 +371,36 @@ for o in $observed; do
   case " $NON_VERIFIERS " in *" $o "*) continue ;; esac
   missing_from_table="$missing_from_table\n    - $o verifies a marker but has no table entry"
 done
+# Behaviour gives the PRECISE population, but only for verbs the probe set
+# carries. A hook gated on any other verb is invisible to it: review planted a
+# `zz-fake-gate` verifying `zz-marker` behind `git push`, registered it in
+# settings.json, and the file stayed 3/3 -- the third time a population in this
+# repo has been narrower than its own claim, all three in the green direction.
+#
+# So the completeness half takes a conservative OVER-APPROXIMATION from the
+# text: any candidate whose source mentions `markgate` at all MIGHT verify one,
+# and must therefore be accounted for -- in the table, in NON_VERIFIERS, or by
+# having been observed. The grep is useless as a population (it finds 20 hooks,
+# almost all of them only reading `.markgate.yml`) and exactly right as a
+# net that must not have holes. Over-approximate the trigger, be strict on the
+# resolution: the same rule `.claude/rules/hooks.md` states for the gates.
+mentions_markgate=""
+for base in $CANDIDATES; do
+  [ -f "$HOOKS_DIR/$base.sh" ] || continue
+  # Strip COMMENTS and the two SENTINEL filenames before looking. Neither is a
+  # refinement: `.markgate.yml` is the repo opt-in check that almost every gate
+  # does, `.markgate-*` are the broad-integ / pr-review sentinels, and a comment
+  # is prose. Without the strip the net catches 20 hooks and then 17; with it,
+  # exactly 9 -- the 8 in the table plus the one declared non-verifier, which is
+  # the net having no holes AND no slack.
+  sed -e 's/#.*//' -e 's/\.markgate\.yml//g' -e 's/\.markgate-[A-Za-z0-9-]*//g' \
+      "$HOOKS_DIR/$base.sh" | grep -q 'markgate' || continue
+  case " $table_hooks " in *" $base "*) continue ;; esac
+  case " $NON_VERIFIERS " in *" $base "*) continue ;; esac
+  case " $observed " in *" $base "*) continue ;; esac
+  mentions_markgate="$mentions_markgate\n    - $base mentions markgate, is not in the table, is not declared a non-verifier, and no probe reached it"
+done
+
 stale_in_table=""
 for t in $table_hooks; do
   case " $observed " in *" $t "*) ;; *) stale_in_table="$stale_in_table\n    - $t is in the table but never verified anything" ;; esac
@@ -352,10 +410,10 @@ observed_count=0
 for _o in $observed; do observed_count=$((observed_count + 1)); done
 if [ "$observed_count" -lt 8 ]; then
   ng "fence 2: only $observed_count hooks were observed verifying a marker; the drive harness is not reaching them, so this comparison is vacuous"
-elif [ -z "$missing_from_table$stale_in_table" ]; then
+elif [ -z "$missing_from_table$stale_in_table$mentions_markgate" ]; then
   ok "fence 2: the table and the $observed_count observed markgate callers agree in both directions"
 else
-  ng "fence 2: the table and the observed markgate callers disagree:$(printf '%b' "$missing_from_table$stale_in_table")"
+  ng "fence 2: the table and the observed markgate callers disagree:$(printf '%b' "$missing_from_table$stale_in_table$mentions_markgate")"
 fi
 
 echo
