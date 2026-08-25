@@ -600,6 +600,20 @@ GATE_RE_GH_LABEL_CARRIER="^gh${GATE_GH_C}[[:space:]]+(issue|pr)[[:space:]]+(crea
 GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 # pr-body-item-number-gate: everything that can post a body containing `#N`.
 GATE_RE_GH_BODY_CARRIER="^gh${GATE_GH_C}[[:space:]]+(pr[[:space:]]+(create|edit)|issue[[:space:]]+(create|comment)|api)([[:space:]]|$)"
+# issue-dup-check-gate: the one verb that MINTS a new issue. `edit` and
+# `comment` are deliberately absent -- folding a finding into an issue that
+# already exists is the outcome this gate exists to steer toward, so gating it
+# would tax the cheap path and leave the expensive one untouched.
+GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
+# The same mint through the REST verb. `gh api repos/<o>/<r>/issues` with a
+# `title=` field creates an issue; the path must NOT continue past `issues`,
+# which is what separates it from `/issues/<n>/comments` (a comment) and
+# `/issues/<n>` (an edit) -- neither of which mints anything. Sibling
+# GATE_RE_GH_BODY_CARRIER already carries `api` for exactly this reason; this
+# gate omitting it left the trigger under-approximated, against the
+# "over-approximate the TRIGGER, be strict on RESOLUTION" rule in
+# .claude/rules/hooks.md.
+GATE_RE_GH_API_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$).*repos/[^[:space:]/]+/[^[:space:]/]+/issues([[:space:]]|$|\")"
 GATE_RE_VP_RUN_TEST='^vp[[:space:]]+run[[:space:]]+test([[:space:]]|$)'
 # Deploy/destroy-shaped verbs (integ + bug-hunt cleanup gates).
 GATE_RE_CDK_DEPLOY="^(npx[[:space:]]+)?cdk${GATE_FLAGS}[[:space:]]+deploy([[:space:]]|$)"

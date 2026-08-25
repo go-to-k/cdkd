@@ -118,8 +118,10 @@ fix-in-session round still files the issue, then closes it from the PR (`Closes
 #<n>`). The issue body carries the real repro (the CDK app / commands / the exact
 deploy-update-destroy sequence) so the later fixer has the evidence.
 
-**Every issue this hunt files also carries the four classification lines**
+**Every issue this hunt files also carries a `Dup-check:` line and the four classification lines**
 (`CLAUDE.md` → "The four TODO fields"), in English, one field per line:
+
+These four are the CLASSIFICATION lines and there are still four of them. A filed issue carries one more line, written at filing time rather than at classification time: `Dup-check:`, recording that the open issue list was searched for an issue already naming this root cause (`/work-issues` section 5; enforced by `.claude/hooks/issue-dup-check-gate.sh`, which refuses `gh issue create` without it). It answers a different question -- not "when and at what cost" but "is this a new root cause at all" -- and on a HIT there is no new issue to classify, because the finding becomes a checklist row in the issue that already covers the root cause.
 
 ```text
 Session-fit: now (do it in this session) | next (not this session) — <reason>

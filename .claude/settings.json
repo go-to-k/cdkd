@@ -66,6 +66,12 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/issue-dup-check-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking the issue body records an open-issue dup check..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/closes-paren-form-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking PR body for Closes (#N) auto-close trap..."
