@@ -16,7 +16,8 @@ Most hooks in this file ship a `*.test.sh` smoke suite next to them (37 suites
 for 39 hooks, counting `run-tests.sh` as the runner rather than a hook — only
 `post-merge-sync-reminder` and `stop-warn` have none; `gh-label-validity-gate`
 and `gh-pr-edit-deprecation-gate` gained theirs after the issue #2050 count this
-sentence used to carry), and the runner executes
+sentence used to carry, and `stop-warn` is now covered by the markgate-gate-name
+CLASS fence below even though it has no suite of its own), and the runner executes
 every suite that exists under **every bash on the machine** — `bash` from PATH (Homebrew 5.x on a dev Mac) and `/bin/bash`
 (macOS's system **3.2**).
 Both matter because the hooks are `#!/usr/bin/env bash`: on a machine without a
@@ -337,6 +338,71 @@ The hooks a session runs come from ONE repo's `.claude/settings.json` — whiche
 **Do not port cdkd's stricter gates down to a sibling, or a sibling's exemptions up into cdkd.** The obvious-looking convergence — give cdkd the same docs/tooling exemption — is actively wrong here, and the demonstration is this very issue: a `.claude/hooks/**`-only PR touches no `src/**`, so that exemption would have waived `/verify-pr` for the change that introduced a remote-code-execution path, and the 3-axis review that caught it would never have been required. cdkd's agent-instruction files are load-bearing in a way a sibling's are not, which is also why `CLAUDE.md`, `.claude/rules/**` and the four verification-depth skills sit inside cdkd's gate scopes at all.
 
 **Delegation was tried and abandoned.** PR 1970 made each gate hand its decision to `<target-repo>/.claude/hooks/<same-name>` when one existed. It works, and it introduces arbitrary code execution: the target directory is named by the command itself (a `cd`, a `git -C` / `gh -C` flag, the payload's `cwd`), so any directory the agent can be induced to touch that carries an executable file at that path gets it run with the session's environment. Reproduced with a planted hook and a plain `git checkout`, which read `AWS_*` / `GH_TOKEN`-shaped variables and captured the payload. It is not patchable from inside the design — every trust signal available from the target repo is forgeable, because the attacker controls that repo — so trust would have to come from a maintainer-maintained allow-list. Read the closed PR before proposing delegation again; it also records two independent defects worth knowing (an exit status of 128+N from a signal-killed hook propagates as a non-blocking error and turns a block into a pass, and `git -C ""` silently resolves the hook process's own cwd).
+
+## The gate-name class fence (issue 2198)
+
+`.claude/hooks/markgate-gate-name-class.test.sh` asserts, for every
+markgate-backed hook, WHICH GATE it asks its verifier about. Nothing did before:
+every per-hook suite asserted an exit code and a few asserted the cwd markgate
+ran in, and a gate pointed at the wrong marker is **indistinguishable from a
+working one from the outside** — same exit codes, same messages, same cwd. Only
+the argv separates them. Measured 2026-08-25 by rewriting each hook's
+`markgate verify <gate>` to `verify BOGUS-GATE` and running that hook's own
+suite: `verify-pr-gate` 22/22, `check-gate` 33/33, `integ-destroy-gate` 20/20,
+`integ-broad-gate` 24/24 — all green. The `verify-pr` case is not theoretical:
+swapping `verify verify-pr` for `verify check` makes that gate pass whenever
+`/check` alone is fresh, merging a PR whose `/verify-pr` checklist never ran.
+
+**The population is derived from BEHAVIOUR, not from the hook text**, and that is
+the part worth copying. All three textual predicates were tried and all three are
+wrong: `grep -l 'markgate verify'` finds 5 of the 8 (gates invoke the binary as
+`"${markgate[@]}" verify <gate>`, and `stop-warn` builds that array so no literal
+`markgate verify` appears on any line); `grep -l markgate` finds 20, because
+almost every gate reads `.markgate.yml` for the repo opt-in check; and stripping
+comments does NOT exclude `main-tree-git-cwd-detector`, which carries
+`markgate[[:space:]]+(set|verify)` inside a REGEX STRING, since detecting
+markgate commands is its job. So the CANDIDATE list comes from
+`.claude/settings.json` — the only authoritative statement of what is a hook —
+and each candidate is RUN under a markgate shim that records its argv. The
+directory listing is deliberately NOT the candidate list: `run-tests.sh` is the
+aggregate suite RUNNER, so driving it re-runs every suite once per probe payload,
+and a first version of this file had to be killed after twenty minutes.
+
+Three fences, and fence 3 is what makes the other two mean anything:
+
+- **fence 1** — every hook in the table asks about the gate the table names.
+- **fence 2** — the table and the observed population agree in BOTH directions,
+  so a new markgate-backed hook with no table entry fails, and so does a table
+  entry for a hook that no longer verifies anything.
+- **fence 3** — the probes actually REACH the markgate call. Four gates
+  scope-check the PR diff and return before verifying anything, so without this
+  the file would report green over nothing.
+
+**Reaching the call was most of the work, and four separate things blocked it** —
+each one a failure in the green direction, and each caught by fence 3 rather than
+passing as "verified":
+
+1. The gates read their scope from `gh pr view --json files`, not from
+   `gh pr diff --name-only`, so a generic `files` array made four of them decide
+   the PR was out of scope.
+2. **Two verbs carry the question.** `check-gate` asks with `markgate status
+   <gate>` (it parses the parenthesised staleness reason out of the output);
+   the others ask with `verify`. A fence keyed on `verify` alone reports
+   `check-gate` as reaching nothing.
+3. `check-gate` probes `markgate --version` and fails CLOSED when it errors, so
+   a shim that only knows `verify` / `status` never lets it reach the question.
+4. `integ-schema-migration-gate` splits the diff into per-FILE hunks and greps
+   the `src/types/state.ts` one, so a bare `+ version: ...` line with no
+   `diff --git` header belongs to no file and matches nothing.
+
+A fifth was in the fence's own instrument: the argv extraction used BRE
+`\(verify\|status\)`, and `\|` is a GNU extension, so on macOS it silently
+matched nothing and EVERY hook reported "asked about []" — the fence reporting
+its own broken tool as a total failure of its subject. `sed -E` throughout.
+
+Mutation-probed per gate rather than in aggregate: repointing each of the eight
+at another marker fails fence 1 naming that gate and its wrong marker, with a
+3/3 control before and after.
 
 ## Uncommitted-work safety (multi-session)
 
