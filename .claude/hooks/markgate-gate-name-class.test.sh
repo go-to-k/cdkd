@@ -91,6 +91,24 @@ git -C "$REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 # `.markgate.yml`, so without this the whole suite passes through untested.
 touch "$REPO/.markgate.yml"
 
+# `stop-warn` resolves its repo from `${BASH_SOURCE[0]}` -- its OWN checkout --
+# not from the payload, and exits 0 when that repo has no uncommitted changes.
+# So its reachability depended on whether the developer's tree happened to be
+# dirty: locally it reached markgate, on a clean CI checkout it did not, and the
+# suite reported the gate as verifying nothing. That is the fence asserting the
+# ENVIRONMENT rather than the code, which is the failure this whole file exists
+# to catch. A COPY of the hook in a fixture repo makes `$REPO` the fixture, and
+# the fixture is dirty by construction.
+STOP_REPO="$TMPDIR_T/stop-repo"
+mkdir -p "$STOP_REPO/.claude/hooks"
+git init -q -b feat/lane "$STOP_REPO"
+git -C "$STOP_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+touch "$STOP_REPO/.markgate.yml"
+cp "$HOOKS_DIR/stop-warn.sh" "$STOP_REPO/.claude/hooks/stop-warn.sh"
+printf 'uncommitted\n' > "$STOP_REPO/dirty.txt"
+git -C "$STOP_REPO" add dirty.txt
+printf 'changed\n' >> "$STOP_REPO/dirty.txt"
+
 # --- shims ------------------------------------------------------------------
 SHIM="$TMPDIR_T/bin"
 mkdir -p "$SHIM"
@@ -214,6 +232,15 @@ json_for() {
   esac
 }
 
+# Which copy of the hook to run. Only `stop-warn` differs, and only because it
+# reads its OWN checkout rather than the payload -- see the fixture above.
+hook_path_for() {
+  case "$1" in
+    stop-warn) printf '%s' "$STOP_REPO/.claude/hooks/stop-warn.sh" ;;
+    *)         printf '%s' "$HOOKS_DIR/$1.sh" ;;
+  esac
+}
+
 # drive <hook-basename> <probe-key> -> writes argv lines to $MG_ARGS
 drive() {
   local hook="$1" key="$2"
@@ -240,7 +267,7 @@ drive() {
 -export const STATE_SCHEMA_VERSION = 8;
 +export const STATE_SCHEMA_VERSION = 9;"
   GH_FILES="$(scope_env_for "$key")" GH_JSON="$(json_for "$key")" GH_DIFF="$diff_body" \
-    bash -c 'payload="$1"; printf "%s" "$payload" | "$2"' _ "$(payload_for "$key")" "$HOOKS_DIR/$hook.sh" \
+    bash -c 'payload="$1"; printf "%s" "$payload" | "$2"' _ "$(payload_for "$key")" "$(hook_path_for "$hook")" \
     >/dev/null 2>&1
 }
 
