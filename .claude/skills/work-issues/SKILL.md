@@ -202,8 +202,11 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   to rule 5 rather than sorting last. Do NOT bulk-migrate the 44 — `Severity`
   can only be written by someone holding the evidence, and a sweep would
   manufacture 44 guesses. Upgrade a body to the four-line shape when you CLAIM
-  it (§4 carries the step), which is the moment that evidence exists. Four, not
-  five: `Notes` is report-only and never goes in an issue body.
+  it (§4 carries the step), which is the moment that evidence exists. Four
+  CLASSIFICATION lines, not five: `Notes` is report-only and never goes in an
+  issue body. The `Dup-check:` line §5 requires is not one of these four — it is
+  a filing-time record, not a classification, so it is written once when the
+  issue is created and never re-decided on a claim.
 - **Read the body's own classification lines before shortlisting it** —
   `Session-fit` / `Severity` / `Effort` / `Estimate`. The filer
   may already have classified the issue, and a `Session-fit: next` line names the
@@ -583,6 +586,104 @@ Two boundaries, so this does not become a licence for unbounded lanes:
 - **Sweep the same ROOT CAUSE, not the same AREA.** Two unrelated bugs in one
   provider are two issues; one wrong assumption at five call sites is one. The
   test is whether a single sentence describes the fix at every site.
+
+**And whatever you do file, resolve it against the issues ALREADY OPEN first.**
+The sweep above looks for sibling sites in the CODE. This looks for a sibling
+ISSUE, and it is a different search with a different answer: the umbrella that
+covers your finding was written from a DIFFERENT site, by a different lane, and
+names a different provider. Section 10-c already runs a rigorous version of this
+check -- the merged file, then open PRs, then open issues -- but its subject is a
+mirrored skill LESSON. The path that files a defect follow-up mid-lane, which is
+where the volume comes from, ran no such check at all.
+
+Measured 2026-08-25. The backlog is NOT rotting: 115 open, median
+time-to-close 0.17 d, p90 0.96 d, and exactly two open issues older than a
+month. What does not converge is the COUNT.
+
+Where it fails to converge is visible in which issues stay open. By §3's OWN
+umbrella predicate -- title or body says `umbrella`, `audit:`, `Backfill`, or
+`N entries` -- 13 of the 115 open issues are umbrella-shaped, and **all four of
+the oldest are**: go-to-k/cdkd#609 (90 d), go-to-k/cdkd#1160 (33 d),
+go-to-k/cdkd#1225 (30 d), go-to-k/cdkd#1393 (16 d). In a repo that closes a
+median issue in four hours, the ones that do not close are the ones naming N
+sites, because no single lane can close one. Meanwhile 94 of the 115 open
+issues carry `Session-fit: next` and `Session-fit: now` appears 3 times in the
+last 400, so the deferral classifier has one outcome in practice.
+
+That is the shape: the unit drifted from one ROOT CAUSE to one affected SITE,
+and this codebase's site space is types x properties wide, so an umbrella
+either sits open for months or is split into forty issues that each pay the
+full fixed cost.
+
+```bash
+# Search the CONCEPT, not this instance's spelling -- the same reason the code
+# sweep above greps for a SHAPE rather than a name.
+gh issue list --state open --limit 200 --search '<root-cause concept>' \
+  --json number,title
+# Then the body window, which the search index misses: an umbrella names its
+# sites in the body, not the title.
+gh issue list --state open --limit 200 --json number,title,body \
+  --jq '.[] | select((.body // "") | test("<shared symbol / call / assumption>";"i"))
+        | "\(.number)\t\(.title)"'
+# `(.body // "")`, not `.body`: an issue filed with no body makes `test` abort
+# the whole jq program with "null (null) cannot be matched", so one body-less
+# issue silently costs you the entire window.
+```
+
+On a HIT, the finding becomes a CHECKLIST ROW in that issue rather than a new
+issue number:
+
+```bash
+U=$(mktemp)   # NOT a fixed /tmp path -- parallel lanes share the scratchpad
+gh issue view <hit> --json body -q .body > "$U" \
+  && [ -s "$U" ] \
+  && printf -- '- [ ] <site>: <one line, plus where the evidence is>\n' >> "$U" \
+  && gh issue edit <hit> --body-file "$U"
+```
+
+**The chaining and the `-s` test are load-bearing, not style.** The redirect
+truncates `$U` before `gh` runs, so an unchained recipe whose `view` fails --
+wrong number, a non-repo cwd, a transient error -- leaves an empty file that
+the `printf` fills with the single new row, and the `edit` then replaces the
+umbrella's WHOLE body with it. Every previously folded finding would be
+destroyed by the very procedure that exists to preserve them, which is the one
+outcome §10-0 says must never happen. `mktemp` rather than a fixed path for the
+same reason at a different scale: parallel lanes share the scratchpad, and a
+read-modify-write with no concurrency control loses a row when two folds
+overlap -- so do not run two folds against the same issue concurrently.
+
+On a MISS -- the expected outcome for a genuinely new root cause -- file it, and
+record the search in the body so the next lane can see the window was checked:
+
+```text
+Dup-check: searched open issues for <terms> -- none covers this root cause
+```
+
+**This is not a filing threshold, and it must never be used as one.** Section
+10-0 below is explicit that `filed <= closed` is not a target and that an
+unfiled finding is strictly worse than a filed one. Nothing here changes WHETHER
+a defect gets written down; it changes only WHERE. An open issue then counts one
+unresolved root cause instead of one unfixed site -- and root causes are bounded
+by the codebase while sites are bounded by types x properties, so that is the
+number that can actually converge.
+
+Enforced by `.claude/hooks/issue-dup-check-gate.sh`, which refuses
+`gh issue create` without the `Dup-check:` line, and the same refusal covers
+`gh api repos/<o>/<r>/issues`, which mints an issue through the REST verb.
+`gh issue edit` and `gh issue comment` are deliberately NOT gated.
+
+Be precise about what that buys, because the obvious claim is false: folding is
+not CHEAPER than minting. After the same search, minting is one command and
+folding is three (`view`, `printf`, `edit`). What the gate does is make minting
+non-free while leaving folding untaxed -- it removes minting's advantage rather
+than creating one for folding. Two consequences worth stating rather than
+discovering: a folded row carries no `Session-fit` / `Severity`, so §3's
+ranking cannot see it (write the severity into the row's text), and `gh issue
+edit` passes through the `#N` item-number gate that `gh issue create` bodies
+get, so keep bare `#N` out of a folded row yourself. The gate exists because this
+section's own rule -- "N sites of one root cause is ONE issue and ONE PR, never
+N issues", already written and already correct -- produced the numbers above.
+Registration is not execution.
 
 Do the fix in the worktree (match the existing provider/pattern exactly; ESM
 relative imports need the `.js` extension — even in TypeScript). After every source
@@ -1804,9 +1905,29 @@ gh issue list --state all --limit 100 --json number,createdAt,title \
   --jq '.[] | select(.createdAt > "<this run start ISO>") | "\(.number)\t\(.title)"'
 ```
 
-Report it as one line — `closed N / filed M` — and **when M > N, give the reason
-in one more line**. The reason is almost always one of three, and only the first
-is healthy:
+Then split the filed count by what the section 5 window did with each finding,
+because the aggregate cannot tell the two apart and they mean opposite things:
+
+```bash
+# Folded INTO an existing issue rather than filed as a new one. `updatedAt`
+# alone does NOT answer this: §4 makes every lane post a CLAIM comment on the
+# issue it takes, so a bare updatedAt sweep counts this run's own claims and
+# can never read 0. Count the issues whose BODY gained a checklist row instead.
+gh issue list --state open --limit 200 --json number,title,updatedAt \
+  --jq '.[] | select(.updatedAt > "<this run start ISO>") | .number' \
+| while read -r n; do
+    gh issue view "$n" --json body -q '.body' \
+      | grep -qE '^[[:space:]]*- \[ \]' && echo "$n"
+  done
+```
+
+Report it as one line — `closed N / filed M (new K / folded J)` — and **when
+M > N, give the reason in one more line**. `J` is the number the section 5
+window exists to move, and it is the only one of the three that can be improved
+without either missing a defect or leaving one unfixed; a run reporting `J = 0`
+over several findings in one area is the signal that the window was searched by
+this instance's spelling rather than by the concept. The reason is almost always
+one of three, and only the first is healthy:
 
 - **the code really does have that many independent defects** — the run walked
   into an untested area. Fine; say which area, so the next `/hunt-bugs` aims there.
@@ -2178,7 +2299,7 @@ the run evidence behind it — or "no skill change" plus what held.
   ```
 
   The report repeats those same four lines and adds a `Notes` line for
-  session-specific context; the issue body stays at four. **After a lane merges, `next` is the
+  session-specific context; the issue body carries no `Notes`. It does carry a `Dup-check:` line (section 5), which is a filing-time record rather than a classification field. **After a lane merges, `next` is the
   default**: what stays hot is that lane's files and the integ you already ran,
   and nothing else — so a residual landing in those files is `now`, and a
   residual anywhere else is `next` even when it looks small.
