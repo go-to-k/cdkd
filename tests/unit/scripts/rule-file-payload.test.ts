@@ -189,7 +189,8 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['assets.md', 51],
   ['cli-internals.md', 48],
   ['code-layout.md', 261],
-  ['hooks.md', 67],
+  ['hooks.md', 68],
+  ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['layout-analyzer.md', 12],
   ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
   ['layout-cli.md', 48],
@@ -257,7 +258,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // fire at all; anywhere under it, the two fire together. The row is here for
   // its FLOOR, which nothing else provides, so the cap simply tracks the
   // per-file cap rather than pretending to add a signal.
-  ['.claude/hooks/branch-gate.sh', 101_000, MAX_RULE_FILE_BYTES], // measured 115,520
+  ['.claude/hooks/branch-gate.sh', 95_000, MAX_RULE_FILE_BYTES], // measured 106,568 -- hooks.md alone
+  // The shared matcher pulls hooks.md AND the class-fence satellite, which is
+  // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
+  // its own, so the two CLASS fences moved to a satellite of their own rather
+  // than the cap being raised -- a cap that moves when it fires is not a cap.
+  ['.claude/hooks/lib/command-match.sh', 108_000, 140_000], // measured 121,407
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -379,8 +385,8 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 28;
-const CORPUS_BYTES_MIN = 790_000;   // measured 799,693 B -- 9,693 B of slack
+const CORPUS_FILE_COUNT = 29;
+const CORPUS_BYTES_MIN = 795_000;   // measured 808,384 B -- 13,384 B of slack
 const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
 
 /**
