@@ -40,7 +40,12 @@ make_repo() {
   # end-of-input in the hand-written tokenizer, swallowing every later path.
   # The apostrophe goes through a variable: writing it inline needs the
   # `'"'"'` dance, which is what broke this file once already.
-  apos="'"
+  local apos="'"
+  # A literal BACKSLASH in a filename: inside a single-quoted span the
+  # shell takes it literally, so the tokenizer must not treat it as an
+  # escape there.
+  local bslash="\\"
+  echo "original" > "$dir/a${bslash}b.txt"
   echo "original" > "$dir/O${apos}Brien.txt"
   git -C "$dir" add -A
   git -C "$dir" commit -qm init
@@ -117,6 +122,45 @@ run "escaped apostrophe then a dirty path blocks" "$RBS" "git checkout -- O\\'Br
 run "escaped quote then a dirty path blocks"      "$RBS" "git checkout -- say\\\"hi.txt tracked.txt" 2
 RBS2=$(make_repo); echo "modified" > "$RBS2/sp ace.txt"
 run "backslash-escaped space is one path"         "$RBS2" "git restore sp\\ ace.txt" 2
+
+# Git accepts any UNAMBIGUOUS PREFIX of a long option, so an exact-match arm is
+# an enumeration one level up from the short-flag one. `--staged --worktr`
+# reverted the file with the gate returning 0. The asymmetry is what hides it:
+# abbreviating BOTH halves fails safe, because neither flag is recognised and
+# nothing is skipped.
+RPX=$(make_repo); echo "modified" > "$RPX/tracked.txt"
+run "abbreviated --worktr after --staged blocks"  "$RPX" "git restore --staged --worktr tracked.txt" 2
+run "abbreviated --work after --staged blocks"    "$RPX" "git restore --staged --work tracked.txt" 2
+run "abbreviated --worktr after -S blocks"        "$RPX" "git restore -S --worktr tracked.txt" 2
+# Controls: an abbreviated STAGED-only restore is index-only and must still be
+# skipped, and `--source` must not be read as an abbreviation of `--staged`.
+run "abbreviated --stag alone passes"             "$RPX" "git restore --stag tracked.txt" 0
+run "--source is not --staged"                    "$RPX" "git restore --source=HEAD tracked.txt" 2
+
+# A backslash inside a SINGLE-quoted span is literal, not an escape.
+RQ=$(make_repo); echo "modified" > "$RQ/a\\b.txt"
+run "backslash inside single quotes is literal"   "$RQ" "git restore 'a\\b.txt'" 2
+run "backslash inside double quotes escapes"      "$RQ" 'git restore "a\\b.txt"' 2
+
+# A QUOTED path whose text contains a flag-shaped fragment. `for w in $seg`
+# word-split it, so `-Sx.txt` was read as a staged flag, the segment was
+# skipped, and a dirty tracked.txt passed -- the word-splitting defect
+# `split_paths` exists to fix, reintroduced in the flag scan above it.
+RWS=$(make_repo); echo "modified" > "$RWS/tracked.txt"
+run "flag-shaped fragment in a quoted path blocks" "$RWS" 'git restore "a -Sx.txt" tracked.txt' 2
+run "W-shaped fragment in a quoted path blocks"    "$RWS" 'git restore "a -Wx.txt" tracked.txt' 2
+# Control: the same shape with no flag-like fragment must block for the ORDINARY
+# reason, so the two above cannot be satisfied by a gate that blocks on sight of
+# a quote.
+run "plain quoted path still blocks"               "$RWS" 'git restore "a x.txt" tracked.txt' 2
+
+# `--source` and `--staged` share the `--s` prefix. Matching only the literal
+# `--source` let `--sou` fall through to the staged arm and skip a segment that
+# stages nothing.
+run "abbreviated --sou is not --staged"            "$RWS" "git restore --sou HEAD~1 tracked.txt" 2
+run "abbreviated --sourc is not --staged"          "$RWS" "git restore --sourc HEAD~1 tracked.txt" 2
+# Control: an abbreviated STAGED restore is index-only and must still pass.
+run "abbreviated --stage alone passes"             "$RWS" "git restore --stage tracked.txt" 0
 
 # QUOTED paths containing a space. `for raw in $paths` split these into `"sp`
 # and `ace.txt"`, neither of which git knows, so the gate passed.

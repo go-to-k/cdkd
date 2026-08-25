@@ -109,6 +109,52 @@ fi
 
 git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
+# Defined ABOVE every user, and a liveness check below, because this file has
+# already shipped the other way once: a helper defined after its first call
+# makes every call `command not found` (127), and in an `&&` chain that reads
+# as "no match" -- silently, at rc=0. The same shape took out fence 4 of
+# unresolved-target-class.test.sh in an earlier round of this PR.
+# Split QUOTE-AWARE, not on whitespace. `for raw in $paths` word-splits, so
+# `git checkout -- "sp ace.txt"` yielded `"sp` and `ace.txt"`, neither of which
+# is a path git knows, and the gate passed on a dirty file. A path with a space
+# is ordinary and the failure direction is the bad one -- a silent discard of
+# uncommitted work, which is this gate's entire subject.
+split_paths() {
+  local text="$1" tok="" ch quote="" i n
+  n=${#text}
+  for (( i = 0; i < n; i++ )); do
+    ch="${text:i:1}"
+    # A backslash escapes the NEXT character -- but NOT inside a SINGLE-quoted
+    # span, where the shell takes it literally: 'a\b' is a\b, not ab.
+    # The arm sat above the quote test and so applied everywhere. With a
+    # tracked file literally named a\b.txt and dirty, `git restore 'a\b.txt'`
+    # tokenized to ab.txt -- a path git does not know -- and the gate passed
+    # on a dirty file. The double-quoted spelling was already correct.
+    if [[ "$quote" != "'" && "$ch" == '\' ]]; then
+      i=$((i + 1))
+      tok="$tok${text:i:1}"
+      continue
+    fi
+    if [[ -n "$quote" ]]; then
+      if [[ "$ch" == "$quote" ]]; then quote=""; else tok="$tok$ch"; fi
+    elif [[ "$ch" == '"' || "$ch" == "'" ]]; then
+      quote="$ch"
+    elif [[ "$ch" == ' ' || "$ch" == $'\t' ]]; then
+      [[ -n "$tok" ]] && printf '%s\n' "$tok"
+      tok=""
+    else
+      tok="$tok$ch"
+    fi
+  done
+  [[ -n "$tok" ]] && printf '%s\n' "$tok"
+  return 0
+}
+
+if ! command -v split_paths >/dev/null 2>&1; then
+  echo "Blocked by dirty-path-restore-gate: split_paths is not defined at the point it is used, so every call returns 127 and the gate would pass silently." >&2
+  exit 2
+fi
+
 # Extract the path arguments of a PATH-SCOPED restore.
 #
 #   git checkout -- <path>...     the `--` is what makes it a path restore,
@@ -166,19 +212,43 @@ while IFS= read -r seg; do
   # them, hits the `-S` arm and skipped -- reverting the file with the gate
   # reporting rc=0. Short flags cluster in any order with any other flag, so
   # the set of spellings is not enumerable. Ask each WORD instead.
+  # QUOTE-AWARE, via the same splitter the path scan uses. `for w in $seg`
+  # word-split a quoted path, so a FRAGMENT of one could be read as a flag:
+  # `git restore "a -Sx.txt" tracked.txt` yielded a word `-Sx.txt`, set
+  # seg_has_staged, skipped the segment, and passed on a dirty tracked.txt.
+  # That is the word-splitting defect `split_paths` exists to fix, reintroduced
+  # forty lines above it. It also removes the unquoted-expansion glob: `$seg`
+  # containing `*` used to expand against this process's cwd.
   seg_has_worktree=0
   seg_has_staged=0
-  for w in $seg; do
+  while IFS= read -r w; do
     case "$w" in
-      --worktree) seg_has_worktree=1 ;;
-      --staged)   seg_has_staged=1 ;;
-      --*)        ;;
+      # Git accepts any UNAMBIGUOUS PREFIX of a long option, so an exact-match
+      # arm is an enumeration with the same problem the short-flag arm had, one
+      # level up: `git restore --staged --worktr f` set staged=1, worktree=0,
+      # skipped, and DISCARDED the file with the gate returning 0. All eight
+      # prefixes from `--w` to `--worktre` are accepted by git and all eight
+      # reverted the file. The asymmetry is what hides it -- abbreviating BOTH
+      # halves fails safe, because neither flag is recognised here and nothing
+      # is skipped.
+      #
+      # `--st*`, NOT `--s*`: `--source` and `--staged` share the `--s`
+      # prefix, so a `--s*` arm reads `--sou` as staged and skips a segment
+      # that stages nothing. An explicit `--so*) ;;` arm was written first and
+      # a probe showed it fences nothing -- with `--st*` in place, `--so...`
+      # already falls through to `--*` and is ignored. The two `--sou` cases
+      # in the suite guard the `--s*` WIDENING, which is the change that would
+      # actually break this. A bare `--s` is ambiguous and git rejects it, so
+      # leaving it unclassified costs nothing -- the command does not run.
+      --w*)  seg_has_worktree=1 ;;
+      --st*) seg_has_staged=1 ;;
+      --*)   ;;
       -*)
         [[ "${w#-}" == *W* ]] && seg_has_worktree=1
         [[ "${w#-}" == *S* ]] && seg_has_staged=1
         ;;
     esac
-  done
+  done < <(split_paths "$seg")
   # `--staged` alone rewrites the INDEX, so it is skipped. With `--worktree`
   # alongside it the same command ALSO discards worktree content, so the skip
   # has to be conditional on `--worktree` being absent.
@@ -202,42 +272,6 @@ done < <(gate_verb_rest_each "$command" "$GATE_RE_GIT_RESTORE")
 # operator left to strip -- and stripping anyway would silently drop a path
 # containing one of those characters.
 
-# Split QUOTE-AWARE, not on whitespace. `for raw in $paths` word-splits, so
-# `git checkout -- "sp ace.txt"` yielded `"sp` and `ace.txt"`, neither of which
-# is a path git knows, and the gate passed on a dirty file. A path with a space
-# is ordinary and the failure direction is the bad one -- a silent discard of
-# uncommitted work, which is this gate's entire subject.
-split_paths() {
-  local text="$1" tok="" ch quote="" i n
-  n=${#text}
-  for (( i = 0; i < n; i++ )); do
-    ch="${text:i:1}"
-    # A backslash escapes the NEXT character, in a span or out of one. Without
-    # this, `git checkout -- O\'"'"'Brien.txt dirty.txt` opened a quoted span at
-    # the apostrophe that ran to end-of-input, merging every later path into one
-    # token git does not know -- so the gate passed on a dirty file. Same class
-    # as the `\"` hole the lib half of this change fixes, in the tokenizer
-    # written to fix a different one. It also makes the commonest CLI spelling
-    # of a spaced path, `sp\ ace.txt`, a single token.
-    if [[ "$ch" == '\' ]]; then
-      i=$((i + 1))
-      tok="$tok${text:i:1}"
-      continue
-    fi
-    if [[ -n "$quote" ]]; then
-      if [[ "$ch" == "$quote" ]]; then quote=""; else tok="$tok$ch"; fi
-    elif [[ "$ch" == '"' || "$ch" == "'" ]]; then
-      quote="$ch"
-    elif [[ "$ch" == ' ' || "$ch" == $'\t' ]]; then
-      [[ -n "$tok" ]] && printf '%s\n' "$tok"
-      tok=""
-    else
-      tok="$tok$ch"
-    fi
-  done
-  [[ -n "$tok" ]] && printf '%s\n' "$tok"
-  return 0
-}
 
 dirty_paths=()
 while IFS= read -r p; do
