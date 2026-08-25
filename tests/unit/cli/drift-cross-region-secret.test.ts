@@ -299,7 +299,12 @@ interface StackDriftJson {
   notSupported: Array<{ logicalId: string; type: string }>;
   skipped: Array<{ logicalId: string; type: string }>;
   /** Issue #2108: the roll-up of every entry carrying `referencesUnresolved`. */
-  notCompared: Array<{ logicalId: string; type: string; referencesUnresolved: true }>;
+  notCompared: Array<{
+    logicalId: string;
+    type: string;
+    referencesUnresolved: boolean;
+    cause: 'refused' | 'unresolvedToken' | 'readFailed';
+  }>;
 }
 
 function captureStdout(): { output: string[]; restore: () => void } {
@@ -927,7 +932,7 @@ describe('cdkd drift --json marks a resource whose properties were NOT compared 
     // The roll-up a CI job can gate on with ONE key instead of a filter over
     // two arrays.
     expect(parsed[0]!.notCompared).toEqual([
-      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true, cause: 'refused' },
     ]);
   });
 
@@ -1062,6 +1067,17 @@ describe('cdkd drift EXIT CODE distinguishes "clean" from "not compared" (issue 
     // could have differed. The exit code is what stops that reading as a pass.
     expect(output).toContain('no drift detected');
     expect(exitSpy).toHaveBeenCalledWith(2);
+    // The `refused` entry's REASON string, paired with its resource. Since
+    // issues go-to-k/cdkd#2151 / go-to-k/cdkd#1945 the report names each
+    // entry's cause, and `notComparedReason` is an exhaustive record whose
+    // arms nothing read: swapping the `refused` and `unresolvedToken` wordings
+    // left every suite green. This is the only fixture where a resource is
+    // REFUSED and nothing throws, so it is the only place that arm is
+    // observable -- the guard's own suite has no refused resource, and a
+    // resource that is both refused AND throws reports `readFailed`.
+    expect(output).toContain(
+      '! Fn (AWS::Lambda::Function) — cdkd refused to resolve a dynamic reference its state records'
+    );
   });
 
   it('drifted-only: exits 1, unchanged -- a fully compared resource that really differs', async () => {
@@ -1138,7 +1154,7 @@ describe('cdkd drift EXIT CODE distinguishes "clean" from "not compared" (issue 
       'Environment.Variables.PLAIN',
     ]);
     expect(parsed[0]!.notCompared).toEqual([
-      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true, cause: 'refused' },
     ]);
     expect(output).not.toContain(IRELAND_PASSWORD);
     expect(output).not.toContain(TOKYO_PASSWORD);
@@ -1222,7 +1238,12 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
     // than re-scope the exit code.
     expect(parsed[0]!.clean).toEqual([]);
     expect(parsed[0]!.notCompared).toEqual([
-      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true },
+      {
+        logicalId: 'Fn',
+        type: LAMBDA_TYPE,
+        referencesUnresolved: true,
+        cause: 'unresolvedToken',
+      },
     ]);
     expect(exitSpy).not.toHaveBeenCalled();
   });
@@ -1381,8 +1402,13 @@ describe('every rendering agrees about what was NOT compared (issue #2135)', () 
       { logicalId: 'Matched', type: LAMBDA_TYPE, referencesUnresolved: false },
     ]);
     expect(parsed[0]!.notCompared).toEqual([
-      { logicalId: 'Refused', type: LAMBDA_TYPE, referencesUnresolved: true },
-      { logicalId: 'Survivor', type: LAMBDA_TYPE, referencesUnresolved: true },
+      { logicalId: 'Refused', type: LAMBDA_TYPE, referencesUnresolved: true, cause: 'refused' },
+      {
+        logicalId: 'Survivor',
+        type: LAMBDA_TYPE,
+        referencesUnresolved: true,
+        cause: 'unresolvedToken',
+      },
     ]);
     expect(parsed[0]!.drifted).toEqual([]);
   });
@@ -1492,5 +1518,87 @@ describe('every rendering agrees about what was NOT compared (issue #2135)', () 
     // Drift outranks the refusal in the exit code, and the block does not
     // change that.
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+/**
+ * Issues [#2151](https://github.com/go-to-k/cdkd/issues/2151) /
+ * [#1945](https://github.com/go-to-k/cdkd/issues/1945): the per-resource guard's
+ * warning is MASKED, and it exists at all.
+ *
+ * This lives in THIS suite rather than beside the guard's other tests because it
+ * is the only one with a working resolver: masking is a no-op unless `secrets`
+ * actually holds a needle, and filling that map takes a reference that RESOLVES.
+ * A review of the guard found the warn had no assertion anywhere -- deleting the
+ * whole `logger.warn` call, or swapping `maskSecretsInText(...)` for the raw
+ * `err.message`, left the guard's own 12-case suite fully green. The second of
+ * those mutations re-makes the exact defect the hoisted `secrets` declaration
+ * was written to prevent, so it is the one that has to be fenced.
+ */
+describe('the per-resource failure warning is masked (#2151 / #1945)', () => {
+  it('masks a resolved plaintext echoed by a provider error, and still names the resource', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    // A CONSUMER-region ARN: unambiguous, so it RESOLVES rather than being
+    // refused, and `secrets` ends up holding the Tokyo password as a needle.
+    // That is the whole premise -- with an empty map `maskSecretsInText` returns
+    // its input unchanged and this test could not distinguish anything.
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(CONSUMER_ARN_EXPR) }, []));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(TOKYO_PASSWORD),
+      // Throws AFTER resolution, which is the ordering that matters: the map is
+      // populated, so an unmasked write would print the plaintext. A realistic
+      // shape -- an SDK or provider error quoting the value it choked on.
+      canonicalizeDriftProperties: () => {
+        throw new Error(`normalizer failed on value ${TOKYO_PASSWORD} at Environment.Variables`);
+      },
+    });
+
+    await runDrift(['Consumer']);
+
+    const text = logText();
+    // 1. The premise: resolution really happened, so the map really had a
+    //    needle. Without this the test passes vacuously whenever the resolver
+    //    silently stops working.
+    expect(secretCtorRegions()).toEqual([CONSUMER_REGION]);
+    // 2. The warn EXISTS and names the resource. Deleting the `logger.warn`
+    //    fails here.
+    expect(text).toContain('Fn (AWS::Lambda::Function)');
+    expect(text).toContain('could not be compared');
+    // 3. THE discriminator: the plaintext is gone and the mask is in its place.
+    //    Replacing `maskSecretsInText(...)` with the raw message fails here and
+    //    nowhere else in the repo.
+    expect(text).not.toContain(TOKYO_PASSWORD);
+    expect(text).toContain('***');
+    // 4. The masking did not eat the surrounding text -- an over-broad mask that
+    //    replaced the whole message would satisfy 3 while destroying the
+    //    diagnostic.
+    expect(text).toContain('normalizer failed on value');
+  });
+
+  it('an UNRESOLVED reference leaves nothing to mask, and the warning still fires', async () => {
+    // The negative control for the case above, and the path the guard's
+    // rationale is written about: the reference is REFUSED, so the map is
+    // cleared and `maskSecretsInText` is a no-op. The warn must still appear --
+    // a guard that only logged when it had needles would be silent on exactly
+    // the runs that most need a line.
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+      canonicalizeDriftProperties: () => {
+        throw new Error('normalizer failed with no secret in the text');
+      },
+    });
+
+    await runDrift(['Consumer']);
+
+    const text = logText();
+    expect(text).toContain('Fn (AWS::Lambda::Function)');
+    expect(text).toContain('could not be compared');
+    expect(text).toContain('normalizer failed with no secret in the text');
+    // No region was asked, so neither password exists in this process to leak.
+    expect(secretSends).toHaveLength(0);
   });
 });

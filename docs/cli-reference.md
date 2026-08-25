@@ -2099,9 +2099,9 @@ Exit codes:
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | Every inspected stack has zero drift **and cdkd refused no comparison**, OR `--accept` / `--revert` resolved every drift cleanly. Note a resource can be reported under `notCompared` and the run still exit `0` — that happens when the only reason it was not compared is a `{{resolve:...}}` spelling cdkd never resolves (see the `2 (detection)` row). `--accept` also exits `0` when it deliberately REFUSED a secret-bearing property whose AWS-current value it could not identify (see "Secret dynamic references" above) — the refusal is warned about by name and the drift is still reported on the next run. |
+| `0` | Every inspected stack has zero drift **and cdkd left no comparison incomplete** (nothing refused, and no read or comparison failed), OR `--accept` / `--revert` resolved every drift cleanly. Note a resource can be reported under `notCompared` and the run still exit `0` — that happens when the only reason it was not compared is a `{{resolve:...}}` spelling cdkd never resolves (see the `2 (detection)` row). `--accept` also exits `0` when it deliberately REFUSED a secret-bearing property whose AWS-current value it could not identify (see "Secret dynamic references" above) — the refusal is warned about by name and the drift is still reported on the next run. |
 | `1` | Drift detected on at least one resource on at least one stack (detection-only mode), OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. Drift OUTRANKS a partial comparison: a run that both detects drift and leaves something uncompared exits `1`, not `2`. |
-| `2` (detection) | Nothing drifted, but cdkd **deliberately REFUSED** to compare at least one resource: a dynamic reference its state records could not be attributed to a region, so its secret-bearing properties were not compared (issue [#2108](https://github.com/go-to-k/cdkd/issues/2108)). Reporting that run as `0` would be a clean bill of health for a comparison that did not happen — and before #2108 the same population exited `1`, because cdkd resolved the reference in the wrong region and reported phantom drift, so a non-zero exit is what CI consumers already had. **This is narrower than `notCompared`, deliberately.** A resource whose only uncompared properties hold a surviving `{{resolve:ssm-secure:...}}` token is listed under `notCompared` and in the `PARTIALLY compared` block, but does **not** produce this exit code: cdkd has never resolved that spelling, so the condition is permanent and unclearable by any action you can take, and exiting non-zero for it would fail such a stack's CI forever over something unrelated. Fix the refusal by spelling the reference as a full ARN, which names its region. |
+| `2` (detection) | Nothing drifted, but at least one resource's comparison did not happen for a reason **you can act on**. Two causes produce it. (a) cdkd **deliberately REFUSED** to compare a resource: a dynamic reference its state records could not be attributed to a region, so its secret-bearing properties were not compared (issue [#2108](https://github.com/go-to-k/cdkd/issues/2108)). (b) the **read or comparison FAILED** for a resource — an SDK or Cloud Control readback that rejected (a least-privilege role, a throttle), or a comparison that threw on a provider-authored bag (issues [#2151](https://github.com/go-to-k/cdkd/issues/2151) / [#1945](https://github.com/go-to-k/cdkd/issues/1945)). Before #2151 that second cause did not produce an exit code at all: it aborted the whole run with exit `1`, leaving every other resource in the stack unchecked while reporting the same code that means "drift detected", so a CI gate could not tell the two apart. Reporting that run as `0` would be a clean bill of health for a comparison that did not happen — and before #2108 the same population exited `1`, because cdkd resolved the reference in the wrong region and reported phantom drift, so a non-zero exit is what CI consumers already had. **This is narrower than `notCompared`, deliberately.** A resource whose only uncompared properties hold a surviving `{{resolve:ssm-secure:...}}` token is listed under `notCompared` and in the report's not-fully-compared block, but does **not** produce this exit code: cdkd has never resolved that spelling, so the condition is permanent and unclearable by any action you can take, and exiting non-zero for it would fail such a stack's CI forever over something unrelated. **A type Cloud Control has no READ handler for is excluded on the same grounds** and reports `drift unknown` instead, whether the fallback signals it by returning nothing or by throwing `UnsupportedActionException`. Fix a refusal by spelling the reference as a full ARN, which names its region; fix a read failure by granting the missing permission or re-running. Use `--json` and read each `notCompared` entry's `cause` to tell them apart per resource. |
 | `2` (`--revert`) | `--revert` finished but one or more resources did not revert (`PartialFailureError`): a `provider.update` call failed, threw `ResourceUpdateNotSupportedError`, or — counted and reported separately, since it never reached `provider.update` at all — cdkd could not re-resolve the dynamic reference(s) the resource's state records (grant the caller `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
 
 The command produces four terminal states per resource:
@@ -2112,9 +2112,21 @@ The command produces four terminal states per resource:
 - **clean** — every state-recorded property was compared against AWS and
   matched. Counted in the per-stack summary but not listed individually.
 - **not compared** — nothing differed, but cdkd did not compare every
-  property: it could not, or refused to, resolve a dynamic reference the
-  resource's state records, so its secret-bearing properties were never
-  looked at.
+  property. Three causes, told apart per resource by `--json`'s
+  `notCompared[].cause`:
+  - `refused` — cdkd deliberately refused to resolve a dynamic reference the
+    resource's state records, so its secret-bearing properties were never
+    looked at. Clearable: spell the reference as a full ARN.
+  - `unresolvedToken` — the state records a `{{resolve:...}}` spelling cdkd
+    resolves for nobody, in practice `{{resolve:ssm-secure:...}}`. Permanent;
+    a re-run cannot clear it, which is why it alone does not affect the exit
+    code.
+  - `readFailed` — the read or the comparison THREW, so **none** of that
+    resource's properties were compared (issues
+    [#2151](https://github.com/go-to-k/cdkd/issues/2151) /
+    [#1945](https://github.com/go-to-k/cdkd/issues/1945)). Every OTHER resource
+    in the stack is still compared and reported; before #2151 one such throw
+    aborted the entire run.
 - **drift unknown** — the provider does not implement the optional
   `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
   in a separate block at the bottom of each stack's report, and — like
@@ -2122,13 +2134,20 @@ The command produces four terminal states per resource:
   "checked" count**, which reports it separately as `N unsupported`
   (issue [#2141](https://github.com/go-to-k/cdkd/issues/2141)). A stack whose
   only resource is unsupported prints
-  `no drift detected (0 resources checked, 1 unsupported)`.
+  `⚠ ... no drift detected, but NOTHING was compared — 0 of 1 resource checked
+  (1 unsupported)` — the glyph follows "was everything actually compared", so a
+  stack in which nothing was compared does not get the reassuring `✓` (issue
+  [#2154](https://github.com/go-to-k/cdkd/issues/2154)). The **exit code is
+  unchanged at `0`**: only the claim printed about coverage changed. The same
+  applies to a stack whose resources are all Custom Resources (`skipped`).
 
 A **drifted** resource can be partially compared too — the changes it reports
 are real, but they are not the whole comparison — so it carries
-`referencesUnresolved: true` alongside them. Everything partially compared, that
-resource included, is rolled up under `notCompared` in `--json`, listed under a
-`PARTIALLY compared` block in the human report, and excluded from that report's
+`referencesUnresolved: true` alongside them. Everything not fully compared, that
+resource included, is rolled up under `notCompared` in `--json`, listed under the
+human report's `PARTIALLY compared` block -- whose heading changes to
+`NOT fully compared` when a `readFailed` resource is present, since none of that
+resource's properties were compared and calling it "partially" understates it -- and excluded from that report's
 "fully checked" count — as is anything **unsupported**, so both the `N checked`
 and the `N of M fully checked` spellings count only resources a comparison was
 attempted for. In the `N of M` spelling the unsupported total is reported
@@ -2361,13 +2380,36 @@ Still reporting `drift unknown` (deferred):
 ]
 ```
 
+A populated `notCompared` entry, showing the two per-entry keys:
+
+```json
+"notCompared": [
+  {
+    "logicalId": "Function1",
+    "type": "AWS::Lambda::Function",
+    "referencesUnresolved": true,
+    "cause": "refused"
+  },
+  {
+    "logicalId": "Detector1",
+    "type": "AWS::CloudWatch::AnomalyDetector",
+    "referencesUnresolved": false,
+    "cause": "readFailed"
+  }
+]
+```
+
 The `notCompared` roll-up answers one question `clean` alone cannot:
 **was the comparison complete?** When cdkd cannot resolve — or
 deliberately REFUSES to resolve — a dynamic reference a resource's state
 records, that resource's secret-bearing properties are not compared at
 all. The comparator skips those leaves, so nothing is reported as
 drifted, which on its own is indistinguishable from "compared and
-matched".
+matched". Since issues
+[#2151](https://github.com/go-to-k/cdkd/issues/2151) /
+[#1945](https://github.com/go-to-k/cdkd/issues/1945) the array also carries a
+resource whose read or comparison THREW, for which **nothing at all** was
+compared.
 
 Such a resource appears under `notCompared` and **not** under `clean`
 (issue [#2135](https://github.com/go-to-k/cdkd/issues/2135)): `clean`
@@ -2375,9 +2417,21 @@ means compared-and-matched and nothing else, so its entries always carry
 `referencesUnresolved: false`. A `drifted` entry can carry
 `referencesUnresolved: true` — the changes it reports are real, but they
 are not the whole comparison — and it is rolled up under `notCompared`
-as well. Entries in `notCompared` carry `referencesUnresolved: true`
-themselves, so the fact is readable off an entry and not only off which
-array it sits in.
+as well.
+
+Each `notCompared` entry carries two keys of its own:
+
+- `cause` — `refused`, `unresolvedToken` or `readFailed` (see the outcome list
+  above). This is the key to gate on when you need to tell a **clearable**
+  cause from a **permanent** one; the exit code says the run had at least one
+  clearable cause but cannot say which resource.
+- `referencesUnresolved` — `true` for the two reference-related causes and
+  `false` for `readFailed`, whose references are beside the point. It was the
+  constant `true` before #2151 widened the array's population, so **a consumer
+  written as `notCompared.filter(n => n.referencesUnresolved)` silently drops
+  `readFailed` entries** where it previously matched everything in the array.
+  Gate on `notCompared.length` (unchanged, and the documented predicate) or on
+  `cause`; the run still exits `2` either way.
 
 So a CI job that gates on drift should read `notCompared`, not just
 `drifted`:
@@ -2387,8 +2441,11 @@ So a CI job that gates on drift should read `notCompared`, not just
 cdkd drift --all --json | jq -e 'all(.[]; .drifted == [] and .notCompared == [])'
 ```
 
-The human-readable report says the same thing as a
-`N resource(s) only PARTIALLY compared` block — the per-resource detail
+The human-readable report says the same thing in a block headed
+`N resource(s) only PARTIALLY compared` — or, when a `readFailed` resource is
+present, `N resource(s) NOT fully compared — K not compared AT ALL (the read or
+comparison failed)`, because calling such a resource "partially compared"
+understates it. Each entry names its own reason. The per-resource detail also
 goes to the log, which a caller piping stdout does not see. The usual
 causes are a least-privilege role without `secretsmanager:GetSecretValue`
 / `ssm:GetParameter`, a deleted or rotated-away secret, and a
