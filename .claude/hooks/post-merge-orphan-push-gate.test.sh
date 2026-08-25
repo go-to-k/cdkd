@@ -187,6 +187,32 @@ run_case "git push origin :branch (deletion) → pass through" 0 \
   "$del_payload" \
   "$merged_match"
 
+# The FLAG spellings of the same deletion. `--delete` used to sit in the
+# valueless-flag group of the token walk, so it was skipped and the branch
+# name after it was read as a positional -- making the command parse
+# identically to a content push and get refused, while the deletion check's
+# own comment claimed this form passed through. Deleting a merged branch is
+# the routine post-merge cleanup, so the false positive fired on exactly the
+# workflow the gate exists to support.
+del_flag_payload=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin --delete %s"}}' "$feature_repo" "$branch")
+run_case "git push origin --delete branch → pass through" 0 \
+  "$del_flag_payload" \
+  "$merged_match"
+
+del_short_payload=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin -d %s"}}' "$feature_repo" "$branch")
+run_case "git push origin -d branch → pass through" 0 \
+  "$del_short_payload" \
+  "$merged_match"
+
+# Polarity control: the same branch, same mocked merged-PR response, WITHOUT
+# a deletion flag, must still be refused. Without this the two cases above
+# are satisfied by a gate that stopped firing for any reason at all -- the
+# failure mode this session hit four separate times.
+del_control_payload=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin %s"}}' "$feature_repo" "$branch")
+run_case "git push origin branch (no deletion flag) → still blocks" 2 \
+  "$del_control_payload" \
+  "$merged_match"
+
 # --- LINE-START ANCHORING cases (issue #563) ---
 #
 # The matcher MUST NOT fire when the literal substring `git push`
