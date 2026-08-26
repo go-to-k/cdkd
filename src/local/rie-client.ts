@@ -462,12 +462,17 @@ export async function invokeRieStreaming(
     } catch (err) {
       clearTimeout(timer);
       reader.cancel().catch(() => undefined);
-      // MIRROR ONLY -- this file has no runtime caller. cdkd's
-      // `src/local/http-server.ts` re-exports `startApiServer` from
-      // `cdk-local/internal`, so `cdkd local start-api` runs cdk-local's
-      // implementation and `invokeRieStreaming` here has no caller in
-      // cdkd's `src/`. That the fork is unreachable at all is issue #2228,
-      // tracked separately.
+      // MIRROR ONLY -- and the claim is about THIS FUNCTION, not this file.
+      // `rie-client.ts` very much has live callers: `invokeRie` is imported
+      // by `src/cli/commands/local-invoke.ts`, `rest-v1-integrations.ts` and
+      // `websocket-server.ts`, and `waitForRieReady` by `container-pool.ts`.
+      // What has no caller in cdkd's `src/` is `invokeRieStreaming` (and the
+      // `parseStreamingPrelude` it wraps), because the STREAMING path is
+      // reached only through `startApiServer`, and `src/local/http-server.ts`
+      // re-exports that from `cdk-local/internal` -- so `cdkd local
+      // start-api` runs cdk-local's copy. Do NOT read this as "the file is
+      // dead": editing `invokeRie` above ships to users. That the streaming
+      // fork is unreachable at all is issue #2228, tracked separately.
       //
       // The user-facing leak is CLOSED: the fix shipped in cdk-local
       // 0.147.6 (cdk-local PR #556), and cdkd consumes it through the

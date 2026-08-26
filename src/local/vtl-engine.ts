@@ -206,13 +206,17 @@ export function buildDefaultUtil(): VtlUtil {
       try {
         return JSON.parse(s);
       } catch (err) {
-        // MIRROR ONLY -- this file has no runtime caller. cdkd's
+        // MIRROR ONLY -- and, as in `rie-client.ts`, the claim is about
+        // reachability of THIS CODE, not about the file being dead. cdkd's
         // `src/local/http-server.ts` re-exports `startApiServer` from
         // `cdk-local/internal`, so `cdkd local start-api` runs cdk-local's
-        // implementation; `evaluateVtl` here is reached only from cdkd's own
-        // `rest-v1-integrations.ts`, whose sole live import is
-        // `warnSsrfRiskyUri`. That the fork is unreachable at all is issue
-        // #2228, tracked separately.
+        // copy of the VTL engine. Every export of this file is consumed only
+        // by cdkd's own `rest-v1-integrations.ts`, and the one thing anything
+        // live imports from THERE is `warnSsrfRiskyUri` (by
+        // `src/cli/commands/local-start-api.ts`) -- so this module is LOADED
+        // at runtime, and none of its functions is called. `evaluateVtl` and
+        // `buildDefaultUtil` have no live call site. That the fork is
+        // unreachable at all is issue #2228, tracked separately.
         //
         // The user-facing leak is CLOSED: the fix shipped in cdk-local
         // 0.147.6 (cdk-local PR #556), and cdkd consumes it through the
@@ -246,6 +250,14 @@ export function buildDefaultUtil(): VtlUtil {
         // means "nothing was there to parse" and NOT necessarily "the caller
         // sent an empty body". The count is in UTF-16 code units, unlike the
         // sibling message in `rie-client.ts`, which counts BYTES.
+        //
+        // Known and accepted: on the RESPONSE-template path the length is an
+        // oracle over BACKEND data, not caller data. That context is built
+        // from the upstream / Lambda response, so a 502 there reports the
+        // length of a value the HTTP caller never supplied. It is left as is
+        // because the same 502 body already echoes up to 200 characters of
+        // the template itself, which bounds what withholding a single integer
+        // could buy.
         //
         // `'unknown'` rather than `'SyntaxError'` on the non-Error arm: that
         // arm is unreachable today (this `JSON.parse` takes no reviver, so V8
