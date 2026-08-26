@@ -1,3 +1,10 @@
+## [0.284.57](https://github.com/go-to-k/cdkd/compare/v0.284.56...v0.284.57) (2026-08-26)
+
+
+### Bug Fixes
+
+* **gc:** make the placeholder sweeper's fences actually fence ([#2249](https://github.com/go-to-k/cdkd/issues/2249)) ([2a8c58b](https://github.com/go-to-k/cdkd/commit/2a8c58ba12c6cf05fe604c3abf0baa5e51ff1a51))
+
 ## [0.284.56](https://github.com/go-to-k/cdkd/compare/v0.284.55...v0.284.56) (2026-08-26)
 
 
