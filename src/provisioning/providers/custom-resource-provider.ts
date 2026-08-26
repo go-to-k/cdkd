@@ -757,13 +757,31 @@ function parseCfnResponseBody(body: string): CfnResponseBodyParse {
  */
 function capForLog(value: string): string {
   const safe = displaySafe(value);
-  return safe.length > DESCRIBE_MAX_FIELD_CHARS
-    ? `${safe.slice(0, DESCRIBE_MAX_FIELD_CHARS)}...(${safe.length} chars)`
-    : safe;
+  const capped =
+    safe.length > DESCRIBE_MAX_FIELD_CHARS
+      ? `${safe.slice(0, DESCRIBE_MAX_FIELD_CHARS)}...(${safe.length} chars)`
+      : safe;
+  // QUOTED, because `displaySafe` removes control characters and nothing else.
+  // The fields below are interpolated into `Status=<a> PhysicalResourceId=<b>
+  // Data keys [<c>, <d>]`, so a handler-chosen value carrying `]`, `=` or `,`
+  // forges the rest of the record while every character in it is printable.
+  // Measured: a `Data` KEY of `x] Status=SUCCESS PhysicalResourceId=forged-id
+  // Data keys [y` rendered a line on which `grep 'Status=SUCCESS'` matches a
+  // response whose real Status is FAILED. Weaker than the newline forgery the
+  // control-character fix closed -- it cannot start a new log RECORD -- but the
+  // same intent, and not reachable by sanitising characters, because the
+  // characters are legitimate.
+  //
+  // `JSON.stringify` is the whole fix rather than an escape table: it quotes,
+  // escapes the delimiters, and well-forms a lone surrogate that the slice
+  // above can create by cutting a pair in half.
+  return JSON.stringify(capped);
 }
 
 /** Per-field cap for the poll log line. */
 const DESCRIBE_MAX_FIELD_CHARS = 200;
+/** Whole-line clamp, applied after the per-field caps. */
+const DESCRIBE_MAX_LINE_CHARS = 1000;
 /** How many `Data` key names the poll log line names before counting the rest. */
 const DESCRIBE_MAX_DATA_KEYS = 20;
 
@@ -817,7 +835,16 @@ function describeCfnResponseBody(body: string, parsed: CfnResponseBodyParse): st
     dataPart = 'Data not an object';
   }
 
-  return `Status=${capForLog(status)} PhysicalResourceId=${capForLog(physicalId)} ${dataPart}`;
+  const line = `Status=${capForLog(status)} PhysicalResourceId=${capForLog(physicalId)} ${dataPart}`;
+  // Outer clamp on top of the per-field caps. Those bound each PART; the line
+  // is their sum, so 20 keys at the field cap still renders ~4.6 KB against the
+  // 200 characters the `substring(0, 200)` this replaced allowed by
+  // construction -- re-emitted on every poll of a resource that can run for an
+  // hour. The per-field caps stay: they are what keeps one long field from
+  // consuming the whole budget and hiding the others.
+  return line.length > DESCRIBE_MAX_LINE_CHARS
+    ? `${line.slice(0, DESCRIBE_MAX_LINE_CHARS)}...(${line.length} chars total)`
+    : line;
 }
 
 /**
@@ -1945,7 +1972,15 @@ export class CustomResourceProvider implements ResourceProvider {
 
   /** Truncate a CR FAILED reason for log readability. */
   private truncateReason(reason: string | undefined, max = 200): string {
-    const r = reason ?? 'Unknown reason';
+    // `displaySafe` for the same reason the poll line uses it, and this channel
+    // is the LOUDER one: every consumer of this helper interpolates the result
+    // into `logger.warn`, which is not gated by `--verbose`, and its inputs are
+    // the handler-authored `Reason` and the Lambda `logTail` -- the same
+    // untrusted document the poll line reads. Sanitising the quiet channel
+    // while leaving this one raw would have moved the problem rather than
+    // closed it. Sliced AFTER sanitising, so truncation cannot re-expose an
+    // escape that the sanitiser had neutralised.
+    const r = displaySafe(reason ?? 'Unknown reason');
     return r.length > max ? `${r.slice(0, max)}...` : r;
   }
 

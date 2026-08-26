@@ -135,6 +135,31 @@ describe('CustomResourceProvider transient-IAM-authz retry', () => {
     expect(String(warnSpy.mock.calls[0][0])).toContain('transient IAM-authorization FAILED');
   });
 
+  it('neutralises control characters in the handler Reason it warns about', async () => {
+    // This warn is NOT gated by --verbose, so it is the LOUDER channel for the
+    // same handler-authored document the poll debug line reads. Without
+    // sanitising, an ESC + newline in `Reason` reaches the terminal as real
+    // bytes and can print a forged log record into a CI transcript.
+    // The forged bytes go FIRST. `truncateReason` caps at 200 characters and
+    // AUTHZ_REASON is ~300, so appending them put the payload past the cut --
+    // the case then passed whether or not the sanitiser ran, which is the
+    // vacuity this comment exists to stop coming back.
+    const forged = `\u001b[2J\n2026-01-01 ERROR [cdkd] FORGED ${AUTHZ_REASON}`;
+    wireAsyncFlow({ Status: 'FAILED', Reason: forged });
+    const provider = makeProvider();
+
+    await provider.create('AsyncResource', 'Custom::AsyncResource', {
+      ServiceToken: SERVICE_TOKEN,
+    });
+
+    const warned = warnSpy.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+    // It still says what happened...
+    expect(warned).toContain('transient IAM-authorization FAILED');
+    // ...without the bytes that would make the tail its own record.
+    expect(warned).not.toContain('\u001b');
+    expect(warned).not.toContain('\n2026-01-01 ERROR');
+  });
+
   it('does NOT retry a non-authz FAILED (e.g. a real handler timeout) — throws on first attempt', async () => {
     const counts = wireAsyncFlow({ Status: 'FAILED', Reason: 'Operation timed out' });
     const provider = makeProvider();

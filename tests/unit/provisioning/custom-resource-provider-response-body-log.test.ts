@@ -126,8 +126,8 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
     // Hard invariant across the whole verbose transcript, not just this line.
     expect(rendered()).not.toContain(GENERATED_SECRET);
     // ...and every diagnostic the line existed for survives.
-    expect(line).toContain('Status=SUCCESS');
-    expect(line).toContain('PhysicalResourceId=phys-1');
+    expect(line).toContain('Status="SUCCESS"');
+    expect(line).toContain('PhysicalResourceId="phys-1"');
     expect(line).toContain('GeneratedPassword');
     expect(line).toContain('Endpoint');
   });
@@ -153,7 +153,39 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
     // The forged text may survive as inert characters; what must NOT survive is
     // the NEWLINE that makes it read as its own log record.
     expect(line).not.toContain('\n2026-01-01 ERROR');
-    expect(line).toContain('Status=SUCCESS');
+    expect(line).toContain('Status="SUCCESS"');
+  });
+
+  it('QUOTES each field, so a handler cannot forge the envelope with delimiters', async () => {
+    // `displaySafe` removes control characters and nothing else, so the fields
+    // interpolated into `Status=<a> PhysicalResourceId=<b> Data keys [<c>]` can
+    // be forged with characters that are entirely printable. Measured against
+    // the unquoted rendering: this body produced a line on which
+    // `grep 'Status=SUCCESS'` matched a response whose real Status is FAILED.
+    respondWith(
+      JSON.stringify({
+        Status: 'FAILED',
+        PhysicalResourceId: 'real-id',
+        Reason: 'boom',
+        Data: { 'x] Status=SUCCESS PhysicalResourceId=forged-id Data keys [y': 'v' },
+      })
+    );
+
+    await newProvider().pollS3Response('cdkd/cr-response/req.json', 'MyCustomRes', 'Create', 5000);
+
+    const line = responseLine();
+    expect(line).toBeDefined();
+    // The property quoting buys is that the ENVELOPE is unambiguous: exactly
+    // one `Status=` field exists and it carries the real verdict. The forged
+    // text survives as characters -- it is inside a quoted key -- so a bare
+    // substring grep still sees it; what it can no longer do is present itself
+    // as a second envelope field.
+    expect(line!.match(/Status="/g)).toHaveLength(1);
+    expect(line).toContain('Status="FAILED"');
+    expect(line!.match(/PhysicalResourceId="/g)).toHaveLength(1);
+    expect(line).toContain('PhysicalResourceId="real-id"');
+    // The forgery is enclosed rather than free-standing.
+    expect(line).toContain('Data keys ["x]');
   });
 
   it('CAPS each field, so one poll cannot emit an unbounded line', async () => {
@@ -177,7 +209,7 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
     expect(line!.length).toBeLessThan(1000);
     // Bounded, but it still says how much it dropped rather than hiding it.
     expect(line).toContain('more');
-    expect(line).toContain('Status=SUCCESS');
+    expect(line).toContain('Status="SUCCESS"');
   });
 
   it('still diagnoses an UNPARSEABLE body, by length only — never its bytes', async () => {
@@ -230,8 +262,8 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
     const line = responseLine();
     expect(line).toBeDefined();
     expect(rendered()).not.toContain(GENERATED_SECRET);
-    expect(line).toContain('Status=<absent>');
-    expect(line).toContain('PhysicalResourceId=<absent>');
+    expect(line).toContain('Status="<absent>"');
+    expect(line).toContain('PhysicalResourceId="<absent>"');
     expect(line).toContain('Data not an object');
   });
 });
