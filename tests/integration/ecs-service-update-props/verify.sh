@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #1160 + #1165).
+# verify.sh — cdkd ECS Service UPDATE-props integ test (issues #975 + #1160 +
+# #1165 + #1861).
 #
-# Exercises three silent-drop classes on an SDK-routed `AWS::ECS::Service`
+# Exercises four silent-drop classes on an SDK-routed `AWS::ECS::Service`
 # create/update path:
 #
 #   #975  (add-on-update):  a CHANGE to EnableECSManagedTags / PropagateTags
@@ -59,9 +60,21 @@
 #         mis-flipped required member would fail the deploy; values pinned in
 #         tests/unit/provisioning/ecs-service-config-props.test.ts). Phase 2b
 #         bumps ONLY the ForceNewDeployment nonce and asserts a fresh rollout
-#         (deployments[0].id changed). NOT exercised live (unit-pinned; see
+#         (deployments[0].id changed). Phase 2c is the #1861 never-declared
+#         arm. NOT exercised live (unit-pinned; see
 #         README "Not exercised live"): PlacementStrategies (EC2 launch type),
 #         VpcLatticeConfigurations, DeploymentController CODE_DEPLOY, Role.
+#   #1861 (member-level reset-on-removal): the #1160 class ONE LEVEL DOWN.
+#         Dropping an OPTIONAL member of a still-declared
+#         DeploymentCircuitBreaker (ResetOnHealthyTask, ThresholdConfiguration)
+#         is a removal CloudFormation applies — it resets the member to the AWS
+#         default — while UpdateService RETAINS the live value, so before the
+#         #1861 fix cdkd was too STICKY and diverged silently. Note this does
+#         NOT generalize: removing the WHOLE DeploymentConfiguration resets
+#         nothing under either engine (#1805), and the LinearConfiguration /
+#         CanaryConfiguration / hook TimeoutConfiguration siblings are parity
+#         because the API itself default-fills there (#1806/#1848). Phases 2
+#         and 2c cover the two polarities.
 #
 # The Service in this fixture is deliberately plain (no
 # ServiceConnectConfiguration / VolumeConfigurations) so it stays on cdkd's
@@ -70,11 +83,26 @@
 # fixes touch.
 #
 #   Phase 1 (base):   enableECSManagedTags == false, propagateTags == NONE;
-#                     PlatformVersion == 1.4.0, grace == 30.
+#                     PlatformVersion == 1.4.0, grace == 30; circuit-breaker
+#                     resetOnHealthyTask == false + thresholdConfiguration ==
+#                     {COUNT, 7} — declared NON-DEFAULT on purpose, so the
+#                     phase-2 reset assertion can discriminate (#1861).
 #   Phase 2 (update): CDKD_TEST_UPDATE=true flips enableECSManagedTags == true,
 #                     propagateTags == TASK_DEFINITION (#975) AND drops
 #                     PlatformVersion / grace -> assert the #975 changes reach
-#                     AWS AND the #1160 removals reset to LATEST / 0.
+#                     AWS AND the #1160 removals reset to LATEST / 0. Also
+#                     DROPS the two optional circuit-breaker members from a
+#                     still-declared block -> assert AWS shows the defaults
+#                     (#1861 removal arm).
+#   Phase 2b:         ForceNewDeployment nonce bump only -> fresh rollout
+#                     (deployments[0].id changed) (#609).
+#   Phase 2c:         set the two optional circuit-breaker members OUT OF BAND,
+#                     then flip DeploymentCircuitBreaker.Rollback via cdkd ->
+#                     assert the flip applied AND the out-of-band values
+#                     SURVIVED (#1861 never-declared arm — the one that
+#                     discriminates the removal rule from "re-serialize the
+#                     struct whenever its declared content changed").
+#   Phase 3:          destroy; assert the state file is gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -273,6 +301,37 @@ if [ "${BASE_CB_ENABLE}" != "true" ]; then
   exit 1
 fi
 echo "    OK: base #1165 DeploymentConfiguration on AWS is maximumPercent=150, minimumHealthyPercent=50, circuitBreaker.enable=true"
+
+# Base assertion for issue #1861 (member-level removal reset): phase 1 declares
+# the two OPTIONAL DeploymentCircuitBreaker members with NON-DEFAULT values, so
+# the phase-2 reset assertion below can discriminate. If this baseline were the
+# AWS defaults, phase 2 would pass whether or not the reset happened.
+BASE_CB_RESET=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.resetOnHealthyTask' --output json 2>/dev/null)
+BASE_CB_TH_TYPE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.thresholdConfiguration.type' --output json 2>/dev/null | tr -d '"')
+# `--output json` (like the boolean sibling above), NOT `--output text`: if
+# botocore models `value` as a double the CLI prints `7.0` and a CORRECT run
+# would fail a string compare against `7`. The numeric compare below is the
+# second half of that guard, and it also keeps a JSON `null` (the member absent)
+# from being read as the string `None`.
+BASE_CB_TH_VALUE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.thresholdConfiguration.value' --output json 2>/dev/null)
+
+if [ "${BASE_CB_RESET}" != "false" ]; then
+  echo "FAIL: base deploymentCircuitBreaker.resetOnHealthyTask is '${BASE_CB_RESET}', expected 'false' (#1861 baseline never landed, so the phase-2 reset assertion would be vacuous)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+    --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker' | jq .
+  exit 1
+fi
+if [ "${BASE_CB_TH_TYPE}" != "COUNT" ] || [ "$(printf '%s' "${BASE_CB_TH_VALUE}" | awk '{print ($1 == 7) ? "y" : "n"}')" != "y" ]; then
+  echo "FAIL: base deploymentCircuitBreaker.thresholdConfiguration is '${BASE_CB_TH_TYPE}/${BASE_CB_TH_VALUE}', expected 'COUNT/7' (#1861 baseline never landed, so the phase-2 reset assertion would be vacuous)" >&2
+  exit 1
+fi
+echo "    OK: base #1861 circuit-breaker optional members on AWS are resetOnHealthyTask=false, thresholdConfiguration={COUNT,7} (non-default baseline in place)"
 
 # Base assertion for issue #609: AvailabilityZoneRebalancing=ENABLED (set via
 # the L1 escape hatch) must have reached AWS — before the backfill the
@@ -595,6 +654,57 @@ if [ "${AFTER_CB_ROLLBACK}" != "false" ]; then
 fi
 echo "    OK: after update, AWS shows DeploymentConfiguration maximumPercent=175, minimumHealthyPercent=25, circuitBreaker.rollback=false (#1165 update-path silent-drop CLOSED)"
 
+# #1861 update REMOVAL path: phase 2 keeps `DeploymentCircuitBreaker` declared
+# but DROPS its two OPTIONAL members, with `Rollback` flipped in the same call
+# (asserted just above) so the update demonstrably applied. CloudFormation
+# treats a declared-then-omitted member as a REMOVAL and resets it to the AWS
+# default; before this fix cdkd's UpdateService retained the phase-1 values
+# (`false` / `{COUNT, 7}`) and diverged silently.
+AFTER_CB_RESET=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.resetOnHealthyTask' --output json 2>/dev/null)
+AFTER_CB_TH_TYPE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.thresholdConfiguration.type' --output json 2>/dev/null | tr -d '"')
+# `--output json` (like the boolean sibling above), NOT `--output text`: if
+# botocore models `value` as a double the CLI prints `7.0` and a CORRECT run
+# would fail a string compare against `7`. The numeric compare below is the
+# second half of that guard, and it also keeps a JSON `null` (the member absent)
+# from being read as the string `None`.
+AFTER_CB_TH_VALUE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.thresholdConfiguration.value' --output json 2>/dev/null)
+
+# TOLERATED SECOND FORM, stated up front rather than discovered mid-run: AWS
+# may report a member holding its default either EXPLICITLY (`true` /
+# `{BOUNDED_PERCENT, 50}`) or by OMITTING it (`null`). Both mean "the member is
+# at its default", which is what the reset had to achieve, so both PASS. What
+# must NOT pass is the stale phase-1 value (`false` / `{COUNT, 7}`) — that is
+# the regression, and it is a third, distinguishable state.
+if [ "${AFTER_CB_RESET}" = "false" ]; then
+  echo "FAIL: after removal, deploymentCircuitBreaker.resetOnHealthyTask is still 'false' — the stale phase-1 value (#1861 member-level removal reset NOT applied; cdkd retained the live value)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+    --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker' | jq .
+  exit 1
+fi
+if [ "${AFTER_CB_RESET}" != "true" ] && [ "${AFTER_CB_RESET}" != "null" ]; then
+  echo "FAIL: after removal, deploymentCircuitBreaker.resetOnHealthyTask is '${AFTER_CB_RESET}', expected 'true' (explicit default) or 'null' (omitted = default)" >&2
+  exit 1
+fi
+if [ "${AFTER_CB_TH_TYPE}" = "COUNT" ]; then
+  echo "FAIL: after removal, deploymentCircuitBreaker.thresholdConfiguration.type is still 'COUNT' — the stale phase-1 value (#1861 member-level removal reset NOT applied)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+    --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker' | jq .
+  exit 1
+fi
+if [ "${AFTER_CB_TH_TYPE}" = "null" ]; then
+  : # the whole block omitted = at its default; accepted, same as above
+elif [ "${AFTER_CB_TH_TYPE}" != "BOUNDED_PERCENT" ] || [ "$(printf '%s' "${AFTER_CB_TH_VALUE}" | awk '{print ($1 == 50) ? "y" : "n"}')" != "y" ]; then
+  echo "FAIL: after removal, deploymentCircuitBreaker.thresholdConfiguration is '${AFTER_CB_TH_TYPE}/${AFTER_CB_TH_VALUE}', expected 'BOUNDED_PERCENT/50' (explicit default) or 'null' (omitted = default) (#1861 member-level removal reset NOT applied)" >&2
+  exit 1
+fi
+echo "    OK: after removal, AWS reset circuitBreaker resetOnHealthyTask=true, thresholdConfiguration={BOUNDED_PERCENT,50} (#1861 member-level removal CLOSED)"
+
 # --- Phase 2b: ForceNewDeployment nonce bump forces a fresh rollout (#609) --
 # The phase-2b template is IDENTICAL to phase 2 except the
 # ForceNewDeployment.ForceNewDeploymentNonce (cdkd-nonce-1 -> cdkd-nonce-2),
@@ -635,6 +745,101 @@ if [ "${DEPLOY_ID_AFTER}" = "${DEPLOY_ID_BEFORE}" ]; then
 fi
 echo "    OK: ForceNewDeployment nonce bump started a fresh rollout (${DEPLOY_ID_BEFORE} -> ${DEPLOY_ID_AFTER}) (#609 forced-rollout translation CLOSED)"
 
+# --- Phase 2c: the NEVER-DECLARED arm (#1861) --------------------------
+# The arm that DISCRIMINATES the two candidate rules, and the one polarity a
+# removal-keyed fix can get wrong in the opposite direction. Phase 2 dropped
+# the two optional DeploymentCircuitBreaker members, so cdkd's state now
+# records them ABSENT — from here on no template declares them. Set them OUT OF
+# BAND, then run a cdkd deploy whose ONLY change is `Rollback` flipped back on,
+# INSIDE the same block:
+#
+#   - if cdkd applies a genuine previous-present / current-absent REMOVAL, the
+#     members are never-declared on BOTH sides, nothing is sent for them, and
+#     the out-of-band values SURVIVE — which is what CloudFormation was
+#     measured to do (us-east-1 2026-08-13, third measurement on the issue).
+#   - if cdkd instead re-serialized the struct with defaults whenever its
+#     declared content changed, or simply always sent the defaults, the
+#     out-of-band values would be CLOBBERED — a divergence in the opposite
+#     direction from the one being fixed, destroying a value CloudFormation
+#     deliberately preserves.
+#
+# Neither the removal arm above nor any earlier phase can tell those apart, so
+# this phase is the highest-value live assertion available for #1861. No extra
+# cleanup is registered: the out-of-band edit lands on the SERVICE, which the
+# existing `cleanup` handler already tears down via `state destroy` (a second
+# `trap ... EXIT` would REPLACE the first, not chain, and would strand the
+# stack).
+echo "==> Phase 2c: set the two optional circuit-breaker members OUT OF BAND, then flip Rollback via cdkd (#1861 never-declared arm)"
+aws ecs update-service \
+  --cluster "${CLUSTER_NAME}" --service "${SERVICE_NAME}" --region "${REGION}" \
+  --deployment-configuration '{"maximumPercent":175,"minimumHealthyPercent":25,"deploymentCircuitBreaker":{"enable":true,"rollback":false,"resetOnHealthyTask":false,"thresholdConfiguration":{"type":"COUNT","value":9}}}' \
+  >/dev/null
+
+OOB_RESET=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.resetOnHealthyTask' --output json 2>/dev/null)
+OOB_TH_TYPE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.thresholdConfiguration.type' --output json 2>/dev/null | tr -d '"')
+OOB_TH_VALUE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.thresholdConfiguration.value' --output json 2>/dev/null)
+
+# The out-of-band write must have LANDED, or the survival assertion below is
+# vacuous — it would "pass" against the defaults the reset produces.
+if [ "${OOB_RESET}" != "false" ] || [ "${OOB_TH_TYPE}" != "COUNT" ] || \
+   [ "$(printf '%s' "${OOB_TH_VALUE}" | awk '{print ($1 == 9) ? "y" : "n"}')" != "y" ]; then
+  echo "FAIL: the out-of-band write did not land (resetOnHealthyTask='${OOB_RESET}', threshold='${OOB_TH_TYPE}/${OOB_TH_VALUE}', expected 'false' and 'COUNT/9') — the #1861 never-declared arm would be vacuous" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+    --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker' | jq .
+  exit 1
+fi
+echo "    OK: out-of-band values in place (resetOnHealthyTask=false, thresholdConfiguration={COUNT,9})"
+
+CB_ROLLBACK_BEFORE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.rollback' --output json 2>/dev/null)
+
+CDKD_TEST_UPDATE=true,force-nonce,cb-rollback node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+# The update must have APPLIED, or "the values survived" proves nothing (a
+# no-op deploy trivially leaves them alone). `Rollback` is the sibling INSIDE
+# the same block, which is exactly the change the discriminating measurement
+# used.
+CB_ROLLBACK_AFTER=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.rollback' --output json 2>/dev/null)
+if [ "${CB_ROLLBACK_BEFORE}" != "false" ] || [ "${CB_ROLLBACK_AFTER}" != "true" ]; then
+  echo "FAIL: deploymentCircuitBreaker.rollback went '${CB_ROLLBACK_BEFORE}' -> '${CB_ROLLBACK_AFTER}', expected 'false' -> 'true' — the phase-2c update did NOT apply, so the survival assertion below would be vacuous" >&2
+  exit 1
+fi
+
+SURVIVE_RESET=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.resetOnHealthyTask' --output json 2>/dev/null)
+SURVIVE_TH_TYPE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.thresholdConfiguration.type' --output json 2>/dev/null | tr -d '"')
+SURVIVE_TH_VALUE=$(aws ecs describe-services \
+  --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+  --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker.thresholdConfiguration.value' --output json 2>/dev/null)
+
+if [ "${SURVIVE_RESET}" != "false" ]; then
+  echo "FAIL: after the Rollback flip, deploymentCircuitBreaker.resetOnHealthyTask is '${SURVIVE_RESET}', expected the out-of-band 'false' to SURVIVE (#1861: cdkd clobbered a member NO template declares — CloudFormation leaves it alone)" >&2
+  aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
+    --query 'services[0].deploymentConfiguration.deploymentCircuitBreaker' | jq .
+  exit 1
+fi
+if [ "${SURVIVE_TH_TYPE}" != "COUNT" ] || \
+   [ "$(printf '%s' "${SURVIVE_TH_VALUE}" | awk '{print ($1 == 9) ? "y" : "n"}')" != "y" ]; then
+  echo "FAIL: after the Rollback flip, deploymentCircuitBreaker.thresholdConfiguration is '${SURVIVE_TH_TYPE}/${SURVIVE_TH_VALUE}', expected the out-of-band 'COUNT/9' to SURVIVE (#1861: cdkd clobbered a member NO template declares)" >&2
+  exit 1
+fi
+echo "    OK: a change INSIDE the block left the never-declared members alone (resetOnHealthyTask=false, thresholdConfiguration={COUNT,9} survived) (#1861 never-declared arm CLOSED)"
+
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -646,4 +851,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); AvailabilityZoneRebalancing + DeploymentController + Monitoring acceptance + ForceNewDeployment forced-rollout (#609); clean destroy)"
+echo "==> ecs-service-update-props test passed (EnableECSManagedTags + PropagateTags UpdateService mapping (#975); PlatformVersion + HealthCheckGracePeriodSeconds reset-on-removal (#1160); DeploymentConfiguration nested-object PascalCase->camelCase on create + update (#1165); DeploymentCircuitBreaker member-level removal reset AND the never-declared arm that discriminates it (#1861); AvailabilityZoneRebalancing + DeploymentController + Monitoring acceptance + ForceNewDeployment forced-rollout (#609); clean destroy)"

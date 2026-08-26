@@ -79,6 +79,7 @@ import {
   type ServiceVolumeConfiguration,
   type VpcLatticeConfiguration,
   type MonitoringConfiguration,
+  type ThresholdConfiguration,
 } from '@aws-sdk/client-ecs';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -133,6 +134,91 @@ const DEPLOYMENT_CONFIG_PRESERVE_KEYS_CAMEL: ReadonlySet<string> = new Set(['hoo
  * `LogConfiguration.Options` handling in `convertLogConfiguration`).
  */
 const SERVICE_CONNECT_PRESERVE_KEYS: ReadonlySet<string> = new Set(['Options']);
+
+/**
+ * SHARED RATIONALE for both `CIRCUIT_BREAKER_*_DEFAULT` constants below —
+ * WHERE THE VALUES COME FROM, and when they may be sent (issue #1861).
+ *
+ * They are the values CloudFormation was MEASURED to produce when a template
+ * that previously DECLARED the member stops declaring it (us-east-1,
+ * 2026-08-13, same service, `Rollback` flipped in the same call so the update
+ * demonstrably applied and service identity captured on both sides so a
+ * replacement could not be mistaken for a reset): `resetOnHealthyTask` false
+ * -> `true`, `thresholdConfiguration` {COUNT, 7} -> {BOUNDED_PERCENT, 50}.
+ * They match the SDK's documented defaults for both members, and the SDK
+ * documents those unconditionally — they do not vary by scheduling strategy or
+ * deployment type (see the strategy note in `updateService`'s comment block).
+ *
+ * They are used ONLY as `clearOnUpdateRemoval`'s clear value, i.e. only on a
+ * previous-present / current-absent REMOVAL. They must NEVER be sent for a
+ * member the template never declared — a third measurement in the same
+ * session set both members OUT OF BAND on a service whose template never
+ * declared them, then ran a CloudFormation update that flipped `Rollback`
+ * INSIDE the block: the out-of-band `false` / {COUNT, 9} BOTH survived. That
+ * arm is what excludes the competing reading "CFn re-serializes the struct
+ * whenever its declared content changed" and makes this a genuine removal.
+ */
+
+/**
+ * `DeploymentCircuitBreaker.ResetOnHealthyTask`'s AWS default. A primitive, so
+ * it needs no copy-on-use treatment — unlike its object-valued sibling below.
+ * Provenance and the send-only-on-removal rule: see the shared note above.
+ */
+const CIRCUIT_BREAKER_RESET_ON_HEALTHY_TASK_DEFAULT = true;
+
+/**
+ * `DeploymentCircuitBreaker.ThresholdConfiguration`'s AWS default. Provenance
+ * and the send-only-on-removal rule: see the shared note above.
+ *
+ * FROZEN, and spread into a fresh object at the use site rather than handed
+ * over by reference. `ECSProvider` is a singleton serving concurrent
+ * resources, so a module-level object reaching the SDK input directly would be
+ * one shared mutable value across every in-flight `UpdateService` — a
+ * middleware or a future normalization step mutating it would corrupt every
+ * other caller. The two halves guard different failures and BOTH are pinned by
+ * unit arms: the copy means no caller can ever reach this object, and the
+ * freeze means a caller that somehow does fails LOUDLY instead of silently
+ * poisoning every later update.
+ *
+ * @internal EXPORTED for tests only (issue #1861). Every production consumer
+ * is in this file. The export exists because the freeze is otherwise
+ * UNOBSERVABLE from a test: the resolver hands out a copy by design, so the
+ * payload a test can reach is never this object, and dropping `Object.freeze`
+ * left the whole suite green. Asserting it through a source grep was the
+ * alternative and is the weaker fence this repo has retired elsewhere.
+ */
+export const CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT: Readonly<ThresholdConfiguration> =
+  Object.freeze({
+    type: 'BOUNDED_PERCENT',
+    value: 50,
+  });
+
+/**
+ * A plain object — something a CFn config block can legitimately be. Arrays
+ * and non-objects are excluded on purpose: `typeof [] === 'object'` and every
+ * non-empty string is truthy, so a truthiness check would wave a malformed
+ * template through into a spread.
+ *
+ * Deliberately a module-local copy rather than an export added to
+ * `src/provisioning/config-shape.ts`, whose private `isPlainObject` is
+ * byte-identical: this lane may not widen a shared module's API.
+ *
+ * No "promote it if a third copy appears" trigger, because that already fired
+ * long before this PR and adding it here would read as a new one. Grepped for
+ * a standalone helper whose body is exactly this predicate: NINE across nine
+ * files under six different names — `config-shape.ts`, `wafv2-provider.ts`,
+ * `s3-bucket-provider.ts` (`isPlainObject`), `emr-configuration.ts`,
+ * `lambda-microvm-image-provider.ts` (`isRecord`),
+ * `apigateway-provider.ts` (`isPlainObjectBlock`), `drift.ts`
+ * (`isPlainRecord`), `lambda-vpc-deps.ts` (`isObject`), and this one — plus
+ * further INLINE copies (`route53-provider.ts` x2,
+ * `custom-resource-provider.ts`, `diff-recursive.ts`,
+ * `intrinsic-function-resolver.ts`). Consolidating them touches files across
+ * several lanes and is a separate lane's job, not this PR's.
+ */
+function isPlainCfnObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /**
  * Derive the cluster name from a long-format ECS Service ARN
@@ -1171,9 +1257,30 @@ export class ECSProvider implements ResourceProvider {
     // same service (baseline MaximumPercent 200 / MinimumHealthyPercent 50 /
     // DeploymentCircuitBreaker {Enable,Rollback} true; a ROLLING, REPLICA,
     // Fargate service). Two limits of that probe, stated rather than
-    // dismissed: the DAEMON scheduling strategy was not exercised — harmless,
-    // since the deployment-type-dependent defaults only mattered for the reset
-    // that is no longer being added — and ROLLING did not exercise the
+    // dismissed: the DAEMON scheduling strategy was not exercised — the
+    // ORIGINAL dismissal here read "harmless, since the deployment-type-
+    // dependent defaults only mattered for the reset that is no longer being
+    // added", and issue #1861 INVALIDATED it by adding a reset, so the
+    // reasoning is restated rather than left standing. It is still harmless,
+    // but for ONE reason, not two: the SDK documents the two defaults this
+    // provider sends (`resetOnHealthyTask` true, `thresholdConfiguration`
+    // {BOUNDED_PERCENT, 50}) with no scheduling-strategy dimension, so there
+    // is no DAEMON-specific value for the reset to get wrong. Read that as
+    // the PER-FIELD claim it is, not a general one about this property: the
+    // sibling `minimumHealthyPercent` IS strategy-dependent (100% for a
+    // replica service, 0% for DAEMON via the SDK/CLI/API — models_0.d.ts),
+    // and it is only safe here because it is a PASS-THROUGH that cdkd never
+    // defaults. A second reason was drafted here and REMOVED because it
+    // argued the opposite of its own conclusion: "the circuit breaker is only
+    // usable under the rolling-update (ECS) deployment type" does not put
+    // DAEMON out of scope, it puts DAEMON squarely IN it — the SDK states
+    // that CODE_DEPLOY / EXTERNAL controllers do not support the DAEMON
+    // scheduling strategy, so a DAEMON service NECESSARILY runs the ECS
+    // rolling-update type and can therefore carry a circuit breaker and reach
+    // this reset. Scheduling strategy and deployment type are different
+    // dimensions; do not let the second stand in for the first.
+    // The DAEMON gap remains real for the OTHER rows in this block (they are
+    // pass-throughs, so it costs nothing) — and ROLLING did not exercise the
     // traffic-shifting blocks (LinearConfiguration / CanaryConfiguration /
     // LifecycleHooks), so #1805 left them UNMEASURED. That mattered because they
     // carry no (or a partial) `required` list, unlike the two required-listed
@@ -1181,8 +1288,10 @@ export class ECSProvider implements ResourceProvider {
     // from a template CFn accepts. Issue #1806 measured them: the three blocks
     // it names are PARITY (the API default-fills the omitted member), while
     // the sweep of the REST of the tree found a loud AWS refusal for some
-    // shapes and ONE genuine DIVERGENCE — see the last two bullets, and issue
-    // #1861 for the divergence.
+    // shapes and ONE genuine DIVERGENCE — see the last two bullets. That
+    // divergence (issue #1861) is FIXED: it is the only shape in this whole
+    // property that is NOT a pass-through, and it lives in
+    // `resolveDeploymentConfiguration`.
     //   - KEPT block, sub-field dropped (send only `MaximumPercent: 150`):
     //     UpdateService MERGES server-side — MinimumHealthyPercent stayed 50
     //     and the circuit breaker survived. A CloudFormation stack given the
@@ -1298,9 +1407,13 @@ export class ECSProvider implements ResourceProvider {
     //         CloudFormation handed the same template RESET them to AWS's
     //         defaults (`true` / `{BOUNDED_PERCENT, 50}`). So cdkd silently
     //         fails to apply a removal CFn applies — too STICKY, where #1802
-    //         is too PERMISSIVE. The pass-through is still what ships and what
-    //         the tests pin: the reset is a behavior change needing its own
-    //         per-member measurement across the block, which #1861 owns.
+    //         is too PERMISSIVE. THIS ROW IS NOW FIXED (#1861): those two
+    //         members — and ONLY those two, only when BOTH sides still declare
+    //         the `DeploymentCircuitBreaker` block — are routed through
+    //         `clearOnUpdateRemoval` in `resolveDeploymentConfiguration`, so a
+    //         declared-then-dropped member is sent as its AWS default. Every
+    //         other shape in this comment block still ships as the verbatim
+    //         pass-through the rows above measured as parity.
     //         What CFn is doing there is applying a REMOVAL, not materializing
     //         defaults wholesale — measured, because the distinction decides
     //         the fix: a member the template NEVER declared (set out of band)
@@ -1511,6 +1624,15 @@ export class ECSProvider implements ResourceProvider {
     // field is a one-shot trigger, never persisted state).
     const forceNewDeploymentInput = this.resolveForceNewDeployment(properties, previousProperties);
 
+    // Verbatim PascalCase->camelCase conversion PLUS the member-level removal
+    // reset inside `DeploymentCircuitBreaker` (issue #1861 — the last bullet
+    // of the block above). Everything else in this property stays a
+    // pass-through, which the same measurement established as parity.
+    const deploymentConfigurationInput = this.resolveDeploymentConfiguration(
+      properties,
+      previousProperties
+    );
+
     try {
       const response = await client.send(
         new UpdateServiceCommand({
@@ -1523,12 +1645,12 @@ export class ECSProvider implements ResourceProvider {
           ),
           capacityProviderStrategy: capacityProviderStrategyInput,
           // DeploymentConfiguration is converted PascalCase->camelCase (issue
-          // #1165); a change is sent through, an absent value passes undefined
-          // (no removal RESET — measured as CloudFormation parity, see the
-          // comment block above).
-          deploymentConfiguration: this.convertDeploymentConfiguration(
-            properties['DeploymentConfiguration'] as Record<string, unknown> | undefined
-          ),
+          // #1165); a change is sent through and an absent value passes
+          // undefined (no WHOLE-property removal RESET — measured as
+          // CloudFormation parity). The one member-level removal reset the
+          // measurement DID find lives in `resolveDeploymentConfiguration`
+          // (issue #1861); see the comment block above the try.
+          deploymentConfiguration: deploymentConfigurationInput,
           placementConstraints: placementConstraintsInput,
           placementStrategy: placementStrategyInput,
           platformVersion: platformVersionInput,
@@ -2516,6 +2638,145 @@ export class ECSProvider implements ResourceProvider {
       config,
       DEPLOYMENT_CONFIG_PRESERVE_KEYS
     ) as DeploymentConfiguration;
+  }
+
+  /**
+   * UPDATE-path `DeploymentConfiguration` resolver: the verbatim conversion
+   * above, plus the ONE member-level removal reset real AWS measurement found
+   * in this property tree (issue #1861).
+   *
+   * The rule this keys on is previous-present / current-absent — exactly the
+   * semantic `clearOnUpdateRemoval` implements for TOP-LEVEL properties, which
+   * is why this reuses that helper rather than re-spelling the predicate. What
+   * is new is only the DEPTH: the member lives inside a nested struct the
+   * template STILL DECLARES.
+   *
+   * Scope is deliberately narrow, and each boundary is measured rather than
+   * reasoned about (us-east-1, 2026-08-13; the full A/B table is in the long
+   * comment inside `updateService`):
+   *   - Only `DeploymentCircuitBreaker`'s two OPTIONAL members
+   *     (`ResetOnHealthyTask`, `ThresholdConfiguration`). Its REQUIRED sibling
+   *     `Rollback` reads as REPLACED, so one block holds members with
+   *     different semantics and no row generalizes to its neighbours.
+   *   - NOT the depth-1 siblings `LinearConfiguration` / `CanaryConfiguration`
+   *     / `LifecycleHooks[].TimeoutConfiguration`: those are already PARITY
+   *     because the ECS API ITSELF replaces the struct and default-fills the
+   *     omitted member, so adding a reset there would be the divergence.
+   *   - NOT the whole-struct cases. Removing the whole `DeploymentConfiguration`
+   *     resets nothing under either engine, and the parent
+   *     `DeploymentCircuitBreaker` disappearing entirely was never measured —
+   *     so BOTH sides must still declare the block for a member omission to
+   *     read as a removal.
+   *   - NOT "always send the defaults": a member the template NEVER declared
+   *     is left alone by CloudFormation even when the block around it changes,
+   *     and `clearOnUpdateRemoval` returning `undefined` for that case is what
+   *     keeps cdkd from clobbering an out-of-band value CFn preserves.
+   *   - NOT scoped by scheduling strategy, and that is a deliberate omission
+   *     rather than an unconsidered one. The A/B ran on a ROLLING / REPLICA /
+   *     Fargate service and DAEMON was never exercised, so the question is
+   *     fair — and DAEMON is genuinely REACHABLE here, because the SDK states
+   *     that CODE_DEPLOY / EXTERNAL controllers do not support DAEMON, so a
+   *     DAEMON service necessarily runs the ECS rolling-update type and can
+   *     carry a circuit breaker. What makes the omission safe is narrower and
+   *     PER-FIELD: the SDK documents these TWO members' defaults with no
+   *     strategy dimension. It is not a general property of this block —
+   *     `minimumHealthyPercent`'s default IS strategy-dependent (100% replica
+   *     vs 0% DAEMON), and stays correct only because cdkd passes it through
+   *     rather than defaulting it.
+   *
+   * The previous side stays RAW CFn PascalCase on purpose: `clearOnUpdateRemoval`
+   * only inspects it for PRESENCE, the same shortcut the top-level call sites
+   * in `updateService` take.
+   *
+   * SCOPE OF THAT PRESENCE TEST — state it as what it literally is, because
+   * the obvious reading is stronger than the truth. It means "the previous
+   * BAG carried this member", NOT "the previous TEMPLATE declared it". Those
+   * coincide on the deploy path, where `previousProperties` is the last
+   * deployed template. They do NOT at `drift --revert`
+   * (`src/cli/commands/drift.ts`, the `provider.update(...)` call that passes
+   * `outcome.awsProperties`), where the previous bag is an AWS READBACK: a
+   * member the template never declared but AWS reports is present there, so a
+   * desired side that omits it reads as a removal and gets the default sent.
+   * The window is narrow — the revert path's own desired bag is built from
+   * `observedProperties`, which normally carries the member too, and its
+   * `preserveUntemplated` arm recurses via `mergeUntemplatedValue` and keeps
+   * AWS-only members — but it is real when an `observedProperties` snapshot
+   * predates AWS reporting the member. This is NOT specific to this resolver:
+   * every `clearOnUpdateRemoval` site in the codebase — 78 across 14 provider
+   * files before this PR, 80 with this resolver's two — carries the same
+   * exposure, so fixing it belongs to that shared contract, not here. It is
+   * written down and unit-pinned so the next member copied onto this pattern
+   * does not inherit the premise unchecked.
+   */
+  private resolveDeploymentConfiguration(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): DeploymentConfiguration | undefined {
+    const desired = this.convertDeploymentConfiguration(
+      properties['DeploymentConfiguration'] as Record<string, unknown> | undefined
+    );
+    const desiredBreaker = desired?.deploymentCircuitBreaker;
+    // PLAIN-OBJECT guard, not truthiness. A template can put anything here —
+    // `DeploymentCircuitBreaker: 'oops'` / `[]` / `7` are all truthy, and the
+    // rebuild arm below would spread them: a string spreads to
+    // `{0:'o',1:'o',2:'p',3:'s'}` and then gains both synthesized defaults,
+    // turning a malformed template into a differently-malformed one. No live
+    // mutation results either way (the rebuilt block has no `enable` /
+    // `rollback`, so AWS rejects the whole `UpdateService` exactly as it did
+    // before this fix), but "malformed shapes fall back to the pre-change
+    // pass-through" should be literally TRUE rather than nearly true — so
+    // anything that is not a plain object is handed straight back untouched.
+    if (!desired || !isPlainCfnObject(desiredBreaker)) return desired;
+
+    const previousDeploymentConfiguration = previousProperties['DeploymentConfiguration'];
+    const previousBreaker = isPlainCfnObject(previousDeploymentConfiguration)
+      ? previousDeploymentConfiguration['DeploymentCircuitBreaker']
+      : undefined;
+    // Same guard on the previous side: only PRESENCE is read from it, but a
+    // non-object there would make `previousBreaker['ResetOnHealthyTask']`
+    // read an index off a string or an array element off a list, which is a
+    // presence answer nobody wrote down.
+    if (!isPlainCfnObject(previousBreaker)) return desired;
+
+    const resetOnHealthyTask = clearOnUpdateRemoval(
+      desiredBreaker.resetOnHealthyTask,
+      previousBreaker['ResetOnHealthyTask'] as boolean | undefined,
+      CIRCUIT_BREAKER_RESET_ON_HEALTHY_TASK_DEFAULT
+    );
+    const thresholdConfiguration = clearOnUpdateRemoval(
+      desiredBreaker.thresholdConfiguration,
+      // Cast for the helper's signature only. The previous side is raw CFn
+      // `{Type, Value}` PascalCase, NOT the camelCase SDK shape this names —
+      // sound because only PRESENCE is read, never the value.
+      previousBreaker['ThresholdConfiguration'] as ThresholdConfiguration | undefined,
+      // A FRESH copy per call — see the constant's note. The SDK input must
+      // never carry the shared module-level object.
+      { ...CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT }
+    );
+
+    if (
+      resetOnHealthyTask === desiredBreaker.resetOnHealthyTask &&
+      thresholdConfiguration === desiredBreaker.thresholdConfiguration
+    ) {
+      return desired;
+    }
+
+    return {
+      ...desired,
+      deploymentCircuitBreaker: {
+        ...desiredBreaker,
+        // Conditional spreads keep the built OBJECT's key set equal to what
+        // the template declared, so a never-declared member is absent rather
+        // than an explicit `undefined` key. This is a shape claim, NOT a wire
+        // claim: the SDK omits `undefined` members, and both forms were
+        // measured through a real `UpdateServiceCommand` with a capturing
+        // request handler to serialize byte-identically (102 bytes). Keeping
+        // the shape honest still matters — the object is what unit assertions,
+        // logs and any future diff of this input see.
+        ...(resetOnHealthyTask !== undefined ? { resetOnHealthyTask } : {}),
+        ...(thresholdConfiguration !== undefined ? { thresholdConfiguration } : {}),
+      },
+    };
   }
 
   /**

@@ -100,7 +100,7 @@ ecr-scanning	2026-08-09T06:01:13Z	PASS	55	verify.sh	#1392 exclusion-filter creat
 ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24, destroy 24/0, orphans clean
 ecs-fargate	2026-08-11T14:31:36Z	PASS	600	verify.sh	final pre-merge run on the rebased tree; route flip + ns retry + rollout poll green; destroy 23/23 clean
 ecs-schedule-targets	2026-08-08T19:04:46Z	PASS	60	verify.sh	re-run with drift assert after review fixes; clean
-ecs-service-update-props	2026-08-13T15:11:46Z	PASS	115	verify.sh	#1806 merge run; deploy 15, destroy 15/0, orphans clean
+ecs-service-update-props	2026-08-26T07:43:04Z	PASS	129	verify.sh	issue 1861 lane, RE-RUN after round-2 review edits to ecs-provider.ts staled integ-destroy; both #1861 arms green (removal resets to true/{BOUNDED_PERCENT,50}; never-declared out-of-band false/{COUNT,9} survives a Rollback flip inside the block); destroy 15 deleted 0 errors, 0 orphans
 efs-immutable-replacement	2026-08-01T09:51:12Z	PASS	63	verify.sh	0801 regression sweep; createOnly+stateful guard ok, 0 orphans
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
 efs-standalone	2026-08-11T08:40:19Z	PASS	300	verify.sh	#1587 NUL fix; destroy 11/0, 0 orphans

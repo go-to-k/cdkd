@@ -55,11 +55,14 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
 
     // Mode list: '' (phase 1) | 'true' (phase 2) | 'true,force-nonce'
     // (phase 2b — same template as phase 2 EXCEPT the ForceNewDeployment
-    // nonce). `includes('true')` keeps the phase-2 shape monotonic across
+    // nonce) | 'true,cb-rollback' (phase 2c — same template as phase 2 EXCEPT
+    // DeploymentCircuitBreaker.Rollback flipped back on, issue #1861).
+    // `includes('true')` keeps the phase-2 shape monotonic across
     // the later mode list (the #1543 mode-gated-resource rule).
     const updateMode = process.env.CDKD_TEST_UPDATE ?? '';
     const isUpdate = updateMode.includes('true');
     const isForceNonce = updateMode.includes('force-nonce');
+    const isCircuitBreakerRollbackFlip = updateMode.includes('cb-rollback');
 
     // Minimal VPC (1 AZ, no NAT gateway to minimize cost).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -201,7 +204,18 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
       cfnService.addPropertyOverride('DeploymentConfiguration', {
         MaximumPercent: 150,
         MinimumHealthyPercent: 50,
-        DeploymentCircuitBreaker: { Enable: true, Rollback: true },
+        // The two OPTIONAL members are declared here with NON-DEFAULT values
+        // on purpose (issue #1861): phase 2 DROPS them, and the removal reset
+        // is only observable if the baseline differs from what AWS would
+        // default to. AWS's defaults are `true` / `{BOUNDED_PERCENT, 50}`, so
+        // `false` / `{COUNT, 7}` makes the phase-2 assertion discriminating
+        // instead of vacuous.
+        DeploymentCircuitBreaker: {
+          Enable: true,
+          Rollback: true,
+          ResetOnHealthyTask: false,
+          ThresholdConfiguration: { Type: 'COUNT', Value: 7 },
+        },
       });
     } else {
       // Phase 2: genuinely REMOVE the fields so cdkd's UpdateService sees an
@@ -212,10 +226,28 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
       cfnService.addPropertyDeletionOverride('HealthCheckGracePeriodSeconds');
       // Change the DeploymentConfiguration to a different custom shape so the
       // update SET path is exercised (issue #1165).
+      // Issue #1861: the block STAYS declared while its two OPTIONAL members
+      // are dropped, and `Rollback` flips in the same call so the update
+      // demonstrably applies. `UpdateService` alone RETAINS the phase-1
+      // values; CloudFormation applies the removal and resets them to AWS's
+      // defaults, and cdkd must now do the same.
+      //
+      // Phase 2c (`cb-rollback`) flips `Rollback` back ON and changes nothing
+      // else. By then the two optional members have been NEVER-DECLARED for a
+      // whole deploy (phase 2 dropped them, so cdkd's state records them
+      // absent) and verify.sh has set them OUT OF BAND — so this is the
+      // never-declared arm: a change INSIDE the block that must NOT disturb a
+      // member no template declares. That arm is what discriminates the
+      // removal rule from "re-serialize the struct whenever its declared
+      // content changed", and it is the one polarity a removal-keyed fix can
+      // get wrong by clobbering a value CloudFormation preserves.
       cfnService.addPropertyOverride('DeploymentConfiguration', {
         MaximumPercent: 175,
         MinimumHealthyPercent: 25,
-        DeploymentCircuitBreaker: { Enable: true, Rollback: false },
+        DeploymentCircuitBreaker: {
+          Enable: true,
+          Rollback: isCircuitBreakerRollbackFlip,
+        },
       });
     }
 
