@@ -1,3 +1,10 @@
+## [0.284.67](https://github.com/go-to-k/cdkd/compare/v0.284.66...v0.284.67) (2026-08-26)
+
+
+### Bug Fixes
+
+* **destroy:** refuse the per-stack confirmation prompt on a non-TTY stdin instead of hanging forever ([#2284](https://github.com/go-to-k/cdkd/issues/2284)) ([616fadc](https://github.com/go-to-k/cdkd/commit/616fadccf0b792ba3f6be48bd08379cbbb99a809))
+
 ## [0.284.66](https://github.com/go-to-k/cdkd/compare/v0.284.65...v0.284.66) (2026-08-26)
 
 
