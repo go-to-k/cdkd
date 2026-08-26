@@ -80,8 +80,11 @@ import {
   AUTO_SCALING_TEARDOWN_MAX_RETRIES,
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS as DELETE_BUDGET_REUSE_WINDOW_MS,
+  type ProtectionFlipRecord,
+  ProtectionFlipRegistry,
   autoScalingRetriesWithinDeleteBudget,
   beginDeleteWait,
+  compensateRemovedDeletionProtection,
   deleteBudgetKey,
   resolveDynamoDbDeleteBudgetClock,
   resolveDynamoDbDeleteBudgetMs,
@@ -242,6 +245,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * terms it closes.
    */
   private readonly deleteBudgets = new ElapsedBudgetRegistry();
+
+  /**
+   * What each in-flight delete did to `DeletionProtectionEnabled` (issue
+   * #1978), keyed exactly as the allowance above and for exactly the same
+   * reason: `destroy-runner.ts` re-enters `delete()` after a retryable failure,
+   * and the second attempt's pre-flip `DescribeTable` sees the guard already
+   * off BECAUSE the first attempt turned it off. A record created per call
+   * would therefore read "nothing to undo" on precisely the retry-then-fail
+   * case the issue names. Keyed rather than a plain field for the budget's
+   * reason too — one provider instance serves a whole level's tables at once.
+   */
+  private readonly protectionFlips = new ProtectionFlipRegistry();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -4161,6 +4176,62 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
+    // `--remove-protection` compensation (issue #1978). Identical wrapper to
+    // the sibling `AWS::DynamoDB::Table` provider's, and identical for a
+    // reason: the two types share one root cause with two sites, and the #1955
+    // review had already caught a half-applied twin in this pair.
+    //
+    // The window is WIDER on this type than on the sibling. Between the flip
+    // and the `DeleteTable` sit the client-region resolve, the pre-delete
+    // describe, the auto-scaling teardown and one `waitForReplicaGone` per
+    // non-local replica — twelve minutes apiece, and interruptible since issue
+    // #2053, which is the Ctrl-C route recorded on the issue. Catching at the
+    // method boundary covers all of them; a `catch` on the `DeleteTable` `try`
+    // alone would cover none.
+    // From the REGISTRY, not a fresh object: this method is re-entered by
+    // `destroy-runner.ts` after a retryable failure, and what has to survive
+    // that re-entry is exactly "an earlier attempt already flipped the guard
+    // off". Same key and same reuse window as the delete allowance below.
+    const flip: ProtectionFlipRecord = this.protectionFlips.acquire(
+      deleteBudgetKey(physicalId, context?.expectedRegion),
+      DELETE_BUDGET_REUSE_WINDOW_MS,
+      // The same injected clock the allowance below gets. Production-identical
+      // either way (both default to the monotonic clock). It is threaded so a
+      // future go-to-k/cdkd#2211 test can drive the reuse window THROUGH
+      // `delete()` -- today's window test calls `registry.acquire` directly
+      // with its own clock, so this third argument is not itself fenced yet.
+      resolveDynamoDbDeleteBudgetClock()
+    );
+    try {
+      await this.deleteGlobalTableResource(logicalId, physicalId, resourceType, context, flip);
+    } catch (error) {
+      await compensateRemovedDeletionProtection({
+        flip,
+        error,
+        logicalId,
+        physicalId,
+        typeLabel: 'GlobalTable',
+        logger: this.logger,
+        reEnable: async () => {
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              DeletionProtectionEnabled: true,
+            })
+          );
+        },
+      });
+      throw error;
+    }
+  }
+
+  private async deleteGlobalTableResource(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    flip: ProtectionFlipRecord
+  ): Promise<void> {
     this.logger.debug(`Deleting DynamoDB GlobalTable ${logicalId}: ${physicalId}`);
 
     // ONE allowance for every wait below (issue #1955). Acquired before the
@@ -4188,12 +4259,46 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (context?.removeProtection === true) {
       // Idempotent flip-off — AWS accepts the no-op already-disabled case.
       try {
+        // OBSERVE before flipping (issue #1978). Only a guard that was ON and
+        // that THIS run turned off may be put back on the error path — a table
+        // the user had already left unprotected must come out of a failed
+        // destroy exactly as it went in. Best-effort like the flip itself: a
+        // describe failure leaves the record false, which means "do not know,
+        // so do not touch", and the delete proceeds either way. Deliberately
+        // NOT read from the state properties: state can be stale, and what has
+        // to be restored is what AWS actually had.
+        //
+        // This is a SECOND `DescribeTable` on this path — the pre-delete one
+        // further down cannot serve, because it runs after the flip and would
+        // therefore report the value cdkd just wrote.
+        let observedProtectionOn = false;
+        try {
+          const before = await this.dynamoDBClient.send(
+            new DescribeTableCommand({ TableName: physicalId })
+          );
+          observedProtectionOn = before.Table?.DeletionProtectionEnabled === true;
+        } catch (observeError) {
+          this.logger.debug(
+            `Could not read DeletionProtectionEnabled on ${physicalId} before disabling it: ${observeError instanceof Error ? observeError.message : String(observeError)}`
+          );
+        }
         await this.dynamoDBClient.send(
           new UpdateTableCommand({
             TableName: physicalId,
             DeletionProtectionEnabled: false,
           })
         );
+        // Set only AFTER AWS accepted the flip: a rejected `UpdateTable` left
+        // the guard where it was, so there is nothing to compensate.
+        //
+        // LATCHED, never assigned: on a re-entry the observation above reports
+        // the guard OFF because the PREVIOUS attempt turned it off, so
+        // `flip.flippedOffByThisRun = observedProtectionOn` would erase what
+        // that attempt recorded and the terminal failure here would compensate
+        // nothing (issue #1978). The record is cleared by `release()` on a
+        // terminal outcome, which is what stops the latch from outliving the
+        // delete it belongs to.
+        if (observedProtectionOn) flip.flippedOffByThisRun = true;
         this.logger.debug(`Disabled DeletionProtectionEnabled on ${logicalId}, waiting for ACTIVE`);
         try {
           await this.waitForTableActiveAfterUpdate(
@@ -4444,6 +4549,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         logger: this.logger,
         deleteTable: async () => {
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: physicalId }));
+          // AWS TOOK the delete. Nothing after this line may put the guard back
+          // — the table is `DELETING`, so a later throw on this path is a wait
+          // failing rather than the delete (issue #1978). That is not
+          // hypothetical here: `waitForTableGone` below throws `Table X did not
+          // disappear within Ns`, which matches no retryable pattern and is
+          // therefore TERMINAL by the compensation's own predicate. Without
+          // this record it would answer an accepted delete with an
+          // `UpdateTable(true)` against a dying table and a log line calling
+          // that table LIVE.
+          flip.deleteAccepted = true;
         },
         // The re-arm is BOUNDED, and deliberately far shorter than the
         // 15-minute poll the #1521 gate above uses: that gate runs ONCE, ahead
@@ -4508,8 +4623,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // the table after destroy see it actually gone.
       await this.waitForTableGone(physicalId, logicalId, TABLE_GONE_WAIT_ATTEMPTS, budget);
       this.logger.debug(`Successfully deleted DynamoDB GlobalTable ${logicalId}`);
-      // TERMINAL success — the allowance has no second pass to fund.
+      // TERMINAL success — the allowance has no second pass to fund, and the
+      // flip record has nothing left to undo. Released together and keyed
+      // together: a retained record would let a LATER destroy of a table with
+      // the same name inherit this run's flip.
       this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
+      this.protectionFlips.release(deleteBudgetKey(physicalId, context?.expectedRegion));
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.dynamoDBClient.config.region();
@@ -4522,6 +4641,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         this.logger.debug(`DynamoDB GlobalTable ${physicalId} does not exist, skipping`);
         this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
+        // The table is GONE, so there is no guard to restore — and `delete()`
+        // returns rather than throwing here, so the compensation never sees
+        // this path anyway. Released for the same hygiene as the success path.
+        this.protectionFlips.release(deleteBudgetKey(physicalId, context?.expectedRegion));
         return;
       }
       // Deliberately NOT released on a throw: the outer retry loop may re-enter

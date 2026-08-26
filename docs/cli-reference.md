@@ -2750,6 +2750,34 @@ Behavior:
 - A failure of the flip-off itself (NotFound / similar) is logged
   at debug; the actual delete API call still runs and surfaces
   its own error message.
+- On the two DynamoDB types (`AWS::DynamoDB::Table` and
+  `AWS::DynamoDB::GlobalTable`), a flip that is followed by a
+  **terminal** delete failure — or by a Ctrl-C landing after the
+  flip — is **compensated**: cdkd re-enables
+  `DeletionProtectionEnabled` before reporting the failure, so a
+  destroy that did not happen does not leave a live table with
+  its guard stripped (issue #1978). Four limits are deliberate:
+  it only ever restores a guard cdkd itself turned off in this
+  run (a table whose protection was already disabled beforehand,
+  or one whose pre-flip read failed, is left alone); it does not
+  fire BETWEEN retries — the destroy loop re-enters `delete()`
+  for a retryable failure and flips the guard off again, so
+  compensating there would only toggle it back and forth, and
+  what counts is how the delete ENDS (a throttle followed by a
+  terminal refusal IS compensated); it does not fire once AWS has
+  ACCEPTED the `DeleteTable`, because a failure after that point
+  is a wait giving up on a table that is already being deleted;
+  and it is best-effort — the delete failure stays the reported
+  outcome, and a re-enable that itself fails is reported as a
+  separate ERROR line naming the table plus the
+  `aws dynamodb update-table --deletion-protection-enabled`
+  command that restores it by hand.
+- Two cases it deliberately does NOT reach, both leaving the
+  guard off: a retryable failure that exhausts the destroy loop's
+  own attempt cap (cdkd cannot see which attempt is the last),
+  and a per-resource `--resource-timeout` firing, which rejects
+  without cancelling the delete, so the provider never observes a
+  failure to compensate.
 - This is **per-PR-level**: a single `--remove-protection` covers
   every protection-bearing type listed above. There is no per-
   type variant. If you need finer control, run a stack-only

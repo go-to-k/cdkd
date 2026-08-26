@@ -81,7 +81,13 @@
  */
 
 import { INDEX_SETTLE_POLL_INTERVAL_MS } from '../dynamodb-index-busy-delete.js';
-import { type ElapsedBudget, monotonicNowMs } from '../../utils/elapsed-budget.js';
+import { ElapsedBudget, monotonicNowMs } from '../../utils/elapsed-budget.js';
+import { isInterruptedWaitError } from '../interrupt-watch.js';
+import {
+  isMarkedNonRetryable,
+  isRetryableTransientError,
+} from '../../deployment/retryable-errors.js';
+import type { Logger } from '../../types/config.js';
 
 /**
  * The `DescribeTable` round trip each poll pays ON TOP of its sleep.
@@ -445,3 +451,262 @@ const AUTO_SCALING_RETRY_STEP_MS = 8_000;
 
 /** `withRetry`'s default `maxRetries`, which the teardown takes today. */
 export const AUTO_SCALING_TEARDOWN_MAX_RETRIES = 8;
+
+/* ------------------------------------------------------------------------- *
+ * `--remove-protection` compensation (issue #1978)
+ *
+ * Lives in this module for the same reason the budget above does: it is a
+ * property of the DynamoDB DELETE PATH, which `AWS::DynamoDB::Table` and
+ * `AWS::DynamoDB::GlobalTable` walk with two separate `delete()` bodies. The
+ * issue asks specifically that the two halves not diverge — the #1955 review
+ * had already found one half-applied twin in this pair — and one shared
+ * spelling is a stronger answer to that than two symmetric ones, which is the
+ * same call `../dynamodb-index-busy-delete.ts` makes for the index-busy retry.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * What THIS delete run did to `DeletionProtectionEnabled`, threaded from the
+ * `--remove-protection` flip down to the error path that may have to undo it.
+ *
+ * Mutable-by-reference on purpose: the flip happens deep inside `delete()`
+ * while the compensation runs in the `catch` that wraps it, and a returned
+ * value cannot cross a `throw`.
+ */
+export interface ProtectionFlipRecord {
+  /**
+   * True only when BOTH halves held: the pre-flip `DescribeTable` OBSERVED the
+   * guard on, and the `UpdateTable` that turned it off was accepted.
+   *
+   * The observation is what keeps the compensation from becoming a state change
+   * the user never asked for. A table whose protection was ALREADY off before
+   * the run must never be "re-enabled" — cdkd would then be turning a failed
+   * destroy into a configuration change, which is strictly worse than the
+   * residue this whole mechanism exists to clean up. `undefined`-shaped
+   * uncertainty resolves the same way: if the observing describe failed, we do
+   * not know what the user had, so we leave it alone.
+   *
+   * LATCHING, and that is the whole reason this record is keyed rather than
+   * per-call (see {@link ProtectionFlipRegistry}). A re-entered `delete()`
+   * observes the guard already OFF — *because the previous attempt turned it
+   * off* — so a writer that ASSIGNED its own observation here would erase what
+   * the first attempt recorded, and the terminal failure on the second attempt
+   * would compensate nothing. Writers set it to `true` or leave it; only a
+   * `release()` clears it.
+   */
+  flippedOffByThisRun: boolean;
+
+  /**
+   * Whether AWS ACCEPTED a `DeleteTable` for this resource in this run.
+   *
+   * Once it has, the table is on its way out and the guard must NOT be put
+   * back: a later throw on this path is a WAIT failing, not the delete. The
+   * concrete case is `waitForTableGone`'s `Table X did not disappear within
+   * Ns`, which is raised after `DeleteTable` already succeeded and matches no
+   * retryable pattern, so it is terminal by this module's own predicate. Left
+   * ungated, the compensation would issue `UpdateTable(true)` against a
+   * `DELETING` table and then narrate that the table is "LIVE with its deletion
+   * protection still off" — false, and pointing the user at a table that is
+   * already gone.
+   *
+   * Latching for the same reason as the field above: an accepted delete stays
+   * accepted across the outer loop's re-entry.
+   */
+  deleteAccepted: boolean;
+}
+
+/**
+ * {@link ProtectionFlipRecord}s keyed by the resource they describe, so a
+ * `delete()` that is RE-ENTERED remembers what an earlier attempt did.
+ *
+ * Shaped after `ElapsedBudgetRegistry` in `../../utils/elapsed-budget.ts` and
+ * keyed with the same {@link deleteBudgetKey}, because it is the same re-entry:
+ * `destroy-runner.ts` wraps its outer retry loop — up to four `delete()` calls
+ * — in ONE deadline, and re-invokes `delete()` for anything it classes as
+ * retryable. A record created per call cannot see that. Attempt 1 observes the
+ * guard ON, flips it off and fails on a throttle; attempt 2's pre-flip
+ * `DescribeTable` now reports the guard OFF (attempt 1 is why), so a per-call
+ * record starts and stays `false` and a TERMINAL failure on attempt 2
+ * compensates nothing. That is precisely the issue's retry-then-fail case
+ * (#1978).
+ *
+ * A provider INSTANCE FIELD would be wrong for the same reason the budget is
+ * not one: providers are singletons serving concurrent resources, so one field
+ * would carry another table's flip. The key qualifies the physical id by
+ * region, exactly as the budget's does.
+ *
+ * Entries are RETAINED on a throw — that is the point — and released by the
+ * caller on a terminal outcome (a completed delete, or a NotFound), so the map
+ * holds at most one entry per in-flight resource.
+ */
+export class ProtectionFlipRegistry {
+  private readonly records = new Map<
+    string,
+    { readonly record: ProtectionFlipRecord; readonly age: ElapsedBudget }
+  >();
+
+  /**
+   * The record for `key`, creating it on first use and REUSING it on re-entry.
+   *
+   * `reuseWithinMs` bounds how long an entry may be reused for and is passed
+   * the same `DELETE_BUDGET_REUSE_WINDOW_MS` the allowance uses: past the
+   * deadline the whole path is sized against, that deadline has certainly
+   * fired, so a caller arriving now belongs to a NEW operation and must not
+   * inherit a previous one's flip. Without it a retained record would make a
+   * much later destroy of the same table re-enable a guard it never touched.
+   */
+  acquire(
+    key: string,
+    reuseWithinMs: number,
+    clock: () => number = monotonicNowMs
+  ): ProtectionFlipRecord {
+    const existing = this.records.get(key);
+    if (existing) {
+      if (existing.age.elapsedMs() <= reuseWithinMs) return existing.record;
+      this.records.delete(key);
+    }
+    const created = {
+      record: { flippedOffByThisRun: false, deleteAccepted: false },
+      // Only a monotonic stopwatch is wanted here; the total is never read.
+      age: new ElapsedBudget(reuseWithinMs, clock),
+    };
+    this.records.set(key, created);
+    return created.record;
+  }
+
+  /** Drop `key`'s record — call on a TERMINAL outcome, never between retries. */
+  release(key: string): void {
+    this.records.delete(key);
+  }
+
+  /** Live entries; exists so a test can prove release actually released. */
+  get size(): number {
+    return this.records.size;
+  }
+
+  clear(): void {
+    this.records.clear();
+  }
+}
+
+/**
+ * Whether `error` ends the delete for good, i.e. whether `destroy-runner.ts`'s
+ * outer loop will NOT re-enter `delete()` for it.
+ *
+ * This is the gate on the compensation, and it is the issue's own point:
+ * re-enabling the guard after a RETRYABLE failure would flip the flag back and
+ * forth across a retry sequence, since the next `delete()` immediately turns it
+ * off again. Compensation belongs on the terminal failure only.
+ *
+ * The predicate MIRRORS `destroy-runner.ts`'s re-entry condition
+ * (`!isMarkedNonRetryable && (isRetryableTransientError || 'Too Many
+ * Requests')`) rather than inventing a second classification, and it is applied
+ * to the error the provider is about to THROW — the same wrapped
+ * `ProvisioningError` message the outer loop will classify — so the two cannot
+ * disagree about who gets re-entered.
+ *
+ * A user abort is terminal here even though nothing classifies it: the run is
+ * being torn down, so no re-entry is coming and the guard would otherwise stay
+ * down. That is the Ctrl-C route recorded on the issue.
+ *
+ * KNOWN NARROWINGS, all deliberate. Each leaves the guard off in a case this
+ * mechanism does not reach; none of them is silent about it here.
+ *
+ *  1. **Attempt-cap exhaustion.** A genuinely retryable failure that exhausts
+ *     the outer loop's attempt cap ends the run with the guard still off,
+ *     because the provider cannot see which attempt is the last one.
+ *     Compensating on every attempt instead would trade that residue for an
+ *     `UpdateTable` pair per retry against a table AWS is already throttling.
+ *  2. **The per-resource DEADLINE route.** `src/deployment/resource-deadline.ts`
+ *     rejects the OUTER promise on its timer and does NOT cancel what it
+ *     wraps — the provider's own `await` never settles as a rejection, so no
+ *     `ResourceTimeoutError` ever enters `delete()`'s `catch` and nothing here
+ *     runs for it. The provider keeps polling behind a run that has already
+ *     reported failure (the same non-cancelling shape issue #1955 documents),
+ *     and if that poll eventually succeeds the table is gone anyway. Closing
+ *     this would mean making the deadline cancel — a change to a mechanism
+ *     every provider shares — so it is recorded, not fixed here.
+ *  3. **The compensation itself is unbounded.** `reEnable` is one `UpdateTable`
+ *     with no timeout of its own, so on Ctrl-C it adds one SDK call per flipped
+ *     table to a teardown the user has already asked to end. Left unbounded on
+ *     purpose: an `UpdateTable` is a single control-plane round trip (no
+ *     polling, no wait for ACTIVE), the SDK's own retry/timeout config already
+ *     applies to it, and it is the ONLY thing standing between a Ctrl-C and a
+ *     live table with its guard stripped — a timeout short enough to be felt
+ *     during teardown would mostly convert successful restores into the "could
+ *     NOT re-enable" line. Revisit if the compensation ever grows a WAIT.
+ */
+export function isTerminalDeleteFailure(error: unknown): boolean {
+  if (isInterruptedWaitError(error)) return true;
+  if (isMarkedNonRetryable(error)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return !(isRetryableTransientError(error, message) || message.includes('Too Many Requests'));
+}
+
+/** Inputs to {@link compensateRemovedDeletionProtection}. */
+export interface ProtectionCompensationOptions {
+  readonly flip: ProtectionFlipRecord;
+  /** The failure that is about to be re-thrown. Never replaced, never annotated. */
+  readonly error: unknown;
+  readonly logicalId: string;
+  readonly physicalId: string;
+  /** `table` / `GlobalTable`, for the narration only. */
+  readonly typeLabel: string;
+  readonly logger: Logger;
+  /** Issues the `UpdateTable(DeletionProtectionEnabled: true)`. */
+  readonly reEnable: () => Promise<void>;
+}
+
+/**
+ * Put `DeletionProtectionEnabled` back after a `--remove-protection` flip whose
+ * delete then failed terminally (issue #1978).
+ *
+ * BEST-EFFORT, and it says so. Three properties, each of which the issue names:
+ *
+ *  - **It never masks the original error.** This function does not throw —
+ *    including when the re-enable itself fails — because it runs inside the
+ *    `catch` that is about to re-throw the delete failure, and a secondary
+ *    write that throws would REPLACE the reported outcome with its own. The
+ *    delete failure stays the outcome; this is a secondary line.
+ *  - **It never edits the primary message either.** Splicing the re-enable's
+ *    text into the thrown error would change what `isRetryableTransientError`
+ *    substring-matches on, so a compensation failure carrying a throttle phrase
+ *    could flip a terminal delete failure into a retryable one and re-run the
+ *    whole path. The narration goes to the logger, not into the throw.
+ *  - **It names the table when it fails.** A silent failure here leaves a LIVE
+ *    table with its guard down, which is the exact residue this mechanism
+ *    exists to remove, so the message carries the physical id and the one
+ *    command that fixes it.
+ */
+export async function compensateRemovedDeletionProtection(
+  opts: ProtectionCompensationOptions
+): Promise<void> {
+  if (!opts.flip.flippedOffByThisRun) return;
+  // AWS took the delete, so whatever threw afterwards was a WAIT, not the
+  // delete: the table is `DELETING` and there is no guard to restore on it.
+  // Gated on the RECORD rather than on the shape of the error, because the
+  // error that gets here in that case (`... did not disappear within ...`)
+  // reads exactly like a terminal refusal and would otherwise be answered with
+  // an `UpdateTable(true)` against a dying table plus a log line claiming it is
+  // "LIVE with its deletion protection still off" — both false.
+  if (opts.flip.deleteAccepted) return;
+  if (!isTerminalDeleteFailure(opts.error)) return;
+
+  try {
+    await opts.reEnable();
+    opts.logger.warn(
+      `DynamoDB ${opts.typeLabel} ${opts.logicalId}: the delete failed after ` +
+        `--remove-protection had turned DeletionProtectionEnabled off, so it was ` +
+        `re-enabled on ${opts.physicalId}. The delete failure below is the outcome.`
+    );
+  } catch (reEnableError) {
+    opts.logger.error(
+      `DynamoDB ${opts.typeLabel} ${opts.logicalId}: could NOT re-enable ` +
+        `DeletionProtectionEnabled on ${opts.physicalId} after the delete failed — ` +
+        `that table is LIVE with its deletion protection still off. Restore it with: ` +
+        `aws dynamodb update-table --table-name ${opts.physicalId} ` +
+        `--deletion-protection-enabled. (${
+          reEnableError instanceof Error ? reEnableError.message : String(reEnableError)
+        })`
+    );
+  }
+}
