@@ -7,7 +7,7 @@ import {
   stateOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import {
   CdkdError,
   PartialFailureError,
@@ -789,6 +789,14 @@ async function driftCommand(
   const logger = getLogger();
   if (options.verbose) {
     logger.setLevel('debug');
+  }
+
+  // Issue #2230: claim stdout for the payload BEFORE anything can print on it.
+  // Placed ahead of `applyRoleArnIfSet` deliberately — that helper logs
+  // `Assumed role ...` at INFO from `src/utils/role-arn.ts`, which is one of
+  // the human-facing lines this file cannot route on its own.
+  if (options.json) {
+    reserveStdoutForPayload();
   }
 
   warnIfDeprecatedRegion(options);
@@ -2757,9 +2765,13 @@ async function runAccept(
   stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
-  options: { yes?: boolean; dryRun?: boolean; profile?: string | undefined }
+  options: { yes?: boolean; dryRun?: boolean; json?: boolean; profile?: string | undefined }
 ): Promise<void> {
   const logger = getLogger();
+  // Issue #2230: stdout carries the `--json` payload, so this run's plan and
+  // prompt go to stderr. The `logger.*` lines below need no such threading —
+  // `reserveStdoutForPayload` already re-routed them.
+  const out = humanTextSink(options.json);
   // The recovery command a contention message suggests must resolve to the
   // SAME lock object this command was working on — `cdkd force-unlock`
   // re-resolves the bucket from the ambient profile otherwise (issue #2170).
@@ -2772,7 +2784,7 @@ async function runAccept(
   // Print a per-resource summary of the planned state mutations BEFORE we
   // ask for confirmation (or short-circuit on --dry-run). Mirrors `cdkd
   // import`'s confirm-then-write flow.
-  printAcceptPlan(reports);
+  printAcceptPlan(reports, out);
 
   if (options.dryRun) {
     logger.info('--dry-run: state will NOT be written. Re-run without --dry-run to apply.');
@@ -2780,7 +2792,10 @@ async function runAccept(
   }
 
   if (!options.yes) {
-    const ok = await confirmPrompt(`Update cdkd state with the AWS-current values shown above?`);
+    const ok = await confirmPrompt(
+      `Update cdkd state with the AWS-current values shown above?`,
+      out
+    );
     if (!ok) {
       logger.info('Aborted.');
       return;
@@ -3772,9 +3787,17 @@ async function runRevert(
   stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
-  options: { yes?: boolean; dryRun?: boolean; concurrency?: number; profile?: string | undefined }
+  options: {
+    yes?: boolean;
+    dryRun?: boolean;
+    json?: boolean;
+    concurrency?: number;
+    profile?: string | undefined;
+  }
 ): Promise<void> {
   const logger = getLogger();
+  // Issue #2230: see the note in `runAccept`.
+  const out = humanTextSink(options.json);
   // The recovery command a contention message suggests must resolve to the
   // SAME lock object this command was working on — `cdkd force-unlock`
   // re-resolves the bucket from the ambient profile otherwise (issue #2170).
@@ -3784,7 +3807,7 @@ async function runRevert(
     statePrefix: stateConfig.prefix,
   };
 
-  printRevertPlan(reports);
+  printRevertPlan(reports, out);
 
   if (options.dryRun) {
     logger.info('--dry-run: AWS will NOT be modified. Re-run without --dry-run to apply.');
@@ -3793,7 +3816,8 @@ async function runRevert(
 
   if (!options.yes) {
     const ok = await confirmPrompt(
-      `Push cdkd state values back into AWS for the resources shown above?`
+      `Push cdkd state values back into AWS for the resources shown above?`,
+      out
     );
     if (!ok) {
       logger.info('Aborted.');
@@ -4394,12 +4418,63 @@ async function runRevert(
 }
 
 /**
+ * Where this file's own human-facing text goes.
+ *
+ * Issue [#2230](https://github.com/go-to-k/cdkd/issues/2230). The plan
+ * printers and the confirmation prompt write to `process.stdout` DIRECTLY,
+ * so — unlike the `logger.info` lines, which
+ * {@link reserveStdoutForPayload} re-routes wholesale — they have to be
+ * routed per call site. Under `--json` stdout carries the payload and
+ * nothing else, so they move to stderr.
+ *
+ * MOVED, never dropped. A `--json --accept` run still shows the operator
+ * the plan, the prompt and the summary on their terminal; what changes is
+ * only which stream a pipe reads. Suppressing them instead would pass a
+ * "stdout parses" assertion while losing the information the confirmation
+ * is asking about, which is the worse of the two failures.
+ *
+ * THE TWO MEMBERS BIND AT DIFFERENT TIMES, and the asymmetry is deliberate.
+ * `write` is a closure, so `process.stderr.write` is looked up per CALL — a
+ * test that swaps the stream method after the sink was built still observes
+ * every write. `stream` is the stream OBJECT, captured eagerly, because
+ * `readline.createInterface` takes a sink once and holds it for the interface's
+ * lifetime; there is no later lookup for a closure to serve. That costs
+ * nothing, since swapping a stream's `write` METHOD (what a test does) leaves
+ * the captured object identity intact, and replacing `process.stderr` WHOLESALE
+ * is not something either the CLI or its tests do. It does mean a test fences
+ * `stream` by asserting the IDENTITY handed to `createInterface`, not by
+ * capturing bytes.
+ */
+interface HumanTextSink {
+  /** Write raw text. The caller supplies its own newlines. */
+  write(chunk: string): void;
+  /** The stream an interactive prompt should be attached to. */
+  readonly stream: NodeJS.WritableStream;
+}
+
+function humanTextSink(json: boolean | undefined): HumanTextSink {
+  return json
+    ? {
+        write: (chunk: string): void => {
+          process.stderr.write(chunk);
+        },
+        stream: process.stderr,
+      }
+    : {
+        write: (chunk: string): void => {
+          process.stdout.write(chunk);
+        },
+        stream: process.stdout,
+      };
+}
+
+/**
  * Print the planned state mutations for `--accept` (no AWS calls). One
  * line per resource per property path, mirroring the human report's
  * +/- diff format but flipped: the value on disk after this command
  * runs is the `+` side.
  */
-function printAcceptPlan(reports: StackDriftReport[]): void {
+function printAcceptPlan(reports: StackDriftReport[], out: HumanTextSink): void {
   for (const report of reports) {
     // Issue #2135: the plan asks the same exhaustive question `runAccept` does —
     // a plan that silently omits a variant the real run acts on (or vice versa)
@@ -4453,14 +4528,14 @@ function printAcceptPlan(reports: StackDriftReport[]): void {
     // `state.json` is the same class of false claim as the summary above it,
     // arriving from the other side. The parenthetical is what keeps the two
     // messages saying one thing.
-    process.stdout.write(
+    out.write(
       plannedWrites === 0
         ? `\nPlan (--accept): no accepted values will be written to cdkd state for ` +
             `${report.stackName} (${report.region}) — every drifted change below is refused ` +
             `(the run still writes the positioned re-redaction):\n`
         : `\nPlan (--accept): update cdkd state for ${report.stackName} (${report.region}):\n`
     );
-    for (const line of lines) process.stdout.write(line);
+    for (const line of lines) out.write(line);
   }
 }
 
@@ -4469,7 +4544,7 @@ function printAcceptPlan(reports: StackDriftReport[]): void {
  * One line per resource summarising how many property paths will be
  * overwritten on the AWS side.
  */
-function printRevertPlan(reports: StackDriftReport[]): void {
+function printRevertPlan(reports: StackDriftReport[], out: HumanTextSink): void {
   for (const report of reports) {
     // Issue #2135: same exhaustive question `runRevert` asks, for the same
     // reason the accept plan asks it.
@@ -4485,16 +4560,16 @@ function printRevertPlan(reports: StackDriftReport[]): void {
       })
     );
     if (drifted.length === 0) continue;
-    process.stdout.write(
+    out.write(
       `\nPlan (--revert): push cdkd state values back into AWS for ${report.stackName} (${report.region}):\n`
     );
     for (const o of drifted) {
       const word = o.changes.length === 1 ? 'property path' : 'property paths';
-      process.stdout.write(
+      out.write(
         `  → provider.update on ${o.logicalId} (${o.resourceType}): revert ${o.changes.length} ${word}\n`
       );
       for (const change of o.changes) {
-        process.stdout.write(
+        out.write(
           `    ${change.path}: ${formatScalar(change.awsValue)} -> ${formatScalar(change.stateValue)}\n`
         );
       }
@@ -4527,7 +4602,7 @@ function printRevertPlan(reports: StackDriftReport[]): void {
         // holds, which a refusal and a surviving token answer the same way.
         const cannotMaskKeys = o.notComparedCause !== undefined;
         if (cannotMaskKeys && preserved.length > 0) {
-          process.stdout.write(
+          out.write(
             `    ! ${preserved.length} AWS-authored tag(s) will be preserved, but cdkd could not ` +
               `resolve this resource's dynamic reference(s), so their names are withheld — they ` +
               `come from the live readback and cannot be checked for secrets without them.\n`
@@ -4539,7 +4614,7 @@ function printRevertPlan(reports: StackDriftReport[]): void {
           // makes a reader check whether they can both fire.
         } else if (preserved.length > 0) {
           const tagWord = preserved.length === 1 ? 'tag' : 'tags';
-          process.stdout.write(
+          out.write(
             `    ! reverting this tag list KEEPS ${preserved.length} AWS-authored ` +
               `${tagWord} the baseline does not carry:\n`
           );
@@ -4551,7 +4626,7 @@ function printRevertPlan(reports: StackDriftReport[]): void {
             // diff lines. Masked at the point of printing rather than at the
             // point of building, so the callers that use these lists as
             // KEY SETS keep the real keys.
-            process.stdout.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
+            out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
           }
           // "Every other tag reverts normally" is only true on the
           // observed-capture baseline. Under #1626's raw-TEMPLATE baseline
@@ -4562,7 +4637,7 @@ function printRevertPlan(reports: StackDriftReport[]): void {
             stateResource.observedProperties === undefined
               ? ''
               : `Every other tag reverts normally. `;
-          process.stdout.write(
+          out.write(
             `      ${othersRevert}A service may require these ` +
               `(ECS needs AmazonECSManaged for managed scaling); 'aws:'-prefixed keys are ` +
               `AWS-reserved and cannot be removed by hand.\n`
@@ -4578,7 +4653,7 @@ function printRevertPlan(reports: StackDriftReport[]): void {
         if (o.notComparedCause !== undefined && unbaselined.length > 0) {
           // Same withholding as the tag list above, and it must say something:
           // silently skipping the block left the user with no signal at all.
-          process.stdout.write(
+          out.write(
             `    ! ${unbaselined.length} AWS-authored value(s) will be left untouched, but cdkd ` +
               `could not resolve this resource's dynamic reference(s), so their paths are ` +
               `withheld — they come from the live readback and cannot be checked for secrets ` +
@@ -4586,16 +4661,16 @@ function printRevertPlan(reports: StackDriftReport[]): void {
           );
         } else if (unbaselined.length > 0) {
           const word = unbaselined.length === 1 ? 'value' : 'values';
-          process.stdout.write(
+          out.write(
             `    ! this resource has no observed-capture baseline, so the revert ` +
               `pushes the raw TEMPLATE and LEAVES ${unbaselined.length} AWS-authored ${word} ` +
               `untouched:\n`
           );
           for (const path of unbaselined) {
             // Masked for the same reason as the preserved-tag list above.
-            process.stdout.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
+            out.write(`        ${maskSecretsInText(path, o.secrets)}\n`);
           }
-          process.stdout.write(
+          out.write(
             `      The template does not declare these, so cdkd cannot tell an AWS-authored ` +
               `value from an out-of-band change and will not reset either (issue #1626). ` +
               `Run 'cdkd state refresh-observed ${report.stackName}' (or re-deploy) to populate ` +
@@ -4632,8 +4707,16 @@ async function runWithConcurrency(
   await Promise.all(workers);
 }
 
-async function confirmPrompt(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+/**
+ * Ask the operator to confirm a mutation.
+ *
+ * Issue #2230: the prompt is written to `out.stream`, not unconditionally to
+ * `process.stdout` — under `--json` that stream carries the payload, and a
+ * bare `[y/N] ` spliced into it is the same corruption as a status line.
+ * The prompt is still SHOWN; only its stream changes.
+ */
+async function confirmPrompt(prompt: string, out: HumanTextSink): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: out.stream });
   try {
     const ans = await rl.question(`${prompt} [y/N] `);
     return /^y(es)?$/i.test(ans.trim());
