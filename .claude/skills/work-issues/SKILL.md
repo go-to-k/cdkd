@@ -526,6 +526,31 @@ go-to-k/cdkd#1419 / go-to-k/cdkd#1435 twenty seconds apart (2026-08-09), both
 having followed every other rule in this skill, and it took the maintainer
 arbitrating to resolve. See go-to-k/cdkd#1446.
 
+**The tie-break only works if the LOSER re-reads. Nothing makes it, so the
+window is not seconds — it is the whole lane.** The compare-and-swap above is
+written as a one-shot check performed right after posting, which catches only a
+rival who posted BEFORE you. A rival who posts LATER never appears in it, and
+since neither session re-reads the issue again, both run to completion. On
+2026-08-25 go-to-k/cdkd#2200 was claimed at 14:34:26Z and again at 15:00:22Z --
+26 minutes apart, so the first claim was plainly visible to the second session,
+which had the losing timestamp and worked it anyway. Both lanes built the same
+fix. The merged one (go-to-k/cdkd#2206) turned out to be a strict superset, so
+nothing was lost but the duplicated hours; that is luck, not the rule working.
+
+Two cheap habits close it, and they are cheap precisely because a claim comment
+is one API call:
+
+- **Re-read the claims before you PUSH, not only after you post.** By then your
+  lane has a branch name to offer and a rival has had its whole triage window to
+  appear. If a later claim exists and yours is earlier, say so on the issue
+  rather than assuming they saw it; if yours is later, stand down even though
+  you have already written code -- discarding a branch is cheaper than two
+  reviews and two merges of the same change.
+- **When you find yourself the loser, record the timestamps in the stand-down
+  comment.** The rule is unenforced by construction (nothing can block another
+  session's `gh issue comment`), so the only thing keeping it alive is that
+  violations stay visible instead of being quietly absorbed.
+
 **Claim what you FILE, too — filing is not claiming.** An issue this run files as
 its own deferral is invisible to every ownership probe: no branch, no PR, no comment,
 and only §3-0's hour covers it. So when the issue is one THIS run means to pick up
@@ -791,6 +816,21 @@ this family: its `stripComments` stripped block comments before line ones, so a
 `//` comment containing the glob `src/provisioning/**` opened a block comment and
 swallowed 235 lines of `deploy-engine.ts`, dropping 2 writers and 2 helper calls
 into silence.
+
+**Adding a HANDLER to a slot that already has one REPLACES it.** Bash `trap`
+does not chain: a second `trap ... EXIT` anywhere in a script silently disarms
+the first, and in an integ fixture the first is the AWS teardown. Nearly shipped
+2026-08-25 on the go-to-k/cdkd#2213 lane, acting on a correct reviewer nit -- a
+`mktemp` scratch file leaked on five `exit 1` paths, and the obvious fix
+(`trap 'rm -f "${OUT}"' EXIT`) would have traded that temp file for a live SQS
+queue, an anomaly detector and a state record left behind on every failure path.
+The happy path still passes, so a green run proves nothing. Put the extra work
+inside the EXISTING handler (unset-guarded -- it can run before the variable is
+assigned, under `set +eu`), or re-install a handler that still CALLS the
+original, which is the form 16 fixtures already use. Fenced by
+`tests/unit/scripts/integ-single-exit-trap.test.ts`. The general shape is worth
+carrying past `trap`: before adding to any single-slot registration -- a signal
+handler, a callback field, an `EXIT` hook -- count what is already there.
 
 **A mutation probe proves a test discriminates only if it changes the value the
 test READS.** Four vacuous tests shipped across three lanes on 2026-08-19, and
