@@ -308,6 +308,150 @@ describe('invokeRieStreaming', () => {
     await expect(invokeRieStreaming('127.0.0.1', port, {}, 5000)).rejects.toThrow(/not valid JSON/);
   });
 
+  // ---- issue #2203: the rejection must not echo the bytes it parsed ----
+  //
+  // The split above scans the WHOLE response for an 8-NUL run, and the #664
+  // block in `rie-client.ts` records that the commonest handler shape in the
+  // wild (`streamifyResponse` + `setContentType`/`write`, never calling
+  // `HttpResponseStream.from`) emits NO framing -- so what gets scanned is
+  // raw function OUTPUT. Any 8-NUL run inside binary output therefore matches
+  // spuriously and hands `preludeBytes` a slice of application data, which
+  // V8 then quotes back in `SyntaxError.message`.
+  //
+  // Both cases assert POSITIVES alongside the negative: "the needle is
+  // absent" alone is satisfied by any unrelated rejection.
+
+  async function streamingRejectionMessage(payload: Buffer): Promise<string> {
+    nextStreamResponse = (_req, res) => {
+      res.writeHead(200);
+      res.end(payload);
+    };
+    try {
+      await invokeRieStreaming('127.0.0.1', port, {}, 5000);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    expect.fail('invokeRieStreaming should have rejected on an unparseable prelude');
+  }
+
+  it('withholds the ~10-character prefix V8 quotes from a spurious NUL match in binary output', async () => {
+    // A tar stream is the sharpest instance: its 512-byte member header
+    // NUL-pads everything after the 100-byte name field, so the FIRST 8-NUL
+    // run sits immediately after the file name. `preludeBytes` becomes that
+    // name, and on the pinned Node 24.15 the parser answers
+    // `Unexpected token 'c', "customer-d"... is not valid JSON`.
+    const name = 'customer-database-dump.sql';
+    const tarHeader = Buffer.alloc(512);
+    tarHeader.write(name, 0, 'utf8');
+    const message = await streamingRejectionMessage(
+      Buffer.concat([tarHeader, Buffer.from('...archive payload...')])
+    );
+
+    // The needle is the PREFIX, not the whole name: `not.toContain(name)`
+    // would pass WITHOUT the fix, since V8 never emits past its window.
+    expect(message).not.toContain('customer-d');
+    // Also fence the parser's PHRASING: stripping only the quoted segment
+    // still leaks the first byte and the offset.
+    expect(message).not.toContain('Unexpected token');
+    // Deliberately NOT `not.toContain(name)`: vacuous at this length, since
+    // V8 never emits past its prefix window. The full-quote shape is covered
+    // by the short-prelude case below, where that assertion discriminates.
+
+    expect(message).toContain('prelude is not valid JSON');
+    expect(message).toContain('SyntaxError');
+    // Anchored on both sides: a bare `26 bytes before` is a substring of
+    // `126 bytes before`, so an inflated count would pass unnoticed.
+    expect(message).toContain(`; ${name.length} bytes before the 8-NUL separator`);
+    // Anchored to the REMEDIATION sentence, not the bare symbol: the
+    // diagnosis sentence above it also names `HttpResponseStream.from`, so a
+    // bare `toContain('HttpResponseStream.from')` stayed green with the hint
+    // deleted -- confirmed by mutation probe R5.
+    expect(message).toContain('calling HttpResponseStream.from(...) frames the response explicitly');
+  });
+
+  it('counts BYTES, not UTF-16 code units, in the reported prelude size', async () => {
+    // The other fixtures are pure ASCII, where the two counts coincide -- so
+    // a mutation to `preludeBytes.toString('utf8').length` survives them.
+    // Four 3-byte characters are 12 bytes and 4 code units.
+    const multibyte = '\u3042\u3044\u3046\u3048';
+    const preludeBuf = Buffer.from(multibyte, 'utf8');
+    expect(preludeBuf.length).toBe(12);
+    expect(multibyte.length).toBe(4);
+
+    const message = await streamingRejectionMessage(
+      Buffer.concat([preludeBuf, SEPARATOR, Buffer.from('body')])
+    );
+    expect(message).toContain('; 12 bytes before the 8-NUL separator');
+    expect(message).not.toContain('; 4 bytes before the 8-NUL separator');
+    expect(message).not.toContain(multibyte);
+    expect(message).not.toContain('Unexpected token');
+  });
+
+  // --- the three input-INDEPENDENT throws must stay legible -------------
+  //
+  // `parseStreamingPrelude` throws four ways and only the `JSON.parse` one
+  // carries the parsed bytes. Suppressing the other three buys no privacy
+  // and ships a FALSE diagnosis -- a correctly-framed handler being told its
+  // valid JSON is "not valid JSON", with advice to call a function it
+  // already called. These fence the `err instanceof SyntaxError` gate, and
+  // they have to run through `invokeRieStreaming`: the suppression lives at
+  // the CALLER, so the direct `parseStreamingPrelude` cases above cannot
+  // see it.
+
+  it('keeps the non-object-prelude diagnosis verbatim (valid JSON, wrong shape)', async () => {
+    const message = await streamingRejectionMessage(
+      Buffer.concat([Buffer.from('"a string"'), SEPARATOR, Buffer.from('body')])
+    );
+
+    expect(message).toContain('RIE streaming response prelude is invalid:');
+    expect(message).toContain('prelude is not a JSON object');
+    // The false diagnosis this gate exists to prevent.
+    expect(message).not.toContain('is not valid JSON');
+    expect(message).not.toContain('HttpResponseStream.from');
+  });
+
+  it('keeps the statusCode diagnosis verbatim (valid JSON object, bad statusCode)', async () => {
+    const message = await streamingRejectionMessage(
+      Buffer.concat([Buffer.from('{"foo":1}'), SEPARATOR, Buffer.from('body')])
+    );
+
+    expect(message).toContain('RIE streaming response prelude is invalid:');
+    expect(message).toContain('statusCode must be a number');
+    expect(message).toContain('got undefined');
+    expect(message).not.toContain('is not valid JSON');
+    expect(message).not.toContain('HttpResponseStream.from');
+  });
+
+  it('keeps the empty-prelude diagnosis verbatim', async () => {
+    // Whitespace-only bytes before the separator: non-empty, so the
+    // synthesized-prelude path is not taken, but `trim()` empties it.
+    const message = await streamingRejectionMessage(
+      Buffer.concat([Buffer.from('   '), SEPARATOR, Buffer.from('body')])
+    );
+
+    expect(message).toContain('RIE streaming response prelude is invalid:');
+    expect(message).toContain('empty prelude');
+    expect(message).not.toContain('is not valid JSON');
+    expect(message).not.toContain('HttpResponseStream.from');
+  });
+
+  it('withholds a SHORT prelude, which V8 quotes in FULL rather than truncating', async () => {
+    // Second leak shape: V8 appends `...` only past its prefix window, so
+    // `JSON.parse('not-json{')` quotes the whole string. A guard written only
+    // against the truncated shape would miss this one.
+    const bogus = 'not-json{';
+    const message = await streamingRejectionMessage(
+      Buffer.concat([Buffer.from(bogus), SEPARATOR, Buffer.from('body')])
+    );
+
+    expect(message).not.toContain(bogus);
+    expect(message).not.toContain('Unexpected token');
+
+    expect(message).toContain('prelude is not valid JSON');
+    expect(message).toContain('SyntaxError');
+    expect(message).toContain(`; ${bogus.length} bytes before the 8-NUL separator`);
+  });
+
   it('forwards the event JSON in the request body', async () => {
     let received = '';
     nextStreamResponse = async (req, res) => {
