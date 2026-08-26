@@ -219,9 +219,9 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   `Session-fit` and read its `Effort:` value as an **`Estimate`**, because in
   that shape the field held a DURATION — reading it as the new `Effort` (a
   verification-cycle kind) turns `~1-3 h` into nonsense. A missing `Severity` is
-  UNKNOWN, never `low`; ranking rule 4 already declines to separate a pair
+  UNKNOWN, never `low`; ranking rule 3 already declines to separate a pair
   unless both sides carry the line, so an unclassified body simply falls through
-  to rule 5 rather than sorting last. Do NOT bulk-migrate the 44 — `Severity`
+  to rule 4 rather than sorting last. Do NOT bulk-migrate the 44 — `Severity`
   can only be written by someone holding the evidence, and a sweep would
   manufacture 44 guesses. Upgrade a body to the four-line shape when you CLAIM
   it (§4 carries the step), which is the moment that evidence exists. Four
@@ -375,8 +375,8 @@ a tie:
 |---|---|---|
 | 1 | **Security issues come FIRST**, ahead of every other rule below | A security defect is the one class where the cost keeps growing while it sits: the vulnerable behavior is already shipped, already running in users' accounts, and the report may be public. Every other rule orders work by how much value a fix adds; this one orders it by how much a delay costs |
 | 2 | **Umbrella issues sort LAST**, whatever else they score (except rule 1) | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
-| 3 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong |
-| 4 | **Higher `Severity` first**, when BOTH candidates carry the line | It is the same axis rules 1 and 3 approximate — how much the defect costs while it sits — but measured by the session that had the evidence in hand, rather than inferred from a title prefix. It ranks below rule 3 rather than replacing it because most issues do not carry the line yet: a `fix:` with no `Severity` must not lose to a `chore:` that happens to claim `high`. When only one side carries it, this rule does not separate them — fall through to rule 5 |
+| 3 | **Higher `Severity` first** (`high` > `medium` > `low`), when BOTH candidates carry it | It is the same axis rule 1 approximates — how much the defect costs while it sits — but MEASURED by the session that held the evidence, where a title prefix is only a proxy for it. **A proxy does not outrank the measurement it stands in for**, which is why this sits ABOVE the prefix rule rather than below it. The "BOTH carry it" precondition is what makes that safe, and it is doing all the work the old ordering did: most issues still carry no `Severity`, and for those this rule never fires, so a `fix:` with no `Severity` cannot lose to a `chore:` that happens to claim `high` — it falls straight through to rule 4. **Both values are also LABELS** (`severity:high\|medium\|low`, `effort:small\|medium\|large`), so this is answerable from the LISTING (`gh issue list --state open --label severity:high`) rather than one `gh issue view` per candidate; that is what made promoting it practical. The label is a mirror of the body line, never a second source: an issue carrying the line but not the label predates the labels, so a label-only query UNDER-counts and the body stays the authority |
+| 4 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong. This is the fallback for the majority of the backlog, which carries no `Severity` at all — where rule 3 does fire, it is the same question answered with evidence instead of a prefix |
 | 5 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
 | 6 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
 | 7 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
@@ -391,8 +391,17 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
         | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
         | @tsv'
 
-# the filer may already have classified it (§3) — this is a body read, so do it
-# on the shortlist rather than on the whole listing
+# rule 3's input is a LABEL as well as a body line, so it is answerable from the
+# same listing — no body read, no per-candidate `gh issue view`.
+gh issue list --state open --limit 200 --json number,title,labels \
+  --jq '.[] | [.number,
+               ([.labels[].name | select(startswith("severity:"))] | first // "severity:?"),
+               ([.labels[].name | select(startswith("effort:"))]   | first // "effort:?"),
+               .title] | @tsv'
+
+# `severity:?` means UNLABELLED, which is NOT `low`: rule 3 simply does not fire
+# for that issue. For the other two fields, which have no label, and to confirm a
+# surprising one against its body:
 gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort:|Estimate:'
 ```
 
@@ -443,7 +452,7 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
   candidate to take EARLY rather than a reason to skip.
 - **Severity / Effort / Estimate**: the body's own lines, when the filer wrote
   them (§3). `Severity` says what stays broken while the issue sits — it is
-  ranking rule 4 above, and it separates two candidates only when BOTH carry the
+  ranking rule 3 above, and it separates two candidates only when BOTH carry the
   line. `Effort` says which verification cycle the fix drags (a `large` one
   needs its own PR plus integ plus review, so it does not belong in a fan-out
   lane); `Estimate` says how many hours, which is what decides how many lanes
@@ -497,6 +506,16 @@ what you just read, and a value this run's evidence contradicts is corrected
 with the correction named in the claim comment. Doing it here rather than at
 merge time is the same argument the deferral rule makes — the evidence is in
 hand now and gone later. `Notes` never goes into an issue body.
+
+**Carry `--add-label` on that same `gh issue edit`.** Writing a `Severity:` /
+`Effort:` value into a body whose labels do not carry it is what
+`.claude/hooks/issue-classification-label-gate.sh` refuses, so the edit that
+upgrades a legacy body sets the labels in the same command
+(`--add-label severity:<v> --add-label effort:<v>`). This is also the moment the
+existing backlog gets labelled at all: it happens on touch, by the lane already
+holding the evidence, rather than by the bulk sweep §3 forbids. Doing it BEFORE
+the lane's PR exists is what makes the PR inherit the labels — the workflow
+reads them when the PR is opened.
 
 **Claim at SHORTLIST time, not after the analysis.** Claim the moment an issue
 enters your candidate set — before the deep read of its body, before mapping
@@ -760,6 +779,33 @@ record the search in the body so the next lane can see the window was checked:
 Dup-check: searched open issues for <terms> -- none covers this root cause
 ```
 
+**File it with its `Severity` / `Effort` values ALSO as labels** — the body lines
+stay exactly as written, and the same two values ride the command as
+`--label severity:<high|medium|low> --label effort:<small|medium|large>`:
+
+```bash
+gh issue create -t 'fix(provider): ...' --body-file "$B" \
+  --label severity:high --label effort:large
+```
+
+Prose is invisible to `gh issue list`, so applying §3's ranking rule 3 at all
+used to cost one `gh issue view` per candidate. Making it a listing-time filter
+is what let that rule move ABOVE the title-prefix heuristic: a prefix is a proxy
+for how much a defect costs while it sits, and `Severity` is that same thing
+measured. It stays gated on BOTH candidates carrying the value, because a
+label-only query under-counts — most of the backlog predates the labels — so the
+body remains the authority. Only these two get labels:
+`Session-fit` is re-decided when the issue is claimed and a stale label would be
+worse than none, and `Estimate` is a free-form duration with no closed value set.
+The same applies at §4's CLAIM, which is where an old packed body is rewritten
+into the four-line shape and therefore where `Severity` first exists for most of
+the backlog — carry `--add-label` on that `gh issue edit`. Enforced by
+`.claude/hooks/issue-classification-label-gate.sh`, which refuses a
+`gh issue create` / `gh issue edit` whose body states a value the labels do not
+carry; `gh issue comment` is not gated. A folded checklist row (the HIT path
+above) still carries no classification of its own — write the severity into the
+row's text, as this section already says.
+
 **This is not a filing threshold, and it must never be used as one.** Section
 10-0 below is explicit that `filed <= closed` is not a target and that an
 unfiled finding is strictly worse than a filed one. Nothing here changes WHETHER
@@ -771,7 +817,10 @@ number that can actually converge.
 Enforced by `.claude/hooks/issue-dup-check-gate.sh`, which refuses
 `gh issue create` without the `Dup-check:` line, and the same refusal covers
 `gh api repos/<o>/<r>/issues`, which mints an issue through the REST verb.
-`gh issue edit` and `gh issue comment` are deliberately NOT gated.
+`gh issue edit` and `gh issue comment` are deliberately NOT gated BY THAT GATE --
+folding into an existing issue is the outcome it steers toward, so taxing the
+cheap path would defeat it. The classification-label gate above makes the
+opposite call about `edit` for the opposite reason, and the two are independent.
 
 Be precise about what that buys, because the obvious claim is false: folding is
 not CHEAPER than minting. After the same search, minting is one command and
@@ -2693,6 +2742,10 @@ the run evidence behind it — or "no skill change" plus what held.
 - **Merge with `--squash --delete-branch` only** — the repo's sole merge method.
 - **English-only** for all committed/public artifacts (source, docs, PR/commit
   messages, issue comments on this repo).
+- **`Severity` / `Effort` go on the issue as LABELS too** — same two values, body
+  text unchanged (`CLAUDE.md` → the four TODO classification fields). Set at
+  filing (§5) and at the claim that rewrites an old packed body (§4). The lane's
+  PR inherits them from the issue it closes, so never hand-add them to a PR.
 - **Never download/run/install untrusted third-party content** (§0).
 - **Drive each lane to MERGED, not to "pushed".** Section 9 is the finish line for
   a LANE — merge, pull, confirm the release bump, rebuild, remove the worktree —
