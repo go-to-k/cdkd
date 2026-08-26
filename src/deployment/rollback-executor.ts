@@ -58,6 +58,7 @@ import type {
 } from '../types/resource.js';
 import type { Logger } from '../types/config.js';
 import type { ProviderRegistry } from '../provisioning/provider-registry.js';
+import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import { STATEFUL_TYPES } from '../provisioning/stateful-types.js';
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
@@ -844,6 +845,29 @@ export async function replayRollback(
  *    backoff schedule per op — ~47s on the generic grid, or ~64s if the op
  *    hits a name cooldown, which rides its own longer grid since issue #2116.
  *
+ * A FOURTH thing since issue
+ * [#2086](https://github.com/go-to-k/cdkd/issues/2086): the call is bound in
+ * {@link withCurrentResourceSecrets}, the async-local channel
+ * `NestedStackProvider` reads to seed a nested CHILD engine with the pairs the
+ * parent already resolved (issue #1903). `resolveReplayProps` has just
+ * re-resolved the journal's `{{resolve:...}}` expressions back to PLAINTEXT
+ * into `secrets`, so the bag in hand here is exactly the one the deploy engine
+ * would have bound — and without the binding a rollback that reverts a
+ * nested-stack row calls `NestedStackProvider.update`, the child engine seeds
+ * nothing, and the child's `state.json` is rewritten with the DECRYPTED secret.
+ * A recovery path that restores the pre-fix behaviour re-opens the very
+ * disclosure the fix closes, so "absent reads as undefined, the pre-#1903
+ * baseline" is not an acceptable answer HERE, however it reads elsewhere.
+ *
+ * `NestedStackProvider` is reachable on this path by construction, not in
+ * theory: it is one of the two `disableOuterRetry` providers named above that
+ * also implement `update()`, and `cdkd deploy`'s in-process auto-rollback runs
+ * inside a DEPLOY-mode `withNestedStackContext` (`deploy.ts` passes
+ * `nestedTemplates` / `dagBuilder` / `diffCalculator`). Standalone `cdkd
+ * rollback` is NOT affected — `rollback.ts` builds a destroy-mode context with
+ * none of those three fields, so `requireDeployContext` throws loudly before
+ * any child engine is built.
+ *
  * Returns the provider's result so the caller can honour
  * `effectiveProperties` (issue #1644) — both revert arms used to write the
  * previous state record back verbatim, dropping a narrowing the provider had
@@ -1210,15 +1234,21 @@ async function updateWithRollbackRetry(
   if (provider.disableOuterRetry) {
     // Single-shot — the provider handles transient errors internally, and an
     // outer retry would invalidate its per-call invariant state.
-    return await provider.update(...args);
+    return await withCurrentResourceSecrets(secrets, () => provider.update(...args));
   }
-  return await withRetry(() => provider.update(...args), logicalId, {
-    logger: maskingRetryLogger(logger, secrets),
-    ...(isInterrupted && {
-      isInterrupted,
-      onInterrupted: () => new Error('Rollback interrupted while retrying a resource update'),
-    }),
-  });
+  return await withRetry(
+    // INSIDE the retry arrow, so the store is bound per ATTEMPT, exactly as the
+    // deploy engine binds its own provider calls.
+    () => withCurrentResourceSecrets(secrets, () => provider.update(...args)),
+    logicalId,
+    {
+      logger: maskingRetryLogger(logger, secrets),
+      ...(isInterrupted && {
+        isInterrupted,
+        onInterrupted: () => new Error('Rollback interrupted while retrying a resource update'),
+      }),
+    }
+  );
 }
 
 /**
@@ -1291,6 +1321,16 @@ async function updateWithRollbackRetry(
  * now earns its place by ALSO covering the late name release that the inner
  * default classifier rejects. The two compound — measured at 640s of total
  * sleep on a cooldown, inside the 30-minute per-resource deadline.
+ *
+ * ## The secrets scope, on both call sites (issue #2086)
+ *
+ * Each caller's `create` thunk binds {@link withCurrentResourceSecrets} around
+ * `createProvider.create(...)`, for the same reason
+ * {@link updateWithRollbackRetry} does around `update(...)`: a
+ * reverse-replacement replay of an `AWS::CloudFormation::Stack` row re-CREATES
+ * the child, and an unbound store makes the child engine persist the parent's
+ * plaintext. It sits INSIDE the thunk, so it is re-established on every
+ * attempt of both loops rather than once around them.
  */
 async function createWithRollbackRetry(
   provider: ResourceProvider,
@@ -1762,11 +1802,13 @@ async function replaySingle(
           createResult = await createWithRollbackRetry(
             createProvider,
             () =>
-              createProvider.create(
-                op.logicalId,
-                op.resourceType,
-                { ...resolvedPrevProps },
-                replayingStateCreateContext(secrets)
+              withCurrentResourceSecrets(secrets, () =>
+                createProvider.create(
+                  op.logicalId,
+                  op.resourceType,
+                  { ...resolvedPrevProps },
+                  replayingStateCreateContext(secrets)
+                )
               ),
             op.logicalId,
             logger,
@@ -1826,11 +1868,13 @@ async function replaySingle(
             createResult = await createWithRollbackRetry(
               createProvider,
               () =>
-                createProvider.create(
-                  op.logicalId,
-                  op.resourceType,
-                  { ...resolvedPrevProps },
-                  replayingStateCreateContext(secrets)
+                withCurrentResourceSecrets(secrets, () =>
+                  createProvider.create(
+                    op.logicalId,
+                    op.resourceType,
+                    { ...resolvedPrevProps },
+                    replayingStateCreateContext(secrets)
+                  )
                 ),
               op.logicalId,
               logger,

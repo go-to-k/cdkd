@@ -211,6 +211,35 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       expect(crossStackSourceKey({ 'Fn::Join': ['', ['a']] })).toBeUndefined();
       expect(crossStackSourceKey({ Name: '', Value: 'an-unrelated-literal' })).toBeUndefined();
     });
+
+    it('separates two Fn::GetAtt attributes of ONE nested stack, in either authored spelling', () => {
+      const arrayCur = crossStackSourceKey({ 'Fn::GetAtt': ['Child', 'Outputs.CurrentPw'] });
+      const arrayPrev = crossStackSourceKey({ 'Fn::GetAtt': ['Child', 'Outputs.PreviousPw'] });
+      const stringCur = crossStackSourceKey({ 'Fn::GetAtt': 'Child.Arn' });
+      const otherChild = crossStackSourceKey({ 'Fn::GetAtt': ['Other', 'Outputs.CurrentPw'] });
+
+      const keys = [arrayCur, arrayPrev, stringCur, otherChild];
+      expect(keys.every((k) => typeof k === 'string')).toBe(true);
+      // The pair this arm exists for must not share a key, and neither must
+      // two children spelling the same attribute.
+      expect(new Set(keys).size).toBe(4);
+    });
+
+    it('REFUSES an Fn::GetAtt the RESOLVER itself would not accept, and a non-literal attribute name', () => {
+      // Both sides have to compute the same string from the same leaf, so the
+      // arm accepts exactly the two spellings `resolveGetAtt` accepts (the
+      // string form at exactly two dot-separated segments) and refuses anything
+      // whose attribute name the persist path could not recompute.
+      expect(crossStackSourceKey({ 'Fn::GetAtt': 'Child.Outputs.CurrentPw' })).toBeUndefined();
+      expect(crossStackSourceKey({ 'Fn::GetAtt': 'Child' })).toBeUndefined();
+      expect(
+        crossStackSourceKey({ 'Fn::GetAtt': ['Child', { Ref: 'AttrNameParam' }] })
+      ).toBeUndefined();
+      expect(
+        crossStackSourceKey({ 'Fn::GetAtt': ['Child', 'Outputs.CurrentPw', 'extra'] })
+      ).toBeUndefined();
+      expect(crossStackSourceKey({ 'Fn::GetAtt': ['', 'Outputs.CurrentPw'] })).toBeUndefined();
+    });
   });
 
   describe('Fn::ImportValue', () => {
@@ -724,6 +753,93 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       const survivor = recordedSecretValues.get(SHARED);
       expect(redacted.Variables['CURRENT']).toBe(survivor);
       expect(redacted.Variables['PREVIOUS']).toBe(survivor);
+      expect(JSON.stringify(redacted)).not.toContain(SHARED);
+    });
+  });
+
+  describe('Fn::GetAtt on a nested-stack OUTPUT (issue #2055 read site)', () => {
+    // The THIRD reader that re-resolves a producer-stored `{{resolve:...}}`
+    // token, and the one this PR added. It had no key at all — the arm passed a
+    // literal `undefined` — so its leaves fell to the plaintext-keyed value
+    // scan and a rotating secret's two staging labels collapsed there exactly
+    // as #2059's two did.
+    const SOURCE = {
+      Variables: {
+        CURRENT: { 'Fn::GetAtt': ['Child', 'Outputs.CurrentPw'] },
+        PREVIOUS: { 'Fn::GetAtt': ['Child', 'Outputs.PreviousPw'] },
+      },
+    };
+
+    /** The parent's nested-stack row, holding the child's REDACTED outputs. */
+    function childResources(attributes: Record<string, unknown>): ResolverContext['resources'] {
+      return {
+        Child: {
+          physicalId: `arn:cdkd-local:${REGION}:111122223333:nested-stack/Parent/Child`,
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: {},
+          attributes,
+        },
+      } as unknown as ResolverContext['resources'];
+    }
+
+    it('keeps each leaf on ITS OWN expression when two child outputs resolve to one plaintext', async () => {
+      const recordedSecretValues: RecordedSecretValues = new Map();
+      const context = buildContext({
+        resources: childResources({
+          'Outputs.CurrentPw': EXPR_CURRENT,
+          'Outputs.PreviousPw': EXPR_PREVIOUS,
+        }),
+        recordedSecretValues,
+      });
+
+      const resolved = (await resolver.resolve(SOURCE, context)) as {
+        Variables: Record<string, string>;
+      };
+
+      // The pass really did collapse: ONE needle for two distinct references.
+      // Without that, this case would pass with the defect fully intact.
+      expect(resolved.Variables['CURRENT']).toBe(SHARED);
+      expect(resolved.Variables['PREVIOUS']).toBe(SHARED);
+      expect(recordedSecretValues.size).toBe(1);
+
+      const redacted = redactSecretsForState(resolved, recordedSecretValues, SOURCE) as {
+        Variables: Record<string, string>;
+      };
+
+      expect(redacted.Variables['CURRENT']).toBe(EXPR_CURRENT);
+      expect(redacted.Variables['PREVIOUS']).toBe(EXPR_PREVIOUS);
+      expect(JSON.stringify(redacted)).not.toContain(SHARED);
+    });
+
+    it('REFUSES when the attribute name is an intrinsic, falling back to today’s behaviour', async () => {
+      // The persist path holds the unresolved template, so it cannot recompute
+      // this leaf's identity. Refusing degrades to the value scan — the collapse
+      // — which is what "today's behaviour" means here.
+      const refSource = {
+        Variables: {
+          CURRENT: { 'Fn::GetAtt': ['Child', { 'Fn::Sub': 'Outputs.CurrentPw' }] },
+          PREVIOUS: { 'Fn::GetAtt': ['Child', { 'Fn::Sub': 'Outputs.PreviousPw' }] },
+        },
+      };
+      const recordedSecretValues: RecordedSecretValues = new Map();
+      const resolved = (await resolver.resolve(
+        refSource,
+        buildContext({
+          resources: childResources({
+            'Outputs.CurrentPw': EXPR_CURRENT,
+            'Outputs.PreviousPw': EXPR_PREVIOUS,
+          }),
+          recordedSecretValues,
+        })
+      )) as { Variables: Record<string, string> };
+
+      const redacted = redactSecretsForState(resolved, recordedSecretValues, refSource) as {
+        Variables: Record<string, string>;
+      };
+      const survivor = recordedSecretValues.get(SHARED);
+      expect(redacted.Variables['CURRENT']).toBe(survivor);
+      expect(redacted.Variables['PREVIOUS']).toBe(survivor);
+      // Whatever the fallback picks, it is never the PLAINTEXT.
       expect(JSON.stringify(redacted)).not.toContain(SHARED);
     });
   });

@@ -269,6 +269,10 @@ function literalStringOrUndefined(value: unknown): string | undefined {
  * (`(producer X / Y)`), so it is neither derivable from the source leaf nor
  * stable.
  *
+ * THREE arms answer: `Fn::ImportValue`, `Fn::GetStackOutput`, and the
+ * `Fn::GetAtt` on a nested-stack OUTPUT that issue #2055's read site
+ * re-resolves. Every other leaf refuses.
+ *
  * `Region` and `RoleArn` are OPTIONAL slots, and an ABSENT one keys as empty
  * while a PRESENT-but-non-literal one refuses. Absent has to be its own key
  * rather than being filled in with the resolver's own region: the persist path
@@ -336,6 +340,51 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
       slots.push(literal);
     }
     return slots.join(CROSS_STACK_KEY_SEPARATOR);
+  }
+
+  // `Fn::GetAtt` on a NESTED-STACK OUTPUT (issue #2055's read site). The
+  // resolver re-resolves such a leaf through `reresolveCrossStackValue` exactly
+  // as it does the two arms above, so without a key here that arm passed
+  // `undefined` and the persist path fell back to the plaintext-keyed value
+  // scan. That fallback is only lossless while the plaintexts differ: a child
+  // exporting `Cur` (`:AWSCURRENT`) and `Prev` (`:AWSPREVIOUS`) of ONE rotating
+  // secret has both outputs resolve to the same value during the `AWSPENDING`
+  // window, `recordedSecretValues` collapses them onto whichever expression was
+  // recorded last, and BOTH parent properties then persist the survivor's
+  // expression -- which `resolveReplayProps` re-resolves and applies to a live
+  // resource on rollback, i.e. the WRONG stage. Keying by the consumer's own
+  // leaf separates them.
+  //
+  // BOTH SIDES COMPUTE FROM THE RAW LEAF, which is what makes the two strings
+  // identical by construction: the resolver hands over the `Fn::GetAtt`
+  // argument exactly as authored (BEFORE it resolves an intrinsic attribute
+  // name), and the persist path hands over the template source leaf at the
+  // position being persisted. Deriving the resolver's half from its RESOLVED
+  // `attributeName` would look equivalent and is not, for the same reason the
+  // `Fn::ImportValue` note above gives.
+  //
+  // The two authored spellings are accepted on the SAME terms the resolver
+  // accepts them -- the string form only at exactly two dot-separated segments
+  // (`resolveGetAtt` throws otherwise), the array form only at exactly two
+  // elements -- and a NON-LITERAL attribute name refuses, because the persist
+  // path holds the unresolved template and could not recompute it. Every
+  // refusal degrades to today's behaviour (the skeleton pass, then the value
+  // scan).
+  if (key === 'Fn::GetAtt') {
+    const raw = source[key];
+    let logicalId: string | undefined;
+    let attributeName: string | undefined;
+    if (typeof raw === 'string') {
+      const parts = raw.split('.');
+      if (parts.length !== 2) return undefined;
+      logicalId = literalStringOrUndefined(parts[0]);
+      attributeName = literalStringOrUndefined(parts[1]);
+    } else if (Array.isArray(raw) && raw.length === 2) {
+      logicalId = literalStringOrUndefined(raw[0]);
+      attributeName = literalStringOrUndefined(raw[1]);
+    }
+    if (logicalId === undefined || attributeName === undefined) return undefined;
+    return ['Fn::GetAtt', logicalId, attributeName].join(CROSS_STACK_KEY_SEPARATOR);
   }
 
   return undefined;
@@ -1169,7 +1218,7 @@ function plaintextIndexOf(secrets: RecordedSecretValues): Map<string, string | s
  * bag could not be vouched for, because it rewrote a `{Name: '', Value:
  * 'an-unrelated-literal'}` pair. Nothing here can do that: the answer is never
  * the source subtree, it is an expression a WRITER recorded against this exact
- * leaf identity; the arm fires for exactly two intrinsic spellings; and
+ * leaf identity; the arm fires for exactly three intrinsic spellings; and
  * condition 1 still demands that the bag leaf be a plaintext this pass
  * resolved. Every rejection degrades to {@link positionByIntrinsicSkeleton} and
  * then to the value scan, i.e. to today's behavior.

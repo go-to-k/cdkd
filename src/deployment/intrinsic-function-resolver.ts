@@ -47,6 +47,7 @@ import {
   recordCrossStackExpression,
   isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
+  MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -722,6 +723,38 @@ export function carriesDynamicReference(value: unknown): boolean {
   return false;
 }
 
+/** The nested-stack resource type, whose `Outputs.<Name>` attributes are re-resolved (issue #2055). */
+const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
+/** Prefix `NestedStackProvider` records a child stack output under. */
+const NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX = 'Outputs.';
+/**
+ * `arn:cdkd-local:<childRegion>:<accountId>:nested-stack/<parent>/<logicalId>` —
+ * the synthesized physicalId `NestedStackProvider.synthesizeArn` records on the
+ * parent's `AWS::CloudFormation::Stack` row.
+ */
+const NESTED_STACK_LOCAL_ARN = /^arn:cdkd-local:([a-z0-9-]+):[^:]*:nested-stack\//i;
+
+/**
+ * The CHILD stack's region, read off the parent row's synthesized physicalId
+ * (issue [#2055](https://github.com/go-to-k/cdkd/issues/2055)).
+ *
+ * WHY THE ARN AND NOT A STATE READ. The child's own record carries `region`,
+ * but its state KEY is `cdkd/<parent>~<logicalId>/<region>/state.json` — the
+ * region is part of the key, so reading the record to learn the region is
+ * circular. The synthesized physicalId is the SAME provider's durable record of
+ * the region it deployed the child into, it sits on the resource row the
+ * resolver already holds, and reading it costs no I/O on a path that is
+ * otherwise hot.
+ *
+ * Returns `undefined` for anything that is not that shape (a hand-edited state
+ * file, a record written before this provider existed), which the caller reads
+ * as "use this resolver's own region".
+ */
+function nestedStackChildRegionFromLocalArn(physicalId: string | undefined): string | undefined {
+  if (typeof physicalId !== 'string') return undefined;
+  return NESTED_STACK_LOCAL_ARN.exec(physicalId)?.[1];
+}
+
 /**
  * Resolver context for intrinsic functions
  */
@@ -786,6 +819,36 @@ export interface ResolverContext {
    * See `src/deployment/secret-redaction.ts`.
    */
   recordedSecretValues?: RecordedSecretValues;
+  /**
+   * Secret pairs a PARENT stack already resolved on a nested CHILD's behalf,
+   * for the child resolver to RECORD from rather than to substitute with
+   * (issues [#1903](https://github.com/go-to-k/cdkd/issues/1903) /
+   * [#2087](https://github.com/go-to-k/cdkd/issues/2087)).
+   *
+   * Set only by a nested-stack child `DeployEngine`, from
+   * `DeployEngineOptions.inheritedSecrets`. The parent resolves the child's
+   * `Parameters` block, so the value reaching the child is already PLAINTEXT
+   * and the child's own template spells the consumption as
+   * `{Ref: <ParamName>}` — an intrinsic OBJECT, never a `{{resolve:` string.
+   * Nothing in the child's own resolution can therefore record the
+   * `plaintext -> expression` pair that the deploy engine's state-save choke
+   * point redacts with, and the child's `state.json` persisted the decrypted
+   * secret.
+   *
+   * READ-ONLY and NEVER substituted: `resolveRef` still returns the real
+   * parameter value — that is what reaches AWS — and only copies the matching
+   * pair into `recordedSecretValues`, i.e. into the map belonging to the
+   * resource whose resolution actually consumed the parameter. Recording at
+   * RESOLUTION time rather than pre-seeding every context is what keeps the
+   * per-resource scoping every reader of `perResourceSecrets` assumes; the
+   * earlier pre-seed handed the same bag to every child resource, so an
+   * unrelated literal merely CONTAINING the plaintext (`my-production-bucket`
+   * against a secret `production`) was spliced into the expression and the
+   * stack acquired a perpetual UPDATE (issue #2087).
+   *
+   * A reader MUST NOT enumerate or log its KEYS — they are secret plaintext.
+   */
+  inheritedSecrets?: RecordedSecretValues;
   /**
    * Internal hook used while evaluating the template `Conditions` section.
    * A CFn Condition can reference ANOTHER named condition via
@@ -1452,6 +1515,102 @@ export interface ParameterDefinition {
 }
 
 /**
+ * Does coercing to `type` risk destroying the plaintext cdkd redacts against?
+ *
+ * DERIVED from {@link coerceParameterTypedValue}, never enumerated beside it.
+ * The previous shape was a hand-kept set naming `Number` / `List<Number>`,
+ * whose doc cleared `CommaDelimitedList` as safe because it "produces an array
+ * of strings (both of which the recording scan and the redactor handle)". That
+ * holds only for a comma-FREE secret -- and the dominant Secrets Manager shape
+ * is a JSON blob, which is nothing but commas, so `,`-splitting shreds the
+ * plaintext into fragments matching neither arm of
+ * {@link inheritedSecretsCarriedBy}. An audited allow-list was wrong about one
+ * of its own three entries, which is why this is now measured, not listed.
+ *
+ * Probe the REAL coercion with a canary carrying the separators the arms use --
+ * a comma and surrounding whitespace -- and call the type risky when the canary
+ * does not survive as one string. A `Type` added to the switch is covered the
+ * day it is added, with nothing to keep in sync.
+ *
+ * The DEPLOY path does better: `refuseCoercedInheritedSecret` measures the loss
+ * on the ACTUAL value, so a comma-free secret in a `CommaDelimitedList` still
+ * works. This coarser predicate is for `cdkd diff`, which holds no secrets bag
+ * and therefore cannot measure.
+ */
+const SECRET_IDENTITY_CANARY = 'a, b';
+
+export function parameterTypeMayLoseSecretIdentity(type: string): boolean {
+  return coerceParameterTypedValue(SECRET_IDENTITY_CANARY, type) !== SECRET_IDENTITY_CANARY;
+}
+
+/**
+ * ONE definition of parameter-type coercion, at module scope so
+ * {@link parameterTypeMayLoseSecretIdentity} probes the same code the resolver
+ * runs rather than a copy of it.
+ */
+export function coerceParameterTypedValue(value: string, type: string): unknown {
+  switch (type) {
+    case 'Number':
+      return Number(value);
+    case 'List<Number>':
+      return value.split(',').map((v) => Number(v.trim()));
+    case 'CommaDelimitedList':
+      return value.split(',').map((v) => v.trim());
+    case 'String':
+    default:
+      return value;
+  }
+}
+
+/**
+ * The inherited `plaintext -> expression` pairs that `value` CARRIES.
+ *
+ * ONE definition, shared by the RECORDING side
+ * (`recordInheritedParameterSecrets`) and the REFUSAL side
+ * (`refuseCoercedInheritedSecret`), because a refusal narrower than the
+ * recording would let exactly the values it exists to catch through — and the
+ * two drifting apart is how this class of bug reappears.
+ *
+ * TWO ARMS, mirroring the two `redactSecretsForState` performs, so the
+ * recording side cannot be narrower than the redaction side:
+ *
+ * - WHOLE VALUE at any length — `{Ref: Param}` returning exactly the secret.
+ * - SUBSTRING at or above {@link MIN_NEEDLE_LENGTH} — the parent built the
+ *   parameter with an `Fn::Sub`, so the value is `postgres://u:<secret>@host`
+ *   and only part of it is the secret. Short needles are excluded on this arm
+ *   for the same reason the redactor excludes them: a 3-character secret
+ *   matches half the alphabet's worth of ordinary identifiers.
+ *
+ * A `CommaDelimitedList` parameter arrives as an array, so the scan walks
+ * string elements too.
+ */
+function inheritedSecretsCarriedBy(
+  value: unknown,
+  inherited: RecordedSecretValues
+): Array<[string, string]> {
+  const candidates: string[] = [];
+  if (typeof value === 'string') {
+    candidates.push(value);
+  } else if (Array.isArray(value)) {
+    for (const element of value) {
+      if (typeof element === 'string') candidates.push(element);
+    }
+  }
+  if (candidates.length === 0) return [];
+
+  const carried: Array<[string, string]> = [];
+  for (const [plaintext, expression] of inherited) {
+    const hit = candidates.some(
+      (candidate) =>
+        candidate === plaintext ||
+        (plaintext.length >= MIN_NEEDLE_LENGTH && candidate.includes(plaintext))
+    );
+    if (hit) carried.push([plaintext, expression]);
+  }
+  return carried;
+}
+
+/**
  * Render a parameter VALUE for a debug log line, honoring the definition's
  * `NoEcho` flag (issue #1329). `NoEcho: true` is the template author's
  * explicit "this value is sensitive" declaration — CloudFormation masks such
@@ -1961,8 +2120,32 @@ export class IntrinsicFunctionResolver {
    */
   async resolveParameters(
     template: CloudFormationTemplate,
-    userParameters?: Record<string, string>
+    userParameters?: Record<string, string>,
+    options?: {
+      /**
+       * The parent's `plaintext -> {{resolve:...}}` pairs, on a NESTED-STACK
+       * CHILD engine only (issue #1903). Two things need it HERE, and both
+       * are about the same seam — this method is where an already-decrypted
+       * parent value first enters the child:
+       *
+       *  - the debug lines below print a parameter VALUE, and on this path
+       *    that value is plaintext the child's own `recordedSecretValues`
+       *    does not yet know about, so `stringifyParameterForLog`'s `NoEcho`
+       *    test (the author's own declaration, which a CDK-synthesized
+       *    nested-stack parameter never carries) is the only thing standing
+       *    between `--verbose` and the secret;
+       *  - `refuseCoercedInheritedSecret` needs the PRE-coercion string to
+       *    decide whether the declared `Type` would push the value out of
+       *    cdkd's string-keyed redaction model.
+       */
+      inheritedSecrets?: RecordedSecretValues;
+    }
   ): Promise<Record<string, unknown>> {
+    const inheritedSecrets = options?.inheritedSecrets;
+    const maskInherited = (text: string): string =>
+      inheritedSecrets && inheritedSecrets.size > 0
+        ? maskSecretsInText(text, inheritedSecrets)
+        : text;
     const parameters: Record<string, unknown> = {};
     const templateParameters = template.Parameters;
 
@@ -1981,9 +2164,12 @@ export class IntrinsicFunctionResolver {
       if (userParameters && name in userParameters) {
         const userValue = userParameters[name];
         if (userValue !== undefined) {
+          this.refuseCoercedInheritedSecret(name, paramDef, userValue, inheritedSecrets);
           parameters[name] = this.coerceParameterValue(userValue, paramDef.Type);
           this.logger.debug(
-            `Parameter ${name}: using user-provided value ${stringifyParameterForLog(paramDef, userValue)}`
+            `Parameter ${name}: using user-provided value ${maskInherited(
+              stringifyParameterForLog(paramDef, userValue)
+            )}`
           );
           continue;
         }
@@ -2013,14 +2199,18 @@ export class IntrinsicFunctionResolver {
           const resolved = await this.resolveSSMParameter(ssmPath);
           parameters[name] = resolved;
           this.logger.debug(
-            `Parameter ${name}: resolved SSM value ${stringifyParameterForLog(paramDef, resolved)}`
+            `Parameter ${name}: resolved SSM value ${maskInherited(
+              stringifyParameterForLog(paramDef, resolved)
+            )}`
           );
           continue;
         }
 
         parameters[name] = paramDef.Default;
         this.logger.debug(
-          `Parameter ${name}: using default value ${stringifyParameterForLog(paramDef, paramDef.Default)}`
+          `Parameter ${name}: using default value ${maskInherited(
+            stringifyParameterForLog(paramDef, paramDef.Default)
+          )}`
         );
         continue;
       }
@@ -2050,17 +2240,7 @@ export class IntrinsicFunctionResolver {
    * Coerce parameter value to the correct type based on parameter definition
    */
   private coerceParameterValue(value: string, type: string): unknown {
-    switch (type) {
-      case 'Number':
-        return Number(value);
-      case 'List<Number>':
-        return value.split(',').map((v) => Number(v.trim()));
-      case 'CommaDelimitedList':
-        return value.split(',').map((v) => v.trim());
-      case 'String':
-      default:
-        return value;
-    }
+    return coerceParameterTypedValue(value, type);
   }
 
   /**
@@ -2298,6 +2478,151 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Copy any {@link ResolverContext.inheritedSecrets} pair whose PLAINTEXT is
+   * present in a just-resolved parameter value into this context's
+   * `recordedSecretValues` (issues #1903 / #2087).
+   *
+   * WHY AT RESOLUTION TIME. This is the whole of the #2087 fix. The parent
+   * hands a nested child already-resolved plaintext, so the child's own
+   * resolution never sees a `{{resolve:` and cannot record the pair itself; the
+   * first cut pre-SEEDED every child resource's map with the parent's bag,
+   * which restored the redaction but destroyed the per-resource scoping
+   * `perResourceSecrets` exists for. `redactSecretsForState` substring-matches
+   * at or above {@link MIN_NEEDLE_LENGTH}, so a child resource that never
+   * referenced the parameter but happens to spell `my-production-bucket` while
+   * the secret is `production` had its state persisted as
+   * `my-{{resolve:...}}-bucket` — which `redactParametersForDiff` does NOT
+   * mirror on the desired side (it rewrites only the PARAMETERS), so every
+   * later deploy saw a change: a perpetual UPDATE, or a perpetual REPLACEMENT
+   * on a create-only property.
+   *
+   * Recording here binds the pair to exactly the resources whose resolution
+   * consumed the parameter — which are exactly the ones that can carry the
+   * plaintext into their persisted state — so the child gets the SAME scoping
+   * RULE the PARENT already has, where `perResourceSecrets` is keyed by logical
+   * id.
+   *
+   * That is PARITY with the parent, not a claim of exactness. Once a pair is in
+   * a resource's bag, `redactSecretsForState` substring-matches every leaf of
+   * THAT resource, so a resource which both `Ref`s the parameter and carries an
+   * unrelated literal spelling the plaintext has the literal rewritten too. The
+   * parent has precisely this residual for any resource that resolves a
+   * `{{resolve:...}}`; what #2087 removed was the much wider version, where
+   * every resource in the child got the bag whether it consumed the parameter
+   * or not.
+   *
+   * The TWO ARMS of the match live in {@link inheritedSecretsCarriedBy}, shared
+   * with the refusal below so the two can never drift apart.
+   *
+   * Covers every consumption shape, because `Fn::Sub` / `Fn::Join` /
+   * `Fn::Select` / `Fn::FindInMap` all re-enter `resolveValue` and reach the
+   * parameter through this same `Ref` branch.
+   *
+   * Substituting is deliberately NOT done here — the resolved value is what
+   * reaches AWS, and an `Fn::Equals` over a parameter must compare the real
+   * value or the condition flips.
+   */
+  private recordInheritedParameterSecrets(value: unknown, context: ResolverContext): void {
+    const inherited = context.inheritedSecrets;
+    const recorded = context.recordedSecretValues;
+    if (!inherited || inherited.size === 0 || !recorded) return;
+    for (const [plaintext, expression] of inheritedSecretsCarriedBy(value, inherited)) {
+      recorded.set(plaintext, expression);
+    }
+  }
+
+  /**
+   * Refuse a child parameter whose declared `Type` would COERCE an inherited
+   * secret out of cdkd's string-keyed secret model (issue #1903, review round
+   * 2).
+   *
+   * THE MODEL IS STRING-KEYED END TO END. `RecordedSecretValues` is keyed by
+   * plaintext STRING, {@link recordInheritedParameterSecrets} scans strings and
+   * string array elements, and `redactSecretsForState` rewrites string LEAVES.
+   * `coerceParameterValue` turns a `Number` / `List<Number>` parameter into a JS
+   * number before any of that runs, so the pair was never recorded, the leaf was
+   * never rewritten, and the child's `state.json` persisted the DECRYPTED value
+   * verbatim — the exact disclosure this issue closes for `String` parameters —
+   * with `cdkd diff --recursive` then reporting a change on every run.
+   *
+   * WHY A REFUSAL RATHER THAN RECORDING ON THE PRE-COERCION STRING. Recording
+   * the pair is not enough on its own: the persisted leaf is a NUMBER, so the
+   * redactor would additionally have to rewrite a number leaf into an
+   * expression STRING, matched by `String(n) === plaintext`. That comparison
+   * both UNDER-covers (`"007"` coerces to `7` and stringifies back to `"7"`, so
+   * a zero-padded secret silently stays plaintext) and OVER-covers (a numeric
+   * secret like `8080` whole-value-matches every unrelated port in the bag —
+   * issue #2087's class, on a path where `MIN_NEEDLE_LENGTH` does not apply).
+   * A remedy that can silently under-cover is the wrong one for a disclosure
+   * path, so this refuses and NAMES the parameter instead.
+   *
+   * The blast radius is nil for CDK-authored apps: CDK synthesizes every
+   * nested-stack cross-reference parameter as `Type: String`. A hand-authored
+   * template that really wants a numeric secret can declare the parameter
+   * `String` and keep the value a string, which is what CloudFormation's own
+   * `NoEcho` / dynamic-reference handling assumes anyway.
+   *
+   * SCOPED TO THE INHERITED BAG, which is non-empty only on a nested-stack
+   * child engine, and only for a value that actually carries a pair the parent
+   * PROVED secret. An ordinary `Type: Number` parameter is untouched.
+   *
+   * The message never quotes the value.
+   */
+  private refuseCoercedInheritedSecret(
+    name: string,
+    paramDef: ParameterDefinition,
+    userValue: string,
+    inherited: RecordedSecretValues | undefined
+  ): void {
+    if (!inherited || inherited.size === 0) return;
+    // MEASURE the loss; do not enumerate the types that cause it. A hand-kept
+    // list of "types that lose string identity" was wrong the moment it was
+    // written: it named `Number` / `List<Number>` and explicitly cleared
+    // `CommaDelimitedList` as safe because it "produces an array of strings
+    // (both of which the recording scan and the redactor handle)". That holds
+    // only while the secret contains no comma -- and the dominant Secrets
+    // Manager shape is a JSON blob, which is nothing but commas. `,`-splitting
+    // shreds the plaintext into FRAGMENTS, so neither arm of
+    // `inheritedSecretsCarriedBy` matches, nothing is recorded, the redactor is
+    // the identity, and the child's state.json keeps the cleartext -- the exact
+    // escape this refusal exists to close, on a type an audit had cleared.
+    //
+    // Comparing the pairs BEFORE and AFTER coercion answers the real question
+    // ("did coercion destroy a needle we would have redacted with?") instead of
+    // a proxy for it. It subsumes `Number` and `List<Number>`, covers the
+    // `.trim()` whitespace variant, keeps a comma-FREE `CommaDelimitedList`
+    // secret working, and cannot go stale when a new `Type` is added to
+    // `coerceParameterValue`.
+    const carriedBefore = inheritedSecretsCarriedBy(userValue, inherited).length;
+    if (carriedBefore === 0) return;
+    const carriedAfter = inheritedSecretsCarriedBy(
+      this.coerceParameterValue(userValue, paramDef.Type),
+      inherited
+    ).length;
+    if (carriedAfter >= carriedBefore) return;
+    // `markNonRetryable` for the same reason the `Fn::GetAtt` refusals above
+    // carry it: the decision comes from the template's declared `Type`, which
+    // no retry rewrites, and the message interpolates a template-controlled
+    // parameter NAME that the substring-matching retry classifiers can read as
+    // transient (issue #1838).
+    throw markNonRetryable(
+      new IntrinsicResolutionRefusalError(
+        `Nested-stack parameter '${name}' is declared 'Type: ${paramDef.Type}', but the ` +
+          `parent stack resolved a SECRET dynamic reference into it. cdkd keeps a resolved ` +
+          `secret out of persisted state by rewriting STRING leaves back to their ` +
+          `{{resolve:...}} expression; coercing this value to '${paramDef.Type}' destroys the ` +
+          `plaintext cdkd would have matched on, so the DECRYPTED secret would be left in the ` +
+          `child stack's state.json with nothing to redact it back ` +
+          `to. Declare '${name}' as 'Type: String' in the nested stack's template (CDK does ` +
+          `this by default for cross-stack references), or stop passing a secret reference ` +
+          `into it.`,
+        undefined,
+        'NESTED_STACK_SECRET_PARAMETER_TYPE'
+      )
+    );
+  }
+
+  /**
    * Resolve Ref intrinsic function
    *
    * Ref can reference:
@@ -2318,9 +2643,23 @@ export class IntrinsicFunctionResolver {
     if (context.parameters && logicalId in context.parameters) {
       const value = context.parameters[logicalId];
       const paramDef = context.template.Parameters?.[logicalId] as ParameterDefinition | undefined;
+      // Masked BEFORE the pair is recorded below, which is why it goes through
+      // `maskSecretsForLog` (which consults `context.inheritedSecrets`) rather
+      // than relying on `recordedSecretValues`: at this instant that bag is
+      // still empty for this resource, so masking against it alone would print
+      // the plaintext. `stringifyParameterForLog` only covers the author's own
+      // `NoEcho` declaration, and a CDK-synthesized nested-stack parameter
+      // never carries one.
       this.logger.debug(
-        `Resolved Ref to parameter: ${logicalId} -> ${stringifyParameterForLog(paramDef, value)}`
+        `Resolved Ref to parameter: ${logicalId} -> ${this.maskSecretsForLog(
+          stringifyParameterForLog(paramDef, value),
+          context
+        )}`
       );
+      // Issue #1903 / #2087: a nested-stack child records the parent's
+      // already-resolved secret HERE, at the point a resource actually
+      // consumes the parameter, so the pair lands in that resource's own bag.
+      this.recordInheritedParameterSecrets(value, context);
       return value;
     }
 
@@ -2484,6 +2823,58 @@ export class IntrinsicFunctionResolver {
         this.logger.debug(
           `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, flatValue)}`
         );
+        // A nested-stack child's outputs are read out of the child's PERSISTED
+        // state by `NestedStackProvider`, which since PR #1899 holds a
+        // secret-bearing output as its unresolved `{{resolve:...}}` expression
+        // — so `{"Fn::GetAtt": ["Child", "Outputs.DbPassword"]}` used to reach
+        // AWS as that literal token (issue #2055). Same class as #1934's
+        // `Fn::ImportValue` / `Fn::GetStackOutput` arms, one reader further
+        // out, so it takes the same helper rather than a fourth copy of the
+        // walk.
+        //
+        // The log line above stays AHEAD of this call on purpose (the #1934
+        // ordering rule): it prints the token, never the resolved value.
+        //
+        // The producer region is the CHILD's, read off the synthesized
+        // `arn:cdkd-local:<childRegion>:...` physicalId `NestedStackProvider`
+        // recorded — a secret NAME is regional, so the consumer's own region
+        // can answer with a different secret. `undefined` (an unparseable or
+        // hand-edited id) falls back to this resolver, which is the pre-fix
+        // region and still strictly better than shipping the token.
+        //
+        // `sourceKey` is computed from the RAW `Fn::GetAtt` argument — the leaf
+        // exactly as authored, BEFORE the intrinsic attribute-name resolution
+        // above — because the persist path holds the unresolved template and
+        // must derive the identical string from that same leaf
+        // (`crossStackSourceKey`, issue #2059). The first cut passed
+        // `undefined` here, which is that method's documented refusal
+        // fall-back; it is not a neutral one. Falling back means the persist
+        // path positions this leaf through the plaintext-keyed value scan, and
+        // a child exporting `Cur` (`:AWSCURRENT`) and `Prev` (`:AWSPREVIOUS`)
+        // of ONE rotating secret has both outputs resolve EQUAL during the
+        // `AWSPENDING` window: `recordedSecretValues` collapses them, both
+        // parent properties persist the survivor's expression, and
+        // `resolveReplayProps` then applies the WRONG stage to the live
+        // resource on a rollback or a `cdkd drift --revert`. That is the same
+        // failure #2059 closed one reader further in, so it takes the same
+        // key rather than a fourth positioning rule.
+        //
+        // A leaf the key function refuses — a non-literal attribute name, an
+        // arity the resolver would not accept — still yields `undefined` and
+        // still inherits today's behaviour.
+        if (
+          resource.resourceType === NESTED_STACK_RESOURCE_TYPE &&
+          attributeName.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX) &&
+          carriesDynamicReference(flatValue)
+        ) {
+          return await this.reresolveCrossStackValue(
+            flatValue,
+            nestedStackChildRegionFromLocalArn(resource.physicalId),
+            context,
+            `nested stack ${logicalId} ${attributeName}`,
+            crossStackSourceKey({ 'Fn::GetAtt': getAtt })
+          );
+        }
         return flatValue;
       }
 
@@ -2514,6 +2905,14 @@ export class IntrinsicFunctionResolver {
           this.logger.debug(
             `Resolved Fn::GetAtt from nested attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, cursor)}`
           );
+          // NO nested-stack re-resolution arm here, unlike the flat-key lookup
+          // above, and that is a REACHABILITY claim rather than a decision:
+          // `NestedStackProvider.buildOutputsAttributes` is the only writer of
+          // an `Outputs.<Key>` attribute and it writes FLAT dot-keys, so a
+          // redacted child output can never be served from this walk. A second
+          // writer that stored those outputs as a nested object would need this
+          // arm too, or it would ship the literal `{{resolve:...}}` token to AWS
+          // — the very defect issue #2055 closed one branch up.
           return cursor;
         }
       }
@@ -5599,8 +5998,25 @@ export class IntrinsicFunctionResolver {
    * recorded no secrets.
    */
   private maskSecretsForLog(text: string, context?: ResolverContext): string {
+    let masked = text;
+    // BOTH BAGS, and the inherited one FIRST (issue #1903 review round 2). A
+    // nested-stack CHILD engine is the only place `context.parameters` holds
+    // DECRYPTED plaintext — the PARENT resolved the child's `Parameters` block
+    // — and that plaintext is not in `recordedSecretValues` until some
+    // resource's `{Ref: <Param>}` actually resolves and
+    // `recordInheritedParameterSecrets` copies the pair across. Every log line
+    // emitted BEFORE that moment (the two parameter lines, and any line the
+    // child's own resolution reaches first) therefore had nothing to mask
+    // against and printed the secret at `--verbose`.
+    //
+    // Masking against the inherited bag is never a widening: its keys are pairs
+    // the parent PROVED secret, so anything it masks is a value that must not
+    // be echoed regardless of which resource is being resolved.
+    const inherited = context?.inheritedSecrets;
+    if (inherited && inherited.size > 0) masked = maskSecretsInText(masked, inherited);
     const secrets = context?.recordedSecretValues;
-    return secrets ? maskSecretsInText(text, secrets) : text;
+    if (secrets && secrets.size > 0) masked = maskSecretsInText(masked, secrets);
+    return masked;
   }
 
   async resolveDynamicReferences(value: string, context?: ResolverContext): Promise<string> {

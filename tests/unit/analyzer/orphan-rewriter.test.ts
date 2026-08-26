@@ -1,5 +1,19 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const fns = {
+    setLevel: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: () => fns,
+  };
+  return { getLogger: () => fns };
+});
+
 import { rewriteResourceReferences } from '../../../src/analyzer/orphan-rewriter.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import type { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -310,6 +324,76 @@ describe('rewriteResourceReferences', () => {
 
     expect(result.unresolvable).toEqual([]);
     expect(result.state.resources['Other']?.properties).toEqual({ Arn: 'arn:aws:s3:::b-cached' });
+  });
+
+  it('--force WARNS when the cached attribute is an unresolved dynamic reference (#2055)', async () => {
+    // The SECOND reader of `state.attributes`. Since issue #2055 a nested
+    // stack's `Outputs.<Key>` attribute legitimately holds its unresolved
+    // `{{resolve:...}}` expression — the resolver re-resolves it at the READ
+    // site, where a resolver context exists. This path has none, so it can only
+    // splice the token verbatim into the referring resource's state; `--force`
+    // is an explicit "use the cached value" escape hatch so it does not refuse,
+    // but it must SAY what it wrote.
+    const TOKEN = '{{resolve:secretsmanager:prod/db/cred:SecretString:password::}}';
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const getAttribute = vi.fn(async () => {
+      throw new Error('throttled');
+    });
+    const state = baseState({
+      Child: {
+        physicalId: 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child',
+        resourceType: 'AWS::CloudFormation::Stack',
+        properties: {},
+        attributes: { 'Outputs.DbPassword': TOKEN },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::SSM::Parameter',
+        properties: { Value: { 'Fn::GetAtt': ['Child', 'Outputs.DbPassword'] } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Child'], fakeRegistry(getAttribute), {
+      force: true,
+    });
+
+    // Behaviour is unchanged: the token IS spliced.
+    expect(result.state.resources['Other']?.properties).toEqual({ Value: TOKEN });
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).toContain('UNRESOLVED');
+    expect(warned).toContain('Outputs.DbPassword');
+  });
+
+  it('--force does NOT emit that warning for an ordinary cached value (scope control)', async () => {
+    // The discriminator: a fix that warned on every cache fallback would make
+    // the assertion above pass while telling the user nothing specific.
+    const warn = getLogger().warn as unknown as ReturnType<typeof vi.fn>;
+    warn.mockClear();
+    const getAttribute = vi.fn(async () => {
+      throw new Error('throttled');
+    });
+    const state = baseState({
+      Bucket: {
+        physicalId: 'b',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: { Arn: 'arn:aws:s3:::b-cached' },
+      },
+      Other: {
+        physicalId: 'o',
+        resourceType: 'AWS::Lambda::Function',
+        properties: { Arn: { 'Fn::GetAtt': ['Bucket', 'Arn'] } },
+      },
+    });
+
+    await rewriteResourceReferences(state, ['Bucket'], fakeRegistry(getAttribute), { force: true });
+
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    // The ordinary "falling back to cached value" warn still fires...
+    expect(warned).toContain('falling back to cached value');
+    // ...but not the dynamic-reference one.
+    expect(warned).not.toContain('UNRESOLVED');
   });
 
   it('--force leaves the original intrinsic when both live and cache fail', async () => {

@@ -65,6 +65,17 @@ vi.mock('../../../src/deployment/deploy-engine.js', () => ({
   DEFAULT_RESOURCE_TIMEOUT_MS: 30 * 60 * 1000,
 }));
 
+// Issue #1903 / #2086: the provider reads the parent's per-resource secrets bag
+// out of `resource-secrets-scope.ts`'s async-local store to seed the child
+// engine. That store is a LEAF module, deliberately NOT part of `deploy-engine`
+// (the rollback executor binds it too, and `deploy-engine` already imports the
+// rollback executor), so the mock above cannot reach it and none is needed: no
+// caller in this file binds the store, so the real accessor answers `undefined`
+// — the absent case, which is the pre-#1903 behaviour every assertion below was
+// written against. The forwarding itself is fenced in
+// `nested-stack-provider-inherited-secrets.test.ts`, which drives the REAL
+// store.
+
 // Mock runDestroyForStack so delete doesn't require an actual destroy
 // pipeline. Records every invocation AND the ALS context captured at
 // call time so the test can verify the child-context swap on the

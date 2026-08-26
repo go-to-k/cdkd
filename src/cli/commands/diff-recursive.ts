@@ -7,7 +7,11 @@ import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
 import { DiffCalculator, INTRINSIC_KEYS } from '../../analyzer/diff-calculator.js';
 import type { CanonicalizePropertiesFn } from '../../analyzer/diff-calculator.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
-import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
+import {
+  IntrinsicFunctionResolver,
+  carriesDynamicReference,
+  parameterTypeMayLoseSecretIdentity,
+} from '../../deployment/intrinsic-function-resolver.js';
 import {
   computeOutputsDiff,
   resolveTemplateOutputs,
@@ -24,6 +28,63 @@ import { findActionableSilentDrops } from '../../provisioning/property-coverage.
 import { NESTED_STACK_RESOURCE_TYPE } from './retire-cfn-stack.js';
 
 const logger = getLogger().child('DiffRecursive');
+
+/** Every `Ref` target reachable from a value, collected in one walk. */
+function collectRefTargets(value: unknown, refs: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const element of value) collectRefTargets(element, refs);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj['Ref'] === 'string') refs.add(obj['Ref']);
+  for (const nested of Object.values(obj)) collectRefTargets(nested, refs);
+}
+
+/**
+ * Whether ANY condition in `template` references one of `tokenParameterNames`
+ * (issue #1903, review round 2).
+ *
+ * WHY THIS EXISTS AND WHY THE BROAD FORM IS NOT MERELY CONSERVATIVE. The
+ * token-parameter guard originally skipped condition evaluation for the WHOLE
+ * template as soon as any bound parameter was a redacted token, on the argument
+ * that the cost is "a condition-false resource is diffed rather than pruned".
+ * That is only half of it: leaving `conditions` UNDEFINED also means `resolveIf`
+ * finds no entry, warns, and takes the FALSE branch for every `Fn::If` in every
+ * property value — so a condition-TRUE property diffs as a spurious UPDATE
+ * (perpetual, and `--fail` exits 1) and condition-gated resources surface as
+ * phantom CREATEs. And it fired whenever ANY parameter was token-valued, even
+ * when not one condition mentioned it.
+ *
+ * So the skip is narrowed to what it can actually get wrong: a condition whose
+ * verdict DEPENDS on a value this side does not have.
+ *
+ * NO TRANSITIVE `{Condition: X}` WALK, and its absence is a reachability
+ * argument rather than an omission. An `Fn::And` over a NAMED condition (issue
+ * #840's shape) does inherit that condition's dependency — but the named
+ * condition is itself an entry in this same `Conditions` map, and this scan
+ * visits EVERY entry, so the dependency is already found directly on the
+ * referenced condition. A chain walk was written first and measured dead: with
+ * it removed, a template whose `IsDev` wraps `{Condition: IsProd}` while only
+ * `IsProd` names the token parameter still answers `true`.
+ */
+function conditionsDependOnTokenParameters(
+  template: CloudFormationTemplate,
+  tokenParameterNames: ReadonlySet<string>
+): boolean {
+  const templateConditions = template.Conditions;
+  if (!templateConditions || typeof templateConditions !== 'object') return false;
+  if (tokenParameterNames.size === 0) return false;
+
+  for (const definition of Object.values(templateConditions)) {
+    const refs = new Set<string>();
+    collectRefTargets(definition, refs);
+    for (const ref of refs) {
+      if (tokenParameterNames.has(ref)) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * One node in the recursive `cdkd diff --recursive` tree (issue
@@ -256,6 +317,47 @@ export async function computeStackDiff(
   //    `DeployEngineOptions.parameters` does on deploy.
   let mergedParameters: Record<string, unknown> | undefined = parameters;
   let parametersBound = false;
+  // The names whose incoming value is a REDACTED `{{resolve:...}}` token rather
+  // than the value the deploy will actually bind (issue #1903).
+  // `resolveChildStackParameters` sets `skipDynamicReferences`, so a
+  // secret-bearing nested input arrives here as its expression — which is right
+  // for the COMPARISON (the child's state holds the expression too) and wrong
+  // for anything that has to reason about the VALUE. Two such things live
+  // below, and both are handled by knowing this set rather than by decrypting:
+  //
+  //  - `resolveParameters` COERCES by declared `Type`, so a `Type: Number`
+  //    parameter fed a token becomes `NaN`, which then diffs against the real
+  //    number in state on every run.
+  //  - `evaluateConditions` compares it, so an `Fn::Equals` over a
+  //    secret-valued parameter answers differently here than on deploy — where
+  //    the deploy engine deliberately hands the CONDITION context the real
+  //    values — and condition-gated child resources appear as phantom CREATEs
+  //    or DELETEs.
+  const tokenParameterNames = new Set(
+    Object.entries(parameters ?? {})
+      .filter(([, value]) => carriesDynamicReference(value))
+      .map(([name]) => name)
+  );
+  // The deploy path REFUSES a token-valued child parameter whose declared
+  // `Type` loses the plaintext under coercion -- asked of the coercion itself
+  // via `parameterTypeMayLoseSecretIdentity`, never re-enumerated here. The
+  // enumeration this replaced named `Number` / `List<Number>` and so stayed
+  // silent on `CommaDelimitedList`, whose `,`-split shreds the dominant
+  // Secrets Manager shape (a JSON blob) -- because coercing it drops the value
+  // out of cdkd's string-keyed redaction model and the child's state.json would
+  // keep the DECRYPTED secret (`refuseCoercedInheritedSecret`). `cdkd diff` is
+  // best-effort by contract and must not hard-fail, so it says so instead —
+  // otherwise the first the user hears of it is a failed deploy.
+  for (const name of tokenParameterNames) {
+    const declaredType = (template.Parameters?.[name] as { Type?: unknown } | undefined)?.Type;
+    if (typeof declaredType === 'string' && parameterTypeMayLoseSecretIdentity(declaredType)) {
+      logger.warn(
+        `Stack ${stackName}: parameter '${name}' is declared 'Type: ${declaredType}' and is fed ` +
+          `a secret dynamic reference. 'cdkd deploy' refuses this — declare it 'Type: String' — ` +
+          `and this diff keeps the unresolved reference rather than coercing it.`
+      );
+    }
+  }
   try {
     const userParameters: Record<string, string> = {};
     for (const [name, value] of Object.entries(parameters ?? {})) {
@@ -268,7 +370,16 @@ export async function computeStackDiff(
     // carries the deploy-coerced values (a Number-typed nested input becomes
     // a number, like deploy) — while raw nested inputs survive for any name
     // the template does not declare.
+    //
+    // EXCEPT for a redacted token (see `tokenParameterNames`): coercing an
+    // expression by the declared `Type` produces a `NaN` / `"false"` that
+    // matches neither side, so the token itself is kept — which is exactly what
+    // the child's state holds for such a parameter, keeping the comparison
+    // expression-vs-expression.
     mergedParameters = { ...parameters, ...templateParameters };
+    for (const name of tokenParameterNames) {
+      mergedParameters[name] = (parameters ?? {})[name];
+    }
     parametersBound = true;
   } catch (error) {
     logger.debug(
@@ -288,7 +399,25 @@ export async function computeStackDiff(
   //    whole-template in that case.
   let effectiveTemplate = template;
   let conditions: Record<string, boolean> | undefined;
-  if (parametersBound) {
+  // ALSO skipped when a CONDITION transitively references a redacted-token
+  // parameter (issue #1903): the deploy engine evaluates its conditions against
+  // the REAL parameter values, and this side does not have them and must not
+  // fetch them. Rather than evaluate a condition on an expression string and
+  // prune by the answer, fall back to the whole template — the SAME fallback
+  // the `parametersBound` guard already takes, for the same reason (an
+  // unreliable condition verdict prunes real resources and reports phantom
+  // DELETEs).
+  //
+  // THE COST OF THE SKIP IS NOT MERELY "DIFFED RATHER THAN PRUNED", which is
+  // what this comment used to claim. Leaving `conditions` undefined ALSO makes
+  // `resolveIf` warn and take the FALSE branch for every `Fn::If` in every
+  // property value, so a condition-true property diffs as a spurious UPDATE
+  // (perpetual, and `--fail` exits 1) on top of the phantom CREATEs. That is
+  // why the test is `conditionsDependOnTokenParameters` and not
+  // `tokenParameterNames.size === 0`: the broad form fired whenever ANY
+  // parameter was token-valued, including the common case where no condition
+  // mentions one, and paid that price for nothing.
+  if (parametersBound && !conditionsDependOnTokenParameters(template, tokenParameterNames)) {
     try {
       conditions = await intrinsicResolver.evaluateConditions({
         template,
@@ -476,6 +605,20 @@ async function resolveChildStackParameters(
         // parameter is expected (caught + omitted below), not warn-worthy.
         bestEffort: true,
         ...(parentParameters && { parameters: parentParameters }),
+        // Leave SECRET `{{resolve:...}}` dynamic references UNRESOLVED here
+        // too (issue #1903). Without it `cdkd diff --recursive` DECRYPTED a
+        // secret-bearing nested-stack input parameter at plan time and printed
+        // the plaintext in the child's diff.
+        //
+        // This flag is only correct BECAUSE the deploy half landed with it:
+        // `DeployEngineOptions.inheritedSecrets` now makes the child's
+        // `state.json` hold the `{{resolve:...}}` expression rather than the
+        // resolved value, so the desired side and the stored side are both
+        // expressions. On its own it would have compared an expression against
+        // a child state still holding plaintext and reported a spurious
+        // perpetual change on every run — which is why the issue's two halves
+        // could not be split.
+        skipDynamicReferences: true,
       });
     } catch {
       // Unresolvable (e.g. references a not-yet-deployed resource): omit it so

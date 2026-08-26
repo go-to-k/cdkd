@@ -1897,6 +1897,54 @@ would apply, comparing the synth template against cdkd's S3 state.
   with no state file yet diffs as all-CREATE; a nested stack removed from
   the CDK code (present in state, absent from the template) diffs as
   all-DELETE recursively.
+
+  A child input parameter fed by a SECRET dynamic reference is **not
+  decrypted at plan time** (issues
+  [#1903](https://github.com/go-to-k/cdkd/issues/1903) /
+  [#2087](https://github.com/go-to-k/cdkd/issues/2087)). The parent's
+  `Parameters` value is carried down as its `{{resolve:...}}` expression,
+  which is also what the child's state now holds, so the two sides compare
+  expression-vs-expression and no plaintext appears in the output. Two
+  consequences follow from a redacted token not being a usable VALUE, and both
+  are deliberate:
+
+  - The token is left **uncoerced** rather than being cast by the child
+    parameter's declared `Type` (a `Type: Number` parameter would otherwise
+    become `NaN` and diff forever). `cdkd diff` additionally WARNS for such a
+    parameter, because `cdkd deploy` refuses it outright — see "Secret
+    parameters must be `Type: String`" below.
+  - A child stack is **not condition-pruned** on that run **when one of its
+    `Conditions` transitively references a token-valued parameter** — `cdkd
+    deploy` evaluates its conditions against the real values, so a verdict
+    computed over an expression could flip an `Fn::Equals` and report a
+    phantom CREATE or DELETE of a condition-gated child resource. The whole
+    child template is diffed instead, which is the same fallback an unbindable
+    parameter already takes. The skip is scoped to conditions that actually
+    depend on such a parameter: leaving the condition map unevaluated ALSO
+    makes every `Fn::If` in a property value take its FALSE branch, so a
+    template whose conditions mention no secret parameter is evaluated and
+    pruned exactly as it would be without a secret in the tree.
+
+  #### Secret parameters must be `Type: String`
+
+  A nested-stack input parameter fed a SECRET dynamic reference must be
+  declared `Type: String` (or `CommaDelimitedList`). `cdkd deploy` **refuses**
+  a `Type: Number` / `Type: List<Number>` parameter in that position, naming
+  the parameter:
+
+  ```text
+  Nested-stack parameter 'DbPort' is declared 'Type: Number', but the parent
+  stack resolved a SECRET dynamic reference into it. ...
+  ```
+
+  cdkd keeps a resolved secret out of persisted state by rewriting **string**
+  leaves back to their `{{resolve:...}}` expression. Casting the value to a
+  number takes it out of that model, so the child stack's `state.json` would
+  keep the DECRYPTED secret with nothing to redact it back to — the very
+  disclosure issue [#1903](https://github.com/go-to-k/cdkd/issues/1903)
+  closes. Refusing names the problem; silently persisting the plaintext does
+  not. CDK synthesizes every nested-stack cross-reference parameter as
+  `Type: String`, so a CDK app never hits this.
 - `--fail` — exit `1` when any change is detected (parity with `cdk diff
   --fail`). With `--recursive`, considers the whole nested-stack tree, so
   CI can gate on tree-wide drift with a single `cdkd diff <parent>

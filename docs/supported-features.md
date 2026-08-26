@@ -66,7 +66,7 @@ top-level features rather than table rows.
 | Cross-region references | ✅ | Via `Fn::GetStackOutput` + S3 state, with a same-account CloudFormation `DescribeStacks` fallback (issue #1697). Cross-account via `RoleArn` (producer-account cdkd state only). |
 | JSON Patch updates | ✅ | RFC 6902, minimal patches; write-only properties re-included per registry schema (`cloudformation:DescribeType`, graceful fallback) |
 | Resource replacement detection | ✅ | 10+ resource types |
-| Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}`; secret-bearing ones (secretsmanager, or an ssm `SecureString` parameter) are persisted as the unresolved expression, never as plaintext |
+| Dynamic References | ✅ | `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}`; secret-bearing ones (secretsmanager, or an ssm `SecureString` parameter) are persisted as the unresolved expression, never as plaintext. This holds across a NESTED-STACK boundary in both directions since issues [#1903](https://github.com/go-to-k/cdkd/issues/1903) / [#2055](https://github.com/go-to-k/cdkd/issues/2055): a reference passed down through an `AWS::CloudFormation::Stack` row's `Parameters` is redacted in the CHILD's state (only for the child resources that actually consume it), and a redacted child OUTPUT is re-resolved before it reaches AWS rather than shipping the literal token |
 | DELETE idempotency | ✅ | Not-found errors treated as success |
 | Asset publishing (S3) | ✅ | Lambda code packages |
 | Asset publishing (ECR) | ✅ | Self-implemented Docker image publishing |

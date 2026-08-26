@@ -600,7 +600,8 @@
         "import-nested-stack",
         "nested-stack",
         "nested-stack-3level",
-        "nested-stack-deep"
+        "nested-stack-deep",
+        "nested-stack-secret"
       ],
       "signals": {
         "export-nested-stack": [
@@ -616,6 +617,9 @@
           "literal"
         ],
         "nested-stack-deep": [
+          "literal"
+        ],
+        "nested-stack-secret": [
           "literal"
         ]
       }
@@ -5564,6 +5568,7 @@
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
+        "nested-stack-secret",
         "opensearch-domain-getatt",
         "outputs-only-export",
         "rds-full-stack",
@@ -5706,6 +5711,10 @@
         ],
         "nested-stack-deep": [
           "l2"
+        ],
+        "nested-stack-secret": [
+          "l2",
+          "literal"
         ],
         "opensearch-domain-getatt": [
           "l1"
