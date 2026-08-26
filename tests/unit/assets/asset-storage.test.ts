@@ -26,6 +26,9 @@ vi.mock('@aws-sdk/client-s3', () => ({
   })),
   HeadBucketCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'HeadBucket' })),
   CreateBucketCommand: vi.fn().mockImplementation((input) => ({ ...input, _type: 'CreateBucket' })),
+  GetBucketLocationCommand: vi
+    .fn()
+    .mockImplementation((input) => ({ ...input, _type: 'GetBucketLocation' })),
   PutBucketEncryptionCommand: vi
     .fn()
     .mockImplementation((input) => ({ ...input, _type: 'PutBucketEncryption' })),
@@ -100,6 +103,40 @@ function awsError(name: string, httpStatusCode?: number): Error {
   return Object.assign(new Error(name), {
     name,
     ...(httpStatusCode && { $metadata: { httpStatusCode } }),
+  });
+}
+
+/**
+ * An AWS error carrying the `x-amz-bucket-region` response header, which real
+ * S3 sets on BOTH cross-region shapes this module meets (issue #2240): the
+ * `301` from `HeadBucket` and the `409 BucketAlreadyOwnedByYou` from
+ * `CreateBucket`. Measured against real S3 on 2026-08-26.
+ */
+function awsErrorInRegion(
+  name: string,
+  httpStatusCode: number,
+  bucketRegion: string,
+  /** Spell the header canonically, to make the reader's `toLowerCase()` load-bearing. */
+  canonicalCase = false
+): Error {
+  // A REALISTIC bag, in the order real S3 sends it (measured 2026-08-26:
+  // x-amz-bucket-region, x-amz-request-id, x-amz-id-2, content-type,
+  // transfer-encoding, date, server). The region header is deliberately NOT
+  // first and NOT alone -- a single-entry object lets a reader that ignores the
+  // KEY entirely ("return the first truthy value") pass, and in production that
+  // returns a date string as the bucket's region.
+  const headers: Record<string, string> = {
+    'x-amz-request-id': 'ZZZ0000000000001',
+    'x-amz-id-2': 'abcdefghijklmnopqrstuvwxyz0123456789',
+    'content-type': 'application/xml',
+    date: 'Wed, 26 Aug 2026 06:00:00 GMT',
+    server: 'AmazonS3',
+  };
+  headers[canonicalCase ? 'X-Amz-Bucket-Region' : 'x-amz-bucket-region'] = bucketRegion;
+  return Object.assign(new Error(name), {
+    name,
+    $metadata: { httpStatusCode },
+    $response: { headers },
   });
 }
 
@@ -544,6 +581,400 @@ describe('ensureAssetStorage', () => {
     const { putRawObject, options } = makeOptions();
     await ensureAssetStorage(options);
     expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('cross-region asset-bucket adoption (issue #2240)', () => {
+  const FOREIGN = 'ap-northeast-1';
+
+  function makeOptions(
+    overrides: { region?: string; force?: boolean; assetBucketName?: string } = {}
+  ) {
+    const putRawObject = vi.fn().mockResolvedValue(undefined);
+    const getRawObject = vi.fn().mockResolvedValue(null);
+    const region = overrides.region ?? REGION;
+    return {
+      putRawObject,
+      options: {
+        s3Client: new S3Client({ region }) as S3Client,
+        ecrClient: new ECRClient({}) as ECRClient,
+        stateBackend: { putRawObject, getRawObject } as unknown as S3StateBackend,
+        accountId: ACCOUNT,
+        region,
+        force: overrides.force ?? false,
+        // The region-FREE custom name is what makes this reachable at all: the
+        // default `cdkd-assets-<acct>-<region>` embeds the region, which is why
+        // this class first read as structurally unreachable.
+        ...(overrides.assetBucketName !== undefined && {
+          assetBucketName: overrides.assetBucketName,
+        }),
+      },
+    };
+  }
+
+  function s3CallTypes(): string[] {
+    return mockS3Send.mock.calls.map((c) => c[0]._type as string);
+  }
+
+  it('refuses on the HeadBucket 301 and applies NO configuration to the foreign-region bucket', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket'
+        ? Promise.reject(awsErrorInRegion('Unknown', 301, FOREIGN))
+        : Promise.resolve({})
+    );
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    await expect(ensureAssetStorage(options)).rejects.toThrowError(
+      new RegExp(`resolves to a bucket in ${FOREIGN}.*targets ${REGION}`, 's')
+    );
+    // NOTE on what discriminates here. `putRawObject` not being called is a
+    // CONFLUENCE point on this arm -- pre-fix the 301 threw too (through
+    // `normalizeAwsError`, whose wording tells the user to file a bug), so no
+    // PUT happened either way. The real discriminator is the `code` and the
+    // `resolves to a bucket in ... targets ...` message asserted above. The call-type
+    // assertion below IS the discriminator on the 409 arm, where the pre-fix
+    // code swallowed and went on to PUT.
+    expect(s3CallTypes()).toEqual(['HeadBucket', 'HeadBucket']);
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('--force does not license adopting a foreign-region bucket', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket'
+        ? Promise.reject(awsErrorInRegion('Unknown', 301, FOREIGN))
+        : Promise.resolve({})
+    );
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets', force: true });
+
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    // `--force` means "re-apply configuration to the bucket you INTENDED", never
+    // "write to a bucket in another region" — so the PUT gate stays shut.
+    expect(s3CallTypes()).toEqual(['HeadBucket']);
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('refuses a CROSS-REGION BucketAlreadyOwnedByYou instead of configuring that bucket', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsErrorInRegion('BucketAlreadyOwnedByYou', 409, FOREIGN));
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    expect(s3CallTypes()).toEqual(['HeadBucket', 'CreateBucket']);
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('NEGATIVE CONTROL: a SAME-region BucketAlreadyOwnedByYou race is still tolerated', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsErrorInRegion('BucketAlreadyOwnedByYou', 409, REGION));
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+
+    await ensureAssetStorage(options);
+
+    // A guard that refuses everything would satisfy every positive assertion
+    // above; this is the arm that says it does not.
+    expect(s3CallTypes()).toEqual([
+      'HeadBucket',
+      'CreateBucket',
+      'PutBucketEncryption',
+      'PutPublicAccessBlock',
+      'PutBucketPolicy',
+    ]);
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to GetBucketLocation when the 409 carries no region header', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsError('BucketAlreadyOwnedByYou', 409));
+      if (cmd._type === 'GetBucketLocation')
+        return Promise.resolve({ LocationConstraint: FOREIGN });
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    expect(s3CallTypes()).toEqual(['HeadBucket', 'CreateBucket', 'GetBucketLocation']);
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('folds the legacy EU LocationConstraint to eu-west-1 rather than refusing', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsError('BucketAlreadyOwnedByYou', 409));
+      if (cmd._type === 'GetBucketLocation') return Promise.resolve({ LocationConstraint: 'EU' });
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({
+      region: 'eu-west-1',
+      assetBucketName: 'shared-assets',
+    });
+
+    await ensureAssetStorage(options);
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('folds an EMPTY LocationConstraint to us-east-1 rather than refusing', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsError('BucketAlreadyOwnedByYou', 409));
+      if (cmd._type === 'GetBucketLocation') return Promise.resolve({});
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+
+    await ensureAssetStorage(options);
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('FAILS CLOSED when the region cannot be determined at all', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsError('BucketAlreadyOwnedByYou', 409));
+      if (cmd._type === 'GetBucketLocation') return Promise.reject(awsError('AccessDenied', 403));
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+
+    // `resolveBucketRegion` would have returned its fallbackRegion here and let
+    // the adoption through — which is why this guard does not use it.
+    await expect(ensureAssetStorage(options)).rejects.toThrowError(/could not.*determine/s);
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('reads the region header by KEY, not by position, and case-insensitively', async () => {
+    // Pins `readBucketRegionHeader`'s key match AND its `toLowerCase()`: the
+    // bag carries five decoy headers and spells the region one canonically.
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket'
+        ? Promise.reject(awsErrorInRegion('Unknown', 301, FOREIGN, true))
+        : Promise.resolve({})
+    );
+    const { options } = makeOptions({ assetBucketName: 'shared-assets' });
+    await expect(ensureAssetStorage(options)).rejects.toThrow(
+      new RegExp(`resolves to a bucket in ${FOREIGN}`)
+    );
+  });
+
+  it('treats a 400 carrying the region header as a cross-region redirect', async () => {
+    // The SDK's own `regionRedirectMiddleware` fires on 301 OR 400-with-header;
+    // a status-301-only gate misses this spelling entirely.
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket'
+        ? Promise.reject(awsErrorInRegion('AuthorizationHeaderMalformed', 400, FOREIGN))
+        : Promise.resolve({})
+    );
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('does NOT adopt on a redirect whose header names THIS region', async () => {
+    // Without an arm here, replacing the post-guard `throw` with
+    // `bucketExists = true` passes: the guard returns (regions match) and the
+    // caller would sail on to the configuration PUTs.
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket'
+        ? Promise.reject(awsErrorInRegion('Unknown', 301, REGION))
+        : Promise.resolve({})
+    );
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+    await expect(ensureAssetStorage(options)).rejects.toThrow(/different region than the client/);
+    expect(s3CallTypes()).toEqual(['HeadBucket']);
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('folds an EMPTY LocationConstraint to us-east-1 and REFUSES a non-us-east-1 target', async () => {
+    // The tolerated EMPTY arm above targets us-east-1, so the fold's output
+    // equals `want` there and it cannot separate "folds to us-east-1" from
+    // "folds to whatever we wanted" -- i.e. it would pass a fail-OPEN
+    // `?? want`. This arm targets ap-northeast-1, so only the real fold refuses.
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsError('BucketAlreadyOwnedByYou', 409));
+      if (cmd._type === 'GetBucketLocation') return Promise.resolve({});
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({
+      region: FOREIGN,
+      assetBucketName: 'shared-assets',
+    });
+    await expect(ensureAssetStorage(options)).rejects.toThrow(
+      new RegExp(`resolves to a bucket in us-east-1.*targets ${FOREIGN}`, 's')
+    );
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('canonicalizes BOTH sides before comparing, so a raw --region spelling still matches', async () => {
+    // `bootstrap.ts` passes the user's RAW `--region` spelling, so dropping the
+    // canonicalization would refuse a bucket that is in the right region.
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsErrorInRegion('BucketAlreadyOwnedByYou', 409, 'US-EAST-1'));
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+    await ensureAssetStorage(options);
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+    // Fence the FALLBACK out. Without this the arm passes even when the header
+    // is ignored entirely, because `GetBucketLocation` answers `{}` here and
+    // that folds to `us-east-1`, which equals `want` -- so it could not tell
+    // "header read and canonicalized" from "header not read at all".
+    expect(s3CallTypes()).toEqual([
+      'HeadBucket',
+      'CreateBucket',
+      'PutBucketEncryption',
+      'PutPublicAccessBlock',
+      'PutBucketPolicy',
+    ]);
+  });
+
+  it('canonicalizes the TARGET region too, so a raw --region does not self-refuse', async () => {
+    // `bootstrap.ts` passes `rawRegion ?? region` DELIBERATELY -- the raw
+    // spelling is scoped to that one argument while every client is built from
+    // the canonical one. So dropping `canonicalizeRegion` on the `want` side
+    // turns the NORMAL same-region 409 race (see the provider comment: a 409 is
+    // how it arrives in every region but us-east-1) into a hard refusal reading
+    // "resolves to a bucket in us-east-1, while this operation targets
+    // US-EAST-1". The sibling arm above only feeds the raw spelling on the
+    // header (`actual`) side, so it cannot catch this.
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsErrorInRegion('BucketAlreadyOwnedByYou', 409, 'us-east-1'));
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({
+      region: 'US-EAST-1',
+      assetBucketName: 'shared-assets',
+    });
+    await ensureAssetStorage(options);
+    expect(putRawObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT treat an arbitrary status carrying the header as a redirect', async () => {
+    // Negative arm for the 301-or-400 gate: widening it to `status !== undefined`
+    // must not pass. A 500 with a stray region header is a server error, not a
+    // cross-region answer, and must keep its own handling.
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket'
+        ? Promise.reject(awsErrorInRegion('InternalError', 500, FOREIGN))
+        : Promise.resolve({})
+    );
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+    await expect(ensureAssetStorage(options)).rejects.not.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('a HEADER-LESS 301 still reaches the guard via the GetBucketLocation fallback', async () => {
+    // Requiring the header on the 301 arm regressed this case: it stopped
+    // reaching the guard and fell back to the "please report it" wording.
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('Unknown', 301));
+      if (cmd._type === 'GetBucketLocation')
+        return Promise.resolve({ LocationConstraint: FOREIGN });
+      return Promise.resolve({});
+    });
+    const { putRawObject, options } = makeOptions({ assetBucketName: 'shared-assets' });
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    expect(s3CallTypes()).toEqual(['HeadBucket', 'GetBucketLocation']);
+    expect(putRawObject).not.toHaveBeenCalled();
+  });
+
+  it('owner-pins the GetBucketLocation fallback probe', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsError('BucketAlreadyOwnedByYou', 409));
+      if (cmd._type === 'GetBucketLocation')
+        return Promise.resolve({ LocationConstraint: FOREIGN });
+      return Promise.resolve({});
+    });
+    const { options } = makeOptions({ assetBucketName: 'shared-assets' });
+    await expect(ensureAssetStorage(options)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    const probe = mockS3Send.mock.calls.map((c) => c[0]).find((c) => c._type === 'GetBucketLocation');
+    expect(probe.ExpectedBucketOwner).toBe(ACCOUNT);
+  });
+
+  it('recovers the region when the GetBucketLocation FALLBACK itself redirects', async () => {
+    // The probe runs on a deploy-region client, so for this very bucket it can
+    // answer a redirect of its own -- which carries the region we wanted.
+    mockS3Send.mockImplementation((cmd: { _type: string }) => {
+      if (cmd._type === 'HeadBucket') return Promise.reject(awsError('NotFound', 404));
+      if (cmd._type === 'CreateBucket')
+        return Promise.reject(awsError('BucketAlreadyOwnedByYou', 409));
+      if (cmd._type === 'GetBucketLocation')
+        return Promise.reject(awsErrorInRegion('PermanentRedirect', 301, FOREIGN));
+      return Promise.resolve({});
+    });
+    const { options } = makeOptions({ assetBucketName: 'shared-assets' });
+    await expect(ensureAssetStorage(options)).rejects.toThrow(
+      new RegExp(`resolves to a bucket in ${FOREIGN}`)
+    );
+  });
+
+  it('verifyAssetStorageExists still THROWS on a redirect naming THIS region', async () => {
+    // The guard returns without throwing when the regions match, so the code
+    // AFTER it is what stops a redirect being read as "verification passed".
+    // Without this arm, replacing that `throw` with a bare `return` lets a
+    // deploy proceed against a bucket the client cannot even reach.
+    mockS3Send.mockImplementation(() =>
+      Promise.reject(awsErrorInRegion('Unknown', 301, REGION))
+    );
+    await expect(verifyAssetStorageExists(validMarker(), ACCOUNT, REGION)).rejects.toThrow(
+      /different region than the client/
+    );
+  });
+
+  it('verifyAssetStorageExists refuses a marker bucket that now lives elsewhere', async () => {
+    // `mockImplementation`, not `mockRejectedValueOnce`: the arm asserts twice
+    // and a `*Once` primer would be drained by the first call, leaving the
+    // second to resolve.
+    mockS3Send.mockImplementation(() => Promise.reject(awsErrorInRegion('Unknown', 301, FOREIGN)));
+    // Pre-fix this path did not even reach `normalizeAwsError` — it rethrew the
+    // SDK's bare synthetic `UnknownError` with no context at all.
+    await expect(verifyAssetStorageExists(validMarker(), ACCOUNT, REGION)).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    // Name the BUCKET and both regions, not just the code: asserting the code
+    // alone lets the fallback probe read `marker.containerRepo` instead of
+    // `marker.assetBucket` and still pass.
+    await expect(
+      verifyAssetStorageExists(validMarker(), ACCOUNT, REGION)
+    ).rejects.toThrow(
+      new RegExp(`'${validMarker().assetBucket}'.*resolves to a bucket in ${FOREIGN}.*targets ${REGION}`, 's')
+    );
+    expect(mockEcrSend).not.toHaveBeenCalled();
   });
 });
 

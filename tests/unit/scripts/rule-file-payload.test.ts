@@ -186,6 +186,7 @@ const ALWAYS_ON_REACH_RATIO = 0.95;
 const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['analyzer.md', 12],
   ['architecture.md', 261],
+  ['asset-bucket-region.md', 4], // literal list: EXACT, see below
   ['assets.md', 51],
   ['cli-internals.md', 48],
   ['code-layout.md', 261],
@@ -281,6 +282,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/provisioning/masked-retry-logger.ts', 129_000, 162_000], // measured 147,384
   ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
   ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  37,183
+  ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
   ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
   ['vite.config.ts', 14_000, 21_000],                            // measured  16,712
 ];
@@ -394,8 +396,11 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 30; // +gate-sibling-repos.md: hooks.md crossed the per-file cap, so its
-                                //  cross-repo gate-aliasing section moved out verbatim (go-to-k/cdkd#2236)
+const CORPUS_FILE_COUNT = 31; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+                              //  its cross-repo gate-aliasing section moved out verbatim,
+                              //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
+                              //  split out of assets.md). Both landed as 30 independently; the merged
+                              //  count is 31.
 const CORPUS_BYTES_MIN = 795_000;   // measured 808,384 B -- 13,384 B of slack
 const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
 
