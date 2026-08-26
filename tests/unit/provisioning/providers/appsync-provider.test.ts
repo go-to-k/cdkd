@@ -13,6 +13,40 @@ vi.mock('@aws-sdk/client-appsync', async (importOriginal) => {
   };
 });
 
+// Mock STS (issue #2081). `AppSyncProvider`'s update path builds the resource
+// ARN through `buildAppSyncArn`, which resolves the caller's account identity
+// via `getAwsAccountInfo` -> `getAwsClients().sts` — an `STSClient` built inside
+// `src/utils/aws-clients.ts`, which the AppSync package mock above cannot reach.
+// Without this the file issued a REAL `sts:GetCallerIdentity` against whatever
+// account the runner is authenticated to.
+//
+// The call is mocked to SUCCEED with a realistic `GetCallerIdentity` response,
+// because success is what a real deploy does: `resolveAccountIdentity` returns a
+// genuine account id and `buildAppSyncArn` builds a genuine ARN.
+//
+// Stated plainly, since a comment here previously claimed otherwise: NO assertion
+// in this file distinguishes the two polarities. Measured — the file is green with
+// this mock resolving and green with it rejecting. The failure arm would flag the
+// fallback id `fabricated: true` (`src/provisioning/providers/appsync-provider.ts`
+// refuses ARN building on that flag), but nothing here reaches an assertion that
+// can tell the difference. The choice is therefore about fidelity to a real
+// deploy, not about discrimination — do not read it as a covered branch.
+const stsMockSend = vi.hoisted(() =>
+  vi.fn(async () => ({
+    Account: '123456789012',
+    Arn: 'arn:aws:iam::123456789012:user/test',
+    UserId: 'AIDATESTUSERID',
+  }))
+);
+
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({ send: stsMockSend, destroy: vi.fn() })),
+  };
+});
+
 vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),

@@ -46,6 +46,38 @@ vi.mock('@aws-sdk/client-route-53', async () => {
   };
 });
 
+// Mock STS (issue #2081). The NEGATIVE CONTROL at the bottom feeds an EMPTY
+// attribute set to the real resolver, which falls through to the
+// physical-id fallback — and that path resolves the caller's account identity
+// through `getAwsClients().sts`, an `STSClient` built inside
+// `src/utils/aws-clients.ts`. Mocking the Route53 package above does not reach
+// it, so the test issued a REAL `sts:GetCallerIdentity` against whatever
+// account the runner is authenticated to.
+//
+// The call is mocked to SUCCEED with a realistic `GetCallerIdentity` response,
+// because success is what a real deploy does — the healthy answer keeps the
+// fallback path measuring its own mechanism rather than a degraded one.
+//
+// Stated plainly, since a comment here previously claimed otherwise: NO assertion
+// in this file distinguishes the two polarities. Measured — the file is green with
+// this mock resolving and green with it rejecting. What it asserts is the
+// `Fn::Join` refusal over a non-list attribute, which never consults the account
+// id, so the `fabricated: true` degraded branch is simply not observed here. The
+// choice is about fidelity, not coverage.
+const stsMockSend = vi.fn(async () => ({
+  Account: '123456789012',
+  Arn: 'arn:aws:iam::123456789012:user/test',
+  UserId: 'AIDATESTUSERID',
+}));
+
+vi.mock('@aws-sdk/client-sts', async () => {
+  const actual = await vi.importActual('@aws-sdk/client-sts');
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({ send: stsMockSend, destroy: vi.fn() })),
+  };
+});
+
 const childLogger = {
   debug: vi.fn(),
   info: vi.fn(),
