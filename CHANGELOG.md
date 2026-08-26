@@ -1,3 +1,10 @@
+## [0.284.69](https://github.com/go-to-k/cdkd/compare/v0.284.68...v0.284.69) (2026-08-26)
+
+
+### Bug Fixes
+
+* **secret-redaction:** redact three readback shapes POSITION could not certify, when the positions themselves corroborate the pairing ([#2295](https://github.com/go-to-k/cdkd/issues/2295)) ([ca021bf](https://github.com/go-to-k/cdkd/commit/ca021bfa77ca6c88984dcc94e4a3ca0c69332147))
+
 ## [0.284.68](https://github.com/go-to-k/cdkd/compare/v0.284.67...v0.284.68) (2026-08-26)
 
 
