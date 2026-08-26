@@ -1219,6 +1219,23 @@ restore never ran, and the file stayed mutated from the previous probe. Do not
 reason about which hooks can fire — assume any call can be refused, and keep
 writes in their own call.
 
+**This paragraph is now enforced by `.claude/hooks/gated-command-preamble-gate.sh`,
+because saying it twice did not work.** The rule above, with its three worked
+examples, was in this file and had been read when a run on 2026-08-25 violated it
+TWICE inside one lane — `mise exec -- markgate set docs && … && git commit -F …`
+(both `set`s discarded, so the retry hit the same refusal and read as "the marker
+will not stick"), then `cat > /tmp/commit-msg.txt <<'MSG' … MSG && git commit -F
+/tmp/commit-msg.txt` (file never written; the retry failed with `could not read
+log file`). Section 10-b's own rule applies: when a rule is ALREADY in the text
+and gets violated anyway, that proves the sentence is not load-bearing, so
+escalate rather than restate.
+
+The gate blocks only preambles whose loss is SILENT — `markgate set`, a write
+redirect, `cp` / `mv`. It deliberately still allows `cd <dir> &&` (required
+above), reads, and `git add` (losing that one fails the commit LOUDLY with
+"nothing to commit", so nothing is believed). A write AFTER the gated command is
+also fine: it is that command's own output.
+
 Three consequences, each seen live.
 `markgate set check && markgate set docs && git commit …` is refused in full,
 including the two `set`s that would have satisfied the gate; and a call whose
@@ -1821,6 +1838,38 @@ PR that had edited `deploy-engine.ts` — which that lane also edited — and th
 marker correctly went stale, buying a second real-AWS run at merge time. Push
 first so CI starts, then re-run the integ alongside it; the two are independent
 and serializing them wastes the CI wall-clock.
+
+**Verify the CLAIMS your fix ships with, to the same bar as the fix.** A diff
+carries two things a reviewer can be wrong about: the code, and the prose
+asserting what the code does — commit messages, changelog entries, PR bodies,
+rationale comments. Only the first has tests, a type checker and an integ behind
+it. Measured on one lane, issues go-to-k/cdkd#1882 / go-to-k/cdkd#1887 on
+2026-08-25: four review rounds and five reviewer dispatches (three code, three
+test, one security) found **zero defects in the code and five false statements
+in the prose** — a reachability story that was wrong, a mechanism ("dies at the
+first AWS call") contradicted by the same PR's own JSDoc, a scope claim ("the
+last unfolded read") that ~25 sites falsified, a coverage claim asserting two
+issues were "closed with evidence" while both sat open with zero comments, and a
+fifth surviving copy of a claim two earlier sweeps had already corrected. Every
+one was caught by a reviewer reading the SOURCE rather than the sentence.
+
+Three habits follow, each of which caught something on that lane:
+
+- **Grep the SHAPE, never the phrase.** Two consecutive sweeps for a stale claim
+  searched the exact wording the known copies used; each missed a differently
+  worded one. Section 5 says this about CODE — it is just as true of prose, and
+  the fix is the same: count the population BEFORE editing and assert the count
+  after.
+- **A claim inherited from the ISSUE BODY is the least trustworthy of all**, and
+  it arrives feeling authoritative. That lane repeated issue go-to-k/cdkd#1887's
+  "the empty list propagates silently" into a commit message, a changelog entry
+  and a source comment; go-to-k/cdkd#1957 had already made it false. Re-verify
+  an issue's mechanism against current `main` before restating it — section 3
+  already says an older issue is likelier to be wrong, and this is where that
+  bites hardest, because a fix's rationale outlives the issue.
+- **A correction can be a new false claim.** Twice on that lane the replacement
+  for a wrong sentence was wrong in the other direction. Re-read a correction
+  against the code the same way you read the original.
 
 **A reviewer's suggested FIX can be wrong even when its finding is right —
 re-derive the fix from the source rather than pasting the patch.** The premise

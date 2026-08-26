@@ -195,8 +195,10 @@ stop-warn|check|stop
 # consults this so a deliberate non-verifier does not have to be a table entry.
 # `main-tree-git-cwd-detector` carries `markgate[[:space:]]+(set|verify)` inside
 # a REGEX -- detecting markgate commands is its job -- so it must never be
-# expected to verify one itself.
-NON_VERIFIERS="main-tree-git-cwd-detector"
+# expected to verify one itself. `gated-command-preamble-gate` is the same
+# class: it matches `markgate[[:space:]]+set` to recognise a preamble whose loss
+# would be SILENT, and verifies no gate of its own.
+NON_VERIFIERS="main-tree-git-cwd-detector gated-command-preamble-gate"
 
 payload_for() {
   local key="$1" cmd
@@ -391,8 +393,10 @@ for base in $CANDIDATES; do
   # refinement: `.markgate.yml` is the repo opt-in check that almost every gate
   # does, `.markgate-*` are the broad-integ / pr-review sentinels, and a comment
   # is prose. Without the strip the net catches 20 hooks and then 17; with it,
-  # exactly 9 -- the 8 in the table plus the one declared non-verifier, which is
-  # the net having no holes AND no slack.
+  # exactly 10 -- the 8 in the table plus the two declared non-verifiers, which
+  # is the net having no holes AND no slack. (This count is PROSE and goes stale
+  # silently; the assertions below are floors, so update it when NON_VERIFIERS
+  # or the table changes.)
   sed -e 's/#.*//' -e 's/\.markgate\.yml//g' -e 's/\.markgate-[A-Za-z0-9-]*//g' \
       "$HOOKS_DIR/$base.sh" | grep -q 'markgate' || continue
   case " $table_hooks " in *" $base "*) continue ;; esac
