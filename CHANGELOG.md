@@ -1,3 +1,10 @@
+## [0.284.66](https://github.com/go-to-k/cdkd/compare/v0.284.65...v0.284.66) (2026-08-26)
+
+
+### Bug Fixes
+
+* **cli:** keep drift --json stdout to the payload so --accept/--revert output parses ([#2289](https://github.com/go-to-k/cdkd/issues/2289)) ([c4805b2](https://github.com/go-to-k/cdkd/commit/c4805b248b50ba0de98f5f20686e5e2ca3281d82))
+
 ## [0.284.65](https://github.com/go-to-k/cdkd/compare/v0.284.64...v0.284.65) (2026-08-26)
 
 
