@@ -1,3 +1,10 @@
+## [0.284.56](https://github.com/go-to-k/cdkd/compare/v0.284.55...v0.284.56) (2026-08-26)
+
+
+### Bug Fixes
+
+* **dynamodb:** slide the protection-flip reuse window, and stop asserting a gone table is LIVE ([#2248](https://github.com/go-to-k/cdkd/issues/2248)) ([e56adac](https://github.com/go-to-k/cdkd/commit/e56adac19c7e0dfa69c6f1fa7cb5603cd43cffec))
+
 ## [0.284.55](https://github.com/go-to-k/cdkd/compare/v0.284.54...v0.284.55) (2026-08-26)
 
 
