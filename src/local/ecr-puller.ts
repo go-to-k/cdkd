@@ -203,6 +203,9 @@ const STS_CREDENTIAL_SAFETY_MARGIN_MS = 5 * 60 * 1000;
  * and the per-`(roleArn, region)` keying already isolates concurrent runs).
  *
  * @internal
+ *
+ * @test-only-export exists so unit tests can drop the module-level STS caches between
+ * cases; no shipped code path calls it, and the rest of this module is live.
  */
 export function __resetStsCachesForTesting(): void {
   ASSUMED_ROLE_CACHE.clear();
@@ -466,10 +469,11 @@ async function verifyImageInLocalCache(imageUri: string): Promise<void> {
 
 /**
  * Check whether a docker image is in the local registry. Pure boolean —
- * the caller decides what message to surface on miss. Reused by the
- * `docker-image-builder` `--no-build` path so both the ECR-pull verifier
- * (above) and the local-build verifier route through one `docker image
- * inspect` shape.
+ * the caller decides what message to surface on miss.
+ *
+ * @no-live-caller nothing in `src/` calls this. The rest of this module is live; this one
+ * helper is not, and the `docker-image-builder` reuse its doc used to claim never existed --
+ * that file is a re-export shim over cdk-local (issue #2228).
  */
 export async function isImageInLocalCache(imageRef: string): Promise<boolean> {
   try {

@@ -398,6 +398,21 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/check-provider-secret-mask.ts',
         cache: false,
       },
+      // Issue #2228 — every exported value symbol with a cdkd-authored body under
+      // `src/local/**` must be transitively reachable from a shipped entry point,
+      // or carry `@no-live-caller` / `@test-only-export` saying it is not. Half of
+      // that directory is a re-export surface over cdk-local and the boundary has
+      // moved repeatedly; what a move leaves behind still compiles and still has
+      // passing tests, so a fix landing in the orphan ships as a NO-OP with every
+      // gate green (issue #2203 did exactly that). The rule is symbol-level, not
+      // module-level, because `vtl-engine.ts` HAS a live importer and still runs
+      // nothing. `cache: false` for the same reason the critics above carry it: a
+      // green replayed from cache is a checker reporting "all reachable" without
+      // having looked.
+      'audit:local-reachability:check': {
+        command: 'node --experimental-strip-types scripts/check-local-reachability.ts',
+        cache: false,
+      },
       // Escape hatch for issue #1842's evidence-loss verdict: the plain writer
       // above REFUSES to overwrite the matrix with weaker per-property evidence
       // than the committed one records. Use this only when the reduction is

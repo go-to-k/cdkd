@@ -132,6 +132,10 @@ export interface Orchestrator {
 /**
  * Construct an Orchestrator. The orchestrator is stateless — every
  * call to `reload()` reads `getServerState()` for the baseline.
+ *
+ * @no-live-caller superseded by `reloadAllServers` in `local-start-api.ts`, which drives the
+ * `--watch` reload across the N-server topology. The only thing still imported from this
+ * module is the `NextStateMaterial` type (issue #2228).
  */
 export function createReloadOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const logger = getLogger().child('start-api-reload');

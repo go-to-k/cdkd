@@ -92,6 +92,10 @@ export type SupportedSubtype =
 
 /**
  * Full list of subtypes cdkd recognizes as supported. Mirrors AWS docs.
+ *
+ * @no-live-caller cdk-local owns the live copy. Nothing in `src/` imports this module at
+ * all, so it is not even loaded: `cdkd local start-api` dispatches HTTP API v2 service
+ * integrations through cdk-local's own `dispatchServiceIntegration` (issue #2228).
  */
 export const SUPPORTED_SUBTYPES: readonly SupportedSubtype[] = [
   'EventBridge-PutEvents',
@@ -112,6 +116,10 @@ export const SUPPORTED_SUBTYPES: readonly SupportedSubtype[] = [
  * Used by route discovery to classify routes — recognized subtypes go
  * through dispatch, anything else (typo, future-AWS-subtype-not-yet-supported)
  * falls back to deferred-501.
+ *
+ * @no-live-caller cdk-local owns the live copy. Nothing in `src/` imports this module at
+ * all, so it is not even loaded: `cdkd local start-api` dispatches HTTP API v2 service
+ * integrations through cdk-local's own `dispatchServiceIntegration` (issue #2228).
  */
 export function isSupportedSubtype(value: unknown): value is SupportedSubtype {
   return typeof value === 'string' && (SUPPORTED_SUBTYPES as readonly string[]).includes(value);
@@ -172,6 +180,11 @@ async function getClient(service: string, region: string): Promise<unknown> {
  * Internal test hook — drop all cached SDK clients so unit tests can
  * reset module-scoped state between cases. NOT exported via the public
  * `index.ts`; used only by `tests/unit/local/httpv2-service-integration.test.ts`.
+ *
+ * @no-live-caller nothing in `src/` imports this module at all, so the cache this hook
+ * clears is one no shipped path ever fills. It is annotated with the same tag as the rest
+ * of the file rather than `@test-only-export` because the module, not just the hook, is
+ * unreachable (issue #2228).
  */
 export function _resetClientCacheForTest(): void {
   clientCache.clear();
@@ -190,6 +203,10 @@ export function _resetClientCacheForTest(): void {
  * Returns a `ServiceIntegrationResult` for the HTTP server to write
  * to the client. SDK-level errors are caught and translated to
  * HTTP 4xx / 5xx — never thrown.
+ *
+ * @no-live-caller cdk-local owns the live copy. Nothing in `src/` imports this module at
+ * all, so it is not even loaded: `cdkd local start-api` dispatches HTTP API v2 service
+ * integrations through cdk-local's own `dispatchServiceIntegration` (issue #2228).
  */
 export async function dispatchServiceIntegration(
   subtype: SupportedSubtype,
@@ -556,6 +573,10 @@ function translateSdkError(subtype: SupportedSubtype, err: unknown): ServiceInte
  * Status-code lookup is by the SDK-returned `statusCode`. When the
  * exact code has no entry, the wildcard `'default'` entry is applied
  * if present (matches AWS deployed behavior).
+ *
+ * @no-live-caller cdk-local owns the live copy. Nothing in `src/` imports this module at
+ * all, so it is not even loaded: `cdkd local start-api` dispatches HTTP API v2 service
+ * integrations through cdk-local's own `dispatchServiceIntegration` (issue #2228).
  */
 export function applyResponseParameters(
   base: ServiceIntegrationResult,

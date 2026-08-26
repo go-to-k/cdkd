@@ -270,6 +270,20 @@ jobs:
       # here rather than reporting a byte-identical green.
       - run: vp run audit:provider-error-cause:check
 
+      # Issue #2228 — cdkd's `src/local/**` is half its own code and half a
+      # re-export surface over cdk-local, and the boundary between them has moved
+      # several times. A module that moves out does not stop compiling and does
+      # not stop being tested; it stops being CALLED, leaving a decoy at the path
+      # a grep lands on. #2203's fix landed in two such orphans, passed every gate
+      # and shipped as a no-op — a live probe returned the whole value it was
+      # meant to truncate. This critic requires every exported value symbol with a
+      # cdkd-authored body there to be reachable from a shipped entry point or to
+      # say at its declaration that it is not, and it fails on a STALE annotation
+      # too, so the annotations cannot rot. Re-export shims are exempt by
+      # construction (no body to edit), not by an allowlist. It self-probes its
+      # own classifier in both directions before reading the tree.
+      - run: vp run audit:local-reachability:check
+
       # Issue #2053 — every `withRetry` under `src/provisioning/**` must thread
       # `isInterrupted` / `onInterrupted`. It is the only wait in the codebase
       # that polls an interrupt DURING a backoff, so an un-threaded call leaves
