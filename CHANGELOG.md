@@ -1,3 +1,10 @@
+## [0.284.58](https://github.com/go-to-k/cdkd/compare/v0.284.57...v0.284.58) (2026-08-26)
+
+
+### Bug Fixes
+
+* **s3:** refuse to adopt an already-owned bucket that lives in another region ([#2251](https://github.com/go-to-k/cdkd/issues/2251)) ([a39840f](https://github.com/go-to-k/cdkd/commit/a39840fd3984f1e56f026322bd1761af77b381f3))
+
 ## [0.284.57](https://github.com/go-to-k/cdkd/compare/v0.284.56...v0.284.57) (2026-08-26)
 
 
