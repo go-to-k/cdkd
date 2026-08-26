@@ -67,10 +67,21 @@ const LITERAL = /['"`]custom-resource-responses\/?['"`]/g;
 /**
  * Every tracked `.ts` file under `src/`, TOP-LEVEL ones included.
  *
- * Two pathspecs, not one: git wildmatch needs a literal `/` for the `**\/`
- * segment, so a lone `src/**\/*.ts` skips `src/index.ts` and `src/version.ts`.
- * See the header — that omission is what let a copy in the library entrypoint
- * pass the fence.
+ * The bug this replaced was a lone `src/**\/*.ts`, which returns 326 of 328:
+ * git wildmatch needs a literal `/` for the `**\/` segment, so it skips
+ * `src/index.ts` and `src/version.ts`. See the header — that omission is what
+ * let a copy in the library ENTRYPOINT pass the fence.
+ *
+ * Do NOT read that as "`src/*.ts` is the top-level half of a pair". Under git
+ * PATHSPEC (unlike a shell glob) `*` crosses `/`, so `src/*.ts` ALONE already
+ * returns all 328 — measured 2026-08-26: `src/*.ts` 328, `src/**\/*.ts` 326,
+ * the pair 328 with no duplicates. The `**` form is kept only so the intent
+ * reads as "top-level plus nested" to someone scanning it.
+ *
+ * The distinction is load-bearing in one direction: believing `src/*.ts` is
+ * top-level-only is exactly the inference that would justify "simplifying"
+ * this back to the `**` spelling that already shipped the hole. The floors
+ * below fail loudly if that happens, but the reasoning should not need them.
  */
 function sourceFiles(): string[] {
   return execFileSync('git', ['ls-files', 'src/*.ts', 'src/**/*.ts'], {
