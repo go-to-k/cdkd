@@ -102,6 +102,12 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/gated-command-preamble-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking for a side-effecting preamble on a gated command..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/gh-pr-edit-deprecation-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking gh pr edit usage..."
