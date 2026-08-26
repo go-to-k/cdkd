@@ -219,9 +219,9 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   `Session-fit` and read its `Effort:` value as an **`Estimate`**, because in
   that shape the field held a DURATION — reading it as the new `Effort` (a
   verification-cycle kind) turns `~1-3 h` into nonsense. A missing `Severity` is
-  UNKNOWN, never `low`; ranking rule 4 already declines to separate a pair
+  UNKNOWN, never `low`; ranking rule 3 already declines to separate a pair
   unless both sides carry the line, so an unclassified body simply falls through
-  to rule 5 rather than sorting last. Do NOT bulk-migrate the 44 — `Severity`
+  to rule 4 rather than sorting last. Do NOT bulk-migrate the 44 — `Severity`
   can only be written by someone holding the evidence, and a sweep would
   manufacture 44 guesses. Upgrade a body to the four-line shape when you CLAIM
   it (§4 carries the step), which is the moment that evidence exists. Four
@@ -375,8 +375,8 @@ a tie:
 |---|---|---|
 | 1 | **Security issues come FIRST**, ahead of every other rule below | A security defect is the one class where the cost keeps growing while it sits: the vulnerable behavior is already shipped, already running in users' accounts, and the report may be public. Every other rule orders work by how much value a fix adds; this one orders it by how much a delay costs |
 | 2 | **Umbrella issues sort LAST**, whatever else they score (except rule 1) | They cannot be finished in one lane, so a lane leaves the issue open with ambiguous residue, and their many sites collide with everything |
-| 3 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong |
-| 4 | **Higher `Severity` first**, when BOTH candidates carry the line | It is the same axis rules 1 and 3 approximate — how much the defect costs while it sits — but measured by the session that had the evidence in hand, rather than inferred from a title prefix. It ranks below rule 3 rather than replacing it because most issues do not carry the line yet: a `fix:` with no `Severity` must not lose to a `chore:` that happens to claim `high`. When only one side carries it, this rule does not separate them — fall through to rule 5. **Both values are also LABELS** (`severity:high|medium|low`, `effort:small|medium|large`), so this rule is one `gh issue list --state open --label severity:high` rather than one `gh issue view` per candidate. The label is a mirror of the body line, never a second source: an issue carrying the line but not the label predates the labels, so a label-only query UNDER-counts and the body scan below is still the authority |
+| 3 | **Higher `Severity` first** (`high` > `medium` > `low`), when BOTH candidates carry it | It is the same axis rule 1 approximates — how much the defect costs while it sits — but MEASURED by the session that held the evidence, where a title prefix is only a proxy for it. **A proxy does not outrank the measurement it stands in for**, which is why this sits ABOVE the prefix rule rather than below it. The "BOTH carry it" precondition is what makes that safe, and it is doing all the work the old ordering did: most issues still carry no `Severity`, and for those this rule never fires, so a `fix:` with no `Severity` cannot lose to a `chore:` that happens to claim `high` — it falls straight through to rule 4. **Both values are also LABELS** (`severity:high\|medium\|low`, `effort:small\|medium\|large`), so this is answerable from the LISTING (`gh issue list --state open --label severity:high`) rather than one `gh issue view` per candidate; that is what made promoting it practical. The label is a mirror of the body line, never a second source: an issue carrying the line but not the label predates the labels, so a label-only query UNDER-counts and the body stays the authority |
+| 4 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect in shipped behavior a user can hit today; the rest are improvements to behavior that is not wrong. This is the fallback for the majority of the backlog, which carries no `Severity` at all — where rule 3 does fire, it is the same question answered with evidence instead of a prefix |
 | 5 | **Area: `deploy` > `diff` = `destroy` > everything else** | Deploy is the tool's primary function — it is what cdkd exists to do, so a deploy defect costs more than an equally-sized defect elsewhere. `diff` and `destroy` rank equally behind it |
 | 6 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | Not just collision-avoidance for this run: a cross-cutting file admits only one lane at a time, so taking it blocks the widest set of future parallel work. Among equals, spend the contested files last |
 | 7 | **Newer first** (higher issue number / `created_at`) | Not novelty — **accuracy**. A freshly filed issue was written against current code, so its file:line tables and reproduction still hold. Older ones rot: on 2026-08-13 two of the enumerated sites in a one-day-old issue were already fixed or deleted. An older issue is likelier to be partly done, superseded, or wrong |
@@ -391,8 +391,17 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
         | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
         | @tsv'
 
-# the filer may already have classified it (§3) — this is a body read, so do it
-# on the shortlist rather than on the whole listing
+# rule 3's input is a LABEL as well as a body line, so it is answerable from the
+# same listing — no body read, no per-candidate `gh issue view`.
+gh issue list --state open --limit 200 --json number,title,labels \
+  --jq '.[] | [.number,
+               ([.labels[].name | select(startswith("severity:"))] | first // "severity:?"),
+               ([.labels[].name | select(startswith("effort:"))]   | first // "effort:?"),
+               .title] | @tsv'
+
+# `severity:?` means UNLABELLED, which is NOT `low`: rule 3 simply does not fire
+# for that issue. For the other two fields, which have no label, and to confirm a
+# surprising one against its body:
 gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort:|Estimate:'
 ```
 
@@ -443,7 +452,7 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
   candidate to take EARLY rather than a reason to skip.
 - **Severity / Effort / Estimate**: the body's own lines, when the filer wrote
   them (§3). `Severity` says what stays broken while the issue sits — it is
-  ranking rule 4 above, and it separates two candidates only when BOTH carry the
+  ranking rule 3 above, and it separates two candidates only when BOTH carry the
   line. `Effort` says which verification cycle the fix drags (a `large` one
   needs its own PR plus integ plus review, so it does not belong in a fan-out
   lane); `Estimate` says how many hours, which is what decides how many lanes
@@ -752,11 +761,13 @@ gh issue create -t 'fix(provider): ...' --body-file "$B" \
   --label severity:high --label effort:large
 ```
 
-Prose is invisible to `gh issue list`, so applying §3's ranking rule 4 at all
-costs one `gh issue view` per candidate. The label changes that price, not the
-rule's rank: it still sits below the title-prefix heuristic because most issues
-do not carry the line, and rule 4's own note says a label-only query under-counts
-for the same reason. Only these two get labels:
+Prose is invisible to `gh issue list`, so applying §3's ranking rule 3 at all
+used to cost one `gh issue view` per candidate. Making it a listing-time filter
+is what let that rule move ABOVE the title-prefix heuristic: a prefix is a proxy
+for how much a defect costs while it sits, and `Severity` is that same thing
+measured. It stays gated on BOTH candidates carrying the value, because a
+label-only query under-counts — most of the backlog predates the labels — so the
+body remains the authority. Only these two get labels:
 `Session-fit` is re-decided when the issue is claimed and a stale label would be
 worse than none, and `Estimate` is a free-form duration with no closed value set.
 The same applies at §4's CLAIM, which is where an old packed body is rewritten

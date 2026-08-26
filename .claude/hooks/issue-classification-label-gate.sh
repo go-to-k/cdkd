@@ -9,7 +9,7 @@
 # / `Estimate`) live in the issue BODY as prose lines. That is the right place
 # for the one-line reason each of them carries, and nothing here changes how
 # they are written or displayed. But prose is invisible to every query the
-# backlog is actually triaged with: `/work-issues` section 3's ranking rule 4
+# backlog is actually triaged with: `/work-issues` section 3's ranking rule 3
 # ("higher `Severity` first, when BOTH candidates carry the line") can only be
 # applied by opening each body, which is why it sits below a title-prefix
 # heuristic rather than above it. `gh issue list --label severity:high` answers
@@ -355,7 +355,7 @@ fi
   echo "  ${verb} ... ${flag} severity:<high|medium|low> ${flag} effort:<small|medium|large>"
   echo ""
   echo "Why: the four classification fields live in the body as prose, which no"
-  echo "\`gh issue list\` query can read. /work-issues section 3's ranking rule 4"
+  echo "\`gh issue list\` query can read. /work-issues section 3's ranking rule 3"
   echo "(\"higher Severity first\") therefore costs one \`gh issue view\` per"
   echo "candidate, while \`gh issue list --label severity:high\` is one call."
   echo "Only Severity and Effort are mirrored: Session-fit is re-decided at claim"
