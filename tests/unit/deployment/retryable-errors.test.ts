@@ -736,7 +736,14 @@ describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', (
       // pays a full index-settle poll, which is the arithmetic
       // `src/provisioning/dynamodb-index-busy-delete.ts` derives against the
       // 30-minute per-resource deadline.
-      'An error occurred (ResourceInUseException) when calling the UpdateTable operation: Table is being deleted',
+      //
+      // The exemplar is a `DeleteTable` call, matching that reason: the budget
+      // this row is about is the DELETE path's. (The identical sentence also
+      // arrives from `UpdateTable` — see
+      // `tests/unit/scripts/integ-delete-retry-race-driver.test.ts` — and the
+      // verdict is the same either way, since the classifier reads only the
+      // message.)
+      'An error occurred (ResourceInUseException) when calling the DeleteTable operation: Table is being deleted',
       false,
       false,
       'DynamoDB table being deleted — excluded for the delete-budget interaction',

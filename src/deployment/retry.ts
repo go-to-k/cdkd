@@ -119,9 +119,26 @@ export const IAM_PROPAGATION_MAX_RETRIES = 26;
  * the give-up summary in {@link withRetry}), so a too-short budget is
  * reportable rather than indistinguishable from having no retry at all.
  *
- * The retry COUNT is deliberately the generic 8 rather than a new ceiling: the
- * whole change is the delay grid, so nothing about the loop's exit condition
- * moves. Same reason the dense IAM grid needed its own count and this does not.
+ * The retry COUNT is deliberately the generic 8 rather than a new ceiling, so
+ * nothing about the loop's own exit condition moves. Same reason the dense IAM
+ * grid needed its own count and this does not.
+ *
+ * **But "only the delay grid changes" understates the effect at the NESTED
+ * sites, so state the compounding rather than implying there is none.** Three
+ * call sites wrap a DEFAULT-schedule `withRetry` inside their own outer loop
+ * (`deploy-engine.ts`'s two `--replace` / recreate sites and
+ * `rollback-executor.ts`'s reverse-replacement). The inner loop is the one
+ * this grid changes, and the outer one re-enters it per attempt, so the
+ * product grows with it: total sleep on a cooldown at those sites measures
+ * **487s -> 640s (8.1 -> 10.7 min)**. That is accepted, not overlooked -- it
+ * stays inside the 30-minute per-resource `withResourceDeadline`, and the
+ * alternative is an inner loop that cannot ride out the window it is nested
+ * for. A reader auditing those budgets needs the number, which is why it is
+ * here and not left to be re-derived.
+ *
+ * `dynamodb-index-busy-delete.ts` is unaffected and that was checked rather
+ * than assumed: it passes all four knobs, so `defaultSchedule` is false and
+ * this grid never applies to it -- its own deadline arithmetic stands.
  */
 export const NAME_COOLDOWN_INITIAL_DELAY_MS = 2_000;
 
@@ -359,9 +376,38 @@ export async function withRetry<T>(
           // reaches 25 while the sequence still exhausts all 26 attempts, and
           // the summary would report a genuine exhaustion as "something else
           // ended it" -- inverting the branch the reader uses to decide
-          // whether the budget needs widening. False positives were never
-          // possible; this false NEGATIVE was.
+          // whether the budget needs widening. For THIS latch a false positive
+          // was never possible, because `sawPropagation` never clears once set
+          // and `attempt >= attemptLimit` is the loop's own exit condition.
+          //
+          // That reasoning is specific to the latch's shape and does NOT carry
+          // to a per-class counter, which issue #2116 proved by breaking it:
+          // the name-cooldown suffix below first shipped keyed on
+          // `attempt >= attemptLimit` alone, and a sequence that spent ONE
+          // cooldown retry inside an otherwise-mixed 8-retry run duly reported
+          // "1 name-cooldown retry over 10.00s ... (the full name-cooldown
+          // budget)" -- the exact inversion this guard exists to prevent,
+          // arriving through the OTHER direction. A per-class claim needs a
+          // per-class conjunct; see `nameCooldownBudgetExhausted` below.
           const budgetExhausted = sawPropagation && attempt >= attemptLimit;
+          // The name-cooldown twin, and it needs BOTH conjuncts where the
+          // propagation one needs a latch:
+          //
+          //  - `nameCooldownRetries >= maxRetries` says the class actually
+          //    spent all of ITS retries, i.e. the whole 64s grid. Without it,
+          //    any cooldown retry at all inside a sequence that later exhausts
+          //    on some other class claims the full budget.
+          //  - `attempt >= attemptLimit` says the LOOP exhausted rather than
+          //    ending early on a non-retryable error, same as above.
+          //
+          // Deliberately conservative in one corner: 8 cooldown retries
+          // followed by a terminal error while an IAM-propagation latch has
+          // raised `attemptLimit` to 26 spends the entire 64s grid and still
+          // prints no suffix. A false NEGATIVE there costs a reader one
+          // inference; the false POSITIVE it avoids would send them widening a
+          // budget that was never exhausted.
+          const nameCooldownBudgetExhausted =
+            nameCooldownRetries >= maxRetries && attempt >= attemptLimit;
           // The seconds figure counts PROPAGATION backoff only, so a mixed
           // sequence's throttle waits are deliberately excluded -- the number
           // exists to be compared against the 47.75s propagation budget, and
@@ -407,7 +453,7 @@ export async function withRetry<T>(
               `${nameCooldownRetries} name-cooldown ` +
                 `${nameCooldownRetries === 1 ? 'retry' : 'retries'} over ` +
                 `${(nameCooldownSleptMs / 1000).toFixed(2)}s waiting for the name to be released` +
-                `${attempt >= attemptLimit ? ' (the full name-cooldown budget)' : ''}`
+                `${nameCooldownBudgetExhausted ? ' (the full name-cooldown budget)' : ''}`
             );
           }
           if (serverErrorRetries > 0) {

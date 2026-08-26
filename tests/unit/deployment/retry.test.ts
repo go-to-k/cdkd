@@ -533,34 +533,81 @@ describe('withRetry rides a NAME COOLDOWN on its own grid (issue #2116)', () => 
    * SQS's own sentence says "wait 60 seconds". A 47s budget against a 60s
    * window does not converge, it just fails 47s later.
    *
-   * These cases assert the GRID, not the attempt count. A count cannot see the
-   * difference: both schedules run the same 8 retries, so a test that only
-   * counted `op` calls would be green under either one and the whole budget
-   * change would be unfenced.
+   * These cases assert the per-attempt GRID, not just the total and not the
+   * attempt count. Each of the three is blind to something the others catch:
+   *
+   *  - a COUNT cannot see the schedule at all -- both grids run the same 8
+   *    retries, so `toHaveBeenCalledTimes(9)` is green under either;
+   *  - a TOTAL cannot see the shape. Measured: reversing the schedule to
+   *    10,10,10,10,10,8,4,2 -- same 64s, completely different cadence -- left
+   *    the earlier version of this block 33/33 green. The point of a per-class
+   *    grid is that the early probes are DENSE, so a resource whose name is
+   *    released after 3s is not made to wait 10s for the next attempt.
+   *
+   * So the grid is asserted element by element, and the total is kept as the
+   * budget claim it also has to satisfy.
    */
   const COOLDOWN = 'You must wait 60 seconds after deleting a queue before you can create another with the same name.';
   const GENERIC_TRANSIENT = 'Schema is currently being altered';
 
-  const drive = async (message: string): Promise<number[]> => {
-    const sleeps: number[] = [];
-    const op = vi.fn().mockRejectedValue(new Error(message));
+  /**
+   * Recover the PER-ATTEMPT delays from the loop's real behaviour.
+   *
+   * `withRetry` sleeps in <=1s slices so a SIGINT can land mid-wait, so the
+   * raw `sleep` calls are all 1000 and their boundaries are unrecoverable from
+   * the values alone. Interleaving a marker on every `operation` call gives the
+   * boundaries back: the slices between two calls ARE that attempt's delay.
+   *
+   * Deliberately observed through `sleep` + `operation` rather than by parsing
+   * the debug log line: the log is reporting, and a test that read the grid off
+   * it would still pass if the line said one thing and the loop slept another.
+   */
+  const drivePerAttempt = async (message: string): Promise<number[]> => {
+    const events: Array<number | 'call'> = [];
+    const op = vi.fn().mockImplementation(async () => {
+      events.push('call');
+      throw new Error(message);
+    });
     await withRetry(op, 'MyResource', {
       sleep: (ms) => {
-        sleeps.push(ms);
+        events.push(ms);
         return Promise.resolve();
       },
     }).catch(() => undefined);
-    // `withRetry` sleeps in <=1s slices so a SIGINT can land mid-wait, so the
-    // recorded values are slices; fold them back into per-attempt delays by
-    // summing between operation calls is unnecessary here -- the total is what
-    // the budget is expressed in, and the per-attempt grid is recovered below
-    // from the slice run-lengths.
-    return sleeps;
+    const perAttempt: number[] = [];
+    let acc = 0;
+    let seenCall = false;
+    for (const e of events) {
+      if (e === 'call') {
+        if (seenCall) perAttempt.push(acc);
+        acc = 0;
+        seenCall = true;
+      } else {
+        acc += e;
+      }
+    }
+    if (seenCall) perAttempt.push(acc);
+    // The final attempt is followed by no sleep, so it folds to 0.
+    return perAttempt.filter((d) => d > 0);
   };
 
+  it('climbs 2s/4s/8s then holds at 10s — the SHAPE, not just the sum', async () => {
+    // The assertion the reversed-schedule mutation fails. A dense early ramp is
+    // the whole reason this class has its own grid rather than a bigger number.
+    expect(await drivePerAttempt(COOLDOWN)).toEqual([
+      2_000, 4_000, 8_000, 10_000, 10_000, 10_000, 10_000, 10_000,
+    ]);
+  });
+
+  it('CONTROL: the generic class keeps its own SHAPE too', async () => {
+    expect(await drivePerAttempt(GENERIC_TRANSIENT)).toEqual([
+      1_000, 2_000, 4_000, 8_000, 8_000, 8_000, 8_000, 8_000,
+    ]);
+  });
+
   it('spends the full 64s budget, which COVERS the 60s window SQS names', async () => {
-    const sleeps = await drive(COOLDOWN);
-    const total = sleeps.reduce((a, b) => a + b, 0);
+    const perAttempt = await drivePerAttempt(COOLDOWN);
+    const total = perAttempt.reduce((a, b) => a + b, 0);
     expect(total).toBe(NAME_COOLDOWN_TOTAL_BUDGET_MS);
     // The point of the class, stated as an inequality rather than left implicit
     // in a constant: the budget must cover the longest window in the class.
@@ -575,12 +622,12 @@ describe('withRetry rides a NAME COOLDOWN on its own grid (issue #2116)', () => 
     );
   });
 
-  it('CONTROL: the generic transient class still gets the 47s grid', async () => {
+  it('CONTROL: the generic transient class still totals 47s', async () => {
     // Without this the case above proves only "something slept 64s". This is
     // what makes it a statement about the COOLDOWN class specifically: the same
     // loop, the same 8 retries, a different message, 47s.
-    const sleeps = await drive(GENERIC_TRANSIENT);
-    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(47_000);
+    const perAttempt = await drivePerAttempt(GENERIC_TRANSIENT);
+    expect(perAttempt.reduce((a, b) => a + b, 0)).toBe(47_000);
   });
 
   it('the two classes differ in the GRID, not in the attempt count', async () => {
@@ -629,5 +676,69 @@ describe('withRetry rides a NAME COOLDOWN on its own grid (issue #2116)', () => 
     expect(line).toContain('MyQueue: gave up after');
     expect(line).toContain('8 name-cooldown retries over 64.00s');
     expect(line).toContain('(the full name-cooldown budget)');
+  });
+
+  /**
+   * The give-up line's two remaining branches, and the reason they are worth a
+   * case each: BOTH were green under a mutation before this block existed --
+   * hardcoding `'retries'` left 33/33 passing, and the budget suffix keyed on
+   * the LOOP's exit condition rather than on this class's own exhaustion, so it
+   * claimed a full 64s budget after a single 2s retry.
+   *
+   * That second one is the inversion `budgetExhausted` guards against for the
+   * propagation class, arriving from the other direction: a per-class claim
+   * needs a per-class conjunct.
+   */
+  const giveUpLine = async (messages: string[]): Promise<string> => {
+    const warn = vi.fn();
+    let i = 0;
+    const op = vi.fn().mockImplementation(async () => {
+      const m = messages[Math.min(i++, messages.length - 1)] as string;
+      throw new Error(m);
+    });
+    await withRetry(op, 'MyQueue', {
+      sleep: () => Promise.resolve(),
+      logger: { debug: () => undefined, warn },
+    }).catch(() => undefined);
+    return (warn.mock.calls[0]?.[0] as string | undefined) ?? '';
+  };
+
+  it('says "1 name-cooldown retry" in the SINGULAR, and claims no budget', async () => {
+    // One cooldown retry, then a terminal error: the loop gives up at attempt 1,
+    // far short of its 8. Fences the singular/plural ternary AND the absence of
+    // the budget suffix on an early exit.
+    const line = await giveUpLine([COOLDOWN, 'InvalidParameterValue: nope']);
+    expect(line).toContain('1 name-cooldown retry over 2.00s');
+    expect(line).not.toContain('retries over');
+    expect(line).not.toContain('(the full name-cooldown budget)');
+  });
+
+  it('does not claim the full budget for ONE cooldown retry in a mixed sequence', async () => {
+    // The measured false positive: one cooldown retry, then generic transient
+    // failures that exhaust the loop's 8 attempts. `attempt >= attemptLimit` is
+    // TRUE here, so the pre-fix condition printed "(the full name-cooldown
+    // budget)" after 2.00s of cooldown backoff.
+    const line = await giveUpLine([COOLDOWN, GENERIC_TRANSIENT]);
+    expect(line).toContain('1 name-cooldown retry over 2.00s');
+    expect(line).not.toContain('(the full name-cooldown budget)');
+  });
+
+  it('does not claim the full budget when an IAM-propagation latch extends the loop', async () => {
+    // The second measured false positive. Three cooldown retries (2+4+8 = 14s),
+    // then propagation errors, which latch `attemptLimit` to 26 and run the loop
+    // out. Pre-fix: "3 name-cooldown retries over 14.00s ... (the full
+    // name-cooldown budget)" -- 14s of a 64s budget, reported as all of it.
+    const line = await giveUpLine([
+      COOLDOWN,
+      COOLDOWN,
+      COOLDOWN,
+      'The role defined for the function cannot be assumed by Lambda.',
+    ]);
+    expect(line).toContain('3 name-cooldown retries over 14.00s');
+    expect(line).not.toContain('(the full name-cooldown budget)');
+    // ...and the propagation half of the same line still reports normally, so
+    // the fix narrowed one claim rather than muting the summary.
+    expect(line).toContain('IAM-propagation');
+    expect(line).toContain('(the full propagation budget)');
   });
 });

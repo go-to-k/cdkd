@@ -540,11 +540,25 @@ fi
 # missed the window reports INCONCLUSIVE rather than claiming coverage it did
 # not have.
 #
+# Anchored on `Retrying ` -- `withRetry`'s own per-attempt line -- rather than
+# on the message anywhere in the output. A bare message grep would credit any
+# run that merely LOGGED the cooldown text and then succeeded by some other
+# route, which is a weaker claim than this comment makes.
+#
 # Deliberately NON-FATAL: the window is a real-AWS timing property (~23s
 # measured), and failing the fixture because AWS was fast that day would make
 # it flaky for a reason unrelated to the code under test. The fatal half above
 # already catches the regression.
-if printf '%s' "${REDEPLOY_TXT}" | grep -qiE 'State Machine is being deleted|StateMachineDeleting'; then
+#
+# Be honest about what that costs: INCONCLUSIVE is probably the COMMON outcome,
+# not the rare one. The bucket poll above can burn up to 200s against a ~23s
+# window, so most runs will have missed it before the deploy even starts. And
+# nothing here forces a re-run -- no exit code changes, no gate reads this --
+# so in practice an INCONCLUSIVE line will be scrolled past. Treat this arm as
+# opportunistic evidence that shows up sometimes, NOT as standing coverage; the
+# unit tests in tests/unit/deployment/{retryable-errors,retry}.test.ts are what
+# actually hold the classifier and the backoff grid in place on every run.
+if printf '%s' "${REDEPLOY_TXT}" | grep -qE 'Retrying .*(State Machine is being deleted|StateMachineDeleting)'; then
   echo "    OK: COVERED -- the redeploy hit the state-machine name cooldown and"
   echo "        retried through it (issue #2116), with no wait in the fixture"
 else

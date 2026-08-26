@@ -392,9 +392,13 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
  * identical AWS condition was survivable depended on which spelling the SDK
  * happened to surface.
  *
- * Bounded, not unbounded: the ordinary-create path rides `withRetry`'s generic
- * schedule (8 retries, 1s/2s/4s/8s capped at 8s ≈ 47s of sleep) and the
- * re-create sites their own ~64s budget. A name that is NOT in fact being
+ * Bounded, not unbounded: since #2116 the ordinary-create path rides
+ * `withRetry`'s NAME-COOLDOWN grid (8 retries, 2s/4s/8s then capped at 10s ≈
+ * 64s of sleep — `NAME_COOLDOWN_INITIAL_DELAY_MS` in `./retry.ts`), which is
+ * the same budget the re-create sites already carried. It is deliberately NOT
+ * the generic 47s schedule this path used to inherit: SQS's own sentence names
+ * a 60-second window, so 47s would not converge, it would merely fail 47s
+ * later. A name that is NOT in fact being
  * released — a genuine, permanent collision — is a different signature
  * ({@link isNameCollisionError}) and is deliberately NOT here, so it still
  * fails fast into the actionable `--replace` refusal instead of burning a

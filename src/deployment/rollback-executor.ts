@@ -841,7 +841,8 @@ export async function replayRollback(
  *    hang the flag exists to prevent. Those providers retry internally.
  *  - **Interrupt.** `replayRollback` polls interrupts only BETWEEN ops, so an
  *    un-threaded `isInterrupted` leaves Ctrl-C dead for the length of the
- *    backoff schedule (~47s) per op.
+ *    backoff schedule per op — ~47s on the generic grid, or ~64s if the op
+ *    hits a name cooldown, which rides its own longer grid since issue #2116.
  *
  * Returns the provider's result so the caller can honour
  * `effectiveProperties` (issue #1644) — both revert arms used to write the
@@ -1283,8 +1284,13 @@ async function updateWithRollbackRetry(
  * on attempt 0 and it reaches the caller's catch on the FIRST outer attempt,
  * exactly as before. The SQS cooldown IS matched by the inner classifier (the
  * generic table carries `wait 60 seconds`), which is the same division of
- * labour the deploy engine's named-replacement site documents: the inner retry
- * absorbs most of the 60s window and the outer ~64s budget covers the tail.
+ * labour the deploy engine's named-replacement site documents. Since issue
+ * #2116 the inner retry rides the name-cooldown grid (≈64s) rather than the
+ * generic ~47s one, so it covers the whole 60s window on its own instead of
+ * absorbing most of it and leaving a tail for the outer loop; the outer loop
+ * now earns its place by ALSO covering the late name release that the inner
+ * default classifier rejects. The two compound — measured at 640s of total
+ * sleep on a cooldown, inside the 30-minute per-resource deadline.
  */
 async function createWithRollbackRetry(
   provider: ResourceProvider,
