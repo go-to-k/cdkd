@@ -1,3 +1,10 @@
+## [0.284.63](https://github.com/go-to-k/cdkd/compare/v0.284.62...v0.284.63) (2026-08-26)
+
+
+### Bug Fixes
+
+* **deployment:** redact a nested stack's secret flow in both directions, scoped per resource, on the rollback path too ([#2266](https://github.com/go-to-k/cdkd/issues/2266)) ([d777295](https://github.com/go-to-k/cdkd/commit/d7772957bdf4a8241bf8795ebf132f901bdccff4))
+
 ## [0.284.62](https://github.com/go-to-k/cdkd/compare/v0.284.61...v0.284.62) (2026-08-26)
 
 
