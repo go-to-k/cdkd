@@ -84,6 +84,7 @@ import {
   type ConfigStringOptions,
 } from '../config-shape.js';
 import { generateResourceName } from '../resource-name.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1507,12 +1508,31 @@ interface PerItemApplyOutcome {
  * exported from there because `resolveS3BucketDestination` is S3-specific
  * branch selection, not a shared shape guard — the two only share the wording.
  */
-function describeValue(value: unknown): string {
+function describeValue(value: unknown, maskSecrets: MaskerFn = (text) => text): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'an array';
-  if (typeof value === 'string') return `a string ${JSON.stringify(value)}`;
-  if (isPlainObject(value)) return `an object with keys [${Object.keys(value).join(', ')}]`;
-  return `a ${typeof value} (${String(value)})`;
+  // Mask BEFORE the stringify, never after (issue #2178). A provider's
+  // `properties` bag arrives RESOLVED, so a `{{resolve:secretsmanager:...}}`
+  // scalar is already plaintext here, and `JSON.stringify` escapes `"` / `\` /
+  // newlines out of the finished line so a message-level mask can no longer
+  // find the needle. The masker defaults to identity so every existing caller
+  // keeps its current (unmasked) behaviour rather than silently changing.
+  if (typeof value === 'string') return `a string ${JSON.stringify(maskDeep(value, maskSecrets))}`;
+  // KEYS leak too, and for the same reason `maskDeep` masks keys: a resolved
+  // secret used as a map key is rendered into this line verbatim. No
+  // `JSON.stringify` here, so the critic cannot see it — the argument is
+  // identical all the same.
+  if (isPlainObject(value)) {
+    return `an object with keys [${Object.keys(value)
+      .map((key) => maskSecrets(key))
+      .join(', ')}]`;
+  }
+  // Only number / boolean / bigint / symbol / function / undefined reach here
+  // (string, array, plain object and null are all handled above), none of which
+  // can BE a resolved secret — those are always strings. Masked anyway because
+  // the call is free and the alternative is a branch that renders a value
+  // through no masker at all.
+  return `a ${typeof value} (${maskSecrets(String(value))})`;
 }
 
 /**
@@ -2896,7 +2916,12 @@ export class S3BucketProvider implements ResourceProvider {
   private resolveS3BucketDestination(
     dest: unknown,
     destinationPath: string,
-    onUnusable?: (message: string) => void
+    onUnusable?: (message: string) => void,
+    // TRAILING with an identity default, following
+    // `dynamodb-table-provider.ts`'s `skipWarmThroughputDecrease`: every
+    // existing caller keeps compiling and "absent means unmasked" stays the
+    // back-compatible contract.
+    maskSecrets: MaskerFn = (text) => text
   ): Record<string, unknown> | undefined {
     const nestedPath = `${destinationPath}.S3BucketDestination`;
     const drop = (message: string): undefined => {
@@ -2918,7 +2943,7 @@ export class S3BucketProvider implements ResourceProvider {
 
     if (!isPlainObject(dest)) {
       return drop(
-        `${destinationPath} must be an object (got ${describeValue(dest)}) — check for an ` +
+        `${destinationPath} must be an object (got ${describeValue(dest, maskSecrets)}) — check for an ` +
           `unresolved intrinsic or a mis-nested template value; the destination would ` +
           `otherwise be dropped from the request with no error`
       );
@@ -2936,13 +2961,13 @@ export class S3BucketProvider implements ResourceProvider {
     if (bag === undefined || bag === null) {
       return drop(
         `${destinationPath} carries neither a bucket (BucketArn / Bucket) nor a nested ` +
-          `S3BucketDestination object (got ${describeValue(dest)}) — the destination would ` +
+          `S3BucketDestination object (got ${describeValue(dest, maskSecrets)}) — the destination would ` +
           `otherwise be dropped from the request with no error`
       );
     }
     if (!isPlainObject(bag)) {
       return drop(
-        `${nestedPath} must be an object (got ${describeValue(bag)}) — check for an ` +
+        `${nestedPath} must be an object (got ${describeValue(bag, maskSecrets)}) — check for an ` +
           `unresolved intrinsic or a mis-nested template value; the destination would ` +
           `otherwise be dropped from the request with no error`
       );
@@ -2955,7 +2980,7 @@ export class S3BucketProvider implements ResourceProvider {
     if (!bag['BucketArn'] && !bag['Bucket']) {
       return drop(
         `${bag === dest ? destinationPath : nestedPath} has no destination bucket ` +
-          `(BucketArn / Bucket) (got ${describeValue(bag)}) — the request would be ` +
+          `(BucketArn / Bucket) (got ${describeValue(bag, maskSecrets)}) — the request would be ` +
           `rejected by S3, or silently carry no destination`
       );
     }
@@ -2979,7 +3004,12 @@ export class S3BucketProvider implements ResourceProvider {
   private async applyAnalyticsConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
-    onUnusable?: (message: string) => void
+    onUnusable?: (message: string) => void,
+    // TRAILING with an identity default (same shape as
+    // `resolveS3BucketDestination` below it): the masker only reaches the
+    // destination-shape refusals, so an absent one leaves today's behaviour
+    // exactly as it was.
+    maskSecrets: MaskerFn = (text) => text
   ): Promise<PerItemApplyOutcome> {
     const skipped: number[] = [];
     const substituted = new Map<number, Record<string, unknown>>();
@@ -3089,7 +3119,12 @@ export class S3BucketProvider implements ResourceProvider {
         const analyticsDestPath =
           'AWS::S3::Bucket AnalyticsConfigurations[].StorageClassAnalysis.DataExport.Destination';
         const rawDest = dataExport['Destination'];
-        const s3Dest = this.resolveS3BucketDestination(rawDest, analyticsDestPath, onUnusable);
+        const s3Dest = this.resolveS3BucketDestination(
+          rawDest,
+          analyticsDestPath,
+          onUnusable,
+          maskSecrets
+        );
         // A PRESENT-but-unusable destination that only warned leaves the live
         // configuration ALONE rather than sending a destination-less request.
         // `Destination` is a REQUIRED SDK member, so emitting the Put without
@@ -3321,7 +3356,12 @@ export class S3BucketProvider implements ResourceProvider {
   private async applyInventoryConfigurations(
     bucketName: string,
     configs: Array<Record<string, unknown>>,
-    onUnusable?: (message: string) => void
+    onUnusable?: (message: string) => void,
+    // TRAILING with an identity default (same shape as
+    // `resolveS3BucketDestination` below it): the masker only reaches the
+    // destination-shape refusals, so an absent one leaves today's behaviour
+    // exactly as it was.
+    maskSecrets: MaskerFn = (text) => text
   ): Promise<PerItemApplyOutcome> {
     const skipped: number[] = [];
     const substituted = new Map<number, Record<string, unknown>>();
@@ -3406,7 +3446,12 @@ export class S3BucketProvider implements ResourceProvider {
       }
       const inventoryDestPath = 'AWS::S3::Bucket InventoryConfigurations[].Destination';
       const rawDest = config['Destination'];
-      const s3Dest = this.resolveS3BucketDestination(rawDest, inventoryDestPath, onUnusable);
+      const s3Dest = this.resolveS3BucketDestination(
+        rawDest,
+        inventoryDestPath,
+        onUnusable,
+        maskSecrets
+      );
       // See the analytics sibling: a warned-away destination leaves the live
       // configuration untouched instead of sending a request S3 rejects.
       if (s3Dest === undefined && rawDest != null) {
@@ -4479,6 +4524,10 @@ export class S3BucketProvider implements ResourceProvider {
     context?: UpdateContext
   ): Promise<Map<string, unknown>> {
     const overrides = new Map<string, unknown>();
+    // The REAL masker for this call, not a decorative parameter: the
+    // destination-shape refusals below quote values read straight off the
+    // desired `properties` bag, which arrives RESOLVED (issue #2178).
+    const maskSecrets = maskerOrIdentity(context?.maskSecrets);
     /** Record a WHOLE-BLOCK skip: the effective value is the previous one. */
     const retainPrevious = (key: string): void => {
       overrides.set(key, previousProperties[key]);
@@ -4999,8 +5048,11 @@ export class S3BucketProvider implements ResourceProvider {
       // as the desired bag, so a refusal here would strand the resource with no
       // template-side remedy (issue #1493 item 2).
       async (id, cfg) => {
-        const outcome = await this.applyAnalyticsConfigurations(bucketName, [cfg], (m) =>
-          this.logger.warn(m)
+        const outcome = await this.applyAnalyticsConfigurations(
+          bucketName,
+          [cfg],
+          (m) => this.logger.warn(m),
+          maskSecrets
         );
         analyticsOutcomes.record(String(id), outcome);
       },
@@ -5051,8 +5103,11 @@ export class S3BucketProvider implements ResourceProvider {
       properties['InventoryConfigurations'] as Array<Record<string, unknown>> | undefined,
       // Same update-path warn as the analytics sibling above.
       async (id, cfg) => {
-        const outcome = await this.applyInventoryConfigurations(bucketName, [cfg], (m) =>
-          this.logger.warn(m)
+        const outcome = await this.applyInventoryConfigurations(
+          bucketName,
+          [cfg],
+          (m) => this.logger.warn(m),
+          maskSecrets
         );
         inventoryOutcomes.record(String(id), outcome);
       },
@@ -5127,6 +5182,10 @@ export class S3BucketProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<Map<string, unknown>> {
     const overrides = new Map<string, unknown>();
+    // The REAL masker for this call, not a decorative parameter: the
+    // destination-shape refusals below quote values read straight off the
+    // desired `properties` bag, which arrives RESOLVED (issue #2178).
+    const maskSecrets = maskerOrIdentity(context?.maskSecrets);
     /**
      * Record a WHOLE-BLOCK fold: the effective value is what was SENT (issue
      * #1748). The create-path twin of `applySubConfigDiffs`'s helper of the same
@@ -5316,7 +5375,12 @@ export class S3BucketProvider implements ResourceProvider {
       recordItemOutcome(
         'AnalyticsConfigurations',
         analyticsConfigs,
-        await this.applyAnalyticsConfigurations(bucketName, analyticsConfigs, replayOnUnusable)
+        await this.applyAnalyticsConfigurations(
+          bucketName,
+          analyticsConfigs,
+          replayOnUnusable,
+          maskSecrets
+        )
       );
     }
 
@@ -5340,7 +5404,12 @@ export class S3BucketProvider implements ResourceProvider {
       recordItemOutcome(
         'InventoryConfigurations',
         inventoryConfigs,
-        await this.applyInventoryConfigurations(bucketName, inventoryConfigs, replayOnUnusable)
+        await this.applyInventoryConfigurations(
+          bucketName,
+          inventoryConfigs,
+          replayOnUnusable,
+          maskSecrets
+        )
       );
     }
 

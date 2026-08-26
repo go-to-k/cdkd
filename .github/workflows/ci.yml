@@ -283,6 +283,32 @@ jobs:
       # reporting a byte-identical green.
       - run: vp run audit:withretry-interrupt:check
 
+      # Issue #2178 — a provider interpolating a `properties`-derived value into
+      # a message must mask it BEFORE `JSON.stringify`. The bag arrives RESOLVED,
+      # so a `{{resolve:secretsmanager:...}}` scalar is already plaintext, and
+      # masking the FINISHED message cannot recover it (stringify escapes the
+      # secret out of existence, and the message is too long for anything but
+      # the >= 4-character substring arm). The rule was prose from issue #1932
+      # and the issue #2176 sweep found it violated in files already hardened
+      # for it. Pass/fail with nothing to regenerate, so a bare `run`; the
+      # classifier is dataflow-aware (a mask upstream of the stringify passes),
+      # self-probes itself against fixed sources with known verdicts INCLUDING
+      # raw ones before reading the tree, and re-audits every exemption against
+      # its site's current VERDICT — an entry whose site disappeared, became
+      # MASKED upstream, or gained a same-spelled sibling fails — so a
+      # degradation to "everything looks masked" fails here rather than
+      # reporting a byte-identical green. It also REFUSES an identity masker:
+      # a `maskerOrIdentity(undefined)` binding fences nothing (issue #2007)
+      # and must not silence a site or count toward the masked floor.
+      # KNOWN BOUND (4), stated HERE too because this is the one file a reader
+      # meets the refusal in without the surrounding prose: the check is
+      # SYNTACTIC, so a no-op DECLARED to be the capability is believed
+      # (`const m: MaskerFn = someNoOp`, `{ maskSecrets: (t) => t }`). A green
+      # run means the value reached something DECLARED to be the project's
+      # masker -- NOT that the value is masked. Both spellings are pinned as
+      # self-probes expecting `masked`, so closing the bound fails loudly.
+      - run: vp run audit:provider-secret-mask:check
+
   # Issue #1618 — run the unit suite a second time with the runtime
   # `*Once`-leak detector armed, so a test that primes more mock responses than
   # its code path consumes fails HERE instead of silently shifting every later

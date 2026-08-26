@@ -90,7 +90,7 @@ import {
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
-import { maskDeep } from '../masked-retry-logger.js';
+import { maskDeep, type MaskerFn } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -559,7 +559,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         properties,
         currentRegion,
         'min',
-        diagnostics
+        diagnostics,
+        maskSecrets
       );
     }
 
@@ -813,7 +814,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
               `${message} Omitting the malformed block, so this create carries NO ` +
                 `indexes; the same value is REFUSED on a template-path create`
             );
-          })
+          }),
+        maskSecrets
       );
     } catch (error) {
       throw new ProvisioningError(
@@ -999,7 +1001,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // half was ever wired, so a user who capped read request units got a table
     // with NO read ceiling and a success report (issue #1436). Both halves go
     // into the SAME `CreateTable` member.
-    const createCeilings = collectTableOnDemandCeilings(properties, currentRegion, diagnostics);
+    const createCeilings = collectTableOnDemandCeilings(
+      properties,
+      currentRegion,
+      diagnostics,
+      maskSecrets
+    );
     const createOnDemand: OnDemandThroughput = {
       ...(createCeilings.read.value !== undefined && {
         MaxReadRequestUnits: createCeilings.read.value,
@@ -1040,9 +1047,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       toSdkReplicaGlobalSecondaryIndexes(
         replica['GlobalSecondaryIndexes'],
         billingMode,
-        diagnostics
+        diagnostics,
+        maskSecrets
       );
-      toSdkReplicaThroughputOverrides(replica, billingMode, diagnostics, {});
+      toSdkReplicaThroughputOverrides(replica, billingMode, diagnostics, {}, maskSecrets);
     }
     this.reportThroughputDiagnostics(diagnostics, logicalId, tableName, maskSecrets);
 
@@ -1078,7 +1086,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (!region || region === currentRegion) continue;
         // No diagnostics collector: the same translation already ran in the
         // pre-flight scan above, so passing one here would warn twice.
-        await this.addReplica(tableName, replica, region, logicalId, billingMode);
+        await this.addReplica(
+          tableName,
+          replica,
+          region,
+          logicalId,
+          billingMode,
+          undefined,
+          maskSecrets
+        );
       }
 
       // Cross-region replica Tags propagation (Issue #441 — closes the
@@ -1369,7 +1385,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     region: string,
     logicalId: string,
     billingMode: string,
-    diagnostics?: ThroughputDiagnostic[]
+    diagnostics?: ThroughputDiagnostic[],
+    // Threaded from both call sites (`create` / `update`), which each hold the
+    // contract's `context?.maskSecrets`. Identity default keeps the
+    // "absent means unmasked" contract for any future caller (issue #2178).
+    maskSecrets: SecretMasker = (text) => text
   ): Promise<void> {
     const create: CreateReplicationGroupMemberAction = {
       RegionName: region,
@@ -1384,7 +1404,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const replicaIndexes = toSdkReplicaGlobalSecondaryIndexes(
       replica['GlobalSecondaryIndexes'],
       billingMode,
-      diagnostics
+      diagnostics,
+      maskSecrets
     );
     if (replicaIndexes) {
       create.GlobalSecondaryIndexes = replicaIndexes;
@@ -1393,7 +1414,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // the SAME two CFn spellings one level up (issue #1436). A non-local
     // replica's `ReadOnDemandThroughputSettings` was dropped entirely before
     // this — the replica silently kept the source table's default.
-    const tableOverrides = toSdkReplicaThroughputOverrides(replica, billingMode, diagnostics, {});
+    const tableOverrides = toSdkReplicaThroughputOverrides(
+      replica,
+      billingMode,
+      diagnostics,
+      {},
+      maskSecrets
+    );
     if (tableOverrides.ProvisionedThroughputOverride) {
       create.ProvisionedThroughputOverride = tableOverrides.ProvisionedThroughputOverride;
     }
@@ -1838,7 +1865,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // never wrote (issue #1428's "asymmetric between the desired side and
       // the previous side").
       const diagnostics: ThroughputDiagnostic[] = [];
-      const desiredCeilings = collectTableOnDemandCeilings(properties, currentRegion, diagnostics);
+      const desiredCeilings = collectTableOnDemandCeilings(
+        properties,
+        currentRegion,
+        diagnostics,
+        maskSecrets
+      );
       // The TABLE-level provisioned capacity is only SENT by step 4's billing
       // flip, which is also the only place it can fall through to 5/5 — so the
       // #1511 diagnostic is gated on exactly that condition rather than on
@@ -1847,7 +1879,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // would have read. Result discarded: this call is for the diagnostics.
       const flippingToProvisioned = oldBilling !== newBilling && newBilling === 'PROVISIONED';
       if (flippingToProvisioned) {
-        derivePerCallProvisionedThroughput(properties, currentRegion, 'seed', diagnostics);
+        derivePerCallProvisionedThroughput(
+          properties,
+          currentRegion,
+          'seed',
+          diagnostics,
+          maskSecrets
+        );
       }
       // The DIFF's translation stays on `'min'` (step 6 compares against it),
       // but the diagnostics must be raised with the source step 4 will actually
@@ -1935,7 +1973,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         newBilling,
         'min',
         flippingToProvisioned ? undefined : diagnostics,
-        onUnusableGsiBlock
+        onUnusableGsiBlock,
+        maskSecrets
       );
       if (flippingToProvisioned) {
         toSdkGlobalSecondaryIndexes(
@@ -1944,7 +1983,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           newBilling,
           'seed',
           diagnostics,
-          onUnusableGsiBlock
+          onUnusableGsiBlock,
+          maskSecrets
         );
       }
       for (const replica of (properties['Replicas'] ?? []) as Array<Record<string, unknown>>) {
@@ -1953,9 +1993,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         toSdkReplicaGlobalSecondaryIndexes(
           replica['GlobalSecondaryIndexes'],
           newBilling,
-          diagnostics
+          diagnostics,
+          maskSecrets
         );
-        toSdkReplicaThroughputOverrides(replica, newBilling, diagnostics, {});
+        toSdkReplicaThroughputOverrides(replica, newBilling, diagnostics, {}, maskSecrets);
       }
       this.reportThroughputDiagnostics(diagnostics, logicalId, physicalId, maskSecrets);
 
@@ -2186,7 +2227,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           undefined,
           () => {
             previousGsiProbeUnusable = true;
-          }
+          },
+          maskSecrets
         );
         const previousIndexes = previousProperties['GlobalSecondaryIndexes'];
         effectiveProperties = { ...(effectiveProperties ?? properties) };
@@ -2399,7 +2441,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           billingUpdate.ProvisionedThroughput = derivePerCallProvisionedThroughput(
             properties,
             currentRegion,
-            'seed'
+            'seed',
+            undefined,
+            maskSecrets
           );
           // AWS requires per-GSI `ProvisionedThroughput` in the SAME
           // UpdateTable call that flips PAY_PER_REQUEST -> PROVISIONED
@@ -2413,7 +2457,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             newBilling,
             'seed',
             undefined,
-            onUnusableGsiBlock
+            onUnusableGsiBlock,
+            maskSecrets
           );
           // Only indexes that ALREADY exist on AWS can take an `Update`
           // action; a GSI introduced by this same deploy is created (with
@@ -2442,7 +2487,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             newBilling,
             'seed',
             undefined,
-            onUnusablePreviousGsiBlock
+            onUnusablePreviousGsiBlock,
+            maskSecrets
           );
           // A flip TO PROVISIONED with an unusable block on EITHER side is
           // refused outright (issue #1551). AWS requires per-index
@@ -2664,7 +2710,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (!region || region === currentRegion) continue;
         // Diagnostics already emitted by the pre-flight scan at the top of
         // update(); passing the collector again would warn twice.
-        await this.addReplica(physicalId, replica, region, logicalId, newBilling);
+        await this.addReplica(
+          physicalId,
+          replica,
+          region,
+          logicalId,
+          newBilling,
+          undefined,
+          maskSecrets
+        );
 
         // Cross-region Tags propagation for the newly-added replica
         // (Issue #441 follow-up — mirrors the create-side + modified
@@ -2785,7 +2839,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // create-side `addReplica` (Issue #1387).
         const replicaIndexes = toSdkReplicaGlobalSecondaryIndexes(
           replica['GlobalSecondaryIndexes'],
-          newBilling
+          newBilling,
+          undefined,
+          maskSecrets
         );
         if (replicaIndexes) {
           updateAction.GlobalSecondaryIndexes = replicaIndexes;
@@ -2808,7 +2864,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           replica,
           newBilling,
           undefined,
-          {}
+          {},
+          maskSecrets
         );
         if (replicaOverrides.ProvisionedThroughputOverride) {
           updateAction.ProvisionedThroughputOverride =
@@ -2826,7 +2883,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             oldReplica ?? {},
             oldBilling,
             undefined,
-            {}
+            {},
+            maskSecrets
           );
           const droppedOverrides: string[] = [];
           if (
@@ -2915,7 +2973,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         oldBilling,
         'min',
         undefined,
-        onUnusablePreviousGsiBlock
+        onUnusablePreviousGsiBlock,
+        maskSecrets
       );
       // With a junk state record the baseline is built from the DESIRED side
       // filtered to the indexes that actually EXIST live, carrying the live
@@ -6029,7 +6088,10 @@ export function derivePerCallProvisionedThroughput(
   properties: Record<string, unknown>,
   region: string,
   source: CapacitySource = 'min',
-  diagnostics?: ThroughputDiagnostic[]
+  diagnostics?: ThroughputDiagnostic[],
+  // See `mergeExplicitThroughputBlock` for why the mask goes INSIDE the
+  // stringify rather than around the finished message (issue #2178).
+  maskSecrets: MaskerFn = (text) => text
 ): { ReadCapacityUnits: number; WriteCapacityUnits: number } {
   // `Array.isArray` rather than a bare cast: a non-array `Replicas` (an
   // unresolved intrinsic, a malformed template) would otherwise die on `.find`
@@ -6059,7 +6121,8 @@ export function derivePerCallProvisionedThroughput(
       source,
       { appliedUnits: DEFAULT_CAPACITY_UNITS },
       diagnostics,
-      { blockName: 'Replicas[local].ReadProvisionedThroughputSettings' }
+      { blockName: 'Replicas[local].ReadProvisionedThroughputSettings' },
+      maskSecrets
     );
   }
   if (write === undefined) {
@@ -6069,7 +6132,8 @@ export function derivePerCallProvisionedThroughput(
       source,
       { appliedUnits: DEFAULT_CAPACITY_UNITS },
       diagnostics,
-      { blockName: 'WriteProvisionedThroughputSettings' }
+      { blockName: 'WriteProvisionedThroughputSettings' },
+      maskSecrets
     );
   }
   return {
@@ -6540,7 +6604,15 @@ function mergeExplicitThroughputBlock<T>(
   derived: Partial<Record<keyof T & string, number>> | undefined,
   members: ReadonlyArray<keyof T & string>,
   diagnostics: ThroughputDiagnostic[] | undefined,
-  context: { indexName?: string; blockName: string }
+  context: { indexName?: string; blockName: string },
+  // Trailing + identity-defaulted (issue #2178), matching the sibling
+  // `dynamodb-table-provider.ts` convention: absent still means UNMASKED, so
+  // every existing caller keeps compiling. The walk has to happen BEFORE the
+  // `JSON.stringify` below, never after it: a provider's `properties` bag
+  // arrives RESOLVED, so a `{{resolve:secretsmanager:...}}` member is already
+  // plaintext here, and `JSON.stringify` escapes `"` / `\` / newlines out of
+  // the finished line so a message-level mask can no longer find the needle.
+  maskSecrets: MaskerFn = (text) => text
 ): T | undefined {
   const out: Record<string, number> = {};
   for (const member of members) {
@@ -6556,7 +6628,8 @@ function mergeExplicitThroughputBlock<T>(
         member,
         message:
           `${context.blockName}.${member} is present but did not resolve to a number ` +
-          `(${JSON.stringify(explicit[member])?.slice(0, 80)}), so it was ignored. ` +
+          `(${JSON.stringify(maskDeep(explicit[member], maskSecrets))?.slice(0, 80)}), so ` +
+          `it was ignored. ` +
           `This is usually an unresolved intrinsic; resolve it to a literal.`,
       });
     }
@@ -6582,7 +6655,10 @@ function mergeExplicitThroughputBlock<T>(
 function reportUnresolvedRawMember(
   rawValue: unknown,
   diagnostics: ThroughputDiagnostic[] | undefined,
-  context: { indexName?: string; blockName: string; member: string }
+  context: { indexName?: string; blockName: string; member: string },
+  // See `mergeExplicitThroughputBlock` for why the mask goes INSIDE the
+  // stringify rather than around the finished message (issue #2178).
+  maskSecrets: MaskerFn = (text) => text
 ): void {
   if (!diagnostics) return;
   if (rawValue === undefined) return;
@@ -6593,7 +6669,8 @@ function reportUnresolvedRawMember(
     member: context.member,
     message:
       `${context.blockName}.${context.member} is declared but did not resolve to a ` +
-      `number (${JSON.stringify(rawValue)?.slice(0, 80)}), so no throughput value was ` +
+      `number (${JSON.stringify(maskDeep(rawValue, maskSecrets))?.slice(0, 80)}), so no ` +
+      `throughput value was ` +
       `sent for it and the live AWS setting was left unchanged. This is usually an ` +
       `unresolved intrinsic; resolve it to a literal to apply the limit, or remove the ` +
       `property entirely to clear it.`,
@@ -6671,7 +6748,10 @@ function reportUnresolvedProvisionedCapacity(
   source: CapacitySource,
   outcome: { readonly appliedUnits: number } | { readonly suppressed: string },
   diagnostics: ThroughputDiagnostic[] | undefined,
-  context: { indexName?: string; blockName: string }
+  context: { indexName?: string; blockName: string },
+  // See `mergeExplicitThroughputBlock` for why the mask goes INSIDE the
+  // stringify rather than around the finished message (issue #2178).
+  maskSecrets: MaskerFn = (text) => text
 ): void {
   if (!diagnostics) return;
   const blame = blameUnresolvedProvisionedMember(rawSettings, side, source);
@@ -6700,7 +6780,8 @@ function reportUnresolvedProvisionedCapacity(
       : context.blockName.slice(context.blockName.lastIndexOf('.') + 1),
     message:
       `${path} is declared but did not resolve to a number ` +
-      `(${JSON.stringify(blame.value)?.slice(0, 80)}), ${consequence}. This is usually an ` +
+      `(${JSON.stringify(maskDeep(blame.value, maskSecrets))?.slice(0, 80)}), ${consequence}. ` +
+      `This is usually an ` +
       `unresolved intrinsic; resolve it to a literal to apply the capacity you declared.`,
   });
 }
@@ -6841,7 +6922,12 @@ export function toSdkGlobalSecondaryIndexes(
   billingMode: string,
   source: CapacitySource = 'min',
   diagnostics?: ThroughputDiagnostic[],
-  onUnusableIndexes?: (message: string) => void
+  onUnusableIndexes?: (message: string) => void,
+  // See `mergeExplicitThroughputBlock` for why the mask goes INSIDE the
+  // stringify rather than around the finished message (issue #2178). Threaded
+  // on to every diagnostic helper this function calls, so the whole GSI
+  // translation masks by construction rather than per author-memory.
+  maskSecrets: MaskerFn = (text) => text
 ): GlobalSecondaryIndex[] {
   const rawIndexes = properties['GlobalSecondaryIndexes'];
   // A NON-ARRAY value (an unresolved `Fn::If`, a malformed template) must not
@@ -6866,7 +6952,7 @@ export function toSdkGlobalSecondaryIndexes(
   if (rawIndexes !== undefined && !Array.isArray(rawIndexes)) {
     const shapeDetail =
       `AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array, got ` +
-      `${typeof rawIndexes} (${JSON.stringify(rawIndexes)?.slice(0, 200)}).`;
+      `${typeof rawIndexes} (${JSON.stringify(maskDeep(rawIndexes, maskSecrets))?.slice(0, 200)}).`;
     if (onUnusableIndexes) {
       onUnusableIndexes(shapeDetail);
       return [];
@@ -7002,7 +7088,8 @@ export function toSdkGlobalSecondaryIndexes(
             blockName: fromReplica
               ? 'Replicas[local].GlobalSecondaryIndexes[].ReadProvisionedThroughputSettings'
               : 'ReadProvisionedThroughputSettings',
-          }
+          },
+          maskSecrets
         );
       }
       if (derivedWrite === undefined && !explicitCovers('WriteCapacityUnits')) {
@@ -7015,7 +7102,8 @@ export function toSdkGlobalSecondaryIndexes(
           {
             ...(typeof indexName === 'string' && { indexName }),
             blockName: 'WriteProvisionedThroughputSettings',
-          }
+          },
+          maskSecrets
         );
       }
       // The derived side always yields both members (defaulting to 5/5), so
@@ -7029,7 +7117,11 @@ export function toSdkGlobalSecondaryIndexes(
         },
         ['ReadCapacityUnits', 'WriteCapacityUnits'],
         diagnostics,
-        { ...(typeof indexName === 'string' && { indexName }), blockName: 'ProvisionedThroughput' }
+        {
+          ...(typeof indexName === 'string' && { indexName }),
+          blockName: 'ProvisionedThroughput',
+        },
+        maskSecrets
       );
     } else {
       // Raw-key diagnostics fire regardless of whether the value survives
@@ -7040,24 +7132,34 @@ export function toSdkGlobalSecondaryIndexes(
         'MaxReadRequestUnits'
       ];
       const rawReadGsi = asRecord(gsi['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'];
-      reportUnresolvedRawMember(rawWrite, diagnostics, {
-        ...(typeof indexName === 'string' && { indexName }),
-        blockName: 'WriteOnDemandThroughputSettings',
-        member: 'MaxWriteRequestUnits',
-      });
+      reportUnresolvedRawMember(
+        rawWrite,
+        diagnostics,
+        {
+          ...(typeof indexName === 'string' && { indexName }),
+          blockName: 'WriteOnDemandThroughputSettings',
+          member: 'MaxWriteRequestUnits',
+        },
+        maskSecrets
+      );
       // The replica spelling is the canonical CDK one and wins when it
       // coerces, so only report the GSI-level fallback when the replica entry
       // contributed nothing — otherwise a hand-authored leftover would draw a
       // warning about a value that was never going to be used.
       const rawRead = rawReadLocal !== undefined ? rawReadLocal : rawReadGsi;
-      reportUnresolvedRawMember(rawRead, diagnostics, {
-        ...(typeof indexName === 'string' && { indexName }),
-        blockName:
-          rawReadLocal !== undefined
-            ? 'Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings'
-            : 'ReadOnDemandThroughputSettings',
-        member: 'MaxReadRequestUnits',
-      });
+      reportUnresolvedRawMember(
+        rawRead,
+        diagnostics,
+        {
+          ...(typeof indexName === 'string' && { indexName }),
+          blockName:
+            rawReadLocal !== undefined
+              ? 'Replicas[local].GlobalSecondaryIndexes[].ReadOnDemandThroughputSettings'
+              : 'ReadOnDemandThroughputSettings',
+          member: 'MaxReadRequestUnits',
+        },
+        maskSecrets
+      );
 
       const maxWrite = toFiniteNumber(rawWrite);
       const maxRead = toFiniteNumber(rawReadLocal) ?? toFiniteNumber(rawReadGsi);
@@ -7069,7 +7171,8 @@ export function toSdkGlobalSecondaryIndexes(
         },
         ['MaxReadRequestUnits', 'MaxWriteRequestUnits'],
         diagnostics,
-        { ...(typeof indexName === 'string' && { indexName }), blockName: 'OnDemandThroughput' }
+        { ...(typeof indexName === 'string' && { indexName }), blockName: 'OnDemandThroughput' },
+        maskSecrets
       );
       if (merged) sdk.OnDemandThroughput = merged;
     }
@@ -7811,7 +7914,10 @@ export function buildLiveRecoveryGsiBaseline(
 export function toSdkReplicaGlobalSecondaryIndexes(
   replicaIndexes: unknown,
   billingMode: string,
-  diagnostics?: ThroughputDiagnostic[]
+  diagnostics?: ThroughputDiagnostic[],
+  // See `mergeExplicitThroughputBlock` for why the mask goes INSIDE the
+  // stringify rather than around the finished message (issue #2178).
+  maskSecrets: MaskerFn = (text) => text
 ): ReplicaGlobalSecondaryIndex[] | undefined {
   if (!Array.isArray(replicaIndexes) || replicaIndexes.length === 0) return undefined;
   return replicaIndexes.map((entry) => {
@@ -7819,9 +7925,13 @@ export function toSdkReplicaGlobalSecondaryIndexes(
     if (!cfn) return entry as ReplicaGlobalSecondaryIndex;
     const indexName = cfn['IndexName'] as string | undefined;
     const sdk: ReplicaGlobalSecondaryIndex = { IndexName: indexName };
-    const overrides = toSdkReplicaThroughputOverrides(cfn, billingMode, diagnostics, {
-      ...(typeof indexName === 'string' && { indexName }),
-    });
+    const overrides = toSdkReplicaThroughputOverrides(
+      cfn,
+      billingMode,
+      diagnostics,
+      { ...(typeof indexName === 'string' && { indexName }) },
+      maskSecrets
+    );
     if (overrides.ProvisionedThroughputOverride) {
       sdk.ProvisionedThroughputOverride = overrides.ProvisionedThroughputOverride;
     }
@@ -7850,7 +7960,10 @@ function toSdkReplicaThroughputOverrides(
   cfn: Record<string, unknown>,
   billingMode: string,
   diagnostics: ThroughputDiagnostic[] | undefined,
-  context: { indexName?: string }
+  context: { indexName?: string },
+  // See `mergeExplicitThroughputBlock` for why the mask goes INSIDE the
+  // stringify rather than around the finished message (issue #2178).
+  maskSecrets: MaskerFn = (text) => text
 ): {
   ProvisionedThroughputOverride?: { ReadCapacityUnits: number };
   OnDemandThroughputOverride?: { MaxReadRequestUnits: number };
@@ -7901,7 +8014,8 @@ function toSdkReplicaThroughputOverrides(
             `source table's read capacity`,
         },
         diagnostics,
-        { ...context, blockName: 'ReadProvisionedThroughputSettings' }
+        { ...context, blockName: 'ReadProvisionedThroughputSettings' },
+        maskSecrets
       );
     }
     const merged = mergeExplicitThroughputBlock<{ ReadCapacityUnits: number }>(
@@ -7909,24 +8023,31 @@ function toSdkReplicaThroughputOverrides(
       readCapacity !== undefined ? { ReadCapacityUnits: readCapacity } : undefined,
       ['ReadCapacityUnits'],
       diagnostics,
-      { ...context, blockName: 'ProvisionedThroughputOverride' }
+      { ...context, blockName: 'ProvisionedThroughputOverride' },
+      maskSecrets
     );
     return merged ? { ProvisionedThroughputOverride: merged } : {};
   }
 
   const rawMaxRead = asRecord(cfn['ReadOnDemandThroughputSettings'])?.['MaxReadRequestUnits'];
-  reportUnresolvedRawMember(rawMaxRead, diagnostics, {
-    ...context,
-    blockName: 'ReadOnDemandThroughputSettings',
-    member: 'MaxReadRequestUnits',
-  });
+  reportUnresolvedRawMember(
+    rawMaxRead,
+    diagnostics,
+    {
+      ...context,
+      blockName: 'ReadOnDemandThroughputSettings',
+      member: 'MaxReadRequestUnits',
+    },
+    maskSecrets
+  );
   const maxReadRequestUnits = toFiniteNumber(rawMaxRead);
   const merged = mergeExplicitThroughputBlock<{ MaxReadRequestUnits: number }>(
     explicitOnDemand,
     maxReadRequestUnits !== undefined ? { MaxReadRequestUnits: maxReadRequestUnits } : undefined,
     ['MaxReadRequestUnits'],
     diagnostics,
-    { ...context, blockName: 'OnDemandThroughputOverride' }
+    { ...context, blockName: 'OnDemandThroughputOverride' },
+    maskSecrets
   );
   return merged ? { OnDemandThroughputOverride: merged } : {};
 }
@@ -7967,7 +8088,10 @@ export interface RawCeiling {
 export function collectTableOnDemandCeilings(
   properties: Record<string, unknown>,
   region: string,
-  diagnostics?: ThroughputDiagnostic[]
+  diagnostics?: ThroughputDiagnostic[],
+  // See `mergeExplicitThroughputBlock` for why the mask goes INSIDE the
+  // stringify rather than around the finished message (issue #2178).
+  maskSecrets: MaskerFn = (text) => text
 ): { read: RawCeiling; write: RawCeiling } {
   const writeBlock = properties['WriteOnDemandThroughputSettings'];
   const replicas = properties['Replicas'];
@@ -7977,14 +8101,21 @@ export function collectTableOnDemandCeilings(
   const readBlock = asRecord(localReplica)?.['ReadOnDemandThroughputSettings'];
   const rawRead = asRecord(readBlock)?.['MaxReadRequestUnits'];
   const rawWrite = asRecord(writeBlock)?.['MaxWriteRequestUnits'];
-  reportUnresolvedRawMember(rawRead, diagnostics, {
-    blockName: 'Replicas[local].ReadOnDemandThroughputSettings',
-    member: 'MaxReadRequestUnits',
-  });
-  reportUnresolvedRawMember(rawWrite, diagnostics, {
-    blockName: 'WriteOnDemandThroughputSettings',
-    member: 'MaxWriteRequestUnits',
-  });
+  reportUnresolvedRawMember(
+    rawRead,
+    diagnostics,
+    {
+      blockName: 'Replicas[local].ReadOnDemandThroughputSettings',
+      member: 'MaxReadRequestUnits',
+    },
+    maskSecrets
+  );
+  reportUnresolvedRawMember(
+    rawWrite,
+    diagnostics,
+    { blockName: 'WriteOnDemandThroughputSettings', member: 'MaxWriteRequestUnits' },
+    maskSecrets
+  );
   return {
     read: {
       declared: rawRead !== undefined || isUnresolvedIntrinsicBlock(readBlock),

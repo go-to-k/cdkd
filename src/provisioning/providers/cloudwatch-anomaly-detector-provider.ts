@@ -22,7 +22,10 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 
 /**
  * AWS CloudWatch AnomalyDetector Provider (issue #1304)
@@ -81,11 +84,15 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudWatch anomaly detector ${logicalId}`);
 
-    const params = buildPutParams(properties);
+    // Issue #2178: `toDate` quotes the offending `ExcludedTimeRanges` entry
+    // back at the user, and `properties` arrives RESOLVED. Absent means
+    // unmasked, the contract's back-compatible default.
+    const params = buildPutParams(properties, maskerOrIdentity(context?.maskSecrets));
     if (!hasDescriptor(params)) {
       throw new ProvisioningError(
         `AnomalyDetector ${logicalId} needs a metric descriptor: either SingleMetricAnomalyDetector, ` +
@@ -143,12 +150,18 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    _previousProperties: Record<string, unknown>
+    _previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CloudWatch anomaly detector ${logicalId}: ${physicalId}`);
 
     try {
-      await this.cloudWatchClient.send(new PutAnomalyDetectorCommand(buildPutParams(properties)));
+      await this.cloudWatchClient.send(
+        new PutAnomalyDetectorCommand(
+          // Issue #2178: same refusal, same bag, so the same masker (see `create`).
+          buildPutParams(properties, maskerOrIdentity(context?.maskSecrets))
+        )
+      );
 
       this.logger.debug(`Successfully updated CloudWatch anomaly detector ${logicalId}`);
 
@@ -270,7 +283,10 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
  * `Configuration.ExcludedTimeRanges[].StartTime/EndTime`, which CFn carries
  * as ISO-8601 strings and the SDK models as `Date`.
  */
-function buildPutParams(properties: Record<string, unknown>): PutAnomalyDetectorCommandInput {
+function buildPutParams(
+  properties: Record<string, unknown>,
+  mask: MaskerFn
+): PutAnomalyDetectorCommandInput {
   const params: PutAnomalyDetectorCommandInput = {};
 
   const single = properties['SingleMetricAnomalyDetector'] as
@@ -309,8 +325,8 @@ function buildPutParams(properties: Record<string, unknown>): PutAnomalyDetector
       | undefined;
     if (ranges !== undefined) {
       mapped.ExcludedTimeRanges = ranges.map((r) => ({
-        StartTime: toDate(r['StartTime']),
-        EndTime: toDate(r['EndTime']),
+        StartTime: toDate(r['StartTime'], mask),
+        EndTime: toDate(r['EndTime'], mask),
       }));
     }
     params.Configuration = mapped;
@@ -350,7 +366,7 @@ function buildDeleteParams(properties: Record<string, unknown>): DeleteAnomalyDe
 }
 
 /** CFn carries Range times as ISO-8601 strings; the SDK models them as Date. */
-function toDate(value: unknown): Date | undefined {
+function toDate(value: unknown, mask: MaskerFn): Date | undefined {
   if (value === undefined) return undefined;
   if (value instanceof Date) return value;
   const parsed =
@@ -361,7 +377,8 @@ function toDate(value: unknown): Date | undefined {
     // JSON.stringify (not String) so a non-scalar renders its content
     // rather than '[object Object]' (lint: no-base-to-string).
     throw new Error(
-      `Configuration.ExcludedTimeRanges contains an unparsable time value: ${JSON.stringify(value)}`
+      `Configuration.ExcludedTimeRanges contains an unparsable time value: ` +
+        `${JSON.stringify(maskDeep(value, mask))}`
     );
   }
   return parsed;

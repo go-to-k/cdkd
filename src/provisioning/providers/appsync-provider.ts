@@ -83,7 +83,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 
 /** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
 const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
@@ -621,7 +623,8 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::AppSync::GraphQLApi':
@@ -646,7 +649,11 @@ export class AppSyncProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          // Issue #2178: `applyDataSourceConfig` quotes a resolved
+          // `DeltaSyncConfig` TTL back at the user, so the masker has to reach
+          // it from BOTH operations. Absent means unmasked.
+          maskerOrIdentity(context?.maskSecrets)
         );
       case 'AWS::AppSync::Resolver':
         return this.updateResolver(
@@ -935,7 +942,8 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: MaskerFn
   ): Promise<ResourceUpdateResult> {
     // Identity fields are immutable: ApiId / Name / Type. Reject diffs in
     // defense-in-depth against a missing replacement-rule entry.
@@ -999,7 +1007,7 @@ export class AppSyncProvider implements ResourceProvider {
       type,
     };
     // Shared with createDataSource so create and update cannot diverge.
-    this.applyDataSourceConfig(input, resourceType, logicalId, properties);
+    this.applyDataSourceConfig(input, resourceType, logicalId, properties, mask);
 
     try {
       await this.getClient().send(new UpdateDataSourceCommand(input));
@@ -1391,7 +1399,8 @@ export class AppSyncProvider implements ResourceProvider {
     value: unknown,
     path: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    mask: MaskerFn
   ): number {
     const numeric =
       typeof value === 'number' ? value : typeof value === 'string' ? value.trim() : undefined;
@@ -1399,7 +1408,8 @@ export class AppSyncProvider implements ResourceProvider {
     if (!Number.isFinite(parsed)) {
       throw new ProvisioningError(
         `${resourceType} ${path} must be a number of minutes (CFn types it as a ` +
-          `string), got ${JSON.stringify(value)} — cdkd refuses to drop it silently`,
+          `string), got ${JSON.stringify(maskDeep(value, mask))} — cdkd refuses to drop it ` +
+          `silently`,
         resourceType,
         logicalId
       );
@@ -2090,7 +2100,8 @@ export class AppSyncProvider implements ResourceProvider {
     input: CreateDataSourceCommandInput | UpdateDataSourceCommandInput,
     resourceType: string,
     logicalId: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: MaskerFn
   ): void {
     if (properties['Description'] !== undefined) {
       input.description = properties['Description'] as string;
@@ -2135,7 +2146,8 @@ export class AppSyncProvider implements ResourceProvider {
             delta['BaseTableTTL'],
             'DynamoDBConfig.DeltaSyncConfig.BaseTableTTL',
             logicalId,
-            resourceType
+            resourceType,
+            mask
           );
         }
         if (delta['DeltaSyncTableName'] !== undefined) {
@@ -2146,7 +2158,8 @@ export class AppSyncProvider implements ResourceProvider {
             delta['DeltaSyncTableTTL'],
             'DynamoDBConfig.DeltaSyncConfig.DeltaSyncTableTTL',
             logicalId,
-            resourceType
+            resourceType,
+            mask
           );
         }
         ddbConfig.deltaSyncConfig = deltaConfig;
@@ -2604,7 +2617,13 @@ export class AppSyncProvider implements ResourceProvider {
       };
 
       // Shared with updateDataSource so create and update cannot diverge.
-      this.applyDataSourceConfig(input, resourceType, logicalId, properties);
+      this.applyDataSourceConfig(
+        input,
+        resourceType,
+        logicalId,
+        properties,
+        maskerOrIdentity(context?.maskSecrets)
+      );
 
       const response = await this.getClient().send(new CreateDataSourceCommand(input));
       // Recorded, not consumed, inside the try — see the return below.

@@ -57,7 +57,9 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../../types/resource.js';
+import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 
 /**
@@ -572,8 +574,17 @@ export class LambdaFunctionProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // Issue #2178: the sink for the line that QUOTES a value read off the bag.
+    // `properties` arrives RESOLVED, and the RuntimeManagementConfig echo below
+    // puts a slice of it into a log line NO engine sink ever sees. Absent means
+    // unmasked. The other `this.logger.debug` lines here name the function
+    // rather than a property value and belong to issue #2177's TIER A sweep.
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    const debug = (message: string): void => this.logger.debug(mask(message));
+
     this.logger.debug(`Updating Lambda function ${logicalId}: ${physicalId}`);
 
     try {
@@ -926,9 +937,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
           physicalId,
           newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
         );
-        this.logger.debug(
+        debug(
           `Updated RuntimeManagementConfig for Lambda function ${physicalId} to ${JSON.stringify(
-            newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
+            maskDeep(newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }, mask)
           )}`
         );
       }

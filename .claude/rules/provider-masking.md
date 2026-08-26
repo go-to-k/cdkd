@@ -70,6 +70,28 @@ Rules for a provider:
   stringified — and escaped — identically. The masker is idempotent, so the
   overlap between the two passes is free.
 
+  **Mechanically enforced for the `JSON.stringify` case since issue
+  [#2178](https://github.com/go-to-k/cdkd/issues/2178).**
+  `vp run audit:provider-secret-mask:check`
+  (`scripts/check-provider-secret-mask.ts`, a CI step) fails any
+  `${JSON.stringify(X)}` interpolated into a message under
+  `src/provisioning/providers/**` (plus `composite-id.ts`) where `X` reaches no
+  masker. It is DATAFLOW-aware, so a mask applied UPSTREAM passes — `asg-provider.ts`
+  masks each element in a `.map()` a line above the interpolation and
+  `cloudfront-distribution-provider.ts` masks into a `const`, and both are correct.
+  It exists because this rule was PROSE and got violated anyway, which is the
+  case `.claude/skills/work-issues/SKILL.md` section 10-b calls for a check
+  rather than another sentence. It REFUSES an identity masker — a
+  `maskerOrIdentity(undefined)` binding masks nothing, and issue #2007 records
+  why one that fences nothing is worse than none (its presence stops the next
+  author looking) — so a path with no masker to thread must thread the
+  capability or be recorded in the critic's re-audited `EXEMPT` list, never
+  silenced with an identity default. The masker-ARGUMENT position of the shared
+  walk is an ALLOW-LIST (only the derived capability passes), so a hand-rolled
+  no-op is refused without enumeration; but a no-op DECLARED to be the
+  capability is believed, so a green run proves the value reached something
+  declared to be the masker, NOT that it was masked.
+
   **Use `maskDeep` from `src/provisioning/masked-retry-logger.ts` for the walk
   — do NOT hand-roll one.** Issue #2176 found SIX private copies
   (`elbv2`, `cognito`, `sns-topic`, `dynamodb-table`, `dynamodb-globaltable`,

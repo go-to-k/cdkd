@@ -33,7 +33,10 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 
 /**
  * SDK Provider for AWS::Budgets::Budget (issue #1041).
@@ -175,7 +178,13 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * a UTC date string (`2026-07-01T00:00:00Z`) or an epoch timestamp in
    * seconds (possibly as a numeric string).
    */
-  private toSdkDate(raw: unknown, field: string, logicalId: string, resourceType: string): Date {
+  private toSdkDate(
+    raw: unknown,
+    field: string,
+    logicalId: string,
+    resourceType: string,
+    mask: MaskerFn
+  ): Date {
     let date: Date;
     if (typeof raw === 'number') {
       // Epoch. Values below 10^12 are seconds (10^12 ms is 2001-09-09;
@@ -188,14 +197,16 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       date = new Date(raw);
     } else {
       throw new ProvisioningError(
-        `Invalid TimePeriod.${field} for budget ${logicalId}: expected a date string or epoch timestamp, got ${JSON.stringify(raw)}`,
+        `Invalid TimePeriod.${field} for budget ${logicalId}: expected a date string or epoch ` +
+          `timestamp, got ${JSON.stringify(maskDeep(raw, mask))}`,
         resourceType,
         logicalId
       );
     }
     if (Number.isNaN(date.getTime())) {
       throw new ProvisioningError(
-        `Invalid TimePeriod.${field} for budget ${logicalId}: ${JSON.stringify(raw)} is not a parseable date`,
+        `Invalid TimePeriod.${field} for budget ${logicalId}: ` +
+          `${JSON.stringify(maskDeep(raw, mask))} is not a parseable date`,
         resourceType,
         logicalId
       );
@@ -214,7 +225,8 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     raw: unknown,
     budgetName: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    mask: MaskerFn
   ): Budget {
     if (raw === undefined || raw === null || typeof raw !== 'object') {
       throw new ProvisioningError(
@@ -245,10 +257,10 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       const rawPeriod = src['TimePeriod'] as Record<string, unknown>;
       const period: TimePeriod = {};
       if (rawPeriod['Start'] !== undefined) {
-        period.Start = this.toSdkDate(rawPeriod['Start'], 'Start', logicalId, resourceType);
+        period.Start = this.toSdkDate(rawPeriod['Start'], 'Start', logicalId, resourceType, mask);
       }
       if (rawPeriod['End'] !== undefined) {
-        period.End = this.toSdkDate(rawPeriod['End'], 'End', logicalId, resourceType);
+        period.End = this.toSdkDate(rawPeriod['End'], 'End', logicalId, resourceType, mask);
       }
       budget['TimePeriod'] = period;
     }
@@ -353,8 +365,14 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // Issue #2178: `toSdkDate` quotes the offending `TimePeriod` value back at
+    // the user, and `properties` arrives RESOLVED. Absent means unmasked, the
+    // back-compatible default the SecretMaskingContext contract mandates.
+    const mask = maskerOrIdentity(context?.maskSecrets);
+
     this.logger.debug(`Creating budget ${logicalId}`);
 
     const rawBudget = (properties['Budget'] ?? {}) as Record<string, unknown>;
@@ -384,7 +402,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       await this.getClient().send(
         new CreateBudgetCommand({
           AccountId: accountId,
-          Budget: this.toSdkBudget(properties['Budget'], name, logicalId, resourceType),
+          Budget: this.toSdkBudget(properties['Budget'], name, logicalId, resourceType, mask),
           ...(notifications.length > 0 && { NotificationsWithSubscribers: notifications }),
           ...(resourceTags.length > 0 && { ResourceTags: resourceTags }),
         })
@@ -420,8 +438,12 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // Issue #2178: same refusal, same bag, so the same sink (see `create`).
+    const mask = maskerOrIdentity(context?.maskSecrets);
+
     this.logger.debug(`Updating budget ${logicalId}: ${physicalId}`);
 
     try {
@@ -433,7 +455,13 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       await this.getClient().send(
         new UpdateBudgetCommand({
           AccountId: accountId,
-          NewBudget: this.toSdkBudget(properties['Budget'], physicalId, logicalId, resourceType),
+          NewBudget: this.toSdkBudget(
+            properties['Budget'],
+            physicalId,
+            logicalId,
+            resourceType,
+            mask
+          ),
         })
       );
 
