@@ -1602,3 +1602,49 @@ describe('the per-resource failure warning is masked (#2151 / #1945)', () => {
     expect(secretSends).toHaveLength(0);
   });
 });
+
+/**
+ * Issue [#2208](https://github.com/go-to-k/cdkd/issues/2208), the `refused`
+ * half. The remediation modes' no-drift line now reports an incomplete
+ * comparison, and it names the cause -- so the `refused` cause needs a fixture
+ * that actually produces one, which is what this file's cross-region harness
+ * is. Every fixture in the sibling suite
+ * (`drift-per-resource-failure.test.ts`) produces `readFailed`, so the second
+ * arm of that message is unreachable there and would be unfenced: deleting it
+ * leaves that suite green.
+ */
+describe('cdkd drift --accept over a REFUSED comparison reports it as incomplete (#2208)', () => {
+  it('names the refusal as the cause, keeps exit 0, and writes no state', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    // Region-less reference plus a cross-region import on record: cdkd REFUSES
+    // to resolve it (issue #2108) rather than failing to. The live readback
+    // matches on every property it CAN compare, so the resource is
+    // `notCompared`, the run finds no drift, and the remediation path is the
+    // one under test.
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { error } = await runDrift(['Consumer', '--accept', '--yes']);
+
+    const text = logText();
+    expect(text).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '1 of 1 resource(s) could not be compared ' +
+        '(1 only PARTIALLY compared: cdkd could not, or refused to, resolve a dynamic ' +
+        'reference their state records), ' +
+        'so cdkd does not know whether they drifted.'
+    );
+    expect(text).not.toContain('No drift detected');
+    // Unchanged contract: the remediation modes still exit 0.
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
+    // ...and the refusal is still a refusal: nothing was fetched from either
+    // region, so no foreign plaintext reached the run.
+    expect(secretSends).toHaveLength(0);
+  });
+});

@@ -394,6 +394,10 @@ class DriftDetectedError extends CdkdError {
  * a partially-failed `--revert` still exits 2 through `PartialFailureError`) --
  * those modes report per-resource refusals on their own paths, and changing them
  * would alter what a remediation run means, which is not what this closes.
+ * Issue [#2208](https://github.com/go-to-k/cdkd/issues/2208) re-examined that
+ * scoping and KEPT it: what those modes owed was not this exit code but an
+ * honest SENTENCE, since their no-drift line claimed a clean bill of health for
+ * a stack they had not read. See {@link incompleteRemediationMessage}.
  *
  * WHAT DOES NOT TRIGGER IT: a stack whose properties reference
  * `{{resolve:ssm-secure:...}}` still exits 0. Those properties genuinely are not
@@ -505,6 +509,68 @@ function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplete' | 'n
     unsupported: () => 'none',
     skipped: () => 'none',
   });
+}
+
+/**
+ * The line `--accept` / `--revert` print INSTEAD of `No drift detected --
+ * nothing to accept.` when the run found no drift but did not manage to compare
+ * everything ([issue #2208](https://github.com/go-to-k/cdkd/issues/2208)).
+ *
+ * MESSAGE-ONLY, and the EXIT CODE deliberately stays `0`. The remediation
+ * modes' exit codes are a documented user contract -- #2108 scoped its `2` to
+ * detection-only mode on purpose, and {@link DriftComparisonIncompleteError}'s
+ * note says why: "changing them would alter what a remediation run means".
+ * Nothing about that reasoning expired. The defect this closes is entirely in
+ * what the run REPORTS: `--accept` / `--revert` already correctly leave an
+ * uncompared resource alone (both iterate the drifted outcomes only, asserted
+ * in `tests/unit/cli/drift-per-resource-failure.test.ts`), so the state and AWS
+ * are right and only the sentence is wrong. Making the remediation path exit
+ * non-zero would break the CI of everyone running `cdkd drift --accept` over a
+ * stack that hits a throttle, to fix a wording problem.
+ *
+ * What the line has to carry, since the exit code will not carry it: that the
+ * comparison was INCOMPLETE (never that no drift was detected), HOW MANY
+ * resources were not compared and WHY, and the pointer to the detection-only
+ * run, which is the mode whose exit code does report it (`2`).
+ *
+ * The incomplete subset is read back through {@link outcomeExitSignal} rather
+ * than re-spelled here as "cause !== 'unresolvedToken'". One spelling of the
+ * subset means this message and the detection exit code can never come to
+ * disagree about which resources count -- the same single-source argument
+ * {@link notComparedOutcomes} makes for the two RENDERINGS.
+ */
+function incompleteRemediationMessage(
+  reports: StackDriftReport[],
+  mode: 'accept' | 'revert'
+): string[] {
+  const incomplete = reports.flatMap((report) =>
+    notComparedOutcomes(report).filter(({ outcome }) => outcomeExitSignal(outcome) === 'incomplete')
+  );
+  const total = reports.reduce((n, report) => n + report.outcomes.length, 0);
+  const readFailed = incomplete.filter((e) => e.cause === 'readFailed').length;
+  const referenceCaused = incomplete.length - readFailed;
+  // Counted apart rather than summed under one phrase, for the same reason the
+  // human report's heading counts them apart: a `readFailed` resource was not
+  // "partially" compared, it was not compared at all, and one phrase covering
+  // both understates it in the reassuring direction.
+  const causes: string[] = [];
+  if (readFailed > 0) {
+    causes.push(`${readFailed} not compared AT ALL: the read or comparison failed`);
+  }
+  if (referenceCaused > 0) {
+    causes.push(
+      `${referenceCaused} only PARTIALLY compared: cdkd could not, or refused to, resolve a ` +
+        `dynamic reference their state records`
+    );
+  }
+  const flag = mode === 'accept' ? '--accept' : '--revert';
+  return [
+    `Comparison INCOMPLETE — nothing to ${mode}, and that is NOT a clean bill of health: ` +
+      `${incomplete.length} of ${total} resource(s) could not be compared ` +
+      `(${causes.join('; ')}), so cdkd does not know whether they drifted.`,
+    `Re-run 'cdkd drift' without ${flag} to see which resources and why — a detection-only ` +
+      `run exits 2 while a comparison is incomplete.`,
+  ];
 }
 
 /**
@@ -666,6 +732,20 @@ async function driftCommand(
     // Resolution path. Both flags share the prompt + lock + state-loaded
     // reports; the per-resource action differs.
     if (!drifted) {
+      // Issue #2208: `No drift detected` is FALSE for a run that did not manage
+      // to compare everything -- nothing drifted only because nothing was read.
+      // The exit code stays `0` on this path by design; see
+      // {@link incompleteRemediationMessage} for why the fix is the message and
+      // not the code.
+      if (anyIncomplete) {
+        for (const line of incompleteRemediationMessage(
+          reports,
+          options.accept ? 'accept' : 'revert'
+        )) {
+          logger.info(line);
+        }
+        return;
+      }
       logger.info(
         options.accept
           ? 'No drift detected — nothing to accept.'
