@@ -618,6 +618,31 @@ issue has committed to that number in three places; re-deriving it from the
 post-fix tree cannot detect a copy the sweep never saw, because the fix removed
 the very thing you would grep for.
 
+**Paste the command with the number, and re-run it before you ship.** A count
+that appears in a commit message, a changelog entry and a PR body has been
+asserted three times, and a reader can only re-derive it if the query is there.
+On 2026-08-26 the go-to-k/cdkd#2227 sweep claimed "88 hits across 13 files";
+the reviewer's `grep -rn "AlreadyExists\|AlreadyOwned" src/provisioning
+--include=*.ts | wc -l` returned 47, and no single grep reproduced 88 -- the
+number had come from a different, wider invocation than the one the prose
+implied. The CONCLUSION held, which is exactly why this is easy to ship: a
+right conclusion with an unreproducible measurement reads as evidence and is
+not.
+
+**Before deriving a fix, grep the repo for the SYMPTOM -- something may already
+have solved it.** This is a different search from the sibling-site sweep above:
+that one looks for the same BUG elsewhere and greps the defect's shape, while
+this one looks for a place that already answered the same QUESTION and greps
+the error string, the API name, or the surprising behaviour. On 2026-08-26
+`src/utils/aws-region-resolver.ts` already carried the mechanism the
+go-to-k/cdkd#2227 lane spent a real-AWS round trip rediscovering, verbatim:
+"AWS SDK v3's region-redirect middleware does not handle the empty-body HEAD
+response on a 301 ... produces a synthetic `name: 'Unknown', message:
+'UnknownError'`". Neither the implementation nor its tests had consulted it. A
+grep for `UnknownError` or `followRegionRedirects` would have found it in
+seconds, and the helper next to that comment also documented the fail-OPEN trap
+that the eventual fix had to avoid.
+
 **N sites of one root cause is ONE issue and ONE PR, never N issues.** This is
 the single largest source of unbounded backlog growth: split into N, each site
 pays the full fixed cost — triage, claim, worktree, review tier, integ run,
@@ -1037,6 +1062,20 @@ since the day each was written.
 The general shape: **a fence is not evidence until you have watched it go red on
 something you had not already counted.** Calibration tells you it is not noisy;
 only the spelling and deletion probes tell you it is load-bearing.
+
+**And no number of probes can falsify the FIXTURE, because a mutation probe
+perturbs the CODE and reads the TEST while both read the same mock.** Any
+premise SHARED by code and mock is invariant under mutation, so a suite can be
+fully discriminating and still describe a wire shape AWS never produces. On
+2026-08-26 (go-to-k/cdkd#2227) seven cases passed, were probed two
+complementary ways -- removing the guard reddened six, stripping a
+normalization reddened the seventh -- and the guard could not fire against real
+AWS at all: the mocks had been written from a measurement taken with the AWS
+**CLI**, which follows S3's cross-region 301, while the SDK client cdkd uses
+does not and yields a synthetic `UnknownError`. Only the live arm caught it.
+So when a fixture encodes an AWS response, its shape needs its own evidence --
+a recorded real response, a live arm, or a probe against the SDK rather than
+the CLI. Probing harder is the one thing that cannot supply it.
 
 Two more questions to ask of any fence you build, both learned on 2026-08-21
 from go-to-k/cdkd#2027, and both of which let a fence pass while testing less
@@ -1806,6 +1845,34 @@ does both — and prove the arm discriminates by mutating the fix and confirming
 the ORIGINAL arm still passes while the new one fails. That asymmetry is the
 whole point: an arm that fails alongside the old one has not shown it reaches
 anything new.
+
+**An arm added to a SHARED fixture must not touch an identifier that fixture
+REUSES.** An arm usually needs a resource in a state the fixture does not
+normally produce, and the cheap way to get one is to reach for a name the
+fixture already has. That couples the arm's failures to the whole fixture: if
+the arm leaves the name in a state AWS will not immediately re-issue, every
+LATER phase that wants it is blocked -- and so is the next run, for anyone.
+
+Measured 2026-08-26 on go-to-k/cdkd#2227. The arm planted the STACK'S OWN
+bucket name in a second region to force a cross-region collision. Once an S3
+bucket name has existed in one region, re-creating it in ANOTHER answers
+`OperationAborted` ("a conflicting conditional operation is currently in
+progress") for a long time -- 40 retries across 10 minutes never cleared it,
+and the name took roughly 58 minutes to free -- while `HeadBucket` already
+reports 404, so nothing looks wrong. That blocked the arm, then the base
+fixture's own deploy phase, i.e. every `s3-lifecycle` run, for the better part
+of an hour.
+
+The fix generalizes past S3: give the arm a PER-RUN UNIQUE identifier, and let
+the stack create it only when the arm asks. Here that is one env var the fixture
+sets and the CDK app reads (`CDKD_XR_ARM_BUCKET`), so every other phase
+synthesizes exactly the stack it always did -- verified by running `cdk synth`
+in both polarities and grepping for the resource. After the change the arms cost
+no wait at all and the whole fixture ran in 200 s.
+
+Note the same error code is worth remembering on its own: a bucket that is
+mid-delete surfaces as `OperationAborted`, which cdkd already classifies as
+transient and retries -- NOT as `BucketAlreadyOwnedByYou`.
 
 **Three fixture mechanics that each cost a real-AWS cycle on 2026-08-20.** None
 is visible by reading the script, and all three are caught by a stubbed dry run
