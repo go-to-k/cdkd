@@ -1633,10 +1633,12 @@ describe('cdkd drift --accept over a REFUSED comparison reports it as incomplete
     const text = logText();
     expect(text).toContain(
       'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
-        '1 of 1 resource(s) could not be compared ' +
-        '(1 only PARTIALLY compared: cdkd refused to resolve a dynamic reference their ' +
-        'state records), ' +
-        'so cdkd does not know whether they drifted.'
+        '1 of 1 resource(s) could not be compared.'
+    );
+    expect(text).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 only PARTIALLY compared: cdkd refused to resolve a dynamic reference their ' +
+        'state records.'
     );
     expect(text).not.toContain('No drift detected');
     // Unchanged contract: the remediation modes still exit 0.
@@ -1690,11 +1692,15 @@ describe('cdkd drift --accept reports a refusal and a read failure together (#22
 
     expect(logText()).toContain(
       'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
-        '2 of 2 resource(s) could not be compared ' +
-        '(1 not compared AT ALL: the read or comparison failed; ' +
+        '2 of 2 resource(s) could not be compared.'
+    );
+    // Both are `unknown`-kind, so they share ONE lead and the `'; '` join
+    // between them is what this fixture exists to fence.
+    expect(logText()).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 not compared AT ALL: the read or comparison failed; ' +
         '1 only PARTIALLY compared: cdkd refused to resolve a dynamic reference their ' +
-        'state records), ' +
-        'so cdkd does not know whether they drifted.'
+        'state records.'
     );
     expect(exitSpy).not.toHaveBeenCalled();
     expect(error).toBeUndefined();

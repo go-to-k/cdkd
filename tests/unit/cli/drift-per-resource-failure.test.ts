@@ -1192,10 +1192,17 @@ describe('a remediation run that compared nothing does not report no drift (#220
     // of them alone is satisfiable by wording that still reassures.
     expect(text).toContain(
       'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
-        '2 of 2 resource(s) could not be compared ' +
-        '(2 not compared AT ALL: the read or comparison failed), ' +
-        'so cdkd does not know whether they drifted.'
+        '2 of 2 resource(s) could not be compared.'
     );
+    // The uncertainty claim is per-CAUSE, not a blanket tail (round 2): these
+    // two are `readFailed`, so cdkd genuinely cannot say either way.
+    expect(text).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '2 not compared AT ALL: the read or comparison failed.'
+    );
+    // ...and with no by-design resource in the stack, that group is absent
+    // entirely rather than printed empty.
+    expect(text).not.toContain('Not drift-checked by cdkd at all');
     // ...and the pointer at the mode whose EXIT CODE reports it, since this
     // one's does not.
     expect(text).toContain(
@@ -1222,9 +1229,11 @@ describe('a remediation run that compared nothing does not report no drift (#220
     const text = infoText();
     expect(text).toContain(
       'Comparison INCOMPLETE — nothing to revert, and that is NOT a clean bill of health: ' +
-        '2 of 2 resource(s) could not be compared ' +
-        '(2 not compared AT ALL: the read or comparison failed), ' +
-        'so cdkd does not know whether they drifted.'
+        '2 of 2 resource(s) could not be compared.'
+    );
+    expect(text).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '2 not compared AT ALL: the read or comparison failed.'
     );
     expect(text).toContain("Re-run 'cdkd drift' without --revert");
     expect(text).not.toContain('No drift detected');
@@ -1260,9 +1269,11 @@ describe('a remediation run that compared nothing does not report no drift (#220
 
     expect(infoText()).toContain(
       'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
-        '1 of 2 resource(s) could not be compared ' +
-        '(1 not compared AT ALL: the read or comparison failed), ' +
-        'so cdkd does not know whether they drifted.'
+        '1 of 2 resource(s) could not be compared.'
+    );
+    expect(infoText()).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 not compared AT ALL: the read or comparison failed.'
     );
     expect(exitSpy).not.toHaveBeenCalled();
     expect(error).toBeUndefined();
@@ -1390,14 +1401,27 @@ describe('a remediation run that compared nothing does not report no drift (#220
    * `2 resource(s) NOT fully compared`, the newer line being the quieter of the
    * two -- in a message written to stop this command being quietly reassuring.
    *
-   * Four resources, four different fates in one stack: a read that threw, a
-   * permanently-unresolvable token, a type with no read path, and one ordinary
-   * resource that compared cleanly. The assertion is the WHOLE line, because the
-   * count, the order and the three phrases only constrain each other together --
-   * asserting `2 of 4` alone passes under any relabelling, and asserting one
+   * FIVE resources, five different fates in one stack: a read that threw, a
+   * permanently-unresolvable token, a type with no read path, a `Custom::*`
+   * resource cdkd never drift-checks, and one ordinary resource that compared
+   * cleanly. The assertions are the WHOLE lines, because the count, the grouping,
+   * the order and the four phrases only constrain each other together --
+   * asserting `4 of 5` alone passes under any relabelling, and asserting one
    * phrase alone passes while the count is wrong.
+   *
+   * The `Custom::*` member is round 2's addition and it was NOT a formality: the
+   * four-resource version left BOTH `skipped` branches unfenced (the tally bump
+   * and the phrase), each measured green at 66/66, while `unsupported`'s twin
+   * probe red one test. Via `Custom::S3AutoDeleteObjects` that is also the
+   * COMMONEST member of this population in real CDK stacks, so it was the one
+   * arm most likely to be seen and the only one nothing checked.
+   *
+   * It is also what fences the per-KIND split: `skipped` and `unsupported` must
+   * land under the by-design lead with no uncertainty claim attached, because
+   * issue #323's position on a `Custom::*` resource is that drift is not
+   * APPLICABLE -- not that cdkd is unsure about it.
    */
-  it('counts and labels EVERY uncompared resource, each by its own reason', async () => {
+  it('counts and labels EVERY uncompared resource, each by its own reason and claim', async () => {
     mockGetState.mockResolvedValue(
       makeState({
         Tokened: resource(LAMBDA, {
@@ -1405,6 +1429,9 @@ describe('a remediation run that compared nothing does not report no drift (#220
         }),
         Thrower: resource(QUEUE, { QueueName: 'ok' }),
         NoReadPath: resource('AWS::Some::Type', {}),
+        // `Custom::*` is short-circuited to the `skipped` outcome before any
+        // provider lookup, so this needs no entry in the provider mock below.
+        Helper: resource('Custom::S3AutoDeleteObjects', { ServiceToken: 'arn:aws:lambda:::f' }),
         Fine: resource('AWS::SNS::Topic', { TopicName: 'ok' }),
       })
     );
@@ -1431,12 +1458,27 @@ describe('a remediation run that compared nothing does not report no drift (#220
 
     expect(infoText()).toContain(
       'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
-        '3 of 4 resource(s) could not be compared ' +
-        '(1 not compared AT ALL: the read or comparison failed; ' +
+        '4 of 5 resource(s) could not be compared.'
+    );
+    // The two cdkd genuinely cannot vouch for, in emit order.
+    expect(infoText()).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 not compared AT ALL: the read or comparison failed; ' +
         '1 only PARTIALLY compared: their state records a `{{resolve:...}}` spelling cdkd ' +
-        'resolves for nobody, which no re-run can clear; ' +
-        '1 not compared AT ALL: their provider does not support drift detection yet), ' +
-        'so cdkd does not know whether they drifted.'
+        'resolves for nobody, which no re-run can clear.'
+    );
+    // ...and the two it was never going to look at, under a lead that makes no
+    // uncertainty claim about them. `Custom::*` is not a resource cdkd is
+    // unsure about; it is one cdkd does not drift-check (issue #323).
+    expect(infoText()).toContain(
+      'Not drift-checked by cdkd at all, which is a coverage limit rather than uncertainty — ' +
+        '1 not compared AT ALL: their provider does not support drift detection yet; ' +
+        '1 not compared AT ALL: cdkd does not drift-check the type.'
+    );
+    // The old blanket tail claimed uncertainty about every member of `N`,
+    // including the `Custom::*` one. It must not reappear on the by-design side.
+    expect(infoText()).not.toContain(
+      'cdkd does not drift-check the type, so cdkd does not know whether they drifted'
     );
     // The permanently-unresolvable resource must NOT be described as a refusal.
     // Pre-fix it was counted under the `refused` wording, which points the
