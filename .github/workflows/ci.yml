@@ -24,8 +24,27 @@ jobs:
       # separately so a wrong `import type` or a stale mock shape in a test
       # file fails CI instead of slipping through.
       - run: vp run typecheck:test
-      - run: vp run test
+      # `build` runs BEFORE `test` on purpose. `dist/` is gitignored, and
+      # `tests/unit/cli/version.test.ts` skips itself when `dist/cli.js` is
+      # absent -- so with the old order its two fences (the entry-chunk bound
+      # and the command-tree-stub wiring fence added for issue #2002) were
+      # green-by-SKIP on every PR, i.e. the only coverage of the `--version`
+      # fast path never executed in CI. Measured with `dist/` absent:
+      # `Test Files 1 skipped (1) / Tests 3 skipped (3)`. The test also asserts
+      # loudly rather than skipping when `CI` is set, so a future reorder
+      # cannot silently re-disarm it -- the comment and the assertion are
+      # deliberately redundant, because the comment alone is what failed here.
       - run: vp run build
+      # CDKD_EXPECT_DIST is set ONLY here, because this is the only job that
+      # builds. `tests/unit/cli/version.test.ts` skips itself when `dist/` is
+      # absent -- correct for a contributor who has not built, and correct for
+      # the `once-leak-detect` / `runtime-compat` jobs, which do not build
+      # either. Keying the loud assertion on a bare `CI` reddened those two
+      # jobs; keying it on the build is what actually says "dist was produced,
+      # so a skip here means the step order regressed".
+      - run: vp run test
+        env:
+          CDKD_EXPECT_DIST: "1"
 
       # Issue #399 — fail CI when docs/integ-coverage.md or
       # docs/_generated/integ-coverage.json is stale relative to
