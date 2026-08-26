@@ -116,7 +116,7 @@ const SECRET_MATERIAL: readonly Pattern[] = [
   {
     what: 'SecretValue.unsafePlainText(...) — a literal secret in the template',
     re: /unsafePlainText/,
-    floor: 5,
+    floor: 6,
     sample: `secretStringValue: cdk.SecretValue.unsafePlainText('x')`,
   },
   {
@@ -128,7 +128,7 @@ const SECRET_MATERIAL: readonly Pattern[] = [
   {
     what: 'a hand-supplied Secret value (secretStringValue / secretObjectValue / secretStringBeta1)',
     re: /secretString(Value|Beta1)|secretObjectValue/,
-    floor: 5,
+    floor: 6,
     sample: 'secretObjectValue: { username: x }',
   },
   {
@@ -319,6 +319,7 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'eventbridge-api-destination',
       'iam-access-key',
       'lambda-esm-self-managed-kafka',
+      'local-run-task-from-state',
       'secrets-array-nested',
       'secrets-dynamic-ref',
     ]);

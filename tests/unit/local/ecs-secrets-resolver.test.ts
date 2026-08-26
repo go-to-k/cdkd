@@ -169,4 +169,72 @@ describe('resolveEcsSecrets', () => {
       ])
     ).rejects.toThrow(/not valid JSON/);
   });
+
+  // Issue #2189: V8 embeds a ~10-char prefix of the PARSED INPUT in
+  // `SyntaxError.message` (`Unexpected token 's', "supersecre"... is not
+  // valid JSON`). Interpolating that message put the secret plaintext on
+  // stderr. Each test below pairs the negative assertion (the leaked
+  // substring is absent) with a positive one (the actionable context
+  // survives) so an unrelated failure cannot satisfy it on its own.
+  it('does not echo the secret plaintext prefix in the invalid-JSON error', async () => {
+    const secret = 'supersecretpassword12345';
+    // What V8 would splice into the message: the first character it choked
+    // on, and the 10-char quoted prefix.
+    expect(secret.slice(0, 10)).toBe('supersecre');
+    sends.secrets.mockResolvedValueOnce({ SecretString: secret });
+
+    const err = await resolveEcsSecrets([
+      {
+        containerName: 'app',
+        name: 'DB_PASS',
+        valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:foo:password::',
+      },
+    ]).then(
+      () => {
+        throw new Error('expected resolveEcsSecrets to reject');
+      },
+      (e: unknown) => e as Error
+    );
+
+    expect(err).toBeInstanceOf(EcsSecretsResolutionError);
+    // Negative: no secret-derived text survives anywhere in the message.
+    expect(err.message).not.toContain('supersecre');
+    expect(err.message).not.toContain(secret);
+    expect(err.message).not.toContain("Unexpected token 's'");
+    // Positive: the message is still actionable — it names the container,
+    // the env var, the requested json-key and a safe discriminator.
+    expect(err.message).toContain("Container 'app'");
+    expect(err.message).toContain("'DB_PASS'");
+    expect(err.message).toContain("'password'");
+    expect(err.message).toContain('not valid JSON');
+    expect(err.message).toContain('SyntaxError');
+  });
+
+  it('does not echo a SHORT secret, which V8 quotes in full rather than truncating', async () => {
+    // V8 only appends `...` when the input exceeds its prefix window; a
+    // short value is quoted whole (`Unexpected token 'o', "shortpw" is not
+    // valid JSON`), so this is a second, distinct leak shape.
+    const secret = 'shortpw';
+    sends.secrets.mockResolvedValueOnce({ SecretString: secret });
+
+    const err = await resolveEcsSecrets([
+      {
+        containerName: 'web',
+        name: 'TOKEN',
+        valueFrom: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:foo:tok::',
+      },
+    ]).then(
+      () => {
+        throw new Error('expected resolveEcsSecrets to reject');
+      },
+      (e: unknown) => e as Error
+    );
+
+    expect(err).toBeInstanceOf(EcsSecretsResolutionError);
+    expect(err.message).not.toContain(secret);
+    expect(err.message).toContain("'web'");
+    expect(err.message).toContain("'TOKEN'");
+    expect(err.message).toContain("'tok'");
+    expect(err.message).toContain('not valid JSON');
+  });
 });

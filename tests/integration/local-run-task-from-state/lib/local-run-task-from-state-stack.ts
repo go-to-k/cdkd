@@ -223,5 +223,66 @@ export class LocalRunTaskFromStateStack extends cdk.Stack {
       ],
     });
     envTaskDef.overrideLogicalId('EnvTaskDef');
+
+    // --- Issue #2189: a `:json-key:` reference to a NON-JSON secret ------
+    //
+    // `resolveEcsSecrets` used to interpolate the raw `JSON.parse` failure
+    // into its own error, and V8 embeds a prefix of the PARSED INPUT in
+    // `SyntaxError.message` -- so the secret plaintext reached stderr. No
+    // fixture reached that branch: EnvTaskDef above references the whole
+    // secret (no json-key) and MySecret's value IS valid JSON, so both
+    // halves of the precondition were missing.
+    //
+    // This secret's value is a deliberately NON-JSON literal, committed in
+    // the clear because verify.sh has to grep for its ABSENCE from the
+    // failure output. It is fixture data, never a credential: nothing is
+    // authorized by it. The literal is chosen to collide with no other
+    // needle this fixture asserts on (the step-4c assertions are all
+    // `TABLE_*` / `ENDPOINT` / `JOINED` / `DB_SECRET_LEN`).
+    const plainSecret = new sm.Secret(this, 'PlainSecret', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      secretStringValue: cdk.SecretValue.unsafePlainText(
+        'cdkd2189plaintextnotjson-abcdefghijklmnop'
+      ),
+    });
+    (plainSecret.node.defaultChild as sm.CfnSecret).overrideLogicalId('PlainSecret');
+
+    const jsonKeyExecRole = new iam.Role(this, 'JsonKeyTaskDefExecRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'service-role/AmazonECSTaskExecutionRolePolicy'
+        ),
+      ],
+    });
+    plainSecret.grantRead(jsonKeyExecRole);
+    (jsonKeyExecRole.node.defaultChild as iam.CfnRole).overrideLogicalId('JsonKeyTaskDefExecRole');
+
+    const jsonKeyTaskDef = new ecs.CfnTaskDefinition(this, 'JsonKeyTaskDef', {
+      family: 'cdkd-local-run-task-from-state-jsonkey-fixture',
+      requiresCompatibilities: ['EC2'],
+      networkMode: 'bridge',
+      executionRoleArn: jsonKeyExecRole.roleArn,
+      containerDefinitions: [
+        {
+          name: 'jsonkey',
+          image: 'public.ecr.aws/docker/library/busybox:1.36',
+          essential: true,
+          memory: 64,
+          // The container never starts: resolution fails first. The command
+          // is here only so a REGRESSION (resolution unexpectedly
+          // succeeding) prints something verify.sh can recognise rather
+          // than hanging.
+          command: ['sh', '-c', 'echo "UNEXPECTED_RESOLUTION_SUCCEEDED"'],
+          // The ECS `:json-key:` form: ARN, then the key, then the empty
+          // version-stage / version-id fields. cdkd fetches the secret,
+          // finds it is not JSON, and refuses.
+          secrets: [
+            { name: 'DB_PASS', valueFrom: `${plainSecret.secretArn}:password::` },
+          ],
+        },
+      ],
+    });
+    jsonKeyTaskDef.overrideLogicalId('JsonKeyTaskDef');
   }
 }
