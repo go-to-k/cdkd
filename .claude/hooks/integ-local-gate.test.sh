@@ -282,8 +282,29 @@ run_case "git merge octopus falls through to verify" 2 \
 #
 # BOTH DIRECTIONS are driven below, and the ACCEPT direction is the one that
 # matters here: a guard fenced only on "refuses what it must" cannot see an
-# over-tightening, and this defect IS an over-tightening. Case A is the only
-# case that would have failed against the pre-fix hook by PASSING a merge.
+# over-tightening, and this defect IS an over-tightening.
+#
+# READ THIS BEFORE DELETING ANY CASE BELOW AS REDUNDANT. An earlier revision of
+# this comment claimed "Case A is the only case that would have failed against
+# the pre-fix hook by PASSING a merge". That was false, and false in the
+# dangerous direction: measured by swapping in the origin/main hook + lib, case
+# A PASSED against the pre-fix hook, so it fenced nothing, and A2 -- the
+# NEGATIVE grep -- was the only thing holding the accept direction at all. A
+# maintainer trusting the old sentence would have deleted A2 as redundant and
+# removed the entire fence.
+#
+# Two causes, both now fixed: the markgate shim returns `fresh` for ANY gate
+# name, so exit 0 alone cannot discriminate; and the argv needle `verify integ`
+# is a strict SUBSTRING of `verify integ-local`, the very string it exists to
+# reject. The argv file is joined with `tr '\n' '|'`, so every needle below is
+# anchored with a trailing `|` (`verify integ|`) and no longer matches its own
+# counter-example. Verified: under probe P6 the argv is
+# `verify integ-local|status integ|`, which does NOT contain `verify integ|`.
+#
+# The cases that legitimately pass against the pre-fix hook are the two
+# FAIL-CLOSED regression guards ("unparsable config ..." and "target declaring
+# integ-local ..."): their whole assertion is that the new code still behaves
+# like the old one. Probes P3/P4 are what fence those, not a pre-fix delta.
 #
 # The cases assert the markgate ARGV, not only the exit code. A gate pointed at
 # the wrong marker is indistinguishable from a working one by exit code, message
@@ -310,7 +331,12 @@ cat > "$X_SHIM/markgate" <<MG_EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$MG_ARGV"
 case "\$1" in
-  verify) [ "\${MG_VERDICT:-stale}" = fresh ] && exit 0; exit 1 ;;
+  verify)
+    # 2 is markgate's "could not EVALUATE" (hash: diff base unresolvable / no
+    # delta), which needs the OPPOSITE remedy to a stale marker.
+    [ "\${MG_VERDICT:-stale}" = error ] && exit 2
+    [ "\${MG_VERDICT:-stale}" = fresh ] && exit 0
+    exit 1 ;;
   status)
     if [ "\${MG_VERDICT:-stale}" = fresh ]; then
       printf 'key:        %s\nstate:      match\n' "\$2"
@@ -398,7 +424,7 @@ mk_repo "$own_repo" "https://github.com/go-to-k/cdk-local.git" check integ-local
 # A. THE DEFECT. Sibling repo, its own equivalent gate FRESH -> the merge must
 #    proceed. Pre-fix this asked for `integ-local`, which cannot exist there, so
 #    it exited 2 no matter what had been verified.
-run_x "sibling with fresh equivalent gate ACCEPTS the merge" 0 fresh - - "verify integ" \
+run_x "sibling with fresh equivalent gate ACCEPTS the merge" 0 fresh - - "verify integ|" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$sib_repo")"
 
 # A2. And it asked about THAT gate rather than acquiring a second marker: a gate
@@ -415,12 +441,16 @@ fi
 # B. Sibling repo, its equivalent gate STALE -> still refused, but with a
 #    SATISFIABLE instruction naming the gate that repo actually has.
 run_x "sibling with stale equivalent gate refuses, naming ITS gate" 2 stale \
-  "its gate    : integ" "the \`integ-local\` marker is stale" "verify integ" \
+  "its gate    : integ" "the \`integ-local\` marker is stale" "verify integ|" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$sib_repo")"
 
 # B2. The refusal must carry the command that refreshes it in that repo.
+# `/run-integ local-` alone does NOT discriminate: the pre-fix canonical refusal
+# prints `/run-integ local-invoke` too, so this case passed against the old hook
+# and fenced nothing. `/run-integ local-<test>` is the ALIAS row's own text and
+# appears in no other message.
 run_x "sibling stale refusal names the command to run there" 2 stale \
-  "/run-integ local-" - - \
+  "/run-integ local-<test>" - - \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$sib_repo")"
 
 # C. SAFETY: the mapping is keyed on the repo, not on the gate name. An unmapped
@@ -446,11 +476,11 @@ run_x "checkout with no .markgate.yml refuses actionably" 2 fresh \
 #    UNDETERMINABLE, not "no such gate": the hook keeps the cdkd gate name, so a
 #    config this parser does not understand can never route a merge elsewhere.
 run_x "unparsable config keeps the cdkd gate name (fail closed)" 2 stale \
-  "integ-local" - "verify integ-local" \
+  "integ-local" - "verify integ-local|" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$empty_cfg_repo")"
 
 # G. A repo that DOES declare integ-local uses it, mapping row or not.
-run_x "target declaring integ-local uses it, not the alias" 0 fresh - - "verify integ-local" \
+run_x "target declaring integ-local uses it, not the alias" 0 fresh - - "verify integ-local|" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$own_repo")"
 
 # H. The scope guard still runs FIRST: a sibling PR touching no local file
@@ -476,6 +506,48 @@ else
   fail=$((fail + 1)); printf 'FAIL sibling PR out of local scope (rc=%s argv=%s)\n' "$x_rc" "$(tr '\n' '|' < "$MG_ARGV")"
   fail_log+="FAIL sibling PR out of local scope: rc=$x_rc out=$x_out\n"
 fi
+
+# J. THE SLUG CARRIES THE HOST (go-to-k/cdkd#2236 review, item 3). A DIFFERENT
+#    forge with the same owner/name must not inherit cdk-local's alias. Driven
+#    with a FRESH verdict, so a host-blind key would exit 0 here.
+gitlab_repo="$TMPDIR/x-gitlab"
+mk_repo "$gitlab_repo" "https://gitlab.com/go-to-k/cdk-local.git" check docs integ
+run_x "same owner/name on a DIFFERENT host is not the mapped repo" 2 fresh \
+  "declares no gate" - NONE \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$gitlab_repo")"
+
+# K. A local-path remote carries no host, so it is unkeyable and must refuse
+#    rather than reduce to the same owner/name.
+path_repo="$TMPDIR/x-pathremote"
+mk_repo "$path_repo" "/srv/mirrors/go-to-k/cdk-local" check docs integ
+run_x "local-path remote is unkeyable, not the mapped repo" 2 fresh \
+  "declares no gate" - NONE \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$path_repo")"
+
+# K2. ...and the refusal must not paste a sentence into the suggested row.
+run_x "unkeyable remote yields a placeholder row, not prose" 2 fresh \
+  "<host>/<owner>/<repo>|integ-local|" - NONE \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$path_repo")"
+
+# L. The scp-like SSH spelling must still resolve to the mapped repo -- the
+#    host parse must not break the form git actually writes for SSH remotes.
+ssh_repo="$TMPDIR/x-ssh"
+mk_repo "$ssh_repo" "git@github.com:go-to-k/cdk-local.git" check docs integ
+run_x "scp-like SSH remote resolves to the mapped repo" 0 fresh - - "verify integ|" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$ssh_repo")"
+
+# M. EXIT 2 IS NOT STALENESS (review item 1). The one alias that exists is a
+#    `hash: diff` gate, so exit 2 is its NORMAL verdict from a base tree. The
+#    refusal must give the exit-2 remedy and must NOT send the reader to run a
+#    Docker integ, which cannot clear it -- `markgate set` fails the same way.
+run_x "alias gate exit 2 gives the evaluation remedy" 2 error \
+  "git fetch origin" "/run-integ local-<test>" "verify integ|" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$sib_repo")"
+
+# M2. And it says so in the words that distinguish it from a stale marker.
+run_x "alias gate exit 2 says it is not a stale marker" 2 error \
+  "could not EVALUATE" - - \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$sib_repo")"
 
 # I. PARSER FENCE against the REAL config this repo ships. A parser that
 #    answered "not declared" for cdkd's own `integ-local` would silently route

@@ -43,6 +43,7 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_resolve_marker_gate >/dev/null \
   || ! declare -F gate_refuse_no_equivalent_marker >/dev/null \
   || ! declare -F gate_refuse_stale_alias_marker >/dev/null \
+  || ! declare -F gate_refuse_unevaluable_marker >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -254,40 +255,29 @@ if [ "$status" -eq 0 ]; then
   exit 0
 fi
 
-if [ "$__mode" = "alias" ]; then
-  gate_refuse_stale_alias_marker "integ-destroy-gate" "integ-destroy" "$target_dir" \
-    "$__gate" "$__gate_fix" \
-    "deletion logic (provider delete(), destroy.ts, dag-builder, rollback-executor)"
-fi
-
 # markgate 0.4's `hash: diff` adds a THIRD outcome: exit 2 is a hard
 # evaluation error, not a stale marker. It fires when `origin/main`
 # cannot be resolved (never fetched, shallow clone with no merge base)
 # or when this branch has no delta against the merge base at all.
-# Neither is fixed by running an integ -- `markgate set integ-destroy`
-# fails on exactly the same condition, so the generic "/run-integ"
-# advice below would burn a real-AWS run and leave the merge blocked
-# anyway. `markgate status` also errors on this path and prints no
-# `state:` line, so the reason extraction below would come back empty
-# and silently degrade to the wrong message. Name the real remedy.
+# Neither is fixed by running an integ -- `markgate set` fails on exactly
+# the same condition, so the generic "/run-integ" advice below would burn
+# a real-AWS run and leave the merge blocked anyway.
+#
+# THIS MUST STAY ABOVE THE ALIAS REFUSAL. It used to sit below it, which was
+# latent only because no `integ-destroy` alias row exists yet: adding one would
+# have silently routed every exit-2 verdict into the alias refusal's
+# "go run the integ" advice -- a trap laid for the next author
+# (go-to-k/cdkd#2236 review, item 2). The message is the SHARED one so all four
+# gates say the same thing, and it names `$__gate`, which is the alias when one
+# is in play rather than a cdkd gate name the target repo does not have.
 if [ "$status" -eq 2 ]; then
-  cat >&2 <<'EOF_ERR'
-Blocked by integ-destroy-gate: markgate could not EVALUATE the
-`integ-destroy` gate (exit 2). This is not a stale marker, and
-/run-integ will NOT fix it -- `markgate set` fails the same way.
+  gate_refuse_unevaluable_marker "integ-destroy-gate" "$__gate" "$target_dir"
+fi
 
-Likely cause and remedy:
-  * `origin/main` missing or stale in this worktree
-      git fetch origin
-  * shallow clone with no merge base against origin/main
-      git fetch --unshallow
-  * this branch has no delta against merge-base(origin/main, HEAD)
-      commit the work first, or run from a branch that is ahead of main
-
-Diagnose with:
-  mise exec -- markgate status integ-destroy
-EOF_ERR
-  exit 2
+if [ "$__mode" = "alias" ]; then
+  gate_refuse_stale_alias_marker "integ-destroy-gate" "integ-destroy" "$target_dir" \
+    "$__gate" "$__gate_fix" \
+    "deletion logic (provider delete(), destroy.ts, dag-builder, rollback-executor)"
 fi
 
 # Extract the parenthesized reason from `markgate status integ-destroy` so

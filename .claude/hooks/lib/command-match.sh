@@ -1299,13 +1299,21 @@ cmd_last_cd_target() {
 # cdk-local names its Docker local-execution gate `integ` -- fails that verify
 # NO MATTER WHAT, so the merge became unsatisfiable by any legitimate action.
 #
-# Measured 2026-08-26 with markgate 0.4.1: markgate gives the caller NO way to
-# tell "this repo does not declare that gate" from "the marker is stale".
+# Measured 2026-08-26 with markgate 0.4.1: NO PER-GATE query distinguishes
+# "this repo does not declare that gate" from "the marker is stale".
 # `verify <undeclared>` exits 1 with no output, and `status <undeclared>` exits
 # 1 printing `state: no marker` -- byte-identical to a declared-but-unset gate.
-# There is also no `config list` / `gates` subcommand. So the definedness
-# question can only be answered by reading `.markgate.yml` directly, which is
-# what gate_markgate_declares does.
+# That is the decisive fact, because a gate hook asks about ONE named gate.
+#
+# markgate is not blind to definedness in general: BARE `markgate status` lists
+# every gate and tags the declared ones `(configured)` (rc=1, ~2s on this repo).
+# It is not used here for two reasons -- it is a whole extra subprocess on every
+# gated merge in a PreToolUse hook, and it needs markgate resolvable in the
+# target repo before the definedness question can even be asked, whereas reading
+# the config does not. Do not repeat the earlier, wider claim that markgate
+# "cannot answer definedness at all": it can, just not per-gate, and a future
+# author who finds `markgate status` should not conclude this rationale was
+# sloppy. `gate_markgate_declares` reads `.markgate.yml` directly.
 #
 # WHY AN EXPLICIT PER-REPO TABLE RATHER THAN DISCOVERY. Discovering "the gate
 # that means the same thing" from the target's `.markgate.yml` needs a property
@@ -1320,7 +1328,8 @@ cmd_last_cd_target() {
 # DECLARED, keyed on the target repo as well as the gate name, and an unknown
 # repo gets a refusal rather than a guess.
 #
-# GATE_MARKER_ALIASES rows: <repo-slug>|<cdkd gate>|<that repo's gate>|<how to refresh it there>
+# GATE_MARKER_ALIASES rows: <host>/<owner>/<repo>|<cdkd gate>|<that repo's gate>|<how to refresh it there>
+# The slug carries the HOST on purpose -- see gate_repo_slug.
 #
 # Only same-PURPOSE pairs belong here. `integ-destroy` / `integ-broad` /
 # `integ-schema-migration` deliberately have NO row: neither sibling has a
@@ -1328,7 +1337,7 @@ cmd_last_cd_target() {
 # them onto cdk-local's Docker `integ` (or cdk-real-drift's read-only one) would
 # accept a marker that never exercised the code being gated.
 GATE_MARKER_ALIASES='
-go-to-k/cdk-local|integ-local|integ|/run-integ local-<test> (cdk-local'"'"'s /run-integ sets its integ marker after a clean Docker run with an empty container / network sweep)
+github.com/go-to-k/cdk-local|integ-local|integ|/run-integ local-<test> (cdk-local'"'"'s /run-integ sets its integ marker after a clean Docker run with an empty container / network sweep)
 '
 
 # gate_markgate_declares <repo-top> <gate-name>
@@ -1394,21 +1403,59 @@ gate_markgate_declared_gates() {
 
 # gate_repo_slug <dir>
 #
-# Prints `<owner>/<name>` for the checkout's `origin` remote, or exits 1 when
-# there is no origin (a local-only fixture repo). Used only to key the alias
-# table, so "unknown" degrades to "no alias declared" -- a refusal, never a pass.
+# Prints `<host>/<owner>/<name>` for the checkout's `origin` remote, or exits 1
+# when there is no origin, or when the URL carries no HOST (a local-path remote
+# such as `/srv/mirrors/go-to-k/cdk-local`, or a bare relative path).
+#
+# THE HOST IS PART OF THE KEY, and dropping it reopened the exact hole this
+# table exists to close: `https://gitlab.com/go-to-k/cdk-local.git` and a local
+# clone at `/x/go-to-k/cdk-local` both reduce to `go-to-k/cdk-local`, so an
+# unrelated repository that merely shares a path tail would inherit cdk-local's
+# alias and be merged on its marker. An unkeyable remote returns 1, which
+# degrades to "no alias declared" -- a refusal, never a guess.
+#
+# Handles the three spellings git actually produces:
+#   https://github.com/o/r(.git)      scp-like  git@github.com:o/r(.git)
+#   ssh://git@github.com/o/r(.git)
 gate_repo_slug() {
-  local url name rest owner
+  local url host path name owner rest
   url=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || return 1
   [ -n "$url" ] || return 1
   url="${url%.git}"
   url="${url%/}"
-  name="${url##*/}"
-  rest="${url%/*}"
-  owner="${rest##*[:/]}"
-  [ -n "$owner" ] && [ -n "$name" ] || return 1
-  [ "$owner" != "$url" ] || return 1
-  printf '%s/%s' "$owner" "$name"
+
+  case "$url" in
+    *://*)
+      rest="${url#*://}"
+      host="${rest%%/*}"
+      path="${rest#*/}"
+      [ "$path" = "$rest" ] && return 1
+      ;;
+    *:*/*)
+      host="${url%%:*}"
+      path="${url#*:}"
+      ;;
+    *)
+      # No host at all: a local filesystem path. NOT keyable.
+      return 1
+      ;;
+  esac
+
+  host="${host#*@}"          # strip any user@
+  host="${host%%:*}"         # strip any :port
+  case "$host" in
+    ""|*/*|*" "*) return 1 ;;
+    *.*) ;;
+    localhost) ;;
+    *) return 1 ;;
+  esac
+
+  path="${path#/}"
+  name="${path##*/}"
+  rest="${path%/*}"
+  owner="${rest##*/}"
+  [ -n "$owner" ] && [ -n "$name" ] && [ "$owner" != "$name" ] || return 1
+  printf '%s/%s/%s' "$host" "$owner" "$name"
 }
 
 # gate_resolve_marker_gate <target-dir> <cdkd-gate>
@@ -1424,14 +1471,25 @@ gate_repo_slug() {
 # whenever definedness cannot be determined, so the cdkd repo's own path is
 # unchanged in every case. Always exits 0; the caller decides what `none` means.
 gate_resolve_marker_gate() {
-  local dir="$1" gate="$2" top slug row alias_gate alias_fix rc
+  # `row_*` are the loop's read targets and MUST be declared here: without it
+  # they leak into the caller's shell as globals.
+  local dir="$1" gate="$2" top slug alias_gate alias_fix rc
+  local row_slug row_gate row_alias row_fix
+  alias_gate=""
+  alias_fix=""
   top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top=""
   if [ -z "$top" ]; then
     printf 'canonical\t%s\t\n' "$gate"
     return 0
   fi
-  gate_markgate_declares "$top" "$gate"
-  rc=$?
+  # `if`, not a bare call + `rc=$?`: this file's convention (see gate_matches /
+  # cmd_last_cd_target) is that a non-zero return must never escape to a caller
+  # running under `set -e`.
+  if gate_markgate_declares "$top" "$gate"; then
+    rc=0
+  else
+    rc=$?
+  fi
   # 0 = declared, 2 = undeterminable. Both keep the cdkd name (fail closed).
   if [ "$rc" -ne 1 ]; then
     printf 'canonical\t%s\t\n' "$gate"
@@ -1446,9 +1504,15 @@ gate_resolve_marker_gate() {
       alias_gate="$row_alias"
       alias_fix="$row_fix"
       break
-    done <<GATE_ALIAS_EOF
-$GATE_MARKER_ALIASES
-GATE_ALIAS_EOF
+    # A quoted here-string, NOT a heredoc. Review asked for `<<'GATE_ALIAS_EOF'`
+    # so a row carrying `$` / a backtick / a backslash cannot be expanded --
+    # right intent, wrong mechanism: the heredoc BODY here is the single token
+    # `$GATE_MARKER_ALIASES`, so quoting the delimiter stops the table variable
+    # expanding at all and the loop reads the literal name. `<<< "$VAR"`
+    # expands the variable exactly once and passes its CONTENT through
+    # uninterpreted, which is what was actually wanted. Not a pipe, so the loop
+    # still runs in this shell and its assignments survive.
+    done <<< "$GATE_MARKER_ALIASES"
   fi
   # The alias must itself be DECLARED there; a table row that has gone stale
   # against the sibling's config must not send the merge to a marker that does
@@ -1467,15 +1531,25 @@ GATE_ALIAS_EOF
 # cdkd gate: in this repo that gate cannot exist, which is the whole defect of
 # go-to-k/cdkd#2236. It names the mapping row to add instead. EXITS the hook (2).
 gate_refuse_no_equivalent_marker() {
-  local gate="$1" cdkd_gate="$2" dir="$3" scope="$4" top slug
+  local gate="$1" cdkd_gate="$2" dir="$3" scope="$4" top slug slug_shown row_key
   top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top="$dir"
-  slug=$(gate_repo_slug "$dir" 2>/dev/null) || slug="no origin remote"
+  # Two different strings on purpose. `slug_shown` is prose and may say why
+  # there is no slug; `row_key` is pasted into a config row, so when the remote
+  # is unkeyable it must be a PLACEHOLDER, not a sentence -- splicing
+  # "no origin remote" there produced an unusable row the reader would copy.
+  if slug=$(gate_repo_slug "$dir" 2>/dev/null); then
+    slug_shown="$slug"
+    row_key="$slug"
+  else
+    slug_shown="origin remote missing or not host-qualified"
+    row_key="<host>/<owner>/<repo>"
+  fi
   {
     echo "Blocked by $gate: this merge touches $scope, which cdkd requires to be"
     echo "verified before it reaches main -- but the repository this command targets"
     echo "declares no gate for that verification, so there is no marker to refresh."
     echo ""
-    echo "  target repo : $top ($slug)"
+    echo "  target repo : $top ($slug_shown)"
     echo "  cdkd gate   : $cdkd_gate -- NOT declared in $top/.markgate.yml"
     echo ""
     echo "cdkd's gate policy deliberately applies to commands this session runs"
@@ -1485,7 +1559,7 @@ gate_refuse_no_equivalent_marker() {
     echo "  1. That repo already verifies this under a DIFFERENT gate name: record"
     echo "     the mapping once, in GATE_MARKER_ALIASES in"
     echo "     .claude/hooks/lib/command-match.sh, as one row"
-    echo "       $slug|$cdkd_gate|<that repo's gate>|<command that refreshes it>"
+    echo "       $row_key|$cdkd_gate|<that repo's gate>|<command that refreshes it>"
     echo "     then run that command in that repo and retry the merge."
     echo "  2. That repo does not verify this at all: add the gate and its setter"
     echo "     skill there first -- the change is genuinely unverified."
@@ -1523,6 +1597,50 @@ gate_refuse_stale_alias_marker() {
     echo "Do NOT run 'markgate set' by hand to get past this, and do not re-run the"
     echo "merge from another checkout: cdkd applies this policy to whichever tree the"
     echo "command targets, precisely so an unverified code path cannot reach main."
+  } >&2
+  exit 2
+}
+
+# gate_refuse_unevaluable_marker <gate-name> <gate> <target-dir> [diagnose-cmd-prefix]
+#
+# markgate exit 2 is "could not EVALUATE this gate", NOT "the marker is stale",
+# and the two need OPPOSITE remedies. Under `hash: diff` it fires when
+# `origin/main` will not resolve (never fetched, shallow clone, no merge base)
+# or when the branch has no delta against the merge base at all -- and
+# `markgate set` fails on exactly the same condition, so the ordinary
+# "go run the integ" advice burns a real Docker / AWS run and leaves the merge
+# blocked anyway. `markgate status` also errors here and prints no `state:`
+# line, so a reason extraction downstream comes back empty and silently
+# degrades to the wrong message.
+#
+# THIS MUST BE CONSULTED BEFORE THE ALIAS REFUSAL, in every gate. The one alias
+# that exists (cdk-local's `integ`) is a `hash: diff` gate, so exit 2 is its
+# NORMAL verdict when the command runs from that repo's base tree -- measured
+# 2026-08-26: `markgate verify integ` there exits 2 with "no delta against
+# merge-base(origin/main, HEAD)". Reporting that as "not fresh -- go run
+# /run-integ local-<test>" is the precise mistake integ-destroy-gate has
+# documented as wrong since it grew its own exit-2 branch. EXITS the hook (2).
+gate_refuse_unevaluable_marker() {
+  local gate="$1" mgate="$2" dir="$3" diagnose="${4:-mise exec -- markgate}"
+  {
+    echo "Blocked by $gate: markgate could not EVALUATE the \`$mgate\` gate"
+    echo "(exit 2). This is NOT a stale marker, and running the integ will NOT fix"
+    echo "it -- \`markgate set\` fails on the very same condition."
+    echo ""
+    echo "  target repo : $dir"
+    echo "  gate        : $mgate"
+    echo ""
+    echo "Likely cause and remedy:"
+    echo "  * \`origin/main\` missing or stale in this worktree"
+    echo "      git fetch origin"
+    echo "  * shallow clone with no merge base against origin/main"
+    echo "      git fetch --unshallow"
+    echo "  * this branch has no delta against merge-base(origin/main, HEAD)"
+    echo "      commit the work first, or run from a branch that is ahead of main"
+    echo "    (a \`hash: diff\` gate CANNOT be evaluated on the base branch itself)"
+    echo ""
+    echo "Diagnose with:"
+    echo "  $diagnose status $mgate"
   } >&2
   exit 2
 }

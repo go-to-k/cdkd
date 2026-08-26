@@ -345,13 +345,23 @@ the DIFF touch this gate's scope?", and cdk-local's entire runtime lives under
 `src/local/`, so it answers yes and hands the merge to the blocking path. The
 question nobody was asking is "does the TARGET repo DECLARE this gate?".
 
-**markgate cannot answer that question, measured rather than assumed** (0.4.1,
-2026-08-26): `verify <undeclared>` exits 1 with no output, and
+**No PER-GATE markgate query answers that question, measured rather than
+assumed** (0.4.1, 2026-08-26): `verify <undeclared>` exits 1 with no output, and
 `status <undeclared>` exits 1 printing `state: no marker` -- byte-identical to a
-declared-but-unset gate. There is no `config list` / `gates` subcommand either
-(`markgate config` has only `lint`). So definedness can only be answered by
-reading the target's own `.markgate.yml`, which is what
-`gate_markgate_declares` in `lib/command-match.sh` does.
+declared-but-unset gate. That is the decisive fact, because a gate hook asks
+about ONE named gate.
+
+Be precise about the scope of that claim: markgate is **not** blind to
+definedness in general. **Bare `markgate status` lists every gate and tags the
+declared ones `(configured)`**, exiting rc=1 in about 2 s on this repo. (An
+older memory rule saying bare `status` hangs for minutes is stale for 0.4.1.)
+It is not used here for two reasons -- it is a whole extra subprocess on every
+gated merge inside a PreToolUse hook, and it needs markgate resolvable in the
+TARGET repo before the definedness question can even be asked, whereas reading
+the config does not. Do not restate this as "markgate cannot answer definedness":
+a future author who finds `markgate status` would reasonably conclude the whole
+rationale was sloppy. `gate_markgate_declares` in `lib/command-match.sh` reads
+the target's own `.markgate.yml`.
 
 **The mapping is DECLARED, keyed on the repo as well as the gate, not
 discovered.** Discovery needs a property separating "the gate that means the
@@ -396,10 +406,31 @@ in REACHABILITY and in whether an alias exists:
 | `integ-local` | YES -- cdk-local's whole runtime is `src/local/**` / `src/cli/commands/local-*.ts`; demonstrated live | `go-to-k/cdk-local` -> `integ` |
 | `integ-destroy` | not today -- neither sibling has `src/provisioning/**`, `src/deployment/**` or `src/analyzer/**` | none: neither sibling has a destroy path, so their `integ` never exercised a delete |
 | `integ-broad` | not today -- same paths | none: the marker is bound to a broad-set real-AWS sentinel with no sibling counterpart |
-| `integ-schema-migration` | not today -- neither sibling has `src/types/state.ts` | none: neither persists a versioned state document |
+| `integ-schema-migration` | not today, but by a WEAKER guarantee than the others -- see below | none: neither sibling ships a schema whose bump this marker could attest to |
 
-"Not reachable today" is a property of the siblings' current file layout, not of
-the gate, so it is not a reason to leave the shape in place.
+**The `integ-schema-migration` row earned a correction, and the correction is
+the interesting part.** An earlier revision of this table said "neither sibling
+has `src/types/state.ts`". That is FALSE: `/Users/goto/pc/github/cdk-local/src/types/state.ts`
+exists, is 15 KB, and carries `STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7`.
+The gate's FILE-path scope check therefore matches cdk-local exactly. What keeps
+it inert is only the second half of its activation test -- the diff-content
+regexes -- and both score 0 against that file for incidental spelling reasons:
+
+- `version:\s*\d+(\s*\|\s*\d+)+` misses because the union is spelled
+  `export type StateSchemaVersion = 1 | 2 | ...` (an `=`, not a `version:` key),
+  and the record field is `version: StateSchemaVersion`, a type name rather than
+  numeric literals.
+- `STATE_SCHEMA_VERSION\s*=\s*\d+` misses because the constants are
+  `STATE_SCHEMA_VERSION_CURRENT` / `_LEGACY`, so `_CURRENT` intervenes before
+  the `=`.
+
+So the conclusion "not reachable today" still holds, but it rests on a rename
+away from flipping rather than on the file being absent -- a materially weaker
+guarantee than the other two rows, which is why this row is annotated rather
+than lumped in with them. Re-measure it rather than trusting this paragraph.
+
+"Not reachable today" is in every case a property of the siblings' current file
+layout, not of the gate, so it is not a reason to leave the shape in place.
 
 **The other four markgate gates are NOT affected, and that is a measurement
 rather than an assumption.** Comparing the three `gates:` blocks: cdkd declares
@@ -412,14 +443,53 @@ the cdkd-only names are exactly the four fixed here. Re-run that comparison
 before assuming it still holds -- a gate renamed in any of the three repos puts
 its hook back into this class.
 
-Driven in BOTH directions by `.claude/hooks/integ-local-gate.test.sh` (13 added
+**Three further defects came out of review round 1, all in the alias path.**
+
+- **Exit 2 is not staleness, and the alias is where that bites.** markgate exits
+  2 for "could not EVALUATE" (`hash: diff` with an unresolvable base, or no
+  delta against the merge base) and `markgate set` fails on the same condition,
+  so the "go run the integ" remedy burns a real Docker / AWS run and leaves the
+  merge blocked. The one alias that exists points at cdk-local's `integ`, a
+  `hash: diff` gate, so exit 2 is its NORMAL verdict from that repo's base tree
+  (measured: `no delta against merge-base(origin/main, HEAD)`). All four gates
+  now branch on `status -eq 2` into the shared `gate_refuse_unevaluable_marker`.
+- **That branch must sit ABOVE the alias refusal.** In `integ-destroy-gate` it
+  originally sat below, which was latent only because no `integ-destroy` alias
+  row exists -- adding one later would have silently disabled the exit-2
+  message. Ordering is now identical in all four: rc 0 -> pass, rc 2 ->
+  unevaluable, alias -> alias refusal, else canonical.
+- **The slug carries the HOST.** `gate_repo_slug` returned `<owner>/<name>`, so
+  `https://gitlab.com/go-to-k/cdk-local` and a local clone at
+  `/x/go-to-k/cdk-local` both matched cdk-local's row -- an unrelated repo
+  inheriting the alias, which is precisely the guessing this table exists to
+  prevent. It now returns `<host>/<owner>/<name>` and refuses to key a remote
+  with no host at all.
+
+Driven in BOTH directions by `.claude/hooks/integ-local-gate.test.sh` (19 added
 cases) and four cases each in the three sibling suites. The ACCEPT direction is
 the one that matters, since the defect is an over-tightening and a guard fenced
 only on "refuses what it must" cannot see one. The sibling suites drive their
 "a repo declaring only its own `integ` is NOT accepted on it" case with a FRESH
 verdict, so a hook that guessed an alias by name would exit 0 and fail the case.
-Eleven mutation probes were taken and every one went RED, with a comment-only
+Sixteen mutation probes were taken and every one went RED, with a comment-only
 control that did not.
+
+**Two of the accept-direction cases were VACUOUS when first written**, and only
+a pre-fix comparison found it -- the probes did not. Measured by swapping in the
+origin/main hook + lib: the "sibling with fresh equivalent gate ACCEPTS" case
+and the "names the command to run there" case both PASSED against the pre-fix
+hook, so they fenced nothing. Three separate causes, all now fixed: the markgate
+shim returns `fresh` for ANY gate name, so exit 0 alone cannot discriminate; the
+argv needle `verify integ` is a strict SUBSTRING of `verify integ-local`, the
+very string it exists to reject (this one also silently hollowed out the argv
+half of a THIRD case, which still failed on its stderr assertions and so looked
+healthy); and `/run-integ local-` appears in the pre-fix message too. The needles are now anchored on the argv joiner (`verify integ|`) and on
+alias-only text (`/run-integ local-<test>`). **Re-run the pre-fix swap after
+touching any of these cases** -- it is the only check that catches this class,
+and this is the same substring-confluence failure that hit three other lanes in
+the same session. The two cases that legitimately still pass pre-fix are the
+FAIL-CLOSED regression guards, whose whole assertion is that behaviour did not
+change; probes P3/P4 fence those instead.
 
 ## Class fences
 

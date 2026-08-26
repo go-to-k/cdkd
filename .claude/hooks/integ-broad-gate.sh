@@ -55,6 +55,7 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_resolve_marker_gate >/dev/null \
   || ! declare -F gate_refuse_no_equivalent_marker >/dev/null \
   || ! declare -F gate_refuse_stale_alias_marker >/dev/null \
+  || ! declare -F gate_refuse_unevaluable_marker >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -227,6 +228,15 @@ fi
 status=$?
 if [ "$status" -eq 0 ]; then
   exit 0
+fi
+
+# markgate exit 2 is "could not EVALUATE", not "stale", and the remedies are
+# OPPOSITE. This MUST come before the alias refusal below: the one alias that
+# exists is a `hash: diff` gate whose NORMAL verdict from a base tree is exit 2,
+# and the alias refusal would tell the reader to go run an integ, which cannot
+# clear it (go-to-k/cdkd#2236 review, items 1 + 2).
+if [ "$status" -eq 2 ]; then
+  gate_refuse_unevaluable_marker "integ-broad-gate" "$__gate" "$target_dir"
 fi
 
 if [ "$__mode" = "alias" ]; then
