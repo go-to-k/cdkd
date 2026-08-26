@@ -104,8 +104,8 @@ whatever its PR state**, and read what it owns before picking anything:
 git diff --stat origin/main...origin/<recent-branch>
 ```
 
-This is not belt-and-braces. On 2026-08-11 all three of the first probes reported
-a clear field while two lanes were actively writing:
+This is not belt-and-braces. On 2026-08-11 the first probes reported a clear
+field while two lanes were actively writing:
 `origin/fix/609-appsync-resolver-datasource-props` had been pushed **four minutes
 earlier** with no PR, no local branch and no worktree, and it owned both
 `appsync-provider.ts` and `scripts/gen-nested-key-coverage.ts` — the exact two files
@@ -258,10 +258,30 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   that had (go-to-k/cdkd#1980) having closed four minutes earlier. That grep costs
   one command at triage; the same discovery after claiming costs a worktree, a
   `pnpm install` and a gate round.
-- **An issue's premise may not be TRUE YET — resolve the body against the tree
-  before you write anything that depends on it.** The bullet above catches a body
-  whose work is already DONE. This is its mirror image and it is the commoner
-  direction here: a body written from an unmerged branch describes the state of
+- **Resolve EVERY issue's premise against the tree at CLAIM time, not at edit
+  time — a body can be already-done, not-yet-true, or simply WRONG, and all three
+  look identical from the title.** The bullet above catches one shape of this and
+  scopes it to MIRROR issues; the check is owed to every issue, and it belongs in
+  §4's claim turn rather than here, because by the time you are editing you have
+  already paid for a worktree, a `pnpm install` and a gate round. **One grep per
+  asserted symbol, file or behaviour is the whole cost.** Measured 2026-08-26 on a
+  single run: THREE of six claimed issues had a false premise, none of them a
+  mirror issue, and every one was one command away. go-to-k/cdkd#2004 asked for a
+  row in a generation table that `git show origin/main:<file>` already
+  contained — added under a DIFFERENT issue's PR, so no backlog search would have
+  surfaced it, and its own comment thread said so. go-to-k/cdkd#2212 asserted that
+  a `generateSecretString` value is persisted to `state.json`; the provider mints
+  it locally and returns the ARN alone, so acting on the body would have made four
+  fixtures sweep for a value that is not there. go-to-k/cdkd#2037 reported a
+  substring-matching gate that go-to-k/cdkd#2129 had already converged onto a
+  command-position matcher — all four reported shapes passed on the current tree.
+  Each stayed worth doing, but as a DIFFERENT change: a close-with-evidence, a
+  fenced exemption, and a regression fence respectively. Write what you found in
+  the claim comment and correct the issue body, so the next reader sees the tree
+  and the issue disagreed and which one won.
+
+  The remaining paragraphs cover the not-yet-true direction, which is the commoner
+  one here: a body written from an unmerged branch describes the state of
   THAT branch, and this repo's lanes routinely file a follow-up for a file their
   own allow-list excluded, minutes before the PR that creates the thing the
   follow-up talks about. So the issue is accurate about a tree that does not exist
@@ -723,8 +743,16 @@ implied. The CONCLUSION held, which is exactly why this is easy to ship: a
 right conclusion with an unreproducible measurement reads as evidence and is
 not.
 
-**A count RELAYED from a subagent's report is unearned in the same way, and it
-is the harder half — there is no command to paste, because you never ran one.**
+**Any CLAIM relayed from a subagent's report is unearned in the same way — not
+just a count — and it is the harder half, because there is no command to paste:
+you never ran one.** A count is only the easiest instance to catch; the shape
+covers any assertion about what the work DOES. Measured 2026-08-26: an agent
+reported that its hermeticity pins were "each probed adversarially", the
+orchestrator relayed that to the maintainer as evidence of verification depth,
+and a reviewer then measured it — the PATH decoy was created and never placed on
+PATH, and deleting six of the pins left the suite 65/65 green. Only `PATH` and
+`TMPDIR` were load-bearing. Nothing about that claim was numeric, so a
+count-shaped rule does not reach it.
 The rule above assumes the number came from a sweep you performed. The numbers
 that actually get published usually do not: they arrive inside a fan-out agent's
 summary or a reviewer's finding, already phrased as fact, and get copied onward
@@ -2316,6 +2344,27 @@ merging while yours sits open — on 2026-08-19 both remaining lanes went
 CONFLICTING on `docs/changelog-cdkd.md` between `gh pr create` and the first
 check. Rebase, force-push, and CI fires within ~30s.
 
+**"CI fires within ~30s" is the push-to-queue latency, not the time to a
+verdict, and the difference decides whether you can merge at all.** Measured
+2026-08-26: checks first APPEARED 10-13 minutes after a push (a runner-queue
+backlog, with a peer's PR getting runs immediately in the same window), and
+settled 6-10 minutes after that. With active peer lanes that total is LONGER
+than the interval between merges to `main`, so a lane that runs its post-rebase
+suite first and pushes second loses the race by construction — it arrives at
+green already CONFLICTING again. One PR took FOUR rebase cycles that way.
+**PUSH FIRST, then run the post-rebase suite while the queue drains**; the two
+are independent, and the suite still gates the merge. Then poll tightly and
+merge the moment it goes green.
+
+Two traps in the polling itself, both hit on that run. **"No pending checks" is
+not "checks passed"** — a PR with ZERO checks satisfies it, which is exactly the
+CONFLICTING state above, so an exit condition must require that checks EXIST and
+that none is pending. And `mergeable` is computed lazily: a `gh pr view` seconds
+after a push returns `UNKNOWN UNKNOWN`, which is neither a pass nor a conflict.
+Re-query rather than reading it as either. The `ci-green-gate` hook refuses a
+merge on "no checks reported" for the same reason, so a wrong poll costs a
+retry, not a bad merge.
+
 **FLATTEN BEFORE YOU REBASE — this is the default step, not a remedy to reach
 for once the conflicts start.** The changelog conflicts on nearly every
 parallel-lane rebase, and a commit-by-commit rebase re-conflicts on it ONCE PER
@@ -2349,6 +2398,25 @@ keep-both a SHARED paragraph: `.claude/rules/code-layout.md` conflicted on one
 bullet that both sides had edited, where main's version described this lane's own
 issue as still open. A word-level diff of the two sides is what shows whether you
 are looking at two additions or one contested sentence.
+
+**Keep-both also DUPLICATES any entry your side carries that main already has**,
+and the whole-file diff above does not catch it: the entry is present on both
+sides, so nothing goes missing and the `^<` check stays empty while the file
+gains a second copy. It happens because a flattened branch's changelog diff
+drags neighbouring entries into the conflict hunk as context. Measured
+2026-08-26: it fired on BOTH lanes of one run, duplicating an unrelated
+already-merged entry each time. Make the resolution mechanical rather than
+eyeballed — take main's side whole, then append only the lines of YOUR side that
+main does not already contain, and assert the residual:
+
+```bash
+# after resolving, before `git rebase --continue`
+grep -c "<a distinctive phrase from the entry you kept>" docs/changelog-cdkd.md   # must be 1
+diff <(git show origin/main:docs/changelog-cdkd.md) docs/changelog-cdkd.md | grep -c '^<'   # must be 0
+```
+
+The first line is the one that matters; the second only re-checks what the
+paragraph above already asks for.
 
 ```bash
 gh pr merge <n> --squash --delete-branch     # squash is the repo's only method
@@ -2935,7 +3003,16 @@ the run evidence behind it — or "no skill change" plus what held.
   tell was a COUNT, not an error — 123 tests without the `cd` against 143 with
   it — so a run that only reads rc cannot detect it. Prefix every verification
   command with `cd <worktree> &&`, and when a result is surprisingly clean,
-  check `pwd` before believing it. **When it has already happened, the two
+  check `pwd` before believing it. **A BACKGROUNDED call gets this wrong even
+  when you know the rule**, because the `cd` you were relying on came from an
+  earlier tool call and the backgrounded command starts from the session cwd,
+  which may have drifted. Measured twice on 2026-08-26: an orchestrator launched
+  a full `/check` that began in the MAIN tree (killed before it could report a
+  false green), and a lane agent's cwd silently moved into a DIFFERENT lane's
+  worktree mid-round. Make every long-running call print its own `pwd` as its
+  first line and read that line before the results — the receipt costs nothing
+  and is the only thing separating "green" from "green somewhere else".
+  **When it has already happened, the two
   obvious repairs are both refused**: `git checkout -- <path>` trips
   `dirty-path-restore-gate` (the stray edit IS uncommitted work, and the gate
   cannot know you have a copy elsewhere) and writing the file back trips
