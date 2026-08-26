@@ -394,7 +394,32 @@ async function destroyCommand(
     // signal landed in a window no runner handler spanned. Always call it at
     // the point of decision; assigning it to a local re-creates the
     // sampled-once channel this issue is about.
+    //
+    // The `interrupted ||` disjunct looks subsumed by the watch — both are
+    // ordinary `process.on('SIGINT')` listeners, so a real signal reaches both
+    // — and round 3's review proposed dropping it. It is KEPT, because that
+    // argument is about the PROCESS while this expression is about the
+    // CALLEE's return value: the loop trusts what `runDestroyForStack`
+    // reported, not a global side-channel that happens to agree. Measured by
+    // probe rather than assumed — removing it reddens three cases that fence
+    // the runner channel on its own (`still honours the runner-reported
+    // interrupt` here and in the `state destroy` twin, plus `does NOT purge
+    // the event history of a stack the runner reported interrupted`), each of
+    // which hands back `interrupted: true` without emitting a signal at all.
     const runInterrupted = (): boolean => interrupted || interruptWatch.interrupted();
+    // Set only where a `break` leaves at least one stack UNPROCESSED.
+    //
+    // The exit code needs this and the loop does not, which is why it is a
+    // second flag rather than a rename. A signal can also land in the TAIL of
+    // the run — after the last (or only) stack returned cleanly, during
+    // `eventRecorder.finalize` / `purgeEventsAfterDestroy` — and there the
+    // command-level answer is true while every target really was destroyed.
+    // Reading `runInterrupted()` at the terminal throw made that case exit 2
+    // with "State preserved — re-run 'cdkd destroy' to finish" over a destroy
+    // that had nothing left to finish, which is a wrong answer in the
+    // direction CI acts on. Before issue #2117 that site read the sampled
+    // `result.interrupted`, which was false there.
+    let stoppedEarly = false;
 
     let stackNames: string[];
     if (options.all) {
@@ -504,7 +529,7 @@ async function destroyCommand(
     // 3. Process each stack via the shared destroy runner. The cross-stack
     // `totalErrors` accumulator is declared above (before the empty-match
     // gate) so the upfront nested-child-by-name refusal can also contribute.
-    for (const stackName of stackNames) {
+    for (const [stackIndex, stackName] of stackNames.entries()) {
       logger.info(`\nPreparing to destroy stack: ${stackName}`);
 
       // Pick the region for this stack. If synth ran, prefer the synth region
@@ -599,7 +624,13 @@ async function destroyCommand(
       // same defect one stack earlier. Breaking BELOW the recorder would emit a
       // RUN_STARTED and then finalize it SUCCEEDED, so `cdkd events` would show
       // a clean destroy run for a stack nothing touched.
-      if (runInterrupted()) break;
+      //
+      // Unconditionally `stoppedEarly`: THIS stack is the one left undestroyed,
+      // whether or not any follow it.
+      if (runInterrupted()) {
+        stoppedEarly = true;
+        break;
+      }
 
       // Issue [#808] — best-effort structured deployment-event recorder
       // for this destroy run. The runner emits per-resource DELETE events
@@ -614,11 +645,28 @@ async function destroyCommand(
         command: 'destroy',
       })!;
       let destroyRunResult: DeploymentRunResult = 'SUCCEEDED';
+      // The runner's PER-STACK verdict, hoisted out of the `try` so
+      // `purgeEventsAfterDestroy` below can read it (`result` is block-scoped).
+      // That helper asks "did this stack finish?", which is the per-stack
+      // question, not the command-level one — see the call site.
+      let stackInterrupted = false;
+      // The OTHER way this stack can finish with its resources still standing:
+      // the user answered `n` at the runner's per-stack confirmation prompt.
+      // Hoisted for the same reason and read at the same call site — see the
+      // `--purge-events` gate below for why `interrupted` alone is not the
+      // question that gate needs to ask.
+      let stackCancelled = false;
 
-      // Set the NestedStackProvider context for this destroy. The provider
-      // is registered globally (it's state-less) and only fires when the
-      // state file actually carries an AWS::CloudFormation::Stack record;
-      // for stacks without nested children this is a cheap no-op.
+      // The per-stack destroy, bracketed by `interruptWatch.runStack` (issue
+      // #2117) so a second Ctrl-C in this window escalates through the RUNNER's
+      // handler — the only one that can release this stack's lock best-effort
+      // and print the region-qualified `cdkd force-unlock` recovery command.
+      //
+      // Inside the bracket, set the NestedStackProvider context for this
+      // destroy. The provider is registered globally (it's state-less) and only
+      // fires when the state file actually carries an
+      // AWS::CloudFormation::Stack record; for stacks without nested children
+      // this is a cheap no-op.
       try {
         const result = await interruptWatch.runStack(() =>
           withNestedStackContext(
@@ -686,6 +734,8 @@ async function destroyCommand(
         );
         totalErrors += result.errorCount;
         totalSkipped += result.skippedCount;
+        stackInterrupted = result.interrupted;
+        stackCancelled = result.cancelled === true;
         if (result.interrupted) interrupted = true;
 
         // Map the per-stack runner outcome to a run-level result. A
@@ -720,6 +770,30 @@ async function destroyCommand(
       // Issue [#885] — --purge-events: after a CLEAN destroy, also delete this
       // stack's deployment-event history so the state bucket returns fully
       // empty. Runs AFTER the recorder finalizes (see the helper's contract).
+      //
+      // PER-STACK answers, because the question the helper asks — "are these
+      // events the post-mortem for a retry?" — is per-stack: it is about THIS
+      // stack's own history. `runInterrupted()` (the command-level read)
+      // disagreed with the exit code in the shape BLOCKER 1 of this PR fixed:
+      // a signal in the tail of a fully-completed run made this skip the purge
+      // while the command exited 0, so the user was told the destroy succeeded
+      // and the events stayed behind.
+      //
+      // `stackCancelled` is the SECOND of the two ways a stack can come back
+      // with its resources still standing, and reading only `stackInterrupted`
+      // missed it. When the user answers `n` at the runner's per-stack prompt,
+      // the runner returns `{cancelled: true, deletedCount: 0}` — nothing was
+      // deleted, but `errorCount` and `skippedCount` are both 0, so
+      // `destroyRunResult` maps to `SUCCEEDED` and `interrupted` is false.
+      // `cdkd destroy --purge-events` then DELETED the event history of a
+      // stack that still exists, which is the one thing the flag's own docs
+      // promise it will not do. Probed on the round-2 code: a runner returning
+      // `{cancelled: true, deletedCount: 0}` for two stacks called `pruneRuns`
+      // twice.
+      //
+      // Pre-existing rather than introduced by this PR — but round 2 rewrote
+      // this line and asserted in its comment that the flag is "true exactly
+      // when there IS something to retry", and that claim is what was false.
       await purgeEventsAfterDestroy(
         new DeploymentEventsReader(stateBackend),
         stackName,
@@ -727,7 +801,7 @@ async function destroyCommand(
         {
           purgeEvents: options.purgeEvents,
           runResult: destroyRunResult,
-          interrupted: runInterrupted(),
+          interrupted: stackInterrupted || stackCancelled,
         },
         logger
       );
@@ -739,7 +813,38 @@ async function destroyCommand(
       // — a signal delivered anywhere above (including after the runner dropped
       // its own listener, and during the event finalize / purge just done) must
       // stop the loop just as a signal during the deletes does.
-      if (runInterrupted()) break;
+      //
+      // `stoppedEarly` only when a stack actually remains. On the LAST
+      // iteration this break exits a loop that had nothing left to do, so the
+      // run completed — a signal that landed in this stack's own deletes is
+      // already carried by `interrupted`, and one that landed in the tail after
+      // it must not turn a finished destroy into exit 2.
+      //
+      // `stackIndex < stackNames.length - 1` is the INDEX form, and the
+      // `state destroy` twin deliberately does NOT use it — see
+      // `targetRemainsAfter` there, whose comment says `destroy.ts` needs no
+      // counterpart because `candidateStacks` is pre-filtered to names that
+      // have state, "so an index there IS a target". That holds at the ENTRY
+      // filter and is over-claimed past it: three `continue`s in this loop body
+      // can still leave a remaining index that would never have been destroyed
+      // — termination protection without `--remove-protection`, a
+      // nested-stack child refusal, and, the one that is a genuine RACE rather
+      // than a policy refusal, `getState` returning null a few lines above
+      // (`No state found for stack ..., skipping`) because the record was
+      // deleted between the pre-filter and this read.
+      //
+      // That last one reproduces exactly the over-claim `targetRemainsAfter`
+      // was written to close: a signal here reports exit 2 with "State
+      // preserved -- re-run" over a run whose only remaining name has no state
+      // to destroy. Left as the index form deliberately — the two policy
+      // refusals already count into `totalErrors`, which exits 2 on its own,
+      // so the race is the only case that differs and it errs toward telling
+      // the user to re-run. Naming it here so the next reader does not have to
+      // re-derive that the twin's rationale is narrower than it reads.
+      if (runInterrupted()) {
+        if (stackIndex < stackNames.length - 1) stoppedEarly = true;
+        break;
+      }
     }
 
     if (totalErrors > 0) {
@@ -754,10 +859,16 @@ async function destroyCommand(
           `If the same resource keeps failing, 'cdkd state orphan <stack>' removes the state record without deleting AWS resources.`
       );
     }
-    if (runInterrupted()) {
+    if (interrupted || (interruptWatch.interrupted() && stoppedEarly)) {
       // Graceful SIGINT (issue #816): in-flight deletes finished, state was
       // preserved (trimmed), and the lock was released. Surface a non-zero
       // exit so scripts / CI see the destroy did not complete.
+      //
+      // NOT `runInterrupted()`: this is the one decision point that must ask
+      // "did anything go UNDESTROYED?" rather than "was a signal seen?". See
+      // `stoppedEarly` above — a signal in the tail of a fully-completed run
+      // reaches here with the command-level flag set and nothing left to
+      // finish, and the message would then be false in both halves.
       throw new PartialFailureError(
         `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd destroy' to finish.`
       );

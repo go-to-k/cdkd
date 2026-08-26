@@ -350,11 +350,17 @@ describe('interrupt watch — the LAST-listener force-quit (multi-stack destroy 
     // covered and the force-quit there is the command's own, which also stops
     // the loop rather than only exiting.
     //
-    // The case is kept because the mechanism still has a live population: the
-    // commands that register NO handler at all — `import` / `export` / `scrub`
-    // / `orphan` / `drift` / `state refresh-observed` — as the source's own
-    // scope note next to this handler records. It is that population this now
-    // pins, not the destroy gap.
+    // The case is kept even though the mechanism now has NO live population
+    // among today's commands, and the reason it has none is worth stating
+    // because the obvious answer is wrong: the commands that register no
+    // handler at all — `import` / `export` / `scrub` / `orphan` / `drift` /
+    // `state refresh-observed` — never open the command interrupt SCOPE, so
+    // this watch never arms for them and cannot force-quit there either. Every
+    // command that DOES open one holds a graceful SIGINT handler across the
+    // whole of it. What this pins is therefore a STRUCTURAL guarantee: the
+    // branch fires again the moment a command opens the scope without holding
+    // a handler across it, and the failure it prevents (a swallowed Ctrl-C
+    // mid-provider-wait) is silent.
     const removeCommandHandler = installCommandHandler();
     const stackOne = startInterruptWatch('stack 1 wait');
     stackOne.dispose();

@@ -2929,9 +2929,20 @@ the state file is flushed to its minimal preserved form, and the stack lock is
 released. The command then exits non-zero
 (`Destroy interrupted by Ctrl-C. State preserved`) so CI sees that the teardown
 did not complete — re-running `cdkd destroy` picks up the remaining resources.
-A **second** Ctrl-C force-quits without waiting for the in-flight call; when a
-stack lock is held at that moment, the exact region-qualified
-`cdkd force-unlock` recovery command is printed. CI cancellation delivers
+A **second** Ctrl-C force-quits without waiting for the in-flight call. Which
+recovery command it prints depends on whether a per-stack teardown had armed
+its own handler yet, which is not the same as whether a stack is "running":
+
+- the exact **region-qualified** `cdkd force-unlock <stack> --stack-region ...`
+  once that stack's teardown owns the signal, i.e. it can name the lock;
+- a **hedged** `cdkd force-unlock <stack-name>` otherwise — both between two
+  stacks (where the finished stack has already released its lock, unless that
+  release itself failed) **and on the FIRST signal inside a stack that has not
+  yet armed its teardown**, the window between the loop dispatching the stack
+  and the runner registering its handler. Nothing at either point knows which
+  lock to name.
+
+CI cancellation delivers
 SIGTERM rather than Ctrl-C, and it is routed through the identical path (issue
 [#1342](https://github.com/go-to-k/cdkd/issues/1342)).
 
@@ -2942,6 +2953,23 @@ per-stack teardown cannot observe at all (issue
 [#2117](https://github.com/go-to-k/cdkd/issues/2117)). Previously a Ctrl-C
 there was either swallowed, letting `--all` delete the next stack, or taken by
 a last-resort force-quit that exited 130 with the lock stranded.
+
+The non-zero exit means **work was left undone**, not merely "a signal
+arrived". A Ctrl-C that lands in the tail of the run — after the last (or only)
+stack has already been destroyed, while cdkd is finalizing its event record —
+leaves nothing to re-run, so that case exits 0.
+
+`cdkd state destroy --all` prompts once for the whole batch before it touches
+anything. A signal at that prompt cancels it and exits 130 without reading,
+locking or deleting anything.
+
+The prompt is **interactive-only**: when stdin is not a TTY — a piped,
+redirected or CI run — the command refuses **before** creating the prompt and
+exits non-zero, naming `--yes` as the way through. Nothing is read, locked or
+deleted. This is the same non-interactive rule `cdkd gc` and
+`cdkd bootstrap --destroy` follow. Use `--yes` / `-y` to confirm the batch
+non-interactively; that flag short-circuits above the check, so it never
+consults stdin at all.
 
 A stack whose deletes were interrupted keeps its `state.json` and its
 deployment-event history — the events are the post-mortem for the retry, which
@@ -2963,6 +2991,12 @@ cdkd destroy MyStack --purge-events -y
 - The purge runs **only after a clean, non-interrupted destroy** of that
   stack. On a failed / interrupted destroy the events are kept — they are
   exactly the post-mortem you want when retrying.
+- "Interrupted" here is the PER-STACK question — was this stack left with
+  work to re-run — matching what the exit code asks of the run as a whole. A
+  Ctrl-C that lands after this stack was fully destroyed does not keep its
+  events: there is no retry to post-mortem, and the run reports success, so
+  suppressing the purge there would report a clean teardown while silently
+  leaving the history behind.
 - Best-effort: a purge failure logs a warning but never fails the
   already-successful destroy.
 - `state destroy` does NOT take this flag; for an already-destroyed stack (or

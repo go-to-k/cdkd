@@ -229,29 +229,53 @@ describe('runDestroyForStack — empty-state cleanup takes the lock (issue #2171
     exitSpy.mockRestore();
   });
 
-  it('reports the drain on the RESULT so a --all run does not walk on', async () => {
-    // `result.interrupted ||= emptyInterrupted` was asserted nowhere: the drain
-    // test above fires its signals AFTER the call resolved, by which point the
-    // assignment has already run with `false`. Firing from INSIDE the branch is
-    // what makes the flag observable.
+  it('does NOT report `interrupted` after DELETING the state record', async () => {
+    // Round 3 (issue #2117): this case used to assert the exact opposite, and
+    // it was 10/10 green while pinning the defect. `result.interrupted ||=
+    // emptyInterrupted` sat at the end of this branch, ~950 lines above the
+    // main path's `&& statePreserved` gate and BEFORE the `try`/`finally` that
+    // carries it — so a first Ctrl-C here made `destroy.ts` throw
+    // `Destroy interrupted by Ctrl-C. State preserved -- re-run 'cdkd destroy'
+    // to finish` and exit 2 over a stack whose state file it had just DELETED,
+    // and skip `--purge-events` for a stack with no state left to post-mortem.
+    //
+    // `result.interrupted` is the PER-STACK answer to "is there work left in
+    // this stack?". After `deleteState` the answer is no, whatever signal
+    // arrived: nothing is preserved and nothing remains to re-run against.
+    // The command-level "the user asked to stop" question has a different
+    // owner (`watchCommandInterrupt`), which both `--all` loops read live.
     const h = makeCtx({ acquired: true, recheck: null });
     const exitSpy = vi
       .spyOn(process, 'exit')
       .mockImplementation((() => undefined) as unknown as typeof process.exit);
     h.getState.mockImplementation(async () => {
-      // Mid-branch: the handler is registered and the lock is held.
+      // Mid-branch: the handler is registered and the lock is held. Firing
+      // from INSIDE is what makes the flag observable at all — the drain case
+      // above fires after the call resolved.
       (process.listeners('SIGINT').at(-1) as NodeJS.SignalsListener)('SIGINT');
       return null;
     });
 
     const result = await runDestroyForStack('TestStack', emptyState(), h.ctx);
 
-    expect(result.interrupted).toBe(true);
+    // The two assertions are one invariant: the record is GONE, so the stack
+    // must not report work left in it.
+    expect(h.deleteState).toHaveBeenCalledWith('TestStack', REGION);
+    expect(result.interrupted).toBe(false);
     expect(result.skippedEmpty).toBe(true);
-    // A first signal DRAINS: the cleanup still completed.
-    expect(h.deleteState).toHaveBeenCalled();
+    // A first signal still DRAINS rather than exiting: the cleanup completed.
     expect(exitSpy).not.toHaveBeenCalled();
     exitSpy.mockRestore();
+  });
+
+  it('leaves `interrupted` false on the clean, signal-free empty branch too', async () => {
+    // Negative control for the case above: without it, a `result.interrupted =
+    // false` hard-coded anywhere would satisfy it, and so would a branch that
+    // never sets the flag under ANY condition for the wrong reason.
+    const h = makeCtx({ acquired: true, recheck: null });
+    const result = await runDestroyForStack('TestStack', emptyState(), h.ctx);
+    expect(result.interrupted).toBe(false);
+    expect(result.skippedEmpty).toBe(true);
   });
 
   it('carries --state-prefix into the recovery hint when it is not the default', async () => {
