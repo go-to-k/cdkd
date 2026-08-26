@@ -29,6 +29,19 @@ cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 # matcher (.claude/hooks/lib/command-match.sh, issue #2129): the old unanchored
 # form blocked `echo "next step: gh pr edit 1 --body foo"` — a measured false
 # positive on a command that never called gh — while missing nothing it caught.
+# Issue #2037 re-reported the same class from the other end: a `grep` pattern,
+# a `python3 - <<'PY'` heredoc body, or a test-case label that merely QUOTES the
+# deprecated spelling is data, not an invocation, and a PreToolUse denial aborts
+# the WHOLE call, so those runs did nothing at all. The shared matcher already
+# neutralises quoted spans and heredoc bodies before looking for the verb in
+# command position, so all four reported shapes pass; the suite beside this file
+# now pins them so a future rewrite cannot quietly reintroduce them.
+#
+# DELIBERATELY NOT SOLVED HERE: deciding policy by regex-matching shell text
+# leaves the set of bypass spellings unbounded (an alias, a variable holding the
+# verb, an interpreter reading the command off stdin). That class is tracked in
+# go-to-k/cdkd#2156 and is out of scope for this gate — the choice was made, not
+# missed.
 # shellcheck source=lib/command-match.sh
 _gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/command-match.sh"
 # Fail CLOSED: a gate that cannot evaluate the command must not wave it through.
