@@ -188,10 +188,21 @@ async function resolveSecretsManager(
   try {
     parsed = JSON.parse(secretString);
   } catch (err) {
+    // NEVER interpolate the parser's own message here. V8 embeds a ~10-char
+    // prefix of the PARSED INPUT in `SyntaxError.message`
+    // (`Unexpected token 's', "supersecre"... is not valid JSON`), and the
+    // parsed input IS the secret plaintext — so echoing it puts the secret on
+    // stderr and into any surrounding log capture (issue #2189). `err.name`
+    // is input-independent and safe as a discriminator; the container, env
+    // var and json-key already make the message actionable.
+    // `'unknown'` rather than `'SyntaxError'` for the non-Error arm: it is
+    // unreachable today (JSON.parse has no reviver here, so V8 throws only a
+    // SyntaxError), and reporting a class the throw was not would be a small
+    // lie the moment it becomes reachable.
+    const kind = err instanceof Error ? err.name : 'unknown';
     throw new EcsSecretsResolutionError(
-      `Container '${entry.containerName}' secret '${entry.name}' specified json-key '${shape.jsonKey}' but the secret value is not valid JSON: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Container '${entry.containerName}' secret '${entry.name}' specified json-key '${shape.jsonKey}' but the secret value is not valid JSON (${kind}). ` +
+        'The parser detail is withheld because it would echo the secret plaintext.'
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

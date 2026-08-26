@@ -29,6 +29,9 @@
 #      `${MyRepo}` placeholder with the deployed physical name, the
 #      container started against the pushed image, and the host port is
 #      reachable
+#   4d. issue #2189: run the JsonKeyTaskDef, whose `:json-key:` ValueFrom
+#       points at a NON-JSON secret -- assert the refusal fires and withholds
+#       the secret plaintext
 #   5. clean up: docker rm + docker network rm via trap; aws ecr
 #      batch-delete-image to empty the repo (cdkd destroy fails if a repo
 #      has images); cdkd destroy --force
@@ -45,15 +48,23 @@ set -euo pipefail
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
 STACK="CdkdLocalRunTaskFromStateFixture"
-# Three TaskDefs:
+# Four TaskDefs:
 #   - NginxTaskDef   : Fn::Sub-shape Image (L1 CfnTaskDefinition)        → port 18082
 #   - NginxTaskDefL2 : Fn::Join-shape Image (L2 fromEcrRepository)       → port 18083
 #   - EnvTaskDef     : intrinsic env vars + Ref secret (busybox printer) → no port (echoes)
+#   - JsonKeyTaskDef : `:json-key:` ref to a NON-JSON secret (issue #2189)  → refuses, never starts
 # The first two share the deployed ECR repository (single deploy + push);
 # EnvTaskDef uses busybox to focus on the env/secret resolver path (#291).
 TASK_PATH_SUB="${STACK}/NginxTaskDef"
 TASK_PATH_JOIN="${STACK}/NginxTaskDefL2"
 TASK_PATH_ENV="${STACK}/EnvTaskDef"
+TASK_PATH_JSONKEY="${STACK}/JsonKeyTaskDef"
+# Issue #2189: the literal this fixture's PlainSecret holds. verify.sh greps
+# for its ABSENCE from the refusal output, and for the absence of the 10-char
+# prefix V8 actually emitted -- asserting only the whole value passes WITHOUT
+# the fix, because V8 never emitted more than the prefix.
+PLAIN_SECRET_VALUE="cdkd2189plaintextnotjson-abcdefghijklmnop"
+PLAIN_SECRET_PREFIX="${PLAIN_SECRET_VALUE:0:10}"
 HOST_PORT_SUB=18082
 HOST_PORT_JOIN=18083
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
@@ -67,6 +78,27 @@ CDKD="node ${REPO_ROOT}/dist/cli.js"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
+
+# Shared S3 VERSION-sweep helpers (issue #2096). This fixture seeds TWO secrets
+# whose values land in the deployed state record: MySecret's generated JSON, and
+# PlainSecret's literal (added for issue #2189, whose branch needs a secret that
+# is deliberately NOT valid JSON). The state bucket is VERSIONED, so `aws s3 rm`
+# writes a delete marker and removes nothing -- every state.json this fixture has
+# ever written stays readable through GetObjectVersion. Sweeping the whole
+# `cdkd/<stack>/<region>/` PREFIX rather than state.json alone is load-bearing:
+# state.json carries BOTH secrets' values, and the prefix also covers
+# lock.json / rollback-journal.json / deployments/**. (The #2189 arm's own
+# failure writes no rollback journal -- `cdkd local run-task` never deploys --
+# so the prefix form is justified by the state record, not by that arm.)
+# Sourced by ABSOLUTE path, not `. ../s3-versions.sh`: the `cd "${TEST_DIR}"`
+# below is seven lines later, so a relative source resolves against the
+# CALLER's cwd. This script's own header documents running it as
+# `bash tests/integration/local-run-task-from-state/verify.sh` from the repo
+# root, and that spelling aborts at this line under `set -e`. The real runs
+# passed only because the runner cds in first. docdb-neptune/verify.sh already
+# hit this and uses the absolute form for the same reason.
+. "${REPO_ROOT}/tests/integration/s3-versions.sh"
+STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 echo "[verify] step 1a: install + build cdkd"
 (cd "${REPO_ROOT}" && pnpm install)
@@ -117,6 +149,24 @@ cleanup() {
   fi
 
   ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tail -5 || true
+
+  # State-version sweep (issue #2096), INSIDE cleanup on purpose. `cleanup`
+  # ends with `exit "${rc}"`, so calling it from the success path terminates
+  # the script -- an earlier revision of this arm put the sweep after an
+  # explicit `cleanup` call and the sweep never ran, which the first real-AWS
+  # run of this arm is what revealed. Here it runs on EVERY exit path, which is
+  # also the right scope: a FAILED run seeds state too.
+  #
+  # Mode matters. `all` is correct only once the stack is gone for good; on a
+  # failed path the destroy above is best-effort and a live state.json may still
+  # be needed by a later `cdkd state destroy`, so that path purges only
+  # NONCURRENT versions (where a seeded plaintext lives) and does not assert.
+  if [ "${rc}" -eq 0 ]; then
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+    s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "local-run-task-from-state state teardown"
+  else
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" noncurrent || true
+  fi
 
   exit "${rc}"
 }
@@ -271,5 +321,125 @@ if [[ "${LEFTOVER_NETWORKS}" -ne 0 ]]; then
 fi
 echo "[verify]   teardown clean: 0 containers (incl. exited), 0 task networks"
 
+# --- Issue #2189: a `:json-key:` ref to a NON-JSON secret must refuse -----
+#
+# The refusal is the POINT of this arm, so the run is EXPECTED to exit
+# non-zero and that non-zero rc is asserted as a positive marker. Reading
+# only "the plaintext is absent" would be a confluence point: an arm that
+# died before ever reaching the resolver satisfies it just as well.
+#
+# The premise is proved first, in its own step, so a green result cannot come
+# from an arm that never reached the branch:
+#   (a) the secret really is non-JSON (read back from AWS), and
+#   (b) the run really did reach the json-key branch (the message names the
+#       container, the env var and the requested key).
+echo "[verify] step 4d: issue #2189 - :json-key: against a NON-JSON secret must refuse without echoing it"
+
+PLAIN_SECRET_ARN="$(${CDKD} state resources "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);for(const r of j){if(r.resourceType==="AWS::SecretsManager::Secret"&&/PlainSecret/i.test(r.physicalId||"")){console.log(r.physicalId);process.exit(0)}}process.exit(1)})')"
+[ -n "${PLAIN_SECRET_ARN}" ] || { echo "[verify] FAIL: could not read PlainSecret from state"; exit 1; }
+
+# Premise (a): AWS holds exactly the non-JSON literal this arm assumes. If a
+# future edit makes it valid JSON the branch stops being reachable and the
+# whole arm silently stops testing anything - so fail loudly here instead.
+LIVE_PLAIN="$(aws secretsmanager get-secret-value --secret-id "${PLAIN_SECRET_ARN}" \
+  --region "${REGION}" --query SecretString --output text)"
+if [ "${LIVE_PLAIN}" != "${PLAIN_SECRET_VALUE}" ]; then
+  echo "[verify] FAIL: PlainSecret does not hold the expected fixture literal"
+  exit 1
+fi
+if echo "${LIVE_PLAIN}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{JSON.parse(d.trim());process.exit(0)}catch(e){process.exit(1)}})'; then
+  echo "[verify] FAIL: PlainSecret parses as JSON - the #2189 branch is unreachable, this arm tests nothing"
+  exit 1
+fi
+echo "[verify]   premise ok: PlainSecret is present and is NOT valid JSON"
+
+set +e
+JSONKEY_OUT="$(${CDKD} local run-task "${TASK_PATH_JSONKEY}" \
+  --from-state \
+  --no-pull \
+  --container-host 127.0.0.1 \
+  --state-bucket "${STATE_BUCKET}" 2>&1)"
+JSONKEY_RC=$?
+set -e
+
+# Never echo ${JSONKEY_OUT} raw: if the fix regressed, printing it here would
+# put the plaintext into the CI log this arm exists to keep it out of.
+echo "[verify]   run-task exited rc=${JSONKEY_RC} (${#JSONKEY_OUT} bytes of output, withheld)"
+
+# Positive marker 1: it REFUSED. A zero rc means resolution succeeded, which
+# for a non-JSON secret under a json-key reference is itself the bug.
+if [ "${JSONKEY_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: json-key against a non-JSON secret exited 0 - expected a refusal"
+  exit 1
+fi
+if echo "${JSONKEY_OUT}" | grep -qF "UNEXPECTED_RESOLUTION_SUCCEEDED"; then
+  echo "[verify] FAIL: the container ran - resolution did not refuse"
+  exit 1
+fi
+
+# Positive marker 2: it refused for the RIGHT reason, in the json-key branch.
+# Without these, any unrelated failure (bad credentials, missing state) would
+# satisfy the absence assertions below.
+# The last entry is the CONTIGUOUS message, not another loose token: each of
+# the four tokens above occurs elsewhere (`not valid JSON` alone appears at
+# eight other src sites), so only the whole phrase pins the message to THIS
+# branch. It is byte-identical before and after the fix and the error path does
+# no wrapping, so asserting it costs nothing and is strictly stronger.
+for needle in "jsonkey" "DB_PASS" "password" "not valid JSON" \
+  "secret 'DB_PASS' specified json-key 'password' but the secret value is not valid JSON"; do
+  if ! echo "${JSONKEY_OUT}" | grep -qF "${needle}"; then
+    # Plain single quotes: they are literal inside a double-quoted string. The
+    # `'"'"'` idiom escapes a quote inside SINGLE quotes, and using it here
+    # closed the double quoting and left ${needle} unquoted -- a needle holding
+    # a glob character expanded against the cwd (measured).
+    echo "[verify] FAIL: refusal message did not name '${needle}' - it did not reach the json-key branch"
+    exit 1
+  fi
+done
+echo "[verify]   refusal reached the json-key branch and named the container, env var and key"
+
+# The actual issue #2189 assertion: no secret-derived text in the output.
+if echo "${JSONKEY_OUT}" | grep -qF "${PLAIN_SECRET_VALUE}"; then
+  echo "[verify] FAIL: the refusal echoed the WHOLE secret plaintext"
+  exit 1
+fi
+if echo "${JSONKEY_OUT}" | grep -qF "${PLAIN_SECRET_PREFIX}"; then
+  echo "[verify] FAIL: the refusal echoed the secret plaintext prefix (the #2189 leak)"
+  exit 1
+fi
+echo "[verify]   no secret plaintext (whole or 10-char prefix) in the refusal output"
+
+# Negative control: the ORDINARY secret path still resolves. Step 4c above
+# already asserted DB_SECRET_LEN > 0 on the same run, so a refusal that fired
+# on everything would have been caught there rather than here - this line
+# records that the control exists and where it lives.
+echo "[verify]   negative control: step 4c resolved MySecret normally on this same run"
+
+# The refusal happens before any container starts (ecs-task-runner resolves
+# secrets before createTaskNetwork and before any boot), so nothing should be
+# left. COUNT FIRST, then sweep: an earlier revision swept and then counted,
+# which cannot fail -- `docker rm -f` had already removed whatever it was
+# supposed to detect.
+JSONKEY_LEFTOVER=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+JSONKEY_NET_LEFTOVER=$(docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | wc -l | tr -d ' ')
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+if [[ "${JSONKEY_LEFTOVER}" -ne 0 ]]; then
+  echo "[verify] FAIL: ${JSONKEY_LEFTOVER} container(s) left after the refusal arm"
+  exit 1
+fi
+# Networks too, mirroring step 4c. This is not symmetry for its own sake: the
+# arm's premise is that the refusal fires BEFORE createTaskNetwork, so a
+# surviving cdkd-local-task-* network is exactly the regression that would show
+# the refusal had moved later in the path.
+if [[ "${JSONKEY_NET_LEFTOVER}" -ne 0 ]]; then
+  echo "[verify] FAIL: ${JSONKEY_NET_LEFTOVER} task network(s) left after the refusal arm"
+  exit 1
+fi
+
+# NOTE: no explicit `cleanup` call here. It ends with `exit "${rc}"`, so calling
+# it would terminate the script before anything after it ran -- the trap is what
+# invokes it, and the state-version sweep lives inside it.
 echo ""
-echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join) AND env-var / Ref-secret intrinsics (issue #291) against deployed cdkd state."
+echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join), env-var / Ref-secret intrinsics (issue #291), the issue #2189 json-key refusal withheld the secret plaintext, and zero state versions survived - all against deployed cdkd state."
