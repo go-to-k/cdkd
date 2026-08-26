@@ -1,3 +1,10 @@
+## [0.284.64](https://github.com/go-to-k/cdkd/compare/v0.284.63...v0.284.64) (2026-08-26)
+
+
+### Bug Fixes
+
+* **scrub,drift:** mask the resolved export name the cross-stack pre-pass logs, and make the accept plan and summary agree with the write ([#2268](https://github.com/go-to-k/cdkd/issues/2268)) ([cddd368](https://github.com/go-to-k/cdkd/commit/cddd368c3c7ee0fc913e1d85e794d29a7ea41745))
+
 ## [0.284.63](https://github.com/go-to-k/cdkd/compare/v0.284.62...v0.284.63) (2026-08-26)
 
 
