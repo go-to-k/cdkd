@@ -1,3 +1,10 @@
+## [0.284.62](https://github.com/go-to-k/cdkd/compare/v0.284.61...v0.284.62) (2026-08-26)
+
+
+### Bug Fixes
+
+* **destroy:** stop reporting a COMPLETED destroy as unfinished, and unblock the state-destroy batch prompt ([#2247](https://github.com/go-to-k/cdkd/issues/2247)) ([6b747da](https://github.com/go-to-k/cdkd/commit/6b747da2de93e79487285294f310a394f7aefce9))
+
 ## [0.284.61](https://github.com/go-to-k/cdkd/compare/v0.284.60...v0.284.61) (2026-08-26)
 
 
