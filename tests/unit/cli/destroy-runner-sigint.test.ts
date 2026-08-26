@@ -377,7 +377,7 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
  *
  * `rl.question` never settles when stdin is already at EOF, and EOF carries no
  * signal, so the abort arm the SIGINT block above fences could not help: there
- * was nothing to abort ON. Measured on Node 24.19 against real
+ * was nothing to abort ON. Measured on Node 24.15.0, the version `.node-version` pins (and 24.19 before it) against real
  * `node:readline/promises` -- `echo y |` resolves `"y"`, while `printf 'y' |`
  * (a real answer with no trailing newline) and `< /dev/null` both stay pending
  * indefinitely.
@@ -480,6 +480,27 @@ describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => 
     },
     5000
   );
+
+  it('READS other stacks before refusing, but locks and deletes nothing', async () => {
+    // The docs contrast this refusal against the batch prompt's "nothing is
+    // read, locked or deleted". The READ half is real -- a state record WITH
+    // outputs triggers the strong-reference scan, which lists stacks and reads
+    // their records -- and no case pinned it, because every fixture here uses
+    // `outputs: {}` and so skips the scan entirely.
+    const ctx = makeConfirmCtx(false);
+    const listStacks = ctx.stateBackend.listStacks as unknown as ReturnType<typeof vi.fn>;
+    const state = makeState({ A: res() });
+    (state as unknown as { outputs: Record<string, unknown> }).outputs = { Out: 'v' };
+
+    await expect(runDestroyForStack('TestStack', state, ctx)).rejects.toMatchObject({
+      code: 'NON_INTERACTIVE_CONFIRM',
+    });
+
+    expect(listStacks).toHaveBeenCalled();
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
 
   it('throws CdkdError with the NON_INTERACTIVE_CONFIRM code so CI can branch on it', async () => {
     // Only `gc.ts` and `bootstrap-destroy.ts` carry this code among the five

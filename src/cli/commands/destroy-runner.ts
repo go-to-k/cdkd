@@ -631,7 +631,7 @@ export async function runDestroyForStack(
     // Issue #2259: refuse a NON-INTERACTIVE run before the interface exists.
     //
     // `rl.question` never settles when stdin is already at EOF, and EOF
-    // delivers no signal, so nothing wakes it. Measured on Node 24.19 against
+    // delivers no signal, so nothing wakes it. Measured on Node 24.15.0, the version `.node-version` pins (and 24.19 before it) against
     // real `node:readline/promises`: `echo y |` resolves `"y"`, while both
     // `printf 'y' |` (a real answer with no trailing newline) and
     // `< /dev/null` stay pending indefinitely. Without this guard
