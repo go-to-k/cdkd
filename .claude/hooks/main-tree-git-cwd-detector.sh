@@ -90,6 +90,115 @@
 # direction, since a missing warning is indistinguishable from nothing
 # being wrong.
 #
+# ── THE `vp run build` EXEMPTION (go-to-k/cdkd#2094) ──────────────────
+#
+# One main-tree verification command is MANDATED rather than mistaken:
+# the post-merge rebuild. `post-merge-sync-reminder.sh` fires after
+# every `gh pr merge`, and `/work-issues` section 9 spells the step out
+# — `git pull` in the MAIN tree, then `vp run build` there, because the
+# artifact other projects consume is the main tree's `dist/`. Before
+# this exemption the hook fired on that step every single time, on a
+# higher-frequency shape than the `cd "$WT" && …` false positive rule 4
+# above was written for. An "ignore this" that applies to a step the
+# flow requires is not a caveat, it is the common case, and a detector
+# whose common case is "ignore this" is a detector nobody reads.
+#
+# WHAT WAS MEASURED, because the obvious discriminator does not work.
+# The tempting rule is POSITION IN THE FLOW: the post-merge rebuild
+# happens on `main`, CLEAN, at `origin/main`, so key on that. Measured
+# against this repo mid-lane on 2026-08-27, with six feature worktrees
+# live and lane work in flight:
+#
+#     main tree branch        main
+#     git status --porcelain  0 lines (CLEAN)
+#     rev-list --count HEAD...origin/main   0 ahead, 1 behind
+#
+# i.e. the main tree looks IDENTICAL in the dangerous shape, and it has
+# to: the whole hazard is that a run against an UNMODIFIED main tree
+# passes. The lane's content lives in the worktree, so the main tree is
+# clean in both. `at origin/main` fails the other way — it is true for
+# long mid-lane stretches (this flow pulls after every merge, while
+# sibling lanes stay live), so it would go quiet in exactly the
+# post-merge window where other lanes are most exposed. Main-tree git
+# state carries NO signal separating the two shapes.
+#
+# The worktree side does not separate them either. Measured the same
+# day: 5 of the 6 live lanes had a CLEAN worktree with 1-2 commits
+# ahead of `main`, so "some lane holds UNCOMMITTED work" was false for
+# the dangerous shape most of the time, and after a squash merge the
+# just-merged lane's branch is still `ahead` of main, so "ahead" does
+# not mark it as finished either.
+#
+# What DOES separate them is the TASK. `vite.config.ts` defines exactly
+# one `vp run` task whose product is an ARTIFACT the main tree
+# legitimately owns — `build`, whose `dist/` is gitignored and is what
+# `/use-cdkd` points another project at. Every other task is one of two
+# things that must KEEP warning: it yields a VERDICT about the tree it
+# ran in (`test`, `typecheck`, `lint`, `check`, `verify`,
+# `format:check`, the `audit:*` family), which is what becomes a FALSE
+# GREEN from the wrong tree; or it WRITES TRACKED files there (the
+# `gen:*` family), which is the separate main-tree hazard
+# `main-tree-edit-gate` / `main-tree-dirty-detector` exist for. So the
+# verify half goes quiet only when EVERY verification verb in the
+# command is `vp run build`.
+#
+# "EVERY" is what keeps this from being the blanket "suppress every
+# main-tree `vp run build`" the issue rules out — but ONLY for commands
+# `VERIFY_VERB` matches. `vp run build && vp run test` — the measured
+# 2026-08-20 shape — still warns, as does
+# `vp run build && markgate set check`, and the GIT family is untouched
+# (`git add -A && vp run build` still warns for its git half). What it
+# is NOT is "a build cannot launder a verdict riding along with it";
+# see ACCEPTED MISS below for the true boundary.
+#
+# The state checks are kept as a NARROWING, and are honestly not the
+# discriminator: they only ensure the main tree holds nothing of its
+# own that a build could be attesting to (on `main`/`master`, clean of
+# TRACKED changes, and not AHEAD of `origin/<branch>` — "at, or being
+# fast-forwarded to"). A missing `origin/<branch>` ref means the
+# position cannot be established, so it WARNS rather than exempting.
+# UNTRACKED files are excluded on purpose — the main tree routinely
+# carries scratch / log output, and counting it would revive the very
+# false positive this exemption removes; see `post_merge_position` for
+# the measurement and the sibling hook it copies. Measured: `dist/` is
+# gitignored, so a completed build leaves the tree clean and this
+# predicate still holds when the hook evaluates it (PostToolUse runs
+# AFTER the command).
+#
+# ACCEPTED MISS — a BOUNDARY, not the single example an earlier
+# revision of this header conceded. The exemption drops the verify
+# warning for ANY command riding along that `VERIFY_VERB` does not
+# match, the SAME call included. The verb set is `vp run <task>` /
+# `vp test run <path>` / `markgate set|verify`, so anything spelled
+# outside it rides quietly. Measured 2026-08-27 against a fixture main
+# tree in post-merge position, pre-change hook -> this one, all five
+# warn -> quiet in ONE call:
+#
+#     vp run build && node dist/cli.js deploy
+#     vp run build && npx vitest run
+#     vp run build && pnpm test
+#     vp run build && ./scripts/verify.sh
+#     vp run build && eval "vp run test"
+#
+# What is lost is INCIDENTAL coverage, and the same measurement shows
+# it: each of those riding commands run ALONE is quiet under BOTH hooks
+# (`node dist/cli.js deploy` and `npx vitest run` were checked), so
+# none was ever DETECTED as a verification command — the pre-change
+# warning came from the adjacent `vp run build` token, not from the
+# riding command. The cross-call shape is the same loss: a rebuild,
+# then a `node dist/cli.js` live test in a SEPARATE call, loses its
+# warning at the build step.
+#
+# This is deliberately NOT closed by widening `VERIFY_VERB` to cover
+# `node` / `npx` / `pnpm` / a script path. That is a different change
+# with its own false-positive surface, and it does not belong in a lane
+# whose whole purpose is REMOVING a false positive. Per this hook's
+# standing trade, a missed warning is the status quo ante while a false
+# alarm on a mandated step disables the detector wholesale. All five
+# spellings are pinned as QUIET cases in the suite, so the concession
+# is FENCED rather than merely written down: widening the verb set
+# later must reckon with them explicitly.
+#
 # ── KNOWN GAP: what moving to the shared matcher COST ─────────────────
 #
 # This hook used to match with its own inline ERE anchored at
@@ -126,6 +235,7 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null 2>&1 \
   || ! declare -F cmd_last_cd_target >/dev/null 2>&1 \
+  || ! declare -F gate_segments >/dev/null 2>&1 \
   || ! declare -F strip_noncommand_spans >/dev/null 2>&1; then
   # NON-blocking hook: without the helper, skip rather than refuse —
   # matching restore-backup.sh / post-merge-sync-reminder.sh. A missed
@@ -223,6 +333,38 @@ has_cd_before_verb() {
   '
 }
 
+# verify_is_build_only <cmd> — succeeds when at least one verification
+# verb is present in command position and EVERY one of them is
+# `vp run build`. See the `vp run build` EXEMPTION section in the
+# header for why the task name is the discriminator and why "every" is
+# load-bearing.
+#
+# Segment-wise rather than one more ERE, because the question is "is
+# this token exactly `build`?" and an ERE can only spell that as a
+# negation of a word, which fails OPEN on near-misses: the natural
+# `build[^…]|b[^u]|bu[^i]|…` expansion reads `vp run buil` and
+# `vp run b` as builds. Exact comparison per segment gets those right
+# (measured: both classify as non-build, i.e. still warn).
+verify_is_build_only() {
+  local segment saw_build=0
+  while IFS= read -r segment; do
+    # Peel the same optional `mise exec [args] -- ` prefix RUNNER_PFX
+    # honours, so the spelling the skills actually tell agents to write
+    # classifies identically to the bare one.
+    if [[ "$segment" =~ ^mise[[:space:]]+exec[[:space:]]+([^[:space:]]+[[:space:]]+)*--[[:space:]]+(.+)$ ]]; then
+      segment="${BASH_REMATCH[2]}"
+    fi
+    if [[ "$segment" =~ ^vp[[:space:]]+run[[:space:]]+build([[:space:]]|$) ]]; then
+      saw_build=1
+      continue
+    fi
+    if [[ "$segment" =~ ^(vp[[:space:]]+run[[:space:]]+[^[:space:]]|vp[[:space:]]+test[[:space:]]+run([[:space:]]|$)|markgate[[:space:]]+(set|verify)([[:space:]]|$)) ]]; then
+      return 1
+    fi
+  done < <(gate_segments "$1")
+  [ "$saw_build" = 1 ]
+}
+
 eff_git="$base"
 if [[ "$git_hit" == 1 ]]; then
   # There is deliberately NO `git -C <dir>` handling here, and that is a
@@ -288,6 +430,42 @@ in_main_tree() {
   return 0
 }
 
+# post_merge_position <main-tree> — succeeds when the main tree holds
+# nothing of its own that a build there could be wrongly attesting to:
+# on `main`/`master`, clean of TRACKED changes, and not AHEAD of its
+# `origin/<branch>` ("at, or being fast-forwarded to", the post-merge
+# state). This is a NARROWING of the exemption, not the discriminator —
+# see the header: the same three properties hold mid-lane, which is
+# measured and is why the task name carries the decision. A missing
+# remote-tracking ref means the position cannot be established, so it
+# does NOT exempt.
+#
+# "clean" means clean of TRACKED changes, and the `^??` filter is
+# load-bearing rather than tidiness. A bare `git status --porcelain`
+# lists untracked files too, and the main tree routinely carries
+# untracked scratch / log output, so keying on it would flip the
+# MANDATED post-merge rebuild back to WARN on a single stray file —
+# reviving the exact false positive this exemption exists to remove
+# (measured 2026-08-27: one `?? scratch.log` was enough). The sibling
+# `main-tree-dirty-detector.sh` already strips `^??` for the same
+# reason and says so at its own `dirty=` line; ignored files never
+# appear in `--porcelain` at all, so `dist/` is out either way. Both
+# directions are pinned in the suite (untracked-only stays quiet, a
+# dirty TRACKED file still warns) so neither half can rot.
+#
+# Only reached on a command already known to be armed, main-tree-bound
+# and concurrent with a live worktree, so its `git` calls are off the
+# every-Bash-call path this hook otherwise stays clear of.
+post_merge_position() {
+  local mt="$1" br
+  br=$(git -C "$mt" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
+  [[ "$br" == "main" || "$br" == "master" ]] || return 1
+  [ -z "$(git -C "$mt" status --porcelain 2>/dev/null | grep -vE '^\?\?')" ] || return 1
+  git -C "$mt" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null 2>&1 || return 1
+  [ "$(git -C "$mt" rev-list --count "refs/remotes/origin/$br..HEAD" 2>/dev/null)" = "0" ] || return 1
+  return 0
+}
+
 warn_git=0
 warn_verify=0
 main_tree=""
@@ -309,6 +487,15 @@ feature_wts=$(git -C "$main_tree" worktree list --porcelain 2>/dev/null \
   | awk '/^worktree /{print substr($0, 10)}' \
   | grep -F "$main_tree/.claude/worktrees/" || true)
 [[ -n "$feature_wts" ]] || exit 0
+
+# The MANDATED post-merge rebuild (go-to-k/cdkd#2094). Drops only the
+# VERIFY half — a git mutation riding along keeps its own warning.
+if [[ "$warn_verify" == 1 ]] \
+  && verify_is_build_only "$cmd" \
+  && post_merge_position "$main_tree"; then
+  warn_verify=0
+  [[ "$warn_git" == 1 ]] || exit 0
+fi
 
 wt_list=$(printf '%s\n' "$feature_wts" | sed -E "s#^$main_tree/##" | head -6 | paste -sd ',' -)
 first_wt=$(printf '%s\n' "$feature_wts" | head -1)

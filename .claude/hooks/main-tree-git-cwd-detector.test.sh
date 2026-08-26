@@ -19,8 +19,17 @@ git init -q -b main "$MAIN"
 echo "seed" > "$MAIN/file.txt"
 # Opt the fixture into the gate (issue #1259).
 touch "$MAIN/.markgate.yml"
+# Mirror the real repo's ignore of the worktree root (`.gitignore:49`).
+# Without it the nested worktree shows as untracked and the main tree is
+# never CLEAN, which would make every post-merge case (issue #2094) pass
+# for the wrong reason.
+printf '.claude/worktrees/\n' > "$MAIN/.gitignore"
 git -C "$MAIN" add -A
 git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m init
+# A remote-tracking ref for `main`, written directly (no network), so
+# the post-merge-position predicate has something to compare HEAD
+# against. Cases that need the opposite polarity move or delete it.
+git -C "$MAIN" update-ref refs/remotes/origin/main HEAD
 
 # canonicalize (macOS /tmp -> /private/tmp) so paths in payloads match
 # what the hook resolves via `pwd -P`.
@@ -90,9 +99,19 @@ run_case quiet "echo containing 'git commit' string" \
 # a FALSE GREEN. Cases 9-20.
 # ---------------------------------------------------------------------
 
-# 9. `vp run build` in main tree, feature worktree active -> WARN.
-run_case warn  "vp run build in main tree, feature worktree active" \
-  "$MAIN" 'vp run build'
+# 9. A verdict-producing task in the main tree, feature worktree active
+#    -> WARN. This case used to be `vp run build`; that command is now
+#    the MANDATED post-merge rebuild and is covered by the #2094 block
+#    below, so the general "a verification command in the main tree
+#    warns" property is pinned on a task that is unambiguously a
+#    verdict.
+run_case warn  "vp run test in main tree, feature worktree active" \
+  "$MAIN" 'vp run test'
+
+# 9b. Same for another verdict task, so the WARN side does not rest on
+#     the single token `test`.
+run_case warn  "vp run typecheck in main tree, feature worktree active" \
+  "$MAIN" 'vp run typecheck'
 
 # 10. `vp run build && vp run test` — the measured 2026-08-20 shape:
 #     the full suite ran against the MAIN checkout while the lane's
@@ -158,8 +177,11 @@ run_case warn  "mise exec -- vp run test in main tree" \
   "$MAIN" 'mise exec -- vp run test'
 
 # 19c. `mise exec <tool> -- vp run <task>` (a tool token before `--`).
-run_case warn  "mise exec node@24 -- vp run build in main tree" \
-  "$MAIN" 'mise exec node@24 -- vp run build'
+#      Uses a verdict task: the `build` spelling of this same shape is
+#      the #2094 exemption and is pinned QUIET below, so keeping `build`
+#      here would have turned a matcher case into an exemption case.
+run_case warn  "mise exec node@24 -- vp run typecheck in main tree" \
+  "$MAIN" 'mise exec node@24 -- vp run typecheck'
 
 # 19d. The literal `--` is required, so a `mise exec` whose ARGUMENTS
 #      merely mention the verb does not fire -> QUIET.
@@ -228,6 +250,189 @@ run_case quiet "bare vp run with no task in main tree" \
 #     does not and will not see.
 run_case quiet "arbitrary grep in main tree (documented non-coverage)" \
   "$MAIN" 'grep -rn "marker" .claude/skills'
+
+# ---------------------------------------------------------------------
+# The MANDATED post-merge rebuild (issue #2094). `post-merge-sync-
+# reminder.sh` fires after every `gh pr merge` and `/work-issues`
+# section 9 spells out a `vp run build` in the MAIN tree, so before the
+# exemption this detector fired on a routine step every single time.
+#
+# BOTH directions are pinned here on purpose. A one-sided fence that
+# only asserts the quiet case is satisfied by a detector that warns
+# about nothing; one that only asserts the warn case never notices the
+# exemption widening. Cases 28a-28h are the quiet side (each FAILS
+# against the pre-change hook), 29a-29i the warn side (each PASSES
+# against both, so they fence the exemption rather than the fix).
+# ---------------------------------------------------------------------
+
+# 28a. The exact reported shape: a bare `vp run build` in a main tree
+#      that is on `main`, clean, and at `origin/main` -> QUIET.
+run_case quiet "vp run build in post-merge main tree" \
+  "$MAIN" 'vp run build'
+
+# 28b. The `mise exec -- ` spelling the skills tell agents to write must
+#      classify identically, or the exemption would depend on which of
+#      two sanctioned spellings was used -> QUIET.
+run_case quiet "mise exec -- vp run build in post-merge main tree" \
+  "$MAIN" 'mise exec -- vp run build'
+
+# 28c. ...including with a tool token before the `--`.
+run_case quiet "mise exec node@24 -- vp run build in post-merge main tree" \
+  "$MAIN" 'mise exec node@24 -- vp run build'
+
+# 28d. The literal mandated sequence. `pull` is not in GIT_VERB, so the
+#      git half never arms and only the verify half is in question.
+run_case quiet "git pull --ff-only origin main && vp run build" \
+  "$MAIN" 'git pull --ff-only origin main && vp run build'
+
+# 28e. Spelled with an explicit `cd` to the main tree — the deliberate
+#      form. Note case 20e pins the SAME shape with `vp run test` as a
+#      WARN, so this pair isolates the task name as the discriminator.
+run_case quiet "cd <main-tree> && vp run build" \
+  "$MAIN" "cd $MAIN && vp run build"
+
+# 28f. Task ARGUMENTS do not change the task -> QUIET.
+run_case quiet "vp run build --silent in post-merge main tree" \
+  "$MAIN" 'vp run build --silent'
+
+# 28g. Extra whitespace is the same command -> QUIET.
+run_case quiet "vp  run  build (extra whitespace)" \
+  "$MAIN" 'vp  run  build'
+
+# 28h. A main-tree path containing a SPACE, reached through a quoted
+#      `cd`. The exemption reads git state out of the resolved path, so
+#      a path the resolver mangles would silently fall back to warning.
+MAINSP="$TMPDIR/main sp"
+git init -q -b main "$MAINSP"
+echo "seed" > "$MAINSP/file.txt"
+touch "$MAINSP/.markgate.yml"
+printf '.claude/worktrees/\n' > "$MAINSP/.gitignore"
+git -C "$MAINSP" add -A
+git -C "$MAINSP" -c user.email=t@t -c user.name=t commit -q -m init
+git -C "$MAINSP" update-ref refs/remotes/origin/main HEAD
+MAINSP="$(cd "$MAINSP" && pwd -P)"
+git -C "$MAINSP" worktree add -q "$MAINSP/.claude/worktrees/feat-z" -b feat/z >/dev/null 2>&1
+run_case quiet "cd \"<main tree with space>\" && vp run build" \
+  "$TMPDIR" "cd \"$MAINSP\" && vp run build"
+# ...and its control: the same quoted path with a verdict task WARNS,
+# so the case above cannot pass merely because the path was unresolved.
+run_case warn  "cd \"<main tree with space>\" && vp run test (control)" \
+  "$TMPDIR" "cd \"$MAINSP\" && vp run test"
+
+# 29a. A build cannot LAUNDER a verdict riding in the same command.
+#      This is what separates the exemption from the blanket "suppress
+#      every main-tree `vp run build`" the issue rules out. Case 10
+#      already pins the `vp run test` spelling of this (it is the
+#      measured 2026-08-20 shape); this one uses `vp test run <path>`,
+#      the form vp-run-test-path-gate steers callers to, so the two are
+#      not one command written twice.
+run_case warn  "vp run build && vp test run <path> in post-merge main tree" \
+  "$MAIN" 'vp run build && vp test run tests/unit/cli/version.test.ts'
+
+# 29b. Same for a marker call riding along.
+run_case warn  "vp run build && mise exec -- markgate set check" \
+  "$MAIN" 'vp run build && mise exec -- markgate set check'
+
+# 29c. The GIT family is untouched by the exemption: the git half keeps
+#      its own warning even though the verify half is dropped.
+run_case warn  "git add -A && vp run build in post-merge main tree" \
+  "$MAIN" 'git add -A && vp run build'
+
+# 29d. A near-miss task name is NOT `build`. An ERE spelled as "a word
+#      that is not build" fails open on these; the exact-token
+#      comparison does not.
+run_case warn  "vp run build:docs in post-merge main tree" \
+  "$MAIN" 'vp run build:docs'
+
+# 29e. ...and a task whose name merely STARTS with build.
+run_case warn  "vp run buildx in post-merge main tree" \
+  "$MAIN" 'vp run buildx'
+
+# 29f. State arm: a DIRTY main tree holds content of its own that a
+#      build there could be attesting to -> WARN. This is the TRACKED
+#      half of a pair; 29f-b below is its untracked twin and the two
+#      must stay together, because each alone is a one-sided fence: 29f
+#      alone is satisfied by a predicate that counts untracked files
+#      (the #2094 false positive, revived), and 29f-b alone by a
+#      predicate that has stopped looking at the tree at all.
+echo "lane edit" >> "$MAIN/file.txt"
+run_case warn  "vp run build while the main tree is DIRTY (tracked)" \
+  "$MAIN" 'vp run build'
+echo "seed" > "$MAIN/file.txt"
+
+# 29f-b. ...and the untracked half: a main tree carrying ONLY untracked
+#      files is still in the post-merge position -> QUIET. The main
+#      tree routinely holds scratch / log output, so a bare
+#      `git status --porcelain` here would flip the MANDATED rebuild
+#      back to WARN on one stray file. Measured against the pre-filter
+#      predicate: a single `?? scratch.log` was enough.
+echo "scratch" > "$MAIN/scratch.log"
+run_case quiet "vp run build while the main tree has ONLY untracked files" \
+  "$MAIN" 'vp run build'
+rm -f "$MAIN/scratch.log"
+
+# 29g. State arm: local `main` AHEAD of `origin/main` is not the
+#      post-merge position -> WARN.
+MAIN_BASE="$(git -C "$MAIN" rev-parse HEAD)"
+echo "local" > "$MAIN/local.txt"
+git -C "$MAIN" add -A
+git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m local
+run_case warn  "vp run build while main is AHEAD of origin/main" \
+  "$MAIN" 'vp run build'
+git -C "$MAIN" reset -q --hard "$MAIN_BASE"
+rm -f "$MAIN/local.txt"
+
+# 29h. State arm: no `origin/<branch>` ref at all means the position
+#      cannot be ESTABLISHED, and an unestablished position must not
+#      exempt -> WARN.
+git -C "$MAIN" update-ref -d refs/remotes/origin/main
+run_case warn  "vp run build with no origin/main ref" \
+  "$MAIN" 'vp run build'
+git -C "$MAIN" update-ref refs/remotes/origin/main HEAD
+
+# 29i. State arm: the main tree checked out to something other than
+#      `main`/`master` -> WARN.
+git -C "$MAIN" checkout -q -b side
+run_case warn  "vp run build while the main tree is on a side branch" \
+  "$MAIN" 'vp run build'
+git -C "$MAIN" checkout -q main
+git -C "$MAIN" branch -q -D side
+
+# 29k-29o. The ACCEPTED MISS, FENCED rather than merely written down.
+#      The exemption drops the verify warning for ANY riding command
+#      `VERIFY_VERB` does not match -- the SAME call included, not just
+#      the separate-call `node dist/cli.js` shape an earlier revision
+#      conceded. These five are pinned QUIET because that is the
+#      DOCUMENTED LOSS, not an oversight: none of them was ever
+#      detected as a verification command (each is quiet under the
+#      PRE-change hook too when run alone), so what the exemption
+#      removed is the INCIDENTAL coverage the adjacent `vp run build`
+#      token was giving them. Closing this means widening `VERIFY_VERB`
+#      to `node` / `npx` / `pnpm` / a script path, which carries its
+#      own false-positive surface and is a different change; whoever
+#      makes it has to flip these cases deliberately, which is the
+#      point of pinning them.
+run_case quiet "vp run build && node dist/cli.js (riding, unmatched verb)" \
+  "$MAIN" 'vp run build && node dist/cli.js deploy'
+run_case quiet "vp run build && npx vitest run (riding, unmatched verb)" \
+  "$MAIN" 'vp run build && npx vitest run'
+run_case quiet "vp run build && pnpm test (riding, unmatched verb)" \
+  "$MAIN" 'vp run build && pnpm test'
+run_case quiet "vp run build && ./scripts/verify.sh (riding, unmatched verb)" \
+  "$MAIN" 'vp run build && ./scripts/verify.sh'
+# `eval` hides the verb inside a quoted span, so the shared matcher
+# never sees it in command position -- the same loss reached by a
+# different route, and the one spelling that could be mistaken for a
+# gap in `verify_is_build_only` rather than in the verb set.
+run_case quiet "vp run build && eval \"vp run test\" (riding, hidden by eval)" \
+  "$MAIN" 'vp run build && eval "vp run test"'
+
+# 29j. Regression control for the whole block: with the main tree back
+#      in the post-merge position, 28a's verdict must be reproducible.
+#      Without it a mutation case that forgot to restore would leave
+#      every later case testing a different fixture.
+run_case quiet "vp run build in post-merge main tree (after state arms)" \
+  "$MAIN" 'vp run build'
 
 # 24. No feature worktree active -> QUIET even for a bare main-tree commit
 #     (no task in flight; ordinary main-tree work governed by branch-gate).
