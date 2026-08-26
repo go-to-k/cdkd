@@ -1,3 +1,10 @@
+## [0.284.49](https://github.com/go-to-k/cdkd/compare/v0.284.48...v0.284.49) (2026-08-26)
+
+
+### Bug Fixes
+
+* **cli:** answer a bare --version without importing the command tree (~1020ms -> ~50ms) ([#2219](https://github.com/go-to-k/cdkd/issues/2219)) ([000adca](https://github.com/go-to-k/cdkd/commit/000adca1cda47fa382a289e02a616c4e2a4d7cc5))
+
 ## [0.284.48](https://github.com/go-to-k/cdkd/compare/v0.284.47...v0.284.48) (2026-08-26)
 
 
