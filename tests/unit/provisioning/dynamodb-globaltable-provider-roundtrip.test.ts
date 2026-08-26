@@ -1823,6 +1823,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     });
 
     it('--remove-protection: issues UpdateTable to clear DeletionProtectionEnabled first', async () => {
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, DeletionProtectionEnabled: true },
+      }); // pre-flip OBSERVATION DescribeTable (issue #1978)
       mockSend.mockResolvedValueOnce({}); // UpdateTable (flip-off)
       mockSend.mockResolvedValueOnce({
         Table: { TableStatus: 'ACTIVE' },
@@ -1838,7 +1841,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         removeProtection: true,
       });
 
-      const flipCall = mockSend.mock.calls[0]?.[0] as UpdateTableCommand;
+      // Index 1, not 0: the observing describe above now comes first.
+      const flipCall = mockSend.mock.calls[1]?.[0] as UpdateTableCommand;
       expect(flipCall).toBeInstanceOf(UpdateTableCommand);
       expect(flipCall.input.DeletionProtectionEnabled).toBe(false);
     });
@@ -1849,6 +1853,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       // swallows the RNF and continues to the per-region drop loop +
       // DeleteTable, which fall through to the standard region-match-
       // gated RNF idempotency path.
+      mockSend.mockRejectedValueOnce(newRnf()); // pre-flip observation -> RNF (issue #1978)
       mockSend.mockRejectedValueOnce(newRnf()); // UpdateTable (flip-off) -> RNF
       mockSend.mockRejectedValueOnce(newRnf()); // DescribeTable -> RNF (table gone)
       mockSend.mockRejectedValueOnce(newRnf()); // DeleteTable -> RNF
@@ -1867,6 +1872,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       // Same as above but with a region mismatch — the downstream RNF
       // on DeleteTable must still throw because the destroy could be
       // silently stripping a still-existing resource from state.
+      mockSend.mockRejectedValueOnce(newRnf()); // pre-flip observation -> RNF (issue #1978)
       mockSend.mockRejectedValueOnce(newRnf()); // UpdateTable (flip-off) -> RNF
       mockSend.mockRejectedValueOnce(newRnf()); // DescribeTable -> RNF
       mockSend.mockRejectedValueOnce(newRnf()); // DeleteTable -> RNF
@@ -3517,6 +3523,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       // Sequence: flip-off UpdateTable succeeds → waitForTableActiveAfterUpdate
       // succeeds → DescribeTable returns RNF (table concurrently deleted)
       // → DeleteTable returns RNF → region-match check refuses idempotency.
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: TABLE_NAME, DeletionProtectionEnabled: true },
+      }); // pre-flip OBSERVATION DescribeTable (issue #1978)
       mockSend.mockResolvedValueOnce({}); // UpdateTable (flip-off) — SUCCESS
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait ACTIVE — SUCCESS
       mockSend.mockRejectedValueOnce(newRnf()); // DescribeTable -> RNF

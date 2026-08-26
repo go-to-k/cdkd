@@ -786,6 +786,7 @@ describe('every wait on the DELETE path draws from the allowance (issue #1955)',
     let describes = 0;
     let pollsBeforeDelete = -1;
     let deleted = false;
+    let observedProtection = false;
     mockSend.mockImplementation((command: unknown) => {
       if (command instanceof DescribeTableCommand) {
         // Post-delete, the table is GONE so `waitForTableGone` returns at once.
@@ -793,6 +794,23 @@ describe('every wait on the DELETE path draws from the allowance (issue #1955)',
         // wait's real 600-poll cap and time out.
         if (deleted) {
           return Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }));
+        }
+        // The FIRST describe is the issue-#1978 pre-flip OBSERVATION, not a
+        // poll of the ACTIVE wait this fixture measures. It is deliberately
+        // uncounted: counting it would shift `activeAtPoll` off the wait it
+        // names, and the clamped cases (which expect the ONE-poll floor) would
+        // read 2 while measuring the same single poll.
+        if (!observedProtection) {
+          observedProtection = true;
+          return Promise.resolve({
+            Table: {
+              TableName: 'shared-table',
+              TableStatus: 'ACTIVE',
+              DeletionProtectionEnabled: true,
+              GlobalSecondaryIndexes: [{ IndexName: 'gsi1', IndexStatus: 'ACTIVE' }],
+              Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }],
+            },
+          });
         }
         describes += 1;
         const ready = describes >= opts.activeAtPoll;
