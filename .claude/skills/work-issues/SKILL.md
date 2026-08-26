@@ -1192,6 +1192,26 @@ because it converts an open gap into a recorded assurance:
   positive receipt it cannot produce without having run —
   `bytes 41822 -> 41799; anchor now 0 (was 1); changed=True` — then read the
   receipt rather than the exit code.
+
+  **This rule was already written here and was broken THREE times in one run
+  (2026-08-26), so the fix is to stop asking agents to invent the name: the
+  ORCHESTRATOR assigns each dispatched agent a unique scratch directory IN ITS
+  PROMPT** (`$SCRATCHPAD/lane<issue>-private/`, `$SCRATCHPAD/rev-<role>-<sha>/`),
+  and every prompt says never to write a bare generic name in the scratchpad root.
+  Decided once per run, it cannot be re-derived wrongly per agent. What happened
+  without it: lane B's loop picked up a `probe.sh` lane A had written and ran **lane
+  A's entire probe table twelve times against lane A's worktree**; a reviewer's
+  order-probe left an uncommitted mutation inside lane B's worktree, which a second
+  reviewer then restored from `HEAD`; and — the one worth knowing about — an agent
+  reported a live cross-session TRESPASS that had not happened, because the
+  `_old-<name>.test.sh` copies a reviewer is TOLD to write beside their subject look
+  identical, from inside the worktree, to a peer writing there. A collision and a
+  correct convention are indistinguishable to the lane being written into, so the
+  orchestrator has to be the one who knows which is which.
+
+  A hook was considered and rejected: it would have to match command TEXT for writes
+  to a scratch path, which is the unbounded-bypass-spelling shape go-to-k/cdkd#2156
+  documents. Pre-assignment moves the decision instead of trying to police it.
 - **A probe's FIXTURE, not its mutation, decided the outcome.** A region test
   set `AWS_REGION` to the CONSUMER's region, under which the correct code and
   the mutation bind identically, so the probe stayed green; pointing it at the
@@ -1748,7 +1768,16 @@ conclude the fix is broken.
   `/verify-pr` step 9, and never from `verify-pr` itself — that gate sits on top of
   `check` + `docs` with no diff-shape carve-out. This is the easy tier to
   under-verify: with no fixture and no integ that can fail, "the gates are green"
-  reads as "nothing left to check". What SATISFIES step 9 depends on what the diff
+  reads as "nothing left to check". **And never conclude a CI job cannot fail on
+  your diff from that job's NAME or its usual scope** — a job's name bounds where it
+  READS from, not what it ASSERTS. On 2026-08-26 the go-to-k/cdkd#2236 lane wrote
+  twice that `check-build-test` "cannot fail on a `.claude/**`-only diff because it
+  is a `src/**` / `tests/**` job", and used that to skip the full suite after a
+  final round of prose growth. It went red: `tests/unit/scripts/rule-file-payload.test.ts`
+  lives under `tests/` and has jurisdiction over the WHOLE tree, `.claude/rules/**`
+  included, so the one check the lane talked itself out of running is the one that
+  would have caught it. Any repo-wide fence — a byte cap, a corpus scan, a
+  `git ls-files` walk — sits inside some job whose name suggests a narrower reach. What SATISFIES step 9 depends on what the diff
   changes, and a diff that does both takes BOTH arms.
   - **It changes what a command or gate DOES** (a build / lint config, a CI
     workflow, hook logic, a `vite.config.ts` task) → the verification IS that
@@ -2077,6 +2106,21 @@ never saw. The fix is `git fetch` + rebase + re-run, not distrusting the peer's 
 test (go-to-k/cdk-local#524 vs go-to-k/cdk-local#520, 2026-08-19; the flake case is
 go-to-k/cdk-local#509 hitting the go-to-k/cdk-local#515 timeout 2/2 in its worktree,
 green on the first post-merge, post-rebase run).
+
+**When the failing check is a CUMULATIVE BUDGET, the number CI reports is not the
+number your branch holds, and rebasing is not enough to see it.** A byte cap, a
+corpus total, a count-of-files fence — anything whose verdict is a SUM over the tree
+— is evaluated on the MERGE RESULT, so a peer who grows the same file moves your
+verdict without touching your diff. On 2026-08-26 the go-to-k/cdkd#2236 lane measured
+`.claude/rules/hooks.md` at 120,454 B on its branch, comfortably inside a
+95,000-120,000 B band, while CI reported **123,797 B** and stayed red: peer PR
+go-to-k/cdkd#2229 had merged mid-review and added 3,343 B to that same file. Trimming
+to fit the LOCAL number would have landed inside the band and remained red on every
+push. Measure what the merge produces — `git merge-tree HEAD origin/main` gives it
+without touching the working tree, which matters because an actual `git merge` can
+itself be refused by a gate whose scope the incoming range touches. Then say the
+resulting HEADROOM out loud in the report, because it is what tells the next lane
+whether its own addition will red the same fence.
 
 ```bash
 git checkout main && git pull origin main    # bring the merges local
