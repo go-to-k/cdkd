@@ -79,12 +79,18 @@ array is NOT omitted, because absent and empty are different records here;
 and a save that CARRIES a bag forward (`outputs: currentState.outputs` on the
 five failure-path saves, `cdkd import` over an existing record) spreads
 `exportNamesCarriedFrom(previous)` next to it, never inventing `[]` for a bag
-whose set it does not know. The no-change deploy path additionally
-BACKFILLS a record that lacks the field — it re-resolved the bag and found it
-equal, so the set is known — and re-feeds the exports index with the exports
-only, which is what evicts the plain-name entries a pre-v9 deploy published;
-without that a producer whose template never changes would pollute the index
-forever. Duplicate producers of one export name (two stacks both EXPORTING
+whose set it does not know. The no-change deploy path additionally persists
+the set (and re-feeds the exports index with the exports only) whenever the
+EFFECTIVE export set changed even though the outputs VALUES did not — compared
+as `importableOutputKeys(currentState)` against the freshly-resolved set. Two
+shapes reach it: a pre-v9 record whose every-key legacy set differs from the
+real exports (its first migration, evicting the plain-name entries a pre-v9
+deploy published — without which a producer whose template never changes would
+pollute the index forever), and a SELF-NAMED export toggled on a v9 record
+(`Export.Name` equal to the output key rewrites the same key with the same
+value, so the bag is byte-equal but `exportNames` flips between `[]` and
+`[<key>]`). It is kept OUT of the "outputs value changed" branch so it does not
+flip that log line or the persisted-bag choice. Duplicate producers of one export name (two stacks both EXPORTING
 it) keep the index's latest-writer policy but now WARN, on update and on
 rebuild; CloudFormation refuses the second producer outright.
 

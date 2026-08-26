@@ -545,10 +545,15 @@ before the field existed, and the stack's next deploy clears it.
 pre-v9 record reads as "every output key is importable" (the v8-shipped
 behavior), so no existing cross-stack reference breaks; the next deploy of the
 producer under a v9 binary writes the set and persists `version: 9` silently.
-That includes a deploy with NO template change: the no-change path backfills
-the field and re-feeds the exports index with the exports only, so a producer
-whose template never changes still stops publishing its plain output names
-after one deploy. The
+That includes a deploy with NO template change: the no-change path persists the
+set and re-feeds the exports index with the exports only whenever the effective
+export set changed while the outputs values did not, so a producer whose
+template never changes still stops publishing its plain output names after one
+deploy. The same path also handles a **self-named export** toggled on a v9
+record — adding or removing `Export.Name` equal to an output's own key rewrites
+the same key with the same value (byte-equal bag), and the effective-set
+comparison is what persists and re-indexes the flip so a newly-exported name
+becomes importable (and a newly-unexported one stops being served). The
 [`tests/integration/schema-v8-to-v9-migration/`](../tests/integration/schema-v8-to-v9-migration/)
 integ test proves the round-trip against real AWS — and first reproduces the
 shadowing under the v8 binary (a consumer bound to a decoy stack's plain

@@ -522,4 +522,82 @@ describe('DeployEngine - Outputs-only change on a no-resource-diff deploy (#875)
     expect(JSON.stringify(saved)).toContain('"exportNames":[]');
     expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {});
   });
+
+  it('ADDING a self-named Export.Name on a v9 record (unchanged bag) saves the set + indexes it (#2194 review)', async () => {
+    // The blocker: a v9 record has a plain output `Foo` (exportNames: []). The
+    // user adds `Export: { Name: 'Foo' }` — self-named, so `isExportAliasCollision`
+    // returns false and the alias write hits the SAME key with the SAME value.
+    // The bag is byte-equal, so `outputsChanged` is false and the old `undefined`
+    // backfill never fired — nothing saved, the consumer's Fn::ImportValue Foo
+    // hard-failed. The effective-set comparison must catch it.
+    mockStateBackend.getState.mockResolvedValue({
+      state: makeState({ Foo: 'foo-value' }, []),
+      etag: 'etag-old',
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      Outputs: { Foo: { Value: 'foo-value', Export: { Name: 'Foo' } } },
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+    // The bag is unchanged; only its export set flips to include Foo.
+    expect(saved.outputs).toEqual({ Foo: 'foo-value' });
+    expect(saved.exportNames).toEqual(['Foo']);
+    // And the index now serves the export.
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {
+      Foo: 'foo-value',
+    });
+  });
+
+  it('REMOVING a self-named Export.Name on a v9 record evicts the phantom export from state + index (#2194 review)', async () => {
+    // Reverse direction: exportNames: ['Foo'] but the template no longer exports
+    // it. The bag is byte-equal (Foo is still a plain output), so without the
+    // effective-set comparison exportNames: ['Foo'] would be carried forever and
+    // the index would keep serving a template-unbacked export.
+    mockStateBackend.getState.mockResolvedValue({
+      state: makeState({ Foo: 'foo-value' }, ['Foo']),
+      etag: 'etag-old',
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      Outputs: { Foo: { Value: 'foo-value' } }, // no Export anymore
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).toHaveBeenCalledTimes(1);
+    const saved = mockStateBackend.saveState.mock.calls[0]![2] as StackState;
+    expect(saved.outputs).toEqual({ Foo: 'foo-value' });
+    expect(saved.exportNames).toEqual([]);
+    // The index is re-fed with the exports only ({} now), evicting the phantom.
+    expect(mockExportIndexStore.updateForStack).toHaveBeenCalledWith('producer-stack', 'us-east-1', {});
+  });
+
+  it('an unchanged v9 export set on a no-change deploy neither saves nor re-indexes', async () => {
+    // Guard against over-firing: exportNames already correct, bag unchanged,
+    // nothing to do. (Fences the set-comparison against a mutation that always
+    // reports "changed".)
+    mockStateBackend.getState.mockResolvedValue({
+      state: makeState({ Foo: 'foo-value', 'ex:Foo': 'foo-value' }, ['ex:Foo']),
+      etag: 'etag-old',
+    });
+
+    const template: CloudFormationTemplate = {
+      Resources: { BucketA: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'bucket-a' } } },
+      Outputs: { Foo: { Value: 'foo-value', Export: { Name: 'ex:Foo' } } },
+    };
+
+    const engine = makeEngine();
+    await engine.deploy(stackName, template);
+
+    expect(mockStateBackend.saveState).not.toHaveBeenCalled();
+    expect(mockExportIndexStore.updateForStack).not.toHaveBeenCalled();
+  });
 });

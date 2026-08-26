@@ -50,6 +50,7 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   shouldRetainResource,
   exportNamesCarriedFrom,
+  importableOutputKeys,
   importableOutputs,
   type StackState,
   type StateImportEntry,
@@ -1758,23 +1759,29 @@ export class DeployEngine {
           const resolutionFailed = Object.values(resolvedOutputs).some((v) => v === undefined);
           const outputsChanged =
             !resolutionFailed && !outputMapsEqual(persistedOutputs, resolvedOutputs);
-          // Issue #2193: a record that predates `exportNames` is still feeding
-          // the exports index every one of its plain Output names. Write the
-          // set this pass produced now rather than waiting for a template
-          // change that may never come, and re-index below with the exports
-          // only so the stale plain-name entries are evicted in the same
-          // deploy. Scoped to a record that ACTUALLY has a plain output name
-          // the legacy rule would wrongly serve — an empty bag, or one whose
-          // every key is already an export, has nothing to suppress, so
-          // backfilling it would be a state write with no effect. `outputsChanged`
-          // records the set on its own save, so this only covers the no-change
-          // arm — hence `persistedOutputs` below, not the resolved bag: the
-          // `!outputsChanged` term means the two are equal here anyway.
-          const exportNamesBackfill =
+          // Issue #2193: the EFFECTIVE export set can change without the outputs
+          // VALUES changing, and the no-change path is the only place that would
+          // persist it. Two shapes reach here with `outputsChanged` false:
+          //   - a pre-v9 record (`exportNames` undefined) still feeding the index
+          //     every plain Output name — the legacy every-key set differs from
+          //     the resolved exports whenever there is a plain name to suppress;
+          //   - a SELF-NAMED export toggled on a v9 record: adding
+          //     `Export: { Name: <same-as-output-key> }` (or removing it) rewrites
+          //     the same key with the same value, so the bag is byte-equal, but
+          //     `exportNames` flips between `[]` and `[<key>]`. Without this the
+          //     added export never lands in state/index (consumer's Fn::ImportValue
+          //     hard-fails), and the removed one is a phantom export served forever.
+          // Detect it by comparing the CURRENTLY-effective set against this pass's
+          // resolved set. Subsumes the old pre-v9 backfill and catches both
+          // self-named directions. Kept OUT of `outputsChanged` deliberately: this
+          // is not an outputs-VALUE change, so it must not flip the "Outputs-only
+          // change" log or the `resolvedOutputs`-vs-`persistedOutputs` bag choice.
+          const currentEffectiveExports = new Set(importableOutputKeys(currentState));
+          const resolvedExportSet = new Set(this.resolvedExportNames);
+          const exportSetChanged =
             !resolutionFailed &&
-            !outputsChanged &&
-            currentState.exportNames === undefined &&
-            Object.keys(persistedOutputs).some((k) => !this.resolvedExportNames.includes(k));
+            (currentEffectiveExports.size !== resolvedExportSet.size ||
+              [...resolvedExportSet].some((k) => !currentEffectiveExports.has(k)));
 
           // Surface the rare case where outputs DID change but a resolution
           // failure suppressed the persist. resolveOutputs already warns
@@ -1797,7 +1804,7 @@ export class DeployEngine {
             await this.drainObservedCaptures(currentState.resources);
           }
 
-          if (observedRefresh || outputsChanged || exportNamesBackfill) {
+          if (observedRefresh || outputsChanged || exportSetChanged) {
             try {
               const refreshedState: StackState = {
                 version: STATE_SCHEMA_VERSION_CURRENT,
@@ -1839,12 +1846,14 @@ export class DeployEngine {
                 this.withParentInfo(refreshedState),
                 saveOptions
               );
-              if (outputsChanged || exportNamesBackfill) {
+              if (outputsChanged || exportSetChanged) {
                 persistedOutputs = refreshedState.outputs;
                 if (outputsChanged) {
                   this.logger.info('Persisted Outputs-only change (no resource diff).');
                 } else {
-                  this.logger.debug('Persisted exportNames backfill (no-change path, #2193)');
+                  this.logger.debug(
+                    'Persisted export-set change (no outputs-value diff, no-change path, #2193)'
+                  );
                 }
                 // Update the persistent exports index so the newly-added export
                 // resolves O(1) for consumers — with the EXPORTS only (#2193),

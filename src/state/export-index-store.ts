@@ -466,19 +466,33 @@ export class ExportIndexStore {
         }
       })
     );
+    // Per surviving export name, the `lastModified` of the state record it came
+    // from — so a rebuild collision keeps the MORE-RECENTLY-MODIFIED producer
+    // (closest to "deployed last"), rather than whichever stack `listStacks`
+    // happened to iterate last. That makes `warnOnForeignOverwrite`'s
+    // "binds to whichever deployed last" wording true on this arm too (#2194
+    // review). `listStacks` order is otherwise arbitrary.
+    const survivorModifiedAt = new Map<string, number>();
     for (const { ref, state } of results) {
       if (!state || !state.outputs) continue;
       const region = ref.region ?? this.region;
+      const stateModified = state.lastModified ?? 0;
       // The EXPORTS only (issue #2193), through the one predicate every
       // reader of the bag shares — a pre-v9 record still contributes every
       // key, and its next deploy narrows it.
       for (const [name, value] of Object.entries(importableOutputs(state))) {
-        this.warnOnForeignOverwrite(entries.get(name), name, ref.stackName, region);
+        const existing = entries.get(name);
+        if (existing && existing.producerStack !== ref.stackName) {
+          this.warnOnForeignOverwrite(existing, name, ref.stackName, region);
+          // Keep the newer record; a strictly-older colliding producer loses.
+          if (stateModified < (survivorModifiedAt.get(name) ?? 0)) continue;
+        }
         entries.set(name, {
           value,
           producerStack: ref.stackName,
           producerRegion: region,
         });
+        survivorModifiedAt.set(name, stateModified);
       }
     }
     return entries;

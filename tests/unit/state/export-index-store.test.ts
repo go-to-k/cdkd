@@ -87,6 +87,8 @@ function mockBackend(
     outputs?: Record<string, unknown>;
     /** Omitted = a pre-v9 record (issue #2193): every output key importable. */
     exportNames?: string[];
+    /** State record's lastModified; rebuild keeps the newer on a collision (#2194). */
+    lastModified?: number;
   }>
 ): S3StateBackend {
   return {
@@ -104,7 +106,7 @@ function mockBackend(
           resources: {},
           outputs: found.outputs ?? {},
           ...(found.exportNames !== undefined && { exportNames: found.exportNames }),
-          lastModified: 1234,
+          lastModified: found.lastModified ?? 1234,
         },
         etag: 'fake-etag',
       };
@@ -231,6 +233,27 @@ describe('ExportIndexStore', () => {
       expect(warnings()).toHaveLength(1);
       expect(warnings()[0]).toContain("Export 'Shared' is published by both 'First' (us-east-1) and 'Second' (us-east-1)");
       expect(warnings()[0]).toContain('CloudFormation refuses a second producer');
+    });
+
+    it('rebuild keeps the MORE-RECENTLY-MODIFIED producer on a collision, not the last iterated (#2194)', async () => {
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+        if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"new-etag"' };
+        throw new Error(`unexpected command ${cmd.constructor.name}`);
+      });
+      // `First` is iterated FIRST but has the NEWER lastModified, so it must win
+      // — proving the survivor is chosen by lastModified, not scan order. That
+      // makes the warning's "binds to whichever deployed last" wording true here.
+      const backend = mockBackend([
+        { stackName: 'First', region: 'us-east-1', outputs: { Shared: 'from-first' }, exportNames: ['Shared'], lastModified: 2000 },
+        { stackName: 'Second', region: 'us-east-1', outputs: { Shared: 'from-second' }, exportNames: ['Shared'], lastModified: 1000 },
+      ]);
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+      const entry = await store.lookup('Shared');
+      expect(entry?.producerStack).toBe('First');
+      expect(entry?.value).toBe('from-first');
+      expect(warnings()).toHaveLength(1);
     });
 
     it('rebuilds when index JSON is corrupt', async () => {
