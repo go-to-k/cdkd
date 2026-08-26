@@ -16,6 +16,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getLogger } from '../../utils/logger.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
   getAccountInfo,
@@ -700,6 +701,123 @@ function hasHandlerLogOutput(logTail: string): boolean {
   return logTail
     .split('\n')
     .some((line) => line.trim().length > 0 && !CR_LOG_TAIL_BOILERPLATE.test(line.trimStart()));
+}
+
+/**
+ * Outcome of parsing a custom-resource response body read back from S3.
+ *
+ * The three cases the poll loop must tell apart WITHOUT echoing the body
+ * (issue #2250): a usable response document, valid JSON that is not one (a
+ * bare scalar, an array, or `null` — what a handler writing the wrong shape
+ * produces), and bytes that do not parse at all (typically a partially
+ * written object caught mid-upload).
+ */
+type CfnResponseBodyParse =
+  | { kind: 'envelope'; response: CfnCustomResourceResponse }
+  | { kind: 'non-object' }
+  | { kind: 'unparseable' };
+
+/**
+ * Parse a response body without trusting it. The body is written by the
+ * customer's Lambda handler through a pre-signed URL, so it is UNTRUSTED
+ * input: it may be truncated, may be a JSON scalar, or may be `null`. Every
+ * one of those must be a normal "keep polling" outcome rather than a throw.
+ */
+function parseCfnResponseBody(body: string): CfnResponseBodyParse {
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    return { kind: 'unparseable' };
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { kind: 'non-object' };
+  }
+  return { kind: 'envelope', response: value as CfnCustomResourceResponse };
+}
+
+/**
+ * Every field of the response is HANDLER-CONTROLLED, so each one is made safe
+ * to render before it reaches a log line, and capped.
+ *
+ * Both halves are regressions this function introduced and a review caught.
+ * The line it replaced printed `body.substring(0, 200)` -- raw WIRE json, where
+ * the encoder had already escaped control characters as `\u001b`, and which was
+ * capped at 200 characters by construction. Parsing first UNDOES the escaping:
+ * an ESC and a newline reach the terminal as real bytes, so a handler (or
+ * anyone holding the pre-signed response URL) could clear the screen and print
+ * a forged `ERROR [cdkd]` line into a CI transcript. Measured: a
+ * `PhysicalResourceId` carrying `ESC[2J` plus a newline rendered both. And
+ * dropping the substring removed the bound -- a 5000-char id with 300 `Data`
+ * keys rendered a 19,714-character line, re-emitted on EVERY poll.
+ *
+ * `displaySafe` is this repo's one answer to the first (issue
+ * https://github.com/go-to-k/cdkd/issues/2170); `state.ts` already applies the
+ * same treatment to this very value when it prints a state record.
+ */
+function capForLog(value: string): string {
+  const safe = displaySafe(value);
+  return safe.length > DESCRIBE_MAX_FIELD_CHARS
+    ? `${safe.slice(0, DESCRIBE_MAX_FIELD_CHARS)}...(${safe.length} chars)`
+    : safe;
+}
+
+/** Per-field cap for the poll log line. */
+const DESCRIBE_MAX_FIELD_CHARS = 200;
+/** How many `Data` key names the poll log line names before counting the rest. */
+const DESCRIBE_MAX_DATA_KEYS = 20;
+
+/**
+ * Render a NON-SENSITIVE one-line summary of a custom-resource response body
+ * for the poll's debug log (issue #2250).
+ *
+ * The body is the CloudFormation custom-resource response document, and its
+ * `Data` field is the documented place a handler returns a GENERATED VALUE —
+ * including a generated secret. The previous log line emitted
+ * `body.substring(0, 200)`, which put those values on the terminal (and, in
+ * CI, into the retained build log) on every poll under `--verbose`.
+ *
+ * What survives here is everything the line was actually useful for: WHICH
+ * resource answered (the caller adds the logical id), WHETHER it succeeded
+ * (`Status`), what identity it claimed (`PhysicalResourceId` — already
+ * persisted to state.json, so not a new channel), and WHICH keys came back
+ * (`Object.keys(Data)`). The `Data` VALUES never appear, and neither does
+ * `Reason`, which is free-form handler text that can quote them.
+ *
+ * For a body that is not a usable envelope, only its LENGTH is reported —
+ * never its bytes. That keeps the diagnostic for the case it matters most in
+ * (a handler writing a malformed response) without turning the fallback into
+ * the same prefix echo through another door.
+ */
+function describeCfnResponseBody(body: string, parsed: CfnResponseBodyParse): string {
+  if (parsed.kind !== 'envelope') {
+    const shape = parsed.kind === 'unparseable' ? 'unparseable body' : 'JSON body is not an object';
+    return `${shape} (${body.length} chars)`;
+  }
+
+  // Read defensively: the parse only proved the body is SOME object, not that
+  // it matches `CfnCustomResourceResponse`.
+  const envelope = parsed.response as unknown as Record<string, unknown>;
+  const status = typeof envelope['Status'] === 'string' ? envelope['Status'] : '<absent>';
+  const physicalId =
+    typeof envelope['PhysicalResourceId'] === 'string'
+      ? envelope['PhysicalResourceId']
+      : '<absent>';
+
+  const data = envelope['Data'];
+  let dataPart: string;
+  if (data === undefined) {
+    dataPart = 'Data absent';
+  } else if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
+    const keys = Object.keys(data);
+    const shown = keys.slice(0, DESCRIBE_MAX_DATA_KEYS).map((k) => capForLog(k));
+    const omitted = keys.length - shown.length;
+    dataPart = `Data keys [${shown.join(', ')}${omitted > 0 ? `, +${omitted} more` : ''}]`;
+  } else {
+    dataPart = 'Data not an object';
+  }
+
+  return `Status=${capForLog(status)} PhysicalResourceId=${capForLog(physicalId)} ${dataPart}`;
 }
 
 /**
@@ -2358,10 +2476,29 @@ export class CustomResourceProvider implements ResourceProvider {
 
           const body = await response.Body?.transformToString();
           if (body && body.length > 0) {
-            this.logger.debug(`Got S3 response for ${logicalId}: ${body.substring(0, 200)}`);
+            // Issue #2250: this line used to log `body.substring(0, 200)`. The
+            // body is the custom-resource RESPONSE DOCUMENT, whose `Data` is
+            // the documented place a handler returns a generated value — so a
+            // generated secret sitting behind a short `PhysicalResourceId`
+            // landed inside that window and reached the terminal (and CI logs)
+            // on every poll under `--verbose`. Log the ENVELOPE instead.
+            //
+            // The parse is hoisted ABOVE the log so one result feeds both the
+            // summary and the terminal-status check — but the log itself still
+            // fires for a body that does NOT parse, which is deliberate: a
+            // malformed response is exactly when the diagnostic is worth most.
+            // That arm reports the body's LENGTH only, never its bytes.
+            //
+            // The old `try` also spanned the cleanup + return below. Nothing
+            // relied on that: `cleanupResponseObject` swallows its own errors,
+            // so the only throw the catch ever saw was `JSON.parse`'s.
+            const parsed = parseCfnResponseBody(body);
+            this.logger.debug(
+              `Got S3 response for ${logicalId}: ${describeCfnResponseBody(body, parsed)}`
+            );
 
-            try {
-              const cfnResponse = JSON.parse(body) as CfnCustomResourceResponse;
+            if (parsed.kind === 'envelope') {
+              const cfnResponse = parsed.response;
 
               // Validate response has required fields
               if (cfnResponse.Status === 'SUCCESS' || cfnResponse.Status === 'FAILED') {
@@ -2369,8 +2506,9 @@ export class CustomResourceProvider implements ResourceProvider {
                 await this.cleanupResponseObject(responseKey);
                 return cfnResponse;
               }
-            } catch {
-              // JSON parse failed, response not yet written properly
+            } else {
+              // Not a usable response document yet — a truncated write, or a
+              // handler that wrote a bare JSON scalar. Keep polling.
               this.logger.debug(`S3 response not yet valid JSON for ${logicalId}, retrying...`);
             }
           }
