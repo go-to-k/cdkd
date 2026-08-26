@@ -712,12 +712,15 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
   });
 
   it('the collision warning MASKS a resolved name that carries plaintext', async () => {
-    // The deploy twin prints its colliding name unmasked, and its rationale is
-    // that the secret refusal already cleared it. Scrub runs no such refusal and
-    // its name is a BEST-EFFORT resolved intrinsic, so it must mask its own —
-    // otherwise the shared helper asserts an invariant only one caller upholds.
-    // Contrived by construction (the resolved name has to equal a declared
-    // output name) but the disclosure is real: the warning goes to stderr.
+    // The deploy twin prints its colliding name unmasked because
+    // `secretBearingExportNameWarning` refused a secret-bearing `Export.Name`
+    // upstream. Scrub runs no such refusal, so it masks its own — a BELT rather
+    // than the guarantee an earlier revision of this comment claimed (issue
+    // #1958 item 9): what actually bounds the printed string is the collision
+    // test, which only ever passes a name matching a DECLARED output name.
+    // Hence the shape below, which is the reachable one and not an arbitrary
+    // contrivance: the template has to NAME an output with the plaintext. The
+    // disclosure is still real — the template is not stderr, and not a CI log.
     stateBackend.getState.mockResolvedValue({
       state: makeState({ [OWNER_PLAINTEXT]: 'v', Exporter: SECRET_PLAINTEXT }),
       etag: 'etag-1',
@@ -777,5 +780,50 @@ describe('outputs-export-alias message builders', () => {
     // ...while still naming enough of the key to act on.
     expect(message).toContain('pre-');
     expect(message).toContain('-endpoint');
+  });
+
+  it('the scrub collision warning masks the OWNING output key too, not only the exported name', () => {
+    // The neighbour of the masked argument (issue #1958 review). Both names
+    // reach this builder from the same place — the collision fired because the
+    // export name matched a DECLARED output name, so the owning key is a
+    // declared output name as well — and the reachable shape is a template that
+    // NAMES an output with the plaintext. Which of the two carries it depends
+    // only on which output does the exporting, so masking one and printing the
+    // other raw leaves the disclosure open on half the inputs.
+    //
+    // Note the arguments are the MIRROR of the case below: here the PLAINTEXT
+    // is the owning key and the export name is ordinary.
+    const message = exportAliasCollisionScrubWarning(
+      SECRET_PLAINTEXT,
+      'alpha-public-endpoint',
+      SECRETS_FOR_MESSAGE
+    );
+
+    expect(message).not.toContain(SECRET_PLAINTEXT);
+    expect(message).toContain('***');
+    // ...and the ordinary name beside it is untouched, so this is a mask and
+    // not a builder that redacts indiscriminately.
+    expect(message).toContain('alpha-public-endpoint');
+  });
+
+  it('CONTROL: the scrub collision warning leaves an ORDINARY name untouched', () => {
+    // The polarity the suite was missing (issue #1958 item 9). The end-to-end
+    // `MASKS a resolved name that carries plaintext` case pins that the belt
+    // FIRES; nothing pinned that it stays OFF a name carrying no secret, and
+    // the three assertions that call this builder as their own expected value
+    // cannot — they are tautological with respect to masking. Measured: a
+    // builder that returned the bare mask for every name is green across the
+    // whole file except this case. (It does NOT reach `secretsPresentIn`'s
+    // `MIN_SECRET_NEEDLE` bound — that needs a degenerate SHORT needle in the
+    // map, which `deploy-engine-outputs-export-name-collision.test.ts` fences
+    // with its `PLAINTEXT_SHORT`.)
+    const message = exportAliasCollisionScrubWarning(
+      'SecretBeta',
+      'alpha-public-endpoint',
+      SECRETS_FOR_MESSAGE
+    );
+
+    expect(message).toContain('alpha-public-endpoint');
+    expect(message).not.toContain('***');
   });
 });

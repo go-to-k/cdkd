@@ -1749,10 +1749,22 @@ function plaintextProducerCrossStackReadError(
   // the whole-value arm of `maskSecretsInText` matches at any length, so a
   // short secret is masked by this call and by nothing else.
   //
-  // `producerStack` is masked for UNIFORMITY rather than reach: it comes from
-  // the state record's own stack name, which is never a resolved value, so no
-  // input makes it a secret today. Stated rather than implied, so a later
-  // reader does not mistake it for a fence that is holding something.
+  // `producerStack` is masked because it is REACHABLE too — not, as an earlier
+  // revision of this comment claimed, merely for uniformity with `exportKey`.
+  // The claim held for ONE of the two arms that reach here. An
+  // `Fn::ImportValue` producer name comes from the state-bucket listing
+  // (`recordImport` is handed `entry.producerStack` / `refStack`), and that is
+  // never a resolved value. An `Fn::GetStackOutput` producer name is
+  // RESOLVED before it is recorded: `recordOutputRead(context, stackName, ...)`
+  // is fed `await this.resolveValue(args['StackName'], context)`, so an
+  // `Fn::Sub` / `Fn::Join` assembling a `{{resolve:...}}` into `StackName`
+  // makes the recorded producer name a resolved secret exactly the way
+  // `exportKey` can be.
+  //
+  // Nothing leaks today, because both identifiers are masked at every site
+  // that prints them. What was wrong was the RATIONALE — and a wrong one is
+  // worse here than none at all, since "never a resolved value" reads as
+  // licence to drop the call the next time this line is touched.
   const loggedExportKey = maskSecretsInText(exportKey, secrets);
   const loggedProducerStack = maskSecretsInText(producerStack, secrets);
   // The claim about the producer's TEMPLATE is only as precise as the match
@@ -2504,7 +2516,8 @@ function makeCrossStackPrePass(deps: {
         loaded = await backend.getState(producer.stack, producer.region);
       } catch (err) {
         logger.debug(
-          `Scrub of ${stackName}: could not re-read producer '${producer.stack}' ` +
+          `Scrub of ${stackName}: could not re-read producer ` +
+            `'${maskSecretsInText(producer.stack, secrets)}' ` +
             `(${producer.region}) to classify its stored value: ` +
             `${maskSecretsInText(err instanceof Error ? err.message : String(err), secrets)}`
         );
@@ -2530,6 +2543,11 @@ function makeCrossStackPrePass(deps: {
         recordedImports: [],
         recordedOutputReads: [],
       };
+      // WHERE THE READ IS, spelled once and hoisted above the `try` so all
+      // nine log/finding sites below share one spelling (issue #2163 review --
+      // the first cut hoisted it only past the `catch`, leaving four re-spelled
+      // copies of the identical expression behind).
+      const where = `${key} in ${origin}${path ? ` at ${path}` : ''}`;
       try {
         await resolver.resolve({ [key]: node[key] }, probe);
       } catch (err) {
@@ -2543,8 +2561,8 @@ function makeCrossStackPrePass(deps: {
         // {@link isOutputSuppressed} exists to spare.
         if (!nodeCanRefuse) {
           logger.debug(
-            `Scrub of ${stackName}: ${key} in ${origin}${path ? ` at ${path}` : ''} could not be ` +
-              `resolved, and this position cannot refuse: ${maskSecretsInText(
+            `Scrub of ${stackName}: ${where} could not be resolved, and this position ` +
+              `cannot refuse: ${maskSecretsInText(
                 err instanceof Error ? err.message : String(err),
                 secrets
               )}`
@@ -2552,7 +2570,7 @@ function makeCrossStackPrePass(deps: {
           return;
         }
         if (isByDesignRefusal(err)) {
-          const detail = `${key} in ${origin}${path ? ` at ${path}` : ''}: ${maskSecretsInText(
+          const detail = `${where}: ${maskSecretsInText(
             err instanceof Error ? err.message : String(err),
             secrets
           )}`;
@@ -2566,14 +2584,85 @@ function makeCrossStackPrePass(deps: {
         }
         throw unresolvableCrossStackReadError(origin, stackName, key, path, err, secrets);
       }
+      // FIVE declining arms used to return in silence -- issue #2163 named
+      // three of them and reasoned from "every arm that classifies and then
+      // declines logs a debug line" that the failing live run must have taken
+      // one of those three. That premise was false for the other two, which is
+      // why isolating #2163 cost four real-AWS runs and still did not settle
+      // which one fired. All five name themselves below.
       const producer = recordedProducer(key, probe);
-      if (!producer) return;
+      if (!producer) {
+        logger.debug(
+          `Scrub of ${stackName}: ${where} resolved, but the resolver recorded no cdkd ` +
+            `cross-stack read for it — the value came from a CloudFormation fallback or a ` +
+            `cross-account arm that records nothing, so scrub cannot name a producer to ` +
+            `classify. Not classified as a plaintext producer.`
+        );
+        return;
+      }
+      // MASKED, for the reason {@link plaintextProducerCrossStackReadError} already
+      // gives for the REFUSAL that shares these two identifiers, and it applies
+      // with more force here: a `logger.debug` line has no boundary net at all,
+      // where the refusal at least passes through `maskSecretsInError` at
+      // `scrubStack`'s edge.
+      //
+      // `producer.key` is the REACHABLE half: it is `recordedImports.at(-1)
+      // .exportName` / `recordedOutputReads.at(-1).outputName`, i.e. the
+      // POST-resolution name, and `resolveImportValue` sets it from
+      // `resolveValue(importValueArg)` -- so an `Fn::ImportValue` over an
+      // `Fn::Sub` / `Fn::Join` / bare string assembling a `{{resolve:...}}`
+      // makes it a resolved secret verbatim. The needle is present by then:
+      // `probe` shares this function's `secrets` map object (it spreads
+      // `context`), the resolver fills that map IN PLACE, and the
+      // `resolver.resolve` call above is what performs the resolution.
+      // `maskSecretsInError` would not cover it anyway -- `allRecordedSecrets`
+      // DROPS every needle below `MIN_NEEDLE_LENGTH`, while the whole-value arm
+      // of `maskSecretsInText` matches at any length.
+      //
+      // `producer.stack` is masked because it is REACHABLE too — not merely
+      // for uniformity, which is what an earlier revision of this comment
+      // claimed. That claim held for ONE of the two arms `recordedProducer`
+      // reads. `Fn::ImportValue` takes the producer name from the state-bucket
+      // listing, so it really is a state record's own stack name.
+      // `Fn::GetStackOutput` RESOLVES it first:
+      // `recordOutputRead(context, stackName, ...)` is fed
+      // `await this.resolveValue(args['StackName'], context)`, so an
+      // `Fn::Sub` / `Fn::Join` assembling a `{{resolve:...}}` into `StackName`
+      // makes `producer.stack` a resolved secret exactly the way
+      // `producer.key` can be.
+      //
+      // Nothing leaks today — both are masked at every site below. The
+      // RATIONALE was the defect, and a wrong one is worse than none: "never a
+      // resolved value" reads as licence to drop the mask.
+      //
+      // `producer.region` is the one that genuinely cannot carry a secret, and
+      // it is interpolated raw for that reason. `Fn::GetStackOutput` gates its
+      // region through `isClientSafeRegion` (`/^[a-z0-9][a-z0-9-]{0,30}$/`,
+      // which no `{{resolve:...}}` token can satisfy) and THROWS rather than
+      // falling back; `Fn::ImportValue` takes it from the same state-bucket
+      // listing the stack name comes from.
+      const loggedKey = maskSecretsInText(producer.key, secrets);
+      const loggedStack = maskSecretsInText(producer.stack, secrets);
       // The producer is not a stack of this app, so scrub has no template to
       // classify the export with — and no chain to follow out of it either.
       // Documented residual — see {@link producerPublishesSecretExpression}.
-      if (!producerTemplates.has(producer.stack)) return;
+      if (!producerTemplates.has(producer.stack)) {
+        logger.debug(
+          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}' ` +
+            `(${producer.region}), which is not a stack of this app — scrub has no template to ` +
+            `classify export '${loggedKey}' with. Not classified as a plaintext producer.`
+        );
+        return;
+      }
       const verdict = secretExpressionVerdict(producer.stack, producer.key);
-      if (verdict.kind === 'no') return;
+      if (verdict.kind === 'no') {
+        logger.debug(
+          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}', whose ` +
+            `template declares no {{resolve:...}} expression for '${loggedKey}' and no ` +
+            `re-export chain reaching one. Not classified as a plaintext producer.`
+        );
+        return;
+      }
       // THE DISCRIMINATOR: read the producer's STORED value and test IT.
       //
       // The RESOLVED value cannot answer this, and neither can the template.
@@ -2615,10 +2704,25 @@ function makeCrossStackPrePass(deps: {
       // no longer has), and `scrubStack` deliberately supplies no `exportIndex`
       // — so writing a test for it would mean fabricating a state scrub cannot
       // produce. Kept as the fail-open guard for a future caller that does.
-      if (!stored) return;
+      if (!stored) {
+        logger.debug(
+          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}' ` +
+            `(${producer.region}), whose state record could not be read or does not carry the ` +
+            `key '${loggedKey}' — cannot classify, so this is not classified as a plaintext ` +
+            `producer.`
+        );
+        return;
+      }
       // The producer's state holds the EXPRESSION: it has been scrubbed, the
       // read handed this stack a resolvable secret, and there is nothing wrong.
-      if (carriesDynamicReference(stored.stored)) return;
+      if (carriesDynamicReference(stored.stored)) {
+        logger.debug(
+          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}', whose ` +
+            `stored value for '${loggedKey}' already carries a {{resolve:...}} expression — ` +
+            `the producer is scrubbed and there is nothing wrong with this read.`
+        );
+        return;
+      }
       // ...and neither is it a plaintext when it carries no text at ALL (issue
       // #2133 review). `carriesDynamicReference` is false for `null`, `''` and
       // every non-string scalar, so under a `widened` verdict — where the
@@ -2638,16 +2742,16 @@ function makeCrossStackPrePass(deps: {
       // which no shape here can distinguish from a populated one worth testing.
       if (storedValueCarriesNoPlaintext(stored.stored)) {
         logger.debug(
-          `Scrub of ${stackName}: ${key} in ${origin}${path ? ` at ${path}` : ''} resolved ` +
-            `through producer '${producer.stack}', whose stored value for that key carries no ` +
+          `Scrub of ${stackName}: ${where} resolved through producer '${loggedStack}', ` +
+            `whose stored value for that key carries no ` +
             `text — nothing to redact, so this is not classified as a plaintext producer.`
         );
         return;
       }
       if (!nodeCanRefuse) {
         logger.debug(
-          `Scrub of ${stackName}: ${key} in ${origin}${path ? ` at ${path}` : ''} resolved to a ` +
-            `plaintext from unscrubbed producer '${producer.stack}', and this position cannot refuse.`
+          `Scrub of ${stackName}: ${where} resolved to a plaintext from unscrubbed ` +
+            `producer '${loggedStack}', and this position cannot refuse.`
         );
         return;
       }

@@ -688,6 +688,75 @@ fi
 assert_no_plaintext "'cdkd drift --json'" "${DRIFT_JSON}"
 echo "    OK: exactly one drifted path — no phantom drift on the untouched references"
 
+# --- The all-changes-REFUSED wording (issue #1958) -------------------------
+# Everything above proves the refusal HAPPENS. This proves cdkd SAYS SO
+# CONSISTENTLY. Two user-visible strings used to contradict the per-change
+# `not accepting` warning printed right beside them:
+#   - the PLAN header announced `update cdkd state for <stack>` over a body
+#     that is nothing but `SKIPPED` lines;
+#   - the SUMMARY counted DRIFTED resources rather than RECORDED ones, so it
+#     reported `accepted drift on 1 resource(s)` for a run that accepted none.
+# Both are read against the state this fixture is already in, which is the only
+# state that can tell the two binaries apart: exactly one drifted resource,
+# carrying exactly one change, and that change refused.
+#
+# PREMISE FIRST. Both assertions describe what cdkd says when EVERY change of
+# EVERY drifted resource is refused, so a run with nothing to refuse would
+# satisfy the same wording for the wrong reason. `DRIFT_JSON` was captured
+# immediately above and nothing has been written since.
+DRIFTED_RESOURCES=$(printf '%s' "${DRIFT_JSON}" | jq '[.[].drifted[]] | length')
+DRIFTED_CHANGES=$(printf '%s' "${DRIFT_JSON}" | jq '[.[].drifted[].changes[]] | length')
+if [ "${DRIFTED_RESOURCES}" != "1" ] || [ "${DRIFTED_CHANGES}" != "1" ]; then
+  echo "FAIL: the all-refused premise does not hold — expected 1 drifted resource carrying 1 change, got ${DRIFTED_RESOURCES} resource(s) / ${DRIFTED_CHANGES} change(s)" >&2
+  exit 1
+fi
+echo "    OK: exactly one drifted resource carrying exactly one change — the all-refused premise"
+
+# The PLAN half. `printAcceptPlan` runs BEFORE the `--dry-run` short-circuit,
+# so this is the very header the write path prints too.
+echo "==> Asserting the --accept PLAN does not promise a write it will refuse (issue #1958)"
+set +e
+ACCEPT_PLAN_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --accept --dry-run 2>&1)
+ACCEPT_PLAN_RC=$?
+set -e
+if [ "${ACCEPT_PLAN_RC}" -ne 0 ]; then
+  echo "FAIL: 'cdkd drift --accept --dry-run' failed (rc=${ACCEPT_PLAN_RC})" >&2
+  diag_output "${ACCEPT_PLAN_OUT}"
+  exit 1
+fi
+assert_no_plaintext "'cdkd drift --accept --dry-run'" "${ACCEPT_PLAN_OUT}"
+# The body really is all-SKIPPED, from the command's own mouth — a second
+# reading of the premise above, taken from the output being asserted on.
+if ! printf '%s' "${ACCEPT_PLAN_OUT}" | grep -qF "SKIPPED"; then
+  echo "FAIL: the --accept plan printed no SKIPPED line, so its header is not being read over an all-refused body" >&2
+  diag_output "${ACCEPT_PLAN_OUT}"
+  exit 1
+fi
+# POSITIVE marker: only the fixed binary emits this header.
+if ! printf '%s' "${ACCEPT_PLAN_OUT}" | grep -qF "no accepted values will be written to cdkd state for"; then
+  echo "FAIL: the --accept plan did not say that no accepted values will be written" >&2
+  diag_output "${ACCEPT_PLAN_OUT}"
+  exit 1
+fi
+# ...and it names WHAT the run does still write. `no accepted values`, not
+# `nothing`: the real run over this same input takes the lock, bumps
+# lastModified and rewrites the bag through the positioned re-redaction, so a
+# plan promising an untouched state.json would be false the other way round.
+if ! printf '%s' "${ACCEPT_PLAN_OUT}" | grep -qF "positioned re-redaction"; then
+  echo "FAIL: the --accept plan did not name the positioned re-redaction the run still writes" >&2
+  diag_output "${ACCEPT_PLAN_OUT}"
+  exit 1
+fi
+# NEGATIVE: the pre-change header. Paired with the two positives above so this
+# arm cannot go green by asserting absences over an empty output.
+if printf '%s' "${ACCEPT_PLAN_OUT}" | grep -qF "Plan (--accept): update cdkd state for"; then
+  echo "FAIL: the --accept plan still promises 'update cdkd state for' over an all-refused body" >&2
+  diag_output "${ACCEPT_PLAN_OUT}"
+  exit 1
+fi
+echo "    OK: the plan describes the body it prints, and names the write it does make"
+
 # --accept must REFUSE this path rather than persisting what it just masked:
 # writing `***` into the baseline would corrupt state and make the next deploy
 # push the literal mask at AWS. The drift keeps being reported, which is the
@@ -709,6 +778,30 @@ if ! printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "not accepting"; then
   diag_output "${ACCEPT_REFUSE_OUT}"
   exit 1
 fi
+# The SUMMARY half (issue #1958). Same run, same all-refused input: the
+# per-change warning asserted just above says nothing was accepted, so the
+# summary must agree. A pre-change binary counts `driftedOutcomes.length` here
+# and prints `accepted drift on 1 resource(s)` directly under that warning.
+if ! printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "0 resource(s) accepted"; then
+  echo "FAIL: --accept did not report 0 resource(s) accepted after refusing every drifted change" >&2
+  diag_output "${ACCEPT_REFUSE_OUT}"
+  exit 1
+fi
+if printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "accepted drift on"; then
+  echo "FAIL: --accept claimed it accepted drift in the same run it refused every change" >&2
+  diag_output "${ACCEPT_REFUSE_OUT}"
+  exit 1
+fi
+# ...and the write DID happen, which is what makes `0 resource(s) accepted` the
+# honest wording rather than `nothing was written`: the summary is still
+# prefixed by the state-updated line. Without this, the two assertions above
+# would both be satisfied by a run that had silently stopped writing.
+if ! printf '%s' "${ACCEPT_REFUSE_OUT}" | grep -qF "State updated for ${STACK} (${REGION})"; then
+  echo "FAIL: --accept did not report the state write it still performs" >&2
+  diag_output "${ACCEPT_REFUSE_OUT}"
+  exit 1
+fi
+echo "    OK: the summary reports 0 resource(s) accepted over the write it still made"
 REFUSED_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null)
 if printf '%s' "${REFUSED_STATE}" | grep -qF "${DRIFT_SENTINEL}"; then

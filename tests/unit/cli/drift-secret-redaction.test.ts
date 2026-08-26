@@ -988,6 +988,174 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     ).toBe(true);
   });
 
+  it('the --accept SUMMARY says 0 accepted when every drifted change was refused', async () => {
+    // Issue #1958: the summary counted drifted OUTCOMES, not accepted changes,
+    // so a resource whose every change hit `acceptRefusalReason` still reported
+    // `accepted drift on 1 resource(s)` — while the per-change warnings just
+    // above said the opposite. The write itself still happens (it carries the
+    // positioned re-redaction), so suppressing the line is not the fix; saying
+    // what it did is.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    // The write DID happen — otherwise "the count is wrong" would be untestable
+    // here and the assertion below would pass over a run that saved nothing.
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(info).toContain('0 resource(s) accepted');
+    expect(info).not.toContain('accepted drift on');
+  });
+
+  it('POSITIVE CONTROL: the --accept summary still counts a resource that DID accept something', async () => {
+    // The other polarity, so a fix that hard-wired `0 accepted` is caught: the
+    // same resource with a NON-secret path drifting accepts that path and the
+    // count reports it.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: SECRET_PLAINTEXT, PLAIN: 'edited' }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(info).toContain('accepted drift on 1 resource(s)');
+    expect(info).not.toContain('0 resource(s) accepted');
+  });
+
+  it('the --accept summary COUNTS, rather than reporting one-or-none', async () => {
+    // Two drifted resources, both accepting, so the summary must say TWO.
+    // Without this the count is only ever pinned at zero-vs-nonzero: measured,
+    // replacing `acceptedResourceCount++` with `= 1` survived all 268 cases
+    // across the five drift suites (issue #1958 review). A summary that
+    // silently reports `1 resource(s)` over a five-resource accept is the same
+    // class of wrong claim as the one this whole change removes.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({ Consumer: lambdaResource(), Second: lambdaResource() })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: SECRET_PLAINTEXT, PLAIN: 'edited' }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(info).toContain('accepted drift on 2 resource(s)');
+  });
+
+  it('...and EXCLUDES a resource whose every change was refused, rather than counting rows', async () => {
+    // The MIXED stack, which is the shape the count exists for and which
+    // neither the all-refused case nor the single-resource positive control can
+    // see. One resource drifts at a public path AND at the secret one; its
+    // neighbour drifts ONLY at the secret path, because its baseline already
+    // carries the edited public value. Two resources DRIFTED, one RECORDED
+    // something, and the summary owes the second number: counting outcomes
+    // reports 2 here, which is the pre-fix bug at a stack that is not wholly
+    // refused.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Accepts: lambdaResource(),
+        Refuses: lambdaResource({
+          FunctionName: 'fn',
+          Environment: { Variables: { SECRET_PASSWORD: SECRET_EXPR, PLAIN: 'edited' } },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () =>
+        awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console', PLAIN: 'edited' }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(info).toContain('accepted drift on 1 resource(s)');
+    expect(info).not.toContain('accepted drift on 2 resource(s)');
+  });
+
+  it('the --accept PLAN header does not promise an update when every line is SKIPPED', async () => {
+    // Issue #1958: the header announced `update cdkd state for <stack>` over a
+    // body that is nothing but `SKIPPED` lines — the plan promising the write
+    // the shared predicate had just refused. The resources stay LISTED, because
+    // each line's refusal reason is the actionable half.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--accept', '--dry-run']);
+
+    expect(output).toContain('no accepted values will be written to cdkd state for TestStack');
+    expect(output).not.toContain('Plan (--accept): update cdkd state for TestStack');
+    // ...and it does NOT claim state.json is untouched (issue #1958 review).
+    // The real run over this same input takes the lock, bumps `lastModified`
+    // and rewrites the bag; the first cut said `NOTHING will be written`, which
+    // a `--dry-run` reader takes to mean the file is not touched at all.
+    expect(output).toContain('the run still writes the positioned re-redaction');
+    expect(output).not.toContain('NOTHING will be written');
+    // The body is still there, with its reason.
+    expect(output).toContain('Environment.Variables.SECRET_PASSWORD: SKIPPED');
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  it('the --accept PLAN and the real run say the SAME thing about the write (issue #1958 review)', async () => {
+    // The two messages are written twenty-four hundred lines apart and are the
+    // only two statements cdkd makes about what an all-refused `--accept` does.
+    // They drifted apart once already — the plan said `NOTHING will be written`
+    // while the run said `this write carried only the positioned re-redaction`
+    // — so both are pinned here, over ONE input, in one test that fails if
+    // either side is reworded on its own.
+    const provider = {
+      readCurrentState: async (): Promise<Record<string, unknown>> =>
+        awsEnv({ SECRET_PASSWORD: 'tampered-in-the-console' }),
+    };
+
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue(provider);
+    const { output: planned } = await runDrift(['TestStack', '--accept', '--dry-run']);
+
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue(provider);
+    await runDrift(['TestStack', '--accept', '--yes']);
+    const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+
+    // The run DID write, which is the fact the plan has to agree with.
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    expect(info).toContain('positioned re-redaction');
+    expect(planned).toContain('positioned re-redaction');
+    // ...and the PLAN does not claim the file is left alone. Asserted on the
+    // plan only: that wording never existed on the run's summary, so the same
+    // line over `info` cannot fail and pins nothing (issue #1958 review). What
+    // the summary owes is its own claim, which is the count.
+    expect(planned).not.toContain('NOTHING will be written');
+    expect(info).toContain('0 resource(s) accepted');
+  });
+
+  it('POSITIVE CONTROL: the --accept PLAN header still promises the update when a line will be written', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Consumer: lambdaResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv({ SECRET_PASSWORD: SECRET_PLAINTEXT, PLAIN: 'edited' }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--accept', '--dry-run']);
+
+    expect(output).toContain('Plan (--accept): update cdkd state for TestStack');
+    expect(output).not.toContain('no accepted values will be written');
+  });
+
   it('--accept --dry-run prints the SAME refusal the real run will make', async () => {
     // A plan that promises a write the run refuses is worse than either
     // behaviour on its own, so both ask one predicate.
@@ -1032,6 +1200,18 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     const { output } = await runDrift(['TestStack', '--revert', '--dry-run']);
 
     expect(output).not.toContain(SECRET_PLAINTEXT);
+    // BOTH polarities, like its preserved-tag sibling (issue #1958). The
+    // `not.toContain` alone is satisfied by a plan that never printed the
+    // unbaselined block at all — the masking would then be untested and the
+    // assertion would pass over its removal. This pins that the block DID print
+    // and that the secret-shaped key reached it as a mask.
+    expect(output).toContain('has no observed-capture baseline');
+    // PATH-SHAPED, not the bare mask (issue #1958 review). The drift line above
+    // prints `Environment.Variables.SECRET_PASSWORD: *** -> ***` whatever this
+    // block does, so `toContain(SECRET_MASK)` is satisfied either way and pins
+    // nothing — the very anti-pattern this lane exists to remove. Only the
+    // unbaselined-key list can emit a mask in the KEY position of a path.
+    expect(output).toContain(`Environment.Variables.${SECRET_MASK}`);
   });
 
   it('--accept does not descend arrays positionally when redacting the persisted bag', async () => {
@@ -1725,6 +1905,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // resource's map — non-empty, but built solely from the RESOLVABLE
     // reference — has no entry for the ssm-secure one. That is the residual
     // named in the code, not something the plan's withhold claims to fix.)
+    // A UNIQUE anchor, not the bare word (issue #1958). Both withhold notes say
+    // `withheld`, so `toContain('withheld')` alone is satisfied by the
+    // unbaselined block below even if the tag-list block is skipped entirely —
+    // which is exactly the silent skip the code comment beside it says the
+    // note exists to prevent.
+    expect(output).toContain('AWS-authored tag(s) will be preserved');
     expect(output).toContain('withheld');
     expect(output).not.toContain('reverting this tag list KEEPS');
     // The unbaselined block withholds too, rather than being skipped silently:
@@ -1851,8 +2037,20 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
     await runDrift(['TestStack']);
 
+    // The resolve REALLY happened (issue #1958). Both assertions below are
+    // `not.toContain`, so a SecretsManager mock that stopped resolving would
+    // satisfy them vacuously: the failure path emits `could not resolve`, which
+    // does not match the `cannot resolve` needle.
+    //
+    // TWO checks, because the issue's prescribed one closes only half of it. A
+    // mock never PRIMED is caught by the call count; a mock that is called and
+    // REJECTS is not — `send` still ran once — and that is the reading under
+    // which the failure wording appears at all. So the failure wording is
+    // ALSO pinned absent, which is what actually says the resolve succeeded.
+    expect(mockSecretsManagerSend).toHaveBeenCalledTimes(1);
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).not.toContain('cannot resolve');
+    expect(warned).not.toContain('could not resolve');
     expect(warned).not.toContain(SHAPED);
   });
 
@@ -2006,6 +2204,78 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
         (c) => typeof c[0] === 'string' && c[0].includes('was NOT recorded')
       )
     ).toBe(true);
+  });
+
+  it('the summary does not count a resource whose only accepted value was NOT recorded', async () => {
+    // Issue #1958 item 1, ONE SITE FURTHER ALONG (review round). The count used
+    // to be taken at `accepted.length`, before the not-recorded check — so this
+    // resource, whose single change passes `acceptRefusalReason` and is then
+    // overwritten by the positioned re-redaction, reported `accepted drift on 1
+    // resource(s)` directly under the warning saying the value was not
+    // recorded. Same summary-contradicts-the-warnings-above shape the item
+    // exists to remove, reached through the second refusal rather than the
+    // first.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { Environment: { Variables: { PUB: PUBLIC_SSM_EXPR } } },
+          observedProperties: { Environment: { Variables: { PUB: PUBLIC_SSM_VALUE } } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Environment: { Variables: { PUB: 'changed-in-console' } },
+      }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    // The change really was accepted at the FIRST gate — otherwise this would
+    // be the already-covered `acceptRefusalReason` case rather than this one.
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('was NOT recorded');
+    expect(warned).not.toContain('not accepting');
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(info).toContain('0 resource(s) accepted');
+    expect(info).not.toContain('accepted drift on');
+  });
+
+  it('POSITIVE CONTROL: a resource that records SOME of its accepted values still counts', async () => {
+    // The other polarity of the case above, so a count moved to the wrong side
+    // of the loop — or hard-wired to zero — is caught: the same resource gains
+    // a SECOND, ordinary path that survives the re-redaction, and the resource
+    // is counted once even though one of its two changes was not recorded.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { Environment: { Variables: { PUB: PUBLIC_SSM_EXPR, PLAIN: 'ok' } } },
+          observedProperties: {
+            Environment: { Variables: { PUB: PUBLIC_SSM_VALUE, PLAIN: 'ok' } },
+          },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Environment: { Variables: { PUB: 'changed-in-console', PLAIN: 'edited' } },
+      }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('was NOT recorded');
+    const info = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(info).toContain('accepted drift on 1 resource(s)');
+    expect(info).not.toContain('0 resource(s) accepted');
   });
 
   it('masks the AWS error text of an effectiveProperties read failure', async () => {

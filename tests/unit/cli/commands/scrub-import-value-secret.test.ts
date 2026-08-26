@@ -105,7 +105,10 @@ vi.mock('../../../../src/utils/logger.js', () => {
 
 import { AwsClients, setAwsClients, resetAwsClients } from '../../../../src/utils/aws-clients.js';
 import { resetAccountInfoCache } from '../../../../src/deployment/intrinsic-function-resolver.js';
-import { clearRecordedSecretExpressions } from '../../../../src/deployment/secret-redaction.js';
+import {
+  clearRecordedSecretExpressions,
+  SECRET_MASK,
+} from '../../../../src/deployment/secret-redaction.js';
 import {
   scrubStack,
   orderScrubTargets,
@@ -1939,6 +1942,259 @@ describe('a CONDITION that imports a secret does not print it (issue #2133 revie
   });
 });
 
+describe('the cross-stack pre-pass MASKS the export name it declines (issue #2163 review)', () => {
+  /**
+   * The disclosure this fences, and it is the same one
+   * {@link crossStackProducerPlaintextError} already masks against on the
+   * REFUSAL path — arriving through a `logger.debug` line instead, which has no
+   * boundary net at all.
+   *
+   * `producer.key` is `recordedImports.at(-1).exportName`, i.e. the
+   * POST-resolution name: `resolveImportValue` sets it from
+   * `resolveValue(importValueArg)`, which runs an `Fn::Sub` / `Fn::Join` / a
+   * bare `{{resolve:...}}` string through. So an export name ASSEMBLED FROM A
+   * SECRET is a resolved secret verbatim, and the five arms that name the
+   * export while declining would have printed it into a
+   * `cdkd scrub --verbose` CI log — inside the command whose whole purpose is
+   * removing that plaintext from state.
+   *
+   * `maskSecretsInError` at `scrubStack`'s boundary is not a substitute even
+   * for the throwing arms, and reaches none of these: it masks against
+   * `allRecordedSecrets`, which DROPS every needle below `MIN_NEEDLE_LENGTH`,
+   * while the whole-value arm of `maskSecretsInText` matches at any length.
+   */
+  /** The plaintext the producer's secret holds — and, here, the export NAME. */
+  const SECRET_EXPORT = 'Producer:export-name-from-a-secret-2163';
+  /** The template leaf: an import whose NAME is a dynamic reference. */
+  const EXPORT_NAME_EXPR = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:exportname}}`;
+  const PROPS = {
+    MasterUsername: { 'Fn::ImportValue': EXPORT_NAME_EXPR },
+    MasterUserPassword: 'not-a-secret',
+  };
+
+  beforeEach(() => {
+    secretResponses.set('secretsmanager|GetSecretValueCommand', {
+      SecretString: JSON.stringify({ password: PLAINTEXT, exportname: SECRET_EXPORT }),
+    });
+    consumerState = makeConsumerState({
+      MasterUsername: 'admin',
+      MasterUserPassword: 'not-a-secret',
+    });
+    useProducerOutputs({ [SECRET_EXPORT]: 'an-ordinary-exported-value' });
+  });
+
+  it('the `no verdict` decline names the export as the MASK, never the plaintext', async () => {
+    // The producer's template declares this export from a plain `Ref`, so the
+    // verdict is `no` and the pre-pass declines — printing the export name.
+    await scrub(PROPS, {
+      appStacks: [makeProducerStackInfo({ Out: { Value: { Ref: 'B' }, Export: { Name: SECRET_EXPORT } } })],
+    });
+
+    // POSITIVE MARKERS FIRST — the `not.toContain` below is satisfied just as
+    // well by a run that never resolved the export name at all.
+    // 1. The secret really was fetched, which is what MAKES the export name a
+    //    resolved secret and records the needle to mask against.
+    expect(secretSends.map((s) => s.command)).toContain('GetSecretValueCommand');
+    // 2. The read really went through the producer's state record...
+    expect(stateBackend.getState.mock.calls).toContainEqual([PRODUCER, REGION]);
+    // 3. ...and the declining arm really ran and rendered the export name.
+    const line = logLines.find((l) => l.includes('declares no {{resolve:...}} expression for'));
+    expect(line).toBeDefined();
+
+    // 4. THE assertion: what it rendered is the MASK. The producer STACK beside
+    //    it is untouched HERE because this fixture's producer name is an
+    //    ordinary one, not because the name can never be a secret — it can, and
+    //    the sibling describe below fences that. Asserting it survives is what
+    //    tells a masked line apart from one that simply never carried the name.
+    expect(line).toContain(`expression for '${SECRET_MASK}'`);
+    expect(line).toContain(`producer '${PRODUCER}'`);
+    expect(logLines.join('\n')).not.toContain(SECRET_EXPORT);
+  });
+
+  it('the same holds on the arm that declines for a producer OUTSIDE the app', async () => {
+    // A second arm, because the mask is per-site: passing no `appStacks` takes
+    // the `producerTemplates` miss, which names the export for a different
+    // reason and used to interpolate it just as raw.
+    await scrub(PROPS, { appStacks: [] });
+
+    const line = logLines.find((l) => l.includes('which is not a stack of this app'));
+    expect(line).toBeDefined();
+    expect(line).toContain(`classify export '${SECRET_MASK}' with`);
+    expect(logLines.join('\n')).not.toContain(SECRET_EXPORT);
+  });
+
+  it('and on the HEALTHY arm, which declines for the one reason that is not a problem', async () => {
+    // The third site, and the one a reader is least likely to suspect: the
+    // producer is SCRUBBED, nothing is wrong, and the line says so — while
+    // still naming the export. A decline that reports good news is exactly the
+    // one whose masking nobody re-checks, so it gets its own fence rather than
+    // riding on the two above.
+    useProducerOutputs({ [SECRET_EXPORT]: SECRET_EXPR });
+
+    await scrub(PROPS, {
+      appStacks: [
+        makeProducerStackInfo({
+          Out: { Value: SECRET_EXPR, Export: { Name: SECRET_EXPORT } },
+        }),
+      ],
+    });
+
+    const line = logLines.find((l) =>
+      l.includes('already carries a {{resolve:...}} expression')
+    );
+    expect(line).toBeDefined();
+    expect(line).toContain(`stored value for '${SECRET_MASK}'`);
+    expect(logLines.join('\n')).not.toContain(SECRET_EXPORT);
+  });
+});
+
+describe('the pre-pass masks the PRODUCER STACK NAME too, which is reachable (issue #2163 review)', () => {
+  /**
+   * The sibling of the export-name fence above, and the one whose rationale
+   * this branch had to correct before the test could be written at all.
+   *
+   * An earlier revision justified masking `producer.stack` as UNIFORMITY, on
+   * the reasoning that a producer name comes from a state record and is never a
+   * resolved value. That holds for `Fn::ImportValue`, whose producer name comes
+   * from the state-bucket listing (`recordImport` is handed `entry.producerStack`
+   * / `refStack`). It is FALSE for `Fn::GetStackOutput`:
+   * `recordOutputRead(context, stackName, ...)` is fed
+   * `await this.resolveValue(args['StackName'], context)`, so a `StackName`
+   * that is itself a `{{resolve:...}}` reference — or an `Fn::Sub` / `Fn::Join`
+   * assembling one — makes the RECORDED producer name a resolved secret,
+   * exactly the way the export name can be.
+   *
+   * Nothing leaked: the mask was there throughout. What was missing was any
+   * test that would notice if it went away, and the wrong rationale beside it
+   * read as licence to remove it. Measured before this case existed: replacing
+   * `loggedStack` with `producer.stack` left every test in this directory
+   * green.
+   */
+  /** The plaintext the producer's secret holds — and, here, the STACK NAME. */
+  const SECRET_STACK = 'ProducerNamedFromASecret2163';
+  /** The template leaf: a `StackName` that is a dynamic reference. */
+  const STACK_NAME_EXPR = `{{resolve:secretsmanager:${SECRET_ID}:SecretString:stackname}}`;
+  const PROPS = {
+    MasterUsername: {
+      'Fn::GetStackOutput': { StackName: STACK_NAME_EXPR, OutputName: OUTPUT_NAME },
+    },
+    MasterUserPassword: 'not-a-secret',
+  };
+
+  beforeEach(() => {
+    secretResponses.set('secretsmanager|GetSecretValueCommand', {
+      SecretString: JSON.stringify({ password: PLAINTEXT, stackname: SECRET_STACK }),
+    });
+    consumerState = makeConsumerState({
+      MasterUsername: 'admin',
+      MasterUserPassword: 'not-a-secret',
+    });
+    stateBackend.listStacks.mockResolvedValue([{ stackName: SECRET_STACK, region: REGION }]);
+    stateBackend.getState.mockImplementation((stackName: string) =>
+      Promise.resolve(
+        stackName === SECRET_STACK
+          ? {
+              state: {
+                version: 8,
+                region: REGION,
+                stackName: SECRET_STACK,
+                resources: {},
+                outputs: { [OUTPUT_NAME]: 'an-ordinary-exported-value' },
+                lastModified: 0,
+              } as StackState,
+              etag: 'p-1',
+            }
+          : { state: consumerState, etag: 'c-1' }
+      )
+    );
+  });
+
+  it('the decline for a producer OUTSIDE the app names the stack as the MASK, never the plaintext', async () => {
+    await scrub(PROPS, { appStacks: [] });
+
+    // POSITIVE MARKERS FIRST — `not.toContain` is satisfied just as well by a
+    // run that never resolved the stack name at all.
+    // 1. The secret really was fetched, which is what MAKES the stack name a
+    //    resolved secret and records the needle to mask against.
+    expect(secretSends.map((s) => s.command)).toContain('GetSecretValueCommand');
+    // 2. The read really went to the stack the SECRET named — this is the step
+    //    the old rationale said could not happen.
+    expect(stateBackend.getState.mock.calls).toContainEqual([SECRET_STACK, REGION]);
+    // 3. ...and the declining arm really ran.
+    const line = logLines.find((l) => l.includes('which is not a stack of this app'));
+    expect(line).toBeDefined();
+
+    // 4. THE assertion, both polarities. The export name beside it is an
+    //    ordinary one here, so it survives — which is what distinguishes a
+    //    masked stack name from a line that masked everything indiscriminately.
+    expect(line).toContain(`producer '${SECRET_MASK}'`);
+    expect(line).toContain(`classify export '${OUTPUT_NAME}' with`);
+    expect(logLines.join('\n')).not.toContain(SECRET_STACK);
+  });
+
+  it('and the REFUSAL path masks it too, which only a SHORT name can prove', async () => {
+    // The throwing sibling, `plaintextProducerCrossStackReadError`, whose
+    // comment carried the identical wrong rationale and had done since issue
+    // #2133.
+    //
+    // THE STACK NAME IS THREE CHARACTERS, and that is the whole test rather
+    // than an aesthetic choice. The refusal, unlike a `logger.debug` line,
+    // passes through `maskSecretsInError` at `scrubStack`'s boundary on its way
+    // out — so with a needle of ordinary length the boundary masks it and the
+    // builder's own call is unfalsifiable. Measured: with a 28-character name,
+    // removing the builder's mask left this suite GREEN. `allRecordedSecrets`
+    // filters to `MIN_NEEDLE_LENGTH` (4), while the whole-value arm of
+    // `maskSecretsInText` matches at ANY length — which is exactly the
+    // asymmetry the comment beside the mask claims, so this case is what makes
+    // that claim falsifiable instead of decorative.
+    const SHORT_STACK = 'Zq7';
+    secretResponses.set('secretsmanager|GetSecretValueCommand', {
+      SecretString: JSON.stringify({ password: PLAINTEXT, stackname: SHORT_STACK }),
+    });
+    stateBackend.listStacks.mockResolvedValue([{ stackName: SHORT_STACK, region: REGION }]);
+    stateBackend.getState.mockImplementation((stackName: string) =>
+      Promise.resolve(
+        stackName === SHORT_STACK
+          ? {
+              state: {
+                version: 8,
+                region: REGION,
+                stackName: SHORT_STACK,
+                resources: {},
+                // The pre-#1899 plaintext still in the producer's own record —
+                // the shape that makes this a refusal rather than a decline.
+                outputs: { [OUTPUT_NAME]: PLAINTEXT },
+                lastModified: 0,
+              } as StackState,
+              etag: 'p-1',
+            }
+          : { state: consumerState, etag: 'c-1' }
+      )
+    );
+
+    const err = await scrub(PROPS, {
+      appStacks: [
+        {
+          stackName: SHORT_STACK,
+          dependencyNames: [],
+          template: {
+            Resources: {},
+            Outputs: { [OUTPUT_NAME]: { Value: SECRET_EXPR } },
+          } as unknown as CloudFormationTemplate,
+        },
+      ],
+    }).catch((e: unknown) => e);
+
+    // The refusal really is the plaintext-producer one, not some other failure.
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    // THE assertion: the message names the producer as the mask...
+    expect((err as Error).message).toContain(`producer stack '${SECRET_MASK}'`);
+    // ...and the plaintext appears nowhere in it, nor in the debug trail.
+    expect((err as Error).message).not.toContain(`'${SHORT_STACK}'`);
+    expect(logLines.join('\n')).not.toContain(`'${SHORT_STACK}'`);
+  });
+});
+
 describe('a stored value carrying no text is not a plaintext producer (issue #2133 review)', () => {
   /**
    * The `widened` verdict fires when the producer publishes SOME secret-bearing
@@ -3297,5 +3553,254 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
       'B',
       'P',
     ]);
+  });
+});
+
+/**
+ * WHICH ARM DECLINED, said out loud (issue
+ * [#2163](https://github.com/go-to-k/cdkd/issues/2163)).
+ *
+ * `readOne` is the one function whose job is to decide whether a stack may be
+ * reported clean, and FIVE of its outcomes used to return without saying
+ * anything. Issue #2163 named three of them (`!producer`, the
+ * `producerTemplates` miss, and a `no` verdict) and reasoned from "every arm
+ * that classifies and then declines logs a debug line" that the failing live run
+ * must have taken one of those three. That premise was FALSE: the `!stored` arm
+ * and the healthy `carriesDynamicReference(stored)` arm were silent too, so the
+ * absence of a debug line ruled out nothing. All five now name themselves.
+ *
+ * The fixture below is not hand-shaped: `PRODUCER_OUTPUTS` and `CONSUMER_PROPS`
+ * are the templates `aws-cdk-lib` actually synthesizes for
+ * `tests/integration/cross-stack-secret-import/`, with the #2163 arm's second
+ * conditional export (`Fn::If` whose FALSE -- selected -- branch carries the
+ * expression) added the same way the fixture builds its first one. The producer
+ * STATE is deploy-shaped too: v9, every output stored under BOTH its output name
+ * and its `Export.Name` alias, `exportNames` listing only the aliases.
+ */
+describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)', () => {
+  const P = 'CdkdCrossStackSecretProducer';
+  /** The `{{resolve:...}}` the CDK fixture emits, trailing `::` and all. */
+  const SECRET_URI =
+    '{{resolve:secretsmanager:cdkd-crossstack-secret-import:SecretString:password::}}';
+  /** The producer's secret, as `verify.sh`'s per-run `EXPECTED_PLAINTEXT`. */
+  const RUN_PLAINTEXT = 'integ-1934-20260826';
+  const TAKEN_EXPORT = 'CdkdCrossStackConditionalTakenSecret';
+  const TAKEN_OUTPUT = 'CrossStackConditionalTakenSecretOutput';
+  const UNTAKEN_EXPORT = 'CdkdCrossStackConditionalSecret';
+  const PLAIN_BRANCH = 'crossstack-conditional-plain-branch';
+
+  /**
+   * What `cdk synth` emits for the producer fixture, plus the #2163 arm --
+   * re-indented to this file's style rather than pasted verbatim, so the shape
+   * is the fixture's and the formatting is the repo's. Every key, every value
+   * and the `Fn::If` argument ORDER are the synthesized ones; that order is the
+   * only load-bearing part, since `selectTakenConditionalBranches` keys on it.
+   */
+  const PRODUCER_OUTPUTS = {
+    CrossStackSecretArnOutput: { Value: { Ref: 'CrossStackSecret500993CD' } },
+    CrossStackConditionalSecretOutput: {
+      Value: {
+        'Fn::If': ['CrossStackUseSecretBranch', SECRET_URI, PLAIN_BRANCH],
+      },
+      Export: { Name: UNTAKEN_EXPORT },
+    },
+    CrossStackConditionalTakenSecretOutput: {
+      Value: {
+        'Fn::If': [
+          'CrossStackUseSecretBranch',
+          'crossstack-conditional-decoy-branch',
+          SECRET_URI,
+        ],
+      },
+      Export: { Name: TAKEN_EXPORT },
+    },
+    CrossStackSecretPasswordOutput: {
+      Value: SECRET_URI,
+      Export: { Name: 'CdkdCrossStackSecretPassword' },
+    },
+  } as unknown as Record<string, unknown>;
+
+  /** What `cdk synth` emits for the consumer's SSM parameter, same treatment. */
+  const CONSUMER_PROPS = {
+    Description: {
+      'Fn::Join': [
+        '',
+        [
+          'Imported. Conditional export resolved to: ',
+          { 'Fn::ImportValue': UNTAKEN_EXPORT },
+          ' Taken conditional export resolved to: ',
+          { 'Fn::ImportValue': TAKEN_EXPORT },
+        ],
+      ],
+    },
+    Name: '/cdkd-integ/x',
+    Type: 'String',
+    Value: { 'Fn::ImportValue': 'CdkdCrossStackSecretPassword' },
+  } as unknown as Record<string, unknown>;
+
+  /** The producer's `state.outputs` as a real deploy writes it. */
+  function producerOutputs(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      CrossStackSecretArnOutput:
+        'arn:aws:secretsmanager:us-east-1:111122223333:secret:cdkd-crossstack-AbCdEf',
+      CrossStackConditionalSecretOutput: PLAIN_BRANCH,
+      [UNTAKEN_EXPORT]: PLAIN_BRANCH,
+      [TAKEN_OUTPUT]: SECRET_URI,
+      [TAKEN_EXPORT]: SECRET_URI,
+      CrossStackSecretPasswordOutput: SECRET_URI,
+      CdkdCrossStackSecretPassword: SECRET_URI,
+      ...overrides,
+    };
+  }
+
+  function useProducerState(outputs: Record<string, unknown>): void {
+    stateBackend.listStacks.mockResolvedValue([{ stackName: P, region: REGION }]);
+    stateBackend.getState.mockImplementation((stackName: string) => {
+      if (stackName === P) {
+        return Promise.resolve({
+          state: {
+            version: 9,
+            region: REGION,
+            stackName: P,
+            resources: {},
+            outputs,
+            exportNames: [UNTAKEN_EXPORT, TAKEN_EXPORT, 'CdkdCrossStackSecretPassword'],
+            lastModified: 0,
+          } as StackState,
+          etag: 'p-1',
+        });
+      }
+      if (stackName === CONSUMER) return Promise.resolve({ state: consumerState, etag: 'c-1' });
+      return Promise.resolve(null);
+    });
+  }
+
+  const producerStack = {
+    stackName: P,
+    dependencyNames: [],
+    template: {
+      Resources: {},
+      Conditions: { CrossStackUseSecretBranch: { 'Fn::Equals': ['a', 'b'] } },
+      Outputs: PRODUCER_OUTPUTS,
+    } as unknown as CloudFormationTemplate,
+  };
+
+  beforeEach(() => {
+    secretResponses.set('secretsmanager|GetSecretValueCommand', {
+      SecretString: JSON.stringify({ password: RUN_PLAINTEXT }),
+    });
+    useProducerState(producerOutputs());
+  });
+
+  it('the TAKEN Fn::If branch of a CDK-SYNTHESIZED export refuses when the producer stores the plaintext', async () => {
+    // THE #2163 SHAPE, end to end and on the real templates: the producer's
+    // second conditional export puts the expression in the FALSE arm -- index
+    // 2, which `selectTakenConditionalBranches` takes UNCONDITIONALLY, mirroring
+    // `resolveIf`'s unknown-condition arm. Scrub never evaluates a PRODUCER's
+    // `Conditions`, so the fixture's false condition does not make that branch
+    // live; it only makes the approximation agree with what the deploy selected.
+    // The producer's state has been seeded back to the pre-#1899 plaintext under
+    // BOTH keys. `cdkd scrub <consumer>` must exit 2 naming that export, not
+    // exit 0 over a producer that still holds it in the clear.
+    useProducerState(producerOutputs({ [TAKEN_OUTPUT]: RUN_PLAINTEXT, [TAKEN_EXPORT]: RUN_PLAINTEXT }));
+
+    const err = await scrub(CONSUMER_PROPS, { appStacks: [producerStack] }).catch(
+      (e: unknown) => e
+    );
+
+    expect((err as { code?: string }).code).toBe('SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT');
+    // THE export, by name: the fixture imports three, and two of them must NOT
+    // be the subject. Naming only the code would pass on a refusal raised over
+    // `CdkdCrossStackSecretPassword`, whose producer value is healthy here.
+    expect((err as Error).message).toContain(`declares '${TAKEN_EXPORT}'`);
+    expect((err as Error).message).toContain(`producer stack '${P}'`);
+    // The read that refused is the one nested in the `Fn::Join`, not the bare
+    // `Value` import -- the position the live arm placed it in.
+    expect((err as Error).message).toContain("Description['Fn::Join']");
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+    // ... and it did not leak the secret it just classified.
+    expect((err as Error).message).not.toContain(RUN_PLAINTEXT);
+  });
+
+  it('NEGATIVE CONTROL: the same fixture with the producer SCRUBBED does not refuse, and says why it declined', async () => {
+    // The other polarity of the case above, and what tells a NARROWING of the
+    // refusal from a REMOVAL of it: leave the producer's stored value as the
+    // expression and the identical template must scrub normally. The debug line
+    // is asserted too -- it is the arm issue #2163's premise assumed was loud
+    // and which was in fact silent.
+    //
+    // The consumer record carries this run's plaintext, so "did not refuse" is
+    // backed by a POSITIVE marker: the leaf is rewritten to the expression. A
+    // bare "no throw" is also what a run that died before the rewrite produces.
+    consumerState = makeConsumerState({ Value: RUN_PLAINTEXT });
+
+    const res = await scrub(CONSUMER_PROPS, { appStacks: [producerStack] });
+
+    expect(res.recordsChanged).toBe(1);
+    expect(savedState().resources['Db']!.properties['Value']).toBe(SECRET_URI);
+    expect(logLines.join('\n')).toContain(
+      `stored value for '${TAKEN_EXPORT}' already carries a {{resolve:...}} expression`
+    );
+  });
+
+  it('the UNTAKEN branch still declines, and now says the template declares no expression for it', async () => {
+    // #2164's narrowing, re-asserted from the logging side: the export whose
+    // expression sits in the arm scrub does NOT select verdicts `no`, and that
+    // decline is the one a reader has to be able to tell apart from the two
+    // above.
+    await scrub(CONSUMER_PROPS, { appStacks: [producerStack] });
+
+    expect(logLines.join('\n')).toContain(
+      `declares no {{resolve:...}} expression for '${UNTAKEN_EXPORT}'`
+    );
+  });
+
+  it('a producer OUTSIDE the app declines by name rather than silently', async () => {
+    // The `producerTemplates` miss. Nothing about the read changed -- only that
+    // scrub holds no template for the stack that answered it -- so the outcome
+    // is the documented residual, and the point of the line is that the residual
+    // is now visible in one run instead of inferred over four.
+    await scrub(CONSUMER_PROPS, { appStacks: [] });
+
+    expect(logLines.join('\n')).toContain(`which is not a stack of this app`);
+    expect(logLines.join('\n')).toContain(`classify export '${TAKEN_EXPORT}' with`);
+  });
+
+  it('a CloudFormation-sourced export declines by name, which is the arm that reports NO producer at all', async () => {
+    // The `!producer` arm, and the only one of the three #2163 named that is
+    // reachable without a stale exports index: `resolveImportValue` falls back
+    // to CloudFormation `ListExports`, which is a WEAK reference and records
+    // nothing -- so scrub has no producer to classify and cannot refuse. That
+    // is the arm whose silence looks identical to "there was nothing to find".
+    stateBackend.listStacks.mockResolvedValue([]);
+    stateBackend.getState.mockImplementation((stackName: string) =>
+      stackName === CONSUMER
+        ? Promise.resolve({ state: consumerState, etag: 'c-1' })
+        : Promise.resolve(null)
+    );
+    cfnSends.length = 0;
+    secretResponses.set('cloudformation|ListExportsCommand', {
+      Exports: [
+        { Name: UNTAKEN_EXPORT, Value: PLAIN_BRANCH },
+        { Name: TAKEN_EXPORT, Value: RUN_PLAINTEXT },
+        { Name: 'CdkdCrossStackSecretPassword', Value: RUN_PLAINTEXT },
+      ],
+    });
+
+    const res = await scrub(CONSUMER_PROPS, { appStacks: [producerStack] });
+
+    // No refusal -- a CFn-managed producer is a weak reference by design.
+    // EXACT, where the first cut wrote `toBeGreaterThanOrEqual(0)`, which no
+    // run can fail (issue #2163 review). The fallback records no needle, so
+    // this run finds nothing and rewrites nothing -- and a future change that
+    // made this arm start refusing, or start recording, has to say so here.
+    expect(res).toEqual({
+      recordsChanged: 0,
+      secretsFound: 0,
+      secretBearingKeys: 0,
+      unverifiableReads: 0,
+    });
+    expect(stateBackend.saveState).not.toHaveBeenCalled();
+    expect(logLines.join('\n')).toContain('recorded no cdkd cross-stack read for it');
   });
 });
