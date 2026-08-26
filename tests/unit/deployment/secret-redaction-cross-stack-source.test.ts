@@ -225,13 +225,34 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       expect(new Set(keys).size).toBe(4);
     });
 
+    it('keys the STRING spelling of a nested-stack output identically to the ARRAY one', () => {
+      // Issue #2270. `crossStackSourceKey` re-spelled `resolveGetAtt`'s arity
+      // rule instead of sharing it, so when the resolver widened to
+      // CloudFormation's real rule this arm still refused the string form --
+      // the resolver would key a leaf the persist path could not, and #2059's
+      // positioning silently degraded to the value scan for exactly the
+      // nested-stack OUTPUT references it exists for. Both now call
+      // `splitGetAttStringForm`, so the two spellings agree BY CONSTRUCTION.
+      const asString = crossStackSourceKey({ 'Fn::GetAtt': 'Child.Outputs.CurrentPw' });
+      const asArray = crossStackSourceKey({ 'Fn::GetAtt': ['Child', 'Outputs.CurrentPw'] });
+      expect(typeof asString).toBe('string');
+      expect(asString).toBe(asArray);
+      // Still SEPARATED from its sibling attribute -- an equality that held by
+      // both sides being `undefined` would be worthless.
+      expect(asString).not.toBe(crossStackSourceKey({ 'Fn::GetAtt': 'Child.Outputs.PreviousPw' }));
+    });
+
     it('REFUSES an Fn::GetAtt the RESOLVER itself would not accept, and a non-literal attribute name', () => {
       // Both sides have to compute the same string from the same leaf, so the
-      // arm accepts exactly the two spellings `resolveGetAtt` accepts (the
-      // string form at exactly two dot-separated segments) and refuses anything
-      // whose attribute name the persist path could not recompute.
-      expect(crossStackSourceKey({ 'Fn::GetAtt': 'Child.Outputs.CurrentPw' })).toBeUndefined();
+      // arm accepts exactly the spellings `resolveGetAtt` accepts -- since
+      // issue #2270 that is the SAME FUNCTION (`splitGetAttStringForm`) rather
+      // than a restatement -- and refuses anything whose attribute name the
+      // persist path could not recompute. The string shapes below are the ones
+      // that helper still rejects: no attribute at all, no logical id, and an
+      // empty attribute name.
       expect(crossStackSourceKey({ 'Fn::GetAtt': 'Child' })).toBeUndefined();
+      expect(crossStackSourceKey({ 'Fn::GetAtt': '.Outputs.CurrentPw' })).toBeUndefined();
+      expect(crossStackSourceKey({ 'Fn::GetAtt': 'Child.' })).toBeUndefined();
       expect(
         crossStackSourceKey({ 'Fn::GetAtt': ['Child', { Ref: 'AttrNameParam' }] })
       ).toBeUndefined();
@@ -809,6 +830,262 @@ describe('secret-redaction - cross-stack source leaf (issue #2059)', () => {
       expect(redacted.Variables['CURRENT']).toBe(EXPR_CURRENT);
       expect(redacted.Variables['PREVIOUS']).toBe(EXPR_PREVIOUS);
       expect(JSON.stringify(redacted)).not.toContain(SHARED);
+    });
+
+    it('keeps each leaf on ITS OWN expression through the STRING spelling too', async () => {
+      // Issue #2270's persist-side half, driven end to end rather than at the
+      // key function. THE DISCRIMINATOR IS THE POSITIONED SUBSTITUTION, not the
+      // absence of a leak: with `crossStackSourceKey` refusing the string form
+      // the resolver passed `undefined`, no association was recorded, and
+      // `redactSecretsForState` fell to the plaintext-keyed value scan -- which
+      // collapses these two leaves onto whichever expression was recorded LAST.
+      // A `not.toContain(SHARED)` assertion passes under that collapse (the
+      // survivor is still an expression), so the two per-leaf equalities below
+      // are what actually separate fixed from broken.
+      const stringSource = {
+        Variables: {
+          CURRENT: { 'Fn::GetAtt': 'Child.Outputs.CurrentPw' },
+          PREVIOUS: { 'Fn::GetAtt': 'Child.Outputs.PreviousPw' },
+        },
+      };
+      const recordedSecretValues: RecordedSecretValues = new Map();
+      const resolved = (await resolver.resolve(
+        stringSource,
+        buildContext({
+          resources: childResources({
+            'Outputs.CurrentPw': EXPR_CURRENT,
+            'Outputs.PreviousPw': EXPR_PREVIOUS,
+          }),
+          recordedSecretValues,
+        })
+      )) as { Variables: Record<string, string> };
+
+      // The pass really did collapse -- ONE needle for two distinct references.
+      // Without this the case would pass with the defect fully intact.
+      expect(resolved.Variables['CURRENT']).toBe(SHARED);
+      expect(resolved.Variables['PREVIOUS']).toBe(SHARED);
+      expect(recordedSecretValues.size).toBe(1);
+
+      const redacted = redactSecretsForState(resolved, recordedSecretValues, stringSource) as {
+        Variables: Record<string, string>;
+      };
+
+      expect(redacted.Variables['CURRENT']).toBe(EXPR_CURRENT);
+      expect(redacted.Variables['PREVIOUS']).toBe(EXPR_PREVIOUS);
+      expect(JSON.stringify(redacted)).not.toContain(SHARED);
+    });
+
+    it('keeps each leaf on ITS OWN expression through an Fn::Sub placeholder', async () => {
+      // Issue #2270 round 3, THE BLOCKER. The same PR that made
+      // `${Child.Outputs.X}` resolve created this collapse population: before
+      // it the placeholder was kept as literal text and carried no secret at
+      // all, so there was nothing to position; after it the leaf resolves to a
+      // plaintext and `crossStackSourceKey` refused every `Fn::Sub`, while
+      // `intrinsicSkeletonPattern` cannot position it either (its `[^}]*`
+      // wildcard cannot cross a `{{resolve:...}}` token's own `}}`). Zero
+      // candidates -> the plaintext-keyed value scan -> both leaves take the
+      // SURVIVOR's expression, and `resolveReplayProps` applies the wrong
+      // staging label to the LIVE resource on rollback / `drift --revert`.
+      const subSource = {
+        Variables: {
+          CURRENT: { 'Fn::Sub': '${Child.Outputs.CurrentPw}' },
+          PREVIOUS: { 'Fn::Sub': '${Child.Outputs.PreviousPw}' },
+        },
+      };
+      const recordedSecretValues: RecordedSecretValues = new Map();
+      const resolved = (await resolver.resolve(
+        subSource,
+        buildContext({
+          resources: childResources({
+            'Outputs.CurrentPw': EXPR_CURRENT,
+            'Outputs.PreviousPw': EXPR_PREVIOUS,
+          }),
+          recordedSecretValues,
+        })
+      )) as { Variables: Record<string, string> };
+
+      // The collapse premise is live: ONE needle for two distinct references.
+      expect(resolved.Variables['CURRENT']).toBe(SHARED);
+      expect(resolved.Variables['PREVIOUS']).toBe(SHARED);
+      expect(recordedSecretValues.size).toBe(1);
+
+      const redacted = redactSecretsForState(resolved, recordedSecretValues, subSource) as {
+        Variables: Record<string, string>;
+      };
+
+      // THE DISCRIMINATOR: each leaf back on ITS OWN expression. The measured
+      // pre-fix value of `CURRENT` was EXPR_PREVIOUS -- the sibling's -- so a
+      // `not.toContain(SHARED)` assertion passed with the defect fully intact.
+      expect(redacted.Variables['CURRENT']).toBe(EXPR_CURRENT);
+      expect(redacted.Variables['PREVIOUS']).toBe(EXPR_PREVIOUS);
+      expect(JSON.stringify(redacted)).not.toContain(SHARED);
+    });
+
+    it('keeps each leaf on ITS OWN expression through an UNBOUND 2-arg Fn::Sub', async () => {
+      // The end-to-end twin of the key-level case below, driven through the
+      // real resolver. Same consequence as the one-arg blocker: without the
+      // reader arm both leaves fall to the plaintext-keyed value scan and take
+      // whichever expression was recorded LAST, and `resolveReplayProps` then
+      // applies the wrong staging label to the live resource on rollback /
+      // `cdkd drift --revert`.
+      //
+      // BOTH LEAVES ARE ONE BAG's, which is what makes positioning the thing
+      // that decides: `perResourceSecrets` is keyed by logical id, so two
+      // separate resources would each hold a single pair and pass either way.
+      const subSource = {
+        Variables: {
+          CURRENT: { 'Fn::Sub': ['${Child.Outputs.CurrentPw}', { Unrelated: 'x' }] },
+          PREVIOUS: { 'Fn::Sub': ['${Child.Outputs.PreviousPw}', { Unrelated: 'x' }] },
+        },
+      };
+      const recordedSecretValues: RecordedSecretValues = new Map();
+      const resolved = (await resolver.resolve(
+        subSource,
+        buildContext({
+          resources: childResources({
+            'Outputs.CurrentPw': EXPR_CURRENT,
+            'Outputs.PreviousPw': EXPR_PREVIOUS,
+          }),
+          recordedSecretValues,
+        })
+      )) as { Variables: Record<string, string> };
+
+      // The collapse premise is live: ONE needle for two distinct references.
+      expect(resolved.Variables['CURRENT']).toBe(SHARED);
+      expect(resolved.Variables['PREVIOUS']).toBe(SHARED);
+      expect(recordedSecretValues.size).toBe(1);
+
+      const redacted = redactSecretsForState(resolved, recordedSecretValues, subSource) as {
+        Variables: Record<string, string>;
+      };
+
+      // THE DISCRIMINATOR: each leaf back on ITS OWN expression. A
+      // `not.toContain(SHARED)` assertion passes under the collapse too, the
+      // survivor still being an expression, so it is not the fence here.
+      expect(redacted.Variables['CURRENT']).toBe(EXPR_CURRENT);
+      expect(redacted.Variables['PREVIOUS']).toBe(EXPR_PREVIOUS);
+      expect(JSON.stringify(redacted)).not.toContain(SHARED);
+    });
+
+    it('REFUSES an Fn::Sub that is not exactly one bare output placeholder', () => {
+      // Surrounding text: the resolved value EMBEDS the producer's token rather
+      // than BEING it, and `recordCrossStackExpression` is whole-token only, so
+      // there is no single expression for this leaf. Refusing keeps today's
+      // behaviour rather than inventing a key that would mis-substitute.
+      expect(
+        crossStackSourceKey({ 'Fn::Sub': 'sub-${Child.Outputs.CurrentPw}-end' })
+      ).toBeUndefined();
+      // Two placeholders: same reason, no single producer.
+      expect(
+        crossStackSourceKey({
+          'Fn::Sub': '${Child.Outputs.CurrentPw}${Child.Outputs.PreviousPw}',
+        })
+      ).toBeUndefined();
+      // The literal ESCAPE resolves nothing.
+      expect(crossStackSourceKey({ 'Fn::Sub': '${!Child.Outputs.CurrentPw}' })).toBeUndefined();
+      // The Ref form has no `Fn::GetAtt` writer behind it.
+      expect(crossStackSourceKey({ 'Fn::Sub': '${Child}' })).toBeUndefined();
+      // A pseudo parameter is not a nested-stack output.
+      expect(crossStackSourceKey({ 'Fn::Sub': '${AWS::Region}' })).toBeUndefined();
+      // THE 2-ARG FORM WITH A **BOUND** VARIABLE. This is the counter-case for
+      // the wrong fix -- dropping the array guard without testing the variable
+      // map. `resolveSub` consults the map FIRST and a bound variable wins
+      // outright, so this placeholder never reached `resolveGetAtt` and the
+      // WRITER recorded no key for it. Certifying it from the source alone
+      // would attach another leaf's expression to this value, and on this path
+      // over-redaction is the worse direction: `resolveReplayProps`
+      // re-resolves the persisted expression and `cdkd drift --revert` PUSHES
+      // that baseline to AWS.
+      expect(
+        crossStackSourceKey({
+          'Fn::Sub': ['${Child.Outputs.CurrentPw}', { 'Child.Outputs.CurrentPw': 'x' }],
+        })
+      ).toBeUndefined();
+
+      // ...and an INHERITED binding is refused for the same reason, in BOTH arms.
+      // `resolveSub` tests `varNameStr in variables`, which walks the prototype
+      // chain, so it substitutes locally and records NO key. A reader spelled
+      // `Object.hasOwn` would not refuse and would key the leaf -- certifying an
+      // expression the writer never recorded. This case is what makes the `in`
+      // spelling load-bearing: with `hasOwn` it goes GREEN.
+      const inherited = Object.create({ 'Child.Outputs.CurrentPw': 'x' }) as Record<
+        string,
+        unknown
+      >;
+      expect(
+        crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.CurrentPw}', inherited] })
+      ).toBeUndefined();
+      // The BARE-STRING arm has no variable map of its own, but the writer
+      // defaults it to `{}` and still tests -- so a dotted key on the prototype
+      // reaches it too, and this arm must refuse as well.
+      // The name MUST be DOTTED. `splitGetAttStringForm` refuses any name
+      // without a dot, so a dotless probe key is refused for THAT reason and
+      // the case holds under every spelling of the binding predicate -- i.e.
+      // it fences nothing. Measured: with a dotless name, restoring the
+      // half-fix predicate left this file 36/36 GREEN.
+      const proto = 'Child.Outputs.__cdkdTestInheritedKey__';
+      Object.defineProperty(Object.prototype, proto, {
+        value: 'x',
+        configurable: true,
+        enumerable: false,
+      });
+      try {
+        expect(crossStackSourceKey({ 'Fn::Sub': `\${${proto}}` })).toBeUndefined();
+      } finally {
+        delete (Object.prototype as Record<string, unknown>)[proto];
+      }
+      // A MALFORMED 2-arg form is refused too: `resolveSub` destructures and
+      // `Object.entries` the second element, so these THROW during resolution
+      // and were never recorded either.
+      expect(crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.CurrentPw}'] })).toBeUndefined();
+      expect(
+        crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.CurrentPw}', 'not-an-object'] })
+      ).toBeUndefined();
+      expect(
+        crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.CurrentPw}', ['a']] })
+      ).toBeUndefined();
+      expect(
+        crossStackSourceKey({ 'Fn::Sub': [{ Ref: 'T' }, { X: 1 }] })
+      ).toBeUndefined();
+    });
+
+    it('KEYS the 2-arg Fn::Sub form when the placeholder is UNBOUND', () => {
+      // Found independently by TWO reviewers. An unbound placeholder falls
+      // through `resolveSub`'s variable map to the same-stack lookup, so it
+      // reaches `resolveGetAtt` and the WRITER keys it exactly as it keys the
+      // bare-string form -- while the reader refused the whole 2-arg form on
+      // `typeof template !== 'string'`. That left this spelling in the very
+      // collapse the one-arg arm was added to close, and this PR created the
+      // population: pre-#2270 the placeholder stayed literal text.
+      //
+      // The DISCRIMINATOR is equality with the writer's key, not merely being
+      // defined: a key the writer never records is worse than no key at all.
+      const unbound = crossStackSourceKey({
+        'Fn::Sub': ['${Child.Outputs.CurrentPw}', { X: 1 }],
+      });
+      expect(typeof unbound).toBe('string');
+      expect(unbound).toBe(crossStackSourceKey({ 'Fn::GetAtt': 'Child.Outputs.CurrentPw' }));
+      expect(unbound).toBe(crossStackSourceKey({ 'Fn::Sub': '${Child.Outputs.CurrentPw}' }));
+      // Still SEPARATED from its sibling -- an equality that held by both sides
+      // being `undefined` would be worthless.
+      expect(unbound).not.toBe(
+        crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.PreviousPw}', { X: 1 }] })
+      );
+      // An EMPTY variable map is unbound by definition.
+      expect(crossStackSourceKey({ 'Fn::Sub': ['${Child.Outputs.CurrentPw}', {} ] })).toBe(unbound);
+    });
+
+    it('the Fn::Sub key EQUALS the GetAtt key the resolver records for the same leaf', () => {
+      // The two halves must meet. `resolveSub` calls `resolveGetAtt` with the
+      // bare placeholder text, so the WRITER's key is the GetAtt one and never
+      // mentions `Fn::Sub`; a key derived from the `Fn::Sub` text would look
+      // present and never match.
+      expect(crossStackSourceKey({ 'Fn::Sub': '${Child.Outputs.CurrentPw}' })).toBe(
+        crossStackSourceKey({ 'Fn::GetAtt': 'Child.Outputs.CurrentPw' })
+      );
+      expect(crossStackSourceKey({ 'Fn::Sub': '${Child.Outputs.CurrentPw}' })).toBe(
+        crossStackSourceKey({ 'Fn::GetAtt': ['Child', 'Outputs.CurrentPw'] })
+      );
     });
 
     it('REFUSES when the attribute name is an intrinsic, falling back to today’s behaviour', async () => {

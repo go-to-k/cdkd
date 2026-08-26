@@ -5,6 +5,7 @@ import { extractLambdaVpcDeleteDeps } from './lambda-vpc-deps.js';
 import { defensiveDependsOnToSkip } from './cdk-defensive-deps.js';
 import { getLogger } from '../utils/logger.js';
 import { DependencyError } from '../utils/error-handler.js';
+import { splitGetAttStringForm } from '../deployment/secret-redaction.js';
 
 const { Graph, alg } = graphlib;
 type GraphType = graphlib.Graph;
@@ -473,6 +474,13 @@ export class DagBuilder {
       const getAtt = obj['Fn::GetAtt'];
       if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') {
         return getAtt[0];
+      }
+      // The STRING spelling needs the same edge as the array one (issue #2270);
+      // see `template-parser.ts`'s twin of this arm for why it was harmless
+      // before that PR and a silent race after it. Same shared predicate, so
+      // the graph accepts exactly the set `resolveGetAtt` resolves.
+      if (typeof getAtt === 'string') {
+        return splitGetAttStringForm(getAtt)?.logicalId;
       }
     }
 

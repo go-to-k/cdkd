@@ -1,5 +1,6 @@
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
+import { splitGetAttStringForm } from '../deployment/secret-redaction.js';
 
 /**
  * CloudFormation template parser
@@ -114,6 +115,19 @@ export class TemplateParser {
       const getAtt = obj['Fn::GetAtt'];
       if (Array.isArray(getAtt) && getAtt.length >= 1 && typeof getAtt[0] === 'string') {
         dependencies.add(getAtt[0]);
+      } else if (typeof getAtt === 'string') {
+        // The STRING spelling (`"Child.Outputs.Foo"`, what the shorthand YAML
+        // `!GetAtt` produces) needs the SAME edge as the array one. It got none
+        // until issue #2270 -- harmless while `resolveGetAtt` refused the
+        // three-segment form outright (the deploy failed loudly at resolution),
+        // but that PR made the form RESOLVE, which turned a loud failure into a
+        // silent RACE: with no edge the consumer can be provisioned before the
+        // resource it reads. `splitGetAttStringForm` is the same predicate the
+        // resolver splits with, so the graph and the resolver accept exactly
+        // the same set -- an edge is drawn for precisely those references that
+        // will later resolve.
+        const split = splitGetAttStringForm(getAtt);
+        if (split !== undefined) dependencies.add(split.logicalId);
       }
       return;
     }
