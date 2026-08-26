@@ -1,3 +1,10 @@
+## [0.284.61](https://github.com/go-to-k/cdkd/compare/v0.284.60...v0.284.61) (2026-08-26)
+
+
+### Bug Fixes
+
+* **ecs:** reset an omitted DeploymentCircuitBreaker member instead of retaining it ([#2256](https://github.com/go-to-k/cdkd/issues/2256)) ([5923fba](https://github.com/go-to-k/cdkd/commit/5923fba8c77e36f78c360296ab8651c7da60f7ae))
+
 ## [0.284.60](https://github.com/go-to-k/cdkd/compare/v0.284.59...v0.284.60) (2026-08-26)
 
 
