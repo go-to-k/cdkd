@@ -191,6 +191,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['code-layout.md', 261],
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
+  ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
   ['layout-analyzer.md', 12],
   ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
   ['layout-cli.md', 48],
@@ -264,6 +265,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // its own, so the two CLASS fences moved to a satellite of their own rather
   // than the cap being raised -- a cap that moves when it fires is not a cap.
   ['.claude/hooks/lib/command-match.sh', 108_000, 140_000], // measured 121,407
+  // The four `integ-*` gates were the heaviest UNBUDGETED paths once
+  // `gate-sibling-repos.md` split out of hooks.md: this row is the only one
+  // that names them, so without it the satellite sits under no budget at all
+  // and could go dark or grow unnoticed. Payload is hooks.md + the satellite.
+  // Deliberately NOT added to the command-match row above: that path already
+  // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
+  // adding a third file would spend down to about 1 KB.
+  ['.claude/hooks/integ-local-gate.sh', 108_000, 140_000], // measured 122,313
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -385,7 +394,8 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 29;
+const CORPUS_FILE_COUNT = 30; // +gate-sibling-repos.md: hooks.md crossed the per-file cap, so its
+                                //  cross-repo gate-aliasing section moved out verbatim (go-to-k/cdkd#2236)
 const CORPUS_BYTES_MIN = 795_000;   // measured 808,384 B -- 13,384 B of slack
 const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
 
