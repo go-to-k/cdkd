@@ -1,3 +1,10 @@
+## [0.284.52](https://github.com/go-to-k/cdkd/compare/v0.284.51...v0.284.52) (2026-08-26)
+
+
+### Bug Fixes
+
+* **state:** scope Fn::ImportValue to a producer's declared exports so a same-named plain Output can't shadow a real export ([#2193](https://github.com/go-to-k/cdkd/issues/2193)) ([#2194](https://github.com/go-to-k/cdkd/issues/2194)) ([19f9cee](https://github.com/go-to-k/cdkd/commit/19f9cee6cbc5e0045646e50c1ea92a0284917123))
+
 ## [0.284.51](https://github.com/go-to-k/cdkd/compare/v0.284.50...v0.284.51) (2026-08-26)
 
 
