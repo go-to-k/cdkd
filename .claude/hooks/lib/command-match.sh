@@ -1418,7 +1418,7 @@ gate_markgate_declared_gates() {
 #   https://github.com/o/r(.git)      scp-like  git@github.com:o/r(.git)
 #   ssh://git@github.com/o/r(.git)
 gate_repo_slug() {
-  local url host path name owner rest
+  local url host path rest
   url=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || return 1
   [ -n "$url" ] || return 1
   url="${url%.git}"
@@ -1451,11 +1451,27 @@ gate_repo_slug() {
   esac
 
   path="${path#/}"
-  name="${path##*/}"
-  rest="${path%/*}"
-  owner="${rest##*/}"
-  [ -n "$owner" ] && [ -n "$name" ] && [ "$owner" != "$name" ] || return 1
-  printf '%s/%s/%s' "$host" "$owner" "$name"
+  # The WHOLE path, not its last two segments. Collapsing to `<owner>/<name>`
+  # is the same conflation the host fix targets, one level up: it keys
+  # `github.com/o/r/sub/deep` as `github.com/sub/deep`, and it makes the GitLab
+  # subgroups `gitlab.com/a/x/repo` and `gitlab.com/b/x/repo` IDENTICAL. Inert
+  # today (no non-flat-forge row exists), but the whole point of this key is
+  # that two different repositories can never share one.
+  #
+  # The "at least two segments" test is STRUCTURAL. It used to be spelled
+  # `[ "$owner" != "$name" ]`, which refuses any repo whose name equals its
+  # owner -- measured: `https://github.com/prettier/prettier.git` returned 1,
+  # and the caller then printed "origin remote missing or not host-qualified",
+  # which is simply false for that remote. Fail-closed, so never a hazard, but a
+  # wrong diagnosis sends the next reader hunting the wrong thing.
+  case "$path" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+  case "$path" in
+    *//*|*" "*) return 1 ;;
+  esac
+  printf '%s/%s' "$host" "$path"
 }
 
 # gate_resolve_marker_gate <target-dir> <cdkd-gate>
@@ -1620,14 +1636,24 @@ gate_refuse_stale_alias_marker() {
 # merge-base(origin/main, HEAD)". Reporting that as "not fresh -- go run
 # /run-integ local-<test>" is the precise mistake integ-destroy-gate has
 # documented as wrong since it grew its own exit-2 branch. EXITS the hook (2).
+# NOTE (recorded, not fixed): the 4th `diagnose` parameter currently has no
+# caller, and its default can disagree with a gate's own markgate resolution
+# (`mise exec -- markgate` vs a bare `markgate` from the `elif command -v`
+# branch). Inherited from the destroy gate's original text. Untangling it means
+# threading each gate's resolved `markgate` array in here, which widens this
+# diff for no behavioural gain, so it is left as-is deliberately.
 gate_refuse_unevaluable_marker() {
-  local gate="$1" mgate="$2" dir="$3" diagnose="${4:-mise exec -- markgate}"
+  local gate="$1" mgate="$2" dir="$3" diagnose="${4:-mise exec -- markgate}" top
+  # Name the repo the SAME way the sibling refusal does. This printed the
+  # resolved cwd while gate_refuse_no_equivalent_marker printed the toplevel, so
+  # from a subdirectory the two refusals named different paths for one repo.
+  top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top="$dir"
   {
     echo "Blocked by $gate: markgate could not EVALUATE the \`$mgate\` gate"
     echo "(exit 2). This is NOT a stale marker, and running the integ will NOT fix"
     echo "it -- \`markgate set\` fails on the very same condition."
     echo ""
-    echo "  target repo : $dir"
+    echo "  target repo : $top"
     echo "  gate        : $mgate"
     echo ""
     echo "Likely cause and remedy:"

@@ -416,6 +416,55 @@ else
   ng "fence 2: the table and the observed markgate callers disagree:$(printf '%b' "$missing_from_table$stale_in_table$mentions_markgate")"
 fi
 
+# --- fence 4: rc-2 must be handled BEFORE the alias refusal, in EVERY gate ---
+#
+# go-to-k/cdkd#2236. markgate exit 2 means "could not EVALUATE this gate", not
+# "the marker is stale", and the two need OPPOSITE remedies: an integ run cannot
+# clear an unevaluable gate, because `markgate set` fails on the same condition.
+# A gate that reaches its ALIAS refusal first reports an rc-2 as staleness and
+# sends the reader to burn a Docker / real-AWS run for nothing.
+#
+# WHY THIS IS STATIC AND CLASS-LEVEL RATHER THAN A PER-GATE CASE. Only
+# `integ-local` has an alias row today, so only its suite can reach the alias
+# branch at all: measured 2026-08-26, moving the rc-2 block below the alias
+# block in `integ-destroy-gate.sh` left destroy 24/24 AND local 46/46 GREEN,
+# while the identical mutation in `integ-local-gate.sh` went red. The three
+# alias-less gates therefore carry a live ordering trap that no behavioural test
+# can currently see -- and it springs precisely when someone adds the first
+# alias row for one of them, which is the moment nobody re-reads the ordering.
+#
+# So this asserts on SOURCE ORDER, which is exactly what the trap is about, and
+# it fences the case that does not exist yet. That is the only kind of fence
+# that can catch this one.
+order_bad=""
+order_checked=0
+for gate_file in integ-local-gate integ-destroy-gate integ-broad-gate integ-schema-migration-gate; do
+  src="$HOOKS_DIR/$gate_file.sh"
+  [ -f "$src" ] || { order_bad="$order_bad\n    - $gate_file.sh not found"; continue; }
+  rc2_line=$(grep -n '^if \[ "\$status" -eq 2 \]; then' "$src" | head -1 | cut -d: -f1)
+  alias_line=$(grep -n '^if \[ "\$__mode" = "alias" \]; then' "$src" | head -1 | cut -d: -f1)
+  if [ -z "$rc2_line" ]; then
+    order_bad="$order_bad\n    - $gate_file.sh has NO \`status -eq 2\` branch, so an unevaluable gate is reported as a stale marker"
+    continue
+  fi
+  if [ -z "$alias_line" ]; then
+    order_bad="$order_bad\n    - $gate_file.sh has no alias branch, so the cross-repo resolution is missing entirely"
+    continue
+  fi
+  order_checked=$((order_checked + 1))
+  if [ "$rc2_line" -ge "$alias_line" ]; then
+    order_bad="$order_bad\n    - $gate_file.sh handles rc-2 at line $rc2_line, AFTER the alias refusal at line $alias_line; an unevaluable gate would be reported as staleness"
+  fi
+done
+
+if [ "$order_checked" -lt 4 ]; then
+  ng "fence 4: only $order_checked of 4 gates were actually compared, so this assertion is vacuous:$(printf '%b' "$order_bad")"
+elif [ -n "$order_bad" ]; then
+  ng "fence 4: a gate handles markgate rc-2 after its alias refusal:$(printf '%b' "$order_bad")"
+else
+  ok "fence 4: all 4 gates handle markgate rc-2 BEFORE their alias refusal"
+fi
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

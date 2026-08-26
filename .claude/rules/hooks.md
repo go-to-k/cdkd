@@ -403,7 +403,7 @@ in REACHABILITY and in whether an alias exists:
 
 | gate | reachable in a sibling today | alias row |
 | --- | --- | --- |
-| `integ-local` | YES -- cdk-local's whole runtime is `src/local/**` / `src/cli/commands/local-*.ts`; demonstrated live | `go-to-k/cdk-local` -> `integ` |
+| `integ-local` | YES -- cdk-local's whole runtime is `src/local/**` / `src/cli/commands/local-*.ts`; demonstrated live | `github.com/go-to-k/cdk-local` -> `integ` (the key is HOST-qualified -- copy this shape) |
 | `integ-destroy` | not today -- neither sibling has `src/provisioning/**`, `src/deployment/**` or `src/analyzer/**` | none: neither sibling has a destroy path, so their `integ` never exercised a delete |
 | `integ-broad` | not today -- same paths | none: the marker is bound to a broad-set real-AWS sentinel with no sibling counterpart |
 | `integ-schema-migration` | not today, but by a WEAKER guarantee than the others -- see below | none: neither sibling ships a schema whose bump this marker could attest to |
@@ -458,21 +458,58 @@ its hook back into this class.
   row exists -- adding one later would have silently disabled the exit-2
   message. Ordering is now identical in all four: rc 0 -> pass, rc 2 ->
   unevaluable, alias -> alias refusal, else canonical.
+A doc cell like that one is worth calling out as its own hazard class. It is
+not merely stale -- it is the **template the next author copies from**, so its
+staleness propagates into CODE rather than sitting inert on the page. A row
+written in the old two-segment form matches nothing, and it fails SILENTLY:
+no error, no refusal, just an alias that is never found and a gate quietly back
+to refusing every sibling merge. When a key format changes, grep the docs for
+the old shape as part of the same change, not as a follow-up.
+
 - **The slug carries the HOST.** `gate_repo_slug` returned `<owner>/<name>`, so
   `https://gitlab.com/go-to-k/cdk-local` and a local clone at
   `/x/go-to-k/cdk-local` both matched cdk-local's row -- an unrelated repo
   inheriting the alias, which is precisely the guessing this table exists to
-  prevent. It now returns `<host>/<owner>/<name>` and refuses to key a remote
-  with no host at all.
+  prevent. It now returns `<host>/<full/path>` and refuses to key a remote with
+  no host at all. The path is kept WHOLE rather than reduced to its last two
+  segments, because that reduction is the same conflation one level up: it keys
+  `github.com/o/r/sub/deep` as `github.com/sub/deep` and makes the GitLab
+  subgroups `gitlab.com/a/x/repo` and `gitlab.com/b/x/repo` identical. The
+  "at least two segments" test is structural for the same reason a spelling of
+  `[ "$owner" != "$name" ]` was wrong: it refused `github.com/prettier/prettier`
+  outright and then reported "origin remote missing or not host-qualified",
+  which was false for that remote -- fail-closed, but a wrong diagnosis.
 
-Driven in BOTH directions by `.claude/hooks/integ-local-gate.test.sh` (19 added
+**The ordering trap above is fenced STATICALLY, in `markgate-gate-name-class.test.sh`
+fence 4**, which asserts that each of the four gates handles markgate rc-2 at an
+earlier line than its alias refusal. It has to be static, and the measurement
+says so: moving the rc-2 block below the alias block in `integ-destroy-gate.sh`
+-- behaviour-PRESERVING for an alias-less gate, since `__mode` is never `alias`
+there -- left the destroy suite at 24/24 AND the local suite at 46/46, while
+fence 4 went red. Only `integ-local` has an alias row, so only its suite can
+reach that branch at all; the other three carry a live trap no behavioural test
+can see, and it springs exactly when someone adds their first alias row, which
+is the moment nobody re-reads the ordering. A fence for a case that does not
+exist yet can only be static.
+
+**A probe is only evidence for the mutation you actually claim to fence.** The
+first attempt at the control DELETED the rc-2 block instead of moving it. That
+changes behaviour -- the destroy suite's `error`-verdict case sees a different
+message -- so the control came back RED, which reads as "the per-gate suite
+already covers this" and would have retired fence 4 as redundant. Re-run with
+the MOVE, the two per-gate suites report NOT FENCED and the class fence reports
+RED, which is the actual justification. Delete-vs-move is a behaviour change
+versus a pure reordering; do not substitute one for the other.
+
+Driven in BOTH directions by `.claude/hooks/integ-local-gate.test.sh` (23 added
 cases) and four cases each in the three sibling suites. The ACCEPT direction is
 the one that matters, since the defect is an over-tightening and a guard fenced
 only on "refuses what it must" cannot see one. The sibling suites drive their
 "a repo declaring only its own `integ` is NOT accepted on it" case with a FRESH
 verdict, so a hook that guessed an alias by name would exit 0 and fail the case.
-Sixteen mutation probes were taken and every one went RED, with a comment-only
-control that did not.
+Twenty-two mutation probes were taken and every one went RED, alongside three
+controls that must NOT fence and did not: a comment-only edit, and the rc-2 MOVE
+seen through each of the two per-gate suites.
 
 **Two of the accept-direction cases were VACUOUS when first written**, and only
 a pre-fix comparison found it -- the probes did not. Measured by swapping in the

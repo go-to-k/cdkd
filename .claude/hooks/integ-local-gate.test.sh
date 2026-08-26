@@ -549,6 +549,49 @@ run_x "alias gate exit 2 says it is not a stale marker" 2 error \
   "could not EVALUATE" - - \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$sib_repo")"
 
+# N. `owner == name` MUST resolve, and the refusal must say something TRUE.
+#    The segment-count test was once spelled `[ "$owner" != "$name" ]`, which
+#    refused `github.com/prettier/prettier` outright and then reported the
+#    remote as missing or not host-qualified -- fail-closed, but a false
+#    diagnosis that sends the next reader hunting the wrong thing. The suggested
+#    row must carry the REAL slug, not the placeholder.
+prettier_repo="$TMPDIR/x-prettier"
+mk_repo "$prettier_repo" "https://github.com/prettier/prettier.git" check docs integ
+run_x "repo whose name equals its owner resolves, with a TRUE message" 2 fresh \
+  "github.com/prettier/prettier|integ-local|" "origin remote missing" NONE \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$prettier_repo")"
+
+# O. The path is kept WHOLE. Reducing it to its last two segments is the same
+#    conflation the host fix targets, one level up: it would key this repo as
+#    `github.com/sub/deep`.
+deep_repo="$TMPDIR/x-deep"
+mk_repo "$deep_repo" "https://github.com/o/r/sub/deep.git" check docs integ
+run_x "deep path keeps every segment in the key" 2 fresh \
+  "github.com/o/r/sub/deep|integ-local|" - NONE \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$deep_repo")"
+
+# O2. Two GitLab SUBGROUPS sharing a repo name must key differently. Both refuse
+#     (no row exists for either), so the discriminator is the suggested row.
+subgroup_a="$TMPDIR/x-subgroup-a"
+mk_repo "$subgroup_a" "https://gitlab.com/a/x/repo.git" check docs integ
+run_x "gitlab subgroup a keys as itself, not as subgroup b" 2 fresh \
+  "gitlab.com/a/x/repo|integ-local|" "gitlab.com/b/x/repo" NONE \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$subgroup_a")"
+
+# P. Both refusals must name the SAME path for one repo. The unevaluable one
+#    printed the resolved cwd while the no-equivalent one printed the toplevel,
+#    so from a SUBDIRECTORY they disagreed about which repo was being refused.
+mkdir -p "$sib_repo/src/local/deeply/nested"
+# Compare against the toplevel as GIT reports it, not against the fixture path:
+# on macOS `mktemp -d` hands back `/var/folders/...` while `rev-parse
+# --show-toplevel` resolves the `/var -> /private/var` symlink, so the literal
+# fixture path never appears in the output. Both refusals use --show-toplevel,
+# which is the point of this case -- they now agree with each other.
+sib_top=$(git -C "$sib_repo" rev-parse --show-toplevel)
+run_x "unevaluable refusal names the repo TOPLEVEL, not the cwd" 2 error \
+  "target repo : $sib_top" - - \
+  "$(printf '{"cwd":"%s/src/local/deeply/nested","tool_input":{"command":"gh pr merge --squash"}}' "$sib_repo")"
+
 # I. PARSER FENCE against the REAL config this repo ships. A parser that
 #    answered "not declared" for cdkd's own `integ-local` would silently route
 #    every cdkd merge onto some other marker, and no case above would see it,
