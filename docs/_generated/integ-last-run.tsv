@@ -257,7 +257,7 @@ scheduler-custom-group	2026-07-26T19:25:15Z	PASS	103	verify.sh	0727b sweep-b10 s
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression sweep; transparent auto-migration + outputReads ok, 0 orphans
-schema-v8-to-v9-migration	2026-08-25T07:36:04Z	PASS	355	verify.sh	#2193 re-run after review fixes (proto defense/log strip); v8 shadow->v9 rebind, 0 err 0 orphans
+schema-v8-to-v9-migration	2026-08-26T02:31:01Z	PASS	600	verify.sh	#2194 blocker fix + rebase onto main; v8 shadow->v9 rebind, 0 err 0 orphans (AWS SSM delete lag ~21m, completed clean)
 sdk-ccapi-crossref	2026-08-10T04:23:28Z	PASS	85	verify.sh	0810 sweep b2; post-#1355 CC snapshot path, heterogeneous routing, 4 del 0 err, 0 orph
 secrets-array-nested	2026-08-20T10:31:31Z	PASS	72	verify.sh	#1935 lane: #1915 keyed-array + #1917 token-shaped fences held; 0 versions, 0 orphans
 secrets-dynamic-ref	2026-08-21T02:05:31Z	PASS	344	verify.sh	#2109 regression arm re-run after the scrub.ts changes; drift + scrub over secrets with no cross-stack read; 0 surviving state versions
