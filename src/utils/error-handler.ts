@@ -421,8 +421,10 @@ export class PartialFailureError extends CdkdError {
  * is the whole point: the message interpolates the resource's LOGICAL ID,
  * and the retry classifiers match by SUBSTRING, so a perfectly ordinary
  * composite CDK id like `MyDependencyViolationSub` made
- * `isRetryableTransientError` return true (`DependencyViolation` is the only
- * whitespace-free entry in `RETRYABLE_ERROR_MESSAGE_PATTERNS`) and burned the
+ * `isRetryableTransientError` return true (`DependencyViolation` was then the
+ * only whitespace-free entry in `RETRYABLE_ERROR_MESSAGE_PATTERNS`; the
+ * name-cooldown error CODES `QueueDeletedRecently` / `StateMachineDeleting`
+ * joined it under issue #2116, so the hazard is wider, not narrower) and burned the
  * full generic schedule — 8 retries, ~47s of pure sleep — on a path that was
  * never going to succeed, before the fallback the error exists to trigger was
  * even reached.

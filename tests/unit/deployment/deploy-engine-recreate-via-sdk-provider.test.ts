@@ -282,10 +282,26 @@ describe('DeployEngine — --recreate-via-sdk-provider wire-through (#651)', () 
 
   it('retries the re-create through the SQS QueueDeletedRecently cooldown (issue #1214)', async () => {
     // The destroy-then-create order just released the old name, so a
-    // custom-named SQS-like re-create can hit the 60s cooldown. Uses the
-    // error-CODE form, which the generic transient table does NOT match —
-    // the inner retry rethrows immediately, so only the outer
-    // isRecreateRetryableError filter (the fix under test) can absorb it.
+    // custom-named SQS-like re-create can hit the 60s cooldown.
+    //
+    // The error-CODE form used to be what isolated the OUTER filter: only
+    // `isNameCooldownError` matched it, so the inner generic retry rethrew
+    // immediately and this assertion could only pass through
+    // `isRecreateRetryableError` (the fix under test). Issue
+    // [#2116](https://github.com/go-to-k/cdkd/issues/2116) put every cooldown
+    // spelling into the generic table too -- deliberately, so an ordinary
+    // create in a fresh process rides the window out as well -- and that
+    // falsified the sentence this comment used to carry. MEASURED, not
+    // assumed: with `isRecreateRetryableError` cut back to collision-only,
+    // this suite passed 18/18 (6 of 6 tests in the file's own count) with the
+    // outer filter doing nothing.
+    //
+    // `disableOuterRetry` restores the isolation: it makes
+    // `DeployEngine.withRetry` single-shot, so the ONLY thing that can absorb
+    // the cooldown is the outer `isRecreateRetryableError` loop. Same repair
+    // as the twin case in
+    // `deploy-engine-named-replacement-collision.test.ts`.
+    sdkProvider.disableOuterRetry = true;
     let failures = 1;
     sdkProvider.create = vi.fn().mockImplementation(async () => {
       callOrder.push('sdk.create');

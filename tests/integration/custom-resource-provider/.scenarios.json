@@ -1,5 +1,6 @@
 {
   "scenarios": [
-    "custom-resource-async-poll"
+    "custom-resource-async-poll",
+    "ordinary-create-name-cooldown"
   ]
 }

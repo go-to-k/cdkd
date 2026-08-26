@@ -1070,8 +1070,11 @@ describe('NestedStackProvider', () => {
       // contains SPACES, and the name is `<parent>~<childLogicalId>` built
       // from CloudFormation logical ids, which are alphanumeric — so the
       // substring cannot occur. That is exactly why `DependencyViolation` is
-      // the pattern this whole block is about: it is the only whitespace-free
-      // entry in the table, hence the only one a logical id can carry.
+      // the pattern this whole block is about: it is a whitespace-free entry
+      // in the table, hence one a logical id CAN carry. It was the only such
+      // entry until issue #2116 added `QueueDeletedRecently` /
+      // `StateMachineDeleting`, which a composite construct id could spell
+      // just as easily — the marker fences all of them, which is the point.
       //
       // A row WAS written here first, asserting the marker against an error it
       // constructed ITSELF, and it passed with the provider's marks fully

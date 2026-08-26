@@ -347,9 +347,10 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
   it('stays non-retryable when the logical id itself contains a retryable pattern', async () => {
     // The regression the marker exists for: `sourceClause` interpolates
     // template-controlled text, so an ordinary composite CDK logical id can put
-    // a retryable pattern INTO the message. `DependencyViolation` is the
-    // table's only whitespace-free entry, which is what makes it reachable
-    // from an identifier. Asserted through the classifier (the OUTCOME), not by
+    // a retryable pattern INTO the message. `DependencyViolation` is a
+    // whitespace-free entry in the table, which is what makes it reachable
+    // from an identifier (the only one until issue #2116 added the
+    // name-cooldown error codes). Asserted through the classifier (the OUTCOME), not by
     // re-checking the message against the table — the wording is expected to
     // collide here, and the marker is what has to win.
     const resolver = new IntrinsicFunctionResolver();

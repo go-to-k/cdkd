@@ -253,11 +253,17 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
 ];
 
 /**
- * The NON-IAM-propagation half of {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}:
- * transient failures whose recovery window is either long (SQS's 60s same-name
- * cooldown, a resource still leaving a Pending/Creating state) or genuinely
- * load-related (throttling), where hammering AWS with dense retries is harmful
- * and exponential backoff is the correct shape.
+ * The NON-IAM-propagation, NON-name-cooldown third of
+ * {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}: transient failures whose recovery
+ * window is either long (a resource still leaving a Pending/Creating state) or
+ * genuinely load-related (throttling), where hammering AWS with dense retries
+ * is harmful and exponential backoff is the correct shape.
+ *
+ * The name-cooldown spellings used to live here too (`wait 60 seconds`, S3's
+ * `conflicting conditional operation`); they moved to
+ * {@link NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS} so the ordinary-create path and
+ * the delete-then-re-create sites read ONE list instead of two that drifted
+ * apart (issue [#2116](https://github.com/go-to-k/cdkd/issues/2116)).
  */
 const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // Freshly-created resource still leaving its Pending/Creating state
@@ -271,8 +277,6 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   'does not exist',
   // AppSync schema is being created asynchronously
   'Schema is currently being altered',
-  // S3 bucket creation/deletion still in progress
-  'conflicting conditional operation',
   // Secrets Manager: ForceDeleteWithoutRecovery may take a moment to propagate
   'scheduled for deletion',
   // CloudWatch Logs SubscriptionFilter: Kinesis stream eventual consistency
@@ -280,11 +284,6 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // by delivering a test message; if the stream is freshly ACTIVE or the
   // assumed role hasn't propagated, the probe fails with "Invalid request".
   'Could not deliver test message',
-  // SQS: same-name queue can't be re-created until 60s after a delete.
-  // Hits when a stack is destroyed and re-deployed in quick succession
-  // (a common dev / iteration loop). Retry recovers within ~60s instead
-  // of failing the whole deploy.
-  'wait 60 seconds',
   // Lambda: AddPermission serializes resource-policy updates server-side.
   // When multiple Lambda::Permission resources for the same function
   // dispatch in parallel, AWS rejects the losers with
@@ -360,17 +359,123 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
 ];
 
 /**
+ * The **name-cooldown** third of {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}:
+ * an AWS service that holds a resource's NAME (or other unique identifier)
+ * while an ASYNCHRONOUS delete of the previous holder is still in flight, so a
+ * create of the same name inside that window is refused with a
+ * service-specific message. The window always clears on its own — the delete
+ * that opened it is already running — which is what makes every entry here
+ * retryable rather than terminal, whichever call site hits it.
+ *
+ * Read by BOTH consumers, which is the whole point of the list existing
+ * (issue [#2116](https://github.com/go-to-k/cdkd/issues/2116)):
+ *
+ *  - {@link isNameCooldownError}, and through it
+ *    {@link isRecreateRetryableError}, the retry filter at the
+ *    delete-then-re-create sites (the deploy engine's `--replace` delete-first
+ *    fallback, the recreate-via-* path, the rollback executor's
+ *    delete-new-first) — the sites where cdkd itself just deleted the name
+ *    holder;
+ *  - {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}, i.e. the ORDINARY create path,
+ *    where a fresh `cdkd deploy` process has no idea a prior `cdkd destroy`
+ *    deleted anything.
+ *
+ * The second consumer is the reachable one and was the measured failure in
+ * #2116: destroy-then-redeploy is a routine dev loop, CloudFormation absorbs
+ * the window and converges, and cdkd claims template compatibility with
+ * CloudFormation — so failing the whole deploy (26 resources created and
+ * rolled back, on the run that filed the issue) over a condition that clears
+ * in seconds is a parity defect. Before this list, the two consumers held
+ * DIFFERENT spellings of the same SQS error: the wire message
+ * (`wait 60 seconds`) was in the generic table so an ordinary create retried
+ * it, while the error CODE (`QueueDeletedRecently`) was not — so whether the
+ * identical AWS condition was survivable depended on which spelling the SDK
+ * happened to surface.
+ *
+ * Bounded, not unbounded: since #2116 the ordinary-create path rides
+ * `withRetry`'s NAME-COOLDOWN grid (8 retries, 2s/4s/8s then capped at 10s ≈
+ * 64s of sleep — `NAME_COOLDOWN_INITIAL_DELAY_MS` in `./retry.ts`), which is
+ * the same budget the re-create sites already carried. It is deliberately NOT
+ * the generic 47s schedule this path used to inherit: SQS's own sentence names
+ * a 60-second window, so 47s would not converge, it would merely fail 47s
+ * later. A name that is NOT in fact being
+ * released — a genuine, permanent collision — is a different signature
+ * ({@link isNameCollisionError}) and is deliberately NOT here, so it still
+ * fails fast into the actionable `--replace` refusal instead of burning a
+ * budget it cannot survive.
+ *
+ * **What must NOT go in this list.** Every entry below is specific to a delete
+ * that is ALREADY in flight and clears within a budget. Three candidates the
+ * sibling sweep turned up are recorded here as deliberate EXCLUSIONS rather
+ * than left unmentioned, because "absent" and "considered and rejected" are
+ * indistinguishable to the next person doing this sweep:
+ *
+ *  - **ELBv2 `DuplicateLoadBalancerName`** and **DynamoDB's create-side
+ *    `Table already exists: <name>`** — AWS raises both for a resource that
+ *    merely EXISTS, just as readily as for a deleting one, so neither is
+ *    distinguishable from a terminal collision. Promoting either would convert
+ *    a fast, actionable `--replace` refusal into a full retry budget ending in
+ *    the same failure. (DynamoDB's `Table is being deleted` IS distinguishable,
+ *    but promoting THAT one re-multiplies the destroy-runner budget arithmetic
+ *    `src/provisioning/dynamodb-index-busy-delete.ts` derives against the
+ *    per-resource deadline — a different reason, so it is stated separately
+ *    rather than folded in with the two above.)
+ *  - **Secrets Manager `scheduled for deletion`** — the same one-sided shape as
+ *    S3's entry (generic table only, invisible to
+ *    {@link isRecreateRetryableError}), and the provider does delete with
+ *    `ForceDeleteWithoutRecovery: true`, so it LOOKS like it belongs. It is
+ *    excluded because that single message covers TWO conditions with wildly
+ *    different windows: a force-deleted secret's name releasing in
+ *    seconds-to-minutes, and a secret scheduled for deletion with a
+ *    `RecoveryWindowInDays` of 7-30 DAYS, which no bounded budget can ride out
+ *    and which a user reaches by deleting a secret outside cdkd. A budget that
+ *    cannot converge on half its population is worse than failing fast, so the
+ *    entry stays where it already was — in the generic table, retryable on an
+ *    ordinary create and terminal at the re-create sites, unchanged by #2116.
+ */
+export const NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS: readonly string[] = [
+  // SQS, error-CODE spelling: `AWS.SimpleQueueService.QueueDeletedRecently`.
+  'QueueDeletedRecently',
+  // SQS, wire-message spelling of the SAME condition: "You must wait 60
+  // seconds after deleting a queue before you can create another with the
+  // same name." Hits when a stack is destroyed and re-deployed in quick
+  // succession (a common dev / iteration loop).
+  'wait 60 seconds',
+  // Step Functions, error-CODE spelling: `StateMachineDeleting`.
+  // `DeleteStateMachine` returns immediately and the machine keeps answering
+  // `status: DELETING` afterwards (measured ~23s on an idle machine —
+  // tests/integration/custom-resource-provider), holding its name throughout.
+  'StateMachineDeleting',
+  // Step Functions, wire-message spelling of the same condition:
+  // "State Machine is being deleted: 'arn:aws:states:...'". This is the
+  // message that filed #2116, raised by `CreateStateMachine` during the
+  // window above. Any CDK app using `custom_resources.Provider` with an
+  // `isCompleteHandler` carries a waiter state machine whether or not the
+  // author knows it, so the reachable path is an ordinary re-deploy.
+  'State Machine is being deleted',
+  // S3, wire-message spelling of `OperationAborted`: "A conflicting
+  // conditional operation is currently in progress against this resource."
+  // A bucket name is globally unique and `DeleteBucket` releases it
+  // asynchronously, so a re-create inside that window is refused. This entry
+  // predates the list — it was in the generic table, i.e. retried on an
+  // ordinary create but NOT at the delete-then-re-create sites, which is the
+  // same one-sided coverage #2116 removes for the SQS pair.
+  'conflicting conditional operation',
+];
+
+/**
  * Patterns that mark an AWS error as a transient/retryable failure.
  * Each entry is a substring match against the error message; all of these
  * are situations where the same call typically succeeds after a short delay
  * because of eventual consistency or just-created-dependency propagation.
  *
- * Composed from the two halves above so retryability has ONE source of truth
+ * Composed from the three halves above so retryability has ONE source of truth
  * while `withRetry` can still pick a per-class backoff cadence.
  */
 export const RETRYABLE_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   ...IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS,
   ...OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS,
+  ...NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS,
 ];
 
 /**
@@ -933,26 +1038,31 @@ export function isNameCollisionError(message: string): boolean {
 }
 
 /**
- * Match the SQS same-name re-creation cooldown: after `DeleteQueue`, creating
- * a queue with the SAME name inside ~60s fails with
- * `AWS.SimpleQueueService.QueueDeletedRecently` ("You must wait 60 seconds
- * after deleting a queue before you can create another with the same name").
+ * Match a same-name re-creation cooldown — an AWS service still holding a
+ * resource's name while its asynchronous delete finishes. Every recognised
+ * spelling lives in {@link NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS}; add new ones
+ * THERE rather than here, so the ordinary-create path
+ * ({@link RETRYABLE_ERROR_MESSAGE_PATTERNS}, which composes that list) cannot
+ * drift out of step with the delete-then-re-create sites again. That drift is
+ * exactly what issue [#2116](https://github.com/go-to-k/cdkd/issues/2116)
+ * found: SQS's wire message was retryable on an ordinary create while its
+ * error code was not, and the Step Functions spelling was recognised by
+ * neither.
  *
- * The generic transient table above already carries 'wait 60 seconds' for
- * plain CREATEs (rapid destroy → redeploy loops), but the delete-then-re-create
- * sites (the deploy engine's --replace delete-first fallback and the rollback
- * executor's reverse-replacement) override the retry filter with
- * {@link isNameCollisionError}, which this signature does NOT match — so a
- * replacement revert used to fail fast mid-flight with the resource absent
- * from both AWS and state (issue #1206). Those sites now OR this matcher into
- * their retry filter, with a schedule long enough to cover the 60s window.
+ * The delete-then-re-create sites (the deploy engine's `--replace`
+ * delete-first fallback and the rollback executor's reverse-replacement)
+ * override the retry filter with {@link isNameCollisionError}, which these
+ * signatures do NOT match — so a replacement revert used to fail fast
+ * mid-flight with the resource absent from both AWS and state (issue #1206).
+ * Those sites OR this matcher into their retry filter, with a schedule long
+ * enough to cover the 60s SQS window.
  *
  * Kept separate from {@link isNameCollisionError} on purpose: a cooldown at a
  * create-first site must NOT be treated as a collision (deleting the new
  * resource would not release the cooldown on the old name).
  */
 export function isNameCooldownError(message: string): boolean {
-  return message.includes('QueueDeletedRecently') || message.includes('wait 60 seconds');
+  return NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
 }
 
 /**

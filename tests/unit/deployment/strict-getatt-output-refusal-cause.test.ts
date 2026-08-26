@@ -6,8 +6,9 @@
  * The marker is a non-enumerable symbol on the ORIGINAL error, and the wrapper
  * inlines the refusal's full text — which for a resolver refusal includes
  * template-controlled identifiers. So a logical id like
- * `MyDependencyViolationHandler` puts `DependencyViolation` (the substring
- * table's only whitespace-free entry) into the wrapper's message, and the
+ * `MyDependencyViolationHandler` puts `DependencyViolation` (a whitespace-free
+ * entry in the substring table — the only one until issue #2116 added the
+ * name-cooldown error codes) into the wrapper's message, and the
  * classifier reads it as transient.
  *
  * That is reachable, which is why it matters: the throw leaves

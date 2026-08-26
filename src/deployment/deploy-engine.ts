@@ -3970,12 +3970,21 @@ export class DeployEngine {
             // Delete-then-create just released the old resource's name, so
             // the re-create can hit a late name release ("already exists"
             // from an async delete) or the SQS 60s same-name cooldown
-            // (QueueDeletedRecently, issue #1214). The inner generic retry
-            // matches the cooldown's wire message but its ~47s budget starts
-            // ~1s after the delete and typically ends inside the 60s window
-            // — mirror the --replace delete-first fallback's outer retry
-            // (2s/4s/8s then capped at 10s over 8 retries ≈ 64s total sleep)
-            // so the full cooldown is covered.
+            // (QueueDeletedRecently, issue #1214). The inner retry matches
+            // the cooldown — and since issue #2116 it rides the name-cooldown
+            // grid (2s/4s/8s then 10s, ≈64s), not the generic ~47s one it used
+            // to inherit, so the inner loop alone now covers the 60s window
+            // rather than typically ending inside it.
+            //
+            // This outer loop is kept anyway, and the reason has MOVED rather
+            // than disappeared: it is no longer "the inner budget is too
+            // short" but that the outer filter is `isRecreateRetryableError`,
+            // which also covers the late name RELEASE ("already exists" from
+            // an async delete) that the inner default classifier deliberately
+            // rejects. Note the two now COMPOUND — the outer loop re-enters an
+            // inner loop that is itself 64s — measured at 640s total sleep on
+            // a cooldown, inside the 30-minute per-resource deadline. See
+            // `NAME_COOLDOWN_INITIAL_DELAY_MS` in retry.ts.
             createResult = await withRetry(
               () =>
                 this.withRetry(
@@ -5122,8 +5131,9 @@ export class DeployEngine {
       // so re-wrapping without a cause DROPS it — while inlining the refusal's
       // full text, which for a resolver refusal includes template-controlled
       // identifiers. A logical id like `MyDependencyViolationHandler` then puts
-      // `DependencyViolation` (the substring table's only whitespace-free
-      // entry) into this message, and the classifier reads it as transient.
+      // `DependencyViolation` (a whitespace-free entry in the substring
+      // table — the only one until issue #2116 added the name-cooldown error
+      // codes) into this message, and the classifier reads it as transient.
       // That is reachable: this throw leaves `executeDeployment`, leaves the
       // child `deploy()`, passes through `NestedStackProvider.create`, and
       // lands in the PARENT's `withRetry` — so a nested stack would re-run a
