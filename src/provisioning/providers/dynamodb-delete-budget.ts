@@ -695,6 +695,40 @@ export function isTerminalDeleteFailure(error: unknown): boolean {
   return !(isRetryableTransientError(error, message) || message.includes('Too Many Requests'));
 }
 
+/**
+ * What {@link compensateRemovedDeletionProtection} actually did, which the
+ * caller needs because it decides whether the flip record may be DROPPED.
+ *
+ *  - `not-applicable` — there was nothing to put back: this run never flipped
+ *    the guard, AWS had already accepted the `DeleteTable`, or the failure is
+ *    retryable and a re-entry is coming.
+ *  - `restored` — the compensating `UpdateTable(DeletionProtectionEnabled:
+ *    true)` succeeded, so the guard is back on.
+ *  - `failed` — the compensating `UpdateTable` was attempted and did NOT
+ *    succeed (either arm: the ResourceNotFound one that cannot tell "gone"
+ *    from "not ACTIVE", or any other error). The guard is, as far as cdkd
+ *    knows, still OFF and cdkd is the one that turned it off.
+ *
+ * The three-way split exists for that last case alone. A caller that releases
+ * the flip record on it throws away the only in-process memory that cdkd owes
+ * this table a re-enable, and the record is what a LATER delete of the same
+ * key reads: released, that delete observes the guard already off, records
+ * `flippedOffByThisRun: false`, and compensates NOTHING — so a table cdkd
+ * stripped stays stripped. Retaining it does not re-open the hazard the
+ * release closes, because the unwanted-`UpdateTable(true)` hazard is about a
+ * guard cdkd has already PUT BACK; here it demonstrably has not.
+ *
+ * ONE residual this does NOT cover, named because every other one here is:
+ * the table really is gone, a table of the SAME name is recreated in the same
+ * region inside the sliding window, and THAT delete fails terminally. The
+ * inherited record then has cdkd issue `UpdateTable(DeletionProtectionEnabled:
+ * true)` on a table it never flipped. The trade is still the right one -- the
+ * alternative leaves a table cdkd stripped still stripped, which is the worse
+ * direction -- but the argument above does not reach this case, so it is stated
+ * rather than implied away.
+ */
+export type ProtectionCompensationOutcome = 'not-applicable' | 'restored' | 'failed';
+
 /** Inputs to {@link compensateRemovedDeletionProtection}. */
 export interface ProtectionCompensationOptions {
   readonly flip: ProtectionFlipRecord;
@@ -739,11 +773,17 @@ export interface ProtectionCompensationOptions {
  *    table with its guard down, which is the exact residue this mechanism
  *    exists to remove, so the message carries the physical id and the one
  *    command that fixes it.
+ *
+ * It REPORTS what it did rather than only doing it (see
+ * {@link ProtectionCompensationOutcome}), because the caller's decision to drop
+ * the flip record is not the same decision as whether to compensate: dropping
+ * it after a re-enable that FAILED discards the only record that cdkd still
+ * owes this table its guard back.
  */
 export async function compensateRemovedDeletionProtection(
   opts: ProtectionCompensationOptions
-): Promise<void> {
-  if (!opts.flip.flippedOffByThisRun) return;
+): Promise<ProtectionCompensationOutcome> {
+  if (!opts.flip.flippedOffByThisRun) return 'not-applicable';
   // AWS took the delete, so whatever threw afterwards was a WAIT, not the
   // delete: the table is `DELETING` and there is no guard to restore on it.
   // Gated on the RECORD rather than on the shape of the error, because the
@@ -751,8 +791,8 @@ export async function compensateRemovedDeletionProtection(
   // reads exactly like a terminal refusal and would otherwise be answered with
   // an `UpdateTable(true)` against a dying table plus a log line claiming it is
   // "LIVE with its deletion protection still off" — both false.
-  if (opts.flip.deleteAccepted) return;
-  if (!isTerminalDeleteFailure(opts.error)) return;
+  if (opts.flip.deleteAccepted) return 'not-applicable';
+  if (!isTerminalDeleteFailure(opts.error)) return 'not-applicable';
 
   try {
     await opts.reEnable();
@@ -761,6 +801,7 @@ export async function compensateRemovedDeletionProtection(
         `--remove-protection had turned DeletionProtectionEnabled off, so it was ` +
         `re-enabled on ${opts.physicalId}. The delete failure below is the outcome.`
     );
+    return 'restored';
   } catch (reEnableError) {
     const detail = reEnableError instanceof Error ? reEnableError.message : String(reEnableError);
     if (isResourceNotFoundError(reEnableError)) {
@@ -809,7 +850,12 @@ export async function compensateRemovedDeletionProtection(
           `--table-name ${opts.physicalId}${regionArg} --deletion-protection-enabled. ` +
           `(${detail})`
       );
-      return;
+      // `failed`, not `not-applicable`: the re-enable was ATTEMPTED and did not
+      // land. Whether the table is gone or merely not ACTIVE is exactly what
+      // this arm says cdkd cannot tell, so the record is kept and a later
+      // delete of the same key may try again — the safe direction for the one
+      // case that is not "gone".
+      return 'failed';
     }
     opts.logger.error(
       `DynamoDB ${opts.typeLabel} ${opts.logicalId}: could NOT re-enable ` +
@@ -818,6 +864,7 @@ export async function compensateRemovedDeletionProtection(
         `aws dynamodb update-table --table-name ${opts.physicalId} ` +
         `--deletion-protection-enabled. (${detail})`
     );
+    return 'failed';
   }
 }
 

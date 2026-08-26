@@ -106,6 +106,7 @@ import {
 import type { DeleteContext } from '../../../../src/provisioning/region-check.js';
 import {
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
+  type ProtectionCompensationOutcome,
   ProtectionFlipRegistry,
   compensateRemovedDeletionProtection,
   dynamoDbDeleteBudgetOverride,
@@ -149,6 +150,17 @@ function flipOffCalls(): UpdateTableCommand[] {
       (command): command is UpdateTableCommand =>
         command instanceof UpdateTableCommand && command.input.DeletionProtectionEnabled === false
     );
+}
+
+/**
+ * How many records the provider's own `ProtectionFlipRegistry` is holding.
+ *
+ * White-box, and used here for the one thing the black-box narration cannot
+ * say: whether `delete()`'s `catch` DROPPED the record on its way out (issue
+ * #2244). `ProtectionFlipRegistry.size` exists for exactly this.
+ */
+function registrySize(instance: unknown): number {
+  return (instance as { protectionFlips: { size: number } }).protectionFlips.size;
 }
 
 /** Every `DescribeTable` this run issued, in order. */
@@ -706,8 +718,9 @@ describe.each(PROVIDERS)(
           new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} }),
       });
 
+      const instance = provider.make();
       await expect(
-        provider.make().delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {
+        instance.delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {
           ...REMOVE_PROTECTION,
           // The client is us-east-1 (see the module mock); state says otherwise.
           expectedRegion: 'eu-west-1',
@@ -731,6 +744,17 @@ describe.each(PROVIDERS)(
       expect(debugLines()).not.toContain('ResourceNotFound');
       expect(warnLines()).toContain('could not re-enable');
       expect(warnLines()).toContain('not in this region or account');
+      // WHAT HAPPENS TO THE RECORD on this race, asserted rather than reasoned
+      // about in a comment (issue #2244). The `assertRegionMatch` throw skips
+      // the NotFound branch's own `release()`, so the only thing that could
+      // drop the record is `delete()`'s `catch` -- and it does NOT, because the
+      // compensation it just ran reports `failed`. That is the intended
+      // direction: cdkd turned this guard off, could not put it back, and the
+      // retained record is what lets a later delete of the same key retry the
+      // re-enable it still owes. A release here would leave that later delete
+      // observing the guard already off, recording `flippedOffByThisRun: false`
+      // and compensating nothing.
+      expect(registrySize(instance)).toBe(1);
     }, 120_000);
 
     it('does NOT re-enable when the pre-flip OBSERVATION itself failed', async () => {
@@ -992,7 +1016,7 @@ describe('ProtectionFlipRegistry (#1978)', () => {
     };
 
     let reEnables = 0;
-    await compensateRemovedDeletionProtection({
+    const accepted = await compensateRemovedDeletionProtection({
       ...base,
       flip: { flippedOffByThisRun: true, deleteAccepted: true },
       reEnable: async () => {
@@ -1001,11 +1025,15 @@ describe('ProtectionFlipRegistry (#1978)', () => {
     });
     expect(reEnables).toBe(0);
     expect(calls).toHaveLength(0);
+    // `not-applicable`, NOT `failed`: nothing was attempted, so `delete()` may
+    // drop the record (issue #2244). The table is already `DELETING` and there
+    // is no live guard left for a later delete to owe anything to.
+    expect(accepted).toBe('not-applicable');
 
     // The control: identical inputs with the delete NOT accepted must still
     // compensate, so the assertion above is about `deleteAccepted` rather than
     // about this error shape being un-compensatable.
-    await compensateRemovedDeletionProtection({
+    const notAccepted = await compensateRemovedDeletionProtection({
       ...base,
       flip: { flippedOffByThisRun: true, deleteAccepted: false },
       reEnable: async () => {
@@ -1014,6 +1042,7 @@ describe('ProtectionFlipRegistry (#1978)', () => {
     });
     expect(reEnables).toBe(1);
     expect(calls.join('\n')).toContain(`re-enabled on ${TABLE_NAME}`);
+    expect(notAccepted).toBe('restored');
   });
 });
 
@@ -1045,10 +1074,18 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
     debug: string[];
     warn: string[];
     error: string[];
+    /**
+     * What the compensation REPORTED, which is a separate contract from what it
+     * logged: `delete()` releases the flip record only when this is not
+     * `failed` (issue #2244), so a level change that silently also changed the
+     * outcome would move a destructive-safety decision without touching a line
+     * either suite reads.
+     */
+    outcome: ProtectionCompensationOutcome;
   }
 
   function run(reEnableError: unknown, region?: string): Promise<Captured> {
-    const captured: Captured = { debug: [], warn: [], error: [] };
+    const captured: Captured = { debug: [], warn: [], error: [], outcome: 'not-applicable' };
     const stub = {
       debug: (line: string) => captured.debug.push(line),
       info: () => {},
@@ -1064,7 +1101,10 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
       logger: stub as never,
       ...(region ? { region } : {}),
       reEnable: () => Promise.reject(reEnableError),
-    }).then(() => captured);
+    }).then((outcome) => {
+      captured.outcome = outcome;
+      return captured;
+    });
   }
 
   it('WARNS, without asserting the table is live, when the re-enable gets ResourceNotFound', async () => {
@@ -1091,6 +1131,11 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
     expect(warned).toContain(`aws dynamodb update-table --table-name ${TABLE_NAME}`);
     // The underlying AWS text is still carried, so the line is diagnosable.
     expect(warned).toContain('Requested resource not found');
+    // ...and the re-enable is reported as FAILED even though it is narrated at
+    // warn. The softer LEVEL is about what cdkd can claim; the OUTCOME is about
+    // what it did, and it did not put the guard back -- which is what keeps
+    // `delete()` from dropping the record (issue #2244).
+    expect(captured.outcome).toBe('failed');
   });
 
   it('renders --region on BOTH remediation commands when the caller knows it', async () => {
@@ -1131,6 +1176,7 @@ describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224
     expect(captured.error.join('\n')).toContain(
       `aws dynamodb update-table --table-name ${TABLE_NAME}`
     );
+    expect(captured.outcome).toBe('failed');
   });
 
   it('matches on the SDK error NAME, not on the class identity', async () => {
