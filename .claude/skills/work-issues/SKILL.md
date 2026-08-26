@@ -1312,6 +1312,19 @@ afterwards, the same trees were green. Tell each agent to run only
 `vp test run <its own suite>` and say that the authoritative full suite is yours;
 then run one lane's at a time.
 
+**Serializing YOUR suites is not the same as serializing the machine, and a
+PEER SESSION's suite is invisible from every probe this skill lists.** On
+2026-08-27 a full suite exited **1** with `Test Files 806 passed` /
+`Tests 16597 passed` / `Type Errors no errors` — the failure was
+`[vitest-pool]: Worker forks emitted error / Worker exited unexpectedly` at load
+54, i.e. a dead fork rather than a red test, and by inspection indistinguishable
+from a real regression. The natural reading was self-inflicted oversubscription;
+`ps aux | grep vitest` then showed the heaviest run belonged to ANOTHER
+session's worktree. So before treating any suite failure as a regression, read
+the rc AND the error section AND `uptime`, and check `ps` for a vitest whose
+path is not yours. You cannot serialize a peer — the correct response is to
+re-run once the machine is quiet, not to hunt the diff.
+
 Two costs of the fan-out that are worth budgeting for rather than discovering:
 a lane agent that waits inside a tool call is killed at 600s of silence (have it
 launch long runs backgrounded with a log redirect and poll with short `tail`
@@ -1330,13 +1343,34 @@ arguing the code "cannot have changed behaviour".
   unfamiliar string in a file it thought it owned and running `git log -S`. Say
   in the prompt: re-`git fetch` and inspect the branch before any force-push, and
   if the branch carries work you did not write, STOP and report.
-- **A new fixture literal must not collide with an existing assertion needle.**
-  A `DB_URL` added to the secrets fixture hard-coded `cdkd-user` as its URL user
-  component — which is exactly `EXPECTED_USERNAME`, the needle grepped over the
-  whole persisted env to prove a whole-secret resolution did not land there. The
-  run reported a secret LEAK that had not happened. A false leak report is worse
-  than a missing assertion: it is indistinguishable from the real thing, and the
-  natural response is to go hunting in the redaction code.
+- **A new fixture literal must not collide with an existing assertion needle —
+  and neither may a new fixture RESOURCE collide with an existing resource's
+  VALUE.** The literal form: a `DB_URL` added to the secrets fixture hard-coded
+  `cdkd-user` as its URL user component — exactly `EXPECTED_USERNAME`, the needle
+  grepped over the whole persisted env to prove a whole-secret resolution did not
+  land there. The run reported a secret LEAK that had not happened. A false leak
+  report is worse than a missing assertion: it is indistinguishable from the real
+  thing, and the natural response is to go hunting in the redaction code.
+
+  The RESOURCE form is the same trap one level up, and it is harder to see
+  because the new resource is correct in isolation. Measured 2026-08-26 on the
+  go-to-k/cdkd#2270 lane: an arm testing a same-plaintext COLLAPSE necessarily
+  gives two leaves one plaintext — that sharing is what makes the arm
+  discriminate — and it reused the plaintext of a leaf a pre-existing assertion
+  already owned. The pre-existing `StageParam` then persisted its new sibling's
+  expression and the fixture failed on an assertion the lane never wrote (89
+  chars, `:stage:AWSCURRENT:`, where 79 and `:stage::` were expected). So when an
+  arm deliberately makes two things equal, ask what ELSE already holds that
+  value: give the arm its own secret / key / name rather than borrowing one under
+  assertion. The repair is not to break the sharing — that would retire the
+  fence — but to scope it.
+
+  **And check the arm's shape actually exercises the fix before spending a run
+  on it.** In that same lane, the obvious decoupling (two separate RESOURCES
+  holding the pair) would have been VACUOUS: `perResourceSecrets` is keyed by
+  logical id, so two resources get two bags each holding a single pair and
+  redact correctly with or without the fix. One resource holding both leaves was
+  the only shape where the mechanism under test decides the answer.
 - **Execute every read expression you write.** Two integ runs were lost to
   fixture code, not product defects: the literal collision above, and a `jq`
   assignment written through `to_entries[]`, which builds a new array and is not
@@ -1357,6 +1391,22 @@ arguing the code "cannot have changed behaviour".
   round, have it re-run `git status --porcelain` and `git diff --stat` FIRST and
   report both, rather than assuming its edits survived — the orchestrator cannot
   tell a wiped edit from an unstarted one.
+
+  **Reviewers collide with EACH OTHER too, and a 3-axis dispatch puts three or
+  four of them in one worktree by construction.** They all probe by editing and
+  restoring from `HEAD`, so a peer's in-flight mutation is indistinguishable from
+  the subject, and restoring it is "correct" behaviour that silently discards
+  their work. Measured 2026-08-27 across two lanes in one run: a security
+  reviewer found another's marker (`MUTD_NO_INDETERMINATE_SIGNAL`) in the tree
+  and its first pass reported **6 failures that were the peer's mutation**, not
+  the diff; on the other lane a test reviewer saw a peer mid-probe on
+  `logger.ts` and waited rather than clobbering it. Both recovered, which was
+  judgement rather than the flow working. So say it IN THE PROMPT of every
+  reviewer you dispatch: peers are probing this same worktree, `git status
+  --porcelain` must be EMPTY before you start a probe, and if it is not, WAIT
+  and re-check rather than restoring — a `git show HEAD:<path>` over a peer's
+  edit reverts it. And read any surprising probe result as possibly theirs
+  before concluding anything about the fence.
 
   **That is a DURATION constraint, not just a precondition, and the ORCHESTRATOR
   breaks it more easily than a lane agent does.** The tree being clean at
@@ -2206,6 +2256,30 @@ deploy-mode context is `deploy.ts`'s own — the guarantor is identical on every
 reachable path and the comment was already complete. Record the trace in the PR
 body and the commit: a declined finding with evidence is a decision the next
 reader can re-judge, while a silently dropped one looks like an oversight.
+
+**A premise fails in the other direction too — a reviewer can assert that a
+fence does NOT exist, and acting on that is how you turn CI red.** Measured
+2026-08-27: a spec reviewer reported "no mechanical byte-budget gate exists in
+the repo — the minimality was self-imposed" and, on that basis, proposed a
+~30-byte doc reword. `tests/unit/scripts/rule-file-payload.test.ts` does exist,
+the edited line was **3,998 B against a 4,000 B cap**, and the repo-wide
+long-line ratchet stood at exactly **24/24** — so the suggested fix would have
+made it 25 against a budget that only decreases. The implementing agent's
+instinct to keep the edit minimal had been right and the reviewer called it
+unnecessary. An absence claim is the one a reviewer is least able to establish,
+so verify it by running the thing said not to exist.
+
+**Your own BRIEF to a lane agent is a published claim, and it inherits every
+fact you relayed without checking.** The trigger for verification is
+DESTINATION, not doubt, and a fix instruction is a destination: the agent acts
+on it without the standing to re-derive it. Same run, twice: a test reviewer's
+claim that `scrub.ts` is a NON-`bestEffort` caller went into a brief unverified
+and was false (`resources:` and `bestEffort: true` are fields of ONE object
+literal, so scrub short-circuits before the predicate — the coverage gap was
+real, its stated justification was not); and an arm shape specified in another
+brief would have been VACUOUS for a reason the agent had to find and report
+back. Grep the claim before you put it in an instruction, and when an agent
+corrects your brief, say so in the report rather than absorbing it silently.
 
 **When two reviewers CONTRADICT each other, settle it in the code yourself
 before forwarding either.** On 2026-08-20 the spec reviewer explicitly CLEARED
