@@ -6,6 +6,9 @@
 #
 #   Phase 1: deploy WITHOUT a bootstrap marker -> legacy mode: the one-line
 #            `cdk gc` hazard notice appears, deploy succeeds as before.
+#   Phase 1b: a region-free --asset-bucket name pointing at a bucket THIS
+#            account owns in ANOTHER region -> bootstrap refuses by NAMING
+#            both regions, and writes no marker (issue #2240).
 #   Phase 2: `cdkd bootstrap` -> asset bucket (AES-256, public-access block,
 #            deny-external policy, NO versioning) + IMMUTABLE-tag ECR repo +
 #            marker `cdkd-bootstrap/{region}.json` written to the state
@@ -78,6 +81,13 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ASSET_BUCKET="cdkd-assets-${ACCOUNT_ID}-${REGION}"
 CONTAINER_REPO="cdkd-container-assets-${ACCOUNT_ID}-${REGION}"
 
+# Phase 1b (issue #2240). A region whose name differs from REGION, and a
+# region-FREE bucket name -- the default `cdkd-assets-{acct}-{region}` embeds
+# the region, which is exactly why this class first read as unreachable. Empty
+# until phase 1b creates it, so `cleanup` can be trusted to skip it otherwise.
+XREGION_REGION=$([ "${REGION}" = "us-west-2" ] && echo "us-east-1" || echo "us-west-2")
+XREGION_BUCKET=""
+
 cleanup() {
   # $1 = "prerun" skips the asset-storage deletion: a marker/bucket/repo
   # that exists BEFORE this run is live storage we must not delete (the
@@ -106,6 +116,13 @@ cleanup() {
     aws s3 rb "s3://${ASSET_BUCKET}" --force >/dev/null 2>&1 || true
     aws ecr delete-repository --repository-name "${CONTAINER_REPO}" \
       --region "${REGION}" --force >/dev/null 2>&1 || true
+  fi
+  # Phase 1b's cross-region scratch bucket (issue #2240). Folded into the
+  # EXISTING handler rather than installed as a second `trap ... EXIT`, which
+  # does not chain -- it would replace this one and strand the asset bucket,
+  # the ECR repo and the marker on every failure path.
+  if [ -n "${XREGION_BUCKET:-}" ]; then
+    aws s3 rb "s3://${XREGION_BUCKET}" --force --region "${XREGION_REGION:-}" >/dev/null 2>&1 || true
   fi
   # Lambda deploys leave no log group here (the function is never invoked),
   # but sweep defensively per the fixture template.
@@ -179,6 +196,111 @@ if [ "${NOTICE_COUNT}" != "1" ]; then
   exit 1
 fi
 echo "    OK: legacy mode printed the gc-hazard notice exactly once"
+
+# --- Phase 1b: cross-region --asset-bucket refusal (issue #2240) -----------
+# Runs BEFORE phase 2 on purpose: once REGION carries a marker, a differing
+# requested name hard-errors ASSET_STORAGE_NAME_CONFLICT first and this arm
+# would never reach the bucket probe at all.
+echo "==> Phase 1b: --asset-bucket naming a bucket we own in ${XREGION_REGION}"
+XREGION_BUCKET="cdkd-2240-xregion-${ACCOUNT_ID}-$(date +%s)"
+# `us-east-1` is NOT a member of S3's BucketLocationConstraint enum -- passing
+# it answers `InvalidLocationConstraint` (measured 2026-08-26; omitting the
+# block succeeds). `asset-storage.ts` codes around the same rule. This bites
+# whenever REGION is us-west-2, which is exactly what the guard above
+# recommends, and `set -e` would take phases 2-5 down with it.
+if [ "${XREGION_REGION}" = "us-east-1" ]; then
+  aws s3api create-bucket --bucket "${XREGION_BUCKET}" --region "${XREGION_REGION}" >/dev/null
+else
+  aws s3api create-bucket --bucket "${XREGION_BUCKET}" --region "${XREGION_REGION}" \
+    --create-bucket-configuration "LocationConstraint=${XREGION_REGION}" >/dev/null
+fi
+
+# A review asked whether a bucket created seconds earlier in another region
+# answers 307 (S3's propagation window) rather than 301, which would false-FAIL
+# the grep below. Measured 2026-08-26 -- created in us-west-2, then HEADed via
+# the us-east-1 endpoint five times back to back: 301 every time, with
+# `x-amz-bucket-region: us-west-2` on each. No 307 observed, so no retry arm is
+# added here. Recorded rather than left implicit, so the question is not
+# re-derived.
+#
+# Prove the PREMISE before trusting the assertion: the bucket must really be in
+# the other region, or this arm passes for the wrong reason.
+# `--output text` renders the us-east-1 answer as the literal `None` (the API
+# returns an EMPTY LocationConstraint for it), so the raw value must be folded
+# before it is compared -- measured 2026-08-26, and the unfolded form
+# false-FAILs this arm whenever AWS_REGION is us-west-2.
+XREGION_RAW=$(aws s3api get-bucket-location --bucket "${XREGION_BUCKET}" \
+  --query 'LocationConstraint' --output text)
+case "${XREGION_RAW}" in
+  None | '' | null) XREGION_ACTUAL="us-east-1" ;;
+  EU) XREGION_ACTUAL="eu-west-1" ;;
+  *) XREGION_ACTUAL="${XREGION_RAW}" ;;
+esac
+if [ "${XREGION_ACTUAL}" != "${XREGION_REGION}" ]; then
+  echo "FAIL: scratch bucket landed in '${XREGION_ACTUAL}' (raw '${XREGION_RAW}'), expected ${XREGION_REGION}" >&2
+  exit 1
+fi
+
+set +e
+XREGION_OUT=$(node "${LOCAL_DIST}" bootstrap --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --asset-bucket "${XREGION_BUCKET}" 2>&1)
+XREGION_RC=$?
+set -e
+
+if [ "${XREGION_RC}" -eq 0 ]; then
+  echo "FAIL: bootstrap ADOPTED a bucket in ${XREGION_REGION}; output:" >&2
+  printf '%s\n' "${XREGION_OUT}" >&2
+  exit 1
+fi
+
+# A non-zero rc is NOT the discriminator: before the fix this refused too, via
+# normalizeAwsError's generic 301 rendering. Only the fixed path names the two
+# regions, so that is what is asserted.
+if ! printf '%s' "${XREGION_OUT}" | grep -q "resolves to a bucket in ${XREGION_REGION}"; then
+  echo "FAIL: refusal does not name the bucket's region (${XREGION_REGION}); output:" >&2
+  printf '%s\n' "${XREGION_OUT}" >&2
+  exit 1
+fi
+if ! printf '%s' "${XREGION_OUT}" | grep -q "targets ${REGION}"; then
+  echo "FAIL: refusal does not name the target region (${REGION}); output:" >&2
+  printf '%s\n' "${XREGION_OUT}" >&2
+  exit 1
+fi
+# The PRE-fix wording, which told the user to file a bug for their own naming
+# collision. Its absence is what says the new arm ran rather than the old one.
+if printf '%s' "${XREGION_OUT}" | grep -q 'please report it'; then
+  echo "FAIL: still emitting the pre-fix 301 wording; output:" >&2
+  printf '%s\n' "${XREGION_OUT}" >&2
+  exit 1
+fi
+
+# The refusal must leave nothing half-done: no marker for REGION. NOTE this is
+# a safety net, not a discriminator -- phase 1b runs before phase 2, so no
+# marker exists either way; the `rc -eq 0` check above is what catches an
+# adoption. Kept because a half-written marker is the worst outcome, and
+# routed through the fixture's tri-state helper so a throttled probe cannot
+# read as "no marker".
+assert_gone "refused bootstrap still wrote marker ${MARKER_KEY}" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
+# ...and no configuration applied to the bucket in the other region. A fresh
+# bucket has no policy, so a PutBucketPolicy landing there is visible as one.
+# Tri-state rather than a blind `if`: a throttle / auth failure must not read
+# as "no policy" and pass this check silently. Measured 2026-08-26 -- a
+# policy-free bucket answers rc=254 with `NoSuchBucketPolicy`.
+XREGION_POLICY_OUT=$(aws s3api get-bucket-policy --bucket "${XREGION_BUCKET}" \
+  --region "${XREGION_REGION}" 2>&1) && {
+  echo "FAIL: this region's bucket policy was applied to ${XREGION_BUCKET} in ${XREGION_REGION}" >&2
+  printf '%s\n' "${XREGION_POLICY_OUT}" >&2
+  exit 1
+}
+if ! printf '%s' "${XREGION_POLICY_OUT}" | grep -q 'NoSuchBucketPolicy'; then
+  echo "FAIL: undetermined bucket-policy probe on ${XREGION_BUCKET}: ${XREGION_POLICY_OUT}" >&2
+  exit 1
+fi
+echo "    OK: refused by naming both regions; no marker, no policy on the foreign bucket"
+
+aws s3 rb "s3://${XREGION_BUCKET}" --force --region "${XREGION_REGION}" >/dev/null
+XREGION_BUCKET=""
 
 # --- Phase 2: bootstrap (asset storage + marker) ---------------------------
 echo "==> Phase 2: cdkd bootstrap (creates asset bucket + ECR repo + marker)"

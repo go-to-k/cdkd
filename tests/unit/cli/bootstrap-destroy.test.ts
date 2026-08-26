@@ -574,6 +574,84 @@ describe('cdkd bootstrap --destroy', () => {
     expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalled();
   });
 
+  it('refuses an asset bucket we own in ANOTHER region (HeadBucket 301, issue #2240)', async () => {
+    mockS3Send.mockImplementation(async (command: object) => {
+      callLog.push(`s3:${command.constructor.name}`);
+      if (command instanceof HeadBucketCommand) {
+        // The SDK turns the empty-body HEAD 301 into this synthetic shape;
+        // `x-amz-bucket-region` rides on the response (measured, 2026-08-26).
+        throw Object.assign(new Error('UnknownError'), {
+          name: 'Unknown',
+          $metadata: { httpStatusCode: 301 },
+          $response: { headers: { 'x-amz-bucket-region': 'ap-northeast-1' } },
+        });
+      }
+      return {};
+    });
+
+    await expect(runDestroy(['--yes'])).rejects.toMatchObject({
+      code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
+    });
+    await expect(runDestroy(['--yes'])).rejects.toThrow(
+      /resolves to a bucket in ap-northeast-1/
+    );
+    // Nothing was emptied or deleted, and the marker survives.
+    expect(s3CommandNames()).not.toContain(DeleteBucketCommand.name);
+    expect(s3CommandNames()).not.toContain(ListObjectVersionsCommand.name);
+    expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalled();
+  });
+
+  it('a same-region redirect on the ASSET bucket still aborts the teardown', async () => {
+    // The guard RETURNS without throwing when the regions match, so what stops
+    // a redirect being read as "no asset bucket here" is the code after it.
+    // Without this arm, inserting `return false;` there passes: the teardown
+    // would report nothing to delete, delete the marker anyway, and orphan a
+    // live bucket.
+    mockS3Send.mockImplementation(async (command: object) => {
+      callLog.push(`s3:${command.constructor.name}`);
+      if (command instanceof HeadBucketCommand) {
+        throw Object.assign(new Error('UnknownError'), {
+          name: 'Unknown',
+          $metadata: { httpStatusCode: 301 },
+          $response: { headers: { 'x-amz-bucket-region': REGION } },
+        });
+      }
+      return {};
+    });
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow(/different region than the client/);
+    expect(s3CommandNames()).not.toContain(DeleteBucketCommand.name);
+    expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalled();
+  });
+
+  it('POLARITY CONTROL: the STATE bucket does NOT get the asset-region refusal', async () => {
+    // The state bucket legitimately lives in another region -- one serves the
+    // whole account -- so its caller pre-resolves the client and passes no
+    // expectedRegion. Were the guard wired into the shared helper instead of
+    // being opt-in, `--include-state-bucket` would start refusing here.
+    stateBackendMocks.getRawObject.mockResolvedValue(null);
+    stateBackendMocks.listRawKeys.mockResolvedValue([]);
+    mockS3Send.mockImplementation(async (command: object) => {
+      callLog.push(`s3:${command.constructor.name}`);
+      if (command instanceof HeadBucketCommand) {
+        throw Object.assign(new Error('UnknownError'), {
+          name: 'Unknown',
+          $metadata: { httpStatusCode: 301 },
+          $response: { headers: { 'x-amz-bucket-region': 'ap-northeast-1' } },
+        });
+      }
+      return {};
+    });
+
+    const run = runDestroy(['--yes', '--include-state-bucket']);
+    // It still fails (the client cannot reach the bucket) but with the GENERIC
+    // 301 rendering, not the asset-storage one.
+    await expect(run).rejects.toThrow(/different region than the client/);
+    await expect(
+      runDestroy(['--yes', '--include-state-bucket'])
+    ).rejects.not.toMatchObject({ code: 'ASSET_STORAGE_FOREIGN_REGION_BUCKET' });
+  });
+
   it('declined confirmation deletes nothing', async () => {
     const originalIsTTY = process.stdin.isTTY;
     process.stdin.isTTY = true;

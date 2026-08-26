@@ -15,6 +15,7 @@ import { CdkdError, normalizeAwsError } from '../../utils/error-handler.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
+import { assertAssetBucketRegion, isCrossRegionRedirect } from '../../assets/asset-storage.js';
 import { getDefaultStateBucketName } from '../config-loader.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import {
@@ -162,7 +163,22 @@ async function emptyAndDeleteBucket(
   bucket: string,
   accountId: string,
   label: string,
-  logger: Logger
+  logger: Logger,
+  /**
+   * When supplied, a cross-region `301` on the probe below is refused with the
+   * actionable `ASSET_STORAGE_FOREIGN_REGION_BUCKET` message instead of
+   * `normalizeAwsError`'s generic 301 wording (issue
+   * [#2240](https://github.com/go-to-k/cdkd/issues/2240)).
+   *
+   * OPT-IN rather than always-on because this helper's two callers have
+   * OPPOSITE polarity. The ASSET bucket is per-region by design, so a bucket
+   * of ours in another region is never the one to delete. The STATE bucket
+   * legitimately lives anywhere — one serves the whole account — so its caller
+   * pre-resolves the client with `rebuildClientForBucketRegion` and passes
+   * nothing here; a blanket refusal would turn `--include-state-bucket` into a
+   * false refusal whenever that pre-resolution degrades to the ambient client.
+   */
+  expectedRegion: string | undefined
 ): Promise<boolean> {
   try {
     await s3Client.send(new HeadBucketCommand({ Bucket: bucket, ExpectedBucketOwner: accountId }));
@@ -179,6 +195,13 @@ async function emptyAndDeleteBucket(
         'ASSET_STORAGE_FOREIGN_BUCKET',
         error as Error
       );
+    }
+    if (expectedRegion !== undefined && isCrossRegionRedirect(error)) {
+      // Owned by us, in another region. `normalizeAwsError` renders a 301
+      // readably but tells the reader "cdkd resolves this automatically; if you
+      // see this message, please report it" — true for the state bucket, whose
+      // caller really does re-point its client, and false here.
+      await assertAssetBucketRegion(s3Client, bucket, expectedRegion, accountId, error as Error);
     }
     throw normalizeAwsError(error, { bucket, operation: 'HeadBucket' });
   }
@@ -723,7 +746,8 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         marker.assetBucket,
         accountId,
         'Asset bucket',
-        logger
+        logger,
+        region
       );
       await deleteContainerRepo(marker.containerRepo, region, options.profile, logger);
       await stateBackend.deleteRawObjects([resolvedMarkerKey]);
@@ -789,7 +813,19 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
       );
       try {
         const stateBucketS3 = rebuiltStateBucketClient ?? awsClients.s3;
-        await emptyAndDeleteBucket(stateBucketS3, bucketName, accountId, 'State bucket', logger);
+        // `undefined` DELIBERATELY, and spelled out rather than omitted: the
+        // state bucket legitimately lives in any region (one serves the whole
+        // account), and the client above is already re-pointed at it. Making
+        // the argument explicit means a future caller has to DECIDE rather than
+        // lose the guard by leaving a positional off the end.
+        await emptyAndDeleteBucket(
+          stateBucketS3,
+          bucketName,
+          accountId,
+          'State bucket',
+          logger,
+          undefined
+        );
       } finally {
         rebuiltStateBucketClient?.destroy();
       }

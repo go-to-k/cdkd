@@ -1537,7 +1537,17 @@ prerequisite again.
 
 Bucket-squatting defense: bootstrap refuses to adopt an asset bucket owned
 by another account (predictable-name defense), and cdkd's asset-bucket S3
-calls pass `ExpectedBucketOwner`. Deleting the asset bucket/repo while the
+calls pass `ExpectedBucketOwner`. It also refuses a bucket this account owns
+that lives in **another region** (`ASSET_STORAGE_FOREIGN_REGION_BUCKET`,
+issue [#2240](https://github.com/go-to-k/cdkd/issues/2240)): S3 bucket names
+are globally unique, so both `BucketAlreadyOwnedByYou` and a cross-region
+`HeadBucket` redirect report ACCOUNT ownership rather than the bucket's
+region. The default name embeds the region, but `--asset-bucket <name>` is
+caller-chosen and region-free, so bootstrapping two regions under one custom
+name reaches this. Unlike the STATE bucket — one per account, so bootstrap
+re-points its client at the bucket's own region — asset storage is per-region
+by design, and `--force` does not license adopting one from elsewhere.
+Deleting the asset bucket/repo while the
 marker exists makes deploys fail with a re-bootstrap hint — cdkd never
 silently falls back to CDK bootstrap storage once a region is opted in.
 
