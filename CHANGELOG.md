@@ -1,3 +1,10 @@
+## [0.284.47](https://github.com/go-to-k/cdkd/compare/v0.284.46...v0.284.47) (2026-08-26)
+
+
+### Bug Fixes
+
+* **deployment:** fold the region at its source, so AWS::Region and the Fn::GetAZs filter cannot be mis-cased ([#2220](https://github.com/go-to-k/cdkd/issues/2220)) ([af78e03](https://github.com/go-to-k/cdkd/commit/af78e031b630824817abace065cbf7a25aacc309))
+
 ## [0.284.46](https://github.com/go-to-k/cdkd/compare/v0.284.45...v0.284.46) (2026-08-25)
 
 
