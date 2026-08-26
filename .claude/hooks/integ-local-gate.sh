@@ -55,6 +55,10 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_matches >/dev/null \
   || ! declare -F gate_target_dir_strict >/dev/null \
   || ! declare -F gate_refuse_unresolved_target >/dev/null \
+  || ! declare -F gate_resolve_marker_gate >/dev/null \
+  || ! declare -F gate_refuse_no_equivalent_marker >/dev/null \
+  || ! declare -F gate_refuse_stale_alias_marker >/dev/null \
+  || ! declare -F gate_refuse_unevaluable_marker >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -295,11 +299,49 @@ else
   exit 2
 fi
 
-"${markgate[@]}" verify integ-local >/dev/null 2>&1
+# --- which marker to ask about in THIS target repo (go-to-k/cdkd#2236) ---
+# This hook fires on merges targeting a SIBLING repo too, by design. Asking a
+# sibling about a gate named `integ-local` when it names the same Docker
+# local-execution gate `integ` made the merge UNSATISFIABLE: markgate exits 1
+# for an undeclared gate exactly as it does for a stale marker, so no amount of
+# legitimate verification could clear it (hit live merging go-to-k/cdk-local#558
+# with cdk-local's own `integ` marker fresh). The resolver keeps `integ-local`
+# whenever the target declares it AND whenever definedness cannot be
+# determined, so the cdkd path here is unchanged.
+__plan=$(gate_resolve_marker_gate "$target_dir" integ-local)
+__mode=$(printf '%s' "$__plan" | cut -f1)
+__gate=$(printf '%s' "$__plan" | cut -f2)
+__gate_fix=$(printf '%s' "$__plan" | cut -f3)
+
+if [ "$__mode" = "none" ]; then
+  # NOT a pass-through: cdkd's policy is that local-execution code is verified
+  # against real Docker wherever it lands. What changes is that the refusal
+  # names something the reader can actually do, instead of a gate that cannot
+  # exist in that repo.
+  gate_refuse_no_equivalent_marker "integ-local-gate" "integ-local" "$target_dir" \
+    "local-execution code (src/local/**, src/cli/commands/local-*.ts, tests/integration/local-*)"
+fi
+
+"${markgate[@]}" verify "$__gate" >/dev/null 2>&1
 status=$?
 
 if [ "$status" -eq 0 ]; then
   exit 0
+fi
+
+# markgate exit 2 is "could not EVALUATE", not "stale", and the remedies are
+# OPPOSITE. This MUST come before the alias refusal below: the one alias that
+# exists is a `hash: diff` gate whose NORMAL verdict from a base tree is exit 2,
+# and the alias refusal would tell the reader to go run an integ, which cannot
+# clear it (go-to-k/cdkd#2236 review, items 1 + 2).
+if [ "$status" -eq 2 ]; then
+  gate_refuse_unevaluable_marker "integ-local-gate" "$__gate" "$target_dir"
+fi
+
+if [ "$__mode" = "alias" ]; then
+  gate_refuse_stale_alias_marker "integ-local-gate" "integ-local" "$target_dir" \
+    "$__gate" "$__gate_fix" \
+    "local-execution code (src/local/**, src/cli/commands/local-*.ts, tests/integration/local-*)"
 fi
 
 # Extract the parenthesized reason from `markgate status integ-local` so
@@ -310,7 +352,7 @@ fi
 # Docker / RIE behavior it verified is no longer plausibly current).
 # Distinguishing the two avoids the "but I didn't change anything" confusion.
 # Fails open to a generic message when extraction fails.
-reason=$("${markgate[@]}" status integ-local 2>/dev/null \
+reason=$("${markgate[@]}" status "$__gate" 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
 if [ -n "$reason" ]; then

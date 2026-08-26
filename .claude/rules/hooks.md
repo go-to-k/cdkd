@@ -324,6 +324,14 @@ The hooks a session runs come from ONE repo's `.claude/settings.json` — whiche
 
 **Delegation was tried and abandoned.** PR 1970 made each gate hand its decision to `<target-repo>/.claude/hooks/<same-name>` when one existed. It works, and it introduces arbitrary code execution: the target directory is named by the command itself (a `cd`, a `git -C` / `gh -C` flag, the payload's `cwd`), so any directory the agent can be induced to touch that carries an executable file at that path gets it run with the session's environment. Reproduced with a planted hook and a plain `git checkout`, which read `AWS_*` / `GH_TOKEN`-shaped variables and captured the payload. It is not patchable from inside the design — every trust signal available from the target repo is forgeable, because the attacker controls that repo — so trust would have to come from a maintainer-maintained allow-list. Read the closed PR before proposing delegation again; it also records two independent defects worth knowing (an exit status of 128+N from a signal-killed hook propagates as a non-blocking error and turns a block into a pass, and `git -C ""` silently resolves the hook process's own cwd).
 
+
+
+The cross-repo gate-aliasing design -- why a sibling repo took a refusal it could
+never clear, why the mapping is a declared per-repo table rather than discovery,
+and how `gate_resolve_marker_gate` chooses between the canonical gate, an alias
+and a refusal -- is in [gate-sibling-repos.md](gate-sibling-repos.md), which loads
+when you touch any of the four `integ-*` gate scripts or their suites.
+
 ## Class fences
 
 Two suites whose subject is EVERY hook at once -- the unresolved-target-directory
