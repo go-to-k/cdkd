@@ -408,8 +408,11 @@ export class NestedStackProvider implements ResourceProvider {
     // Issue #1849: this message interpolates `childStackName`
     // (`<parent>~<childLogicalId>`), which is fully user-controlled, and
     // `retryable-errors.ts` classifies by SUBSTRING —
-    // `DependencyViolation` being the only whitespace-free entry in
-    // `RETRYABLE_ERROR_MESSAGE_PATTERNS`, a nested stack whose logical id
+    // `DependencyViolation` being a whitespace-free entry in
+    // `RETRYABLE_ERROR_MESSAGE_PATTERNS` (it was the ONLY one until issue
+    // #2116 added the name-cooldown error CODES `QueueDeletedRecently` /
+    // `StateMachineDeleting`, so the hazard is wider now, not narrower), a
+    // nested stack whose logical id
     // merely CONTAINS it makes a cdkd-authored message look transient. The
     // remedy is `markNonRetryable`, which is consulted BEFORE any message
     // heuristic — but it is applied per ARM, not to the throw as a whole,

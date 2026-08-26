@@ -5122,8 +5122,9 @@ export class DeployEngine {
       // so re-wrapping without a cause DROPS it — while inlining the refusal's
       // full text, which for a resolver refusal includes template-controlled
       // identifiers. A logical id like `MyDependencyViolationHandler` then puts
-      // `DependencyViolation` (the substring table's only whitespace-free
-      // entry) into this message, and the classifier reads it as transient.
+      // `DependencyViolation` (a whitespace-free entry in the substring
+      // table — the only one until issue #2116 added the name-cooldown error
+      // codes) into this message, and the classifier reads it as transient.
       // That is reachable: this throw leaves `executeDeployment`, leaves the
       // child `deploy()`, passes through `NestedStackProvider.create`, and
       // lands in the PARENT's `withRetry` — so a nested stack would re-run a

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
-import { withRetry } from '../../../src/deployment/retry.js';
+import {
+  withRetry,
+  NAME_COOLDOWN_INITIAL_DELAY_MS,
+  NAME_COOLDOWN_MAX_DELAY_MS,
+  NAME_COOLDOWN_TOTAL_BUDGET_MS,
+} from '../../../src/deployment/retry.js';
 import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
@@ -518,5 +523,111 @@ describe('withRetry does not burn the backoff on ResourceUpdateNotSupportedError
     // into 1s slices so it can poll isInterrupted(), so the slice count is an
     // implementation detail of that polling granularity.
     expect(slept.reduce((a, b) => a + b, 0)).toBeGreaterThan(40_000);
+  });
+});
+
+describe('withRetry rides a NAME COOLDOWN on its own grid (issue #2116)', () => {
+  /**
+   * The near-blocker this class exists to answer: the generic schedule sleeps
+   * 47s in total, and the longest window in this class NAMES its duration --
+   * SQS's own sentence says "wait 60 seconds". A 47s budget against a 60s
+   * window does not converge, it just fails 47s later.
+   *
+   * These cases assert the GRID, not the attempt count. A count cannot see the
+   * difference: both schedules run the same 8 retries, so a test that only
+   * counted `op` calls would be green under either one and the whole budget
+   * change would be unfenced.
+   */
+  const COOLDOWN = 'You must wait 60 seconds after deleting a queue before you can create another with the same name.';
+  const GENERIC_TRANSIENT = 'Schema is currently being altered';
+
+  const drive = async (message: string): Promise<number[]> => {
+    const sleeps: number[] = [];
+    const op = vi.fn().mockRejectedValue(new Error(message));
+    await withRetry(op, 'MyResource', {
+      sleep: (ms) => {
+        sleeps.push(ms);
+        return Promise.resolve();
+      },
+    }).catch(() => undefined);
+    // `withRetry` sleeps in <=1s slices so a SIGINT can land mid-wait, so the
+    // recorded values are slices; fold them back into per-attempt delays by
+    // summing between operation calls is unnecessary here -- the total is what
+    // the budget is expressed in, and the per-attempt grid is recovered below
+    // from the slice run-lengths.
+    return sleeps;
+  };
+
+  it('spends the full 64s budget, which COVERS the 60s window SQS names', async () => {
+    const sleeps = await drive(COOLDOWN);
+    const total = sleeps.reduce((a, b) => a + b, 0);
+    expect(total).toBe(NAME_COOLDOWN_TOTAL_BUDGET_MS);
+    // The point of the class, stated as an inequality rather than left implicit
+    // in a constant: the budget must cover the longest window in the class.
+    expect(total).toBeGreaterThanOrEqual(60_000);
+    // ...and the constant in the JSDoc must equal what the loop actually does,
+    // so the documented derivation cannot drift from the schedule.
+    expect(NAME_COOLDOWN_TOTAL_BUDGET_MS).toBe(
+      NAME_COOLDOWN_INITIAL_DELAY_MS +
+        NAME_COOLDOWN_INITIAL_DELAY_MS * 2 +
+        NAME_COOLDOWN_INITIAL_DELAY_MS * 4 +
+        NAME_COOLDOWN_MAX_DELAY_MS * 5
+    );
+  });
+
+  it('CONTROL: the generic transient class still gets the 47s grid', async () => {
+    // Without this the case above proves only "something slept 64s". This is
+    // what makes it a statement about the COOLDOWN class specifically: the same
+    // loop, the same 8 retries, a different message, 47s.
+    const sleeps = await drive(GENERIC_TRANSIENT);
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(47_000);
+  });
+
+  it('the two classes differ in the GRID, not in the attempt count', async () => {
+    const cooldownOp = vi.fn().mockRejectedValue(new Error(COOLDOWN));
+    const genericOp = vi.fn().mockRejectedValue(new Error(GENERIC_TRANSIENT));
+    const noSleep = (): Promise<void> => Promise.resolve();
+    await withRetry(cooldownOp, 'A', { sleep: noSleep }).catch(() => undefined);
+    await withRetry(genericOp, 'B', { sleep: noSleep }).catch(() => undefined);
+    // 9 = the first attempt plus the generic 8 retries, for BOTH.
+    expect(cooldownOp).toHaveBeenCalledTimes(9);
+    expect(genericOp).toHaveBeenCalledTimes(9);
+  });
+
+  it('a caller that passed its own schedule keeps it verbatim', async () => {
+    // The delete-then-re-create sites pass their own ~64s budget and a custom
+    // classifier. The cooldown grid must not reach in and override a caller
+    // that picked its cadence deliberately -- same gate the dense
+    // IAM-propagation grid already respects.
+    const sleeps: number[] = [];
+    const op = vi.fn().mockRejectedValue(new Error(COOLDOWN));
+    await withRetry(op, 'MyResource', {
+      maxRetries: 2,
+      initialDelayMs: 5_000,
+      maxDelayMs: 5_000,
+      sleep: (ms) => {
+        sleeps.push(ms);
+        return Promise.resolve();
+      },
+    }).catch(() => undefined);
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(10_000);
+    expect(op).toHaveBeenCalledTimes(3);
+  });
+
+  it('SAYS it exhausted the budget instead of rethrowing in silence', async () => {
+    // Issue #2018's lesson applied to this class: an exhausted 64s wait that
+    // prints nothing is indistinguishable from having no retry at all, which
+    // is the one question a reader of the failure needs answered.
+    const warn = vi.fn();
+    const op = vi.fn().mockRejectedValue(new Error(COOLDOWN));
+    await withRetry(op, 'MyQueue', {
+      sleep: () => Promise.resolve(),
+      logger: { debug: () => undefined, warn },
+    }).catch(() => undefined);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = warn.mock.calls[0]?.[0] as string;
+    expect(line).toContain('MyQueue: gave up after');
+    expect(line).toContain('8 name-cooldown retries over 64.00s');
+    expect(line).toContain('(the full name-cooldown budget)');
   });
 });

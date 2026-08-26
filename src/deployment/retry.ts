@@ -11,6 +11,7 @@
 import {
   formatRetryClassificationSignals,
   isIamPropagationError,
+  isNameCooldownError,
   isTransientServerError,
   isMarkedNonRetryable,
   isRetryableTransientError,
@@ -79,6 +80,61 @@ export const IAM_PROPAGATION_MAX_DELAY_MS = 2_000;
  * generic one by more than 0.75s in the early band.
  */
 export const IAM_PROPAGATION_MAX_RETRIES = 26;
+
+/**
+ * Backoff for the NAME-COOLDOWN class on the DEFAULT schedule — an AWS service
+ * still holding a resource's name while an asynchronous delete of the previous
+ * holder finishes (`NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS` in
+ * ./retryable-errors.ts). Issue
+ * [#2116](https://github.com/go-to-k/cdkd/issues/2116).
+ *
+ * **Why this class does not inherit the generic schedule.** The generic one
+ * sleeps 1+2+4+8+8+8+8+8 = 47s, and the longest window in this class NAMES its
+ * own duration: SQS's own sentence is "You must wait 60 seconds after deleting
+ * a queue before you can create another with the same name." A 47s budget
+ * against a 60s window does not converge — it just fails 47s later, which is
+ * strictly worse than failing at once. That mismatch was live for as long as
+ * `wait 60 seconds` has been in the generic table.
+ *
+ * **Where the numbers come from — precedent, not a fresh guess.** They are the
+ * delete-then-re-create sites' existing budget, chosen for this exact window
+ * (`deploy-engine.ts`'s `--replace` fallback and `rollback-executor.ts`'s
+ * reverse-replacement both pass `maxRetries: 8, initialDelayMs: 2_000,
+ * maxDelayMs: 10_000`). Adopting it here makes the ordinary create path and
+ * the re-create sites ride the SAME window with the SAME budget, which is the
+ * property #2116 is about: whether a cooldown is survivable must not depend on
+ * which call site met it.
+ *
+ *   2 + 4 + 8 + 10 x 5 = 64s over 8 retries
+ *
+ * Probe grid (seconds after the first failure): 2, 6, 14, 24, 34, 44, 54, 64 —
+ * covering SQS's 60s and, with room to spare, the ~23s of `status: DELETING`
+ * measured on an idle Step Functions state machine
+ * (`tests/integration/custom-resource-provider`).
+ *
+ * **What it does NOT claim.** A window LONGER than 64s still fails, with the
+ * same AWS message as before. This class converts "always fails" into "fails
+ * only past a budget derived from the longest window AWS itself documents" —
+ * and, unlike the generic schedule, a run that exhausts it now says so (see
+ * the give-up summary in {@link withRetry}), so a too-short budget is
+ * reportable rather than indistinguishable from having no retry at all.
+ *
+ * The retry COUNT is deliberately the generic 8 rather than a new ceiling: the
+ * whole change is the delay grid, so nothing about the loop's exit condition
+ * moves. Same reason the dense IAM grid needed its own count and this does not.
+ */
+export const NAME_COOLDOWN_INITIAL_DELAY_MS = 2_000;
+
+/** Cap for the name-cooldown backoff. See {@link NAME_COOLDOWN_INITIAL_DELAY_MS}. */
+export const NAME_COOLDOWN_MAX_DELAY_MS = 10_000;
+
+/**
+ * Total sleep the name-cooldown grid spends across the generic 8 retries, in
+ * milliseconds — 64s. Exported so a test can assert the budget covers the 60s
+ * SQS window by ARITHMETIC rather than by re-summing the schedule by hand, and
+ * so the JSDoc above cannot drift from what the loop does.
+ */
+export const NAME_COOLDOWN_TOTAL_BUDGET_MS = 64_000;
 
 export interface WithRetryOptions {
   /**
@@ -155,6 +211,13 @@ const defaultSleep = (ms: number): Promise<void> =>
  * re-create sites' ~64s budget covering SQS's 60s name cooldown) and gets it
  * verbatim.
  *
+ * A THIRD class rides its own grid on the default schedule since issue
+ * [#2116](https://github.com/go-to-k/cdkd/issues/2116): a NAME COOLDOWN (a
+ * service still holding a name while an async delete finishes) gets
+ * 2s/4s/8s then 10s to a 64s total, because the longest window in that class
+ * NAMES its duration -- SQS says "wait 60 seconds" -- and the generic 47s
+ * cannot ride out a 60s wait. See {@link NAME_COOLDOWN_INITIAL_DELAY_MS}.
+ *
  * The class is re-evaluated per attempt, so a propagation retry that runs into
  * a throttle backs OFF exponentially for that attempt instead of hammering.
  *
@@ -216,6 +279,14 @@ export async function withRetry<T>(
   // and make "did we reach the cap?" unanswerable from the line.
   let propagationRetries = 0;
   let propagationSleptMs = 0;
+  // Issue #2116: retries this sequence spent riding out a NAME COOLDOWN, and
+  // the backoff they slept. Counted separately from the propagation pair for
+  // the same reason that pair is separate from `serverErrorRetries` -- the
+  // seconds figure exists to be compared against THIS class's 64s budget, and
+  // folding in another class's waits makes that comparison meaningless.
+  // Reporting only; neither figure feeds a control decision.
+  let nameCooldownRetries = 0;
+  let nameCooldownSleptMs = 0;
   // Issue #2026: retries this sequence spent on a transient SERVER error
   // (HTTP 500/502/503/504). Counted separately from the propagation figures so
   // the give-up line can REPORT the class this issue made retryable -- without
@@ -252,6 +323,14 @@ export async function withRetry<T>(
       if (propagation) {
         sawPropagation = true;
       }
+      // Issue #2116. Same gate as the propagation class -- a caller that
+      // supplied ANY schedule knob picked its cadence deliberately and gets it
+      // verbatim, which is what keeps the delete-then-re-create sites' own
+      // ~64s budget authoritative at those sites. `propagation` wins the
+      // ternary below on the (currently impossible) overlap: the two pattern
+      // lists share no substring, and if one is ever added the denser grid is
+      // the safer of the two to apply.
+      const nameCooldown = defaultSchedule && !propagation && isNameCooldownError(message);
       const attemptLimit = sawPropagation ? IAM_PROPAGATION_MAX_RETRIES : maxRetries;
       if (!retryable || attempt >= attemptLimit) {
         // Issue #2018: a propagation sequence that gives up must SAY so, at
@@ -271,7 +350,7 @@ export async function withRetry<T>(
         //
         // Gated on having actually retried, so the overwhelmingly common case
         // (a non-propagation error failing fast on attempt 0) prints nothing.
-        if (propagationRetries > 0 || serverErrorRetries > 0) {
+        if (propagationRetries > 0 || serverErrorRetries > 0 || nameCooldownRetries > 0) {
           // Whether the BUDGET ran out is a property of the loop's own exit
           // condition, NOT of the retry count. Keying it on
           // `propagationRetries >= IAM_PROPAGATION_MAX_RETRIES` was wrong in
@@ -317,6 +396,20 @@ export async function withRetry<T>(
                 `${budgetExhausted ? ' (the full propagation budget)' : ''}`
             );
           }
+          if (nameCooldownRetries > 0) {
+            // Issue #2116: without this the class is exactly the silence issue
+            // #2018 removed for propagation -- an exhausted 64s wait rethrows
+            // the raw AWS sentence, indistinguishable from having no retry for
+            // it at all, which is the one question a reader of this failure
+            // needs answered (is the budget too short, or did it never
+            // engage?).
+            spent.push(
+              `${nameCooldownRetries} name-cooldown ` +
+                `${nameCooldownRetries === 1 ? 'retry' : 'retries'} over ` +
+                `${(nameCooldownSleptMs / 1000).toFixed(2)}s waiting for the name to be released` +
+                `${attempt >= attemptLimit ? ' (the full name-cooldown budget)' : ''}`
+            );
+          }
           if (serverErrorRetries > 0) {
             spent.push(
               `${serverErrorRetries} transient server-error ` +
@@ -345,7 +438,12 @@ export async function withRetry<T>(
             IAM_PROPAGATION_INITIAL_DELAY_MS * Math.pow(2, attempt),
             IAM_PROPAGATION_MAX_DELAY_MS
           )
-        : Math.min(initialDelayMs * Math.pow(2, attempt), maxDelayMs);
+        : nameCooldown
+          ? Math.min(
+              NAME_COOLDOWN_INITIAL_DELAY_MS * Math.pow(2, attempt),
+              NAME_COOLDOWN_MAX_DELAY_MS
+            )
+          : Math.min(initialDelayMs * Math.pow(2, attempt), maxDelayMs);
       // Issue #2018: the cumulative figure is what makes a single line
       // answerable on its own ("how far into the 47.75s budget was this?").
       // Reading it off the attempt number instead requires the reader to know
@@ -382,6 +480,9 @@ export async function withRetry<T>(
       if (propagation) {
         propagationRetries++;
         propagationSleptMs = backoffThroughThisAttemptMs;
+      } else if (nameCooldown) {
+        nameCooldownRetries++;
+        nameCooldownSleptMs += delay;
       } else if (opts.isRetryable === undefined && isTransientServerError(error)) {
         // `opts.isRetryable === undefined` is load-bearing, not symmetry with
         // `defaultSchedule`. A caller with its OWN classifier is not using the

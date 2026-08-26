@@ -639,21 +639,33 @@ describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', (
    * The classifier TABLE. `isNameCooldownError` is a classifier, so hand-picked
    * positives cannot fence it: each row is a real message string (an AWS wire
    * sentence, or the exact shape cdkd wraps one in) with its exact expected
-   * verdict on BOTH classifiers — the cooldown matcher and the ordinary-create
-   * transient classifier, which is the half #2116 item 2 changes.
+   * verdict on BOTH classifiers that decide its fate — the cooldown matcher and
+   * `isRetryableTransientError`, the ordinary-create path #2116 item 2 changes.
    *
-   * The negatives are the load-bearing direction: a cooldown verdict makes an
-   * error survivable, so a classifier that swallowed a TERMINAL condition would
-   * turn a fast, actionable failure into ~47s of sleep ending in the same
-   * error — or, at the `--replace` sites, into retrying a create that can never
-   * succeed while the old resource is already deleted.
+   * **Both columns are asserted on every row, and the second one is why.** A
+   * row asserting only `cooldown === false` is not fenced against the OTHER
+   * way a message can become retryable: an entry added to
+   * `OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS` would hand it the same budget by a
+   * different door, and this table would stay green. The negatives are the
+   * load-bearing direction — a retryable verdict makes an error survivable, so
+   * a classifier that swallowed a TERMINAL condition would turn a fast,
+   * actionable failure into a full budget of sleep ending in the same error,
+   * or, at the `--replace` sites, into retrying a create that can never succeed
+   * while the old resource is already deleted.
+   *
+   * Every verdict below was MEASURED against the real classifiers before being
+   * written down, not predicted — including the two rows that are legitimately
+   * `transient: true` while `cooldown: false`, which a guessed table would have
+   * got wrong in the direction that looks tidiest.
    */
   it.each([
+    // message, isNameCooldownError, isRetryableTransientError, label
     // --- Step Functions: the measured #2116 failure, both spellings ---------
     [
       // Verbatim from the issue's real-AWS transcript (account id elided),
       // including cdkd's own `Failed to create ...` wrap.
       "Failed to create Providerwaiterstatemachine5D4A9DF0: Failed to create Step Functions state machine Providerwaiterstatemachine5D4A9DF0: State Machine is being deleted: 'arn:aws:states:us-east-1:111122223333:stateMachine:CustomResourceProviderStack-Providerwaiterstatemachine5D4A9DF0'",
+      true,
       true,
       'SFN wire message, cdkd-wrapped — the exact string that filed the issue',
     ],
@@ -661,6 +673,7 @@ describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', (
       // The spelling `tests/integration/custom-resource-provider/verify.sh`
       // records, where the SDK surfaces the error CODE alongside the sentence.
       'StateMachineDeleting: State Machine is being deleted',
+      true,
       true,
       'SFN error code + sentence',
     ],
@@ -670,18 +683,21 @@ describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', (
       // code-only form was the half that was unrecognised there.
       'Failed to create StateMachine Waiter: StateMachineDeleting',
       true,
+      true,
       'SFN error code alone',
     ],
     // --- SQS: both spellings, now agreeing on the ordinary-create path ------
-    ['AWS.SimpleQueueService.QueueDeletedRecently', true, 'SQS error code'],
+    ['AWS.SimpleQueueService.QueueDeletedRecently', true, true, 'SQS error code'],
     [
       'You must wait 60 seconds after deleting a queue before you can create another with the same name.',
+      true,
       true,
       'SQS wire message',
     ],
     // --- S3: the sweep hit that was one-sided before -----------------------
     [
       'OperationAborted: A conflicting conditional operation is currently in progress against this resource. Please try again.',
+      true,
       true,
       'S3 OperationAborted during an async bucket delete',
     ],
@@ -691,6 +707,7 @@ describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', (
       // name, so crediting a cooldown here would retry a doomed create.
       "Resource of type 'AWS::SQS::Queue' with identifier 'my-queue' already exists.",
       false,
+      false,
       'name collision, not a cooldown',
     ],
     [
@@ -699,24 +716,59 @@ describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', (
       // as for a deleting one, so it cannot be distinguished from terminal.
       'DuplicateLoadBalancerName: A load balancer with the same name already exists',
       false,
-      'ELBv2 duplicate name — deliberately not swept in',
+      false,
+      'ELBv2 duplicate name — excluded, indistinguishable from a live LB',
     ],
     [
-      // DynamoDB, same reasoning as ELBv2, plus a budget interaction: see
-      // src/provisioning/dynamodb-index-busy-delete.ts.
+      // DynamoDB's CREATE-side refusal, which is the spelling the
+      // indistinguishable-from-terminal rationale actually describes. AWS says
+      // this whether the table is live or still DELETING.
+      'An error occurred (ResourceInUseException) when calling the CreateTable operation: Table already exists: MyStack-Table',
+      false,
+      false,
+      'DynamoDB create-side refusal — excluded, indistinguishable from a live table',
+    ],
+    [
+      // DynamoDB's `Table is being deleted`, which IS distinguishable — so it
+      // is excluded for a DIFFERENT reason, and the two are not merged: the
+      // destroy runner's outer loop re-invokes `delete()` for anything
+      // `isRetryableTransientError` accepts, and each of those invocations
+      // pays a full index-settle poll, which is the arithmetic
+      // `src/provisioning/dynamodb-index-busy-delete.ts` derives against the
+      // 30-minute per-resource deadline.
       'An error occurred (ResourceInUseException) when calling the UpdateTable operation: Table is being deleted',
       false,
-      'DynamoDB table being deleted — deliberately not swept in',
+      false,
+      'DynamoDB table being deleted — excluded for the delete-budget interaction',
     ],
     [
+      // Secrets Manager. The one-sided shape S3's entry was promoted for, and
+      // deliberately NOT promoted: the same sentence covers a force-deleted
+      // secret (seconds) and a 7-30 DAY recovery window. It is `transient:
+      // true` today via the generic table's `scheduled for deletion`, and this
+      // row pins that #2116 left that exactly as it was — the assertion is
+      // about the COOLDOWN column staying false.
+      'AWS Secrets Manager: You cannot create this secret because a secret with this name is already scheduled for deletion.',
+      false,
+      true,
+      'Secrets Manager — excluded from the cooldown class, generic entry untouched',
+    ],
+    [
+      // NOT `transient: false`. This message carries `not authorized to
+      // perform`, an IAM-propagation pattern, so it is legitimately retryable
+      // on the dense grid — a freshly-created role often answers exactly this.
+      // Asserting `false` here would have been a guess that happened to look
+      // right; the measured verdict is what fences the row.
       'AccessDenied: User is not authorized to perform states:CreateStateMachine',
       false,
-      'authorization failure',
+      true,
+      'authorization failure — retryable as IAM propagation, but never a cooldown',
     ],
     [
       // The nearest MISS to the SFN sentence: a state machine that is gone,
       // not one that is going. Retrying cannot help.
       'StateMachineDoesNotExist: State Machine Does Not Exist',
+      false,
       false,
       'state machine absent, not deleting',
     ],
@@ -724,12 +776,16 @@ describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', (
       // Anchoring check: a generic "please wait" must not match the SQS entry.
       'ThrottlingException: please wait a few seconds and retry',
       false,
+      false,
       'generic wait advice',
     ],
-  ])('classifies %j as cooldown=%s (%s)', (message, expected) => {
-    expect(isNameCooldownError(message)).toBe(expected);
+  ])('classifies %j as cooldown=%s transient=%s (%s)', (message, cooldown, transient) => {
+    expect(isNameCooldownError(message)).toBe(cooldown);
+    // The ordinary-create path. Asserted on EVERY row, positives and negatives
+    // alike, so a widening through the generic table cannot slip past.
+    expect(isRetryableTransientError(new Error(message), message)).toBe(transient);
     // The delete-then-re-create sites read this one; a cooldown must reach it.
-    if (expected) expect(isRecreateRetryableError(message)).toBe(true);
+    if (cooldown) expect(isRecreateRetryableError(message)).toBe(true);
   });
 
   /**

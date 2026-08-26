@@ -479,54 +479,82 @@ poll_until_gone "bucket ${AUTODELETE_BUCKET}" 40 5 \
   aws s3api head-bucket --bucket "${AUTODELETE_BUCKET}" --region "${REGION}"
 echo "    OK: the bucket name is free again"
 
-# The PREMISE of the arm, recorded immediately before the redeploy so a run
-# where the window had already closed is visible in the log rather than
-# silently reading as a pass. Deliberately NOT fatal: the window is a real-AWS
-# timing property (~23s), and failing the fixture because AWS was fast that day
-# would make it flaky for a reason unrelated to the code under test. A run that
-# prints `PREMISE: window CLOSED` proved the redeploy works, but did not
-# exercise #2116 — re-run it before reading this phase as coverage.
+# The PREMISE, read immediately before the redeploy. It is NECESSARY but not
+# SUFFICIENT, and that gap is why it does not decide the verdict on its own:
+# `CreateStateMachine` fires ~26 resources into the deploy, so a window that is
+# open HERE can still have closed by the time the create lands. The bucket poll
+# above can burn up to 200s too, which closes it before the deploy even starts.
+# So this reading is context for the verdict, not the verdict.
 #
 # `2>&1` rather than `2>/dev/null`: the probe's error text lands IN the value,
-# so the CLOSED branch prints WHY (a `StateMachineDoesNotExist` reads very
+# so the CLOSED reading prints WHY (a `StateMachineDoesNotExist` reads very
 # differently from an AccessDenied) instead of silently rendering every failure
 # as "already gone". A blind `2>/dev/null || echo GONE` is the exact shape
 # `tests/unit/scripts/integ-verify-probe-not-found.test.ts` refuses.
 SM_STATUS="$(aws stepfunctions describe-state-machine --region "${REGION}" \
   --state-machine-arn "${SM_ARN}" --query 'status' --output text 2>&1 || true)"
-if [ "${SM_STATUS}" = 'DELETING' ]; then
-  echo "    PREMISE: window OPEN — the state machine is still ${SM_STATUS}, so the"
-  echo "             redeploy below must ride out the name cooldown (issue #2116)"
-else
-  echo "    PREMISE: window CLOSED — DescribeStateMachine answered '${SM_STATUS}',"
-  echo "             so this run does NOT exercise the issue-#2116 retry"
-fi
+echo "    PREMISE: DescribeStateMachine answers '${SM_STATUS}' at redeploy time"
 
 echo "==> Phase 6: deploy again with the refusal disabled (no state-machine wait)"
+# --verbose is load-bearing, not diagnostic decoration: `withRetry`'s
+# per-attempt line is a debug line, and it is the only POSITIVE evidence that
+# the cooldown was actually ridden out. Same idiom as
+# tests/integration/rollback-sqs-cooldown/verify.sh, which greps its own retry
+# lines for the SQS wording.
 set +e
 REDEPLOY_OUT=$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --verbose \
   --yes 2>&1)
 REDEPLOY_RC=$?
 set -e
 printf '%s\n' "${REDEPLOY_OUT}"
 REDEPLOY_TXT=$(printf '%s' "${REDEPLOY_OUT}" | sed $'s/\033\[[0-9;]*m//g')
 
-# Assert the POSITIVE marker, and the exit code, and both for the reason the
-# repo learned the hard way: a grep on output alone passes over a non-zero exit,
-# and an absence assertion ("no rollback") is true of every unrelated failure.
+# --- the FATAL fence -------------------------------------------------------
+# Exit code AND the positive marker, both: a grep on output alone passes over a
+# non-zero exit, and an absence assertion ("no rollback") is true of every
+# unrelated failure.
+#
+# This pair is what a #2116 REGRESSION trips, and it cannot be silently green:
+# without the retry the `CreateStateMachine` fails outright and the deploy
+# rolls back, so a regression shows up here as a non-zero exit, never as a
+# quiet pass. That is what lets the coverage verdict below stay non-fatal.
 if [ "${REDEPLOY_RC}" -ne 0 ]; then
   echo "FAIL: the unarmed redeploy exited ${REDEPLOY_RC}, expected 0" >&2
   echo "    If the failure names 'State Machine is being deleted', the #2116" >&2
-  echo "    name-cooldown retry regressed — that is what this phase fences." >&2
+  echo "    name-cooldown retry regressed -- that is what this phase fences." >&2
   exit 1
 fi
 if ! printf '%s' "${REDEPLOY_TXT}" | grep -q 'Deployment completed successfully'; then
   echo "FAIL: the unarmed redeploy never printed 'Deployment completed successfully'" >&2
   exit 1
 fi
-echo "    OK: redeployed through the state-machine name cooldown without waiting it out"
+
+# --- the COVERAGE verdict, decided by evidence from the run itself ---------
+# `rc == 0` plus the success marker is ALSO what a fully-closed window
+# produces, i.e. a confluence point: it cannot tell "rode out the cooldown"
+# from "never met it". The retry line can, because it quotes the AWS message
+# that only a real cooldown produces. Gate the OK line on it, so a run that
+# missed the window reports INCONCLUSIVE rather than claiming coverage it did
+# not have.
+#
+# Deliberately NON-FATAL: the window is a real-AWS timing property (~23s
+# measured), and failing the fixture because AWS was fast that day would make
+# it flaky for a reason unrelated to the code under test. The fatal half above
+# already catches the regression.
+if printf '%s' "${REDEPLOY_TXT}" | grep -qiE 'State Machine is being deleted|StateMachineDeleting'; then
+  echo "    OK: COVERED -- the redeploy hit the state-machine name cooldown and"
+  echo "        retried through it (issue #2116), with no wait in the fixture"
+else
+  echo "    INCONCLUSIVE: the redeploy succeeded, but no cooldown retry line"
+  echo "        appeared, so the #2116 window had already closed by the time"
+  echo "        CreateStateMachine fired (DescribeStateMachine read"
+  echo "        '${SM_STATUS}' beforehand). This run PROVES the redeploy works;"
+  echo "        it does NOT exercise the cooldown retry. Re-run before reading"
+  echo "        this phase as coverage."
+fi
 
 echo "cdkd integ probe" | aws s3 cp - "s3://${AUTODELETE_BUCKET}/${AUTODELETE_KEY}" \
   --region "${REGION}" >/dev/null

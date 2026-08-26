@@ -107,14 +107,31 @@ so the Step Functions wording was recognised by nothing and an ordinary
 destroy-then-redeploy failed hard where CloudFormation converges.
 
 **That wait is now the live arm.** #2116 taught the classifier both Step
-Functions spellings and made a name cooldown retryable on the ORDINARY create
-path (not only at the delete-then-re-create sites), so the redeploy rides the
-window out by itself. The phase asserts the POSITIVE marker — exit code 0 plus
-`Deployment completed successfully` — which only the fixed classifier produces;
-pre-fix the identical run rolled 26 resources back. It also logs a
-`PREMISE: window OPEN / CLOSED` line taken immediately before the redeploy, so
-a run where AWS finished the delete early is visible as "did not exercise the
-retry" rather than passing silently.
+Functions spellings, made a name cooldown retryable on the ORDINARY create path
+(not only at the delete-then-re-create sites), and gave the class a 64s backoff
+grid, so the redeploy rides the window out by itself.
+
+The phase separates the two questions a single exit code cannot answer:
+
+- **Fatal fence** — the redeploy must exit 0 AND print
+  `Deployment completed successfully`. A regression cannot slip past this
+  quietly: without the retry, `CreateStateMachine` fails outright and the deploy
+  rolls back, which is a non-zero exit. Pre-fix, the identical run rolled 26
+  resources back.
+- **Coverage verdict** — exit 0 is ALSO what a fully-closed window produces, so
+  it cannot distinguish "rode out the cooldown" from "never met it". The
+  redeploy therefore runs with `--verbose` and the phase greps its output for a
+  retry line quoting the AWS cooldown message (the same idiom
+  `tests/integration/rollback-sqs-cooldown/verify.sh` uses). Found ->
+  `OK: COVERED`; not found -> `INCONCLUSIVE`, which says in as many words that
+  the run proved the redeploy works but did not exercise the retry.
+
+The verdict is deliberately non-fatal, because the window is a real-AWS timing
+property and failing the fixture because AWS was fast would make it flaky for a
+reason unrelated to the code under test. A `PREMISE:` line records what
+`DescribeStateMachine` answered immediately before the redeploy — context for
+an `INCONCLUSIVE` reading, not the verdict itself, since `CreateStateMachine`
+fires ~26 resources later and the window can close in between.
 
 The **bucket** wait stays. S3's `OperationAborted` is retryable on the ordinary
 create path, but `BucketAlreadyOwnedByYou` is short-circuited to idempotent

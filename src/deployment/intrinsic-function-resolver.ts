@@ -3827,7 +3827,8 @@ export class IntrinsicFunctionResolver {
    * criterion `retryable-errors.ts` documents as insufficient: the classifiers
    * match by SUBSTRING, and `sourceClause` interpolates template-controlled
    * text, so a logical id like `MyDependencyViolationHandler` puts
-   * `DependencyViolation` (the table's only whitespace-free entry) into the
+   * `DependencyViolation` (a whitespace-free entry in the table — the only
+   * one until issue #2116 added the name-cooldown error codes) into the
    * message. Reachability is real even though resolution runs outside
    * `withRetry` on the flat path: `NestedStackProvider.create` runs a child
    * `DeployEngine.deploy()` and re-throws, and the parent wraps `create()` in

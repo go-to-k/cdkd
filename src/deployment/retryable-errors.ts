@@ -400,16 +400,34 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
  * fails fast into the actionable `--replace` refusal instead of burning a
  * budget it cannot survive.
  *
- * **What must NOT go in this list**: a spelling AWS also emits for a resource
- * that merely EXISTS. That is the sweep's own finding rather than a
- * hypothetical — ELBv2's `DuplicateLoadBalancerName` and DynamoDB's
- * `CreateTable` refusal are both raised for a live resource just as readily as
- * for a deleting one, so promoting either would convert a terminal collision
- * into ~47s of sleep ending in the same failure, and (on the DynamoDB delete
- * path) re-multiply the budget arithmetic
- * `src/provisioning/dynamodb-index-busy-delete.ts` derives against the
- * per-resource deadline. Every entry below is specific to a delete that is
- * ALREADY in flight.
+ * **What must NOT go in this list.** Every entry below is specific to a delete
+ * that is ALREADY in flight and clears within a budget. Three candidates the
+ * sibling sweep turned up are recorded here as deliberate EXCLUSIONS rather
+ * than left unmentioned, because "absent" and "considered and rejected" are
+ * indistinguishable to the next person doing this sweep:
+ *
+ *  - **ELBv2 `DuplicateLoadBalancerName`** and **DynamoDB's create-side
+ *    `Table already exists: <name>`** — AWS raises both for a resource that
+ *    merely EXISTS, just as readily as for a deleting one, so neither is
+ *    distinguishable from a terminal collision. Promoting either would convert
+ *    a fast, actionable `--replace` refusal into a full retry budget ending in
+ *    the same failure. (DynamoDB's `Table is being deleted` IS distinguishable,
+ *    but promoting THAT one re-multiplies the destroy-runner budget arithmetic
+ *    `src/provisioning/dynamodb-index-busy-delete.ts` derives against the
+ *    per-resource deadline — a different reason, so it is stated separately
+ *    rather than folded in with the two above.)
+ *  - **Secrets Manager `scheduled for deletion`** — the same one-sided shape as
+ *    S3's entry (generic table only, invisible to
+ *    {@link isRecreateRetryableError}), and the provider does delete with
+ *    `ForceDeleteWithoutRecovery: true`, so it LOOKS like it belongs. It is
+ *    excluded because that single message covers TWO conditions with wildly
+ *    different windows: a force-deleted secret's name releasing in
+ *    seconds-to-minutes, and a secret scheduled for deletion with a
+ *    `RecoveryWindowInDays` of 7-30 DAYS, which no bounded budget can ride out
+ *    and which a user reaches by deleting a secret outside cdkd. A budget that
+ *    cannot converge on half its population is worse than failing fast, so the
+ *    entry stays where it already was — in the generic table, retryable on an
+ *    ordinary create and terminal at the re-create sites, unchanged by #2116.
  */
 export const NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // SQS, error-CODE spelling: `AWS.SimpleQueueService.QueueDeletedRecently`.

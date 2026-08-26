@@ -8,8 +8,9 @@
  * interpolates the template-controlled `logicalId` into its message — which
  * the SUBSTRING-matching retry classifiers can read as transient (issue
  * [#1838](https://github.com/go-to-k/cdkd/issues/1838); `DependencyViolation`
- * is the table's only whitespace-free entry, so an ordinary composite CDK id
- * is enough). Reachability is real: a child `DeployEngine.deploy()` re-throws
+ * is a whitespace-free entry in the table — the only one until issue #2116
+ * added the name-cooldown error codes — so an ordinary composite CDK id is
+ * enough). Reachability is real: a child `DeployEngine.deploy()` re-throws
  * through `NestedStackProvider.create`, which the parent wraps in `withRetry`.
  *
  * The FOURTH — the #1730 fabricated-account guard — is deliberately left
@@ -61,9 +62,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
-// A logical id carrying `DependencyViolation` — the only whitespace-free entry
-// in RETRYABLE_ERROR_MESSAGE_PATTERNS, and therefore the one an ordinary
-// composite CDK construct id can reach. Every refusal below interpolates it.
+// A logical id carrying `DependencyViolation` — a whitespace-free entry in
+// RETRYABLE_ERROR_MESSAGE_PATTERNS (the only one until issue #2116 added the
+// name-cooldown error codes), and therefore one an ordinary composite CDK
+// construct id can reach. Every refusal below interpolates it.
 const LOGICAL_ID = 'MyDependencyViolationHandler';
 
 const mkContext = (
