@@ -751,13 +751,6 @@ async function listS3Candidates(
 }
 
 /**
- * Describe the container repo's images (paginated) and pick the deletion
- * candidates: an image is REFERENCED when any of its tags OR its digest is
- * in the referenced set; candidates are unreferenced AND strictly older
- * than the cutoff. Images with no `imagePushedAt` are kept (treated as
- * new). A missing repo is an idempotent skip.
- */
-/**
  * One abandoned custom-resource response placeholder in the STATE bucket.
  *
  * Distinct from an asset candidate: it lives in a different bucket, it is
@@ -769,6 +762,41 @@ export interface ResponsePlaceholderCandidate {
   size: number;
   lastModified: Date;
 }
+
+/**
+ * The only key shape `CustomResourceProvider` can mint under the prefix.
+ *
+ * `getResponseKey` builds `{prefix}/{requestId}.json` from
+ * `cdkd-${Date.now()}-${Math.random().toString(36).substring(7)}`.
+ *
+ * The trailing group is `*`, NOT `+`, and that is a measurement rather than
+ * caution: `substring(7)` returns the EMPTY string whenever the base-36
+ * rendering is shorter than eight characters (`(0.5).toString(36)` is `'0.i'`),
+ * so `cdkd-1756180000000-.json` is a real key this provider writes. A `+` here
+ * would skip exactly those and the sweep would silently under-collect — a
+ * shape filter defeating the sweep it is meant to protect.
+ *
+ * HOW OFTEN, counted rather than guessed, because sampling cannot answer it (0
+ * hits in 5,000,000 `Math.random()` calls). V8 returns `k * 2^-52` for integer
+ * `k` in `[0, 2^52)`, and `toString(36)` emits the shortest string that
+ * round-trips, so the output is at most 7 characters exactly when some 5-digit
+ * base-36 fraction `d / 36^5` has that double as its nearest neighbour.
+ * Enumerating all `36^5` values of `d` and keeping those that land on a value
+ * `Math.random()` can emit gives 14,921,970 of them: a rate of ~3.3e-9, about 1
+ * in 3.0e8 invocations (e.g. `k = 4503599552889192` renders `0.zzzzz`). Rare per
+ * invocation, inevitable across a fleet, and — the part that decides the
+ * quantifier — SILENT when missed.
+ *
+ * Why filter at all: `--state-prefix` is free-form and unvalidated, so a stack
+ * deployed with `--state-prefix custom-resource-responses` puts its
+ * `state.json`, `lock.json`, `rollback-journal.json` and `deployments/*` INSIDE
+ * this prefix. gc builds its own backend on `DEFAULT_STATE_PREFIX` and cannot
+ * see that collision, so an age-only sweep would delete live state and orphan
+ * every resource in the stack. Matching the producer's own shape is what keeps
+ * this command's "bias every ambiguity toward NOT deleting" posture true on the
+ * one path that deletes from the STATE bucket.
+ */
+const RESPONSE_PLACEHOLDER_KEY = /^cdkd-\d+-[0-9a-z]*\.json$/;
 
 /**
  * List abandoned custom-resource response placeholders (issue #2052).
@@ -823,30 +851,6 @@ export interface ResponsePlaceholderCandidate {
  * direction, and the reason the constant is shared with the producer rather
  * than re-spelled here.
  */
-/**
- * The only key shape `CustomResourceProvider` can mint under the prefix.
- *
- * `getResponseKey` builds `{prefix}/{requestId}.json` from
- * `cdkd-${Date.now()}-${Math.random().toString(36).substring(7)}`.
- *
- * The trailing group is `*`, NOT `+`, and that is a measurement rather than
- * caution: `substring(7)` returns the EMPTY string whenever the base-36
- * rendering is shorter than eight characters (`(0.5).toString(36)` is `'0.i'`),
- * so `cdkd-1756180000000-.json` is a real key this provider writes. A `+` here
- * would skip exactly those and the sweep would silently under-collect — a
- * shape filter defeating the sweep it is meant to protect.
- *
- * Why filter at all: `--state-prefix` is free-form and unvalidated, so a stack
- * deployed with `--state-prefix custom-resource-responses` puts its
- * `state.json`, `lock.json`, `rollback-journal.json` and `deployments/*` INSIDE
- * this prefix. gc builds its own backend on `DEFAULT_STATE_PREFIX` and cannot
- * see that collision, so an age-only sweep would delete live state and orphan
- * every resource in the stack. Matching the producer's own shape is what keeps
- * this command's "bias every ambiguity toward NOT deleting" posture true on the
- * one path that deletes from the STATE bucket.
- */
-const RESPONSE_PLACEHOLDER_KEY = /^cdkd-\d+-[0-9a-z]*\.json$/;
-
 export async function listResponsePlaceholderCandidates(
   stateBackend: Pick<S3StateBackend, 'listRawObjects'>,
   cutoffMs: number,
@@ -869,6 +873,13 @@ export async function listResponsePlaceholderCandidates(
   return candidates;
 }
 
+/**
+ * Describe the container repo's images (paginated) and pick the deletion
+ * candidates: an image is REFERENCED when any of its tags OR its digest is
+ * in the referenced set; candidates are unreferenced AND strictly older
+ * than the cutoff. Images with no `imagePushedAt` are kept (treated as
+ * new). A missing repo is an idempotent skip.
+ */
 async function listEcrCandidates(
   ecrClient: Pick<ECRClient, 'send'>,
   repositoryName: string,
@@ -1413,12 +1424,19 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       // `GC_DELETE_FAILED` identity as both asset arms — `deleteRawObjects`
       // raises a bare `StateError`, and one failure mode with two error
       // identities is one a caller has to special-case.
+      //
+      // The wrapper carries NO count. It only ever knew the ATTEMPTED one,
+      // while the message it wraps reports the ACTUAL failures, so an earlier
+      // spelling read `Failed to delete 5000 ... placeholder(s) ...: Failed to
+      // delete 1 object(s) ...` — a partial failure describing itself as total.
+      // Both asset arms report the FAILURE count; this one defers to the inner
+      // message for it rather than contradicting it.
       try {
         await stateBackend.deleteRawObjects(responseCandidates.map((c) => c.key));
       } catch (deleteError) {
         throw new CdkdError(
-          `Failed to delete ${responseCandidates.length} abandoned custom-resource ` +
-            `response placeholder(s) from ${bucketName}: ` +
+          `Failed to delete abandoned custom-resource response placeholder(s) ` +
+            `from ${bucketName}: ` +
             `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
           'GC_DELETE_FAILED'
         );

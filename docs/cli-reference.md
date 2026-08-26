@@ -1839,6 +1839,18 @@ candidates → info line, exit 0, no prompt. Deletion is chunked
 (`DeleteObjects` 1,000 keys / `BatchDeleteImage` 100 images per call) and
 any per-item failure is surfaced as a hard error.
 
+**Upgrade note for CI**: "zero candidates" is a WIDER question than it used
+to be. Since issue [#2052](https://github.com/go-to-k/cdkd/issues/2052) the
+count also includes the state bucket's abandoned custom-resource response
+placeholders, which accumulate account-wide and independently of whether any
+region opted in to cdkd asset storage. A non-interactive run without `-y`
+that used to exit `0` on an account with nothing to collect can therefore
+now find a backlog of them and hard-error `NON_INTERACTIVE_CONFIRM` on its
+first post-upgrade invocation. That is the intended consent posture — this
+is the one arm of `gc` that deletes from the STATE bucket — but a cron that
+calls `cdkd gc` bare and expects a quiet exit `0` needs `-y` (to collect) or
+`--dry-run` (to keep reporting only).
+
 Also accepts `--state-bucket`, `--profile`, `--role-arn`, `--verbose`.
 
 **Reference shapes covered**: `{S3Bucket, S3Key}` / `{Bucket, Key}` (and any

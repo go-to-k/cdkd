@@ -31,6 +31,23 @@ import { CUSTOM_RESOURCE_RESPONSE_PREFIX as VIA_STATE_FILE_KEYS } from '../../..
  * prevent it. So the population is now DERIVED (`git ls-files`) and the needle
  * is quoting-agnostic, with floors on both so a broken glob or a broken regex
  * fails loudly instead of reporting a clean tree.
+ *
+ * ## ...and why DERIVING it was not enough on its own
+ *
+ * The first derived spelling was a single `git ls-files 'src/**\/*.ts'`, which
+ * returned 326 of the 328 tracked `src` TypeScript files: git's wildmatch
+ * requires a literal `/` for the `**\/` segment, so a TOP-LEVEL file matches
+ * neither `**\/` nor the rest of the pattern. The two it silently omitted are
+ * `src/index.ts` — the library ENTRYPOINT, the single most likely place for a
+ * re-exported constant — and `src/version.ts`. Adding
+ * `export const STRAY_PREFIX = 'custom-resource-responses/'` to `src/index.ts`
+ * left the fence green, and a `> 200` count floor cannot see a two-file hole.
+ *
+ * So the pathspec is now the pair `'src/*.ts' 'src/**\/*.ts'` (measured: 328,
+ * the full tracked set), and the population floor names the two files the
+ * broken glob dropped rather than only counting. A count floor answers "did the
+ * glob break completely?"; a membership floor answers "is the file a copy would
+ * land in actually being read?", which is the question that was being missed.
  */
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
@@ -47,8 +64,16 @@ const DEFINITION_SITE = 'src/state/state-prefix.ts';
  */
 const LITERAL = /['"`]custom-resource-responses\/?['"`]/g;
 
+/**
+ * Every tracked `.ts` file under `src/`, TOP-LEVEL ones included.
+ *
+ * Two pathspecs, not one: git wildmatch needs a literal `/` for the `**\/`
+ * segment, so a lone `src/**\/*.ts` skips `src/index.ts` and `src/version.ts`.
+ * See the header — that omission is what let a copy in the library entrypoint
+ * pass the fence.
+ */
 function sourceFiles(): string[] {
-  return execFileSync('git', ['ls-files', 'src/**/*.ts'], {
+  return execFileSync('git', ['ls-files', 'src/*.ts', 'src/**/*.ts'], {
     cwd: REPO_ROOT,
     encoding: 'utf-8',
   })
@@ -68,6 +93,12 @@ describe('custom-resource response prefix (issue #2052)', () => {
     // report a clean tree, which is the failure this rewrite exists to end.
     expect(files.length).toBeGreaterThan(200);
     expect(files).toContain(DEFINITION_SITE);
+    // ...and specifically on the TOP-LEVEL files, which are the ones the
+    // previous single-pathspec glob dropped. A count floor cannot see a
+    // two-file hole; naming them can, and `src/index.ts` is the library
+    // entrypoint — the likeliest place of all for a re-exported copy.
+    expect(files).toContain('src/index.ts');
+    expect(files).toContain('src/version.ts');
 
     const offenders: string[] = [];
     let seenAtDefinition = 0;
