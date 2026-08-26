@@ -1,3 +1,10 @@
+## [0.284.48](https://github.com/go-to-k/cdkd/compare/v0.284.47...v0.284.48) (2026-08-26)
+
+
+### Bug Fixes
+
+* **local:** stop echoing the secret plaintext prefix in the ECS json-key parse error ([#2214](https://github.com/go-to-k/cdkd/issues/2214)) ([a20c655](https://github.com/go-to-k/cdkd/commit/a20c6558d9a87421363fc049d4e6b1f125ad55c0))
+
 ## [0.284.47](https://github.com/go-to-k/cdkd/compare/v0.284.46...v0.284.47) (2026-08-26)
 
 
