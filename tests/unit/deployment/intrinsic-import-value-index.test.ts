@@ -32,7 +32,15 @@ function mockIndex(
 /**
  * Helper: build a state backend mock for fallback-scan tests.
  */
-function mockBackend(stacks: Array<{ stackName: string; region: string; outputs: Record<string, unknown> }>): S3StateBackend {
+function mockBackend(
+  stacks: Array<{
+    stackName: string;
+    region: string;
+    outputs: Record<string, unknown>;
+    /** Omitted = a pre-v9 record (issue #2193): every output key importable. */
+    exportNames?: string[];
+  }>
+): S3StateBackend {
   return {
     listStacks: vi.fn(async () =>
       stacks.map((s) => ({ stackName: s.stackName, region: s.region }))
@@ -47,6 +55,7 @@ function mockBackend(stacks: Array<{ stackName: string; region: string; outputs:
           region: found.region,
           resources: {},
           outputs: found.outputs,
+          ...(found.exportNames !== undefined && { exportNames: found.exportNames }),
           lastModified: 1,
         },
         etag: 'e',
@@ -206,6 +215,72 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
     );
 
     expect(recorded).toHaveLength(1);
+  });
+
+  it('the state scan does NOT match a plain Output name on a v9 record (#2193)', async () => {
+    // `Fn::ImportValue: BucketArn` with no such export anywhere: the only
+    // stack holding a `BucketArn` key declares it as a plain output. CFn
+    // rejects the template; pre-fix cdkd bound the import to it.
+    const resolver = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    const backend = mockBackend([
+      { stackName: 'Decoy', region: 'us-east-1', outputs: { BucketArn: 'arn:decoy' }, exportNames: [] },
+    ]);
+
+    await expect(
+      resolver.resolve(
+        { 'Fn::ImportValue': 'BucketArn' },
+        buildContext({ stateBackend: backend, recordedImports: [] })
+      )
+    ).rejects.toThrow(/export 'BucketArn' not found in any stack/);
+  });
+
+  it('the state scan skips a same-named plain Output in an EARLIER stack and binds to the real exporter (#2193)', async () => {
+    // The shadowing shape: the decoy is listed FIRST, so a first-match scan
+    // over every key returned `arn:decoy` before ever reaching the producer.
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const backend = mockBackend([
+      { stackName: 'Decoy', region: 'us-east-1', outputs: { VpcId: 'vpc-decoy' }, exportNames: [] },
+      {
+        stackName: 'Producer',
+        region: 'us-east-1',
+        outputs: { VpcId: 'vpc-prod', 'prod:VpcId': 'vpc-prod' },
+        exportNames: ['prod:VpcId'],
+      },
+    ]);
+    const recorded: StateImportEntry[] = [];
+
+    // The plain name is not importable even though BOTH stacks hold the key...
+    const resolverNoCfn = new IntrinsicFunctionResolver('us-east-1', { cfnFallback: false });
+    await expect(
+      resolverNoCfn.resolve(
+        { 'Fn::ImportValue': 'VpcId' },
+        buildContext({ stateBackend: backend, recordedImports: [] })
+      )
+    ).rejects.toThrow(/not found in any stack/);
+
+    // ... and the export resolves to its one producer.
+    const result = await resolver.resolve(
+      { 'Fn::ImportValue': 'prod:VpcId' },
+      buildContext({ stateBackend: backend, recordedImports: recorded })
+    );
+    expect(result).toBe('vpc-prod');
+    expect(recorded).toEqual([
+      { sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'prod:VpcId' },
+    ]);
+  });
+
+  it('the state scan still matches every key of a pre-v9 record (legacy rule until it redeploys)', async () => {
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const backend = mockBackend([
+      // No `exportNames` on record: nothing says which key is the export.
+      { stackName: 'Legacy', region: 'us-east-1', outputs: { BucketArn: 'arn:legacy' } },
+    ]);
+
+    const result = await resolver.resolve(
+      { 'Fn::ImportValue': 'BucketArn' },
+      buildContext({ stateBackend: backend, recordedImports: [] })
+    );
+    expect(result).toBe('arn:legacy');
   });
 
   it('works without an exportIndex (pre-PR fallback path stays intact)', async () => {

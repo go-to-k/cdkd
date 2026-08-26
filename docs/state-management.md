@@ -474,7 +474,7 @@ silently. No command, no flag, no manual JSON edit. The
 [`tests/integration/schema-v6-to-v7-migration/`](../tests/integration/schema-v6-to-v7-migration/)
 integ test proves the round-trip against real AWS.
 
-### `version: 8` adds `outputReads` (current writers)
+### `version: 8` adds `outputReads`
 
 Schema `version: 8` adds an optional stack-level `outputReads` array — one
 `StateOutputReadEntry` per `Fn::GetStackOutput` resolution that was served from
@@ -507,19 +507,72 @@ under a v8 binary repopulates the field and persists `version: 8` silently. The
 [`tests/integration/schema-v7-to-v8-migration/`](../tests/integration/schema-v7-to-v8-migration/)
 integ test proves the round-trip against real AWS.
 
+### `version: 9` adds `exportNames` (current writers)
+
+Schema `version: 9` adds a stack-level `exportNames` array: the keys of
+`outputs` that are `Export.Name` aliases, i.e. the ONLY names an
+`Fn::ImportValue` may bind to
+([#2193](https://github.com/go-to-k/cdkd/issues/2193)). The `outputs` bag has
+always held plain Output names and export aliases side by side, and nothing in
+the record said which was which — so the exports index (on update and on
+rebuild) and the resolver's `state.json` scan treated EVERY key as an export. A
+plain `CfnOutput('VpcId')` in an unrelated stack was indexed as the producer of
+export `VpcId`, last writer wins, and a consumer's `Fn::ImportValue: VpcId`
+resolved to whichever stack deployed most recently — silently, and to a value
+CloudFormation would never hand out (its export namespace is separate from its
+output names, and it refuses a second producer of one name). All four readers
+— those three plus the `cdkd local` commands' `--from-state` `Fn::ImportValue`
+fallback scan — now go through one predicate (`importableOutputKeys` in
+`src/types/state.ts`).
+
+Two shapes of the field mean two different things, so unlike `imports` /
+`outputReads` an EMPTY array is written, not omitted: `[]` means the stack is
+known to export nothing (its plain outputs are not importable), while an
+ABSENT field means the set is not known and the record keeps the legacy
+"every key is importable" rule. Absent is what a pre-v9 record carries, and
+also what a v9 failure-path save writes when it carries a pre-v9 bag forward
+unchanged — the set travels with the bag it describes, and cdkd never invents
+`[]` for a bag it did not re-resolve.
+
+Two stacks that both EXPORT one name keep the index's latest-writer policy but
+now produce a warning on the producer's deploy (and on an index rebuild);
+CloudFormation refuses the second producer outright, so rename one of them.
+During the upgrade window that warning can also name a stack that merely holds
+a same-named PLAIN output under a pre-v9 record — that is its stale entry from
+before the field existed, and the stack's next deploy clears it.
+
+**v8 → v9 upgrade is fully transparent** — `exportNames === undefined` on a
+pre-v9 record reads as "every output key is importable" (the v8-shipped
+behavior), so no existing cross-stack reference breaks; the next deploy of the
+producer under a v9 binary writes the set and persists `version: 9` silently.
+That includes a deploy with NO template change: the no-change path persists the
+set and re-feeds the exports index with the exports only whenever the effective
+export set changed while the outputs values did not, so a producer whose
+template never changes still stops publishing its plain output names after one
+deploy. The same path also handles a **self-named export** toggled on a v9
+record — adding or removing `Export.Name` equal to an output's own key rewrites
+the same key with the same value (byte-equal bag), and the effective-set
+comparison is what persists and re-indexes the flip so a newly-exported name
+becomes importable (and a newly-unexported one stops being served). The
+[`tests/integration/schema-v8-to-v9-migration/`](../tests/integration/schema-v8-to-v9-migration/)
+integ test proves the round-trip against real AWS — and first reproduces the
+shadowing under the v8 binary (a consumer bound to a decoy stack's plain
+output) before the v9 binary rebinds it to the real export.
+
 ## State Schema
 
 ### StackState (`state.json`)
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8   // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[]
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9   // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[]
   stackName: string                        // Stack name
   region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
   outputs: Record<string, unknown>         // Output name → Resolved value (NOT coerced to string)
   imports?: StateImportEntry[]             // v4+: Fn::ImportValue refs (strong reference — blocks the producer's destroy)
   outputReads?: StateOutputReadEntry[]     // v8+: Fn::GetStackOutput refs (informational — weak reference, never destroy-blocking)
+  exportNames?: string[]                   // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy; [] = exports nothing)
   parentStack?: string                     // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
@@ -1737,11 +1790,11 @@ explicit on-demand answer.
 
 ### Schema Version
 
-Current writers emit **`version: 8`** on the region-prefixed key layout
+Current writers emit **`version: 9`** on the region-prefixed key layout
 (`cdkd/{stackName}/{region}/state.json`, introduced by `version: 2`). Older
 `version: 1` blobs at the non-region key (`cdkd/{stackName}/state.json`) are
 still readable; the next save migrates them to the region-prefixed key and
-deletes the legacy key. Every v1..v7 blob is read and auto-upgraded in memory
+deletes the legacy key. Every v1..v8 blob is read and auto-upgraded in memory
 by the current binary, and the next write persists the current version
 silently — no user action, no migration command.
 

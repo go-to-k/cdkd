@@ -315,6 +315,9 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
     for (let i = 0; i < mockSaveState.mock.calls.length; i++) {
       const saved = savedStateAt(i);
       expect(saved.outputs).toEqual({});
+      // The bag is rewritten empty, so its export set is KNOWN and empty —
+      // written as `[]`, never carried from the record (issue #2193).
+      expect(saved.exportNames).toEqual([]);
       expect(saved.imports).toBeUndefined();
       expect(saved.outputReads).toBeUndefined();
     }

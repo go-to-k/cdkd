@@ -965,6 +965,10 @@ export async function runDestroyForStack(
       ...rest,
       resources: { ...remainingResources },
       outputs: {},
+      // The bag is REWRITTEN (empty), so its export set is known — and empty
+      // (issue #2193). Carrying the record's previous set through `...rest`
+      // would pair a known set with a bag that no longer holds those keys.
+      exportNames: [],
       lastModified: Date.now(),
     };
   };

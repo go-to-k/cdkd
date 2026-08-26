@@ -15,6 +15,22 @@ import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 // functions) pass resolveExpectedBucketOwner's structural guard, so STS
 // must be mocked or every test would issue a LIVE GetCallerIdentity
 // (PR 1015 reviewer catch: 22ms -> 15s + offline flakiness).
+const loggerSpies = vi.hoisted(() => ({
+  warn: vi.fn(),
+}));
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const l = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: loggerSpies.warn,
+    error: vi.fn(),
+    setLevel: vi.fn(),
+    child: () => l,
+  };
+  return { getLogger: () => l };
+});
+
 vi.mock('@aws-sdk/client-sts', () => ({
   STSClient: vi.fn().mockImplementation(() => ({
     send: vi.fn().mockResolvedValue({ Account: '111111111111' }),
@@ -64,7 +80,17 @@ function mockS3(
  * Helper: produce a fake state-backend with `listStacks` / `getState`
  * returning canned values. The store delegates to these on rebuild.
  */
-function mockBackend(stacks: Array<{ stackName: string; region: string; outputs?: Record<string, unknown> }>): S3StateBackend {
+function mockBackend(
+  stacks: Array<{
+    stackName: string;
+    region: string;
+    outputs?: Record<string, unknown>;
+    /** Omitted = a pre-v9 record (issue #2193): every output key importable. */
+    exportNames?: string[];
+    /** State record's lastModified; rebuild keeps the newer on a collision (#2194). */
+    lastModified?: number;
+  }>
+): S3StateBackend {
   return {
     listStacks: vi.fn(async () =>
       stacks.map((s) => ({ stackName: s.stackName, region: s.region }))
@@ -79,13 +105,16 @@ function mockBackend(stacks: Array<{ stackName: string; region: string; outputs?
           region: found.region,
           resources: {},
           outputs: found.outputs ?? {},
-          lastModified: 1234,
+          ...(found.exportNames !== undefined && { exportNames: found.exportNames }),
+          lastModified: found.lastModified ?? 1234,
         },
         etag: 'fake-etag',
       };
     }),
   } as unknown as S3StateBackend;
 }
+
+const warnings = (): string[] => loggerSpies.warn.mock.calls.map((c) => String(c[0]));
 
 function s3ErrorWith(name: string, status?: number): Error & {
   name: string;
@@ -145,6 +174,86 @@ describe('ExportIndexStore', () => {
       expect(parsed.exports['Topic']).toBeDefined();
       // Different region excluded
       expect(parsed.exports['Should']).toBeUndefined();
+    });
+
+    it('rebuild ingests the EXPORTS only from a v9 record, and every key from a pre-v9 one (#2193)', async () => {
+      let savedBody = '';
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+        if (cmd.constructor.name === 'PutObjectCommand') {
+          savedBody = String((cmd.input as { Body: string }).Body);
+          return { ETag: '"new-etag"' };
+        }
+        throw new Error(`unexpected command ${cmd.constructor.name}`);
+      });
+      const backend = mockBackend([
+        {
+          stackName: 'Producer',
+          region: 'us-east-1',
+          outputs: { VpcId: 'vpc-prod', 'prod:VpcId': 'vpc-prod' },
+          exportNames: ['prod:VpcId'],
+        },
+        // A stack with plain outputs only, and it SAYS so.
+        { stackName: 'Decoy', region: 'us-east-1', outputs: { BucketName: 'b' }, exportNames: [] },
+        // Pre-v9: no set on record, so every key still counts until it redeploys.
+        { stackName: 'Legacy', region: 'us-east-1', outputs: { Topic: 'topic1' } },
+      ]);
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+      expect(await store.lookup('prod:VpcId')).toEqual({
+        value: 'vpc-prod',
+        producerStack: 'Producer',
+        producerRegion: 'us-east-1',
+      });
+      // The plain output NAMES are not exports.
+      expect(await store.lookup('VpcId')).toBeUndefined();
+      expect(await store.lookup('BucketName')).toBeUndefined();
+      // The legacy rule survives for the record that predates the field.
+      expect(await store.lookup('Topic')).toBeDefined();
+
+      const parsed = JSON.parse(savedBody) as ExportIndexFile;
+      expect(Object.keys(parsed.exports).sort()).toEqual(['Topic', 'prod:VpcId']);
+      expect(warnings()).toEqual([]);
+    });
+
+    it('rebuild WARNS when two stacks publish one export name, and keeps the later one (#2193)', async () => {
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+        if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"new-etag"' };
+        throw new Error(`unexpected command ${cmd.constructor.name}`);
+      });
+      const backend = mockBackend([
+        { stackName: 'First', region: 'us-east-1', outputs: { Shared: 'from-first' }, exportNames: ['Shared'] },
+        { stackName: 'Second', region: 'us-east-1', outputs: { Shared: 'from-second' }, exportNames: ['Shared'] },
+      ]);
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+      const entry = await store.lookup('Shared');
+      expect(entry?.producerStack).toBe('Second');
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toContain("Export 'Shared' is published by both 'First' (us-east-1) and 'Second' (us-east-1)");
+      expect(warnings()[0]).toContain('CloudFormation refuses a second producer');
+    });
+
+    it('rebuild keeps the MORE-RECENTLY-MODIFIED producer on a collision, not the last iterated (#2194)', async () => {
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') throw s3ErrorWith('NoSuchKey', 404);
+        if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"new-etag"' };
+        throw new Error(`unexpected command ${cmd.constructor.name}`);
+      });
+      // `First` is iterated FIRST but has the NEWER lastModified, so it must win
+      // — proving the survivor is chosen by lastModified, not scan order. That
+      // makes the warning's "binds to whichever deployed last" wording true here.
+      const backend = mockBackend([
+        { stackName: 'First', region: 'us-east-1', outputs: { Shared: 'from-first' }, exportNames: ['Shared'], lastModified: 2000 },
+        { stackName: 'Second', region: 'us-east-1', outputs: { Shared: 'from-second' }, exportNames: ['Shared'], lastModified: 1000 },
+      ]);
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', backend);
+
+      const entry = await store.lookup('Shared');
+      expect(entry?.producerStack).toBe('First');
+      expect(entry?.value).toBe('from-first');
+      expect(warnings()).toHaveLength(1);
     });
 
     it('rebuilds when index JSON is corrupt', async () => {
@@ -320,6 +429,76 @@ describe('ExportIndexStore', () => {
         producerStack: 'Other',
         producerRegion: 'us-east-1',
       });
+      // Re-publishing one's OWN names is not a collision.
+      expect(warnings()).toEqual([]);
+    });
+
+    it('WARNS when the update overwrites an export another stack owns, and keeps the latest writer (#2193)', async () => {
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {
+          Shared: { value: 'theirs', producerStack: 'Other', producerRegion: 'us-west-2' },
+        },
+        lastModified: 1,
+      };
+      let put: ExportIndexFile | undefined;
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => JSON.stringify(indexFile) },
+            ETag: '"e1"',
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') {
+          put = JSON.parse(String((cmd.input as { Body: string }).Body)) as ExportIndexFile;
+          return { ETag: '"e2"' };
+        }
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+      await store.updateForStack('Mine', 'us-east-1', { Shared: 'mine' });
+
+      // Unchanged policy: the latest writer wins — but no longer silently.
+      expect(put!.exports['Shared']).toEqual({
+        value: 'mine',
+        producerStack: 'Mine',
+        producerRegion: 'us-east-1',
+      });
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toContain("Export 'Shared' is published by both 'Other' (us-west-2) and 'Mine' (us-east-1)");
+      expect(warnings()[0]).toContain('binds to whichever deployed last');
+    });
+
+    it('sanitizes control bytes out of a resolved export name in the collision warning (#2193 review)', async () => {
+      const indexFile: ExportIndexFile = {
+        indexVersion: 1,
+        region: 'us-east-1',
+        exports: {
+          'Shared\u0007X': { value: 'theirs', producerStack: 'Other', producerRegion: 'us-east-1' },
+        },
+        lastModified: 1,
+      };
+      const s3 = mockS3(async (cmd) => {
+        if (cmd.constructor.name === 'GetObjectCommand') {
+          return {
+            Body: { transformToString: async () => JSON.stringify(indexFile) },
+            ETag: '"e1"',
+          };
+        }
+        if (cmd.constructor.name === 'PutObjectCommand') return { ETag: '"e2"' };
+        throw new Error('unexpected');
+      });
+      const store = new ExportIndexStore(s3, 'b', 'cdkd', 'us-east-1', mockBackend([]));
+
+      await store.updateForStack('Mine', 'us-east-1', { 'Shared\u0007X': 'mine' });
+
+      expect(warnings()).toHaveLength(1);
+      // The BEL byte is replaced (displaySafe maps a control char to a space);
+      // the printable characters remain, and no raw control byte survives.
+      expect(warnings()[0]).not.toContain('\u0007');
+      expect(warnings()[0]).toContain("Export 'Shared X'");
     });
 
     it('drops all entries when outputs map is empty', async () => {

@@ -31,7 +31,7 @@ import {
   parseBootstrapMarker,
   readBootstrapMarkerBody,
 } from '../../assets/asset-storage.js';
-import type { StackState } from '../../types/state.js';
+import { importableOutputKeys, type StackState } from '../../types/state.js';
 import type { CrossStackResolver } from '../../local/state-resolver.js';
 
 export interface LoadStateForStackOptions {
@@ -586,7 +586,10 @@ export async function buildCrossStackResolver(
         try {
           const got = await stateBackend.getState(ref.stackName, region);
           if (!got || !got.state.outputs) continue;
-          if (exportName in got.state.outputs) {
+          // Through the shared predicate (issue #2193), not `in outputs`: the
+          // bag also holds every plain Output name, and matching on those
+          // bound a local env var to a stack that exports nothing of that name.
+          if (importableOutputKeys(got.state).includes(exportName)) {
             const value = got.state.outputs[exportName];
             if (typeof value === 'string') return value;
             if (typeof value === 'number' || typeof value === 'boolean') return String(value);

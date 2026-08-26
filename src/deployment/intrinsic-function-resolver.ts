@@ -50,7 +50,12 @@ import {
   type RecordedSecretValues,
 } from './secret-redaction.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
-import type { ResourceState, StateImportEntry, StateOutputReadEntry } from '../types/state.js';
+import {
+  importableOutputKeys,
+  type ResourceState,
+  type StateImportEntry,
+  type StateOutputReadEntry,
+} from '../types/state.js';
 import { S3StateBackend } from '../state/s3-state-backend.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
@@ -4493,7 +4498,10 @@ export class IntrinsicFunctionResolver {
 
         const { state } = stateData;
 
-        if (state.outputs && exportName in state.outputs) {
+        // Through the shared predicate (issue #2193), not `in state.outputs`:
+        // the bag also holds every plain Output name, and matching on those
+        // bound an import to a stack that exports nothing of that name.
+        if (importableOutputKeys(state).includes(exportName)) {
           const value = state.outputs[exportName];
           // No VALUE, for the reason the index arm above states (issue #2133).
           // This is the arm `cdkd scrub` actually takes, since scrub

@@ -74,15 +74,36 @@
  *       v8 writers always emit the field (omitted from JSON when the
  *       set is empty, matching how `imports` is persisted). v7 binary
  *       on v8 state → existing "Upgrade cdkd" hard-fail.
+ * - 9 — adds `StackState.exportNames` (the keys of `outputs` that are
+ *       `Export.Name` aliases, issue
+ *       [#2193](https://github.com/go-to-k/cdkd/issues/2193)). `outputs`
+ *       has always held plain Output names AND export aliases in ONE bag,
+ *       and nothing in the record said which was which — so the exports
+ *       index and the `Fn::ImportValue` state scan treated EVERY key as an
+ *       export, and a same-named plain Output in an unrelated stack could
+ *       silently shadow a real one. The field is the missing half of that
+ *       bag: `importableOutputKeys` reads it, and every reader that used to
+ *       walk `outputs` wholesale goes through that one predicate. The
+ *       discriminator is the FIELD, not the version: a v9 writer that
+ *       carries a pre-v9 record forward without re-resolving its outputs
+ *       (a partial save on a failed deploy) keeps the field absent, and
+ *       absent reads as the legacy "every key" rule until the stack's next
+ *       deploy re-resolves outputs and writes the set (empty included —
+ *       `[]` means "no exports", `undefined` means "not known"). Layout
+ *       superset of v8; only the stack-level shape grew. A v8 binary
+ *       rewriting a v9 record would DROP the field and silently regress
+ *       the stack to the "every key" rule, which is why this is a version
+ *       bump rather than a bare optional field: v8 readers see `version: 9`
+ *       and fail clearly instead.
  *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 8;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 9;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -91,7 +112,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 8;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8,
+  1, 2, 3, 4, 5, 6, 7, 8, 9,
 ];
 
 /**
@@ -204,6 +225,27 @@ export interface StackState {
    * `sourceAccountId` field.
    */
   outputReads?: StateOutputReadEntry[];
+
+  /**
+   * The keys of `outputs` that are `Export.Name` aliases — the ONLY names an
+   * `Fn::ImportValue` may bind to (schema v9+, issue
+   * [#2193](https://github.com/go-to-k/cdkd/issues/2193)). `outputs` keys
+   * both the plain Output names and the export aliases, and before this
+   * field nothing distinguished them, so every reader deriving "what does
+   * this stack export" from the bag took every key.
+   *
+   * `undefined` means NOT KNOWN — a record written before v9, or a v9
+   * partial save that carried a pre-v9 bag forward without re-resolving it —
+   * and reads as the legacy "every key is importable" rule, so no existing
+   * cross-stack reference breaks on upgrade. `[]` means KNOWN to export
+   * nothing. Writers that re-resolve outputs therefore always emit the
+   * field, empty included (unlike `imports` / `outputReads`, where absent
+   * and empty are the same record); writers that carry a bag forward carry
+   * this field with it, through {@link exportNamesCarriedFrom}. Read
+   * through {@link importableOutputKeys} rather than directly, so the
+   * legacy rule lives in one place.
+   */
+  exportNames?: string[];
 
   /**
    * Parent stack's physical name when THIS state record describes a
@@ -423,6 +465,64 @@ export function shouldRetainResource(
   deletionPolicy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined
 ): boolean {
   return deletionPolicy === 'Retain' || deletionPolicy === 'RetainExceptOnCreate';
+}
+
+/**
+ * The keys of `state.outputs` an `Fn::ImportValue` may bind to (issue
+ * [#2193](https://github.com/go-to-k/cdkd/issues/2193)) — THE predicate
+ * behind "what does this stack export". Four readers used to answer that
+ * by walking `outputs` wholesale (the exports index on update and on
+ * rebuild, the resolver's state scan, and the local-command loader's
+ * `Fn::ImportValue` fallback scan), and each therefore took a plain Output
+ * name for an export; they all go through here now, so the rule cannot
+ * drift between them.
+ *
+ * A record whose `exportNames` is unknown (pre-v9, or a v9 partial save that
+ * carried a pre-v9 bag forward) keeps the legacy rule — every key — until
+ * its next deploy writes the set. A known set is intersected with the bag:
+ * an alias whose value did not resolve publishes nothing, and a name the
+ * bag does not hold cannot be served.
+ *
+ * `outputs` is typed required but every consumer treats it as optional (a
+ * state file may simply have none), so it is read defensively here too.
+ */
+export function importableOutputKeys(state: Pick<StackState, 'outputs' | 'exportNames'>): string[] {
+  const outputs = state.outputs ?? {};
+  if (state.exportNames === undefined) return Object.keys(outputs);
+  return state.exportNames.filter((name) => Object.hasOwn(outputs, name));
+}
+
+/** `state.outputs` narrowed to its {@link importableOutputKeys}. */
+export function importableOutputs(
+  state: Pick<StackState, 'outputs' | 'exportNames'>
+): Record<string, unknown> {
+  const outputs = state.outputs ?? {};
+  // `Object.create(null)`, NOT `{}`: a JSON-parsed `state.outputs` can carry an
+  // OWN key named `__proto__` (JSON.parse makes it own, not the setter), and an
+  // `Export.Name` of `__proto__` would then reach this reconstruction. Assigning
+  // `picked['__proto__'] = value` onto a plain object literal walks the prototype
+  // setter — the key vanishes from the bag fed to the exports index / resolver,
+  // and an object value pollutes `picked`'s prototype. Same defense the resolver
+  // uses at `intrinsic-function-resolver.ts` (do not "simplify" back to `{}`).
+  const picked: Record<string, unknown> = Object.create(null);
+  for (const name of importableOutputKeys(state)) picked[name] = outputs[name];
+  return picked;
+}
+
+/**
+ * The `exportNames` half of a record whose `outputs` bag is being CARRIED
+ * FORWARD unchanged rather than re-resolved (a partial save on a failed
+ * deploy, `cdkd import` over an existing record). The two travel together:
+ * carrying the bag without its set would turn a known-exports record back
+ * into a "not known" one, and inventing `[]` for a pre-v9 bag would deny
+ * every consumer of a stack that never had the chance to write the set.
+ * Spread this next to `outputs: previous.outputs` — never write the field
+ * by hand at such a site.
+ */
+export function exportNamesCarriedFrom(
+  previous: Pick<StackState, 'exportNames'>
+): Pick<StackState, 'exportNames'> {
+  return previous.exportNames === undefined ? {} : { exportNames: previous.exportNames };
 }
 
 /**

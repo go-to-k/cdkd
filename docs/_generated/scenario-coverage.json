@@ -1854,6 +1854,13 @@
       "scenarios": []
     },
     {
+      "name": "schema-v8-to-v9-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
       "name": "sdk-ccapi-crossref",
       "annotated": true,
       "scenarios": [
@@ -2689,7 +2696,8 @@
       "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.",
       "fixtures": [
         "legacy-state-migration",
-        "schema-v5-to-v6-migration"
+        "schema-v5-to-v6-migration",
+        "schema-v8-to-v9-migration"
       ]
     },
     {

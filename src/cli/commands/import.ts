@@ -53,6 +53,7 @@ import type {
 } from '../../types/resource.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  exportNamesCarriedFrom,
   type ResourceState,
   type StackState,
 } from '../../types/state.js';
@@ -1369,6 +1370,10 @@ function buildStackState(
     region,
     resources,
     outputs: existingState?.outputs ?? {},
+    // The bag above is carried forward, so its export set travels with it
+    // (issue #2193); a record built from nothing exports nothing, and that is
+    // a KNOWN `[]`, not an unknown.
+    ...(existingState ? exportNamesCarriedFrom(existingState) : { exportNames: [] }),
     lastModified: Date.now(),
   };
 }

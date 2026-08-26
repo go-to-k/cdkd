@@ -258,6 +258,48 @@ describe('buildCrossStackResolver', () => {
       dispose();
     });
 
+    it('the fallback scan skips a same-named PLAIN output in an earlier stack and binds to the real exporter (#2193)', async () => {
+      // The shadowing shape, on the local path: the decoy is listed FIRST and
+      // holds a plain output NAMED like the export (`exportNames: []` says it
+      // exports nothing); the producer's set names the alias. A scan over
+      // every key returned the decoy's value before reaching the producer.
+      const { resolver, dispose } = await makeResolver();
+      mocks.listStacksMock.mockResolvedValue([
+        { stackName: 'Decoy', region: 'us-east-1' },
+        { stackName: 'Producer', region: 'us-east-1' },
+      ]);
+      mocks.getStateMock.mockImplementation(async (stackName: string) => ({
+        state:
+          stackName === 'Decoy'
+            ? { stackName, resources: {}, outputs: { Shared: 'decoy-value' }, exportNames: [] }
+            : {
+                stackName,
+                resources: {},
+                outputs: { ProducerArn: 'producer-value', Shared: 'producer-value' },
+                exportNames: ['Shared'],
+              },
+        etag: 'e',
+      }));
+
+      expect(await resolver.resolveImport('Shared')).toBe('producer-value');
+      // A plain output name is not importable even though a stack holds it.
+      expect(await resolver.resolveImport('ProducerArn')).toBeUndefined();
+      dispose();
+    });
+
+    it('the fallback scan still serves every key of a pre-v9 record (legacy rule until it redeploys)', async () => {
+      const { resolver, dispose } = await makeResolver();
+      mocks.listStacksMock.mockResolvedValue([{ stackName: 'Legacy', region: 'us-east-1' }]);
+      mocks.getStateMock.mockResolvedValue({
+        // No `exportNames` on record: nothing says which key is the export.
+        state: { stackName: 'Legacy', resources: {}, outputs: { Shared: 'legacy-value' } },
+        etag: 'e',
+      });
+
+      expect(await resolver.resolveImport('Shared')).toBe('legacy-value');
+      dispose();
+    });
+
     it('falls back via per-stack scan on index lookup THROW (treated as miss)', async () => {
       const { resolver, dispose } = await makeResolver();
       // Override the default mock: simulate a corrupt-index throw, which
