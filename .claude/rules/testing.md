@@ -17,6 +17,38 @@ paths:
   `tests/unit/scripts/test-import-convention.test.ts` (fails the local test
   run, naming the offending file).
 - Mocking: Mock AWS SDK with vi.mock()
+- **Mocking `src/utils/aws-clients.js` does NOT isolate a provider that builds
+  its OWN client.** `new Route53Client({ region })` inside a provider ignores
+  that mock entirely, so the test transacts with whatever AWS account the
+  runner is authenticated to. The dangerous direction is silent: a call that
+  FAILS looks like an ordinary red, while one that SUCCEEDS creates a real,
+  billable resource and still reports green. A network fence in
+  `tests/setup.ts` refuses any outbound AWS call from a vitest run and names
+  the refused host plus the remedy (issue
+  [#2081](https://github.com/go-to-k/cdkd/issues/2081)); it also FAILS the test
+  from an `afterEach`, because a bare `rejects.toThrow()` is satisfied by the
+  refusal itself and would otherwise hide the escape. It is a RUNTIME control,
+  so it catches a leaked client only when a test EXERCISES it -- a file that
+  constructs one and never calls it stays green, and only a static scan would
+  see that.
+- **When the fence fires, find the CONSTRUCTION SITE before choosing the mock
+  -- and never an opt-out.** Which mock is correct depends on where the
+  escaping client is built, and both answers occur in this repo. Of the nine
+  files the fence caught, SIX construct the client inside the provider and are
+  fixed by mocking the SDK PACKAGE -- `vi.mock('@aws-sdk/client-<svc>', ...)`,
+  the shape `tests/unit/provisioning/route53-provider.test.ts` uses. The other
+  THREE (`tests/unit/analyzer/diff-calculator.test.ts`,
+  `tests/unit/deployment/deploy-engine-interrupt-cause.test.ts`,
+  `tests/unit/deployment/strict-getatt-output-refusal-cause.test.ts`) reach
+  `cloudformation:DescribeType` through `getAwsClients().cloudFormation` and
+  nothing self-constructs, so mocking `src/utils/aws-clients.js` is the right
+  fix there and a package mock would be the wrong one. Watch the package name:
+  the application-auto-scaling client hyphenates it
+  (`@aws-sdk/client-application-auto-scaling`) where the endpoint host does
+  not, and a mis-named `vi.mock` is silently INERT. The fence's message derives
+  the package from the refused host where it has a mapping and says plainly
+  that it cannot rather than guessing where it does not, so copy the name out
+  of the message instead of spelling it from the host.
 
 ### A `*Once` primer must be consumed by the test that primed it (mandatory)
 

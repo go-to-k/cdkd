@@ -17,6 +17,72 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+// Mock `@aws-sdk/client-application-auto-scaling` (issue #2081) — note the
+// hyphen in `auto-scaling`, which does NOT match the `application-autoscaling`
+// service name in the endpoint host. `DynamoDBGlobalTableProvider`
+// builds its OWN `new ApplicationAutoScalingClient({ region })` for the
+// capacity-target reconciliation (`getLocalAutoScalingClient` /
+// `getRegionalAutoScalingClient` / `readAutoScalingSettings`), so the
+// `src/utils/aws-clients.js` mock above — which only supplies `dynamoDB` —
+// never reaches it. Any test whose template carries a
+// `*CapacityAutoScalingSettings` block therefore issued REAL
+// `application-autoscaling` calls against whatever account the runner is
+// authenticated to.
+//
+// The calls are mocked to SUCCEED, against a table with NOTHING registered
+// yet. That state is deliberately chosen to be observationally identical to the
+// pre-fence behaviour while dropping its noise: `readAutoScalingSettings`
+// returns `null` on an empty `ScalableTargets` list exactly as it does on a
+// thrown error, and `probeExistingAutoScalingTargets` re-asserts every target
+// either way — so nothing these tests assert on moves, but the provider no
+// longer takes the best-effort "Could not register auto-scaling target" WARN
+// branch that a failing client would push it down. The reconciliation is an
+// idempotent upsert, so an unregistered table is the ordinary shape for it.
+//
+// Responses are keyed on the command class and carry the fields the provider
+// actually reads (`ScalableTargets` / `ScalingPolicies` / `NextToken`); the
+// write verbs return their real ARN-bearing shapes even though nothing reads
+// them.
+const autoScalingSend = vi.hoisted(() =>
+  vi.fn(async (command: { constructor: { name: string } }) => {
+    switch (command.constructor.name) {
+      case 'DescribeScalableTargetsCommand':
+        return { ScalableTargets: [] };
+      case 'DescribeScalingPoliciesCommand':
+        return { ScalingPolicies: [] };
+      case 'RegisterScalableTargetCommand':
+        return {
+          ScalableTargetARN:
+            'arn:aws:application-autoscaling:us-east-1:123456789012:scalable-target/1234',
+        };
+      case 'PutScalingPolicyCommand':
+        return {
+          PolicyARN:
+            'arn:aws:autoscaling:us-east-1:123456789012:scalingPolicy:1234:resource/dynamodb/table/my-test-table-xxx:policyName/test',
+          Alarms: [],
+        };
+      case 'DeleteScalingPolicyCommand':
+      case 'DeregisterScalableTargetCommand':
+        return {};
+      default:
+        throw new Error(
+          `unmocked application-autoscaling command: ${command.constructor.name}`
+        );
+    }
+  })
+);
+
+vi.mock('@aws-sdk/client-application-auto-scaling', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@aws-sdk/client-application-auto-scaling')>();
+  return {
+    ...actual,
+    ApplicationAutoScalingClient: vi
+      .fn()
+      .mockImplementation(() => ({ send: autoScalingSend, destroy: vi.fn() })),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   childLogger.child.mockReturnValue(childLogger);
   return {

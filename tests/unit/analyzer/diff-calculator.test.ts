@@ -1,4 +1,48 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
+
+/**
+ * `DiffCalculator` consults the CloudFormation registry schema for create-only
+ * properties (`src/provisioning/create-only-properties.ts` ->
+ * `describe-type.ts` -> `getAwsClients().cloudFormation`), so without a mock
+ * this file issues a REAL `cloudformation:DescribeType` against whatever
+ * account the runner is authenticated to (issue #2081).
+ *
+ * The lookup is mocked to FAIL, not to succeed, and the choice is load-bearing:
+ * every assertion in this file is about the REGISTRY-ONLY classification
+ * (`ReplacementRulesRegistry` plus the reference-propagation rules), which is
+ * exactly the fallback `getCreateOnlyPropertyPaths` takes when DescribeType
+ * fails. That is also the path these tests took in CI before the fence existed,
+ * where no credentials resolve and the call errors out. Feeding a SUCCESSFUL
+ * schema instead would route every case through the schema-driven replacement
+ * branch and silently change what this file covers.
+ *
+ * The error carries the shape the production code actually reads: `withRetry`'s
+ * `isRetryable` is `isThrottlingError`, which inspects `name` and
+ * `$metadata.httpStatusCode`. `AccessDeniedException` / 403 is neither a
+ * throttling name nor a retryable status, so it surfaces on the FIRST attempt
+ * with no backoff sleep — the same fast warn-and-fall-back path a caller
+ * without the `cloudformation:DescribeType` permission gets in production.
+ */
+const mockCloudFormationSend = vi.fn(() => {
+  const error = Object.assign(
+    new Error(
+      'User: arn:aws:iam::123456789012:user/test is not authorized to perform: ' +
+        'cloudformation:DescribeType'
+    ),
+    {
+      name: 'AccessDeniedException',
+      $metadata: { httpStatusCode: 403, requestId: 'test-request-id' },
+    }
+  );
+  return Promise.reject(error);
+});
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    cloudFormation: { send: mockCloudFormationSend },
+  }),
+}));
+
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';

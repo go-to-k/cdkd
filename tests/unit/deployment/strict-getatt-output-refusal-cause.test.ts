@@ -31,6 +31,44 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 
+/**
+ * `DeployEngine.deploy()` warms the create-only DescribeType cache for every
+ * distinct resource type in the template (`deploy-engine.ts` -> {@link
+ * getCreateOnlyPropertyPaths} -> `describe-type.ts` ->
+ * `getAwsClients().cloudFormation`), so without a mock this file issues a REAL
+ * `cloudformation:DescribeType` against whatever account the runner is
+ * authenticated to (issue #2081).
+ *
+ * The lookup is mocked to SUCCEED with the type's real registry
+ * `createOnlyProperties`, not to fail. The prefetch is fire-and-forget and its
+ * result is never read here (`calculateDiff` is itself a mock), so neither
+ * choice can move an assertion — which makes the healthy-account path the
+ * honest default: it exercises the same branch a real deploy takes, and it keeps
+ * a "Grant cloudformation:DescribeType" warning — which has nothing to do with
+ * what this file asserts — out of the run.
+ *
+ * `send` reads `command.input.TypeName` and returns the `{ Schema }` shape
+ * `fetchCreateOnlyPropertyPaths` parses; an unlisted type gets `{}`, which that
+ * parser treats as a successful lookup carrying no create-only paths.
+ */
+const CREATE_ONLY_SCHEMAS: Record<string, string[]> = {
+  'AWS::SSM::Parameter': ['/properties/Name'],
+};
+
+const mockCloudFormationSend = vi.fn((command: { input?: { TypeName?: string } }) => {
+  const typeName = command?.input?.TypeName ?? '';
+  const createOnlyProperties = CREATE_ONLY_SCHEMAS[typeName];
+  return Promise.resolve(
+    createOnlyProperties ? { Schema: JSON.stringify({ createOnlyProperties }) } : {}
+  );
+});
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    cloudFormation: { send: mockCloudFormationSend },
+  }),
+}));
+
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
     setLevel: vi.fn(),

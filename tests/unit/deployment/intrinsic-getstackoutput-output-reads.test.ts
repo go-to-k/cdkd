@@ -45,6 +45,42 @@ cfnMockSend.mockImplementation(async () => {
   throw Object.assign(new Error('Stack does not exist'), { name: 'ValidationError' });
 });
 
+// Mock STS (issue #2081): the cross-account (RoleArn) test below routes through
+// `assumeCrossAccountRole` in `src/utils/role-arn.ts`, which builds its OWN
+// `new STSClient({})` — a client no `src/utils/aws-clients.js` mock can reach.
+// Without this the test issued a REAL `sts:AssumeRole` against whatever account
+// the runner is authenticated to.
+//
+// The call is mocked to FAIL, and that is what the test is written around: its
+// own comment says "the STS mock is absent so the cross-account resolution will
+// fail", and what it pins is that `recordedOutputReads` stays empty even on the
+// cross-account ATTEMPT. Making AssumeRole succeed would need a whole fake
+// ephemeral-bucket state backend behind it and would turn this into a different
+// test — the recording site is guarded by `if (!roleArn)`, so the failing attempt
+// exercises exactly the branch under test.
+//
+// The rejection carries the shape the SDK produces for a trust-policy denial
+// (`name` + `$metadata.httpStatusCode`), which is what `assumeCrossAccountRole`
+// re-wraps into its trust-policy hint and what any downstream error classifier
+// inspects.
+const stsMockSend = vi.hoisted(() => vi.fn());
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({ send: stsMockSend, destroy: vi.fn() })),
+  };
+});
+stsMockSend.mockImplementation(async () => {
+  throw Object.assign(
+    new Error(
+      'User: arn:aws:iam::999988887777:user/test is not authorized to perform: ' +
+        'sts:AssumeRole on resource: arn:aws:iam::111122223333:role/cdkd-state-reader'
+    ),
+    { name: 'AccessDenied', $metadata: { httpStatusCode: 403, requestId: 'test-request-id' } }
+  );
+});
+
 import { IntrinsicFunctionResolver } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { ResolverContext } from '../../../src/deployment/intrinsic-function-resolver.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -227,7 +263,15 @@ describe('Fn::GetStackOutput records into context.recordedOutputReads (#668)', (
         },
         buildContext({ recordedOutputReads: recorded })
       )
-    ).rejects.toThrow();
+    ).rejects.toThrow(/AssumeRole into arn:aws:iam::111122223333:role\/cdkd-state-reader failed/);
+    // A BARE `rejects.toThrow()` here was satisfied by anything at all — including
+    // the fence's own refusal back when this file issued a real `sts:AssumeRole`,
+    // and including a `TypeError` from a future refactor. The STS mock above is
+    // what makes the matcher pinnable: with the call isolated, the rejection is
+    // deterministically `assumeCrossAccountRole`'s trust-policy wrapper from
+    // `src/utils/role-arn.ts`, so pin it. That is the same defect this whole
+    // change is about (issue #2081).
+    //
     // Whether the cross-account branch succeeded or failed, the
     // recording site is guarded by `if (!roleArn)` and must NOT
     // have pushed.
