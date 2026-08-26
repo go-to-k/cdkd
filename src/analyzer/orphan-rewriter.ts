@@ -1,4 +1,5 @@
 import {
+  carriesDynamicReference,
   cfnRefValueFromPhysicalId,
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
@@ -235,6 +236,31 @@ class AttributeFetcher {
       `--force: live fetch failed for '${orphanLogicalId}.${attribute}' (${reason}); ` +
         `falling back to cached value from state.attributes.`
     );
+    // THE SECOND READER of a cached attribute that may legitimately hold an
+    // UNRESOLVED `{{resolve:...}}` expression (issue #2055). Since that fix, a
+    // nested stack's `Outputs.<Key>` attribute is stored REDACTED on purpose —
+    // `IntrinsicFunctionResolver.resolveGetAtt` re-resolves it at the read site,
+    // where the consumer's resolver context is in hand. This path has no such
+    // context (the rewriter is an analyzer-layer pass over persisted state), so
+    // it can only splice the token VERBATIM into the sibling's rewritten
+    // properties — where it would compare unequal against the desired side on
+    // every later diff, and on a rollback replay would be re-resolved against
+    // whatever that reference names at that time.
+    //
+    // `--force` is an explicit escape hatch whose whole contract is "use a
+    // possibly-stale cached value", so this does not refuse; refusing would
+    // strand a `cdkd orphan --force` that has no other way forward. It says
+    // exactly what was spliced instead, which is the part a silent fallback
+    // did not give the user.
+    if (carriesDynamicReference(cached)) {
+      this.logger.warn(
+        `--force: the cached value for '${orphanLogicalId}.${attribute}' is an UNRESOLVED ` +
+          `dynamic reference (a nested stack's redacted output, issue #2055). It is being ` +
+          `written into the referring resource's state VERBATIM — cdkd cannot re-resolve it ` +
+          `from here. Re-run without --force once the live attribute is readable, or fix the ` +
+          `referring property by hand.`
+      );
+    }
     const cacheKey = `${orphanLogicalId}\0${attribute}`;
     this.cache.set(cacheKey, cached);
     return { ok: true, value: cached, fromCache: true };

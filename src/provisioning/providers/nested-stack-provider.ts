@@ -9,6 +9,7 @@ import type {
   DeleteContext,
 } from '../../types/resource.js';
 import { DeployEngine } from '../../deployment/deploy-engine.js';
+import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
 import { runDestroyForStack } from '../../cli/commands/destroy-runner.js';
 import {
   withNestedStackContext,
@@ -213,7 +214,11 @@ export class NestedStackProvider implements ResourceProvider {
     return {
       physicalId: this.synthesizeArn(
         ctx.accountId,
-        ctx.parentRegion,
+        // The CHILD's region, not the parent's — identical today (see
+        // `childRegion` above) but the two are named apart because the
+        // resolver READS this segment back as the producer region when it
+        // re-resolves a redacted child output (issue #2055).
+        childRegion,
         ctx.parentStackName,
         logicalId
       ),
@@ -502,6 +507,38 @@ export class NestedStackProvider implements ResourceProvider {
     childParameters: Record<string, string>,
     grandchildTemplates: Record<string, string>
   ): Promise<void> {
+    // Issue #1903. The parent resolved this row's `Parameters` block before
+    // calling us, so `childParameters` above holds PLAINTEXT for any parameter
+    // fed by a `{{resolve:secretsmanager:...}}` / SecureString `{{resolve:ssm:...}}`
+    // reference — and the child's template spells the consumption as
+    // `{Ref: <ParamName>}`, an intrinsic OBJECT, so nothing in the child's own
+    // resolution can ever record the plaintext -> expression pair its state-save
+    // choke point redacts from. The parent's bag for THIS resource is exactly
+    // that set of pairs; hand it down as the child engine's seed.
+    //
+    // TWO binders, not one (issue
+    // [#2086](https://github.com/go-to-k/cdkd/issues/2086)): the deploy engine
+    // around its six provider CREATE / UPDATE sites, and `rollback-executor.ts`
+    // around its four, where `resolveReplayProps` has just re-resolved the
+    // journal's `{{resolve:...}}` back to plaintext. The recovery path needed
+    // it too, or a rollback that reverted this row rewrote the child's
+    // `state.json` with the DECRYPTED secret.
+    //
+    // `undefined` whenever no binder is on the stack (tests, and any future
+    // non-deploy driver), which the child engine reads as "nothing to inherit"
+    // — the pre-#1903 behaviour. Standalone `cdkd rollback` never gets here at
+    // all: it builds a destroy-mode context, so `requireDeployContext` throws
+    // above.
+    //
+    // SCOPED PER RESOURCE, not per stack. What the child engine does with this
+    // map is record a pair into a resource's own bag at the moment that
+    // resource's `{Ref: <Param>}` resolves to a value carrying the plaintext —
+    // NOT pre-seed every resource's bag, which is what the first cut did and
+    // what issue [#2087](https://github.com/go-to-k/cdkd/issues/2087) is about.
+    //
+    // Never enumerate or log this map's KEYS: they are secret plaintext. It is
+    // passed on and nothing else.
+    const inheritedSecrets = getCurrentResourceSecrets();
     const childEngine = new DeployEngine(
       parentCtx.stateBackend,
       parentCtx.lockManager,
@@ -518,6 +555,7 @@ export class NestedStackProvider implements ResourceProvider {
         // `properties.Parameters` on its `AWS::CloudFormation::Stack`
         // resource — that's the authoritative source.
         parameters: childParameters,
+        ...(inheritedSecrets && inheritedSecrets.size > 0 && { inheritedSecrets }),
         parentStackInfo: {
           parentStack: parentCtx.parentStackName,
           parentLogicalId: logicalId,
@@ -596,9 +634,23 @@ export class NestedStackProvider implements ResourceProvider {
     return `${parentStackName}~${nestedLogicalId}`;
   }
 
+  /**
+   * The synthesized `physicalId` recorded on the PARENT's
+   * `AWS::CloudFormation::Stack` row.
+   *
+   * `childRegion` is the region the child stack was deployed into (its own
+   * `StackState.region`), and the segment is LOAD-BEARING as of issue
+   * [#2055](https://github.com/go-to-k/cdkd/issues/2055):
+   * `IntrinsicFunctionResolver` reads it back as the producer region when a
+   * parent property consumes `Fn::GetAtt: [<Child>, 'Outputs.<Name>']` and the
+   * child's persisted output is a redacted `{{resolve:...}}` expression. A
+   * secret NAME is regional, so resolving that expression anywhere but the
+   * child's own region can answer with a different secret. Equal to the
+   * parent's region today; do not collapse the two.
+   */
   private synthesizeArn(
     accountId: string,
-    region: string,
+    childRegion: string,
     parentStackName: string,
     logicalId: string
   ): string {
@@ -606,7 +658,7 @@ export class NestedStackProvider implements ResourceProvider {
     // that misuses this value as a real AWS ARN fails loudly with
     // `Invalid ARN partition: cdkd-local` rather than silently using a
     // non-ARN string.
-    return `arn:cdkd-local:${region}:${accountId}:nested-stack/${parentStackName}/${logicalId}`;
+    return `arn:cdkd-local:${childRegion}:${accountId}:nested-stack/${parentStackName}/${logicalId}`;
   }
 
   private extractParameters(properties: Record<string, unknown>): Record<string, string> {
@@ -708,6 +760,42 @@ export class NestedStackProvider implements ResourceProvider {
     return result;
   }
 
+  /**
+   * Surface the child's PERSISTED outputs as the parent's `Outputs.<Key>`
+   * attributes, VERBATIM — including a secret-bearing one, which PR #1899
+   * persists as its unresolved `{{resolve:...}}` expression.
+   *
+   * DELIBERATELY NOT the place the expression is re-resolved (issue
+   * [#2055](https://github.com/go-to-k/cdkd/issues/2055)). Re-resolving here
+   * would be easy — `readChildOutputsAsAttributes` is already async — and it
+   * would trade one bug for a worse one: this map becomes the parent's
+   * `ResourceState.attributes`, and every CONSUMER resource then reads the
+   * plaintext through `Fn::GetAtt` with no entry in its OWN
+   * `recordedSecretValues`, so the deploy engine's save choke point has nothing
+   * to redact it back to and the consumer's `state.json` persists the decrypted
+   * secret. Keeping the expression here keeps BOTH the parent's nested-stack row
+   * and every consumer's record redacted.
+   *
+   * The re-resolution therefore lives at the READ site, in
+   * `IntrinsicFunctionResolver.resolveGetAtt`, where the CONSUMER's resolver
+   * context is in hand — the same seam and the same reason as the
+   * `Fn::ImportValue` / `Fn::GetStackOutput` arms of issue #1934.
+   *
+   * "A read site risks missing a caller" is answered for the RESOLUTION path by
+   * there being exactly one: the flat-key attribute lookup, which
+   * `getAttribute()` below exists to prove is the only route (it throws for
+   * anything that falls through it).
+   *
+   * It is NOT answered for every reader of `ResourceState.attributes` in the
+   * codebase, and an earlier revision of this note claimed it was.
+   * `AttributeFetcher.cacheFallback` in `src/analyzer/orphan-rewriter.ts` reads
+   * `orphan.attributes?.[attribute]` directly under `cdkd orphan --force` and
+   * has no resolver context to re-resolve with, so it splices the token
+   * verbatim into the referring resource's state and warns about exactly that.
+   * The seam decision above is unchanged — putting the plaintext here would
+   * make EVERY consumer persist it — but the count is "one resolution path",
+   * not "one reader".
+   */
   private buildOutputsAttributes(outputs: Record<string, unknown>): Record<string, unknown> {
     const attributes: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(outputs)) {

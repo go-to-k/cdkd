@@ -1610,6 +1610,13 @@
       "scenarios": []
     },
     {
+      "name": "nested-stack-secret",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
       "name": "nlb-source-nat",
       "annotated": true,
       "scenarios": []
@@ -2282,6 +2289,7 @@
       "fixtures": [
         "cross-stack-secret-import",
         "dynamic-ref-cross-region",
+        "nested-stack-secret",
         "rollback-cross-region-secret",
         "secrets-array-nested",
         "secrets-dynamic-ref"

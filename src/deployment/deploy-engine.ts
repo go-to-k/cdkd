@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { withCurrentResourceSecrets } from './resource-secrets-scope.js';
 import {
   collectPublishedOutputNames,
   exportAliasCollisionWarning,
@@ -229,6 +230,74 @@ export interface DeployEngineOptions {
     parentLogicalId: string;
     parentRegion: string;
   };
+
+  /**
+   * Secrets the PARENT already resolved on this child's behalf (issue
+   * [#1903](https://github.com/go-to-k/cdkd/issues/1903)) — the seed map
+   * `NestedStackProvider` hands the child {@link DeployEngine} it builds.
+   *
+   * WHY A CHILD ENGINE NEEDS ONE AT ALL. cdkd's secret redaction rests on the
+   * resolver recording `plaintext -> {{resolve:...}} expression` into
+   * `recordedSecretValues`, which this engine reads at its state-save choke
+   * point. A nested stack breaks that chain: the parent resolves the child's
+   * `Parameters` block, so the value reaching the child is already PLAINTEXT
+   * and the child's template carries `{Ref: <ParamName>}` — an intrinsic
+   * OBJECT, not an expression string. Nothing in the child's own resolution
+   * ever sees a `{{resolve:`, so its `perResourceSecrets` came out EMPTY and
+   * the child's `state.json` persisted the decrypted secret with no expression
+   * to redact back to.
+   *
+   * The PATH-based redaction that closed #1904 / #1900 structurally cannot
+   * help, and that is why this is a seed rather than a second source bag: that
+   * pass copies a source leaf that IS a `{{resolve:...}}` string, and the
+   * child's corresponding leaf is `{Ref: ...}`. There is no leaf to copy.
+   *
+   * WHAT IT IS USED FOR, both halves being needed or the fix trades one bug for
+   * another:
+   *
+   * 1. {@link buildResolverContext} puts it on the resolver context as
+   *    `ResolverContext.inheritedSecrets`, and the resolver copies a pair into
+   *    the context's own `recordedSecretValues` at the moment a `{Ref: Param}`
+   *    resolves to a value carrying that plaintext
+   *    (`recordInheritedParameterSecrets`). The ordinary VALUE-based redaction
+   *    then finds the plaintext wherever the parameter landed in that resource
+   *    — including inside an `Fn::Join` / `Fn::Sub` that merely EMBEDS it.
+   *
+   *    RECORDED AT RESOLUTION TIME, NOT PRE-SEEDED (issue
+   *    [#2087](https://github.com/go-to-k/cdkd/issues/2087)). The first cut
+   *    pre-loaded every child resource's map with this bag, which redacted the
+   *    genuine consumers but also spliced the expression into an UNRELATED
+   *    resource's literal that merely contained the plaintext as a substring
+   *    (`my-production-bucket` against a secret `production`) — a change the
+   *    desired side never mirrors, so the child acquired a perpetual UPDATE, or
+   *    a perpetual REPLACEMENT on a create-only property. Recording at
+   *    resolution time reproduces the parent's own scoping, where
+   *    `perResourceSecrets` is keyed by logical id.
+   * 2. The DIFF resolver context binds the child's `parameters` to the
+   *    REDACTED form (see `redactParametersForDiff`), so the comparison stays
+   *    expression-vs-expression. Without it the child's desired side resolves
+   *    `{Ref: Param}` to plaintext while its state now holds the expression,
+   *    and every deploy reports a spurious UPDATE — the #1901 perpetual-change
+   *    class, arriving through the parameter boundary.
+   *
+   * The redaction of (2) is deliberately NOT applied to the
+   * CONDITION-evaluation context: an `Fn::Equals` over a parameter must compare
+   * the value the stack actually deployed with, and substituting the expression
+   * there would flip a condition. (1) is harmless there and on the diff context
+   * alike, because it only RECORDS — it never changes a resolved value.
+   *
+   * The map is READ-ONLY: the resolver copies matching entries out of it into a
+   * fresh per-resource map, so passing the parent's own bag by reference cannot
+   * let a child's resolution write back into it.
+   *
+   * Nesting composes without extra plumbing, and now scopes on the way down
+   * too: a grandchild's `AWS::CloudFormation::Stack` row resolves its own
+   * `Parameters` block through a context carrying this option, so the pairs its
+   * values actually reference are recorded into THAT row's bag — which is
+   * exactly the bag `withCurrentResourceSecrets` binds around the provider call
+   * that builds the grandchild engine.
+   */
+  inheritedSecrets?: RecordedSecretValues;
 
   /**
    * Pre-provisioning gate invoked with the stack's CURRENT state, exactly
@@ -974,6 +1043,39 @@ export class DeployEngine {
       ...(this.exportIndexStore && { exportIndex: this.exportIndexStore }),
       recordedImports: this.recordedImports,
       recordedOutputReads: this.recordedOutputReads,
+      // The pairs the PARENT resolved for this stack, on a nested-stack child
+      // engine only (issue #1903). NOT pre-loaded into the map below: the
+      // resolver copies a pair across at the moment a resource's `{Ref: Param}`
+      // actually resolves to a value carrying that plaintext
+      // (`recordInheritedParameterSecrets`), so the pair lands in the bag of
+      // the resource that consumed the parameter and nowhere else.
+      //
+      // The first cut DID pre-load every context's map, and that was issue
+      // #2087: `redactSecretsForState` substring-matches at or above
+      // `MIN_NEEDLE_LENGTH`, so a child resource that never referenced the
+      // parameter but spells `my-production-bucket` while the secret is
+      // `production` had `my-{{resolve:...}}-bucket` persisted. The desired
+      // side does NOT mirror that — `redactParametersForDiff` rewrites only the
+      // PARAMETERS — so the stack acquired a perpetual UPDATE, or a perpetual
+      // REPLACEMENT on a create-only property. The rationale that shipped with
+      // it ("the same over-approximation the parent already accepts") was
+      // simply wrong: the parent scopes its bag to the ONE resource whose
+      // resolution produced the secret, because `perResourceSecrets` is keyed
+      // by logical id. Recording at resolution time gives the child the SAME
+      // scoping rule.
+      //
+      // PARITY, not perfection, and the residual is worth naming rather than
+      // leaving to be rediscovered: within a resource that genuinely DOES
+      // consume the parameter, `redactSecretsForState` still substring-matches
+      // every leaf, so an UNRELATED literal in that same resource carrying the
+      // plaintext verbatim is rewritten too. The parent has exactly that
+      // residual for a resource that resolves a `{{resolve:...}}`, so this is
+      // the child reaching parity with it — not a claim that no
+      // over-approximation remains.
+      ...(this.options.inheritedSecrets &&
+        this.options.inheritedSecrets.size > 0 && {
+          inheritedSecrets: this.options.inheritedSecrets,
+        }),
       // FRESH per-context map: the resolver records each resolved secret
       // (plaintext -> `{{resolve:...}}` expression) here (GHSA fix). The caller
       // captures it and stores it per-logicalId in `perResourceSecrets` (or in
@@ -982,6 +1084,35 @@ export class DeployEngine {
       // `perResourceSecrets` field doc for why per-resource, not session-wide.
       recordedSecretValues: new Map<string, string>(),
     };
+  }
+
+  /**
+   * The parameter bag the DIFF resolver context binds, with any inherited
+   * secret plaintext rewritten back to its `{{resolve:...}}` expression (issue
+   * #1903).
+   *
+   * The provisioning pass must keep the REAL values — that is what actually
+   * reaches AWS — but the child's persisted state holds the expression, so the
+   * comparison side has to hold it too or every deploy of a secret-bearing
+   * nested stack reports a spurious UPDATE and re-issues an AWS call that
+   * changes nothing. This is the child-stack twin of the
+   * `skipDynamicReferences` flag the parent's own diff sets: same goal
+   * (expression-vs-expression), reached differently because the child's
+   * template carries `{Ref: Param}` rather than a `{{resolve:` string, so
+   * there is no reference for that flag to decline to resolve.
+   *
+   * `redactSecretsForState` rather than a `Map.get` lookup so an EMBEDDED
+   * secret — a parameter whose value is `postgres://u:<secret>@host` because
+   * the parent built it with `Fn::Sub` — is rewritten the same way the
+   * state-save choke point rewrites it, keeping the two sides byte-identical.
+   * Identity-returns when nothing was inherited.
+   */
+  private redactParametersForDiff(
+    parameterValues: Record<string, unknown>
+  ): Record<string, unknown> {
+    const inherited = this.options.inheritedSecrets;
+    if (!inherited || inherited.size === 0) return parameterValues;
+    return redactSecretsForState(parameterValues, inherited);
   }
 
   /**
@@ -1598,9 +1729,21 @@ export class DeployEngine {
       this.logger.debug(`Template has ${Object.keys(template.Resources || {}).length} resources`);
 
       // 2.5. Resolve parameters from template and user input
+      // The inherited bag travels into `resolveParameters` as well as into the
+      // per-resource contexts below (issue #1903 review round 2). This is the
+      // seam where the PARENT's already-decrypted values first enter the child
+      // engine, so it is where both the `--verbose` parameter lines are masked
+      // and where a declared `Type` that would coerce the value out of cdkd's
+      // string-keyed redaction model is refused.
       const parameterValues = await this.resolver.resolveParameters(
         template,
-        this.options.parameters
+        this.options.parameters,
+        {
+          ...(this.options.inheritedSecrets &&
+            this.options.inheritedSecrets.size > 0 && {
+              inheritedSecrets: this.options.inheritedSecrets,
+            }),
+        }
       );
       this.logger.debug(
         `Resolved ${Object.keys(parameterValues).length} parameters: ${Object.keys(parameterValues).join(', ')}`
@@ -1682,7 +1825,13 @@ export class DeployEngine {
         {
           template: effectiveTemplate,
           resources: currentState.resources,
-          parameters: parameterValues,
+          // The DIFF side binds the REDACTED parameter bag on a nested-stack
+          // child (issue #1903). The provisioning contexts below deliberately
+          // keep `parameterValues` — the real values are what reach AWS — and
+          // so does the condition evaluation above, where substituting an
+          // expression would flip an `Fn::Equals` over a parameter. See
+          // `redactParametersForDiff`.
+          parameters: this.redactParametersForDiff(parameterValues),
           conditions,
         },
         stackName
@@ -1698,11 +1847,12 @@ export class DeployEngine {
       // diff (GHSA fix): state now stores the unresolved expression, so
       // comparing the desired side as its expression too avoids a spurious
       // perpetual UPDATE on every deploy of a secret-bearing resource, and
-      // fetches no secret value at plan time. That last claim is scoped to THIS
-      // context: `cdkd diff --recursive` resolves a nested child's `Parameters`
-      // through a context that sets neither flag, so it still decrypts there
-      // (issue #1903 — coupled with the child-state half, so it cannot be fixed
-      // by setting the flag alone). A changed expression still diffs.
+      // fetches no secret value at plan time. `cdkd diff --recursive` sets the
+      // same flag when it resolves a nested child's input `Parameters`
+      // (`resolveChildStackParameters`) — as of issue #1903, together with the
+      // child-state half that makes the comparison self-consistent; setting it
+      // there alone would have compared an expression against a child state
+      // still holding plaintext. A changed expression still diffs.
       // An `ssm` reference is classified by the parameter's TYPE rather than by
       // its spelling (issue #1901), so unlike the secretsmanager case the diff
       // DOES issue one `GetParameter` per not-yet-classified reference — with
@@ -3473,7 +3623,13 @@ export class DeployEngine {
       return await withRetry(
         () =>
           this.withRetry(
-            () => replaceProvider.create(logicalId, resourceType, replaceProps, createContext),
+            // Issue #1903, same scope as the ordinary CREATE path: bind the
+            // resolved-secrets bag around every provider create, so no
+            // replacement route can silently skip the nested-stack seed.
+            () =>
+              withCurrentResourceSecrets(secrets, () =>
+                replaceProvider.create(logicalId, resourceType, replaceProps, createContext)
+              ),
             logicalId,
             undefined,
             undefined,
@@ -3615,15 +3771,20 @@ export class DeployEngine {
 
         const result = await this.withRetry(
           () =>
-            createProvider.create(logicalId, resourceType, createProps, {
-              // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
-              // so a `{{resolve:secretsmanager:...}}` property is plaintext by
-              // now; a provider that echoes one into its own warn is outside
-              // both existing masking boundaries (this engine's error/reason
-              // text and the resolver's debug line). Give it the capability
-              // rather than the bag — see `SecretMaskingContext`.
-              maskSecrets: createSecretMasker(createSecrets),
-            }),
+            // Issue #1903: the SAME bag, bound to this call's async chain so
+            // `NestedStackProvider` can seed it into the child engine it
+            // builds. Inside the retry arrow, so every attempt is scoped.
+            withCurrentResourceSecrets(createSecrets, () =>
+              createProvider.create(logicalId, resourceType, createProps, {
+                // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
+                // so a `{{resolve:secretsmanager:...}}` property is plaintext by
+                // now; a provider that echoes one into its own warn is outside
+                // both existing masking boundaries (this engine's error/reason
+                // text and the resolver's debug line). Give it the capability
+                // rather than the bag — see `SecretMaskingContext`.
+                maskSecrets: createSecretMasker(createSecrets),
+              })
+            ),
           logicalId,
           undefined,
           undefined,
@@ -3989,9 +4150,11 @@ export class DeployEngine {
               () =>
                 this.withRetry(
                   () =>
-                    replaceProvider.create(logicalId, resourceType, replaceProps, {
-                      maskSecrets: createSecretMasker(updateSecrets),
-                    }),
+                    withCurrentResourceSecrets(updateSecrets, () =>
+                      replaceProvider.create(logicalId, resourceType, replaceProps, {
+                        maskSecrets: createSecretMasker(updateSecrets),
+                      })
+                    ),
                   logicalId,
                   undefined,
                   undefined,
@@ -4045,9 +4208,11 @@ export class DeployEngine {
             try {
               createResult = await this.withRetry(
                 () =>
-                  replaceProvider.create(logicalId, resourceType, replaceProps, {
-                    maskSecrets: createSecretMasker(updateSecrets),
-                  }),
+                  withCurrentResourceSecrets(updateSecrets, () =>
+                    replaceProvider.create(logicalId, resourceType, replaceProps, {
+                      maskSecrets: createSecretMasker(updateSecrets),
+                    })
+                  ),
                 logicalId,
                 undefined,
                 undefined,
@@ -4340,17 +4505,22 @@ export class DeployEngine {
           try {
             result = await this.withRetry(
               () =>
-                updateProvider.update(
-                  logicalId,
-                  currentResource.physicalId,
-                  resourceType,
-                  updateProps,
-                  currentProps,
-                  // The UPDATE twin of the CREATE call's masker (issue #1932
-                  // item 3): same resolved bag, same exposure, so the contract
-                  // is applied on both or it has a hole in the shape of
-                  // whichever path a given deploy takes.
-                  { maskSecrets: createSecretMasker(updateSecrets) }
+                // The UPDATE twin of the CREATE call's async-local scope (issue
+                // #1903). Both paths bind it or a nested stack that already
+                // exists silently keeps persisting the parent's plaintext.
+                withCurrentResourceSecrets(updateSecrets, () =>
+                  updateProvider.update(
+                    logicalId,
+                    currentResource.physicalId,
+                    resourceType,
+                    updateProps,
+                    currentProps,
+                    // The UPDATE twin of the CREATE call's masker (issue #1932
+                    // item 3): same resolved bag, same exposure, so the contract
+                    // is applied on both or it has a hole in the shape of
+                    // whichever path a given deploy takes.
+                    { maskSecrets: createSecretMasker(updateSecrets) }
+                  )
                 ),
               logicalId,
               undefined,
@@ -4475,9 +4645,11 @@ export class DeployEngine {
                   : resolvedProps;
               const createResult = await this.withRetry(
                 () =>
-                  replProvider.create(logicalId, resourceType, replProps, {
-                    maskSecrets: createSecretMasker(updateSecrets),
-                  }),
+                  withCurrentResourceSecrets(updateSecrets, () =>
+                    replProvider.create(logicalId, resourceType, replProps, {
+                      maskSecrets: createSecretMasker(updateSecrets),
+                    })
+                  ),
                 logicalId,
                 undefined,
                 undefined,

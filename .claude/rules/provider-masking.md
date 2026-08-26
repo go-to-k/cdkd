@@ -124,6 +124,23 @@ read path back to the values, keeps `src/provisioning/**` free of a
 had this shape — `drift.ts` hands `withRetry` a masking `logger.debug` rather
 than the bag.
 
+THE ONE PROVIDER THAT DOES GET THE PAIRS, and why it is not a hole in that
+rule: `NestedStackProvider` must SEED a child `DeployEngine` with the parent's
+`plaintext -> {{resolve:...}}` map, and a function cannot substitute — seeding
+needs the pairs, not the ability to mask (issue
+[#1903](https://github.com/go-to-k/cdkd/issues/1903)). So the bag travels a
+channel only that provider reads — `getCurrentResourceSecrets()` from
+`src/deployment/resource-secrets-scope.ts`, an `AsyncLocalStorage` the deploy
+engine and `rollback-executor.ts` bind around each provider CREATE / UPDATE
+call — instead of widening `CreateContext`, which is the type all ~130
+providers see. The idiom is the one that provider already lives in
+(`getCurrentNestedStackContext()`).
+
+**A provider reading it MUST NOT enumerate or log its KEYS**: they are secret
+plaintext, and the only sanctioned use is handing the map on as a redaction
+seed. Do not reach for this accessor in a new provider — if a provider needs to
+mask, it needs `maskSecrets`, which is the whole point of the paragraph above.
+
 What it does NOT cover: cdkd's dynamic-reference secret model only
 (`{{resolve:secretsmanager:...}}`, `SecureString` ssm). A `NoEcho: true`
 template PARAMETER is outside that model — the resolver redacts it in its own
