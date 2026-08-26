@@ -1,3 +1,10 @@
+## [0.284.70](https://github.com/go-to-k/cdkd/compare/v0.284.69...v0.284.70) (2026-08-26)
+
+
+### Bug Fixes
+
+* **deployment:** resolve a nested stack's Outputs reference in the Fn::GetAtt string form, and refuse rather than keep a structural Fn::Sub failure ([#2292](https://github.com/go-to-k/cdkd/issues/2292)) ([72de37e](https://github.com/go-to-k/cdkd/commit/72de37ed987ac3c66fc63cbdf6904fed16ee80d5))
+
 ## [0.284.69](https://github.com/go-to-k/cdkd/compare/v0.284.68...v0.284.69) (2026-08-26)
 
 
