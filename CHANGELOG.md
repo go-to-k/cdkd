@@ -1,3 +1,10 @@
+## [0.284.54](https://github.com/go-to-k/cdkd/compare/v0.284.53...v0.284.54) (2026-08-26)
+
+
+### Bug Fixes
+
+* **gc:** collect abandoned custom-resource response placeholders ([#2238](https://github.com/go-to-k/cdkd/issues/2238)) ([dad94b4](https://github.com/go-to-k/cdkd/commit/dad94b4878460756fa086b66ed0cf1ac5f55ec2a))
+
 ## [0.284.53](https://github.com/go-to-k/cdkd/compare/v0.284.52...v0.284.53) (2026-08-26)
 
 
