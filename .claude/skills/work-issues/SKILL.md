@@ -1454,6 +1454,35 @@ Two things follow, and the second is the one that is easy to get backwards:
   three rounds plus a live arm that was written, passed, mutation-probed and then
   reverted, so none of it is rebuilt.
 
+**Run the integ LAST — after the final edit to any gate-scoped file, not after
+the final edit you happened to think of.** `/run-integ`'s own tail says "review
+polish first, integ last", but the ordering is DECIDED here, and the rule is
+easy to satisfy in spirit and miss in fact: you run the integ when the lane
+feels done, and then a reviewer hands you three one-line nits that land in the
+same scope. On 2026-08-25 that cost two full real-AWS re-runs in one run of this
+skill. Lane go-to-k/cdkd#2189 ran `local-run-task-from-state` (~5 min), then
+review fixed a shell quoting bug and a missing assertion in the SAME
+`verify.sh`, which is in `integ-local`'s include — marker stale, run again. Lane
+go-to-k/cdkd#1978 ran `remove-protection` (~25 min), then a review nit threaded
+a clock through both DynamoDB providers, which are in `integ-destroy`'s include
+— marker stale, run again. Both re-runs were correct: the gate is doing exactly
+its job, and the second `local-run-task-from-state` run genuinely executed an
+assertion the first never had.
+
+So the sequencing is: dispatch reviewers, apply EVERY finding including the
+nits, THEN rebase, THEN run the integ, THEN set the markers. Two corollaries
+that are cheap to check and expensive to skip:
+
+- **Before starting an integ, ask what is still outstanding.** A reviewer still
+  running, a nit you have not applied yet, a rebase you know is coming — each
+  one will stale the marker the run is about to set. `git diff origin/main...HEAD
+  --name-only` against the gate's include list answers it in one command.
+- **A rebase can stale a `hash: diff` marker on its own**, because the merge
+  base moves: an in-scope file changed by an incoming merge that this branch
+  also touches invalidates it. That is the one case where re-running is
+  unavoidable rather than self-inflicted — so do the rebase BEFORE the integ,
+  not after, and expect `markgate verify` to be the thing that tells you.
+
 Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup, code
 review, and a **live-test of the changed behavior** on top of `/check`. Unit tests
 passing is necessary but NOT sufficient — the fix must be exercised against real
@@ -1828,10 +1857,34 @@ merging while yours sits open — on 2026-08-19 both remaining lanes went
 CONFLICTING on `docs/changelog-cdkd.md` between `gh pr create` and the first
 check. Rebase, force-push, and CI fires within ~30s.
 
-The changelog conflicts on nearly every parallel-lane rebase, and a
-commit-by-commit rebase re-conflicts on each one. Since the repo squash-merges,
-flattening first is cheaper and loses nothing: `git reset --soft $(git merge-base
-origin/main HEAD)`, one commit, then rebase — at most one conflict to resolve.
+**FLATTEN BEFORE YOU REBASE — this is the default step, not a remedy to reach
+for once the conflicts start.** The changelog conflicts on nearly every
+parallel-lane rebase, and a commit-by-commit rebase re-conflicts on it ONCE PER
+COMMIT. Since the repo squash-merges, flattening loses nothing:
+
+```bash
+git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
+git commit -m "<the squashed message>"
+git rebase origin/main                                   # at most one conflict
+```
+
+Read as advice rather than as a step, it gets skipped, because at the moment you
+type `git rebase` you have not hit a conflict yet and the multi-commit history
+still looks worth keeping — it is not, since the merge squashes it anyway. On
+2026-08-25 all three lanes of one run were rebased un-flattened first, and every
+one of them stopped on `docs/changelog-cdkd.md` at its FIRST commit, with four
+to six more queued behind it; each was then aborted, flattened and rebased
+again, which is the same work done twice. Flatten first and the conflict is one
+resolution per lane.
+
+After resolving, verify BOTH sides survived rather than trusting the resolution
+— for the changelog the cheapest form is a whole-file diff against main, which
+needs no marker phrase and cannot be defeated by a hard wrap:
+
+```bash
+diff <(git show origin/main:docs/changelog-cdkd.md) docs/changelog-cdkd.md | grep '^<'
+# nothing printed = every line main had is still there; the '^>' lines are yours
+```
 Resolve `docs/changelog-cdkd.md` by keeping BOTH entries, but never reflexively
 keep-both a SHARED paragraph: `.claude/rules/code-layout.md` conflicted on one
 bullet that both sides had edited, where main's version described this lane's own
