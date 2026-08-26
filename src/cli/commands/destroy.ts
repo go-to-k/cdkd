@@ -38,7 +38,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
-import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
+import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import { matchStacks, describeStack, type StackLike } from '../stack-matcher.js';
 import { runDestroyForStack } from './destroy-runner.js';
@@ -221,9 +221,28 @@ async function destroyCommand(
   });
   setAwsClients(awsClients);
 
+  // Command-scoped interrupt record (issue #2117). Registered BEFORE the
+  // SIGTERM forwarder below, mirroring `deploy.ts`, so a forwarded signal can
+  // never arrive while the command owns no handler of its own.
+  const interruptWatch = watchCommandInterrupt({ command: 'cdkd destroy' });
+
   // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
   // through the destroy-runner's graceful-SIGINT drain (issue #816).
-  const unforwardSigterm = forwardSigtermToSigint();
+  //
+  // Guarded: a throw here would leave the watch's listener installed for the
+  // rest of the PROCESS, and `forwardSigtermToSigint` decides between emitting
+  // SIGINT and `process.exit(143)` on `process.listenerCount('SIGINT') === 0`,
+  // so one leaked listener silently changes SIGTERM handling for every command
+  // that follows. The other half of that throw — the interrupt SCOPE it opens
+  // before registering — is unwound inside `forwardSigtermToSigint` itself,
+  // since a caller holding no unregister function cannot close it.
+  let unforwardSigterm: () => void;
+  try {
+    unforwardSigterm = forwardSigtermToSigint();
+  } catch (error) {
+    interruptWatch.dispose();
+    throw error;
+  }
 
   try {
     // 1. Initialize components
@@ -368,8 +387,14 @@ async function destroyCommand(
     // when it is not.
     let totalSkipped = 0;
     // Set true when a per-stack destroy was gracefully interrupted (issue
-    // #816). Stops the multi-stack loop and surfaces a non-zero exit below.
+    // #816) — the PER-STACK outcome, as the runner reported it.
     let interrupted = false;
+    // What the multi-stack loop and the exit code actually ask (issue #2117):
+    // "has this COMMAND been interrupted?" — either a stack reported it, or a
+    // signal landed in a window no runner handler spanned. Always call it at
+    // the point of decision; assigning it to a local re-creates the
+    // sampled-once channel this issue is about.
+    const runInterrupted = (): boolean => interrupted || interruptWatch.interrupted();
 
     let stackNames: string[];
     if (options.all) {
@@ -566,6 +591,16 @@ async function destroyCommand(
         continue;
       }
 
+      // Issue #2117: the last check before any delete is issued, and it sits
+      // ABOVE `startRunRecorder` deliberately. The two guards at the end of the
+      // loop body cannot cover a signal that lands DURING this iteration but
+      // before dispatch — the state read and the per-stack prompt both happen
+      // in here — and starting a destroy after the user pressed Ctrl-C is the
+      // same defect one stack earlier. Breaking BELOW the recorder would emit a
+      // RUN_STARTED and then finalize it SUCCEEDED, so `cdkd events` would show
+      // a clean destroy run for a stack nothing touched.
+      if (runInterrupted()) break;
+
       // Issue [#808] — best-effort structured deployment-event recorder
       // for this destroy run. The runner emits per-resource DELETE events
       // through it; this CLI emits RUN_STARTED (inside startRunRecorder) /
@@ -585,67 +620,69 @@ async function destroyCommand(
       // state file actually carries an AWS::CloudFormation::Stack record;
       // for stacks without nested children this is a cheap no-op.
       try {
-        const result = await withNestedStackContext(
-          {
-            stateBackend,
-            lockManager,
-            providerRegistry,
-            parentStackName: stackName,
-            parentRegion: stackTargetRegion,
-            accountId,
-            awsClients,
-            stateBucket,
-            exportIndexStore,
-            destroyOptions: {
-              ...(options.profile && { profile: options.profile }),
-              statePrefix: options.statePrefix,
-              ...(options.removeProtection === true && { removeProtection: true }),
-              ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
-              ...(options.resourceWarnAfter?.globalMs !== undefined && {
-                resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-              }),
-              ...(options.resourceTimeout?.globalMs !== undefined && {
-                resourceTimeoutMs: options.resourceTimeout.globalMs,
-              }),
-              ...(options.resourceWarnAfter?.perTypeMs && {
-                resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-              }),
-              ...(options.resourceTimeout?.perTypeMs && {
-                resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-              }),
-            },
-          },
-          () =>
-            runDestroyForStack(stackName, stateResult.state, {
+        const result = await interruptWatch.runStack(() =>
+          withNestedStackContext(
+            {
               stateBackend,
               lockManager,
               providerRegistry,
-              baseAwsClients: awsClients,
-              baseRegion: region,
-              ...(options.profile && { profile: options.profile }),
+              parentStackName: stackName,
+              parentRegion: stackTargetRegion,
+              accountId,
+              awsClients,
               stateBucket,
-              statePrefix: options.statePrefix,
-              skipConfirmation: options.yes || options.force,
-              removeProtection: options.removeProtection === true,
-              skipFinalSnapshot: options.skipFinalSnapshot === true,
               exportIndexStore,
-              ...(options.allowUnsupportedTypes?.length && {
-                allowUnsupportedTypes: options.allowUnsupportedTypes,
-              }),
-              ...(options.resourceWarnAfter?.globalMs !== undefined && {
-                resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-              }),
-              ...(options.resourceTimeout?.globalMs !== undefined && {
-                resourceTimeoutMs: options.resourceTimeout.globalMs,
-              }),
-              ...(options.resourceWarnAfter?.perTypeMs && {
-                resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-              }),
-              ...(options.resourceTimeout?.perTypeMs && {
-                resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-              }),
-              eventRecorder,
-            })
+              destroyOptions: {
+                ...(options.profile && { profile: options.profile }),
+                statePrefix: options.statePrefix,
+                ...(options.removeProtection === true && { removeProtection: true }),
+                ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                  resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+                }),
+                ...(options.resourceTimeout?.globalMs !== undefined && {
+                  resourceTimeoutMs: options.resourceTimeout.globalMs,
+                }),
+                ...(options.resourceWarnAfter?.perTypeMs && {
+                  resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+                }),
+                ...(options.resourceTimeout?.perTypeMs && {
+                  resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+                }),
+              },
+            },
+            () =>
+              runDestroyForStack(stackName, stateResult.state, {
+                stateBackend,
+                lockManager,
+                providerRegistry,
+                baseAwsClients: awsClients,
+                baseRegion: region,
+                ...(options.profile && { profile: options.profile }),
+                stateBucket,
+                statePrefix: options.statePrefix,
+                skipConfirmation: options.yes || options.force,
+                removeProtection: options.removeProtection === true,
+                skipFinalSnapshot: options.skipFinalSnapshot === true,
+                exportIndexStore,
+                ...(options.allowUnsupportedTypes?.length && {
+                  allowUnsupportedTypes: options.allowUnsupportedTypes,
+                }),
+                ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                  resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+                }),
+                ...(options.resourceTimeout?.globalMs !== undefined && {
+                  resourceTimeoutMs: options.resourceTimeout.globalMs,
+                }),
+                ...(options.resourceWarnAfter?.perTypeMs && {
+                  resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+                }),
+                ...(options.resourceTimeout?.perTypeMs && {
+                  resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+                }),
+                eventRecorder,
+              })
+          )
         );
         totalErrors += result.errorCount;
         totalSkipped += result.skippedCount;
@@ -687,14 +724,22 @@ async function destroyCommand(
         new DeploymentEventsReader(stateBackend),
         stackName,
         stackTargetRegion,
-        { purgeEvents: options.purgeEvents, runResult: destroyRunResult, interrupted },
+        {
+          purgeEvents: options.purgeEvents,
+          runResult: destroyRunResult,
+          interrupted: runInterrupted(),
+        },
         logger
       );
 
       // Graceful SIGINT (issue #816): do not start destroying further stacks
       // once the user has asked to stop. The interrupted stack already
       // finished its in-flight deletes, preserved state, and released its lock.
-      if (interrupted) break;
+      // Issue #2117: read LIVE rather than the once-sampled `result.interrupted`
+      // — a signal delivered anywhere above (including after the runner dropped
+      // its own listener, and during the event finalize / purge just done) must
+      // stop the loop just as a signal during the deletes does.
+      if (runInterrupted()) break;
     }
 
     if (totalErrors > 0) {
@@ -709,7 +754,7 @@ async function destroyCommand(
           `If the same resource keeps failing, 'cdkd state orphan <stack>' removes the state record without deleting AWS resources.`
       );
     }
-    if (interrupted) {
+    if (runInterrupted()) {
       // Graceful SIGINT (issue #816): in-flight deletes finished, state was
       // preserved (trimmed), and the lock was released. Surface a non-zero
       // exit so scripts / CI see the destroy did not complete.
@@ -741,6 +786,11 @@ async function destroyCommand(
     }
   } finally {
     unforwardSigterm();
+    // Issue #2117: disposed LAST of the destroy-side handlers — the runner
+    // drops its own listener before its lock release and its `return`, so this
+    // one has to outlive that, exactly as `deploy.ts`'s top-level handler
+    // outlives `deploy-engine.ts`'s.
+    interruptWatch.dispose();
     // Cleanup AWS clients
     awsClients.destroy();
   }

@@ -61,7 +61,7 @@ import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState } from '../../types/state.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
-import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
+import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 
 /**
@@ -1243,9 +1243,22 @@ async function stateDestroyCommand(
     providerRegistry.allowUnsupportedTypes(options.allowUnsupportedTypes);
   }
 
+  // Command-scoped interrupt record (issue #2117) — see the twin in
+  // `destroy.ts`. Registered BEFORE the SIGTERM forwarder below so a forwarded
+  // signal can never arrive while the command owns no handler of its own.
+  const interruptWatch = watchCommandInterrupt({ command: 'cdkd state destroy' });
+
   // CI cancellation delivers SIGTERM, not Ctrl-C (issue #1342) — route it
-  // through the destroy-runner's graceful-SIGINT drain (issue #816).
-  const unforwardSigterm = forwardSigtermToSigint();
+  // through the destroy-runner's graceful-SIGINT drain (issue #816). Guarded
+  // against a throw for the same reason as the twin in `destroy.ts` — which
+  // also records why the interrupt SCOPE half is unwound inside the helper.
+  let unforwardSigterm: () => void;
+  try {
+    unforwardSigterm = forwardSigtermToSigint();
+  } catch (error) {
+    interruptWatch.dispose();
+    throw error;
+  }
 
   try {
     // Resolve target stack names from S3 (no synth). After PR 1, listStacks
@@ -1308,8 +1321,12 @@ async function stateDestroyCommand(
     // when it is not.
     let totalSkipped = 0;
     // Set true when a per-stack destroy was gracefully interrupted (issue
-    // #816). Stops the multi-stack loop and surfaces a non-zero exit below.
+    // #816) — the PER-STACK outcome, as the runner reported it.
     let interrupted = false;
+    // Issue #2117 — see the twin in `destroy.ts` for why the loop and the exit
+    // code ask the COMMAND-level question instead, and why this stays a call
+    // rather than becoming a local.
+    const runInterrupted = (): boolean => interrupted || interruptWatch.interrupted();
     for (const stackName of stackNames) {
       // After PR 1, the same stackName can have state in multiple regions.
       // Pick the right ref(s):
@@ -1357,83 +1374,90 @@ async function stateDestroyCommand(
         // does not synth, so accountId is not separately resolved here;
         // the field is unused on the destroy path (only `create` builds
         // the synthesized ARN).
-        const result = await withNestedStackContext(
-          {
-            stateBackend: setup.stateBackend,
-            lockManager: setup.lockManager,
-            providerRegistry,
-            parentStackName: stackName,
-            parentRegion: ref.region ?? setup.region,
-            accountId: 'unknown',
-            awsClients: setup.awsClients,
-            stateBucket: setup.bucket,
-            exportIndexStore: setup.exportIndexStore,
-            destroyOptions: {
-              ...(options.profile && { profile: options.profile }),
-              statePrefix: options.statePrefix,
-              ...(options.removeProtection === true && { removeProtection: true }),
-              ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
-              ...(options.resourceWarnAfter?.globalMs !== undefined && {
-                resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-              }),
-              ...(options.resourceTimeout?.globalMs !== undefined && {
-                resourceTimeoutMs: options.resourceTimeout.globalMs,
-              }),
-              ...(options.resourceWarnAfter?.perTypeMs && {
-                resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-              }),
-              ...(options.resourceTimeout?.perTypeMs && {
-                resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-              }),
-            },
-          },
-          () =>
-            runDestroyForStack(stackName, stateResult.state, {
+        // Issue #2117 — the last check before any delete is issued; see the
+        // twin in `destroy.ts`.
+        if (runInterrupted()) break;
+
+        const result = await interruptWatch.runStack(() =>
+          withNestedStackContext(
+            {
               stateBackend: setup.stateBackend,
               lockManager: setup.lockManager,
               providerRegistry,
-              baseAwsClients: setup.awsClients,
-              baseRegion: setup.region,
-              ...(options.profile && { profile: options.profile }),
+              parentStackName: stackName,
+              parentRegion: ref.region ?? setup.region,
+              accountId: 'unknown',
+              awsClients: setup.awsClients,
               stateBucket: setup.bucket,
-              statePrefix: options.statePrefix,
-              // --yes covers both the --all batch prompt above (already consumed)
-              // and the per-stack prompt inside the runner. Per-stack prompts are
-              // skipped when `options.yes` is set OR `--all` was set (the user
-              // already accepted the batch prompt).
-              skipConfirmation: options.yes || options.all === true,
-              removeProtection: options.removeProtection === true,
-              skipFinalSnapshot: options.skipFinalSnapshot === true,
               exportIndexStore: setup.exportIndexStore,
-              ...(options.allowUnsupportedTypes?.length && {
-                allowUnsupportedTypes: options.allowUnsupportedTypes,
-              }),
-              ...(options.resourceWarnAfter?.globalMs !== undefined && {
-                resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
-              }),
-              ...(options.resourceTimeout?.globalMs !== undefined && {
-                resourceTimeoutMs: options.resourceTimeout.globalMs,
-              }),
-              ...(options.resourceWarnAfter?.perTypeMs && {
-                resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
-              }),
-              ...(options.resourceTimeout?.perTypeMs && {
-                resourceTimeoutByType: options.resourceTimeout.perTypeMs,
-              }),
-            })
+              destroyOptions: {
+                ...(options.profile && { profile: options.profile }),
+                statePrefix: options.statePrefix,
+                ...(options.removeProtection === true && { removeProtection: true }),
+                ...(options.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
+                ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                  resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+                }),
+                ...(options.resourceTimeout?.globalMs !== undefined && {
+                  resourceTimeoutMs: options.resourceTimeout.globalMs,
+                }),
+                ...(options.resourceWarnAfter?.perTypeMs && {
+                  resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+                }),
+                ...(options.resourceTimeout?.perTypeMs && {
+                  resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+                }),
+              },
+            },
+            () =>
+              runDestroyForStack(stackName, stateResult.state, {
+                stateBackend: setup.stateBackend,
+                lockManager: setup.lockManager,
+                providerRegistry,
+                baseAwsClients: setup.awsClients,
+                baseRegion: setup.region,
+                ...(options.profile && { profile: options.profile }),
+                stateBucket: setup.bucket,
+                statePrefix: options.statePrefix,
+                // --yes covers both the --all batch prompt above (already consumed)
+                // and the per-stack prompt inside the runner. Per-stack prompts are
+                // skipped when `options.yes` is set OR `--all` was set (the user
+                // already accepted the batch prompt).
+                skipConfirmation: options.yes || options.all === true,
+                removeProtection: options.removeProtection === true,
+                skipFinalSnapshot: options.skipFinalSnapshot === true,
+                exportIndexStore: setup.exportIndexStore,
+                ...(options.allowUnsupportedTypes?.length && {
+                  allowUnsupportedTypes: options.allowUnsupportedTypes,
+                }),
+                ...(options.resourceWarnAfter?.globalMs !== undefined && {
+                  resourceWarnAfterMs: options.resourceWarnAfter.globalMs,
+                }),
+                ...(options.resourceTimeout?.globalMs !== undefined && {
+                  resourceTimeoutMs: options.resourceTimeout.globalMs,
+                }),
+                ...(options.resourceWarnAfter?.perTypeMs && {
+                  resourceWarnAfterByType: options.resourceWarnAfter.perTypeMs,
+                }),
+                ...(options.resourceTimeout?.perTypeMs && {
+                  resourceTimeoutByType: options.resourceTimeout.perTypeMs,
+                }),
+              })
+          )
         );
         totalErrors += result.errorCount;
         totalSkipped += result.skippedCount;
         if (result.interrupted) interrupted = true;
         // Graceful interrupt (issue #816): stop iterating this stack's regions.
-        if (interrupted) break;
+        // Issue #2117: read LIVE — see the twin in `destroy.ts`.
+        if (runInterrupted()) break;
       }
 
       // Graceful interrupt (issue #816): stop the outer multi-stack loop too —
       // do not start destroying further stacks once the user has asked to
       // stop. Explicit guard mirroring destroy.ts's stack-loop break (the
       // inner `break` above only exits the per-region loop).
-      if (interrupted) break;
+      if (runInterrupted()) break;
     }
 
     if (totalErrors > 0) {
@@ -1446,7 +1470,7 @@ async function stateDestroyCommand(
           `If the same resource keeps failing, 'cdkd state orphan <stack>' removes the state record without deleting AWS resources.`
       );
     }
-    if (interrupted) {
+    if (runInterrupted()) {
       // Graceful SIGINT (issue #816): in-flight deletes finished, state was
       // preserved (trimmed), and the lock was released. Surface a non-zero
       // exit so scripts / CI see the destroy did not complete.
@@ -1470,6 +1494,9 @@ async function stateDestroyCommand(
     }
   } finally {
     unforwardSigterm();
+    // Issue #2117 — disposed last of the destroy-side handlers; see the twin
+    // in `destroy.ts`.
+    interruptWatch.dispose();
     setup.dispose();
   }
 }

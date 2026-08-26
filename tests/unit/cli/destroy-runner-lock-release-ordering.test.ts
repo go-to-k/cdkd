@@ -9,8 +9,9 @@ import type { AwsClients } from '../../../src/utils/aws-clients.js';
  * Issue #1348 class, reached through a new door (#2053 / #1952 review round 3).
  *
  * `runDestroyForStack`'s `finally` used to remove its SIGINT handler FIRST and
- * release the stack lock LAST. `destroy.ts` / `state.ts` register no handler of
- * their own, so from that removal until the release resolved the command had NO
+ * release the stack lock LAST. At the time, `destroy.ts` / `state.ts` registered
+ * no handler of their own (issue #2117 has since given them one), so from that
+ * removal until the release resolved the command had NO
  * SIGINT handler while still holding the lock — and the provider-side interrupt
  * watch, armed by any DynamoDB / CustomResource / ELBv2 / CloudMap wait earlier
  * in the run, answers a Ctrl-C with a last-listener force-quit. The process
@@ -231,9 +232,15 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     // loop. Keeping `sigintHandler` armed across the renderer teardown, the
     // state flush and the lock release — which is what fixed the stranded lock
     // — moved a whole class of signals to AFTER that read, so `draining` flipped
-    // too late and the flag stayed false. `destroy.ts` reads exactly that flag
-    // to decide whether to stop, and registers no SIGINT handler of its own, so
+    // too late and the flag stayed false. `destroy.ts` read exactly that flag to
+    // decide whether to stop, and registered no SIGINT handler of its own, so
     // `--all` went on to delete the NEXT STACK after the user asked it to stop.
+    //
+    // The ordering pinned below is still the fix for the STRANDED LOCK, which is
+    // what this file is about. The `--all`-kept-going half was the re-sync's
+    // job and is now the command handler's (issue #2117): `destroy.ts` /
+    // `state.ts` hold one for their whole run, so the loop no longer depends on
+    // a flag the runner may have read too early.
     //
     // Pre-round-4 the same signal hit the interrupt watch's force-quit and
     // exited 130: the lock was stranded, but stack B survived. Trading a

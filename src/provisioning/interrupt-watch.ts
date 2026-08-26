@@ -68,13 +68,28 @@
  *
  * 4. **The handler force-quits when it is the LAST listener.** Property 3 gets
  *    the watch armed only under a command with a shutdown path, but that path
- *    is not live for the command's whole duration: `destroy.ts` registers no
- *    SIGINT handler of its own, and `destroy-runner.ts` removes its one in a
- *    `finally` — so between two stacks of a multi-stack destroy the shared
- *    handler is the ONLY listener. Merely latching there SWALLOWS the Ctrl-C:
- *    the process does not exit, `draining` is never set, `result.interrupted`
- *    stays false, and the loop proceeds to delete the NEXT stack after the user
- *    asked to stop — this file's own headline failure, one layer out.
+ *    is not live for the command's whole duration. The case that motivated it:
+ *    `destroy.ts` registered no SIGINT handler of its own, and
+ *    `destroy-runner.ts` removes its one in a `finally` — so between two stacks
+ *    of a multi-stack destroy the shared handler was the ONLY listener. Merely
+ *    latching there SWALLOWS the Ctrl-C: the process does not exit, `draining`
+ *    is never set, `result.interrupted` stays false, and the loop proceeds to
+ *    delete the NEXT stack after the user asked to stop — this file's own
+ *    headline failure, one layer out.
+ *
+ *    Issue #2117 closed THAT instance from the command side: `destroy.ts` and
+ *    `state.ts` now hold a command-scoped handler for their whole run
+ *    (`watchCommandInterrupt`, `src/utils/interrupt-signals.ts`), so this
+ *    handler is no longer last during a destroy and no longer fires there.
+ *    That is the improvement rather than a loss — the force-quit exited 130
+ *    with the lock stranded and without stopping the loop gracefully. Note the
+ *    dependency runs BOTH ways: because this handler is a latch rather than a
+ *    graceful owner, that watch must NOT treat its presence as "someone else
+ *    will handle this" (it subtracts `interruptWatchListenerCount()` for
+ *    exactly that reason), or the swallow above returns one window inward.
+ *    The remaining population here is the commands that register no handler at
+ *    all — `import` / `export` / `scrub` / `orphan` / `drift` /
+ *    `state refresh-observed`.
  *
  *    So when no other listener remains, the handler restores exactly what Node
  *    would have done with no listener at all. That is deliberately not a second
@@ -162,7 +177,10 @@ let sigintLatched = false;
  * Production never assigns either, and neither condition may be weakened to
  * accommodate tests: a command without a shutdown path really must keep Node's
  * default terminate, and a swallowed Ctrl-C in a multi-stack destroy really is
- * a blocker. `cdkd drift --revert` and `cdkd destroy` are the live instances.
+ * a blocker. `cdkd drift --revert` is the live instance of the first. The second
+ * was `cdkd destroy`, until issue #2117 gave both destroy commands a
+ * command-scoped handler of their own; the force-quit's remaining population is
+ * the commands that register none at all (see property 4).
  *
  * `commandOwnsInterrupts` exists because a provider suite never runs a COMMAND,
  * so every interrupt test would otherwise exercise the UNARMED path while

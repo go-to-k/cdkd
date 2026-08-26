@@ -2873,6 +2873,32 @@ cdkd destroy --all --remove-protection -y
 cdkd state destroy MyStack --remove-protection -y
 ```
 
+## Interrupting a destroy (Ctrl-C / SIGTERM)
+
+`cdkd destroy` and `cdkd state destroy` shut down gracefully. The **first**
+Ctrl-C stops scheduling new deletes; the deletes already in flight are awaited,
+the state file is flushed to its minimal preserved form, and the stack lock is
+released. The command then exits non-zero
+(`Destroy interrupted by Ctrl-C. State preserved`) so CI sees that the teardown
+did not complete — re-running `cdkd destroy` picks up the remaining resources.
+A **second** Ctrl-C force-quits without waiting for the in-flight call; when a
+stack lock is held at that moment, the exact region-qualified
+`cdkd force-unlock` recovery command is printed. CI cancellation delivers
+SIGTERM rather than Ctrl-C, and it is routed through the identical path (issue
+[#1342](https://github.com/go-to-k/cdkd/issues/1342)).
+
+Under `--all`, the interrupt also stops the run **before the next stack
+starts** — including a signal that lands between two stacks, or while the
+interrupted stack was finishing its own teardown, which are windows the
+per-stack teardown cannot observe at all (issue
+[#2117](https://github.com/go-to-k/cdkd/issues/2117)). Previously a Ctrl-C
+there was either swallowed, letting `--all` delete the next stack, or taken by
+a last-resort force-quit that exited 130 with the lock stranded.
+
+A stack whose deletes were interrupted keeps its `state.json` and its
+deployment-event history — the events are the post-mortem for the retry, which
+is why `--purge-events` below is skipped on an interrupted run.
+
 ## `--purge-events`: also delete deployment-event history on destroy
 
 By default `cdkd destroy` removes `state.json` / `lock.json` but **keeps** the
