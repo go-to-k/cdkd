@@ -512,6 +512,82 @@ function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplete' | 'n
 }
 
 /**
+ * Every reason one resource can end a run UNCOMPARED, as a closed set.
+ *
+ * A superset of {@link NotComparedCause} by exactly the two variants that are
+ * not compared for a reason unrelated to a dynamic reference: `unsupported`
+ * (the provider has no `readCurrentState` for the type) and `skipped` (cdkd
+ * does not drift-check the type at all). The report renders those under their
+ * own headings, so the cause type has no member for them; the line built by
+ * {@link incompleteRemediationMessage} counts them, so it does.
+ */
+type UncomparedReason = NotComparedCause | 'unsupported' | 'skipped';
+
+/**
+ * The phrase naming each reason in {@link incompleteRemediationMessage}, keyed
+ * so a count can be prefixed to it.
+ *
+ * An exhaustive `Record`, for the same reason {@link notComparedReason} is one:
+ * adding a cause must be a COMPILE ERROR here rather than falling into an
+ * `else` that describes it as something it is not. The first cut of this
+ * function had that `else`, and it was worse than a wrong default -- it
+ * described any unknown cause as a dynamic-reference problem, while
+ * {@link outcomeExitSignal} deliberately routes every NEW cause to the
+ * incomplete side. The two together meant the next cause added would be
+ * reported, at once, to the widest audience and under the wrong name.
+ *
+ * The insertion ORDER is the order the phrases are emitted in, so the line is
+ * deterministic without a second list to keep in sync: "not compared at all"
+ * first, then the partial ones, then the two permanent, structural reasons.
+ *
+ * The wording splits on "was ANY of it compared", which is the same split the
+ * human report's `NOT fully compared` heading makes -- a `readFailed` resource
+ * is not "partially" anything.
+ */
+const UNCOMPARED_PHRASES: Record<UncomparedReason, string> = {
+  readFailed: 'not compared AT ALL: the read or comparison failed',
+  refused:
+    'only PARTIALLY compared: cdkd refused to resolve a dynamic reference their state records',
+  unresolvedToken:
+    'only PARTIALLY compared: their state records a `{{resolve:...}}` spelling cdkd resolves ' +
+    'for nobody, which no re-run can clear',
+  unsupported: 'not compared AT ALL: their provider does not support drift detection yet',
+  skipped: 'not compared AT ALL: cdkd does not drift-check the type',
+};
+
+/**
+ * How many resources across every report ended UNCOMPARED, per reason.
+ *
+ * The `notCompared` population is read through {@link notComparedOutcomes} --
+ * the single spelling both renderings already share -- and the other two come
+ * from an exhaustive `matchOutcome`, so a new outcome variant cannot join the
+ * "nothing to say about it" side by omission. That is the same guarantee
+ * {@link outcomeExitSignal} carries at the exit code, applied to the count.
+ */
+function uncomparedTally(reports: StackDriftReport[]): Map<UncomparedReason, number> {
+  const tally = new Map<UncomparedReason, number>();
+  const bump = (reason: UncomparedReason): void => {
+    tally.set(reason, (tally.get(reason) ?? 0) + 1);
+  };
+  for (const report of reports) {
+    for (const { cause } of notComparedOutcomes(report)) {
+      bump(cause);
+    }
+    for (const outcome of report.outcomes) {
+      matchOutcome<void>(outcome, {
+        drifted: () => {},
+        clean: () => {},
+        // Counted above, through the shared spelling rather than a second one.
+        notCompared: () => {},
+        unsupported: () => bump('unsupported'),
+        skipped: () => bump('skipped'),
+      });
+    }
+  }
+  return tally;
+}
+
+/**
  * The line `--accept` / `--revert` print INSTEAD of `No drift detected --
  * nothing to accept.` when the run found no drift but did not manage to compare
  * everything ([issue #2208](https://github.com/go-to-k/cdkd/issues/2208)).
@@ -533,42 +609,53 @@ function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplete' | 'n
  * resources were not compared and WHY, and the pointer to the detection-only
  * run, which is the mode whose exit code does report it (`2`).
  *
- * The incomplete subset is read back through {@link outcomeExitSignal} rather
- * than re-spelled here as "cause !== 'unresolvedToken'". One spelling of the
- * subset means this message and the detection exit code can never come to
- * disagree about which resources count -- the same single-source argument
- * {@link notComparedOutcomes} makes for the two RENDERINGS.
+ * THE TRIGGER AND THE COUNT ARE DIFFERENT POPULATIONS, deliberately, and
+ * collapsing them is the defect review round 1 found here.
+ *
+ *   - The TRIGGER is `anyIncomplete`, i.e. {@link outcomeExitSignal}'s
+ *     `incomplete`. It is narrow on purpose: a stack whose ONLY uncompared
+ *     resource holds a `{{resolve:ssm-secure:...}}` token must not start
+ *     shouting on every run about a comparison no action of the user's can ever
+ *     complete -- the same CI-forever hazard that cause is kept out of the exit
+ *     code on.
+ *   - The COUNT and the LABELS, once the line is triggered, cover EVERY
+ *     uncompared resource, each named by its own reason (see
+ *     {@link uncomparedTally}). A resource that was not compared was not
+ *     compared, whatever the reason, and counting only the clearable ones
+ *     printed `1 of 3` on a stack the report a few lines above called
+ *     `2 resource(s) NOT fully compared` -- two lines disagreeing about one
+ *     run, with the newer and quieter one being the one written to stop a
+ *     command from being quietly reassuring.
+ *
+ * WHAT `N` AND `M` ARE, stated because the alternatives are all defensible and
+ * silence about the choice is what made the first cut wrong. `M` is the total
+ * number of resource outcomes, and `N` is every one of them that was not
+ * compared -- so `unsupported` and `skipped` land in `N`, WITH their own
+ * phrase, rather than sitting only in the denominator where they would inflate
+ * `M` and go unnamed. On a remediation path, erring LOUD is the correct
+ * direction. Note this makes `N` deliberately WIDER than the report's
+ * `NOT fully compared` heading, which counts the reference / read population
+ * only and reports `drift unknown` separately: the question this line answers
+ * is #2154's, "was everything actually compared", not "how many entries are in
+ * that block".
  */
 function incompleteRemediationMessage(
   reports: StackDriftReport[],
   mode: 'accept' | 'revert'
 ): string[] {
-  const incomplete = reports.flatMap((report) =>
-    notComparedOutcomes(report).filter(({ outcome }) => outcomeExitSignal(outcome) === 'incomplete')
-  );
+  const tally = uncomparedTally(reports);
   const total = reports.reduce((n, report) => n + report.outcomes.length, 0);
-  const readFailed = incomplete.filter((e) => e.cause === 'readFailed').length;
-  const referenceCaused = incomplete.length - readFailed;
-  // Counted apart rather than summed under one phrase, for the same reason the
-  // human report's heading counts them apart: a `readFailed` resource was not
-  // "partially" compared, it was not compared at all, and one phrase covering
-  // both understates it in the reassuring direction.
-  const causes: string[] = [];
-  if (readFailed > 0) {
-    causes.push(`${readFailed} not compared AT ALL: the read or comparison failed`);
-  }
-  if (referenceCaused > 0) {
-    causes.push(
-      `${referenceCaused} only PARTIALLY compared: cdkd could not, or refused to, resolve a ` +
-        `dynamic reference their state records`
-    );
-  }
-  const flag = mode === 'accept' ? '--accept' : '--revert';
+  const uncompared = [...tally.values()].reduce((a, b) => a + b, 0);
+  // Iterated over the phrase record's own keys, so the emit order is fixed and
+  // a new reason cannot be left out of the rendering by a list nobody updated.
+  const reasons = (Object.keys(UNCOMPARED_PHRASES) as UncomparedReason[])
+    .filter((reason) => (tally.get(reason) ?? 0) > 0)
+    .map((reason) => `${tally.get(reason)} ${UNCOMPARED_PHRASES[reason]}`);
   return [
     `Comparison INCOMPLETE — nothing to ${mode}, and that is NOT a clean bill of health: ` +
-      `${incomplete.length} of ${total} resource(s) could not be compared ` +
-      `(${causes.join('; ')}), so cdkd does not know whether they drifted.`,
-    `Re-run 'cdkd drift' without ${flag} to see which resources and why — a detection-only ` +
+      `${uncompared} of ${total} resource(s) could not be compared ` +
+      `(${reasons.join('; ')}), so cdkd does not know whether they drifted.`,
+    `Re-run 'cdkd drift' without --${mode} to see which resources and why — a detection-only ` +
       `run exits 2 while a comparison is incomplete.`,
   ];
 }

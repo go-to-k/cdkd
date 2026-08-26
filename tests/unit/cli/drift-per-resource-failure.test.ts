@@ -1287,13 +1287,15 @@ describe('a remediation run that compared nothing does not report no drift (#220
   });
 
   /**
-   * The OTHER negative direction, and the one that fences WHICH subset the
-   * message reads. A `{{resolve:ssm-secure:...}}` resource IS in the
-   * `notCompared` roll-up, but it is deliberately excluded from the incomplete
-   * signal -- permanent, unclearable, and the reason the detection exit code
-   * does not fire on it either. Reading the roll-up instead of
-   * `outcomeExitSignal` would make every such stack's `--accept` start shouting
-   * about an incomplete comparison it can never complete.
+   * The OTHER negative direction, and the one that fences the TRIGGER -- which
+   * is a different population from the COUNT (see `incompleteRemediationMessage`).
+   * A `{{resolve:ssm-secure:...}}` resource IS in the `notCompared` roll-up, and
+   * IS counted once the line fires, but it must not FIRE the line on its own: it
+   * is permanent, unclearable, and the reason the detection exit code does not
+   * fire on it either. Widening the trigger from `outcomeExitSignal`'s
+   * `incomplete` to the whole roll-up would make every such stack's `--accept`
+   * start shouting, on every run, about a comparison no action of the user's can
+   * ever complete. Deleting that filter from the trigger reds exactly this case.
    */
   it('a permanently-unresolvable reference does NOT trigger the incomplete message', async () => {
     mockGetState.mockResolvedValue(
@@ -1377,5 +1379,71 @@ describe('a remediation run that compared nothing does not report no drift (#220
     expect(output).toContain('! Fn (AWS::Lambda::Function)');
     expect(exitSpy).not.toHaveBeenCalled();
     expect(error).toBeUndefined();
+  });
+
+  /**
+   * THE MIXED-POPULATION CASE, and the one review round 1 found the bug by
+   * looking for. Every other fixture in this file carries ONE reason, so the
+   * count and the labels were free to be taken from the wrong population and
+   * still look right: the first cut counted only the CLEARABLE reasons and
+   * printed `1 of 3` for a stack the human report a few lines above called
+   * `2 resource(s) NOT fully compared`, the newer line being the quieter of the
+   * two -- in a message written to stop this command being quietly reassuring.
+   *
+   * Four resources, four different fates in one stack: a read that threw, a
+   * permanently-unresolvable token, a type with no read path, and one ordinary
+   * resource that compared cleanly. The assertion is the WHOLE line, because the
+   * count, the order and the three phrases only constrain each other together --
+   * asserting `2 of 4` alone passes under any relabelling, and asserting one
+   * phrase alone passes while the count is wrong.
+   */
+  it('counts and labels EVERY uncompared resource, each by its own reason', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Tokened: resource(LAMBDA, {
+          Environment: { Variables: { PW: '{{resolve:ssm-secure:/pw}}' } },
+        }),
+        Thrower: resource(QUEUE, { QueueName: 'ok' }),
+        NoReadPath: resource('AWS::Some::Type', {}),
+        Fine: resource('AWS::SNS::Topic', { TopicName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) => {
+      if (type === LAMBDA) {
+        return { readCurrentState: async () => ({ Environment: { Variables: { PW: 'live' } } }) };
+      }
+      if (type === QUEUE) {
+        return {
+          readCurrentState: async () => {
+            throw awsError('ThrottlingException', 'Rate exceeded');
+          },
+        };
+      }
+      // No `readCurrentState`: the Cloud Control fallback returns undefined
+      // (the suite default), which is the `unsupported` outcome.
+      if (type === 'AWS::Some::Type') {
+        return {};
+      }
+      return { readCurrentState: async () => ({ TopicName: 'ok' }) };
+    });
+
+    const { error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    expect(infoText()).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '3 of 4 resource(s) could not be compared ' +
+        '(1 not compared AT ALL: the read or comparison failed; ' +
+        '1 only PARTIALLY compared: their state records a `{{resolve:...}}` spelling cdkd ' +
+        'resolves for nobody, which no re-run can clear; ' +
+        '1 not compared AT ALL: their provider does not support drift detection yet), ' +
+        'so cdkd does not know whether they drifted.'
+    );
+    // The permanently-unresolvable resource must NOT be described as a refusal.
+    // Pre-fix it was counted under the `refused` wording, which points the
+    // reader at an ARN they can respell for a condition no respelling clears.
+    expect(infoText()).not.toContain('cdkd refused to resolve');
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 });

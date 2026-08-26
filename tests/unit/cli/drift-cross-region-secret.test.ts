@@ -1634,8 +1634,8 @@ describe('cdkd drift --accept over a REFUSED comparison reports it as incomplete
     expect(text).toContain(
       'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
         '1 of 1 resource(s) could not be compared ' +
-        '(1 only PARTIALLY compared: cdkd could not, or refused to, resolve a dynamic ' +
-        'reference their state records), ' +
+        '(1 only PARTIALLY compared: cdkd refused to resolve a dynamic reference their ' +
+        'state records), ' +
         'so cdkd does not know whether they drifted.'
     );
     expect(text).not.toContain('No drift detected');
@@ -1646,5 +1646,58 @@ describe('cdkd drift --accept over a REFUSED comparison reports it as incomplete
     // ...and the refusal is still a refusal: nothing was fetched from either
     // region, so no foreign plaintext reached the run.
     expect(secretSends).toHaveLength(0);
+  });
+});
+
+/**
+ * Issue [#2208](https://github.com/go-to-k/cdkd/issues/2208), BOTH clearable
+ * reasons at once. The message joins its per-reason phrases with `'; '`, and a
+ * fixture carrying one reason cannot fence that join: with a single entry the
+ * separator never appears, so any separator -- or none -- renders identically.
+ * This is also the only fixture in the repo where a `refused` resource and a
+ * `readFailed` one sit in the same stack, which is what makes the ORDER
+ * observable (`readFailed` first: not compared at all outranks partially).
+ */
+describe('cdkd drift --accept reports a refusal and a read failure together (#2208)', () => {
+  it('joins both reasons, in order, with the stack total', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState(
+        {
+          Fn: lambdaResource(NAME_EXPR),
+          Queue: {
+            physicalId: 'q',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'ok' },
+          },
+        },
+        [PRODUCER_REGION]
+      )
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === LAMBDA_TYPE
+        ? { readCurrentState: async () => awsEnv(IRELAND_PASSWORD) }
+        : {
+            readCurrentState: async () => {
+              const err = new Error('Rate exceeded');
+              err.name = 'ThrottlingException';
+              throw err;
+            },
+          }
+    );
+
+    const { error } = await runDrift(['Consumer', '--accept', '--yes']);
+
+    expect(logText()).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '2 of 2 resource(s) could not be compared ' +
+        '(1 not compared AT ALL: the read or comparison failed; ' +
+        '1 only PARTIALLY compared: cdkd refused to resolve a dynamic reference their ' +
+        'state records), ' +
+        'so cdkd does not know whether they drifted.'
+    );
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 });
