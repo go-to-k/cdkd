@@ -430,9 +430,9 @@ assert_gone "SSM parameter ${PARAM} still exists after the manual delete" \
 echo "    OK: the managed parameter is gone"
 
 # --- Phase 6: rebuild UNARMED ----------------------------------------------
-# WAIT FIRST. `cdkd destroy` returns when it has ISSUED every delete, not when
-# AWS has finished them, and two resources here are torn down asynchronously
-# while holding their name:
+# `cdkd destroy` returns when it has ISSUED every delete, not when AWS has
+# finished them, and two resources here are torn down asynchronously while
+# holding their name:
 #
 #   - the CDK Provider framework's waiter STATE MACHINE. Measured: after
 #     `DeleteStateMachine`, `DescribeStateMachine` keeps answering
@@ -448,33 +448,85 @@ echo "    OK: the managed parameter is gone"
 # Nothing else in the stack needs it, and that is evidence rather than
 # assumption: the failed run CREATED 26 resources — every IAM role, policy and
 # Lambda in this template — before dying on the state machine, so their deletes
-# had already released their names. The two below are the ones that had not.
+# had already released their names. The two above are the ones that had not.
 #
-# **This wait is a WORKAROUND with a filed cause: issue
-# [#2116](https://github.com/go-to-k/cdkd/issues/2116).** cdkd's
-# `isNameCooldownError` matches only `QueueDeletedRecently` / `wait 60 seconds`,
-# so the Step Functions wording is recognised by nothing and an ordinary
-# destroy-then-redeploy — a routine dev loop for any CDK app using
-# `custom_resources.Provider` with an `isCompleteHandler` — fails hard where
-# CloudFormation converges. When #2116 lands, cdkd retries this itself and the
-# state-machine half of this wait can be deleted.
+# **The state-machine wait is GONE, and its absence is this phase's live arm
+# for issue [#2116](https://github.com/go-to-k/cdkd/issues/2116).** It used to
+# poll the machine to gone before redeploying, because cdkd's
+# `isNameCooldownError` matched only `QueueDeletedRecently` / `wait 60 seconds`
+# and the Step Functions wording was recognised by nothing — so an ordinary
+# destroy-then-redeploy (a routine dev loop for any CDK app using
+# `custom_resources.Provider` with an `isCompleteHandler`) failed hard where
+# CloudFormation converges. #2116 taught the classifier both Step Functions
+# spellings AND made a name cooldown retryable on the ORDINARY create path, so
+# the redeploy below rides it out on its own.
 #
-# Budget: 40 x 5s = 200s, against a measured 23s. Costs nothing when the
-# resource is already gone — the first probe returns immediately.
-echo "==> Phase 6: wait for the asynchronous deletes to finish (issue #2116)"
-poll_until_gone "waiter state machine ${SM_ARN}" 40 5 \
-  aws stepfunctions describe-state-machine --region "${REGION}" --state-machine-arn "${SM_ARN}"
-echo "    OK: the state machine name is free again"
-
+# That makes this a POSITIVE discriminator rather than the usual vacuous "the
+# bad thing did not happen": the redeploy has to REACH
+# `Deployment completed successfully` while the name is still held, which only
+# the fixed classifier produces. Pre-fix, the same run rolled 26 resources back.
+#
+# The BUCKET wait stays. S3's `OperationAborted` was already retryable on the
+# ordinary create path before #2116 (it is in the same cooldown list now), but
+# `BucketAlreadyOwnedByYou` is short-circuited to idempotent SUCCESS by the S3
+# provider, so a re-create that lands on that spelling would adopt a bucket
+# that is on its way out rather than retry — a different defect, not this one.
+# Budget: 40 x 5s = 200s. It costs nothing when the bucket is already gone (the
+# first probe returns immediately), which is what keeps the state-machine
+# window — measured at ~23s — still OPEN when the redeploy starts.
+echo "==> Phase 6: wait for the bucket name to be released (NOT the state machine)"
 poll_until_gone "bucket ${AUTODELETE_BUCKET}" 40 5 \
   aws s3api head-bucket --bucket "${AUTODELETE_BUCKET}" --region "${REGION}"
 echo "    OK: the bucket name is free again"
 
-echo "==> Phase 6: deploy again with the refusal disabled"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+# The PREMISE of the arm, recorded immediately before the redeploy so a run
+# where the window had already closed is visible in the log rather than
+# silently reading as a pass. Deliberately NOT fatal: the window is a real-AWS
+# timing property (~23s), and failing the fixture because AWS was fast that day
+# would make it flaky for a reason unrelated to the code under test. A run that
+# prints `PREMISE: window CLOSED` proved the redeploy works, but did not
+# exercise #2116 — re-run it before reading this phase as coverage.
+#
+# `2>&1` rather than `2>/dev/null`: the probe's error text lands IN the value,
+# so the CLOSED branch prints WHY (a `StateMachineDoesNotExist` reads very
+# differently from an AccessDenied) instead of silently rendering every failure
+# as "already gone". A blind `2>/dev/null || echo GONE` is the exact shape
+# `tests/unit/scripts/integ-verify-probe-not-found.test.ts` refuses.
+SM_STATUS="$(aws stepfunctions describe-state-machine --region "${REGION}" \
+  --state-machine-arn "${SM_ARN}" --query 'status' --output text 2>&1 || true)"
+if [ "${SM_STATUS}" = 'DELETING' ]; then
+  echo "    PREMISE: window OPEN — the state machine is still ${SM_STATUS}, so the"
+  echo "             redeploy below must ride out the name cooldown (issue #2116)"
+else
+  echo "    PREMISE: window CLOSED — DescribeStateMachine answered '${SM_STATUS}',"
+  echo "             so this run does NOT exercise the issue-#2116 retry"
+fi
+
+echo "==> Phase 6: deploy again with the refusal disabled (no state-machine wait)"
+set +e
+REDEPLOY_OUT=$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes
+  --yes 2>&1)
+REDEPLOY_RC=$?
+set -e
+printf '%s\n' "${REDEPLOY_OUT}"
+REDEPLOY_TXT=$(printf '%s' "${REDEPLOY_OUT}" | sed $'s/\033\[[0-9;]*m//g')
+
+# Assert the POSITIVE marker, and the exit code, and both for the reason the
+# repo learned the hard way: a grep on output alone passes over a non-zero exit,
+# and an absence assertion ("no rollback") is true of every unrelated failure.
+if [ "${REDEPLOY_RC}" -ne 0 ]; then
+  echo "FAIL: the unarmed redeploy exited ${REDEPLOY_RC}, expected 0" >&2
+  echo "    If the failure names 'State Machine is being deleted', the #2116" >&2
+  echo "    name-cooldown retry regressed — that is what this phase fences." >&2
+  exit 1
+fi
+if ! printf '%s' "${REDEPLOY_TXT}" | grep -q 'Deployment completed successfully'; then
+  echo "FAIL: the unarmed redeploy never printed 'Deployment completed successfully'" >&2
+  exit 1
+fi
+echo "    OK: redeployed through the state-machine name cooldown without waiting it out"
 
 echo "cdkd integ probe" | aws s3 cp - "s3://${AUTODELETE_BUCKET}/${AUTODELETE_KEY}" \
   --region "${REGION}" >/dev/null

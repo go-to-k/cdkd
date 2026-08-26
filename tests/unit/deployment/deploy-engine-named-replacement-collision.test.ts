@@ -63,12 +63,21 @@ describe('DeployEngine — custom-named replacement collision', () => {
       "CREATE failed for Pipe: Resource of type 'AWS::Pipes::Pipe' with identifier 'my-pipe' already exists."
     );
 
-  // SQS same-name re-creation cooldown in its error-CODE form. Deliberately
-  // NOT the "wait 60 seconds" wire-message form: that phrase is also in the
-  // generic transient table, so the INNER generic retry would absorb it and
-  // this test could pass without the outer cooldown filter (the fix under
-  // test). The code form is matched ONLY by isNameCooldownError, so this
-  // test fails if the outer filter regresses to collision-only.
+  // SQS same-name re-creation cooldown in its error-CODE form.
+  //
+  // Choosing the code form used to be what made the cooldown test
+  // discriminating: only `isNameCooldownError` matched it, while the wire
+  // message ("wait 60 seconds") was ALSO in the generic transient table, so
+  // the INNER generic retry would have absorbed it and the test could have
+  // passed with the outer filter regressed to collision-only.
+  //
+  // Issue [#2116](https://github.com/go-to-k/cdkd/issues/2116) removed that
+  // asymmetry on purpose — every cooldown spelling is now retryable on the
+  // ordinary create path too, so BOTH forms reach the inner retry and no
+  // message choice can isolate the outer filter any more. Measured rather
+  // than assumed: with `isRecreateRetryableError` cut back to collision-only,
+  // this whole suite stayed green (10/10). The discriminator therefore moved
+  // to the PROVIDER — see `disableOuterRetry` in the cooldown test below.
   const queueDeletedRecently = () =>
     new Error('Failed to create SQS queue Pipe: AWS.SimpleQueueService.QueueDeletedRecently');
 
@@ -302,6 +311,15 @@ describe('DeployEngine — custom-named replacement collision', () => {
     // succeeds — the cooldown signature matches NEITHER the collision
     // detector NOR the old collision-only retry filter, so pre-fix this
     // failed fast with the old resource already gone.
+    //
+    // `disableOuterRetry` is what keeps this test pointed at the OUTER filter
+    // now that #2116 has made every cooldown spelling retryable on the inner
+    // generic path as well (see the `queueDeletedRecently` note above). It
+    // makes `DeployEngine.withRetry` single-shot, so the only thing that can
+    // absorb the cooldown is `isRecreateRetryableError` at the re-create site.
+    // Without it this assertion passes with that filter cut back to
+    // collision-only — measured, not assumed.
+    provider.disableOuterRetry = true;
     createFailures = [alreadyExists(), queueDeletedRecently()];
 
     await invokeProvision(makeEngine({ replace: true }));

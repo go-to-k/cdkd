@@ -212,8 +212,8 @@ LOOP rather than in that one classifier: `withRetry` rethrows a marked error
 ahead of the `opts.isRetryable ? ... : ...` branch, and the destroy runner's
 delete loop gates its own `Too Many Requests` message test the same way — so
 the message-only classifiers (`isNameCollisionError`'s `AlreadyExists`,
-`isNameCooldownError`'s `QueueDeletedRecently`, both of which match a bare
-logical id) cannot resurrect a refusal even though they cannot read the marker
+`isNameCooldownError`'s `QueueDeletedRecently` / `StateMachineDeleting`, all
+of which match a bare logical id) cannot resurrect a refusal even though they cannot read the marker
 themselves, and no classifier signature had to widen. Also point the
 remediation at the STATE record as well as at AWS, since neither skip family
 shipping today (the state-borne composite-id arms, `NestedStackProvider`'s

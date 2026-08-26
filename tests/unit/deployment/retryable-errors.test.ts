@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS,
+  NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS,
   RETRYABLE_ERROR_MESSAGE_PATTERNS,
   isIamPropagationError,
   isMarkedNonRetryable,
@@ -608,6 +609,164 @@ describe('isNameCooldownError', () => {
   });
 });
 
+describe('name cooldown — Step Functions + the sibling sweep (issue #2116)', () => {
+  /**
+   * The POPULATION, asserted against literals that are NOT derived from the
+   * constant under test. A table driven off `NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS`
+   * itself would be blind to a DELETION — removing an entry would simply stop
+   * generating its case and stay green — so the membership check spells every
+   * entry out and the count is written as a number.
+   *
+   * The count is the sweep's own result: 2 spellings before #2116 (both SQS),
+   * 5 after. The three additions are the two Step Functions spellings and S3's
+   * `conflicting conditional operation`, which was already retryable on the
+   * ordinary-create path but invisible to the delete-then-re-create sites.
+   */
+  it('holds exactly the five swept spellings, and no more', () => {
+    expect([...NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS].sort()).toEqual(
+      [
+        'QueueDeletedRecently',
+        'StateMachineDeleting',
+        'State Machine is being deleted',
+        'conflicting conditional operation',
+        'wait 60 seconds',
+      ].sort()
+    );
+    expect(NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS).toHaveLength(5);
+  });
+
+  /**
+   * The classifier TABLE. `isNameCooldownError` is a classifier, so hand-picked
+   * positives cannot fence it: each row is a real message string (an AWS wire
+   * sentence, or the exact shape cdkd wraps one in) with its exact expected
+   * verdict on BOTH classifiers — the cooldown matcher and the ordinary-create
+   * transient classifier, which is the half #2116 item 2 changes.
+   *
+   * The negatives are the load-bearing direction: a cooldown verdict makes an
+   * error survivable, so a classifier that swallowed a TERMINAL condition would
+   * turn a fast, actionable failure into ~47s of sleep ending in the same
+   * error — or, at the `--replace` sites, into retrying a create that can never
+   * succeed while the old resource is already deleted.
+   */
+  it.each([
+    // --- Step Functions: the measured #2116 failure, both spellings ---------
+    [
+      // Verbatim from the issue's real-AWS transcript (account id elided),
+      // including cdkd's own `Failed to create ...` wrap.
+      "Failed to create Providerwaiterstatemachine5D4A9DF0: Failed to create Step Functions state machine Providerwaiterstatemachine5D4A9DF0: State Machine is being deleted: 'arn:aws:states:us-east-1:111122223333:stateMachine:CustomResourceProviderStack-Providerwaiterstatemachine5D4A9DF0'",
+      true,
+      'SFN wire message, cdkd-wrapped — the exact string that filed the issue',
+    ],
+    [
+      // The spelling `tests/integration/custom-resource-provider/verify.sh`
+      // records, where the SDK surfaces the error CODE alongside the sentence.
+      'StateMachineDeleting: State Machine is being deleted',
+      true,
+      'SFN error code + sentence',
+    ],
+    [
+      // The code ALONE, i.e. an SDK error whose name survived the wrap but
+      // whose sentence did not. The SQS pair proves this happens, and the
+      // code-only form was the half that was unrecognised there.
+      'Failed to create StateMachine Waiter: StateMachineDeleting',
+      true,
+      'SFN error code alone',
+    ],
+    // --- SQS: both spellings, now agreeing on the ordinary-create path ------
+    ['AWS.SimpleQueueService.QueueDeletedRecently', true, 'SQS error code'],
+    [
+      'You must wait 60 seconds after deleting a queue before you can create another with the same name.',
+      true,
+      'SQS wire message',
+    ],
+    // --- S3: the sweep hit that was one-sided before -----------------------
+    [
+      'OperationAborted: A conflicting conditional operation is currently in progress against this resource. Please try again.',
+      true,
+      'S3 OperationAborted during an async bucket delete',
+    ],
+    // --- NEGATIVES: terminal conditions that must NOT read as a cooldown ---
+    [
+      // A plain collision. Deleting the NEW resource cannot release the OLD
+      // name, so crediting a cooldown here would retry a doomed create.
+      "Resource of type 'AWS::SQS::Queue' with identifier 'my-queue' already exists.",
+      false,
+      'name collision, not a cooldown',
+    ],
+    [
+      // ELBv2. The sweep found this and deliberately LEFT IT OUT: AWS raises
+      // `DuplicateLoadBalancerName` for a live load balancer just as readily
+      // as for a deleting one, so it cannot be distinguished from terminal.
+      'DuplicateLoadBalancerName: A load balancer with the same name already exists',
+      false,
+      'ELBv2 duplicate name — deliberately not swept in',
+    ],
+    [
+      // DynamoDB, same reasoning as ELBv2, plus a budget interaction: see
+      // src/provisioning/dynamodb-index-busy-delete.ts.
+      'An error occurred (ResourceInUseException) when calling the UpdateTable operation: Table is being deleted',
+      false,
+      'DynamoDB table being deleted — deliberately not swept in',
+    ],
+    [
+      'AccessDenied: User is not authorized to perform states:CreateStateMachine',
+      false,
+      'authorization failure',
+    ],
+    [
+      // The nearest MISS to the SFN sentence: a state machine that is gone,
+      // not one that is going. Retrying cannot help.
+      'StateMachineDoesNotExist: State Machine Does Not Exist',
+      false,
+      'state machine absent, not deleting',
+    ],
+    [
+      // Anchoring check: a generic "please wait" must not match the SQS entry.
+      'ThrottlingException: please wait a few seconds and retry',
+      false,
+      'generic wait advice',
+    ],
+  ])('classifies %j as cooldown=%s (%s)', (message, expected) => {
+    expect(isNameCooldownError(message)).toBe(expected);
+    // The delete-then-re-create sites read this one; a cooldown must reach it.
+    if (expected) expect(isRecreateRetryableError(message)).toBe(true);
+  });
+
+  /**
+   * ITEM 2 of the issue, stated as its own assertion because it is a BEHAVIOUR
+   * change rather than a wider matcher: a name cooldown is now retryable on the
+   * ORDINARY create path, where nothing in the process knows a prior run
+   * deleted anything. That is the reachable case — the measured failure was a
+   * fresh `cdkd deploy` after a `cdkd destroy`, with no `--replace` and no
+   * rollback involved, so item 1 alone would not have fixed it.
+   */
+  it.each(NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS)(
+    'makes %j retryable on the ordinary create path, not only at the re-create sites',
+    (pattern) => {
+      const message = `Failed to create Waiter: ${pattern} (details)`;
+      expect(isRetryableTransientError(new Error(message), message)).toBe(true);
+      expect(RETRYABLE_ERROR_MESSAGE_PATTERNS).toContain(pattern);
+    }
+  );
+
+  it('keeps the cooldown class OUT of the dense IAM-propagation cadence', () => {
+    // A name cooldown is a long window (SQS's is 60s), so it wants the generic
+    // exponential schedule, not the sub-second propagation probe grid.
+    for (const pattern of NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS) {
+      expect(isIamPropagationError(`Failed to create Waiter: ${pattern}`)).toBe(false);
+    }
+  });
+
+  it('does not let a cooldown be read as a name COLLISION', () => {
+    // The dangerous direction at the create-first sites: a collision verdict
+    // under `--replace` DELETES the live old resource. None of these spellings
+    // may reach that classifier.
+    for (const pattern of NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS) {
+      expect(isNameCollisionError(`Failed to create Waiter: ${pattern}`)).toBe(false);
+    }
+  });
+});
+
 describe('isRecreateRetryableError', () => {
   it('accepts both the collision and the cooldown signatures', () => {
     expect(isRecreateRetryableError('Queue already exists')).toBe(true);
@@ -870,8 +1029,9 @@ describe('markNonRetryable / isMarkedNonRetryable (issue #1778)', () => {
 describe('ResourceUpdateNotSupportedError is terminal by construction (issue #1838)', () => {
   // The defect: the message interpolates the LOGICAL ID, and the classifiers
   // match by SUBSTRING, so an ordinary composite CDK id containing
-  // `DependencyViolation` (the only whitespace-free entry in
-  // RETRYABLE_ERROR_MESSAGE_PATTERNS) made a deterministic refusal look
+  // `DependencyViolation` (then the only whitespace-free entry in
+  // RETRYABLE_ERROR_MESSAGE_PATTERNS; the name-cooldown error CODES joined it
+  // under issue #2116) made a deterministic refusal look
   // transient and burned the full ~47s generic schedule before the
   // `--replace` DELETE+CREATE fallback the error exists to trigger.
   const LOGICAL_ID = 'MyDependencyViolationSub';

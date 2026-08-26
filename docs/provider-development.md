@@ -1804,8 +1804,8 @@ Two mechanical details any such abort inherits:
   caller-supplied `opts.isRetryable`, and the destroy runner's delete-retry
   loop gates its own `Too Many Requests` message test the same way. So the
   message-only classifiers (`isNameCollisionError`'s `AlreadyExists`,
-  `isNameCooldownError`'s `QueueDeletedRecently` — both of which match a bare
-  logical id) cannot resurrect a refusal even though they cannot read the
+  `isNameCooldownError`'s `QueueDeletedRecently` / `StateMachineDeleting` —
+  all of which match a bare logical id) cannot resurrect a refusal even though they cannot read the
   marker themselves. Keep the message discipline above regardless: it is what
   a future classifier added outside those two loops still relies on.
 - **Point the remediation at the STATE record, not only at AWS.** Both skip

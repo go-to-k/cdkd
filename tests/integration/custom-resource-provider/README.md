@@ -81,13 +81,13 @@ STATE_BUCKET=cdkd-state-<accountId> ./verify.sh
 
 Phases: deploy -> arm the refusal -> destroy #1 (exit 2, record kept) ->
 destroy #2 (record dropped, resource still live) -> out-of-band removal ->
-**wait out the asynchronous deletes** -> deploy fresh -> destroy #3 (clean).
+**redeploy INTO the state machine's name cooldown** -> destroy #3 (clean).
 
-### Why phase 6 waits
+### Why phase 6 redeploys without waiting for the state machine
 
 `cdkd destroy` returns when it has ISSUED every delete, not when AWS has
 finished them. Two resources here are torn down asynchronously while still
-holding their name, so redeploying immediately fails:
+holding their name:
 
 - the CDK Provider framework's waiter **state machine** — measured: after
   `DeleteStateMachine`, `DescribeStateMachine` answers `status: DELETING` for
@@ -100,12 +100,26 @@ Nothing else needs it, and that is evidence rather than assumption — the faile
 run created every IAM role, policy and Lambda in the template before dying on
 the state machine, so their deletes had already released their names.
 
-The wait is a **workaround with a filed cause**:
-[#2116](https://github.com/go-to-k/cdkd/issues/2116). cdkd's
-`isNameCooldownError` matches only `QueueDeletedRecently` / `wait 60 seconds`,
-so the Step Functions wording is recognised by nothing and an ordinary
-destroy-then-redeploy fails hard where CloudFormation converges. When #2116
-lands, cdkd retries this itself and the state-machine half can be deleted.
+Phase 6 used to poll the state machine to gone first — a **workaround with a
+filed cause**, [#2116](https://github.com/go-to-k/cdkd/issues/2116): cdkd's
+`isNameCooldownError` matched only `QueueDeletedRecently` / `wait 60 seconds`,
+so the Step Functions wording was recognised by nothing and an ordinary
+destroy-then-redeploy failed hard where CloudFormation converges.
+
+**That wait is now the live arm.** #2116 taught the classifier both Step
+Functions spellings and made a name cooldown retryable on the ORDINARY create
+path (not only at the delete-then-re-create sites), so the redeploy rides the
+window out by itself. The phase asserts the POSITIVE marker — exit code 0 plus
+`Deployment completed successfully` — which only the fixed classifier produces;
+pre-fix the identical run rolled 26 resources back. It also logs a
+`PREMISE: window OPEN / CLOSED` line taken immediately before the redeploy, so
+a run where AWS finished the delete early is visible as "did not exercise the
+retry" rather than passing silently.
+
+The **bucket** wait stays. S3's `OperationAborted` is retryable on the ordinary
+create path, but `BucketAlreadyOwnedByYou` is short-circuited to idempotent
+success by the S3 provider, so a re-create landing on that spelling would adopt
+a bucket on its way out — a different defect, not this one.
 
 ## Deploy / destroy by hand (arm A only)
 
