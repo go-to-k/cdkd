@@ -27,6 +27,23 @@ export class S3LifecycleStack extends cdk.Stack {
 
     const update = process.env.CDKD_TEST_UPDATE === 'true';
 
+    // Issue #2227 cross-region-adopt arm, present ONLY when `verify.sh`'s
+    // Phase 0 sets the variable, so every other phase deploys the stack it
+    // always deployed.
+    //
+    // It carries its own PER-RUN UNIQUE name, and that is the whole point.
+    // Measured 2026-08-26: once an S3 bucket name has existed in one region,
+    // re-creating it in ANOTHER answers `OperationAborted` for well over ten
+    // minutes (40 retries across 10 min never cleared it), while `HeadBucket`
+    // already reports 404. Planting the collision on a name the fixture reuses
+    // therefore poisons that name for the rest of the run AND for the next
+    // one. A fresh name per run is only ever created in a single region, so the
+    // arm costs nothing and is repeatable.
+    const xrArmBucket = process.env.CDKD_XR_ARM_BUCKET;
+    if (xrArmBucket) {
+      new s3.CfnBucket(this, 'XrArmBucket', { bucketName: xrArmBucket });
+    }
+
     const rules: s3.LifecycleRule[] = [
       {
         id: 'archive',

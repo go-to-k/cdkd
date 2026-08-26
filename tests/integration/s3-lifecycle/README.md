@@ -19,6 +19,38 @@ failed against real S3).
 
 ## Phases
 
+0b. **Same-region adopt** — the negative control, run **first**. Plant a
+   **per-run unique** name in the region this stack deploys to (the same
+   `CDKD_XR_ARM_BUCKET` hook Phase 0 uses); cdkd must **adopt** it and complete
+   the deploy. Under the default `us-east-1` this does **not** enter the guard
+   at all — S3 answers a same-region re-create with a legacy 200 OK rather than
+   the 409 — so there it is a regression net for "cdkd deploys cleanly over a
+   pre-existing same-region bucket", **not** a discriminating negative control.
+   Set `AWS_REGION` elsewhere and it becomes one. The guard's adopt arm is
+   fenced by the unit suite either way.
+
+   Neither arm may plant a name the fixture itself reuses. An earlier version
+   planted the stack's **own** bucket name cross-region, which poisoned that
+   name for Phase 1 as well and wedged the whole fixture for over 20 minutes.
+
+0. **Cross-region adopt refusal** (issue
+   [#2227](https://github.com/go-to-k/cdkd/issues/2227)) — plant a **per-run
+   unique** bucket name in another region, and add a bucket of that name to the
+   stack via `CDKD_XR_ARM_BUCKET` (the stack creates it only when that variable
+   is set, so every other phase deploys the stack it always deployed). Then
+   deploy. `CreateBucket` answers `BucketAlreadyOwnedByYou` on account-global
+   **ownership**, so cdkd must read the bucket's real region back — from the
+   409's own `x-amz-bucket-region` header — and **refuse** rather than adopt and
+   reconfigure a bucket that lives elsewhere. Asserts the refusal text naming
+   both regions, not merely that the deploy failed. Phase 1 is **not** its
+   negative control (nothing collides there); Phase 0b is.
+
+   The name is unique per run for a measured reason: once an S3 bucket name has
+   existed in one region, re-creating it in **another** answers
+   `OperationAborted` for well over ten minutes (40 retries across 10 minutes
+   never cleared it) while `HeadBucket` already reports 404. Planting the
+   collision on a name the fixture reuses poisons that name for the rest of the
+   run and for the next one.
 1. **Deploy** the bucket with a V1 prefix rule (`archive`, `logs/`) + a scope-less
    abort rule (`abort-mpu`). Assert both rules reached AWS, **none** carries a
    top-level `Prefix` (all normalized to V2 `Filter` form), and the `archive`

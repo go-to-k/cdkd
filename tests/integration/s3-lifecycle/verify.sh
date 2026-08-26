@@ -11,6 +11,27 @@
 #   - an in-place UPDATE that shortens a transition + adds a Filter-based rule
 #
 # Phases:
+#   0b. Run FIRST: plant a PER-RUN UNIQUE name in THIS region (same
+#      CDKD_XR_ARM_BUCKET hook as phase 0) and assert cdkd ADOPTS it and
+#      completes the deploy. Under the DEFAULT us-east-1 this does not enter the
+#      guard at all -- S3 answers a same-region re-create with a legacy 200 OK
+#      rather than the 409 -- so it is a regression net for "cdkd deploys
+#      cleanly over a pre-existing same-region bucket", and only becomes a true
+#      negative control for the guard when AWS_REGION is set elsewhere. The
+#      guard's adopt arm is fenced by the unit suite either way. Neither arm may
+#      touch a name the fixture itself reuses -- an earlier version planted the
+#      stack's own bucket name cross-region and poisoned it for phase 1 too.
+#   0. Issue #2227 cross-region adopt refusal: plant a PER-RUN UNIQUE bucket
+#      name in another region and add a bucket of that name to the stack (via
+#      CDKD_XR_ARM_BUCKET, which the stack reads), then deploy. `CreateBucket`
+#      answers `BucketAlreadyOwnedByYou` on account-global OWNERSHIP, so cdkd
+#      must read the bucket's real region back (from the 409's own
+#      `x-amz-bucket-region` header) and REFUSE rather than adopt and
+#      reconfigure a bucket that lives elsewhere. Asserts the refusal text
+#      naming both regions, not merely a failed deploy. Phase 1 is NOT its
+#      negative control (nothing collides there) -- Phase 0b is. The name is
+#      unique per run because a name that has existed in one region cannot be
+#      re-created in another for >10 minutes.
 #   1. Deploy; assert all three rules reached AWS, none carries a top-level Prefix
 #      (all normalized to V2 Filter form), and the archive rule's expiration=730.
 #      Also assert the legacy singular lifecycle keys (issue #1388 / #1424) and
@@ -72,6 +93,40 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # gone-probe on a bounded schedule instead of asserting once. This does NOT
 # weaken leak detection -- a bucket that never disappears still FAILs, and
 # gone_probe still hard-fails on any non-not-found probe error.
+# Plant a bucket, tolerating S3's post-delete namespace window.
+#
+# Measured 2026-08-26 while building the issue #2227 arms: re-creating a name
+# shortly after deleting it answers `OperationAborted` ("A conflicting
+# conditional operation is currently in progress against this resource"), NOT
+# `BucketAlreadyOwnedByYou`. Same-region reuse clears in seconds; CROSS-region
+# reuse did not clear in ten minutes, which is why the cross-region arm now
+# plants a per-run unique name instead of reusing one (see Phase 0). The budget
+# here is therefore short insurance for the same-region re-plant, not a wait --
+# if it ever expires, something is genuinely wedged and failing fast is right.
+#
+# That error code is also the evidence for what these arms assert: a bucket
+# being deleted surfaces as `OperationAborted`, which cdkd already classifies as
+# transient, so it never reaches the `BucketAlreadyOwnedByYou` short-circuit at
+# all. `--create-bucket-configuration` is omitted for us-east-1, which rejects it.
+plant_bucket() { # usage: plant_bucket <bucket> <region>
+  local bucket="$1" region="$2" attempt out
+  local cbc=""
+  [ "${region}" = "us-east-1" ] || cbc="--create-bucket-configuration LocationConstraint=${region}"
+  for attempt in 1 2 3 4 5 6; do
+    if out="$(aws s3api create-bucket --bucket "${bucket}" --region "${region}" ${cbc} 2>&1)"; then
+      return 0
+    fi
+    if ! printf '%s' "${out}" | grep -qF 'OperationAborted'; then
+      echo "FAIL: plant_bucket ${bucket} in ${region}: ${out}" >&2
+      return 1
+    fi
+    echo "    (S3 namespace still settling, attempt ${attempt}/6)"
+    sleep 15
+  done
+  echo "FAIL: plant_bucket ${bucket} in ${region}: still OperationAborted after 6 attempts" >&2
+  return 1
+}
+
 assert_gone_eventually() { # usage: assert_gone_eventually "<desc>" aws s3api head-bucket ...
   local desc="$1"; shift
   local attempt
@@ -103,6 +158,14 @@ ALIAS_BUCKET="cdkd-lifecycle-alias-${ACCOUNT_ID}"
 EB_MALFORMED_BUCKET="cdkd-lifecycle-ebmalformed-${ACCOUNT_ID}"
 NOTIFY_TOPIC_ARN="arn:aws:sns:${REGION}:${ACCOUNT_ID}:cdkd-lifecycle-notify-${ACCOUNT_ID}"
 
+# Issue #2227: the region the cross-region adopt arm plants its colliding
+# bucket in. It only has to DIFFER from REGION -- S3 bucket names are globally
+# unique, so any other region reproduces the collision.
+XR_REGION="us-west-2"
+if [ "${REGION}" = "${XR_REGION}" ]; then
+  XR_REGION="us-east-2"
+fi
+
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
@@ -120,6 +183,18 @@ cleanup() {
   aws s3api delete-bucket --bucket "${ALIAS_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${EB_MALFORMED_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws sns delete-topic --topic-arn "${NOTIFY_TOPIC_ARN}" --region "${REGION}" >/dev/null 2>&1 || true
+  # Issue #2227 arm: the colliding bucket has a per-run unique name and lives in
+  # ANOTHER region, so the sweep above (all "${REGION}", fixed names) cannot
+  # reach it. Folded into this handler rather than given its own
+  # `trap ... EXIT` -- bash does not chain EXIT traps, so a second one would
+  # silently disarm every line above. Unset-guarded: this runs pre-run too,
+  # before the name is chosen.
+  if [ -n "${XR_ARM_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${XR_ARM_BUCKET}" --region "${XR_REGION:-}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${SR_ARM_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${SR_ARM_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -148,6 +223,133 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# --- Phase 0b: the negative control -- a SAME-region owned bucket is adopted --
+# Plant a bucket cdkd is about to create, in the region this stack deploys to.
+# cdkd must ADOPT it and finish the deploy, so a guard that refuses every
+# already-owned bucket fails here while passing Phase 0 -- but see the SCOPE
+# note below, which bounds that claim in the default region.
+#
+# Uses the same per-run unique `CDKD_XR_ARM_BUCKET` hook as Phase 0, and for the
+# same measured reason: a name that has existed in one region cannot be
+# re-created in ANOTHER for >10 minutes. An earlier version of this arm planted
+# the STACK'S OWN bucket name cross-region, which poisoned that name for the
+# base fixture's Phase 1 as well -- the arms must never touch a name the fixture
+# reuses.
+#
+# Scope, stated because it is easy to over-read: in `us-east-1` S3 answers a
+# re-create of a bucket you already own with a legacy 200 OK rather than
+# `BucketAlreadyOwnedByYou` (measured 2026-08-26), so under the default REGION
+# this phase does not traverse the guard's adopt arm -- it proves cdkd deploys
+# cleanly over a pre-existing same-region bucket, which is the user-visible
+# behaviour. The guard's own adopt arm is fenced by the unit suite, and the
+# REFUSAL arm below does reach the guard from us-east-1 (a cross-region
+# collision returns 409, also measured). Run with AWS_REGION set elsewhere and
+# this phase traverses the adopt arm live too.
+SR_ARM_BUCKET="cdkd-lifecycle-sr-${ACCOUNT_ID}-$(date -u +%s)"
+echo "==> Phase 0b: cdkd must ADOPT ${SR_ARM_BUCKET}, already owned in ${REGION}"
+plant_bucket "${SR_ARM_BUCKET}" "${REGION}"
+
+# Prove the PREMISE: it really is in REGION. `get-bucket-location` reports an
+# empty constraint for us-east-1 (an S3 quirk), which `--output text` renders
+# as `None`.
+SR_LOC="$(aws s3api get-bucket-location --bucket "${SR_ARM_BUCKET}" \
+  --query 'LocationConstraint' --output text)"
+[ "${SR_LOC}" = "None" ] && SR_LOC="us-east-1"
+if [ "${SR_LOC}" != "${REGION}" ]; then
+  echo "FAIL phase 0b premise: arm bucket should be in ${REGION}, got '${SR_LOC}'" >&2
+  exit 1
+fi
+
+CDKD_XR_ARM_BUCKET="${SR_ARM_BUCKET}" env -u CDKD_TEST_UPDATE \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+# Not just "the deploy exited 0": the adopted bucket must still be there. A
+# guard that refused would have failed the deploy above; a cleanup that deleted
+# it would fail here.
+if ! aws s3api head-bucket --bucket "${SR_ARM_BUCKET}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL phase 0b: ${SR_ARM_BUCKET} is gone after a deploy that should have ADOPTED it" >&2
+  exit 1
+fi
+echo "    OK: adopted the pre-existing same-region bucket and completed the deploy"
+
+echo "==> Phase 0b teardown"
+cleanup
+assert_gone_eventually "phase 0b teardown: ${SR_ARM_BUCKET} survived cleanup" \
+  aws s3api head-bucket --bucket "${SR_ARM_BUCKET}" --region "${REGION}"
+
+# --- Phase 0: cross-region adopt refusal (issue #2227) ---------------------
+# `CreateBucket` answers `BucketAlreadyOwnedByYou` on OWNERSHIP, which is
+# account-global, while a bucket is regional -- so it fires for a bucket of
+# ours in ANY region. cdkd used to swallow that as an idempotent-create success
+# and then apply this stack's whole bucket configuration to the foreign-region
+# bucket while reporting success.
+#
+# The collision is planted on a PER-RUN UNIQUE name carried by an extra bucket
+# that only exists while `CDKD_XR_ARM_BUCKET` is set (see the stack). Measured
+# 2026-08-26: once a name has existed in one region, re-creating it in ANOTHER
+# answers `OperationAborted` for well over ten minutes -- 40 retries across 10
+# minutes never cleared it -- while `HeadBucket` already reports 404. Planting
+# the collision on a name the fixture REUSES therefore poisons it for the rest
+# of the run and for the next one, which is exactly how the first version of
+# this arm wedged. A fresh name is only ever created in one region.
+#
+# Asserts the POSITIVE marker only the fixed path emits (the refusal naming
+# both regions), NOT merely "the deploy failed" -- a deploy that died for any
+# other reason would satisfy the negative. Phase 0b ABOVE is the negative
+# control; Phase 1 is NOT one, because nothing collides there.
+XR_ARM_BUCKET="cdkd-lifecycle-xr-${ACCOUNT_ID}-$(date -u +%s)"
+echo "==> Phase 0: cdkd must REFUSE to adopt ${XR_ARM_BUCKET}, owned in ${XR_REGION}"
+plant_bucket "${XR_ARM_BUCKET}" "${XR_REGION}"
+
+# Prove the PREMISE before asserting anything that depends on it: an arm whose
+# collision never landed would "pass" on any unrelated failure.
+XR_LOC="$(aws s3api get-bucket-location --bucket "${XR_ARM_BUCKET}" \
+  --query 'LocationConstraint' --output text)"
+if [ "${XR_LOC}" != "${XR_REGION}" ]; then
+  echo "FAIL phase 0 premise: colliding bucket should be in ${XR_REGION}, got '${XR_LOC}'" >&2
+  exit 1
+fi
+
+set +e
+XR_OUT="$(CDKD_XR_ARM_BUCKET="${XR_ARM_BUCKET}" env -u CDKD_TEST_UPDATE \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+XR_RC=$?
+set -e
+printf '%s\n' "${XR_OUT}"
+
+if [ "${XR_RC}" -eq 0 ]; then
+  echo "FAIL phase 0: deploy SUCCEEDED while ${XR_ARM_BUCKET} lives in ${XR_REGION} -- cdkd adopted a foreign-region bucket" >&2
+  exit 1
+fi
+# Short needles checked separately against a FLATTENED copy, never one long
+# phrase against the raw output. grep is line-based, so if the logger wraps the
+# refusal, a needle straddling the break scores 0 on a message that is
+# perfectly correct -- a false FAIL that reads exactly like a real regression.
+# `-F` because these are literals, not patterns (the getatt-fallback-guard
+# fixture asserts a refusal the same way).
+XR_FLAT="$(printf '%s' "${XR_OUT}" | tr '\n' ' ' | tr -s ' ')"
+for needle in 'Refusing to adopt existing S3 bucket' "lives in ${XR_REGION}" "deploys to ${REGION}"; do
+  if ! printf '%s' "${XR_FLAT}" | grep -qF -- "${needle}"; then
+    echo "FAIL phase 0: refusal output lacks message fragment: ${needle}" >&2
+    exit 1
+  fi
+done
+echo "    OK: refused (rc=${XR_RC}), naming ${XR_REGION} vs ${REGION}"
+
+# Reset to a clean slate before the real phases: the refused deploy created the
+# stack's other buckets before failing, and left a state record. `cleanup` also
+# drops the colliding bucket, since its XR line was folded into that same
+# handler.
+echo "==> Phase 0 teardown"
+cleanup
+# Load-bearing: this bucket lives in XR_REGION, outside both the fixture's
+# REGION-scoped sweeps and /run-integ's post-run orphan scan, so a failed
+# delete would leak SILENTLY while the run still reports 0 orphans.
+assert_gone_eventually "phase 0 teardown: ${XR_ARM_BUCKET} survived cleanup in ${XR_REGION}" \
+  aws s3api head-bucket --bucket "${XR_ARM_BUCKET}" --region "${XR_REGION}"
 
 # --- Phase 1: deploy baseline (prefix rule + abort-only rule) ----------
 echo "==> Phase 1: deploy bucket with a V1 prefix rule + a scope-less abort rule"
