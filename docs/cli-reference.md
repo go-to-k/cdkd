@@ -2830,7 +2830,33 @@ Behavior:
   outcome, and a re-enable that itself fails is reported as a
   separate ERROR line naming the table plus the
   `aws dynamodb update-table --deletion-protection-enabled`
-  command that restores it by hand.
+  command that restores it by hand. A re-enable that fails with
+  `ResourceNotFoundException` is reported at **warn** instead
+  (issue #2224), because cdkd cannot tell which case it is:
+  DynamoDB returns that error both for a table that is gone and
+  for one whose status is merely not `ACTIVE`. So the line drops
+  the claim that the table is LIVE — which would be false in the
+  first case — while staying visible, and names a
+  `describe-table` check before the restore command. Every other
+  re-enable failure keeps the ERROR line.
+- The compensation survives a long retry sequence (issue #2211).
+  It latches per table for the duration of the destroy, and that
+  latch's reuse window is **sliding** — every re-entry restarts
+  it — so what is bounded is idle time since the last attempt
+  rather than the total lifetime of the sequence. A
+  `--resource-timeout` set past the window used to let an
+  accumulation of attempts age out its own latch mid-flight,
+  after which the next attempt read the guard as already off
+  (cdkd having turned it off itself) and compensated nothing.
+  This is not unconditional. `acquire` runs once per attempt, so
+  what the window measures is the previous attempt's own duration
+  plus the loop backoff. That is normally comfortable — the
+  26-minute delete allowance covers the WHOLE retry sequence
+  rather than one attempt, and the window adds a 4-minute margin
+  sized for that backoff — so what can still age out a successor
+  is an attempt that OVERRUNS the allowance (a floor poll granted
+  at zero remaining, an unpriced teardown), not one that merely
+  spends it.
 - Two cases it deliberately does NOT reach, both leaving the
   guard off: a retryable failure that exhausts the destroy loop's
   own attempt cap (cdkd cannot see which attempt is the last),

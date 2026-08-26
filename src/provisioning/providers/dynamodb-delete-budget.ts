@@ -541,18 +541,58 @@ export interface ProtectionFlipRecord {
 export class ProtectionFlipRegistry {
   private readonly records = new Map<
     string,
-    { readonly record: ProtectionFlipRecord; readonly age: ElapsedBudget }
+    { readonly record: ProtectionFlipRecord; idle: ElapsedBudget }
   >();
 
   /**
    * The record for `key`, creating it on first use and REUSING it on re-entry.
    *
-   * `reuseWithinMs` bounds how long an entry may be reused for and is passed
-   * the same `DELETE_BUDGET_REUSE_WINDOW_MS` the allowance uses: past the
-   * deadline the whole path is sized against, that deadline has certainly
-   * fired, so a caller arriving now belongs to a NEW operation and must not
-   * inherit a previous one's flip. Without it a retained record would make a
-   * much later destroy of the same table re-enable a guard it never touched.
+   * `reuseWithinMs` bounds how long an entry may sit UNUSED, and the window
+   * SLIDES: every reuse restarts the stopwatch, so what is bounded is the idle
+   * time since the last `acquire` rather than the entry's total lifetime. It is
+   * passed the same `DELETE_BUDGET_REUSE_WINDOW_MS` the allowance uses, and it
+   * is still needed for the reason it was introduced: entries are RETAINED on a
+   * throw, so without any bound a retained record would let a much LATER
+   * destroy of the same table re-enable a guard it never touched — the inverse
+   * hazard of the one this record exists for.
+   *
+   * Measuring from FIRST acquisition instead is what issue #2211 reported, and
+   * it re-creates issue #1978's residue through this very mechanism. The retry
+   * sequence is unbounded while the window is a wall clock, so a
+   * `--resource-timeout` overshoot past `DELETE_BUDGET_REUSE_WINDOW_MS` lets a
+   * LIVE sequence age out MID-flight: `acquire` drops the entry and hands the
+   * next attempt a fresh `{ flippedOffByThisRun: false }`, whose pre-flip
+   * `DescribeTable` then observes the guard already OFF — because attempt 1
+   * turned it off — so the latch stays `false` and a terminal failure
+   * compensates nothing.
+   *
+   * KNOWN BOUND, stated because the obvious reading overclaims it. `acquire` is
+   * called ONCE per `delete()`, at the top, and nothing touches the entry's
+   * idle STOPWATCH again (the record's fields are mutated throughout, and
+   * `release` drops it) — so the interval this measures is not a gap BETWEEN
+   * operations, it is the previous ATTEMPT's own duration plus the outer loop's
+   * backoff.
+   *
+   * That is normally comfortable, and the arithmetic is worth having right.
+   * `DELETE_BUDGET_REUSE_WINDOW_MS` is `DYNAMODB_DELETE_BUDGET_MS` (26 min)
+   * plus `DYNAMODB_DELETE_DEADLINE_MARGIN_MS` (4 min). The 26 minutes is the
+   * allowance for the WHOLE retry sequence, not for one attempt —
+   * `ElapsedBudgetRegistry.acquire` hands back the SAME budget on re-entry — so
+   * a budget-conforming attempt plus one backoff is at most ~26m20s against a
+   * 30-minute window, and the margin exists precisely to price that backoff.
+   *
+   * What can still age out a successor is therefore an attempt that OVERRUNS
+   * the allowance rather than one that merely spends it: `attemptsWithin` keeps
+   * a `minAttempts` floor poll even at zero remaining, and the auto-scaling
+   * teardown is unpriced (see `src/utils/elapsed-budget.ts`). The slide removes
+   * the ACCUMULATION case — many attempts summing past the window, the common
+   * shape and the one issue #2211 reported — not the overrun one.
+   *
+   * Closing the remainder means sliding at attempt END too (a `touch(key)` in
+   * `delete()`'s catch, making the measured gap the loop backoff rather than
+   * the attempt), or sizing this window independently of the delete budget.
+   * Both are behaviour changes to the delete path and belong in their own
+   * change rather than riding this one.
    */
   acquire(
     key: string,
@@ -561,13 +601,26 @@ export class ProtectionFlipRegistry {
   ): ProtectionFlipRecord {
     const existing = this.records.get(key);
     if (existing) {
-      if (existing.age.elapsedMs() <= reuseWithinMs) return existing.record;
+      if (existing.idle.elapsedMs() <= reuseWithinMs) {
+        // The SLIDE. Restarting the stopwatch on every reuse is what keeps a
+        // long retry sequence from aging out its own record mid-flight.
+        //
+        // Note this rebases on the CALLER's clock, where the sibling
+        // `ElapsedBudgetRegistry.acquire` documents that a re-entry must not
+        // grant itself a fresh one. Inert in production -- both resolve to
+        // `monotonicNowMs`, and the divergence is only reachable from a test
+        // that injects different clocks to the same key -- but the two
+        // registries genuinely differ here, so do not read one's contract onto
+        // the other.
+        existing.idle = new ElapsedBudget(reuseWithinMs, clock);
+        return existing.record;
+      }
       this.records.delete(key);
     }
     const created = {
       record: { flippedOffByThisRun: false, deleteAccepted: false },
       // Only a monotonic stopwatch is wanted here; the total is never read.
-      age: new ElapsedBudget(reuseWithinMs, clock),
+      idle: new ElapsedBudget(reuseWithinMs, clock),
     };
     this.records.set(key, created);
     return created.record;
@@ -652,6 +705,16 @@ export interface ProtectionCompensationOptions {
   /** `table` / `GlobalTable`, for the narration only. */
   readonly typeLabel: string;
   readonly logger: Logger;
+  /**
+   * The region the delete was aimed at, when the caller knows it. Rendered into
+   * the remediation commands, which are otherwise unrunnable in the one case
+   * that most needs them: the race this compensation is reached through is a
+   * REGION MISMATCH, so an operator whose default profile region differs gets
+   * the same ResourceNotFound from the suggested `describe-table` and concludes
+   * the table is gone -- confirming the exact half cdkd deliberately stopped
+   * asserting.
+   */
+  readonly region?: string | undefined;
   /** Issues the `UpdateTable(DeletionProtectionEnabled: true)`. */
   readonly reEnable: () => Promise<void>;
 }
@@ -699,14 +762,89 @@ export async function compensateRemovedDeletionProtection(
         `re-enabled on ${opts.physicalId}. The delete failure below is the outcome.`
     );
   } catch (reEnableError) {
+    const detail = reEnableError instanceof Error ? reEnableError.message : String(reEnableError);
+    if (isResourceNotFoundError(reEnableError)) {
+      // Issue #2224: the ERROR line below asserts "that table is LIVE with its
+      // deletion protection still off", and on this arm cdkd does not know
+      // that. So the ASSERTION is dropped — but the line is NOT silenced, and
+      // the difference is load-bearing.
+      //
+      // `ResourceNotFoundException` from `UpdateTable` does not mean "the table
+      // is gone". The SDK's own model says it covers a table whose "status
+      // might not be ACTIVE" (`@aws-sdk/client-dynamodb` errors.d.ts), and that
+      // case is reachable and not exotic: on `AWS::DynamoDB::GlobalTable`,
+      // `waitForReplicaGone` can time out with the table still UPDATING and
+      // `deleteAccepted` still false (it is set only after `DeleteTable`), so
+      // the compensation fires against a LIVE, unprotected table and is told
+      // ResourceNotFound. Downgrading that to `debug` would hide, at default
+      // verbosity, exactly the case this line exists to report.
+      //
+      // `warn` is therefore the level: visible by default, but not claiming a
+      // fact cdkd cannot establish. The message states the ambiguity and gives
+      // the operator both the check and the remedy.
+      //
+      // The race issue #2224 actually named: `delete()` observes the guard on,
+      // flips it, issues `DeleteTable`, AWS answers ResourceNotFound — a
+      // success for the provider — but `assertRegionMatch` throws inside that
+      // branch BEFORE it reaches `protectionFlips.release`, so the record
+      // arrives here still latched. Deliberately NOT fixed by skipping the
+      // compensation on an RNF-shaped DELETE error (the flip may have landed on
+      // a table that still exists, and the RNF can come from another call in
+      // that branch) nor by releasing the record there (the retained-on-throw
+      // contract is what the re-entered-delete latch depends on).
+      // `--region` is rendered whenever the caller knows it. Without it the
+      // suggested `describe-table` runs against the operator's default profile
+      // region, which on the region-mismatch race that reaches this arm answers
+      // the SAME ResourceNotFound — leading them to conclude "gone", i.e. the
+      // one thing this message deliberately stops asserting.
+      const regionArg = opts.region ? ` --region ${opts.region}` : '';
+      opts.logger.warn(
+        `DynamoDB ${opts.typeLabel} ${opts.logicalId}: could not re-enable ` +
+          `DeletionProtectionEnabled on ${opts.physicalId} after the delete failed — ` +
+          `DynamoDB answered ResourceNotFound. That most commonly means the table is ` +
+          `gone or its status is not ACTIVE, and it can also mean the table is not in ` +
+          `this region or account. If it still exists, its deletion protection is OFF. ` +
+          `Check with: aws dynamodb describe-table --table-name ${opts.physicalId}` +
+          `${regionArg} and if it is there, restore it with: aws dynamodb update-table ` +
+          `--table-name ${opts.physicalId}${regionArg} --deletion-protection-enabled. ` +
+          `(${detail})`
+      );
+      return;
+    }
     opts.logger.error(
       `DynamoDB ${opts.typeLabel} ${opts.logicalId}: could NOT re-enable ` +
         `DeletionProtectionEnabled on ${opts.physicalId} after the delete failed — ` +
         `that table is LIVE with its deletion protection still off. Restore it with: ` +
         `aws dynamodb update-table --table-name ${opts.physicalId} ` +
-        `--deletion-protection-enabled. (${
-          reEnableError instanceof Error ? reEnableError.message : String(reEnableError)
-        })`
+        `--deletion-protection-enabled. (${detail})`
     );
   }
+}
+
+/**
+ * Whether `error` is DynamoDB's `ResourceNotFoundException`.
+ *
+ * Keyed on the SDK's `name` rather than on `instanceof`, so this module keeps
+ * its (deliberate) freedom from an `@aws-sdk/client-dynamodb` import and so a
+ * second client instance of the class still matches.
+ *
+ * Deliberately NOT a `cause`-chain walk: every `reEnable` callback handed to
+ * {@link compensateRemovedDeletionProtection} is a bare `UpdateTable` send, so
+ * the SDK error arrives unwrapped. If one ever wraps its call, this answers
+ * `false` and the compensation keeps the LOUD error line — the safe direction.
+ */
+// One latent widening is worth naming beyond the wrapping direction argued
+// above, because it is the one that would make the caller's downgrade unsafe:
+// if either `reEnable` ever moves onto a PER-REPLICA client (the GlobalTable
+// provider already builds those), a ResourceNotFound would mean "wrong region"
+// rather than "table gone", and the caller's `warn` arm would be describing a
+// live, unprotected table in another region. The caller's message now says a
+// third meaning is possible and renders `--region`, but a move to regional
+// clients should revisit this predicate rather than inherit it.
+function isResourceNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'ResourceNotFoundException'
+  );
 }

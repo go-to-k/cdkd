@@ -4191,15 +4191,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // From the REGISTRY, not a fresh object: this method is re-entered by
     // `destroy-runner.ts` after a retryable failure, and what has to survive
     // that re-entry is exactly "an earlier attempt already flipped the guard
-    // off". Same key and same reuse window as the delete allowance below.
+    // off". Same key and the same window CONSTANT as the delete
+    // allowance below, but not the same semantics: this one SLIDES on reuse
+    // (issue #2211) while `ElapsedBudgetRegistry` still measures from creation.
     const flip: ProtectionFlipRecord = this.protectionFlips.acquire(
       deleteBudgetKey(physicalId, context?.expectedRegion),
       DELETE_BUDGET_REUSE_WINDOW_MS,
       // The same injected clock the allowance below gets. Production-identical
-      // either way (both default to the monotonic clock). It is threaded so a
-      // future go-to-k/cdkd#2211 test can drive the reuse window THROUGH
-      // `delete()` -- today's window test calls `registry.acquire` directly
-      // with its own clock, so this third argument is not itself fenced yet.
+      // either way (both default to the monotonic clock). It is threaded so the
+      // reuse window can be driven THROUGH `delete()`, which is what fences the
+      // SLIDING window go-to-k/cdkd#2211 fixed: the suite's three-attempt case
+      // advances this clock past `DELETE_BUDGET_REUSE_WINDOW_MS` in total while
+      // keeping every gap inside it, and asserts the latch survived.
       resolveDynamoDbDeleteBudgetClock()
     );
     try {
@@ -4212,6 +4215,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         physicalId,
         typeLabel: 'GlobalTable',
         logger: this.logger,
+        ...(context?.expectedRegion ? { region: context.expectedRegion } : {}),
         reEnable: async () => {
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
@@ -4641,9 +4645,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
         this.logger.debug(`DynamoDB GlobalTable ${physicalId} does not exist, skipping`);
         this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
-        // The table is GONE, so there is no guard to restore — and `delete()`
-        // returns rather than throwing here, so the compensation never sees
-        // this path anyway. Released for the same hygiene as the success path.
+        // The table is GONE, so there is no guard to restore, and reaching this
+        // line means `delete()` RETURNS rather than throwing — so the
+        // compensation never runs on it. Released for the same hygiene as the
+        // success path. Note the release is NOT reached when the
+        // `assertRegionMatch` above throws: the record stays latched on purpose
+        // (the re-entered-delete contract), the compensation runs, and its own
+        // `UpdateTable` is answered with the same ResourceNotFound — which
+        // `compensateRemovedDeletionProtection` reports at debug rather than
+        // claiming a live table is unprotected (issue #2224).
         this.protectionFlips.release(deleteBudgetKey(physicalId, context?.expectedRegion));
         return;
       }
