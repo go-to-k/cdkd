@@ -1602,3 +1602,108 @@ describe('the per-resource failure warning is masked (#2151 / #1945)', () => {
     expect(secretSends).toHaveLength(0);
   });
 });
+
+/**
+ * Issue [#2208](https://github.com/go-to-k/cdkd/issues/2208), the `refused`
+ * half. The remediation modes' no-drift line now reports an incomplete
+ * comparison, and it names the cause -- so the `refused` cause needs a fixture
+ * that actually produces one, which is what this file's cross-region harness
+ * is. Every fixture in the sibling suite
+ * (`drift-per-resource-failure.test.ts`) produces `readFailed`, so the second
+ * arm of that message is unreachable there and would be unfenced: deleting it
+ * leaves that suite green.
+ */
+describe('cdkd drift --accept over a REFUSED comparison reports it as incomplete (#2208)', () => {
+  it('names the refusal as the cause, keeps exit 0, and writes no state', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    // Region-less reference plus a cross-region import on record: cdkd REFUSES
+    // to resolve it (issue #2108) rather than failing to. The live readback
+    // matches on every property it CAN compare, so the resource is
+    // `notCompared`, the run finds no drift, and the remediation path is the
+    // one under test.
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { error } = await runDrift(['Consumer', '--accept', '--yes']);
+
+    const text = logText();
+    expect(text).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '1 of 1 resource(s) could not be compared.'
+    );
+    expect(text).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 only PARTIALLY compared: cdkd refused to resolve a dynamic reference their ' +
+        'state records.'
+    );
+    expect(text).not.toContain('No drift detected');
+    // Unchanged contract: the remediation modes still exit 0.
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
+    // ...and the refusal is still a refusal: nothing was fetched from either
+    // region, so no foreign plaintext reached the run.
+    expect(secretSends).toHaveLength(0);
+  });
+});
+
+/**
+ * Issue [#2208](https://github.com/go-to-k/cdkd/issues/2208), BOTH clearable
+ * reasons at once. The message joins its per-reason phrases with `'; '`, and a
+ * fixture carrying one reason cannot fence that join: with a single entry the
+ * separator never appears, so any separator -- or none -- renders identically.
+ * This is also the only fixture in the repo where a `refused` resource and a
+ * `readFailed` one sit in the same stack, which is what makes the ORDER
+ * observable (`readFailed` first: not compared at all outranks partially).
+ */
+describe('cdkd drift --accept reports a refusal and a read failure together (#2208)', () => {
+  it('joins both reasons, in order, with the stack total', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState(
+        {
+          Fn: lambdaResource(NAME_EXPR),
+          Queue: {
+            physicalId: 'q',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'ok' },
+          },
+        },
+        [PRODUCER_REGION]
+      )
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === LAMBDA_TYPE
+        ? { readCurrentState: async () => awsEnv(IRELAND_PASSWORD) }
+        : {
+            readCurrentState: async () => {
+              const err = new Error('Rate exceeded');
+              err.name = 'ThrottlingException';
+              throw err;
+            },
+          }
+    );
+
+    const { error } = await runDrift(['Consumer', '--accept', '--yes']);
+
+    expect(logText()).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '2 of 2 resource(s) could not be compared.'
+    );
+    // Both are `unknown`-kind, so they share ONE lead and the `'; '` join
+    // between them is what this fixture exists to fence.
+    expect(logText()).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 not compared AT ALL: the read or comparison failed; ' +
+        '1 only PARTIALLY compared: cdkd refused to resolve a dynamic reference their ' +
+        'state records.'
+    );
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+});

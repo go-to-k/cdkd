@@ -394,6 +394,10 @@ class DriftDetectedError extends CdkdError {
  * a partially-failed `--revert` still exits 2 through `PartialFailureError`) --
  * those modes report per-resource refusals on their own paths, and changing them
  * would alter what a remediation run means, which is not what this closes.
+ * Issue [#2208](https://github.com/go-to-k/cdkd/issues/2208) re-examined that
+ * scoping and KEPT it: what those modes owed was not this exit code but an
+ * honest SENTENCE, since their no-drift line claimed a clean bill of health for
+ * a stack they had not read. See {@link incompleteRemediationMessage}.
  *
  * WHAT DOES NOT TRIGGER IT: a stack whose properties reference
  * `{{resolve:ssm-secure:...}}` still exits 0. Those properties genuinely are not
@@ -505,6 +509,235 @@ function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplete' | 'n
     unsupported: () => 'none',
     skipped: () => 'none',
   });
+}
+
+/**
+ * Every reason one resource can end a run UNCOMPARED, as a closed set.
+ *
+ * A superset of {@link NotComparedCause} by exactly the two variants that are
+ * not compared for a reason unrelated to a dynamic reference: `unsupported`
+ * (no provider implements `readCurrentState` for the type) and `skipped` (drift
+ * is not conceptually applicable to the type -- `Custom::*`). The cause type has
+ * no member for either because neither is a not-compared CAUSE in the report's
+ * sense; they are their own outcome VARIANTS, rendered -- or not -- on their own
+ * terms. `unsupported` gets its own `drift unknown` heading; `skipped` gets NO
+ * human-report output at all, deliberately (issue
+ * [#323](https://github.com/go-to-k/cdkd/issues/323): `Custom::S3AutoDeleteObjects`
+ * rides along in most CDK stacks, and a per-run line about it would be noise).
+ * It surfaces only inside the #2154 `NOTHING was compared` parenthetical and in
+ * `--json`'s `skipped[]`.
+ *
+ * WHY #323's SILENCE IS DELIBERATELY NOT HONOURED BY
+ * {@link incompleteRemediationMessage}, since the next reader will otherwise
+ * take that line for a regression of it: #323 is about the DETECTION report,
+ * which is a per-resource listing, and there a `Custom::*` entry every run is
+ * pure noise. The remediation line is not a listing -- it is a single sentence
+ * saying why a command that was asked to CHANGE something changed nothing, and
+ * a sentence of that kind has to account for the whole stack or it is back to
+ * being quietly reassuring. So `skipped` is COUNTED there, and #323's substance
+ * is preserved a different way: it is reported under a heading that makes no
+ * uncertainty claim about it (see {@link UNCOMPARED_REASONS}), because "cdkd
+ * never drift-checks this type" is a fact about cdkd, not a doubt about the
+ * resource. Nothing about the detection report changes.
+ */
+type UncomparedReason = NotComparedCause | 'unsupported' | 'skipped';
+
+/**
+ * Which of the two claims the line may make about a reason.
+ *
+ *   - `unknown` -- cdkd TRIED, or would have, and cannot say. The user can act:
+ *     grant the permission, respell the ARN, re-run past the throttle.
+ *   - `byDesign` -- cdkd was never going to look. There is nothing to act on and
+ *     nothing uncertain about it; the resource simply is not in the drift
+ *     command's remit.
+ */
+type UncomparedKind = 'unknown' | 'byDesign';
+
+/**
+ * What {@link incompleteRemediationMessage} says about each reason, and WHICH
+ * CLAIM it is allowed to make about it.
+ *
+ * An exhaustive `Record`, for the same reason {@link notComparedReason} is one:
+ * adding a cause must be a COMPILE ERROR here rather than falling into an
+ * `else` that describes it as something it is not. The first cut of this
+ * function had that `else`, and it was worse than a wrong default -- it
+ * described any unknown cause as a dynamic-reference problem, while
+ * {@link outcomeExitSignal} deliberately routes every NEW cause to the
+ * incomplete side. The two together meant the next cause added would be
+ * reported, at once, to the widest audience and under the wrong name. Carrying
+ * `kind` in the SAME record rather than a second one beside it means a new
+ * reason cannot be given a phrase while quietly inheriting a claim.
+ *
+ * `kind` exists because one blanket tail overclaimed. The line used to end
+ * `..., so cdkd does not know whether they drifted`, which is true of a
+ * throttled read and FALSE of a `Custom::*` resource -- for that one, issue
+ * [#323](https://github.com/go-to-k/cdkd/issues/323)'s position is that drift is
+ * not APPLICABLE, not that cdkd is uncertain. A stack with one throttle and five
+ * `Custom::S3AutoDeleteObjects` would have claimed uncertainty about all six.
+ *
+ * The insertion ORDER is the order the phrases are emitted in, so the line is
+ * deterministic without a second list to keep in sync: "not compared at all"
+ * first, then the partial ones, then the two structural reasons.
+ *
+ * The wording splits on "was ANY of it compared", which is the same split the
+ * human report's `NOT fully compared` heading makes -- a `readFailed` resource
+ * is not "partially" anything.
+ */
+const UNCOMPARED_REASONS: Record<UncomparedReason, { kind: UncomparedKind; phrase: string }> = {
+  readFailed: {
+    kind: 'unknown',
+    phrase: 'not compared AT ALL: the read or comparison failed',
+  },
+  refused: {
+    kind: 'unknown',
+    phrase:
+      'only PARTIALLY compared: cdkd refused to resolve a dynamic reference their state records',
+  },
+  unresolvedToken: {
+    kind: 'unknown',
+    phrase:
+      'only PARTIALLY compared: their state records a `{{resolve:...}}` spelling cdkd resolves ' +
+      'for nobody, which no re-run can clear',
+  },
+  unsupported: {
+    kind: 'byDesign',
+    phrase: 'not compared AT ALL: their provider does not support drift detection yet',
+  },
+  skipped: {
+    kind: 'byDesign',
+    phrase: 'not compared AT ALL: cdkd does not drift-check the type',
+  },
+};
+
+/**
+ * The sentence lead each {@link UncomparedKind} group is reported under.
+ *
+ * Exhaustive for the same reason the record above is, and SEPARATE from it
+ * because the lead is per GROUP while the phrase is per reason: writing the
+ * claim into each phrase would put five copies of two sentences in the file,
+ * and five copies is how two of them come to disagree.
+ *
+ * Insertion order is emit order, and `unknown` comes first deliberately: it is
+ * the half the user can do something about.
+ */
+const UNCOMPARED_KIND_LEADS: Record<UncomparedKind, string> = {
+  unknown: 'cdkd does not know whether these drifted',
+  byDesign: 'Not drift-checked by cdkd at all, which is a coverage limit rather than uncertainty',
+};
+
+/**
+ * How many resources across every report ended UNCOMPARED, per reason.
+ *
+ * The `notCompared` population is read through {@link notComparedOutcomes} --
+ * the single spelling both renderings already share -- and the other two come
+ * from an exhaustive `matchOutcome`, so a new outcome variant cannot join the
+ * "nothing to say about it" side by omission. That is the same guarantee
+ * {@link outcomeExitSignal} carries at the exit code, applied to the count.
+ */
+function uncomparedTally(reports: StackDriftReport[]): Map<UncomparedReason, number> {
+  const tally = new Map<UncomparedReason, number>();
+  const bump = (reason: UncomparedReason): void => {
+    tally.set(reason, (tally.get(reason) ?? 0) + 1);
+  };
+  for (const report of reports) {
+    for (const { cause } of notComparedOutcomes(report)) {
+      bump(cause);
+    }
+    for (const outcome of report.outcomes) {
+      matchOutcome<void>(outcome, {
+        drifted: () => {},
+        clean: () => {},
+        // Counted above, through the shared spelling rather than a second one.
+        notCompared: () => {},
+        unsupported: () => bump('unsupported'),
+        skipped: () => bump('skipped'),
+      });
+    }
+  }
+  return tally;
+}
+
+/**
+ * The lines `--accept` / `--revert` print INSTEAD of `No drift detected --
+ * nothing to accept.` when the run found no drift but did not manage to compare
+ * everything ([issue #2208](https://github.com/go-to-k/cdkd/issues/2208)).
+ *
+ * MESSAGE-ONLY, and the EXIT CODE deliberately stays `0`. The remediation
+ * modes' exit codes are a documented user contract -- #2108 scoped its `2` to
+ * detection-only mode on purpose, and {@link DriftComparisonIncompleteError}'s
+ * note says why: "changing them would alter what a remediation run means".
+ * Nothing about that reasoning expired. The defect this closes is entirely in
+ * what the run REPORTS: `--accept` / `--revert` already correctly leave an
+ * uncompared resource alone (both iterate the drifted outcomes only, asserted
+ * in `tests/unit/cli/drift-per-resource-failure.test.ts`), so the state and AWS
+ * are right and only the sentence is wrong. Making the remediation path exit
+ * non-zero would break the CI of everyone running `cdkd drift --accept` over a
+ * stack that hits a throttle, to fix a wording problem.
+ *
+ * What the lines have to carry, since the exit code will not carry it: that the
+ * comparison was INCOMPLETE (never that no drift was detected), HOW MANY
+ * resources were not compared and WHY, WHICH of those cdkd is actually
+ * uncertain about, and the pointer to the detection-only run, which is the mode
+ * whose exit code does report it (`2`).
+ *
+ * THE TRIGGER AND THE COUNT ARE DIFFERENT POPULATIONS, deliberately, and
+ * collapsing them is the defect review round 1 found here.
+ *
+ *   - The TRIGGER is `anyIncomplete`, i.e. {@link outcomeExitSignal}'s
+ *     `incomplete`. It is narrow on purpose: a stack whose ONLY uncompared
+ *     resource holds a `{{resolve:ssm-secure:...}}` token must not start
+ *     shouting on every run about a comparison no action of the user's can ever
+ *     complete -- the same CI-forever hazard that cause is kept out of the exit
+ *     code on.
+ *   - The COUNT and the LABELS, once the line is triggered, cover EVERY
+ *     uncompared resource, each named by its own reason (see
+ *     {@link uncomparedTally}). A resource that was not compared was not
+ *     compared, whatever the reason, and counting only the clearable ones
+ *     printed `1 of 3` on a stack the report a few lines above called
+ *     `2 resource(s) NOT fully compared` -- two lines disagreeing about one
+ *     run, with the newer and quieter one being the one written to stop a
+ *     command from being quietly reassuring.
+ *
+ * WHAT `N` AND `M` ARE, stated because the alternatives are all defensible and
+ * silence about the choice is what made the first cut wrong. `M` is the total
+ * number of resource outcomes, and `N` is every one of them that was not
+ * compared -- so `unsupported` and `skipped` land in `N`, WITH their own
+ * phrase, rather than sitting only in the denominator where they would inflate
+ * `M` and go unnamed. On a remediation path, erring LOUD is the correct
+ * direction. Note this makes `N` deliberately WIDER than the report's
+ * `NOT fully compared` heading, which counts the reference / read population
+ * only and reports `drift unknown` separately: the question this line answers
+ * is #2154's, "was everything actually compared", not "how many entries are in
+ * that block". What being in `N` does NOT buy is a uniform claim about the
+ * resource -- see {@link UNCOMPARED_REASONS}'s `kind`, and see
+ * {@link UncomparedReason} for why counting a `skipped` resource here is not a
+ * reversal of #323's silence.
+ */
+function incompleteRemediationMessage(
+  reports: StackDriftReport[],
+  mode: 'accept' | 'revert'
+): string[] {
+  const tally = uncomparedTally(reports);
+  const total = reports.reduce((n, report) => n + report.outcomes.length, 0);
+  const uncompared = [...tally.values()].reduce((a, b) => a + b, 0);
+  // Both loops iterate their record's own keys, so emit order is fixed and a
+  // new reason or kind cannot be left out of the rendering by a list nobody
+  // updated.
+  const kinds = Object.keys(UNCOMPARED_KIND_LEADS) as UncomparedKind[];
+  const reasons = Object.keys(UNCOMPARED_REASONS) as UncomparedReason[];
+  const groups = kinds.flatMap((kind) => {
+    const parts = reasons
+      .filter((reason) => UNCOMPARED_REASONS[reason].kind === kind && (tally.get(reason) ?? 0) > 0)
+      .map((reason) => `${tally.get(reason)} ${UNCOMPARED_REASONS[reason].phrase}`);
+    return parts.length === 0 ? [] : [`${UNCOMPARED_KIND_LEADS[kind]} — ${parts.join('; ')}.`];
+  });
+  return [
+    `Comparison INCOMPLETE — nothing to ${mode}, and that is NOT a clean bill of health: ` +
+      `${uncompared} of ${total} resource(s) could not be compared.`,
+    ...groups,
+    `Re-run 'cdkd drift' without --${mode} to see which resources and why — a detection-only ` +
+      `run exits 2 while a comparison is incomplete.`,
+  ];
 }
 
 /**
@@ -666,6 +899,20 @@ async function driftCommand(
     // Resolution path. Both flags share the prompt + lock + state-loaded
     // reports; the per-resource action differs.
     if (!drifted) {
+      // Issue #2208: `No drift detected` is FALSE for a run that did not manage
+      // to compare everything -- nothing drifted only because nothing was read.
+      // The exit code stays `0` on this path by design; see
+      // {@link incompleteRemediationMessage} for why the fix is the message and
+      // not the code.
+      if (anyIncomplete) {
+        for (const line of incompleteRemediationMessage(
+          reports,
+          options.accept ? 'accept' : 'revert'
+        )) {
+          logger.info(line);
+        }
+        return;
+      }
       logger.info(
         options.accept
           ? 'No drift detected — nothing to accept.'

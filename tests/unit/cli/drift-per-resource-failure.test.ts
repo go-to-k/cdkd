@@ -874,7 +874,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     // THE assertion: nothing is written to AWS for a resource cdkd could not
     // compare.
     expect(update).not.toHaveBeenCalled();
-    expect(infoText()).toContain('nothing to revert');
+    // Issue #2208 replaced the line this reads. `nothing to revert` is a
+    // SUBSTRING of the new one, so it would have passed unchanged while saying
+    // nothing about which of the two was printed; the discriminating half is
+    // that the run no longer claims no drift was detected.
+    expect(infoText()).toContain('Comparison INCOMPLETE — nothing to revert');
+    expect(infoText()).not.toContain('No drift detected');
     void output;
   });
 
@@ -1007,7 +1012,10 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     const { output } = await runDrift([...ARGS, '--accept', '--yes']);
 
     expect(mockSaveState).not.toHaveBeenCalled();
-    expect(infoText()).toContain('nothing to accept');
+    // Same as the `--revert` twin above: issue #2208's line, not the old one
+    // that reported a clean bill of health for a stack it half read.
+    expect(infoText()).toContain('Comparison INCOMPLETE — nothing to accept');
+    expect(infoText()).not.toContain('No drift detected');
     void output;
   });
 });
@@ -1107,5 +1115,377 @@ describe('a stack in which NOTHING was compared does not get the ✓ glyph (#215
     expect(output).toContain('1 resource checked, 1 unsupported');
     expect(output).not.toContain('NOTHING was compared');
     expect(error).toBeUndefined();
+  });
+});
+
+/**
+ * Issue [#2208](https://github.com/go-to-k/cdkd/issues/2208): a remediation run
+ * that compared NOTHING used to print `No drift detected — nothing to accept.`
+ * and exit `0`. Nothing drifted only because nothing was read, so the sentence
+ * was a clean bill of health for a comparison that never happened -- the exact
+ * false reassurance #2135 made `notCompared` a variant to prevent, surviving on
+ * the one path #2135 did not touch.
+ *
+ * The fix is MESSAGE-ONLY and the exit code stays `0` on purpose (see
+ * `incompleteRemediationMessage`), so the MESSAGE is the whole contract and the
+ * assertions here are on its exact text. They are POSITIVE markers: every case
+ * also has a "nothing was written" assertion, but `saveState` / `update` not
+ * having been called is a confluence point -- a run that crashed before the
+ * remediation loop satisfies it just as well as one that correctly declined --
+ * so the line the correct path PRINTS is what discriminates.
+ */
+describe('a remediation run that compared nothing does not report no drift (#2208)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    mockIamSend.mockReset();
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    infoSpy.mockReset();
+    debugSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+    mockListStacks.mockResolvedValue([{ stackName: 'TestStack', region: 'us-east-1' }]);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  const mockUpdate = vi.fn().mockResolvedValue({ physicalId: 'phys' });
+
+  /** Every read in the stack throws: the extreme case, where NOTHING was compared. */
+  function everyReadThrows(): void {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation(() => ({
+      readCurrentState: async () => {
+        throw awsError('ThrottlingException', 'Rate exceeded');
+      },
+      update: mockUpdate,
+    }));
+  }
+
+  it('--accept over a stack whose every read failed says the comparison was INCOMPLETE, not that no drift was detected', async () => {
+    mockUpdate.mockClear();
+    everyReadThrows();
+
+    const { error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    const text = infoText();
+    // THE positive marker, as one literal: the count, the cause and the
+    // "not a clean bill of health" clause have to arrive together, because each
+    // of them alone is satisfiable by wording that still reassures.
+    expect(text).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '2 of 2 resource(s) could not be compared.'
+    );
+    // The uncertainty claim is per-CAUSE, not a blanket tail (round 2): these
+    // two are `readFailed`, so cdkd genuinely cannot say either way.
+    expect(text).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '2 not compared AT ALL: the read or comparison failed.'
+    );
+    // ...and with no by-design resource in the stack, that group is absent
+    // entirely rather than printed empty.
+    expect(text).not.toContain('Not drift-checked by cdkd at all');
+    // ...and the pointer at the mode whose EXIT CODE reports it, since this
+    // one's does not.
+    expect(text).toContain(
+      "Re-run 'cdkd drift' without --accept to see which resources and why — " +
+        'a detection-only run exits 2 while a comparison is incomplete.'
+    );
+    // The sentence that was false is gone entirely.
+    expect(text).not.toContain('No drift detected');
+    // The exit code is deliberately UNCHANGED: `--accept` / `--revert` exit
+    // codes are a documented contract (#2108 scoped its `2` to detection-only
+    // mode), so a CI that runs `--accept` does not start failing.
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    // Nothing was written on the strength of a comparison that did not happen.
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  it('--revert over the same stack says the same thing in its own words, and writes nothing', async () => {
+    mockUpdate.mockClear();
+    everyReadThrows();
+
+    const { error } = await runDrift([...ARGS, '--revert', '--yes']);
+
+    const text = infoText();
+    expect(text).toContain(
+      'Comparison INCOMPLETE — nothing to revert, and that is NOT a clean bill of health: ' +
+        '2 of 2 resource(s) could not be compared.'
+    );
+    expect(text).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '2 not compared AT ALL: the read or comparison failed.'
+    );
+    expect(text).toContain("Re-run 'cdkd drift' without --revert");
+    expect(text).not.toContain('No drift detected');
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The PARTIAL population, which is the realistic one: one resource threw and
+   * the rest of the stack compared cleanly. `no drift detected` is still wrong
+   * -- it is true of 1 of the 2 resources -- and the count has to say which
+   * fraction it covers rather than implying the whole stack.
+   */
+  it('counts the resources it could not compare against the stack total', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? SIBLING_PROVIDER
+        : {
+            readCurrentState: async () => {
+              throw awsError('ThrottlingException', 'Rate exceeded');
+            },
+          }
+    );
+
+    const { error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    expect(infoText()).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '1 of 2 resource(s) could not be compared.'
+    );
+    expect(infoText()).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 not compared AT ALL: the read or comparison failed.'
+    );
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  /**
+   * THE NEGATIVE DIRECTION. Without this an over-broad fix -- one that prints
+   * the incomplete line whenever anything at all is in the `notCompared`
+   * roll-up, or unconditionally -- passes every case above.
+   */
+  it('a stack that was fully compared and has no drift keeps the original message', async () => {
+    mockGetState.mockResolvedValue(makeState({ Queue: resource(QUEUE, { QueueName: 'ok' }) }));
+    mockRegistryGetProvider.mockImplementation(() => SIBLING_PROVIDER);
+
+    const { error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    expect(infoText()).toContain('No drift detected — nothing to accept.');
+    expect(infoText()).not.toContain('Comparison INCOMPLETE');
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+  });
+
+  /**
+   * The OTHER negative direction, and the one that fences the TRIGGER -- which
+   * is a different population from the COUNT (see `incompleteRemediationMessage`).
+   * A `{{resolve:ssm-secure:...}}` resource IS in the `notCompared` roll-up, and
+   * IS counted once the line fires, but it must not FIRE the line on its own: it
+   * is permanent, unclearable, and the reason the detection exit code does not
+   * fire on it either. Widening the trigger from `outcomeExitSignal`'s
+   * `incomplete` to the whole roll-up would make every such stack's `--accept`
+   * start shouting, on every run, about a comparison no action of the user's can
+   * ever complete. Deleting that filter from the trigger reds exactly this case.
+   */
+  it('a permanently-unresolvable reference does NOT trigger the incomplete message', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Tokened: resource(LAMBDA, {
+          Environment: { Variables: { PW: '{{resolve:ssm-secure:/pw}}' } },
+        }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation(() => ({
+      readCurrentState: async () => ({ Environment: { Variables: { PW: 'live-value' } } }),
+    }));
+
+    const { output, error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    // The resource IS reported as not fully compared...
+    expect(output).toContain('! Tokened (AWS::Lambda::Function)');
+    // ...and the remediation line is still the plain one.
+    expect(infoText()).toContain('No drift detected — nothing to accept.');
+    expect(infoText()).not.toContain('Comparison INCOMPLETE');
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+  });
+
+  /**
+   * The third direction: a REAL drift with nothing uncompared must still go
+   * through the remediation loop untouched. The incomplete line is reachable
+   * only from the `!drifted` branch, and a fix that moved it above the drift
+   * check would silently stop accepting drift.
+   */
+  it('a genuine drift with no incomplete reads still gets accepted, with no incomplete line', async () => {
+    mockGetState.mockResolvedValue(makeState({ Queue: resource(QUEUE, { QueueName: 'ok' }) }));
+    mockRegistryGetProvider.mockImplementation(() => ({
+      readCurrentState: async () => ({ QueueName: 'CHANGED-IN-CONSOLE' }),
+    }));
+
+    const { output, error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    expect(output).toContain('drift detected on 1 resource');
+    expect(mockSaveState).toHaveBeenCalled();
+    expect(infoText()).not.toContain('Comparison INCOMPLETE');
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+  });
+
+  /**
+   * Drift BESIDE an incomplete read, which is what fences the ORDER of the two
+   * checks. The incomplete line lives inside the `!drifted` branch, so drift
+   * still outranks it exactly as it does in detection mode: the remediation loop
+   * runs and accepts the resource that DID compare, and the failed sibling is
+   * simply not one of them. Hoisting the incomplete branch above the drift check
+   * -- the obvious "be louder about it" edit -- would stop accepting drift
+   * altogether on any stack that also hit a throttle.
+   */
+  it('drift beside a failed read is still accepted: the incomplete branch does not outrank it', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Fn: resource(LAMBDA, { MemorySize: 128 }),
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE
+        ? { readCurrentState: async () => ({ QueueName: 'CHANGED-IN-CONSOLE' }) }
+        : {
+            readCurrentState: async () => {
+              throw awsError('ThrottlingException', 'Rate exceeded');
+            },
+          }
+    );
+
+    const { output, error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    expect(output).toContain('drift detected on 1 resource');
+    // The drifted resource was accepted...
+    expect(mockSaveState).toHaveBeenCalled();
+    // ...and the run did NOT take the no-drift branch.
+    expect(infoText()).not.toContain('Comparison INCOMPLETE');
+    expect(infoText()).not.toContain('No drift detected');
+    // The failed read is still reported, just not as a reason to stop.
+    expect(output).toContain('! Fn (AWS::Lambda::Function)');
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+  });
+
+  /**
+   * THE MIXED-POPULATION CASE, and the one review round 1 found the bug by
+   * looking for. Every other fixture in this file carries ONE reason, so the
+   * count and the labels were free to be taken from the wrong population and
+   * still look right: the first cut counted only the CLEARABLE reasons and
+   * printed `1 of 3` for a stack the human report a few lines above called
+   * `2 resource(s) NOT fully compared`, the newer line being the quieter of the
+   * two -- in a message written to stop this command being quietly reassuring.
+   *
+   * FIVE resources, five different fates in one stack: a read that threw, a
+   * permanently-unresolvable token, a type with no read path, a `Custom::*`
+   * resource cdkd never drift-checks, and one ordinary resource that compared
+   * cleanly. The assertions are the WHOLE lines, because the count, the grouping,
+   * the order and the four phrases only constrain each other together --
+   * asserting `4 of 5` alone passes under any relabelling, and asserting one
+   * phrase alone passes while the count is wrong.
+   *
+   * The `Custom::*` member is round 2's addition and it was NOT a formality: the
+   * four-resource version left BOTH `skipped` branches unfenced (the tally bump
+   * and the phrase), each measured green at 66/66, while `unsupported`'s twin
+   * probe red one test. Via `Custom::S3AutoDeleteObjects` that is also the
+   * COMMONEST member of this population in real CDK stacks, so it was the one
+   * arm most likely to be seen and the only one nothing checked.
+   *
+   * It is also what fences the per-KIND split: `skipped` and `unsupported` must
+   * land under the by-design lead with no uncertainty claim attached, because
+   * issue #323's position on a `Custom::*` resource is that drift is not
+   * APPLICABLE -- not that cdkd is unsure about it.
+   */
+  it('counts and labels EVERY uncompared resource, each by its own reason and claim', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Tokened: resource(LAMBDA, {
+          Environment: { Variables: { PW: '{{resolve:ssm-secure:/pw}}' } },
+        }),
+        Thrower: resource(QUEUE, { QueueName: 'ok' }),
+        NoReadPath: resource('AWS::Some::Type', {}),
+        // `Custom::*` is short-circuited to the `skipped` outcome before any
+        // provider lookup, so this needs no entry in the provider mock below.
+        Helper: resource('Custom::S3AutoDeleteObjects', { ServiceToken: 'arn:aws:lambda:::f' }),
+        Fine: resource('AWS::SNS::Topic', { TopicName: 'ok' }),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) => {
+      if (type === LAMBDA) {
+        return { readCurrentState: async () => ({ Environment: { Variables: { PW: 'live' } } }) };
+      }
+      if (type === QUEUE) {
+        return {
+          readCurrentState: async () => {
+            throw awsError('ThrottlingException', 'Rate exceeded');
+          },
+        };
+      }
+      // No `readCurrentState`: the Cloud Control fallback returns undefined
+      // (the suite default), which is the `unsupported` outcome.
+      if (type === 'AWS::Some::Type') {
+        return {};
+      }
+      return { readCurrentState: async () => ({ TopicName: 'ok' }) };
+    });
+
+    const { error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    expect(infoText()).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '4 of 5 resource(s) could not be compared.'
+    );
+    // The two cdkd genuinely cannot vouch for, in emit order.
+    expect(infoText()).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 not compared AT ALL: the read or comparison failed; ' +
+        '1 only PARTIALLY compared: their state records a `{{resolve:...}}` spelling cdkd ' +
+        'resolves for nobody, which no re-run can clear.'
+    );
+    // ...and the two it was never going to look at, under a lead that makes no
+    // uncertainty claim about them. `Custom::*` is not a resource cdkd is
+    // unsure about; it is one cdkd does not drift-check (issue #323).
+    expect(infoText()).toContain(
+      'Not drift-checked by cdkd at all, which is a coverage limit rather than uncertainty — ' +
+        '1 not compared AT ALL: their provider does not support drift detection yet; ' +
+        '1 not compared AT ALL: cdkd does not drift-check the type.'
+    );
+    // The old blanket tail claimed uncertainty about every member of `N`,
+    // including the `Custom::*` one. It must not reappear on the by-design side.
+    expect(infoText()).not.toContain(
+      'cdkd does not drift-check the type, so cdkd does not know whether they drifted'
+    );
+    // The permanently-unresolvable resource must NOT be described as a refusal.
+    // Pre-fix it was counted under the `refused` wording, which points the
+    // reader at an ARN they can respell for a condition no respelling clears.
+    expect(infoText()).not.toContain('cdkd refused to resolve');
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 });
