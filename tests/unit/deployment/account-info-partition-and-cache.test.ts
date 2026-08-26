@@ -101,16 +101,27 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
    * `CustomResourceProvider.resolveSyntheticStackId` calls
    * `getAccountInfo(this.configuredRegion)` with `undefined` for a region-less
    * client bag, and `cdkd gc` deliberately does not run `foldRegionOption`.
+   * This case is not the ONLY one that catches an override-only fold -- the
+   * ambient-arm synthetic-StackId case reds under the same mutation -- but it
+   * is the one that isolates the arm rather than reaching it through a
+   * provider.
    *
    * Calling `getAccountInfo()` with NO argument is what makes this reach the
    * arm -- a region-less resolver does not, because its constructor
    * substitutes the env value and then passes it as the override.
+   *
+   * The region is deliberately NOT `us-east-1`. That value is also the
+   * function's hard-coded fallback, so an expectation of `'us-east-1'` is a
+   * CONFLUENCE POINT: deleting the env read entirely still produces it, and a
+   * probe measured this case staying GREEN under exactly that mutation. A
+   * region unequal to the default is what makes the assertion discriminate
+   * between "the env arm was read and folded" and "the env arm was skipped".
    */
   it('folds the AWS_REGION arm, not only the explicit override (issue #1882)', async () => {
     succeed();
-    process.env['AWS_REGION'] = 'US-EAST-1';
+    process.env['AWS_REGION'] = 'SA-EAST-1';
     const info = await getAccountInfo();
-    expect(info.region).toBe('us-east-1');
+    expect(info.region).toBe('sa-east-1');
   });
 
   it('folds the explicit override arm too, and leaves a canonical one alone', async () => {

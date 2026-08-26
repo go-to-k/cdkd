@@ -623,10 +623,17 @@ describe('IntrinsicFunctionResolver - Fn::GetAZs', () => {
    * DescribeAvailabilityZones filter region-name=US-EAST-1 -> 0 AZs
    * ```
    *
-   * An empty list is a VALID value here, so it propagates: `Fn::Select` on it
-   * fails far from the cause, or a subnet list silently comes out empty. That
-   * is why this asserts the filter cdkd SENDS rather than the AZ names it
-   * returns -- the names come from the mock and would look correct under either
+   * What the empty list does NEXT is worth stating precisely, because issue
+   * go-to-k/cdkd#1887's own wording is now out of date and this lane repeated it
+   * before checking: since issue go-to-k/cdkd#1957 the empty answer is REFUSED
+   * with a throw rather than propagating into an out-of-range `Fn::Select` or a
+   * silently empty subnet list. So the surviving defect is not silence -- it is
+   * that a deploy which should have resolved the region's AZs instead fails,
+   * and fails with a message blaming an unenabled region or a wrong endpoint,
+   * neither of which is what happened.
+   *
+   * This still asserts the filter cdkd SENDS rather than the AZ names it gets
+   * back: the names come from the mock and would look correct under either
    * spelling, which makes them a confluence point rather than a discriminator.
    *
    * The region must be handed to the CONSTRUCTOR, not written into

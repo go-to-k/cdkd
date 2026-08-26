@@ -4967,9 +4967,11 @@ export class IntrinsicFunctionResolver {
       // `region` enters this method by two paths with different spellings:
       // folded when the template names a `Region` (`canonicalizeRegion`, issue
       // #1957), RAW when it does not, since it then defaults to
-      // `this.resolverRegion`. Before issue #1882 folded `AWS::Region` both
-      // sides of this test were the same raw string, so it compared a value to
-      // itself and always fired. Folding only ONE side repairs the first path
+      // `this.resolverRegion`. On the no-`Region` path both sides were the same
+      // raw string before issue #1882 folded `AWS::Region`, so it compared a
+      // value to itself and always fired; on the named-`Region` path they have
+      // been folded-against-raw since issue #1957, which is the pre-existing
+      // half of the miss. Folding only ONE side repairs the first path
       // and breaks the second — measured on this branch, where a mis-cased
       // resolver region with no `Region` argument resolved its OWN stack's
       // output instead of refusing, and `cfnFallback` defaults to true, so the
@@ -5542,10 +5544,17 @@ export class IntrinsicFunctionResolver {
         // in `aws-cn`, and CloudFormation resolves `${AWS::URLSuffix}` through
         // exactly this mapping. Deliberately NO `getAccountInfo` hop, unlike
         // `AWS::Partition` / `AWS::StackId` which need the account: the suffix is
-        // a pure function of the region, and `resolverRegion` is what every
-        // return path of `getAccountInfo(this.resolverRegion)` would have set
-        // `region` to anyway — so the round trip could only add latency and, on
-        // an STS outage, a warning.
+        // a pure function of the region. The round trip could only add latency
+        // and, on an STS outage, a warning.
+        //
+        // An earlier revision justified that by saying `resolverRegion` is what
+        // `getAccountInfo(this.resolverRegion)` "would have set `region` to
+        // anyway". That stopped being true when issue #1882 folded
+        // `effectiveAccountInfoRegion`: for a mis-cased `resolverRegion` the
+        // two now differ in case. The OUTPUT is unaffected, because
+        // `derivePartitionAndUrlSuffix` canonicalizes its own input (issue
+        // #1795) -- which is the whole reason the skipped hop is still safe --
+        // but the stated reason had to change with it.
         return derivePartitionAndUrlSuffix(this.resolverRegion).urlSuffix;
 
       case 'AWS::NotificationARNs':
