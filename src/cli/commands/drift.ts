@@ -1213,17 +1213,14 @@ function survivingDynamicReferences(value: string): string[] {
   // behind is reported by neither; a `{` inside a token
   // (`{{resolve:ssm:/a{b}}`) is the shape that separates them.
   //
-  // This used to be the ONLY one of cdkd's four spellings that agreed with the
-  // resolver, and its own comment argued the split with
-  // `isWholeDynamicReference` was principled ("they answer different questions
-  // against different modules"). Issue #1936 measured that: the questions
-  // differ, the CHARACTER CLASS does not, and the disagreement persisted
-  // plaintext at the strict sibling.
+  // This predicate and `isWholeDynamicReference` answer different questions,
+  // but they must share ONE character class: where they disagreed, a token the
+  // resolver tried and left behind was classified as not-a-token by the strict
+  // sibling and its plaintext was persisted (issue #1936).
   //
   // Calls `secret-redaction.ts`'s exported scan rather than re-spelling it
-  // (issue #2088 review). #1936 shared the character CLASS while leaving the
-  // assembled PATTERN byte-duplicated here, which is how a later flag or
-  // anchor change re-forks exactly the way the four spellings did.
+  // (issue #2088): sharing the character class while re-assembling the PATTERN
+  // here is how a later flag or anchor change re-forks the two.
   return dynamicReferenceTokens(value);
 }
 
@@ -1803,24 +1800,23 @@ function redactDriftValue(
 }
 
 // `isWholeDynamicReference` — "is the WHOLE string a single `{{resolve:...}}`
-// token and nothing else?" — lived HERE as a hand-copied twin of
-// `secret-redaction.ts`'s `isSingleDynamicReferenceToken` until issue #1936. It
-// is now that function, imported under this file's own name at the top.
+// token and nothing else?" — is `secret-redaction.ts`'s
+// `isSingleDynamicReferenceToken`, imported under this file's own name at the
+// top rather than re-spelled here (issue #1936).
 //
-// The copy spelled the inner class `[^{}]*` to match its sibling
-// "byte-for-byte", and the two DID stay byte-identical — which is precisely why
-// the copy was not the problem: both were stricter than the RESOLVER, so a
-// reference whose inner text contains a `{` was resolved by cdkd and then
-// classified as not-a-token by every predicate downstream. Being identical to
-// the wrong answer is not agreement, and duplicating it made the disagreement
-// with the authority twice as expensive to notice.
+// The authority on what counts as a token is the RESOLVER, not this file: a
+// predicate stricter than the resolver classifies as not-a-token a reference
+// cdkd did resolve, and its plaintext is then persisted by whichever caller
+// asked. A hand-copied twin that agrees byte-for-byte with its sibling does not
+// help — being identical to the wrong answer is not agreement — so there is one
+// definition and it is the shared one.
 //
 // A plain comment rather than a JSDoc block so nothing attaches it to the
-// function below. Sharing one definition matters here for the same reason the
-// copy did: this predicate decides whether a value may be shown INSTEAD of
-// `SECRET_MASK`, and `redactByPath` uses it to decide whether a leaf is already
-// an expression, so a disagreement lets one of them treat as a token what the
-// other treats as data.
+// function below. Sharing matters here specifically because this predicate
+// decides whether a value may be shown INSTEAD of `SECRET_MASK`, and
+// `redactByPath` uses it to decide whether a leaf is already an expression — so
+// a disagreement lets one of them treat as a token what the other treats as
+// data.
 
 /**
  * Why `--accept` must not persist this drift, or `undefined` when it may.
@@ -2848,6 +2844,23 @@ async function runAccept(
       // `--accept` falls back to mutating `properties` — which matches
       // the pre-v3 behavior for those resources.
       const resources: Record<string, ResourceState> = { ...report.state.resources };
+      // Resources that actually gained a RECORDED value, which is not the same
+      // as resources that DRIFTED (issue #1958). Every outcome reaches the loop
+      // below, but one whose every change hit `acceptRefusalReason` accepts
+      // nothing — and the state is still written, because the positioned
+      // re-redaction below runs regardless. Counting outcomes therefore let the
+      // summary claim an acceptance the run had just declined, in the one case
+      // where the user has already been warned per change that it would not
+      // happen. Before the refusal existed the two counts could not differ.
+      //
+      // Counted AFTER the not-recorded loop rather than at `accepted.length`
+      // (issue #1958 review): there is a SECOND refusal site further along, the
+      // positioned re-redaction winning over an accepted value at a public
+      // `{{resolve:...}}` reference, which the comment beside it calls a real
+      // hole rather than a hypothetical one. Counting before it reproduced the
+      // very shape this item removes — a summary contradicting the per-change
+      // warnings printed just above it — one site later.
+      let acceptedResourceCount = 0;
       for (const outcome of driftedOutcomes) {
         const existing = resources[outcome.logicalId];
         if (!existing) continue;
@@ -2925,8 +2938,10 @@ async function runAccept(
           existing.properties ?? {},
           STATE_SOURCED_READBACK_RULES
         );
+        let recordedChanges = 0;
         for (const change of accepted) {
           if (deepEqualUnordered(getAtPath(redactedBaseline, change.path), change.awsValue)) {
+            recordedChanges++;
             continue;
           }
           logger.warn(
@@ -2936,6 +2951,7 @@ async function runAccept(
               `accepted value. Change the template if that reference is wrong.`
           );
         }
+        if (recordedChanges > 0) acceptedResourceCount++;
         resources[outcome.logicalId] = hasObserved
           ? { ...existing, observedProperties: redactedBaseline }
           : { ...existing, properties: redactedBaseline };
@@ -2956,7 +2972,10 @@ async function runAccept(
       await stateBackend.saveState(report.stackName, report.region, newState, saveOptions);
       logger.info(
         `✓ State updated for ${report.stackName} (${report.region}): ` +
-          `accepted drift on ${driftedOutcomes.length} resource(s).`
+          (acceptedResourceCount === 0
+            ? `0 resource(s) accepted — no drifted change was recorded, and this write carried ` +
+              `only the positioned re-redaction.`
+            : `accepted drift on ${acceptedResourceCount} resource(s).`)
       );
     } finally {
       await lockManager.releaseLock(report.stackName, report.region).catch((err) => {
@@ -3408,11 +3427,10 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
 
 /**
  * Replace every leaf of a revert payload that still holds a `{{resolve:...}}`
- * token with the value AWS currently has at that position (issue #1914,
- * round-3 review).
+ * token with the value AWS currently has at that position (issue #1914).
  *
- * The round-3 change downgraded an unresolvable reference from a per-resource
- * failure to a warning, on the premise that `cdkd deploy` resolves through the
+ * cdkd downgrades an unresolvable reference from a per-resource failure to a
+ * warning, on the premise that `cdkd deploy` resolves through the
  * resolver's same unsupported-service arm — so AWS already holds the literal
  * and replaying it is a no-op. **That premise holds only for records cdkd
  * deployed.** CloudFormation resolves `ssm-secure` SERVER-side, so a record
@@ -3443,7 +3461,7 @@ export function preserveLiveValuesAtUnresolvedTokens(
   const walk = (value: unknown, live: unknown): unknown => {
     if (typeof value === 'string' && value.includes('{{resolve:')) {
       // ONLY a whole token is preserved, and this gate is a disclosure boundary
-      // rather than a tidiness rule (issue #1914 round-6 review).
+      // rather than a tidiness rule (issue #1914).
       //
       // A MIXED leaf (`{{ssm-secure:/host}}:{{secretsmanager:db}}`) arrives here
       // already PARTIALLY resolved. Copying the live value in would move the
@@ -3476,9 +3494,11 @@ export function preserveLiveValuesAtUnresolvedTokens(
       // that is what made the token a survivor — so copying the live value in
       // and leaving the mask sets untouched hands a plaintext to three readers
       // that would each have masked it: the retry logger, the AWS-error report,
-      // and the #1644 narrowing delta (whose `descendArrays: false` rules
-      // cannot position an array-nested leaf and rely on the value scan finding
-      // it).
+      // and the #1644 narrowing delta (whose `descendArrays: false` rules reach
+      // an array-nested leaf only where every level is KEY-IDENTIFIABLE -- since
+      // issue #1944 an ECS `ContainerDefinitions[].Environment[]` is, both
+      // levels carrying `Name` -- and fall back to the value scan for the rest,
+      // which is the population this registration is still needed for).
       //
       // (`secrets` itself is NOT necessarily empty here: a resource can hold
       // one resolvable `secretsmanager` reference AND one `ssm-secure`
@@ -4179,10 +4199,13 @@ async function runRevert(
                 // keep that scan complete rather than one: the
                 // `properties`-side map completion above, and
                 // `preserveLiveValuesAtUnresolvedTokens` registering every live
-                // value it copied in. Without the second, a token nested in an
-                // array — ECS `ContainerDefinitions[].Environment[]`, the shape
-                // this advisory keeps landing in — reached neither pass and
-                // landed in `state.json` as plaintext.
+                // value it copied in. Since issue #1944 the path pass DOES reach
+                // a KEY-IDENTIFIABLE array element — an ECS
+                // `ContainerDefinitions[].Environment[]`, the shape this
+                // advisory keeps landing in, is keyed by `Name` at both levels —
+                // so the registration is what covers the arrays that carry no
+                // such key, which reach neither pass and land in `state.json` as
+                // plaintext without it.
                 narrowedByLogicalId.set(
                   outcome.logicalId,
                   // Since issue #1926 this rules constant ALSO runs the
@@ -4393,25 +4416,51 @@ function printAcceptPlan(reports: StackDriftReport[]): void {
       })
     );
     if (drifted.length === 0) continue;
-    process.stdout.write(
-      `\nPlan (--accept): update cdkd state for ${report.stackName} (${report.region}):\n`
-    );
+    // BUFFERED so the header can describe what the body actually says (issue
+    // #1958). Every change of every drifted resource can be refused, and the
+    // header still announced `update cdkd state for <stack>` over a body that is
+    // nothing but `SKIPPED` lines — a plan promising a write the real run will
+    // not make, which is the one property `acceptRefusalReason` is shared to
+    // prevent.
+    const lines: string[] = [];
+    let plannedWrites = 0;
     for (const o of drifted) {
-      process.stdout.write(`  ~ ${o.logicalId} (${o.resourceType})\n`);
+      lines.push(`  ~ ${o.logicalId} (${o.resourceType})\n`);
       for (const change of o.changes) {
         // Issue #1914: a `--dry-run` that promises a write the real run will
         // refuse is worse than either behaviour alone, so the plan asks the
         // same predicate `runAccept` does.
         const refusal = acceptRefusalReason(change, o.maskedPaths);
         if (refusal !== undefined) {
-          process.stdout.write(`    ${change.path}: SKIPPED — ${refusal}\n`);
+          lines.push(`    ${change.path}: SKIPPED — ${refusal}\n`);
           continue;
         }
-        process.stdout.write(
+        plannedWrites++;
+        lines.push(
           `    ${change.path}: ${formatScalar(change.stateValue)} -> ${formatScalar(change.awsValue)}\n`
         );
       }
     }
+    // The resources are still LISTED in both cases: the refusal reason on each
+    // line is the actionable half, and suppressing the block entirely would
+    // leave a user who ran `--accept --dry-run` with no output at all over a
+    // stack that really does have drift.
+    //
+    // "no ACCEPTED VALUES will be written", not "NOTHING will be written"
+    // (issue #1958 review). The real run over this same input still takes the
+    // lock, bumps `lastModified`, rotates the ETag and rewrites the stored bag
+    // through the positioned re-redaction — so a plan promising an untouched
+    // `state.json` is the same class of false claim as the summary above it,
+    // arriving from the other side. The parenthetical is what keeps the two
+    // messages saying one thing.
+    process.stdout.write(
+      plannedWrites === 0
+        ? `\nPlan (--accept): no accepted values will be written to cdkd state for ` +
+            `${report.stackName} (${report.region}) — every drifted change below is refused ` +
+            `(the run still writes the positioned re-redaction):\n`
+        : `\nPlan (--accept): update cdkd state for ${report.stackName} (${report.region}):\n`
+    );
+    for (const line of lines) process.stdout.write(line);
   }
 }
 
@@ -4483,8 +4532,12 @@ function printRevertPlan(reports: StackDriftReport[]): void {
               `resolve this resource's dynamic reference(s), so their names are withheld — they ` +
               `come from the live readback and cannot be checked for secrets without them.\n`
           );
-        }
-        if (!cannotMaskKeys && preserved.length > 0) {
+          // `else if` below, not a second mirrored `if` (issue #1958). The two
+          // arms answer ONE question -- can the key names be masked? -- and the
+          // unbaselined-value block twenty lines below already spells that
+          // decision as `if / else if`. Two shapes for one decision is what
+          // makes a reader check whether they can both fire.
+        } else if (preserved.length > 0) {
           const tagWord = preserved.length === 1 ? 'tag' : 'tags';
           process.stdout.write(
             `    ! reverting this tag list KEEPS ${preserved.length} AWS-authored ` +

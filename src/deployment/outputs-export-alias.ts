@@ -442,20 +442,44 @@ export function exportAliasCollisionScrubWarning(
   exportName: string,
   secrets: RecordedSecretValues
 ): string {
-  // The masking argument is REQUIRED so a future caller cannot silently print
-  // an unmasked name — even though today it never fires. Both callers only
-  // reach this message when the name MATCHED a declared output name, i.e.
-  // template text, so a resolved intrinsic carrying plaintext is refused by the
-  // collision test before it can be printed. An earlier comment here claimed
-  // the opposite as the reason for masking; the honest reason is that scrub,
-  // unlike the deploy twin, has no secret refusal upstream to make that
-  // guarantee structural, so the mask stays as the cheap belt.
-  const exposure = secretsPresentIn(exportName, secrets);
-  const shown = stripControlChars(
-    exposure ? maskEveryOccurrence(exportName, exposure) : exportName
-  );
+  // A BELT, stated as one rather than as a hazard this mask is known to close
+  // (issue #1958 item 9). What actually bounds the exposure is the COLLISION
+  // TEST upstream, not this call: {@link scrubStack} warns only for a name that
+  // matched a DECLARED output name, and {@link collectDeclaredOutputNames} is
+  // `Object.keys(template.Outputs)` — so the string printed here is always one
+  // the template itself spells, however the `Export.Name` intrinsic resolved.
+  //
+  // That leaves the mask REACHABLE but narrow, and the shape is worth naming
+  // because it is not the one the argument was originally justified by: it
+  // takes a template that NAMES an output with the secret plaintext, which the
+  // `MASKS a resolved name that carries plaintext` case in
+  // `scrub-export-name-collision.test.ts` builds. The mask still earns its keep
+  // there — the template is not stderr, and not a CI log.
+  //
+  // The argument stays REQUIRED for a reason about scrub rather than about this
+  // string. The deploy twin has the bound STRUCTURALLY:
+  // {@link secretBearingExportNameWarning} refuses a secret-bearing
+  // `Export.Name` before the collision path can see it, which is why
+  // {@link exportAliasCollisionWarning} takes no map at all. Scrub publishes no
+  // alias, so it runs no such refusal and its bound rests on the collision test
+  // alone — one predicate away from a future caller that widens the set of
+  // names reaching here.
+  //
+  // BOTH names are masked, not just the exported one (issue #1958 review). They
+  // come from the same place: the collision fired because `exportName` matched a
+  // DECLARED output name, so `outputKey` is a declared output name too, and the
+  // reachable shape above — a template that NAMES an output with the plaintext —
+  // puts the plaintext on whichever of the two is that output. Masking one and
+  // printing its neighbour raw is the mask-one-argument-leave-its-neighbour
+  // shape issue #2176 found in the providers, one line apart instead of two
+  // files.
+  const mask = (name: string): string => {
+    const exposure = secretsPresentIn(name, secrets);
+    return stripControlChars(exposure ? maskEveryOccurrence(name, exposure) : name);
+  };
+  const shown = mask(exportName);
   return (
-    `Output ${stripControlChars(outputKey)} exports as "${shown}", which is also the name of another output in this stack — ` +
+    `Output ${mask(outputKey)} exports as "${shown}", which is also the name of another output in this stack — ` +
     `state cannot say which of the two the stored value under "${shown}" came from, so that key is ` +
     `redacted by value match instead of by template position, and two references resolving to the same ` +
     `value could still collapse there. Rename the export, or the colliding output, and redeploy.`
