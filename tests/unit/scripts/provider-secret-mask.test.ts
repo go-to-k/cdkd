@@ -896,6 +896,101 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     expect(stderr).toContain('concatenation(s)');
   }, SPAWN_TIMEOUT_MS);
 
+  it('FAILS a bare message-sink stringify rather than leaving KNOWN BOUND (5) unfenced', () => {
+    // Issue #2269 finding 3. The `analyzeFile`-level assertions in
+    // `provider-secret-mask-recognition-2269.test.ts` pin the COUNTER; this one
+    // pins that `main` still CONSULTS it. Deleting the consult left the whole
+    // suite green, which is a recorded value with no consumer -- inert by
+    // construction, and the same gap the self-probe channel itself had.
+    const dir = copyTree();
+    const path = join(dir, 'kinesis-provider.ts');
+    const text = readFileSync(path, 'utf8');
+    writeFileSync(
+      path,
+      `${text}\nexport function probeBareSink(value: unknown, logger: { warn(m: string): void }) {\n` +
+        `  logger.warn(JSON.stringify(value));\n}\n`
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('STRAIGHT to a message sink');
+    // The failure must LOCATE the site and name the FORM. A bare count over an
+    // 83-file corpus points at nothing, and after the factory arm landed it
+    // could point at a spelling the author never wrote.
+    expect(stderr).toContain('kinesis-provider.ts');
+    expect(stderr).toContain('(logger call)');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('does NOT fail a bare sink whose value already reached a masker', () => {
+    // The counter-direction of the same widening: correct code must stay green,
+    // or the remedy the next author reaches for is to work AROUND the fence.
+    const dir = copyTree();
+    const path = join(dir, 'kinesis-provider.ts');
+    const text = readFileSync(path, 'utf8');
+    writeFileSync(
+      path,
+      `${text}\nexport function probeMaskedSink(\n` +
+        `  value: unknown,\n  maskSecrets: SecretMasker,\n  logger: { warn(m: string): void }\n` +
+        `) {\n  logger.warn(JSON.stringify(maskDeep(value, maskSecrets)));\n}\n`
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(stderr).not.toContain('STRAIGHT to a message sink');
+    expect(status).toBe(0);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('FAILS a FACTORY throw, the 33-site spelling the first cut of bound (5) missed', () => {
+    // `throw this.wrapError(JSON.stringify(properties))` reached a message sink
+    // while the counter reported zero and the run exited 0, because
+    // `isErrorConstructor` required `new`. Probed against the REAL tree rather
+    // than a synthetic source, since the point is that the corpus spells it
+    // this way 33 times.
+    const dir = copyTree();
+    const path = join(dir, 'kinesis-provider.ts');
+    const text = readFileSync(path, 'utf8');
+    writeFileSync(
+      path,
+      `${text}\nexport class ProbeFactory {\n` +
+        `  private wrapError(message: string): Error { return new Error(message); }\n` +
+        `  run(value: unknown): never { throw this.wrapError(JSON.stringify(value)); }\n}\n`
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain('STRAIGHT to a message sink');
+    expect(stderr).toContain('(error factory)');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('FAILS an unconverged masker set, and NAMES the file', () => {
+    // Issue #2269's third nit. Two claims in one probe: `main` consults
+    // `fixpointTruncations` at all, and the message carries `truncatedFiles`
+    // rather than a bare count -- a truncated file's sites can still read
+    // `masked`, so nothing else in the run points at it.
+    const dir = copyTree();
+    const path = join(dir, 'kinesis-provider.ts');
+    const text = readFileSync(path, 'utf8');
+    const links = Array.from(
+      { length: 10 },
+      (_unused, i) => `  const __w${11 - i} = (v: unknown): unknown => __w${10 - i}(v);`
+    ).join('\n');
+    writeFileSync(
+      path,
+      `${text}\nexport function probeTruncation(p: Record<string, unknown>, m: SecretMasker) {\n` +
+        `${links}\n` +
+        `  const __w1 = (v: unknown): unknown => maskDeep(v, m);\n` +
+        `  return \`got \${JSON.stringify(__w11(p))}\`;\n}\n`
+    );
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    // Asserted on the TRUNCATION line specifically, not on the whole stderr:
+    // a truncated file also emits per-SITE failures that name the same file, so
+    // a whole-stderr `toContain` passes even when the truncation line carries a
+    // bare count. Measured during review -- replacing the file list with a
+    // literal left this test green.
+    const truncationLine = stderr
+      .split('\n')
+      .find((line) => line.includes('masker-set') && line.includes('growth cap'));
+    expect(truncationLine, 'no truncation failure line in stderr').toBeDefined();
+    expect(truncationLine).toContain('kinesis-provider.ts');
+  }, SPAWN_TIMEOUT_MS);
+
   it('FAILS when a SECOND site appears with an exempt expression', () => {
     // `count` is exact, not a floor: a same-spelled sibling is a NEW defect the
     // entry must not silently absorb.
@@ -988,8 +1083,10 @@ describe('provider secret-mask critic — the self-probe channel is itself fence
     // satisfied by the export alone.
     const proc = run(['--json']);
     expect(proc.status).toBe(0);
-    const jsonEnd = proc.stdout.lastIndexOf('}');
-    const parsed = JSON.parse(proc.stdout.slice(0, jsonEnd + 1));
+    // Parsed WHOLE, like the sibling assertion below. Slicing back to the last
+    // `}` is the workaround for prose on the data channel, and a test carrying
+    // it cannot notice the summary returning to stdout.
+    const parsed = JSON.parse(proc.stdout);
     expect(parsed.selfProbesRun).toBeGreaterThanOrEqual(40);
   }, SPAWN_TIMEOUT_MS);
 
@@ -1037,8 +1134,14 @@ describe('provider secret-mask critic — entrypoint mechanics', () => {
   it('emits json whose counts are derived from the site list, not restated', () => {
     const proc = run(['--json']);
     expect(proc.status).toBe(0);
-    const jsonEnd = proc.stdout.lastIndexOf('}');
-    const parsed = JSON.parse(proc.stdout.slice(0, jsonEnd + 1));
+    // Parsed WHOLE rather than sliced back to the last `}`. The slice was the
+    // workaround for the human summary being appended to the data channel, and
+    // a test that works around a defect pins it instead of catching it: the
+    // summary now goes to stderr under `--json`, matching the sibling critic
+    // `check-local-reachability.ts`.
+    const parsed = JSON.parse(proc.stdout);
+    expect(proc.stdout).not.toContain('provider secret-mask check OK');
+    expect(proc.stderr).toContain('provider secret-mask check OK');
 
     // `siteList.length === sites` was the previous assertion and it is a
     // TAUTOLOGY — `buildReport` sets both from one array, so it proves the

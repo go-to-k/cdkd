@@ -1,3 +1,24 @@
+/* eslint-disable */
+/**
+ * FROZEN BASELINE — the secret-mask critic exactly as it stood at
+ * `origin/main:scripts/check-provider-secret-mask.ts` before issue #2269.
+ *
+ * DO NOT EDIT and DO NOT KEEP IN SYNC. Its whole value is that it does NOT
+ * move: `provider-secret-mask-recognition-2269.test.ts` runs this classifier
+ * and the LIVE one over the same inputs and requires every difference to fall
+ * in an enumerated INTENDED class, with a per-class FLOOR so a pool that stops
+ * covering a class cannot pass as "no regressions". A hand-picked case list
+ * cannot fence a classifier; a differential over a real corpus plus a synthetic
+ * pool can.
+ *
+ * Everything below the marker is a VERBATIM copy. Proof, re-run on the final
+ * tree (prints nothing on success):
+ *
+ *   diff <(git show origin/main:scripts/check-provider-secret-mask.ts) \
+ *        <(tail -n +22 tests/unit/scripts/fixtures/secret-mask-baseline-2269.ts)
+ *
+ * ------------------------- VERBATIM FROM HERE -------------------------------
+ */
 /**
  * Pre-stringify secret-mask critic for provider message sites (issue #2178).
  *
@@ -128,27 +149,6 @@
  *     masker, because its presence stops the next author looking.
  *     {@link isIdentityMaskerInitializer} refuses it, with four probes.
  *
- *     That refusal is SCOPED to the function that declares the binding (issue
- *     #2269 finding 2). Pooled per FILE, one `const mask =
- *     maskerOrIdentity(undefined)` in `delete()` reddened the correct `const
- *     mask = maskerOrIdentity(context?.maskSecrets)` in `create()`, and `mask`
- *     is the commonest local name in these providers. Scoping it alone would
- *     trade that false positive for a false NEGATIVE, since `names` is still a
- *     file-wide pool and the sibling's real binding would credit the delete
- *     arm — so {@link maskersAt} SUBTRACTS the refusals in scope at a site from
- *     the names in scope at it, and a wrapper declared inside a function is
- *     recorded at that function's scope rather than file-wide.
- *
- *     A FOURTH way to reach a masker that masks nothing, found by issue
- *     #2269's differential fence rather than by its finding list: LAUNDERING
- *     one through a named wrapper. `const mask = maskerOrIdentity(undefined);
- *     const maskLeaf = (v) => maskDeep(v, mask)` made `maskLeaf` a masker,
- *     because {@link wrapsFirstParameter} read only the CALLEE and never the
- *     masker the wrapped call was handed. Both spellings of the wrapper — the
- *     named one and the inline one — now judge that argument exactly as a site
- *     would, with an accept twin so the rule cannot degrade into refusing every
- *     wrapper (four real files use one).
- *
  * KNOWN BOUNDS, stated rather than discovered later
  * -------------------------------------------------
  *  (1) Only TEMPLATE interpolation is a site. A `'text ' + JSON.stringify(x)`
@@ -179,86 +179,6 @@
  *      reached something declared to be the project's masker", never as "the
  *      value is masked".
  *
- *      RESTATED for issue #2269 finding 1, because the bound used to be WIDER
- *      than this paragraph said. Every masker position accepted any property
- *      access whose FINAL name landed in the file's derived set, so with ~108
- *      derived names tree-wide `const junk = { maskLeaf: (t) => t }` bought
- *      both `maskDeep(p, junk.maskLeaf)` and `junk.maskLeaf(p)` a `masked`
- *      verdict — the fence read "the value reached something whose last
- *      identifier collides with a masker name", which is not what any artifact
- *      claimed. What survives the narrowing, and is exactly what "DECLARED to
- *      be the capability" should have meant:
- *
- *        - `maskSecrets` — the CONTRACT's own property name — on ANY receiver.
- *          That is the declaration a syntactic critic can read, and closing it
- *          is a different change; `{ maskSecrets: (t) => t }` stays pinned as
- *          accepted.
- *        - a DERIVED name (`maskLeaf`, `maskValue`, an aliased `maskDeep`) only
- *          off a receiver the provider owns — `this`, or a chain rooted at it.
- *          A derived name is INFERRED from the file rather than declared by the
- *          contract, so a collision with an unrelated object is an accident.
- *
- *      FREE against the real tree, which is why the narrowing shipped rather
- *      than only this restatement: the corpus's only property-access maskers
- *      are `this.maskErrorMessage` (18) and `this.maskedRetryLogger` (5).
- *      See {@link isMaskerPropertyAccess}.
- *
- *  (5) A bare `logger.warn(JSON.stringify(x))` — the stringify handed STRAIGHT
- *      to a message sink, with neither a template nor a `+` — reaches the same
- *      sink as a site and is NOT classified. Measured at zero in the scanned
- *      tree (the only two bare-argument stringifies are a `Buffer.from(...)`
- *      and a `createHash('sha256').update(...)`, neither a message), so
- *      widening the population today would fence nothing. FENCED rather than
- *      merely stated, like bound (1):
- *      `MAX_BARE_SINK_SITES` counts the shape on every run and anything above
- *      zero FAILS, with an accept probe pinning that the counter still SEES it
- *      and a refuse twin pinning that it stays scoped to a SINK. Issue #2269
- *      finding 3, which the first cut left neither classified NOR counted.
- *
- *      FOUR things this bound is looser about than its name suggests, stated
- *      because an over-claimed fence is the failure this critic exists to
- *      prevent — and the DIRECTION of each is stated too, because a blanket
- *      "all of these are fail-closed" would be that same over-claim committed
- *      inside the remedy. ONE of the four is fail-CLOSED (it can only make the
- *      counter fire); THREE are fail-OPEN (they can hide a site), each measured
- *      at zero live hits today:
- *
- *        - FAIL-OPEN. A MASKED bare sink is not counted at all. The value
- *          reached the masker, so it is correct code — counting it failed CI
- *          over `throw this.wrapError(JSON.stringify(maskDeep(v, m)))`, and a
- *          guard that reds correct code is worse than the miss it replaced. The
- *          decision is {@link isMasked}'s, the same one the interpolated-site
- *          path makes, so the two cannot drift — which also means it inherits
- *          bound (4): what was established is that the value reached something
- *          DECLARED to be the project's masker, never that it was masked. Such
- *          a site is still NOT classified.
- *        - FAIL-CLOSED. {@link receiverNamesInclude} matches ANY name in a
- *          receiver chain, so `opts.db.error(...)` and
- *          `getLogger().db.error(...)` count; and the FACTORY arm ignores the
- *          receiver entirely, so a local `wrapError` helper or
- *          `registry.handleError(...)` counts. Deliberate: a counter fenced at
- *          zero should over-reach rather than under-reach, and narrowing it
- *          would re-open the direction this round just closed.
- *        - FAIL-OPEN. An ALIASED logger escapes:
- *          `const sink = this.logger; sink.warn(...)` counts zero, because the
- *          receiver is judged syntactically with no binding resolution.
- *          Recorded rather than fixed — it needs the dataflow walk
- *          {@link isMasked} has and this counter does not, and the corpus
- *          spells no such alias.
- *        - FAIL-OPEN. The counter accepts a factory in ANY position (measured:
- *          `const e = this.wrapDeleteError(JSON.stringify(p))` counts 1), but
- *          the completeness guard that keeps {@link isErrorFactoryName}'s name
- *          set honest enumerates only `throw <call>(...)` callees. So a factory
- *          that is neither in the set nor named `wrap<X>Error` AND is used only
- *          in non-throw position — `const e = buildError(JSON.stringify(v))` —
- *          escapes BOTH, and nothing in this file would say so. Measured at
- *          zero rather than assumed: the whole corpus has exactly TWO calls
- *          taking a bare `JSON.stringify` outside the sink set, `Buffer.from`
- *          and `createHash('sha256').update`, and neither builds a message, so
- *          the escaping population is empty today. Closing it needs the
- *          dataflow this counter does not have — following a binding to the
- *          `throw` that consumes it.
- *
  * USAGE
  *   node --experimental-strip-types scripts/check-provider-secret-mask.ts
  *   node --experimental-strip-types scripts/check-provider-secret-mask.ts --json
@@ -267,7 +187,7 @@
  */
 
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join, normalize, relative, resolve, sep } from 'node:path';
+import { dirname, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript-v6';
@@ -503,124 +423,10 @@ const MIN_MASKER_NAMES = 35;
 const MAX_CONCAT_SITES = 0;
 
 /**
- * KNOWN BOUND (5), fenced rather than merely stated (issue #2269 finding 3).
- *
- * A `logger.warn(JSON.stringify(x))` — the stringify handed STRAIGHT to a
- * message sink, with no template and no `+` — reaches exactly the same sink as
- * the two spellings above and was, until this constant existed, neither
- * classified NOR counted: {@link isConcatOperand} fences only `+` operands, so
- * the shape fell out of the population silently. Measured at zero in the
- * scanned tree — and that zero is now MEASURED against the whole population
- * rather than against the shape the first matcher happened to see. Re-derived
- * 2026-08-27 over `src/provisioning/providers/**` plus `composite-id.ts`:
- * 331 `JSON.stringify` calls total = 41 interpolated SITES + 0 concat operands
- * (bound 1) + 0 bare message sinks (this bound) + 290 residue, and the residue
- * is entirely NON-message: 228 deep-equality comparisons (`!==` 172, `===` 56),
- * 41 `?:` value arms, 10 `return`s, 6 arrow bodies, one `??`, one `=`, one
- * `Message: JSON.stringify(request)` on an SNS `PublishCommand` at
- * `custom-resource-provider.ts:2182`, one `createHash('sha256').update(...)` at
- * `cloudwatch-anomaly-detector-provider.ts:421` and one `Buffer.from(...)`.
- * None is a sink; whether such a VALUE later reaches a message is decided at
- * the interpolation, which is already in the population.
- * It is the same deferred-because-empty shape bound (1)
- * already handles, and it gets the same treatment rather than a sentence: the
- * count is taken on every run and anything above this FAILS. A self-probe pins
- * that the counter still SEES the shape, and a refuse twin pins that it is
- * scoped to a SINK rather than to any call taking a stringify (the tree has two
- * of those — `Buffer.from(...)` and `createHash('sha256').update(...)` — and
- * neither is a message).
- */
-const MAX_BARE_SINK_SITES = 0;
-
-/**
- * Rounds the masker-set growth loop may take before it gives up.
- *
- * Hitting it is REPORTED rather than swallowed — see
- * {@link MaskerSet.fixpointTruncated}.
- */
-const MAX_FIXPOINT_ROUNDS = 10;
-
-/**
- * Method names a message SINK spells, for known bound (5).
- *
- * `log` is included because `console.log` is one; the RECEIVER check below is
- * what keeps an unrelated `x.log(...)` out.
- */
-const MESSAGE_SINK_LEVELS: ReadonlySet<string> = new Set([
-  'debug',
-  'error',
-  'info',
-  'log',
-  'trace',
-  'warn',
-]);
-
-/**
- * Receivers whose `.warn` / `.debug` is a MESSAGE sink.
- *
- * Named rather than accepting any object with a `warn`, which is the same
- * receiver-blindness issue #2269 finding 1 records one function below. The set
- * is DERIVED from the corpus rather than imagined — every receiver of a
- * level-named call under the scanned tree. Re-derive with (one line, from the
- * repo root):
- *
- *   node --experimental-strip-types -e "const ts=require('typescript-v6');\
- *   const {readdirSync,readFileSync,statSync}=require('node:fs');\
- *   const {join}=require('node:path');const L=new Set(['debug','error','info',\
- *   'log','trace','warn']);const c=new Map();const w=d=>{for(const e of \
- *   readdirSync(d)){const f=join(d,e);if(statSync(f).isDirectory())w(f);\
- *   else if(e.endsWith('.ts')&&!e.endsWith('.d.ts')){const s=\
- *   ts.createSourceFile(f,readFileSync(f,'utf8'),ts.ScriptTarget.Latest,true);\
- *   const v=n=>{if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(\
- *   n.expression)&&ts.isIdentifier(n.expression.name)&&L.has(\
- *   n.expression.name.text)){const k=n.expression.expression.getText(s)\
- *   .replace(/\s+/g,'');c.set(k,(c.get(k)??0)+1);}ts.forEachChild(n,v);};\
- *   v(s);}}};w('src/provisioning/providers');console.log([...c].sort((a,b)=>\
- *   b[1]-a[1]))"
- *
- * Measured 2026-08-27:
- * `this.logger` (1714), `logger` (4), `opts.logger` (3), `options` (1) and
- * `getLogger().child('SNSTopicProvider')` (1). The last two were MISSED by the
- * first cut: `options` was absent from this set, and the `getLogger()` chain
- * resolves through a CallExpression, which the old receiver reader could not
- * walk — see {@link receiverNamesInclude}.
- */
-const MESSAGE_SINK_RECEIVERS: ReadonlySet<string> = new Set([
-  'console',
-  'getLogger',
-  'log',
-  'logger',
-  'maskedRetryLogger',
-  'options',
-  'opts',
-]);
-
-/**
- * Error FACTORIES a provider throws instead of constructing with `new`.
- *
- * The first cut of bound (5) looked only for `new <X>Error(...)`, and the
- * corpus throws 33 messages through a factory instead — `this.wrapError(...)`
- * (24) and `this.wrapUpdateError(...)` (9) — so
- * `throw this.wrapError(JSON.stringify(properties))` reached a message sink
- * while the counter reported zero and the run exited 0. Matched by NAME rather
- * than by receiver, unlike the level set above, because these names are
- * specific to this codebase's error plumbing while `warn` is a word any object
- * may own. `handleError` is included for the same family though the corpus
- * throws none today, so adding one lands inside the fence.
- */
-const MESSAGE_SINK_FACTORIES: ReadonlySet<string> = new Set([
-  'handleError',
-  'wrapError',
-  'wrapUpdateError',
-]);
-
-/**
  * Floor on the number of self-probes the ENTRYPOINT actually evaluated.
  *
  * Unlike the five population floors below, this one fences the checker's own
- * collapse-toward-green defense rather than its scan. 86 probes ship
- * (`node --experimental-strip-types scripts/check-provider-secret-mask.ts
- * --json | grep selfProbesRun`); the floor
+ * collapse-toward-green defense rather than its scan. 46 probes ship; the floor
  * sits at 40 so adding or retiring a handful does not force a re-tune, while any
  * real collapse (a deleted call site, a runner short-circuited to `[]`, a loop
  * that stops early) lands far below it. `runSelfProbes` counts INSIDE its loop,
@@ -650,27 +456,6 @@ export interface MaskReport {
   readonly maskerNames: number;
   /** `'x ' + JSON.stringify(y)` calls — known bound (1), fenced at zero. */
   readonly concatSites: number;
-  /** UNMASKED `logger.warn(JSON.stringify(y))` calls — bound (5), fenced at zero. */
-  readonly bareSinkSites: number;
-  /**
-   * WHERE they were, as `<file>:<line> (<form>)`.
-   *
-   * A bare count made the failure name no location across an 83-file corpus,
-   * and -- once the factory arm landed -- name a SPELLING the author never
-   * wrote. Same argument as {@link MaskReport.truncatedFiles}.
-   */
-  readonly bareSinkFiles: readonly string[];
-  /** Files whose masker-set growth did not converge — see `fixpointTruncated`. */
-  readonly fixpointTruncations: number;
-  /**
-   * WHICH files those were.
-   *
-   * A count alone makes a run fail naming nothing, which is the same
-   * "a number moved" failure `MIN_MASKER_NAMES`'s comment warns about — and it
-   * is worse here, because a truncated file's sites can still read `masked`, so
-   * there is no site failure pointing at it either.
-   */
-  readonly truncatedFiles: readonly string[];
   readonly siteList: readonly StringifySite[];
 }
 
@@ -883,39 +668,8 @@ export interface MaskerSet {
    * {@link isMasked} has to recognise it in that position too.
    */
   readonly identities: ReadonlySet<string>;
-  /**
-   * The same refusal, SCOPED to the function that declares it (issue #2269
-   * finding 2).
-   *
-   * `identities` used to be one file-wide NAME pool, so a class whose
-   * `create()` binds `const mask = maskerOrIdentity(context?.maskSecrets)` and
-   * whose `delete()` binds `const mask = maskerOrIdentity(undefined)` had BOTH
-   * arms read `raw` — a FALSE POSITIVE on the correct sibling, and `mask` is
-   * the commonest local name in these providers. PR #2265 only dodged it by
-   * spelling the delete arm `DELETE_PATH_UNMASKED`.
-   *
-   * Scoping it is not free in one direction: `names` is still a file-wide pool,
-   * so the sibling's REAL `mask` would now credit the delete arm — trading a
-   * false positive for a false NEGATIVE, which is the worse one. That is why
-   * {@link maskersAt} SUBTRACTS the identities in scope at a node from the
-   * names in scope at it, rather than merely stopping the deletion.
-   *
-   * A module-scope identity binding has no enclosing function and stays in
-   * `identities` above, which is what keeps the top-level self-probes true.
-   */
-  readonly scopedIdentities: ReadonlyMap<ts.Node, ReadonlySet<string>>;
   /** Local names bound to the `maskerOrIdentity` import, for the same test. */
   readonly defaulters: ReadonlySet<string>;
-  /**
-   * Did the growth loop hit {@link MAX_FIXPOINT_ROUNDS} without converging?
-   *
-   * The loop used to stop silently, which is fail-CLOSED (an unfinished set
-   * under-credits and reds correct code) but signal-free: the run would report
-   * a plausible number of masker names and a reader would have no way to tell
-   * the derivation was truncated. Surfaced to the entrypoint instead, which
-   * FAILS on it — issue #2269's third nit.
-   */
-  readonly fixpointTruncated: boolean;
 }
 
 /** What {@link isStaticallyIdentityMasker} needs to judge one expression. */
@@ -1034,30 +788,14 @@ function isIdentityMaskerInitializer(
 function maskerRoots(source: ts.SourceFile): {
   names: Set<string>;
   identities: Set<string>;
-  scopedIdentities: Map<ts.Node, Set<string>>;
   defaulters: Set<string>;
 } {
   const names = new Set<string>([...importedLocalNames(source, MASK_WALK_FN)]);
   const defaulters = importedLocalNames(source, MASKER_DEFAULT_FN);
   // Refused bindings are RECORDED, not just dropped — see MaskerSet.identities.
-  // Recorded WITH THEIR OWNER since issue #2269: a name refused inside one
-  // method said nothing about the same name in its sibling, and pooling them
-  // per file reddened the sibling.
-  /** MODULE-scope refusals, the ones that may delete from the file-wide pool. */
   const identities = new Set<string>();
-  const refused: { owner: ts.Node | undefined; name: string }[] = [];
-  const refusedAt = (node: ts.Node): Set<string> => {
-    const out = new Set<string>();
-    for (const record of refused) {
-      if (record.owner === undefined || containsNode(record.owner, node)) out.add(record.name);
-    }
-    return out;
-  };
-  const isIdentityBinding = (
-    declaration: ts.Node,
-    initializer: ts.Expression | undefined
-  ): boolean =>
-    isIdentityMaskerInitializer(initializer, { identities: refusedAt(declaration), defaulters });
+  const isIdentityBinding = (initializer: ts.Expression | undefined): boolean =>
+    isIdentityMaskerInitializer(initializer, { identities, defaulters });
 
   const visit = (node: ts.Node): void => {
     if (ts.isParameter(node) && ts.isIdentifier(node.name) && isMaskerType(node.type)) {
@@ -1074,17 +812,12 @@ function maskerRoots(source: ts.SourceFile): {
       ts.isIdentifier(node.name) &&
       isMaskerType(node.type)
     ) {
-      if (!isIdentityBinding(node, node.initializer)) names.add(node.name.text);
+      if (!isIdentityBinding(node.initializer)) names.add(node.name.text);
     } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-      const bindingName = node.name.text;
-      if (isIdentityBinding(node, node.initializer)) {
+      if (isIdentityBinding(node.initializer)) {
         // REFUSED — see isIdentityMaskerInitializer. Recorded so the ARGUMENT
-        // position of the shared walk can recognise the name too, and recorded
-        // with the function that OWNS it so a sibling keeps its own verdict.
-        const owner = enclosingFunction(node);
-        if (!refused.some((record) => record.owner === owner && record.name === bindingName)) {
-          refused.push({ owner, name: bindingName });
-        }
+        // position of the shared walk can recognise the name too.
+        identities.add(node.name.text);
       } else if (isMaskerType(node.type)) {
         names.add(node.name.text);
       } else if (node.initializer) {
@@ -1111,39 +844,8 @@ function maskerRoots(source: ts.SourceFile): {
   // spelling its author pictured" failure this critic exists to forbid.
   visit(source);
   visit(source);
-  const scopedIdentities = new Map<ts.Node, Set<string>>();
-  for (const record of refused) {
-    if (record.owner === undefined) {
-      identities.add(record.name);
-      continue;
-    }
-    const set = scopedIdentities.get(record.owner) ?? new Set<string>();
-    set.add(record.name);
-    scopedIdentities.set(record.owner, set);
-  }
-  // Only a MODULE-scope refusal may delete from the file-wide pool. A
-  // function-scoped one is subtracted at the USE site instead
-  // ({@link maskersAt}), because the same name may be a real masker in the
-  // method next door — which is the whole point of scoping it.
   for (const identity of identities) names.delete(identity);
-  return { names, identities, scopedIdentities, defaulters };
-}
-
-/**
- * The nearest enclosing function-like of `node`, or `undefined` at module
- * scope.
- *
- * Derived from the PARENT CHAIN, a relation the syntax cannot omit — not from
- * a type annotation or an explicit return type, which TypeScript infers and a
- * site may simply leave off, making that site invisible to the derivation.
- */
-function enclosingFunction(node: ts.Node): ts.Node | undefined {
-  let current: ts.Node | undefined = node.parent;
-  while (current) {
-    if (ts.isFunctionLike(current)) return current;
-    current = current.parent;
-  }
-  return undefined;
+  return { names, identities, defaulters };
 }
 
 /**
@@ -1175,8 +877,7 @@ function enclosingFunction(node: ts.Node): ts.Node | undefined {
  */
 function wrapsFirstParameter(
   fn: ts.SignatureDeclaration,
-  names: ReadonlySet<string>,
-  identity: IdentityInfo
+  names: ReadonlySet<string>
 ): boolean {
   const parameter = fn.parameters[0];
   if (parameter === undefined || !ts.isIdentifier(parameter.name)) return false;
@@ -1191,113 +892,42 @@ function wrapsFirstParameter(
     const argument = inner.arguments[0];
     if (argument === undefined) return false;
     const unwrapped = unwrap(argument);
-    if (!ts.isIdentifier(unwrapped) || unwrapped.text !== first) return false;
-    // The MASKER the wrapped call is handed, judged exactly as
-    // {@link isMasked} judges it at a site. Surfaced by the issue #2269
-    // differential: `const mask = maskerOrIdentity(undefined); const maskLeaf =
-    // (v) => maskDeep(v, mask); … JSON.stringify(maskLeaf(x))` classified
-    // `masked` on BOTH sides of that change, because this predicate read only
-    // the CALLEE. The identity refusal covered the derivation root and a DIRECT
-    // call's masker argument, and a named wrapper laundered a refused binding
-    // straight past both -- a masker that masks nothing, which issue #2007 puts
-    // BELOW having no masker at all.
-    return inner.arguments
-      .slice(1)
-      .every(
-        (extra, offset) =>
-          isMaskerArgument(extra, names, identity) ||
-          (offset > 0 && isConstant(unwrap(extra)))
-      );
+    return ts.isIdentifier(unwrapped) && unwrapped.text === first;
   });
 }
 
 export function buildMaskerSet(source: ts.SourceFile): MaskerSet {
-  const { names, identities, scopedIdentities, defaulters } = maskerRoots(source);
+  const { names, identities, defaulters } = maskerRoots(source);
   const functions = collectFunctions(source);
   const scoped = new Map<ts.Node, Set<string>>();
 
-  /** Names refused as identity in scope at `node` — module-scope plus enclosing. */
-  const refusedAt = (node: ts.Node): Set<string> => {
-    const out = new Set(identities);
-    for (const [owner, extra] of scopedIdentities) {
-      if (containsNode(owner, node)) for (const name of extra) out.add(name);
-    }
-    return out;
-  };
-  /**
-   * The file-wide pool minus the identities refused where `node` sits.
-   *
-   * The growth rules below have to ask the question AT A POSITION for the same
-   * reason {@link maskersAt} does: with `identities` scoped, a sibling method's
-   * real `mask` is still in `names`, so a wrapper or a call site inside the
-   * method that refused `mask` would otherwise be credited by it.
-   */
-  const namesAt = (node: ts.Node): Set<string> => {
-    const out = new Set(names);
-    // Scoped names are visible here too, or a locally declared wrapper could
-    // never be the base of another one: `const w1 = (v) => maskDeep(v, m);
-    // const w2 = (v) => w1(v)` inside one method grew file-wide before rule 1
-    // became lexical, and dropping it would be a silent NARROWING rather than
-    // the false-negative fix it is meant to be.
-    for (const [owner, extra] of scoped) {
-      if (containsNode(owner, node)) for (const name of extra) out.add(name);
-    }
-    for (const name of refusedAt(node)) out.delete(name);
-    return out;
-  };
-
   const isMaskerExpression = (node: ts.Expression): boolean => {
     const inner = unwrap(node);
-    const visible = namesAt(inner);
-    // `namesAt` already folds in the enclosing function's scoped names.
-    if (ts.isIdentifier(inner)) return visible.has(inner.text);
-    if (ts.isPropertyAccessExpression(inner)) {
-      return isMaskerPropertyAccess(inner, visible);
+    if (ts.isIdentifier(inner)) {
+      if (names.has(inner.text)) return true;
+      for (const [owner, extra] of scoped) {
+        if (extra.has(inner.text) && containsNode(owner, inner)) return true;
+      }
+      return false;
+    }
+    if (ts.isPropertyAccessExpression(inner) && ts.isIdentifier(inner.name)) {
+      return names.has(inner.name.text) || inner.name.text === MASKER_CONTEXT_PROPERTY;
     }
     // An INLINE wrapper handed straight to the helper.
     if (ts.isArrowFunction(inner) || ts.isFunctionExpression(inner)) {
-      return wrapsFirstParameter(inner, visible, {
-        identities: refusedAt(inner),
-        defaulters,
-      });
+      return wrapsFirstParameter(inner, names);
     }
     return false;
   };
 
-  let fixpointTruncated = true;
-  for (let round = 0; round < MAX_FIXPOINT_ROUNDS; round += 1) {
+  for (let round = 0; round < 10; round += 1) {
     let changed = false;
 
     // RULE 1 — a NAMED wrapper around a known masker.
-    //
-    // Recorded at the wrapper's OWN lexical scope since issue #2269. A
-    // top-level function or a class METHOD has no enclosing function and stays
-    // file-wide, which is how `maskLeafValue` / `maskLeaves` are reached from
-    // their siblings. A `const maskLeaf = (v) => maskDeep(v, mask)` declared
-    // INSIDE a method is scoped to that method — file-wide was harmless while
-    // `identities` was a file-wide pool too (an identity `mask` refused every
-    // wrapper built on it), and became a false NEGATIVE the moment the refusal
-    // was scoped: `create()`'s wrapper would have credited the identically
-    // named wrapper in `delete()`.
     for (const [name, candidates] of functions) {
       if (names.has(name)) continue;
-      for (const candidate of candidates) {
-        const owner = enclosingFunction(candidate.node);
-        const extra = owner === undefined ? undefined : (scoped.get(owner) ?? new Set<string>());
-        if (extra?.has(name)) continue;
-        if (
-          !wrapsFirstParameter(candidate.node, namesAt(candidate.node), {
-            identities: refusedAt(candidate.node),
-            defaulters,
-          })
-        ) {
-          continue;
-        }
-        if (owner === undefined || extra === undefined) names.add(name);
-        else {
-          extra.add(name);
-          scoped.set(owner, extra);
-        }
+      if (candidates.some((candidate) => wrapsFirstParameter(candidate.node, names))) {
+        names.add(name);
         changed = true;
       }
     }
@@ -1341,13 +971,10 @@ export function buildMaskerSet(source: ts.SourceFile): MaskerSet {
       }
     }
 
-    if (!changed) {
-      fixpointTruncated = false;
-      break;
-    }
+    if (!changed) break;
   }
 
-  return { names, scoped, identities, scopedIdentities, defaulters, fixpointTruncated };
+  return { names, scoped, identities, defaulters };
 }
 
 function containsNode(container: ts.Node, node: ts.Node): boolean {
@@ -1359,34 +986,12 @@ function containsNode(container: ts.Node, node: ts.Node): boolean {
   return false;
 }
 
-/**
- * Names REFUSED as identity in scope at `node` — module-scope plus every
- * enclosing function's own.
- */
-export function identitiesAt(node: ts.Node, set: MaskerSet): Set<string> {
-  const out = new Set(set.identities);
-  for (const [owner, extra] of set.scopedIdentities) {
-    if (containsNode(owner, node)) for (const name of extra) out.add(name);
-  }
-  return out;
-}
-
-/**
- * Masker names in scope at `node`: the file-wide set plus any enclosing
- * function's, MINUS the identities refused where `node` sits.
- *
- * The subtraction is the half of issue #2269 finding 2 that is easy to miss.
- * Scoping `identities` fixes the false POSITIVE (the delete arm no longer reds
- * its create sibling) and creates a false NEGATIVE in the same move, because
- * `names` remains a file-wide pool and the sibling's real `mask` is in it. The
- * narrower scope has to WIN at the use site, or the trade is a bad one.
- */
+/** Masker names in scope at `node`: the file-wide set plus any enclosing function's. */
 function maskersAt(node: ts.Node, set: MaskerSet): Set<string> {
   const names = new Set(set.names);
   for (const [owner, extra] of set.scoped) {
     if (containsNode(owner, node)) for (const name of extra) names.add(name);
   }
-  for (const name of identitiesAt(node, set)) names.delete(name);
   return names;
 }
 
@@ -1475,58 +1080,6 @@ function isConstant(node: ts.Node): boolean {
  * A hand-rolled no-op is refused for the right reason — it is not the shared
  * capability — with no enumeration and no next round.
  */
-/**
- * Is a property-access RECEIVER one the provider OWNS?
- *
- * `this`, or a chain rooted at `this`. Nothing else — see
- * {@link isMaskerPropertyAccess} for why.
- */
-function isMaskerReceiver(node: ts.Expression): boolean {
-  const inner = unwrap(node);
-  if (inner.kind === ts.SyntaxKind.ThisKeyword) return true;
-  if (ts.isPropertyAccessExpression(inner)) return isMaskerReceiver(inner.expression);
-  return false;
-}
-
-/**
- * Is a PROPERTY ACCESS in a masker position the project's capability — receiver
- * included?
- *
- * Issue #2269 finding 1. The three masker positions used to accept ANY property
- * access whose FINAL name landed in the file's derived masker set, and with
- * ~108 derived names tree-wide that made the fence read "the value reached
- * something whose last identifier collides with a masker name" rather than
- * "the value reached the project's masker". Probed on the branch that filed it:
- *
- *   const junk = { maskLeaf: (t) => t };
- *   maskDeep(p, junk.maskLeaf)   // -> masked
- *   junk.maskLeaf(p)             // -> masked
- *
- * Two arms, and the split is exactly KNOWN BOUND (4)'s line:
- *
- *  - the contract's OWN property name (`maskSecrets`) is believed on ANY
- *    receiver. That is the bound, stated and self-probed: a syntactic critic
- *    has the declaration and nothing else, so `{ maskSecrets: (t) => t }`
- *    passes here on purpose and closing it is a different change.
- *  - a DERIVED name (`maskLeaf`, `maskValue`, an aliased `maskDeep`, ...) is
- *    accepted only off a receiver the provider owns. A derived name is
- *    inferred from the file rather than declared by the contract, so a
- *    collision with an unrelated object's property is an accident, not a
- *    declaration.
- *
- * FREE on the real tree, which is why the narrowing ships rather than only the
- * restated bound: the only property-access maskers in the scanned corpus are
- * `this.maskErrorMessage` (18) and `this.maskedRetryLogger` (5), both `this`.
- */
-function isMaskerPropertyAccess(
-  node: ts.PropertyAccessExpression,
-  maskers: ReadonlySet<string>
-): boolean {
-  if (!ts.isIdentifier(node.name)) return false;
-  if (node.name.text === MASKER_CONTEXT_PROPERTY) return true;
-  return maskers.has(node.name.text) && isMaskerReceiver(node.expression);
-}
-
 function isMaskerArgument(
   node: ts.Expression,
   maskers: ReadonlySet<string>,
@@ -1543,8 +1096,8 @@ function isMaskerArgument(
     return initializer ? isMaskerArgument(initializer, maskers, identity, depth + 1) : false;
   }
 
-  if (ts.isPropertyAccessExpression(inner)) {
-    return isMaskerPropertyAccess(inner, maskers);
+  if (ts.isPropertyAccessExpression(inner) && ts.isIdentifier(inner.name)) {
+    return maskers.has(inner.name.text) || inner.name.text === MASKER_CONTEXT_PROPERTY;
   }
 
   if (ts.isCallExpression(inner)) {
@@ -1554,7 +1107,7 @@ function isMaskerArgument(
   }
 
   if (ts.isArrowFunction(inner) || ts.isFunctionExpression(inner)) {
-    return wrapsFirstParameter(inner, maskers, identity);
+    return wrapsFirstParameter(inner, maskers);
   }
 
   if (
@@ -1563,21 +1116,6 @@ function isMaskerArgument(
       inner.operatorToken.kind === ts.SyntaxKind.BarBarToken)
   ) {
     return isMaskerArgument(inner.left, maskers, identity, depth + 1);
-  }
-
-  // `maskDeep(v, flag ? a : b)` — BOTH arms, unlike the `??` rule one line up.
-  // `??`'s left-arm-only rule exists for the contract's
-  // `context?.maskSecrets ?? ((t) => t)`, where the right arm is the
-  // absent-means-unmasked fallback rather than a value the caller chose; a `?:`
-  // has no such asymmetry, so an unaccepted arm refuses the whole thing.
-  // {@link isIdentityMaskerInitializer} already had this arm and this one did
-  // not, which made a conditional masker read `raw` — issue #2269's second nit,
-  // a FALSE-POSITIVE direction.
-  if (ts.isConditionalExpression(inner)) {
-    return (
-      isMaskerArgument(inner.whenTrue, maskers, identity, depth + 1) &&
-      isMaskerArgument(inner.whenFalse, maskers, identity, depth + 1)
-    );
   }
 
   return false;
@@ -1630,32 +1168,13 @@ export function isMasked(
     // masks anything, however real the callee is. Checked from index 1 —
     // index 0 is the VALUE — and by ALLOW-LIST: see isMaskerArgument for why
     // the deny-list this replaced could not terminate.
-    // Index 1 must be the CAPABILITY. Index 2 and beyond may also be an
-    // OPTION: `maskDeep`'s own third parameter is a `depth` number, and
-    // requiring EVERY argument past 0 to be a masker classified
-    // `maskDeep(v, m, 1)` raw — issue #2269's first nit, a FALSE-POSITIVE
-    // direction. Widened to CONSTANTS only, and only past index 1, so
-    // `maskDeep(v, undefined)` (where `undefined` is a constant too) stays
-    // refused rather than riding the same relaxation.
     const handedARealMasker = node.arguments
       .slice(1)
-      .every(
-        (argument, offset) =>
-          isMaskerArgument(argument, maskers, identity) ||
-          (offset > 0 && isConstant(unwrap(argument)))
-      );
+      .every((argument) => isMaskerArgument(argument, maskers, identity));
     if (ts.isIdentifier(callee) && maskers.has(callee.text)) return handedARealMasker;
     if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
       const method = callee.name.text;
-      // RECEIVER-checked since issue #2269 finding 1: `maskers.has(method)`
-      // alone accepted `junk.maskLeaf(p)` for any object whose property name
-      // collided with one of the ~108 derived masker names. The conjunction
-      // keeps this position no WIDER than it was — `isMaskerPropertyAccess`
-      // believes the contract's own property name on any receiver, which this
-      // position did not, and the `maskers.has` term holds that line.
-      if (maskers.has(method) && isMaskerPropertyAccess(callee, maskers)) {
-        return handedARealMasker;
-      }
+      if (maskers.has(method)) return handedARealMasker;
       if (method === 'map') {
         // `.map()` REPLACES each element, so the receiver's state is
         // irrelevant and the callback's result is everything.
@@ -1778,217 +1297,35 @@ function isConcatOperand(node: ts.Node): boolean {
   );
 }
 
-/**
- * Is `node` a DIRECT argument of a message SINK — `logger.warn(x)`,
- * `this.logger.debug(x)`, `new ProvisioningError(x)`?
- *
- * Known bound (5)'s population. Only the direct-argument shape: a stringify
- * inside a template argument is already a SITE, and one inside a `+` is
- * already bound (1)'s, so the three populations are disjoint and each is
- * counted once.
- *
- * A LEVEL call is matched RECEIVER-first for the same reason
- * {@link isMaskerPropertyAccess} is: a bare `.warn` / `.update` method-name
- * match would sweep in any object. Measured against the scanned tree, the two
- * non-sink calls that take a bare `JSON.stringify` — `Buffer.from(...)` and
- * `createHash('sha256').update(...)`
- * (`cloudwatch-anomaly-detector-provider.ts:421`) — are correctly outside it,
- * which is what keeps the fence at zero honest rather than merely empty.
- *
- * A FACTORY call is matched by NAME instead, and that arm exists because the
- * first cut of this bound was honest about the wrong population: it required
- * `new`, so the 33 messages this corpus throws through `this.wrapError(...)` /
- * `this.wrapUpdateError(...)` sat outside the count entirely and
- * `throw this.wrapError(JSON.stringify(properties))` ran at exit 0 with
- * `bareSinkSites` reporting zero. A fence whose prose claims a measurement its
- * matcher never took is the failure issue #2178 exists to prevent.
- */
-function bareMessageSinkForm(node: ts.Node): BareSinkForm | undefined {
-  // Walked through CASTS as well as parentheses. `unwrap` strips
-  // `as` / `satisfies` / `!` / `<T>` everywhere else in this file, and the one
-  // place that did not was this one: `logger.warn(JSON.stringify(v) as string)`
-  // stopped at the `as` and counted zero.
-  let current: ts.Node = node;
-  while (current.parent && isTransparentWrapper(current.parent)) current = current.parent;
-  const parent: ts.Node | undefined = current.parent;
-  if (parent === undefined) return undefined;
-  if (ts.isNewExpression(parent)) {
-    if (!isErrorConstructor(parent.expression)) return undefined;
-    return (parent.arguments ?? []).some((argument) => argument === current)
-      ? 'error constructor'
-      : undefined;
-  }
-  if (ts.isCallExpression(parent)) {
-    const form = messageSinkCalleeForm(parent.expression);
-    if (form === undefined) return undefined;
-    return parent.arguments.some((argument) => argument === current) ? form : undefined;
-  }
-  return undefined;
-}
-
-/**
- * The wrappers {@link unwrap} strips, as a parent-chain test.
- *
- * The two are one question asked from two directions — "strip this node's
- * wrapper" and "is my parent a wrapper" — and a divergence between two
- * spellings of one question is this repo's recurring defect: the cast escape
- * this predicate exists to close WAS that divergence. A sixth wrapper added to
- * `unwrap` and not here would re-open it silently, so
- * `provider-secret-mask-recognition-2269.test.ts` parses the `ts.isX(` guards
- * out of BOTH function bodies and requires the two sets to be equal.
- */
-export function isTransparentWrapper(node: ts.Node): boolean {
-  return (
-    ts.isParenthesizedExpression(node) ||
-    ts.isAsExpression(node) ||
-    ts.isNonNullExpression(node) ||
-    ts.isTypeAssertionExpression(node) ||
-    ts.isSatisfiesExpression(node)
-  );
-}
-
-/**
- * Does any name in a RECEIVER chain name a message sink?
- *
- * Walks property accesses AND calls, because
- * `getLogger().child('SNSTopicProvider').warn(...)`
- * (`sns-topic-provider.ts:1115`) puts a CallExpression in the receiver
- * position, where a reader that only understood `<id>` and `<id>.<id>` produced
- * `undefined` and silently dropped the site. `this` terminates the walk without
- * matching — `this.warn(...)` is not a logger, `this.logger.warn(...)` matches
- * on `logger`.
- */
-function receiverNamesInclude(
-  node: ts.Expression,
-  allowed: ReadonlySet<string>,
-  depth = 0
-): boolean {
-  if (depth > 8) return false;
-  const inner = unwrap(node);
-  if (ts.isIdentifier(inner)) return allowed.has(inner.text);
-  if (ts.isPropertyAccessExpression(inner)) {
-    if (ts.isIdentifier(inner.name) && allowed.has(inner.name.text)) return true;
-    return receiverNamesInclude(inner.expression, allowed, depth + 1);
-  }
-  if (ts.isCallExpression(inner)) {
-    return receiverNamesInclude(inner.expression, allowed, depth + 1);
-  }
-  return false;
-}
-
-/**
- * Which SHAPE of message sink a bare stringify was handed to.
- *
- * Reported rather than reduced to a boolean because the failure message names
- * it: after the factory arm was added, "found 1 `logger.warn(...)` call" could
- * point at a form the author never wrote.
- */
-export type BareSinkForm = 'logger call' | 'error factory' | 'error constructor';
-
-/** `new Error(...)` / `new ProvisioningError(...)` — a message-carrying throw. */
-function isErrorConstructor(expression: ts.Expression): boolean {
-  const inner = unwrap(expression);
-  const name = ts.isIdentifier(inner)
-    ? inner.text
-    : ts.isPropertyAccessExpression(inner) && ts.isIdentifier(inner.name)
-      ? inner.name.text
-      : undefined;
-  return name !== undefined && name.endsWith('Error');
-}
-
-/**
- * Is `name` an error FACTORY — one of the named ones, or a `wrap<X>Error`?
- *
- * The PATTERN is the half a list cannot give: review measured that
- * `throw this.wrapDeleteError(JSON.stringify(v))` escaped the set entirely,
- * which is the same shape this bound had just finished fixing — a spelling
- * outside the matcher while the prose calls the measured zero honest. The
- * durable half is not this pattern either but
- * `tests/unit/scripts/provider-secret-mask-recognition-2269.test.ts`'s
- * enumerating test, which walks EVERY `throw <call>(...)` callee in the corpus
- * and fails on a name neither this predicate nor its audited
- * not-a-factory list knows. A regex keeps today's zero honest; the enumeration
- * keeps it honest as the corpus grows.
- */
-export function isErrorFactoryName(name: string): boolean {
-  return MESSAGE_SINK_FACTORIES.has(name) || /^wrap[A-Za-z]*Error$/.test(name);
-}
-
-/**
- * `logger.warn` / `this.logger.debug` — the level AND the receiver must match —
- * or `this.wrapError` / `wrapUpdateError`, matched by NAME.
- */
-function messageSinkCalleeForm(expression: ts.Expression): BareSinkForm | undefined {
-  const inner = unwrap(expression);
-  const calleeName = ts.isIdentifier(inner)
-    ? inner.text
-    : ts.isPropertyAccessExpression(inner) && ts.isIdentifier(inner.name)
-      ? inner.name.text
-      : undefined;
-  if (calleeName !== undefined && isErrorFactoryName(calleeName)) return 'error factory';
-  if (!ts.isPropertyAccessExpression(inner) || !ts.isIdentifier(inner.name)) return undefined;
-  if (!MESSAGE_SINK_LEVELS.has(inner.name.text)) return undefined;
-  return receiverNamesInclude(inner.expression, MESSAGE_SINK_RECEIVERS) ? 'logger call' : undefined;
-}
-
 export interface AnalyzedFile {
   readonly sites: readonly StringifySite[];
   readonly maskerNames: number;
   /** `'x ' + JSON.stringify(y)` calls — known bound (1), fenced at zero. */
   readonly concatSites: number;
-  /** UNMASKED `logger.warn(JSON.stringify(y))` calls — bound (5), fenced at zero. */
-  readonly bareSinkSites: number;
-  /** WHERE they were, as `<file>:<line> (<form>)`. */
-  readonly bareSinkLocations: readonly string[];
-  /** Did this file's masker-set growth hit {@link MAX_FIXPOINT_ROUNDS}? */
-  readonly fixpointTruncated: boolean;
 }
 
 export function analyzeFile(file: string, text: string): AnalyzedFile {
   const source = parseSource(file, text);
   const maskerSet = buildMaskerSet(source);
   const sites: StringifySite[] = [];
-  const bareSinkLocations: string[] = [];
   let concatSites = 0;
-
-  /** The site-level verdict, reused by bound (5) so the two agree. */
-  const reachesAMasker = (argument: ts.Expression | undefined): boolean =>
-    argument !== undefined &&
-    isMasked(argument, maskersAt(argument, maskerSet), {
-      // Scoped to the site, not to the file — issue #2269 finding 2.
-      identities: identitiesAt(argument, maskerSet),
-      defaulters: maskerSet.defaulters,
-    });
 
   const visit = (node: ts.Node): void => {
     if (isJsonStringifyCall(node) && !isInterpolated(node) && isConcatOperand(node)) {
       concatSites += 1;
-    }
-    if (isJsonStringifyCall(node) && !isInterpolated(node)) {
-      const form = bareMessageSinkForm(node);
-      // MASKED ones are NOT counted. The first cut of this arm counted every
-      // bare sink, so `throw this.wrapError(JSON.stringify(maskDeep(v, m)))` --
-      // correct code, with the value already through the project's masker --
-      // failed CI. A guard that reds correct code is worse than the miss it
-      // replaced, because the remedy the next author reaches for is to work
-      // AROUND the fence. The decision is the SITE's own predicate, so the two
-      // populations cannot drift apart.
-      if (form !== undefined && !reachesAMasker(node.arguments[0])) {
-        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-        bareSinkLocations.push(`${file}:${line} (${form})`);
-      }
     }
     if (isJsonStringifyCall(node) && isInterpolated(node)) {
       const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
       const argument = node.arguments[0];
       const expression =
         argument === undefined ? '<no argument>' : normalizeExpression(argument.getText(source));
-      sites.push({
-        file,
-        line,
-        expression,
-        verdict: reachesAMasker(argument) ? 'masked' : 'raw',
-      });
+      const masked =
+        argument !== undefined &&
+        isMasked(argument, maskersAt(argument, maskerSet), {
+          identities: maskerSet.identities,
+          defaulters: maskerSet.defaulters,
+        });
+      sites.push({ file, line, expression, verdict: masked ? 'masked' : 'raw' });
     }
     ts.forEachChild(node, visit);
   };
@@ -1998,9 +1335,6 @@ export function analyzeFile(file: string, text: string): AnalyzedFile {
     sites,
     maskerNames: maskerSet.names.size + [...maskerSet.scoped.values()].reduce((n, s) => n + s.size, 0),
     concatSites,
-    bareSinkSites: bareSinkLocations.length,
-    bareSinkLocations,
-    fixpointTruncated: maskerSet.fixpointTruncated,
   };
 }
 
@@ -2014,17 +1348,6 @@ interface SelfProbe {
   readonly expected: readonly SiteVerdict[];
   /** Expected {@link AnalyzedFile.concatSites}. Omitted means zero. */
   readonly expectedConcat?: number;
-  /** Expected {@link AnalyzedFile.bareSinkSites}. Omitted means zero. */
-  readonly expectedBareSink?: number;
-  /**
-   * Expected {@link AnalyzedFile.fixpointTruncated}. Omitted means `false`.
-   *
-   * The truncation flag is a CLASSIFIER OUTPUT like the two counters above, so
-   * it belongs in this channel rather than only in the unit suite: forcing it
-   * to `false` left the real binary at exit 0 with every probe green, which is
-   * precisely the collapse-toward-green this channel exists to catch.
-   */
-  readonly expectedTruncated?: boolean;
 }
 
 const MASK_IMPORT = `import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';`;
@@ -2521,457 +1844,6 @@ const SELF_PROBES: readonly SelfProbe[] = [
     expected: [],
     expectedConcat: 1,
   },
-  // --- issue #2269 finding 1: the RECEIVER decides, not the final name -----
-  // Each is a PAIR. The accept probe dies if the receiver rule is written so
-  // strictly that `this` stops qualifying; the refuse probe dies the moment the
-  // rule reverts to a bare `maskers.has(name)`, which is how the fence shipped.
-  {
-    name: 'a masker method called on `this` is a mask',
-    source: `${MASK_IMPORT}
-    class P {
-      private maskLeaf(value: unknown, maskSecrets: SecretMasker) {
-        return maskDeep(value, maskSecrets);
-      }
-      run(properties: Record<string, unknown>, maskSecrets: SecretMasker) {
-        return \`got \${JSON.stringify(this.maskLeaf(properties, maskSecrets))}\`;
-      }
-    }`,
-    expected: ['masked'],
-  },
-  {
-    name: 'the same masker NAME on a FOREIGN receiver is NOT a mask',
-    source: `${MASK_IMPORT}
-    class P {
-      private maskLeaf(value: unknown, maskSecrets: SecretMasker) {
-        return maskDeep(value, maskSecrets);
-      }
-      run(properties: Record<string, unknown>, maskSecrets: SecretMasker) {
-        const junk = { maskLeaf: (t: unknown) => t };
-        return \`got \${JSON.stringify(junk.maskLeaf(properties, maskSecrets))}\`;
-      }
-    }`,
-    expected: ['raw'],
-  },
-  {
-    name: 'a masker method on `this` in the ARGUMENT position is a mask',
-    source: `${MASK_IMPORT}
-    class P {
-      private maskLeaf(value: unknown, maskSecrets: SecretMasker) {
-        return maskDeep(value, maskSecrets);
-      }
-      run(properties: Record<string, unknown>) {
-        return \`got \${JSON.stringify(maskDeep(properties, this.maskLeaf))}\`;
-      }
-    }`,
-    expected: ['masked'],
-  },
-  {
-    name: 'the same NAME off a foreign receiver in the ARGUMENT position is raw',
-    source: `${MASK_IMPORT}
-    class P {
-      private maskLeaf(value: unknown, maskSecrets: SecretMasker) {
-        return maskDeep(value, maskSecrets);
-      }
-      run(properties: Record<string, unknown>) {
-        const junk = { maskLeaf: (t: unknown) => t };
-        return \`got \${JSON.stringify(maskDeep(properties, junk.maskLeaf))}\`;
-      }
-    }`,
-    expected: ['raw'],
-  },
-  // --- issue #2269 finding 2: `identities` is scoped to its own function ---
-  // The FALSE-POSITIVE direction, so the accept side is the load-bearing half:
-  // a correct sibling must not be reddened by the unmasked arm next door. The
-  // refuse side is the control -- without it, scoping could degrade into
-  // "identity bindings no longer count anywhere" and the accept would still
-  // pass.
-  {
-    name: 'an unmasked DELETE arm does not red its masked CREATE sibling',
-    source: `${MASK_IMPORT}
-    class P {
-      create(properties: Record<string, unknown>, context?: CreateContext) {
-        const mask = maskerOrIdentity(context?.maskSecrets);
-        throw new Error(\`create \${JSON.stringify(maskDeep(properties, mask))}\`);
-      }
-      delete(properties: Record<string, unknown>) {
-        const mask = maskerOrIdentity(undefined);
-        throw new Error(\`delete \${JSON.stringify(maskDeep(properties, mask))}\`);
-      }
-    }`,
-    expected: ['masked', 'raw'],
-  },
-  {
-    name: 'a MODULE-scope identity still reds every function that names it',
-    source: `${MASK_IMPORT}
-    const mask = maskerOrIdentity(undefined);
-    class P {
-      create(properties: Record<string, unknown>) {
-        throw new Error(\`create \${JSON.stringify(maskDeep(properties, mask))}\`);
-      }
-      delete(properties: Record<string, unknown>) {
-        throw new Error(\`delete \${JSON.stringify(maskDeep(properties, mask))}\`);
-      }
-    }`,
-    expected: ['raw', 'raw'],
-  },
-  {
-    name: 'a sibling function’s REAL masker does not credit the arm that refused it',
-    // The other half of the scoping trade: `names` is still a file-wide pool,
-    // so without maskersAt subtracting the scoped refusal the delete arm would
-    // be credited by create's binding of the same name -- a false NEGATIVE
-    // bought with the false positive above, which is the worse direction.
-    source: `${MASK_IMPORT}
-    class P {
-      create(properties: Record<string, unknown>, context?: CreateContext) {
-        const mask = maskerOrIdentity(context?.maskSecrets);
-        throw new Error(\`create \${JSON.stringify(mask(properties))}\`);
-      }
-      delete(properties: Record<string, unknown>) {
-        const mask = maskerOrIdentity(undefined);
-        throw new Error(\`delete \${JSON.stringify(mask(properties))}\`);
-      }
-    }`,
-    expected: ['masked', 'raw'],
-  },
-  // --- issue #2269 nit 1: an OPTION argument past the masker ---------------
-  {
-    name: 'a trailing CONSTANT option does not unmask the call',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>, maskSecrets: SecretMasker) {
-      return \`got \${JSON.stringify(maskDeep(properties, maskSecrets, 1))}\`;
-    }`,
-    expected: ['masked'],
-  },
-  {
-    name: 'the option relaxation does NOT reach index 1, so `maskDeep(v, undefined)` is raw',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>) {
-      return \`got \${JSON.stringify(maskDeep(properties, undefined))}\`;
-    }`,
-    expected: ['raw'],
-  },
-  {
-    name: 'a NON-constant extra argument is still refused',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>, maskSecrets: SecretMasker, opts: unknown) {
-      return \`got \${JSON.stringify(maskDeep(properties, maskSecrets, opts))}\`;
-    }`,
-    expected: ['raw'],
-  },
-  // --- issue #2269 nit 2: a CONDITIONAL masker argument -------------------
-  {
-    name: 'a `?:` whose BOTH arms are maskers is a mask',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>, a: SecretMasker, b: SecretMasker, flag: boolean) {
-      return \`got \${JSON.stringify(maskDeep(properties, flag ? a : b))}\`;
-    }`,
-    expected: ['masked'],
-  },
-  {
-    name: 'a `?:` with ONE identity arm is NOT a mask',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>, a: SecretMasker, flag: boolean) {
-      return \`got \${JSON.stringify(maskDeep(properties, flag ? a : ((t: string) => t)))}\`;
-    }`,
-    expected: ['raw'],
-  },
-  // --- KNOWN BOUND (5): the bare message-sink counter sees its population --
-  {
-    name: 'a bare `logger.warn(JSON.stringify(x))` is counted but is not a site',
-    source: `function f(value: unknown, logger: { warn(m: string): void }) {
-      logger.warn(JSON.stringify(value));
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'a bare `this.logger.debug(JSON.stringify(x))` is counted too',
-    source: `class P {
-      private readonly logger = { debug(m: string) { return m; } };
-      run(value: unknown) {
-        this.logger.debug(JSON.stringify(value));
-      }
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'a bare `new ProvisioningError(JSON.stringify(x))` is counted too',
-    source: `function f(value: unknown) {
-      throw new ProvisioningError(JSON.stringify(value));
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'a LEVEL-named method on a non-logger receiver is not a sink',
-    // The refuse twin for the RECEIVER half specifically. The `Buffer.from` /
-    // `createHash(...).update` twin below cannot reach it: neither name is a level,
-    // so the level test rejects them before the receiver is ever consulted, and
-    // making the receiver check accept anything left every assertion green.
-    // Measured while probing this suite, which is why the case exists.
-    source: `function f(value: unknown, metrics: { warn(m: string): void }, report: { error(m: string): void }) {
-      metrics.warn(JSON.stringify(value));
-      report.error(JSON.stringify(value));
-    }`,
-    expected: [],
-  },
-  {
-    name: 'a stringify handed to a NON-sink call is not counted',
-    // The refuse twin. Without it the counter could degrade to "any call taking
-    // a JSON.stringify", which would fail the real tree on `Buffer.from(...)`
-    // and `createHash('sha256').update(...)` -- and a fence that reds correct code gets
-    // argued down rather than fixed.
-    source: `function f(value: unknown) {
-      return Buffer.from(JSON.stringify(value));
-    }`,
-    expected: [],
-  },
-  // --- a named wrapper may not LAUNDER a refused identity -----------------
-  // Surfaced by issue #2269's differential fence rather than by its finding
-  // list: the identity refusal covered the derivation ROOT and a DIRECT call's
-  // masker argument, and a one-line wrapper walked past both. The accept twin
-  // is the control -- refusing every wrapper would red four real files.
-  {
-    name: 'a named wrapper around an IDENTITY binding does NOT launder it',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>) {
-      const mask = maskerOrIdentity(undefined);
-      const maskLeaf = (v: unknown): unknown => maskDeep(v, mask);
-      return \`got \${JSON.stringify(maskLeaf(properties))}\`;
-    }`,
-    expected: ['raw'],
-  },
-  {
-    name: 'a named wrapper around a REAL capability is still a mask',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>, context?: CreateContext) {
-      const mask = maskerOrIdentity(context?.maskSecrets);
-      const maskLeaf = (v: unknown): unknown => maskDeep(v, mask);
-      return \`got \${JSON.stringify(maskLeaf(properties))}\`;
-    }`,
-    expected: ['masked'],
-  },
-  {
-    name: 'an INLINE wrapper around an identity binding is refused too',
-    source: `${MASK_IMPORT}
-    function refuse(input: unknown, maskValue: (v: unknown) => unknown = (v) => v) {
-      throw new Error(\`unsupported \${JSON.stringify(maskValue(input))}\`);
-    }
-    function caller(value: unknown) {
-      const mask = maskerOrIdentity(undefined);
-      refuse(value, (v: unknown) => maskDeep(v, mask));
-    }`,
-    expected: ['raw'],
-  },
-  // --- issue #2269 review round: the wrapper's OWN option guard ------------
-  // The trailing-CONSTANT allowance exists TWICE -- in `isMasked` (probed by
-  // "the option relaxation does NOT reach index 1") and in
-  // `wrapsFirstParameter`. Only the first was fenced, so relaxing the second to
-  // accept index 1 left every test green while making
-  // `const maskLeaf = (v) => maskDeep(v, undefined)` a masker -- a wrapper
-  // laundering a no-op, the issue #2007 class this change exists to refuse.
-  {
-    name: 'a wrapper handing the walk `undefined` is NOT a masker',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>) {
-      const maskLeaf = (v: unknown): unknown => maskDeep(v, undefined);
-      return \`got \${JSON.stringify(maskLeaf(properties))}\`;
-    }`,
-    expected: ['raw'],
-  },
-  {
-    name: 'a wrapper handing the walk `null` is NOT a masker',
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>) {
-      const maskLeaf = (v: unknown): unknown => maskDeep(v, null);
-      return \`got \${JSON.stringify(maskLeaf(properties))}\`;
-    }`,
-    expected: ['raw'],
-  },
-  {
-    name: 'an INLINE wrapper handing the walk `undefined` is NOT a masker',
-    source: `${MASK_IMPORT}
-    function refuse(input: unknown, maskValue: (v: unknown) => unknown = (v) => v) {
-      throw new Error(\`unsupported \${JSON.stringify(maskValue(input))}\`);
-    }
-    function caller(value: unknown) {
-      refuse(value, (v: unknown) => maskDeep(v, undefined));
-    }`,
-    expected: ['raw'],
-  },
-  {
-    name: 'a wrapper handing the walk a real masker AND a depth option IS a masker',
-    // The accept control the three above need: the allowance is what lets a
-    // wrapper carry `maskDeep`'s own third parameter, and refusing every extra
-    // argument would red that spelling instead.
-    source: `${MASK_IMPORT}
-    function f(properties: Record<string, unknown>, maskSecrets: SecretMasker) {
-      const maskLeaf = (v: unknown): unknown => maskDeep(v, maskSecrets, 1);
-      return \`got \${JSON.stringify(maskLeaf(properties))}\`;
-    }`,
-    expected: ['masked'],
-  },
-  // --- issue #2269 review round: bound (5)'s FACTORY and chained receivers --
-  {
-    name: 'a factory throw `this.wrapError(JSON.stringify(x))` is counted',
-    // The corpus throws 33 messages this way (24 `wrapError` + 9
-    // `wrapUpdateError`), and the first cut of bound (5) required `new`, so all
-    // 33 sat outside the count while the prose claimed the zero was measured.
-    source: `class P {
-      private wrapError(message: string): Error { return new Error(message); }
-      run(value: unknown): never {
-        throw this.wrapError(JSON.stringify(value));
-      }
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'a CHAINED logger receiver is counted',
-    // `getLogger().child('SNSTopicProvider').warn(...)` puts a CallExpression
-    // in the receiver position, where the first receiver reader produced
-    // `undefined` and dropped the site.
-    source: `declare function getLogger(): { child(n: string): { warn(m: string): void } };
-    function f(value: unknown) {
-      getLogger().child('SNSTopicProvider').warn(JSON.stringify(value));
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'an `options.warn(...)` sink is counted',
-    source: `function f(value: unknown, options: { warn(m: string): void }) {
-      options.warn(JSON.stringify(value));
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'a factory-NAMED call that is not one of the error factories is not a sink',
-    // The refuse twin for the factory arm: it matches by NAME, so it needs a
-    // case proving the name set is consulted rather than every call accepted.
-    source: `class P {
-      private buildPayload(message: string): string { return message; }
-      run(value: unknown): string {
-        return this.buildPayload(JSON.stringify(value));
-      }
-    }`,
-    expected: [],
-  },
-  // --- issue #2269 review round: the truncation flag is a probe output -----
-  {
-    name: 'a growth chain that does NOT converge reports itself truncated',
-    // Eleven links, each declared ABOVE the one it depends on, so growth
-    // advances exactly one per round and the ten-round cap bites. The verdict
-    // is allowed to be wrong (fail-closed); the point is that it is no longer
-    // wrong SILENTLY, and this probe is what makes the CLI say so.
-    source: `import { maskDeep } from '../masked-retry-logger.js';
-    function f(p: Record<string, unknown>, m: SecretMasker) {
-      const w11 = (v: unknown): unknown => w10(v);
-      const w10 = (v: unknown): unknown => w9(v);
-      const w9 = (v: unknown): unknown => w8(v);
-      const w8 = (v: unknown): unknown => w7(v);
-      const w7 = (v: unknown): unknown => w6(v);
-      const w6 = (v: unknown): unknown => w5(v);
-      const w5 = (v: unknown): unknown => w4(v);
-      const w4 = (v: unknown): unknown => w3(v);
-      const w3 = (v: unknown): unknown => w2(v);
-      const w2 = (v: unknown): unknown => w1(v);
-      const w1 = (v: unknown): unknown => maskDeep(v, m);
-      return \`got \${JSON.stringify(w11(p))}\`;
-    }`,
-    expected: ['raw'],
-    expectedTruncated: true,
-  },
-  {
-    name: 'a NINE-link chain converges, so the flag discriminates',
-    source: `import { maskDeep } from '../masked-retry-logger.js';
-    function f(p: Record<string, unknown>, m: SecretMasker) {
-      const w9 = (v: unknown): unknown => w8(v);
-      const w8 = (v: unknown): unknown => w7(v);
-      const w7 = (v: unknown): unknown => w6(v);
-      const w6 = (v: unknown): unknown => w5(v);
-      const w5 = (v: unknown): unknown => w4(v);
-      const w4 = (v: unknown): unknown => w3(v);
-      const w3 = (v: unknown): unknown => w2(v);
-      const w2 = (v: unknown): unknown => w1(v);
-      const w1 = (v: unknown): unknown => maskDeep(v, m);
-      return \`got \${JSON.stringify(w9(p))}\`;
-    }`,
-    expected: ['masked'],
-  },
-  // --- issue #2269 round 2: bound (5) must not red CORRECT code -----------
-  // The counter's FALSE-POSITIVE direction, which the widening opened and a
-  // review round measured: a factory throw whose value already reached the
-  // project's masker is correct code, and failing CI over it teaches the next
-  // author to work AROUND the fence. Each accept has its raw twin, so the fix
-  // cannot degrade into "nothing is ever counted".
-  {
-    name: 'a MASKED factory throw is correct code and is NOT counted',
-    source: `${MASK_IMPORT}
-    class P {
-      private wrapError(message: string): Error { return new Error(message); }
-      run(value: unknown, maskSecrets: SecretMasker): never {
-        throw this.wrapError(JSON.stringify(maskDeep(value, maskSecrets)));
-      }
-    }`,
-    expected: [],
-  },
-  {
-    name: 'an UNMASKED factory throw is still counted',
-    source: `class P {
-      private wrapError(message: string): Error { return new Error(message); }
-      run(properties: Record<string, unknown>): never {
-        throw this.wrapError(JSON.stringify(properties));
-      }
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'a MASKED logger sink is NOT counted',
-    source: `${MASK_IMPORT}
-    function f(value: unknown, maskSecrets: SecretMasker, logger: { warn(m: string): void }) {
-      logger.warn(JSON.stringify(maskDeep(value, maskSecrets)));
-    }`,
-    expected: [],
-  },
-  {
-    name: 'a `wrap<X>Error` the name list never mentioned is counted',
-    // `wrapDeleteError` escaped the SET entirely, which is the same shape this
-    // bound had just finished fixing. Matched by PATTERN now, and fenced from
-    // the other side by the enumerating test over every `throw <call>` callee
-    // in the corpus.
-    source: `class P {
-      private wrapDeleteError(message: string): Error { return new Error(message); }
-      run(properties: Record<string, unknown>): never {
-        throw this.wrapDeleteError(JSON.stringify(properties));
-      }
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'a CAST argument does not smuggle a bare sink past the counter',
-    // `bareMessageSinkForm` walked up through parentheses only, while
-    // `unwrap` strips casts everywhere else in this file, so
-    // `logger.warn(JSON.stringify(v) as string)` counted zero.
-    source: `function f(properties: Record<string, unknown>, logger: { warn(m: string): void }) {
-      logger.warn(JSON.stringify(properties) as string);
-    }`,
-    expected: [],
-    expectedBareSink: 1,
-  },
-  {
-    name: 'a sink whose argument is a TEMPLATE is a SITE, not a bare-sink count',
-    // The three populations are disjoint; this pins that the new counter does
-    // not double-count the one the classifier already covers.
-    source: `function f(value: unknown, logger: { warn(m: string): void }) {
-      logger.warn(\`got \${JSON.stringify(value)}\`);
-    }`,
-    expected: ['raw'],
-  },
 ];
 
 /**
@@ -3029,20 +1901,6 @@ export function runSelfProbes(): SelfProbeOutcome {
       failures.push(
         `self-probe "${probe.name}": expected ${expectedConcat} concat site(s), got ` +
           `${analyzed.concatSites}`
-      );
-    }
-    const expectedBareSink = probe.expectedBareSink ?? 0;
-    if (analyzed.bareSinkSites !== expectedBareSink) {
-      failures.push(
-        `self-probe "${probe.name}": expected ${expectedBareSink} bare message-sink site(s), got ` +
-          `${analyzed.bareSinkSites}`
-      );
-    }
-    const expectedTruncated = probe.expectedTruncated ?? false;
-    if (analyzed.fixpointTruncated !== expectedTruncated) {
-      failures.push(
-        `self-probe "${probe.name}": expected fixpointTruncated=${expectedTruncated}, got ` +
-          `${analyzed.fixpointTruncated}`
       );
     }
   }
@@ -3170,21 +2028,17 @@ export function buildReport(providersDir: string): MaskReport {
   const sites: StringifySite[] = [];
   let maskerNames = 0;
   let concatSites = 0;
-  const bareSinkFiles: string[] = [];
-  const truncatedFiles: string[] = [];
 
   for (const file of files) {
     // Reported relative to the REPO, and relative to the PROVIDERS ROOT when
     // the probe seam points elsewhere, so a scratch-copy run still prints a
     // path a reader can act on — and so EXEMPT keys match either way.
-    const rel = isInsideDirectory(REPO_ROOT, file)
+    const rel = file.startsWith(REPO_ROOT)
       ? relative(REPO_ROOT, file)
       : join(PROVIDERS_ROOT_REL, relative(providersDir, file));
     const analyzed = analyzeFile(rel, readFileSync(file, 'utf8'));
     maskerNames += analyzed.maskerNames;
     concatSites += analyzed.concatSites;
-    bareSinkFiles.push(...analyzed.bareSinkLocations);
-    if (analyzed.fixpointTruncated) truncatedFiles.push(rel);
     for (const site of analyzed.sites) {
       const exemption = site.verdict === 'raw' ? exemptionFor(site) : undefined;
       sites.push(
@@ -3202,39 +2056,8 @@ export function buildReport(providersDir: string): MaskReport {
     exempt: sites.filter((s) => s.verdict === 'exempt').length,
     maskerNames,
     concatSites,
-    bareSinkSites: bareSinkFiles.length,
-    bareSinkFiles,
-    fixpointTruncations: truncatedFiles.length,
-    truncatedFiles,
     siteList: sites,
   };
-}
-
-/**
- * Is `file` inside `root`, on a path-SEGMENT boundary?
- *
- * `startsWith(REPO_ROOT)` — the spelling this replaced — also matches a SIBLING
- * whose name merely extends the root's (`/…/cdkd-scratch/x.ts` for a repo at
- * `/…/cdkd`), and the consequence is not cosmetic: the branch decides whether a
- * site is reported under its repo-relative path or re-rooted under
- * `PROVIDERS_ROOT_REL`, and `EXEMPT` is keyed on exactly that string. A sibling
- * matching by prefix would produce keys no entry can match while the run still
- * looks healthy.
- */
-export function isInsideDirectory(root: string, file: string): boolean {
-  // NORMALIZED first, and both sides stripped of a trailing separator. Without
-  // the normalize, `/repo/cdkd/../evil/a.ts` reads as INSIDE `/repo/cdkd`;
-  // without the strip, the predicate disagreed with itself on whether a
-  // directory contains itself depending on how the caller spelled the root.
-  // Neither is reachable from today's two call sites (both pass resolved
-  // paths), but the function is EXPORTED and its test claims a path-SEGMENT
-  // boundary, which is a stronger statement than a prefix compare can make.
-  const trim = (path: string): string =>
-    path.length > 1 && path.endsWith(sep) ? path.slice(0, -sep.length) : path;
-  const normalizedRoot = trim(normalize(root));
-  const normalizedFile = trim(normalize(file));
-  if (normalizedFile === normalizedRoot) return true;
-  return normalizedFile.startsWith(`${normalizedRoot}${sep}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -3276,21 +2099,14 @@ export function main(
     );
   }
 
-  // A scan failure RETURNS here rather than falling through with an
-  // `undefined` report. The old shape carried the report through as optional
-  // and then read `report?.filesScanned` in the SUCCESS line — where the value
-  // can never be absent, since every path that leaves it unset has pushed a
-  // failure. That optional chaining was dead, and dead narrowing in a checker
-  // reads as a case someone considered.
-  let report: MaskReport;
+  let report: MaskReport | undefined;
   try {
     report = buildReport(providersDir);
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error));
-    return emitFailures(failures);
   }
 
-  {
+  if (report) {
     // `selfProbesRun` rides the report rather than living in `MaskReport`:
     // `buildReport` scans files and knows nothing about probes. It exists so
     // an entrypoint test that SPAWNS this binary can assert the probes ran —
@@ -3320,32 +2136,6 @@ export function main(
       if (actual < minimum) {
         failures.push(`found ${actual} ${label}, expected at least ${minimum} (scan regression?)`);
       }
-    }
-
-    // KNOWN BOUND (5), fenced rather than merely stated.
-    if (report.bareSinkSites > MAX_BARE_SINK_SITES) {
-      failures.push(
-        `found ${report.bareSinkSites} UNMASKED call(s) handing a stringify STRAIGHT to a ` +
-          `message sink, expected at most ${MAX_BARE_SINK_SITES}: ` +
-          `${report.bareSinkFiles.join(', ')}. That spelling reaches the SAME sink as the ` +
-          `template form and is NOT classified by this critic — the population was measured at ` +
-          `zero, which is the only reason widening it was deferred (issue #2269). Mask the value ` +
-          `(\`maskDeep(<value>, maskerOrIdentity(context?.maskSecrets))\`), or write the site ` +
-          `as a template (\`\${JSON.stringify(x)}\`) so it is classified, or widen the ` +
-          `population here and re-calibrate the floors.`
-      );
-    }
-
-    // The masker DERIVATION did not finish — fail-closed, but no longer silent.
-    if (report.fixpointTruncations > 0) {
-      failures.push(
-        `${report.fixpointTruncations} file(s) hit the ${MAX_FIXPOINT_ROUNDS}-round masker-set ` +
-          `growth cap without converging, so their masker set is TRUNCATED and every verdict ` +
-          `computed from it under-credits — and a truncated file's sites can still read ` +
-          `\`masked\`, so nothing else in this run points at it: ` +
-          `${report.truncatedFiles.join(', ')}. Raise MAX_FIXPOINT_ROUNDS after checking the ` +
-          `growth rules are not cycling.`
-      );
     }
 
     // KNOWN BOUND (1), fenced rather than merely stated.
@@ -3378,29 +2168,20 @@ export function main(
     }
   }
 
-  if (failures.length > 0) return emitFailures(failures);
+  if (failures.length > 0) {
+    process.stderr.write(`provider secret-mask check FAILED (${failures.length} problems)\n\n`);
+    for (const failure of failures) process.stderr.write(`  - ${failure}\n`);
+    process.stderr.write('\n');
+    return 1;
+  }
 
-  // Under `--json`, stdout is a DATA channel: appending the human summary to it
-  // makes `--json | jq` fail on trailing text (measured: `parse error: Invalid
-  // numeric literal at line 266`), and a test that slices back to the last `}`
-  // to work around it pins the defect instead of catching it. The sibling
-  // critic `check-local-reachability.ts` already routes its summary this way.
-  const summary = json ? process.stderr : process.stdout;
-  summary.write(
-    `provider secret-mask check OK — ${report.filesScanned} files scanned, ` +
-      `${report.sites} interpolated \`JSON.stringify\` sites across ${report.filesWithSites} ` +
-      `files, ${report.masked} masked before stringify via ${report.maskerNames} derived masker ` +
-      `names (${report.exempt} exempt site(s), each re-audited)\n`
+  process.stdout.write(
+    `provider secret-mask check OK — ${report?.filesScanned} files scanned, ` +
+      `${report?.sites} interpolated \`JSON.stringify\` sites across ${report?.filesWithSites} ` +
+      `files, ${report?.masked} masked before stringify via ${report?.maskerNames} derived masker ` +
+      `names (${report?.exempt} exempt site(s), each re-audited)\n`
   );
   return 0;
-}
-
-/** The single failure-reporting exit, so the scan-failure path prints like the rest. */
-function emitFailures(failures: readonly string[]): number {
-  process.stderr.write(`provider secret-mask check FAILED (${failures.length} problems)\n\n`);
-  for (const failure of failures) process.stderr.write(`  - ${failure}\n`);
-  process.stderr.write('\n');
-  return 1;
 }
 
 /**
