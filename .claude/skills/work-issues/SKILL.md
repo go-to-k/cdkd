@@ -869,6 +869,17 @@ arm produces, so deleting the canonicalization left it green. A fourth asserted
 `ambient.ssm !== instances.at(-1)` while `ambient.ssm` is a LAZY getter that
 constructs at assertion time — it was measuring its own side effect.
 
+**A probe COUNT goes stale across review rounds, so a matrix carried forward is
+wrong even when every row was true when written.** Later rounds add cases that
+depend on the same line, so the row that measured "exactly 1 RED" in round 1
+measures 4 by round 3 — and the number is the part a reader uses to judge how
+load-bearing the line is. Measured 2026-08-26 on one PR: two published rows said
+1 RED each; re-run on the final tree they were 4 and 6. Nothing had regressed,
+the matrix had simply been PATCHED (new rows appended) rather than RE-MEASURED.
+So when a body or changelog publishes a matrix, re-run the whole thing on the
+tree you are about to merge, and say which tree the counts are from — a count
+with no subject is not a measurement.
+
 So when you write the probe, name the discriminator first and assert THAT:
 which client was constructed and with what region, which call the stub actually
 received, what the second invocation saw. "The happy path still happens" is
@@ -1053,6 +1064,36 @@ REAL tree rather than by reasoning:
   OR at all: go-to-k/cdk-local#537's reference scan flipped one `inFence` boolean
   on any fence marker, so a single nested fence inverted it and muted every check
   for the rest of the file, silently.
+
+  **A population derived from an OPTIONAL language feature is derivable-around
+  for free, and a type annotation is the commonest one.** This is the same class
+  arriving through a spelling that looks rigorous rather than lazy. On
+  2026-08-26 a fence written to END a four-round cascade — every round's blocker
+  being "another site writes this field without the gate" — derived its
+  population as "files annotating `: DestroyRunnerResult`". TypeScript infers,
+  so the two files that hold the object as plain locals were never scanned, and
+  planting the write in one of them (the site of round 1's own blocker) left the
+  fence 4/4 GREEN. The fix is to derive from a relation the write CANNOT omit —
+  here, that a file either constructs the result or receives it from the one
+  function that returns it. Ask of any population: *what would this look like if
+  the author simply did not write the optional part?* Annotations, explicit
+  return types, `export` markers, and interface `implements` clauses all answer
+  "identical, and invisible to you".
+
+  **Probe the fence with the evasions the DEFECT would use, not with the one you
+  just fixed.** Re-planting the exact line you removed is the cheapest probe and
+  the least informative — it is the one spelling you have already proved you can
+  see. The same 2026-08-26 fence caught its own removed line and missed four
+  ordinary alternatives to it: a computed member (`x['field'] =`),
+  `Object.assign`, an object literal, and a spread rebuild. The last is the one
+  to reach for first when the cascade has been about early returns, because a
+  new early return is written as a new object, not as a new assignment.
+
+  **And watch the FLOOR for the same collapse.** A floor naming only the file
+  the defect lives in is satisfied BY the collapse it exists to catch: narrowing
+  that fence's pathspec to the owner file alone still passed 4/4, because the
+  floor asked for exactly the file that survived. Name the members a collapse
+  drops FIRST — the peripheral ones — not the central one.
 
 And ask the dumbest question last: **is anything RUNNING it?** The nine hook
 harnesses in go-to-k/cdk-real-drift were shell, so the vitest task never saw
