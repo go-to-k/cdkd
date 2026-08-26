@@ -22,18 +22,28 @@
 # alone separates "there is unmerged work here" from "there is not".
 set -u
 
+# BASH_SOURCE resolves to whichever checkout this copy of the hook lives in --
+# in a linked worktree that is the LANE, not the main tree. That is fine as a
+# place to run `git` from (every worktree shares one object store and one
+# `origin/main`), but it must NOT be used to decide which worktree to skip: the
+# session ending inside its own lane is the case this hook exists for, and an
+# earlier revision skipped exactly that one. Measured from a lane 5 commits
+# ahead: the hook printed nothing. The main tree is excluded by BRANCH below
+# (`main`/`master`), which is the property that actually identifies it.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO" 2>/dev/null || exit 0
 
-# Cheap: no fetch. A stale `origin/main` can only UNDER-report (a branch whose
-# work already merged still looks ahead until the next fetch), and the failure
-# direction that matters is missing a real lane, not naming a merged one.
+# Cheap: no fetch. A stale `origin/main` can only OVER-report: `rev-list --count
+# origin/main..$br` only grows as `origin/main` ages, so a branch whose work has
+# already merged keeps reading as ahead. That is the safe direction -- the
+# failure that matters is MISSING a real lane, and staleness cannot cause it.
+# (An earlier revision of this comment said UNDER-report while its own
+# parenthetical described over-reporting; the parenthetical was the true half.)
 git rev-parse --verify origin/main >/dev/null 2>&1 || exit 0
 
 lanes=""
 while IFS= read -r wt; do
   [ -n "$wt" ] || continue
-  [ "$wt" = "$REPO" ] && continue
   br=$(git -C "$wt" branch --show-current 2>/dev/null) || continue
   [ -n "$br" ] || continue
   case "$br" in main | master) continue ;; esac
@@ -49,7 +59,10 @@ msg="WARNING: unmerged lane(s) still open -- a NOT-CLOSEABLE verdict is a TO-DO 
 Each branch below is committed but not on origin/main. If any is YOURS, you are not done: rebase, run the
 gates, open the PR, merge. If one belongs to another session, say which and why, rather than leaving it
 unexplained. And if you are ending the turn with nothing that will re-invoke you, the honest label is
-STOPPED, not WAITING."
+STOPPED, not WAITING.
+One false positive is expected and is cheap to clear: this repo SQUASH-merges, so a merged branch never
+becomes an ancestor of origin/main and keeps reading as ahead. If a lane below is already merged, the
+remaining work is to remove its worktree and delete the branch -- not to open another PR."
 
 payload=$(printf '%s\n%s' "$msg" "$lanes" |
   python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')

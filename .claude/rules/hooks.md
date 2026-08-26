@@ -12,12 +12,17 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-Most hooks in this file ship a `*.test.sh` smoke suite next to them (39 suites
-for 41 hooks, counting `run-tests.sh` as the runner rather than a hook — only
-`post-merge-sync-reminder` and `stop-warn` have none; `gh-label-validity-gate`
-and `gh-pr-edit-deprecation-gate` gained theirs after the issue #2050 count this
-sentence used to carry, and `stop-warn` is now covered by the markgate-gate-name
-CLASS fence below even though it has no suite of its own), and the runner executes
+Most hooks in this file ship a `*.test.sh` smoke suite next to them (**40 of the
+42** hooks do, counting `run-tests.sh` as the runner rather than a hook — only
+`post-merge-sync-reminder` and `stop-warn` have none, and `stop-warn` is covered
+by the markgate-gate-name CLASS fence below despite having no suite of its own).
+`.claude/hooks/` holds 42 `*.test.sh` files rather than 40, because two of them
+— `markgate-gate-name-class` and `unresolved-target-class` — are CLASS fences
+whose subject is every hook at once rather than one named hook, so they pair
+with no `.sh` of the same name. Recount rather than trusting this sentence:
+`ls .claude/hooks/*.sh | grep -v '\.test\.sh$'`. It has now been stale twice —
+at 39/41 while the tree held 42 hooks, because a PR that ADDS a hook and its
+suite has no reason to look here. The runner executes
 every suite that exists under **every bash on the machine** — `bash` from PATH (Homebrew 5.x on a dev Mac) and `/bin/bash`
 (macOS's system **3.2**).
 Both matter because the hooks are `#!/usr/bin/env bash`: on a machine without a
@@ -346,6 +351,55 @@ Two suites whose subject is EVERY hook at once -- the unresolved-target-director
 sweep (issue 2027) and the gate-name fence (issue 2198) -- live in
 [hooks-class-fences.md](hooks-class-fences.md), loaded when you touch one of
 them or the shared matcher.
+
+## Stop hooks
+
+Two hooks fire on `Stop` rather than on a tool call, and they split the same
+question -- "is there work here that is not finished?" -- along the axis of
+whether it has been committed.
+
+- **`.claude/hooks/stop-warn.sh`** covers the UNCOMMITTED half in the main tree.
+- **`.claude/hooks/stop-unmerged-lane-warn.sh`** covers the quieter half: a
+  linked worktree whose branch is COMMITTED but still ahead of `origin/main` --
+  a lane that is finished as far as the editor is concerned and unfinished as
+  far as the repo is. Non-blocking; it emits a `systemMessage` naming each such
+  branch, its commit count and its worktree.
+
+  Why a hook rather than another sentence: `CLAUDE.md` already says a
+  NOT-CLOSEABLE verdict is a to-do list and not a stopping point, and already
+  says that a turn with no signal that will re-invoke you is STOPPED and not
+  WAITING. Both were violated repeatedly in one session on 2026-08-26 -- turns
+  ended with `Mode: WAITING` next to `Waiting on: none`, and with
+  `Verdict: NOT CLOSEABLE` in the same report as the stop. Per the escalation
+  rule, a rule already in the text that gets violated anyway is not made
+  load-bearing by a third spelling of it, so this computes the verdict from the
+  REPO instead of from the agent's own self-report -- which is the part that was
+  wrong. Deliberately does NOT call `gh` and does NOT fetch: it runs every turn,
+  and a stale `origin/main` can only UNDER-report, which is the safe direction.
+
+  **It shipped INERT for its own primary case** (go-to-k/cdkd#2279, fixed in the
+  follow-up). It derived its root from `BASH_SOURCE` and skipped the worktree
+  that matched -- intended to skip the main tree, but in a linked worktree
+  `BASH_SOURCE` IS the lane, so the session ending inside its own unmerged lane
+  got nothing. Measured in the sibling cdk-local from a lane five commits ahead:
+  EMPTY. The main tree is identified by BRANCH (`main` / `master`), which the
+  loop already checks, so the path skip was redundant AND the entire defect. All
+  seven original cases ran the hook from the sandbox's MAIN tree, which is why
+  none of them could see it.
+
+  Its suite carries one trap worth knowing before editing it. On macOS
+  `mktemp -d` returns a `/var/folders/...` path whose real location is
+  `/private/var/...`; the hook canonicalises its own root with `cd && pwd` while
+  git records a worktree under the path it was CREATED with, so the two
+  spellings never compare equal and any case whose subject IS that equality
+  passes no matter what the hook does. The self-lane case was measured VACUOUS
+  on its first attempt for exactly that reason. The sandbox root is therefore
+  `cd "$(mktemp -d)" && pwd -P`.
+
+  One false positive is expected and is named in the warning text itself: this
+  repo squash-merges, so a merged branch never becomes an ancestor of
+  `origin/main` and keeps reading as ahead until its worktree is removed. The
+  remedy there is `git worktree remove` plus `git branch -D`, not another PR.
 
 ## Uncommitted-work safety (multi-session)
 
