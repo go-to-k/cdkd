@@ -1,3 +1,10 @@
+## [0.284.65](https://github.com/go-to-k/cdkd/compare/v0.284.64...v0.284.65) (2026-08-26)
+
+
+### Bug Fixes
+
+* **providers:** mask eighteen pre-stringify secret sites, and fence the walk with a dataflow-aware critic ([#2265](https://github.com/go-to-k/cdkd/issues/2265)) ([81e93a5](https://github.com/go-to-k/cdkd/commit/81e93a54647dd5ac88bcbc420b4d59138bce07c8))
+
 ## [0.284.64](https://github.com/go-to-k/cdkd/compare/v0.284.63...v0.284.64) (2026-08-26)
 
 
