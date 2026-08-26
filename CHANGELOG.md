@@ -1,3 +1,10 @@
+## [0.284.68](https://github.com/go-to-k/cdkd/compare/v0.284.67...v0.284.68) (2026-08-26)
+
+
+### Bug Fixes
+
+* **providers:** log the custom-resource response ENVELOPE, not a 200-byte prefix of the body ([#2281](https://github.com/go-to-k/cdkd/issues/2281)) ([843465d](https://github.com/go-to-k/cdkd/commit/843465d8b6315fc7d20082e72cfb784d56989423))
+
 ## [0.284.67](https://github.com/go-to-k/cdkd/compare/v0.284.66...v0.284.67) (2026-08-26)
 
 
