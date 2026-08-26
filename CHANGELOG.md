@@ -1,3 +1,10 @@
+## [0.284.53](https://github.com/go-to-k/cdkd/compare/v0.284.52...v0.284.53) (2026-08-26)
+
+
+### Bug Fixes
+
+* **deployment:** retry a name held during an async delete on the ordinary create path, and recognise the Step Functions spelling at all ([#2235](https://github.com/go-to-k/cdkd/issues/2235)) ([85d7da3](https://github.com/go-to-k/cdkd/commit/85d7da349dfcbd306529bed9c43c268e47cce1f3))
+
 ## [0.284.52](https://github.com/go-to-k/cdkd/compare/v0.284.51...v0.284.52) (2026-08-26)
 
 
