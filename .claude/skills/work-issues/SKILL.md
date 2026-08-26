@@ -258,6 +258,37 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   that had (go-to-k/cdkd#1980) having closed four minutes earlier. That grep costs
   one command at triage; the same discovery after claiming costs a worktree, a
   `pnpm install` and a gate round.
+- **An issue's premise may not be TRUE YET — resolve the body against the tree
+  before you write anything that depends on it.** The bullet above catches a body
+  whose work is already DONE. This is its mirror image and it is the commoner
+  direction here: a body written from an unmerged branch describes the state of
+  THAT branch, and this repo's lanes routinely file a follow-up for a file their
+  own allow-list excluded, minutes before the PR that creates the thing the
+  follow-up talks about. So the issue is accurate about a tree that does not exist
+  on `main` yet, and it stays that way until its sibling merges.
+  What that costs is specific: the fix you write NAMES the premise. On 2026-08-26,
+  go-to-k/cdkd#2246 asked for a doc note pointing at
+  `nestedStackChildRegionFromLocalArn` as the reader that parses a region segment
+  back. `grep -rn nestedStackChildRegionFromLocalArn src/` at claim time returned
+  **nothing** — it landed sixteen minutes later in go-to-k/cdkd#2266. Writing the
+  note on the issue's word would have shipped a comment naming a function that was
+  not there.
+  Two moves, and the second is the one that is easy to skip. **(1)** grep for every
+  symbol, file and behaviour the body asserts already exists, before the first
+  edit — the same one command the mirror check above costs. **(2)** When a grep
+  comes back empty, find out WHICH way: `gh pr list --state all --search <symbol>`
+  separates "the premise is wrong" from "the premise is on an unmerged branch",
+  and those need opposite responses — the first is a correction to post on the
+  issue, the second is `git fetch && git rebase origin/main` and carry on. Do not
+  read an empty grep as "the issue is wrong".
+  **Verify the parts you are NOT changing, too.** The same issue also stated that
+  the sibling producer's DOC already recorded the rationale; only its parameter
+  NAME had changed, and the doc still covered something else entirely. That half
+  was never going to fail a build — it would have shipped as a pointer at a
+  paragraph that does not say what it was cited for. A body's claims about
+  SURROUNDING code get no compiler and no test, so they are the ones to check by
+  hand. Say what you found in the PR body: the next reader needs to know the issue
+  and the tree disagreed, and which one won.
 - **A partly-worked issue's residue may be owned by an issue it SPAWNED — read its
   thread to the end, then check the CLAIM STATE of every issue that thread names.**
   A lane that works an issue and cannot close it files the remainder as a child
