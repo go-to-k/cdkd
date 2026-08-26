@@ -217,10 +217,20 @@ PRODUCER_STATE_KEY="cdkd/${PRODUCER}/${REGION}/state.json"
 CONSUMER_STATE_KEY="cdkd/${CONSUMER}/${REGION}/state.json"
 CHAIN_STATE_KEY="cdkd/${CHAIN_CONSUMER}/${REGION}/state.json"
 # Everything each stack owns in the bucket: state.json, lock.json,
-# rollback-journal.json and deployments/**. The shared exports index
-# (`cdkd/_index/...`) is deliberately NOT swept -- it is not this stack's key
-# space, other stacks' entries live in it, and the assertions below already
-# prove it carries the expression rather than the plaintext.
+# rollback-journal.json and deployments/**.
+#
+# The shared exports index (`cdkd/_index/<region>/exports.json`) is a SIBLING
+# prefix no `s3_stack_prefix` reaches, and it holds RESOLVED Output values, so
+# it is a versioned reader of the same material. It used to be skipped outright
+# on the grounds that "other stacks' entries live in it" -- true for a
+# PREFIX-scoped `all` purge, which would take other lanes' current objects with
+# it, and FALSE for the key-scoped NONCURRENT sweep used below:
+# `s3_purge_key_versions` names the one key and `noncurrent` leaves whatever is
+# CURRENT intact, so a concurrent lane's live index is untouched while the
+# historical versions this run wrote stop accumulating. The assertions further
+# down prove the CURRENT object carries the expression rather than the
+# plaintext; they say nothing about the versions behind it, which is the whole
+# gap this file exists to close.
 PRODUCER_STATE_PREFIX="$(s3_stack_prefix "${PRODUCER}" "${REGION}")"
 CONSUMER_STATE_PREFIX="$(s3_stack_prefix "${CONSUMER}" "${REGION}")"
 CHAIN_STATE_PREFIX="$(s3_stack_prefix "${CHAIN_CONSUMER}" "${REGION}")"
@@ -332,6 +342,14 @@ sweep() {
       s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX:-}" noncurrent || true
       s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX:-}" noncurrent || true
       s3_purge_prefix_versions "${STATE_BUCKET}" "${CHAIN_STATE_PREFIX:-}" noncurrent || true
+      # The shared exports index, on EVERY path. `noncurrent` is safe anywhere
+      # (it never touches the CURRENT object, which belongs to whichever stack
+      # wrote it last), so scoping this to the success path -- as it first was
+      # -- left every index version a FAILED or SIGNALLED run wrote, which is
+      # the majority of the runs that write them. The key-scoped form is what
+      # makes it safe: a prefix-scoped `all` here would take a concurrent
+      # lane's live index.
+      s3_purge_key_versions "${STATE_BUCKET}" "${INDEX_KEY:-}" noncurrent || true
     fi
   )
 }
@@ -1593,6 +1611,14 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" all || true
 s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" all || true
 s3_purge_prefix_versions "${STATE_BUCKET}" "${CHAIN_STATE_PREFIX}" all || true
+# The exports index: KEY-scoped and NONCURRENT-only, never `all`. It is shared
+# with every other stack in this region, so its CURRENT object must survive.
+# ASSERTED, not merely attempted: `|| true` with no count is the exact shape
+# this whole convention exists to reject, and it would have been that shape here
+# -- in the suite that rejects it -- had review not caught it.
+s3_purge_key_versions "${STATE_BUCKET}" "${INDEX_KEY}" noncurrent || true
+s3_assert_key_versions_swept "${STATE_BUCKET}" "${INDEX_KEY}" noncurrent \
+  "cross-stack-secret-import exports-index teardown"
 s3_assert_versions_swept "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" "cross-stack-secret-import producer state teardown"
 s3_assert_versions_swept "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" "cross-stack-secret-import consumer state teardown"
 s3_assert_versions_swept "${STATE_BUCKET}" "${CHAIN_STATE_PREFIX}" "cross-stack-secret-import chain consumer state teardown"

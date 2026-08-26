@@ -133,6 +133,33 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-cross-region-secret"
 LOCAL_DIST="${REPO_ROOT}/dist/cli.js"
 
+# Shared S3 VERSION-sweep helpers (issue #2096). The state bucket is VERSIONED,
+# so the `aws s3 rm` calls below only write DELETE MARKERS: every state.json,
+# rollback-journal.json and lock.json this fixture ever wrote stays readable via
+# GetObjectVersion after a green run.
+#
+# WHY THIS FIXTURE SWEEPS (issue #2212's audit). Its templates carry
+# `{{resolve:ssm:...}}` against a SecureString, so cdkd issues a real
+# GetSecretValue/GetParameter for them on the deploy path. On today's code the
+# plaintext does not reach state -- the GHSA-p5qg-v9gv-hc7w fix rewrites each
+# resolved value back to its `{{resolve:...}}` expression before persisting, and
+# the same redaction covers the rollback journal's `attemptedProperties`, which
+# this fixture leaves behind ON PURPOSE. That is a reason to sweep rather than
+# to skip: the redaction is a src-side invariant one bug away from failing, and
+# object versions are FOREVER -- a single run under a broken redaction leaves
+# plaintext no later fix can remove. Its five siblings in this class sweep for
+# exactly this reason.
+#
+# Sourced by ABSOLUTE path: this script `cd`s into the fixture dir further down,
+# so a relative `../s3-versions.sh` would resolve against the caller's cwd.
+. "${REPO_ROOT}/tests/integration/s3-versions.sh"
+
+# Everything each stack owns in the bucket -- state.json, lock.json,
+# rollback-journal.json and deployments/** -- swept as one prefix so a key added
+# later cannot be forgotten. Two stacks in two REGIONS, so two prefixes.
+PRODUCER_STATE_PREFIX="$(s3_stack_prefix "${PRODUCER_STACK}" "${PRODUCER_REGION}")"
+CONSUMER_STATE_PREFIX="$(s3_stack_prefix "${CONSUMER_STACK}" "${CONSUMER_REGION}")"
+
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "FAIL: STATE_BUCKET env var is required" >&2
   exit 1
@@ -169,8 +196,13 @@ cleanup() {
   # deployed parameters go with their stacks.
   AWS_REGION="${CONSUMER_REGION}" ${CLI} destroy "${CONSUMER_STACK}" \
     --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
+  # Plain assignment, NOT `local consumer_destroy_rc=$?` -- `local` is itself a
+  # command, so that spelling captures `local`'s status and always reads 0,
+  # which is the same class of mistake as reading `$?` past a pipe.
+  consumer_destroy_rc=$?
   AWS_REGION="${PRODUCER_REGION}" ${CLI} destroy "${PRODUCER_STACK}" \
     --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
+  producer_destroy_rc=$?
   # Then direct AWS cleanup, in case destroy itself is what broke. This test
   # INTENTIONALLY fails a deploy, so the trap must not rely on a clean path.
   aws ssm delete-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
@@ -184,10 +216,46 @@ cleanup() {
   if [ -n "${q_url}" ] && [ "${q_url}" != "None" ]; then
     aws sqs delete-queue --queue-url "${q_url}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
   fi
-  # State / journal / events sidecars for both stacks (events deliberately
-  # survive destroy, and this run leaves a journal behind on purpose).
-  aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CONSUMER_STACK}/" --recursive >/dev/null 2>&1
-  aws s3 rm "s3://${STATE_BUCKET}/cdkd/${PRODUCER_STACK}/" --recursive >/dev/null 2>&1
+  # VERSION sweep. It lives INSIDE cleanup because this function ends with
+  # `exit "${rc}"`: calling it from the success path would terminate the script,
+  # so a sweep placed after such a call would never run. Here it runs on every
+  # exit path, which is also the right scope -- this test INTENTIONALLY fails a
+  # deploy, and a failed run seeds state just as a green one does.
+  #
+  # THE MODE FOLLOWS THE DESTROYS, not this script's status (issue #2225).
+  # `all` removes every version AND every delete marker, and is correct only
+  # once both stacks are gone for good. `rc` is the SCRIPT's status on entry, so
+  # a run whose assertions all passed and whose teardown then failed would have
+  # `rc` 0 with resources still standing -- taking the `all` branch there would
+  # delete the very state.json a later `cdkd state destroy` needs. All three
+  # statuses must be zero.
+  #
+  # THE `aws s3 rm --recursive` PAIR IS INSIDE THE SUCCESS BRANCH, and that
+  # placement is the whole point rather than tidiness. Run unconditionally --
+  # where they used to sit, above this branch -- they write a DELETE MARKER over
+  # the live state.json, which demotes it to a NONCURRENT version, and the
+  # `noncurrent` purge below then deletes the very record the failure path
+  # exists to preserve. The safe mode was inert, and the comment claiming it
+  # "leaves whatever is CURRENT alone" was false for this fixture specifically.
+  # On the failure path we now touch neither: the state objects stay CURRENT and
+  # a later `cdkd state destroy` can still read them.
+  if [ "${rc}" -eq 0 ] && [ "${consumer_destroy_rc}" -eq 0 ] && [ "${producer_destroy_rc}" -eq 0 ]; then
+    # State / journal / events sidecars for both stacks (events deliberately
+    # survive destroy, and this run leaves a journal behind on purpose).
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CONSUMER_STACK}/" --recursive >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${PRODUCER_STACK}/" --recursive >/dev/null 2>&1
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" all || true
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" all || true
+    s3_assert_versions_swept "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" \
+      "rollback-cross-region-secret consumer state teardown"
+    s3_assert_versions_swept "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" \
+      "rollback-cross-region-secret producer state teardown"
+  else
+    # Historical versions (where a seeded plaintext would live) go; whatever is
+    # CURRENT stays, and stays CURRENT, because nothing above delete-markered it.
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${CONSUMER_STATE_PREFIX}" noncurrent || true
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${PRODUCER_STATE_PREFIX}" noncurrent || true
+  fi
   set -e
   exit "${rc}"
 }
@@ -204,6 +272,21 @@ fi
 echo "[verify] pre-run sweep: drop anything stranded by an earlier failed run"
 (
   set +e
+  # `cdkd state destroy` FIRST, and that ordering is the whole point rather than
+  # tidiness. `cleanup`'s failure path deliberately leaves the state objects
+  # CURRENT so a later `cdkd state destroy` can still read them and tear down
+  # resources that are still standing. Dropping the state here with
+  # `aws s3 rm --recursive` BEFORE anything consults it would delete-marker
+  # exactly that record and strand those resources as orphans with no state --
+  # which would make the promise `cleanup` makes false one run later, by this
+  # same script. So: read the state and destroy from it, THEN remove the
+  # objects. `cross-stack-secret-import`'s `sweep()` has the same shape.
+  if [ -f "${LOCAL_DIST}" ]; then
+    AWS_REGION="${CONSUMER_REGION}" node "${LOCAL_DIST}" state destroy "${CONSUMER_STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" --region "${CONSUMER_REGION}" --yes >/dev/null 2>&1
+    AWS_REGION="${PRODUCER_REGION}" node "${LOCAL_DIST}" state destroy "${PRODUCER_STACK}" \
+      --state-bucket "${STATE_BUCKET:-}" --region "${PRODUCER_REGION}" --yes >/dev/null 2>&1
+  fi
   aws ssm delete-parameter --name "${ECHO_PARAM}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${LOCAL_SECRET_PARAM}" --region "${CONSUMER_REGION}" >/dev/null 2>&1
   aws ssm delete-parameter --name "${PRODUCER_PROBE_PARAM}" --region "${PRODUCER_REGION}" >/dev/null 2>&1
