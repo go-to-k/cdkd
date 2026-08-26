@@ -198,4 +198,118 @@ describe('ElapsedBudgetRegistry', () => {
     expect(() => registry.release('never-acquired')).not.toThrow();
     expect(registry.size).toBe(0);
   });
+
+  /**
+   * `acquire`'s fourth parameter, pinned in the PRIMITIVE's own suite (issue
+   * #2244 item 2).
+   *
+   * Why here, when a consumer already exercises it: the DynamoDB delete-budget
+   * suite covers the parameter through its own caller
+   * (`tests/unit/provisioning/dynamodb-delete-budget.test.ts`, "a RETAINED
+   * allowance goes stale once its deadline has certainly fired"), so the
+   * behaviour is not unfenced -- issue #2244's "no test anywhere passes
+   * `reuseWithinMs`" is FALSE against this tree, and the correction belongs
+   * next to the fix. What was genuinely missing is a fence in the file someone
+   * EDITING `src/utils/elapsed-budget.ts` opens: a contract whose only test
+   * lives in one consumer's suite is one a refactor of the primitive can break
+   * without ever reading it.
+   *
+   * The load-bearing case is the last one. `ProtectionFlipRegistry` -- the
+   * sibling registry in `src/provisioning/providers/dynamodb-delete-budget.ts`,
+   * with the same shape, the same key and the SAME window constant -- went
+   * SLIDING for issue #2211 while this one deliberately did not. Two look-alike
+   * types differing in one invisible respect is exactly what gets "helpfully"
+   * unified, so the difference is asserted rather than left to the JSDoc.
+   */
+  describe('reuseWithinMs', () => {
+    it('reuses FOREVER when the bound is omitted, so the caller opts INTO staleness', () => {
+      // The default, and the reason the DynamoDB caller passes the parameter at
+      // all: entries are retained on a throw, so without a bound a much later
+      // operation reaching the same key inherits a spent allowance and gets no
+      // time at all for a delete of its own.
+      const clock = fakeClock();
+      const registry = new ElapsedBudgetRegistry();
+
+      const first = registry.acquire('orders-table', 60_000, clock.now);
+      clock.advance(10 * 365 * 24 * 60 * 60_000);
+
+      expect(registry.acquire('orders-table', 60_000, clock.now)).toBe(first);
+      expect(first.remainingMs()).toBe(0);
+    });
+
+    it('drops the entry once the bound has elapsed, and the replacement gets a FULL allowance', () => {
+      const clock = fakeClock();
+      const registry = new ElapsedBudgetRegistry();
+      const WINDOW_MS = 30_000;
+
+      const first = registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS);
+      clock.advance(20_000);
+
+      // Inside the bound: the SAME allowance, still draining. Asserted here as
+      // well as in the case above, because it is what makes the next assertion
+      // a bound rather than "acquire always replaces".
+      expect(registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS)).toBe(first);
+      expect(first.remainingMs()).toBe(6_000);
+
+      clock.advance(WINDOW_MS);
+      const replacement = registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS);
+
+      expect(replacement).not.toBe(first);
+      // `totalMs` and `clock` are read only when the entry is CREATED, so the
+      // replacement is where a caller's own numbers finally take effect.
+      expect(replacement.remainingMs()).toBe(26_000);
+      expect(registry.size).toBe(1);
+    });
+
+    it('still reuses at EXACTLY the bound — the comparison is strictly greater', () => {
+      // The boundary is a decision, not an accident: the bound is the deadline
+      // the allowance is SIZED against, and a caller arriving exactly on it has
+      // not yet outlived it. Pinned because the sibling registry spells the
+      // same boundary from the other side (`<= reuseWithinMs` to REUSE), so
+      // "make the two read alike" is a one-character change either way.
+      const clock = fakeClock();
+      const registry = new ElapsedBudgetRegistry();
+      const WINDOW_MS = 30_000;
+
+      const first = registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS);
+      clock.advance(WINDOW_MS);
+      expect(registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS)).toBe(first);
+
+      clock.advance(1);
+      expect(registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS)).not.toBe(first);
+    });
+
+    it('measures the bound from CREATION, not from the last reuse — this window does NOT slide', () => {
+      // THE divergence from `ProtectionFlipRegistry`, which slid for issue
+      // #2211. Both are correct, for opposite reasons:
+      //
+      //  - the FLIP RECORD carries a fact ("an earlier attempt turned the guard
+      //    off") that a long retry sequence must not lose mid-flight, so its
+      //    clock has to restart on every re-entry;
+      //  - an ALLOWANCE is the thing being SPENT. Restarting its staleness
+      //    clock on reuse would keep alive, indefinitely, the one entry that is
+      //    re-acquired most often — i.e. exactly the exhausted allowance a new
+      //    operation must not inherit. The type makes that hard by
+      //    construction: one `ElapsedBudget` is both the allowance and the
+      //    stopwatch, so there is no idle clock to restart without discarding
+      //    the spend, which is what the sibling needs a SECOND stopwatch for.
+      //
+      // Three acquires, each arriving one second inside the window but summing
+      // well past it. A sliding window reuses on the third; a fixed one does
+      // not, and the discriminator is entry IDENTITY.
+      const clock = fakeClock();
+      const registry = new ElapsedBudgetRegistry();
+      const WINDOW_MS = 30_000;
+
+      const first = registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS);
+
+      clock.advance(WINDOW_MS - 1_000);
+      expect(registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS)).toBe(first);
+
+      clock.advance(WINDOW_MS - 1_000);
+      const third = registry.acquire('orders-table', 26_000, clock.now, WINDOW_MS);
+      expect(third).not.toBe(first);
+      expect(registry.size).toBe(1);
+    });
+  });
 });

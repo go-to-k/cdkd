@@ -2954,6 +2954,25 @@ Behavior:
   is an attempt that OVERRUNS the allowance (a floor poll granted
   at zero remaining, an unpriced teardown), not one that merely
   spends it.
+- A **terminal** delete failure releases the latch once the
+  compensation above has run — UNLESS that compensating re-enable
+  itself failed, in which case the latch is kept so a later delete
+  can retry the re-enable cdkd still owes (issue #2244). Retention
+  exists so a re-entered delete keeps the same record, and only a
+  retryable failure is re-entered; holding it past a terminal one
+  left `flippedOffByThisRun` true for a full sliding window after
+  the last attempt, during which a second destroy of the same table
+  in the same process could inherit it and issue an `UpdateTable`
+  (`DeletionProtectionEnabled: true`) nobody asked for. The release
+  runs after the compensation reads the record, so the re-enable
+  above is unaffected. Two failures still RETAIN the latch. A
+  retryable one — the attempt-cap case below included — does,
+  because a re-entry is exactly what the record is for. So does a
+  terminal one whose compensating re-enable itself FAILED: there
+  the guard really is off and cdkd is the one that turned it off,
+  so the latch is kept and a later destroy of the same table in the
+  same process retries the re-enable cdkd still owes rather than
+  finding the guard already down and leaving it there.
 - Two cases it deliberately does NOT reach, both leaving the
   guard off: a retryable failure that exhausts the destroy loop's
   own attempt cap (cdkd cannot see which attempt is the last),

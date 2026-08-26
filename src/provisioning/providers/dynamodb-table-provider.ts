@@ -64,11 +64,13 @@ import {
 import {
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS as DELETE_BUDGET_REUSE_WINDOW_MS,
+  type ProtectionCompensationOutcome,
   type ProtectionFlipRecord,
   ProtectionFlipRegistry,
   beginDeleteWait,
   compensateRemovedDeletionProtection,
   deleteBudgetKey,
+  isTerminalDeleteFailure,
   resolveDynamoDbDeleteBudgetClock,
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
@@ -2321,23 +2323,148 @@ export class DynamoDBTableProvider implements ResourceProvider {
     try {
       await this.deleteTableResource(logicalId, physicalId, resourceType, context, flip);
     } catch (error) {
-      await compensateRemovedDeletionProtection({
-        flip,
-        error,
-        logicalId,
-        physicalId,
-        typeLabel: 'table',
-        logger: this.logger,
-        ...(context?.expectedRegion ? { region: context.expectedRegion } : {}),
-        reEnable: async () => {
-          await this.dynamoDBClient.send(
-            new UpdateTableCommand({
-              TableName: physicalId,
-              DeletionProtectionEnabled: true,
-            })
-          );
-        },
-      });
+      // The outcome DEFAULTS to `failed` and the release sits in a `finally`,
+      // so an unknown outcome retains the record -- the safe direction.
+      // `compensateRemovedDeletionProtection` documents that it never throws
+      // (it must not replace the failure this `catch` is about to re-throw),
+      // but that is a property of the callee: a compensation that died
+      // part-way is exactly the case where cdkd cannot say whether the guard
+      // is back on, so the caller does not depend on it.
+      let outcome: ProtectionCompensationOutcome = 'failed';
+      try {
+        outcome = await compensateRemovedDeletionProtection({
+          flip,
+          error,
+          logicalId,
+          physicalId,
+          typeLabel: 'table',
+          logger: this.logger,
+          ...(context?.expectedRegion ? { region: context.expectedRegion } : {}),
+          reEnable: async () => {
+            await this.dynamoDBClient.send(
+              new UpdateTableCommand({
+                TableName: physicalId,
+                DeletionProtectionEnabled: true,
+              })
+            );
+          },
+        });
+      } catch {
+        // `catch`, not `finally`, and `outcome` stays `'failed'`.
+        // `compensateRemovedDeletionProtection` does not throw by contract --
+        // every arm is inside its own try/catch -- but a LOGGER that throws
+        // escapes it, and under `finally` that exception replaced the delete
+        // error on its way out, so `throw error` below was never reached and
+        // the caller saw the logger's message instead of "Failed to delete
+        // DynamoDB table ...". Measured with a probe that made `logger.warn`
+        // and `logger.error` throw. Catching keeps the ORIGINAL error's
+        // identity while leaving the retain-on-unknown-outcome behaviour
+        // exactly as it was: an outcome that never got assigned is `'failed'`,
+        // so nothing is released.
+      }
+      {
+        // TERMINAL failure whose compensation did not FAIL: drop the flip
+        // record (issue #2244).
+        //
+        // Records are RETAINED on a throw by design -- that is what carries "an
+        // earlier attempt already flipped the guard off" across the re-entered
+        // `delete()` issue #1978's round 2 fixed. But the contract is about a
+        // re-entry, and `isTerminalDeleteFailure` is the predicate that already
+        // asserts none is coming: it MIRRORS `destroy-runner.ts`'s re-entry
+        // condition. It is the same PREDICATE the compensation above consults,
+        // NOT the same gate -- the compensation ANDs it with
+        // `flip.flippedOffByThisRun` and `!flip.deleteAccepted`, so this
+        // release also fires on the arms where the compensation early-returned
+        // having done nothing. That is intended: a record with nothing to undo
+        // has nothing left to serve either. So on this arm there is no second
+        // attempt for the record to serve, and keeping it is not conservative
+        // -- it is wrong in the one direction the registry's own JSDoc names.
+        // A provider is REGISTERED once, so every delete served by the same
+        // `ProviderRegistry` reaches this same INSTANCE and therefore this same
+        // registry -- the deploy engine's own deletes, and
+        // `rollback-executor.ts`, which takes that registry from its context
+        // rather than building one. (`destroy-runner.ts` DOES build a fresh
+        // registry when a stack's region differs, so the sharing is per
+        // registry rather than per process; the key is region-qualified for the
+        // same reason.) A second destroy of the same `region\0name` key inside
+        // the reuse window would inherit that latch and answer its own terminal
+        // failure with an `UpdateTable(DeletionProtectionEnabled: true)` the
+        // user never asked for. Issue #2211's SLIDE widened that window from "a
+        // full window after the FIRST attempt" to "a full window after the
+        // LAST", which is what turned this from implicit into worth closing.
+        //
+        // WHAT THE GUARD ACTUALLY IS ON EACH RELEASING ARM, because "the
+        // compensation has just put it BACK ON" is true of only one of them:
+        //
+        //  - `restored` -- the re-enable landed, so the guard is back on and a
+        //    retained `flippedOffByThisRun: true` describes a world that no
+        //    longer exists.
+        //  - `not-applicable` because `flippedOffByThisRun` is false -- this run
+        //    never turned the guard off, so there is nothing to describe.
+        //  - `not-applicable` because `deleteAccepted` is true -- the guard IS
+        //    still off, but AWS has taken the `DeleteTable` and the table is
+        //    `DELETING`, so there is no live guard for a later delete to owe
+        //    anything to.
+        //  - `not-applicable` because the error is retryable -- unreachable
+        //    here, since the same predicate gates this release.
+        //
+        // NOT released when the compensating `UpdateTable` itself FAILED, and
+        // that arm is the reason this reads an outcome at all. There the guard
+        // really is off and cdkd really is the one that turned it off, so the
+        // record is the only in-process memory that a re-enable is still owed
+        // -- and a later delete of the same key retrying it is the action cdkd
+        // owes, not one nobody asked for. Releasing it instead makes that later
+        // delete observe the guard already off, record
+        // `flippedOffByThisRun: false` and compensate NOTHING, so a table cdkd
+        // stripped stays stripped. Two state records CAN name one physical
+        // table -- `cdkd import` adopts the same table into a second stack --
+        // so this is reachable by the same route that justifies the release
+        // itself. (An earlier revision released here too, calling the retry
+        // "speculative". It is not, and the two arguments could not both
+        // stand.) The failed re-enable is still reported with the command that
+        // fixes it; retention is what lets cdkd fix it on its own.
+        //
+        // THE THREE ROUTES OUT OF THIS `catch`, since the predicate answers
+        // them differently and only one of them is obvious:
+        //
+        //  - **Retryable** (a throttle, and the attempt-cap exhaustion that ends
+        //    a long sequence of them). The predicate is FALSE, so nothing is
+        //    released and the retained-on-throw contract stands exactly as it
+        //    did. Known narrowing 1 of `isTerminalDeleteFailure` still applies:
+        //    a sequence that dies on the outer loop's attempt cap ends with the
+        //    guard off and the record held, because the provider cannot see
+        //    which attempt is the last one. Unchanged here, and pinned by a test
+        //    so it stays a decision rather than an accident.
+        //  - **Interrupt** (Ctrl-C). `isInterruptedWaitError` makes it TERMINAL,
+        //    so the release fires -- and it is the route that most needs it. The
+        //    run is being torn down, no re-entry is coming, and the compensation
+        //    above has just re-enabled the guard (on the `restored` arm -- a
+        //    compensation that FAILED retains instead, and one that was
+        //    `not-applicable` had nothing to put back); the process can still outlive
+        //    the abort long enough for a rollback or a sibling stack's destroy
+        //    to reach the same key. Pinned by its own case, since a claim in a
+        //    comment that no test composes is one a refactor can quietly break.
+        //  - **Deadline** (`--resource-timeout`). This release does NOT fire, and
+        //    cannot: `src/deployment/resource-deadline.ts` rejects the OUTER
+        //    promise on its timer without cancelling what it wraps, so no
+        //    `ResourceTimeoutError` ever enters this `catch` (known narrowing 2,
+        //    the same non-cancelling shape issue #1955 documents). The record
+        //    stays latched behind an attempt that is still polling, which is
+        //    correct: that attempt has not finished, and when it does it reaches
+        //    either the success release or this one.
+        //
+        // The delete ALLOWANCE is deliberately left alone, and NOT because a
+        // re-entry might still spend it -- this arm's whole premise is that no
+        // re-entry is coming. It is out of scope: this change is about the flip
+        // record, the two registries differ in what an inherited entry can DO
+        // (an inherited allowance can only make a later delete give up sooner,
+        // never issue a write nobody asked for), and `ElapsedBudgetRegistry`'s
+        // window is FIXED rather than sliding, so it ages out from its own
+        // creation regardless of what happens here.
+        if (isTerminalDeleteFailure(error) && outcome !== 'failed') {
+          this.protectionFlips.release(deleteBudgetKey(physicalId, context?.expectedRegion));
+        }
+      }
       throw error;
     }
   }
@@ -2569,11 +2696,20 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // line means `delete()` RETURNS rather than throwing — so the
         // compensation never runs on it. Released for the same hygiene as the
         // success path. Note the release is NOT reached when the
-        // `assertRegionMatch` above throws: the record stays latched on purpose
-        // (the re-entered-delete contract), the compensation runs, and its own
-        // `UpdateTable` is answered with the same ResourceNotFound — which
-        // `compensateRemovedDeletionProtection` reports at debug rather than
-        // claiming a live table is unprotected (issue #2224).
+        // `assertRegionMatch` above throws: the record stays latched THROUGH
+        // the compensation on purpose (the re-entered-delete contract), so its
+        // own `UpdateTable` still goes out and is answered with the same
+        // ResourceNotFound — which `compensateRemovedDeletionProtection`
+        // reports at WARN, dropping the CLAIM that the table is live rather
+        // than the line itself, because RNF from `UpdateTable` also covers a
+        // live table whose status is merely not ACTIVE (issue #2224; an earlier
+        // revision of this comment said `debug`, which that issue's fix
+        // deliberately did not ship). `delete()`'s own `catch` then KEEPS the
+        // record on that arm (issue #2244): the failure is terminal, but the
+        // compensation reports `failed`, and a re-enable that did not land is
+        // one cdkd still owes -- so a later delete of the same key may retry
+        // it. Pinned by the `#2224` case in
+        // `dynamodb-remove-protection-compensate.test.ts`.
         this.protectionFlips.release(deleteBudgetKey(physicalId, context?.expectedRegion));
         return;
       }
