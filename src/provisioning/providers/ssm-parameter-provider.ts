@@ -244,13 +244,24 @@ export class SSMParameterProvider implements ResourceProvider {
     // The ARN's own region segment is CANONICALIZED (issue #1795 / #1814 class).
     // `derivePartitionAndUrlSuffix` folds the case INTERNALLY, so the PARTITION
     // above is already right for an upper-cased region — but the segment
-    // interpolated here is not, and `accountInfo.region` is whatever spelling
-    // reached `effectiveAccountInfoRegion` (`overrideRegion || AWS_REGION ||
-    // 'us-east-1'`), folded nowhere. This is REACHABLE rather than theoretical:
-    // DNS is case-insensitive, so `cdkd deploy --region US-EAST-1` SUCCEEDS and
-    // then records `arn:aws:ssm:US-EAST-1:...`, which matches no IAM policy and
-    // is rejected by every SDK call taking the ARN — and it is persisted into
-    // `state.json`, so the wrong value outlives the deploy. Folding here rather
+    // interpolated here is not. The SOURCE now folds
+    // (`effectiveAccountInfoRegion`, issue #1882), so this local fold is defense
+    // in depth rather than the only one. Both are kept: double-folding is a
+    // no-op, and an earlier revision of this comment called the region "folded
+    // nowhere", which is exactly the claim that goes stale silently. The
+    // reachability it also claimed -- that `cdkd deploy --region US-EAST-1`
+    // SUCCEEDS because DNS is case-insensitive -- is FALSE and was corrected
+    // with issue #1882's measurement -- but the mechanism is the
+    // opposite of "it fails": `foldRegionOption` folds `--region` and
+    // `AWS_REGION` at every handler's entry (issue #2065) and `AwsClients`
+    // folds again, so the flag is CANONICAL before it can reach anything. It
+    // never dies, because a raw spelling never gets that far. (It would if it
+    // did: SigV4 compares a credential's region scope case-sensitively.) What
+    // IS reachable is a Cloud Assembly carrying a raw region in its
+    // `environment` string, which cdkd accepts and whose clients it folds.
+    // Unfolded, this records `arn:aws:ssm:US-EAST-1:...`, which matches no IAM
+    // policy, is rejected by every SDK call taking the ARN, and is persisted
+    // into `state.json`, so the wrong value outlives the deploy. Folding here rather
     // than at the read above keeps ONE fold covering every source
     // `effectiveAccountInfoRegion` can fall back to.
     return `arn:${partition}:ssm:${canonicalizeRegion(accountInfo.region)}:${accountInfo.accountId}:parameter/${qualifiedName}`;

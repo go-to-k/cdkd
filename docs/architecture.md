@@ -596,7 +596,11 @@ interface ResolutionContext {
 **Pseudo Parameters**:
 
 - `AWS::AccountId`: Retrieved from STS `GetCallerIdentity`
-- `AWS::Region`: From CLI options
+- `AWS::Region`: From CLI options, CANONICALIZED (issue
+  [#1882](https://github.com/go-to-k/cdkd/issues/1882)) — folded to lower
+  case at its source so a user `Fn::Sub` cannot inherit a spelling AWS
+  itself refuses; SigV4 compares a credential's region scope
+  case-sensitively, so a non-canonical region never reaches CloudFormation
 - `AWS::Partition`: Derived from the region (`aws` / `aws-cn` / `aws-us-gov` /
   `aws-iso` / `aws-iso-b` / `aws-iso-e` / `aws-iso-f` / `aws-eusc`) via
   `derivePartitionAndUrlSuffix` — issues #1730 / #1764

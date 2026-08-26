@@ -154,6 +154,40 @@ describe('CustomResourceProvider synthetic StackId (issue #1866)', () => {
     expect(String(sentRequests()[0]?.['StackId'])).not.toContain('us-west-1');
   });
 
+  /**
+   * Issue [#1882](https://github.com/go-to-k/cdkd/issues/1882). Before the
+   * source-level fold, `resolveSyntheticStackId` was the ONLY reader of
+   * `accountInfo.region` in the repo with no local `canonicalizeRegion` -- the
+   * cloud-control, SSM and AppSync ARN builders all fold at the interpolation.
+   * So a raw region reached the `StackId` this provider hands to the user's
+   * Custom Resource handler, which routinely parses it for the region.
+   *
+   * Both arms are covered because they take DIFFERENT paths into
+   * `effectiveAccountInfoRegion`: the pinned bag arrives as `overrideRegion`,
+   * the ambient one as the `process.env['AWS_REGION']` fallback, and a fold
+   * written over only the first leaves the second raw.
+   */
+  it('folds a mis-cased PINNED region in the synthetic StackId (issue #1882)', async () => {
+    configuredRegion = 'EU-WEST-2';
+    process.env['AWS_REGION'] = 'us-west-1';
+    const provider = makeProvider();
+
+    await provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN });
+
+    expect(String(sentRequests()[0]?.['StackId'])).toContain(':eu-west-2:');
+    expect(String(sentRequests()[0]?.['StackId'])).not.toContain('EU-WEST-2');
+  });
+
+  it('folds a mis-cased AMBIENT region in the synthetic StackId (issue #1882)', async () => {
+    process.env['AWS_REGION'] = 'SA-EAST-1';
+    const provider = makeProvider();
+
+    await provider.create('CrResource', 'Custom::CrResource', { ServiceToken: SERVICE_TOKEN });
+
+    expect(String(sentRequests()[0]?.['StackId'])).toContain(':sa-east-1:');
+    expect(String(sentRequests()[0]?.['StackId'])).not.toContain('SA-EAST-1');
+  });
+
   it('falls back to the ambient region when nothing pinned one', async () => {
     process.env['AWS_REGION'] = 'sa-east-1';
     const provider = makeProvider();

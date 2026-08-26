@@ -79,7 +79,7 @@ docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb remov
 docker-image-asset	2026-08-14T00:41:19Z	PASS	73	verify.sh	PR 1890 review (image-function readback skip); deploy+ECR push+invoke+destroy 2 del 0 err, 0 orph; live probe: both ZIP-only Lambda getters reject with InvalidParameterValueException on a PackageType=Image function
 drift-revert	2026-08-22T15:42:44Z	PASS	194	verify.sh	#2170/#2171 lane, confirmation re-run (forceReleaseLock unconditional + altered-value suppression); 13 deleted / 0 errors / 0 orphans
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
-drift-revert-vpc	2026-08-23T03:34:44Z	PASS	329	verify.sh	issue #2168 broad gate (destroy-runner in cross-cutting scope); 21 deleted 0 errors, orph clean
+drift-revert-vpc	2026-08-25T16:33:39Z	PASS	302	verify.sh	issue #1882 broad arm (intrinsic-function-resolver.ts is in CROSS_CUTTING_REGEX; providers touched too, so integ-destroy applies); VPC exercises Fn::GetAZs, the path the fold changes. 21 deleted 0 errors, 0 orphans (no VPC/ENI/EFS/TG/role/state left)
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
 dynamic-ref-cross-region	2026-08-21T18:32:07Z	PASS	164	verify.sh	#2157 live arm (Phase 3e), FINAL run on the merged shape. A THIRD stack carries ONE assembled foreign-ARN SecureString reference and no region-less one -- the other two spell theirs region-LESSLY and would classify ambiguous and refuse FIRST once foreign outputReads is seeded. Seeds the legacy plaintext plus that evidence, requires rc=0 AND 'Scrubbed 1 resource record(s)' AND the record back on its expression. MUTATION-PROBED against real AWS on an earlier build: restoring the pre-2157 refusal reds it with 'exited 2, expected 0'. The deferred-lookup FINDING that a Phase 3f once fenced was withdrawn after 3 review rounds (residual filed as go-to-k/cdkd#2166), so that phase is gone with it. 3 stacks destroyed, 0 errors, 0 orphans, 0 surviving state object versions
 dynamodb-autoscaling	2026-08-10T05:13:55Z	PASS	65	verify.sh	0810 sweep b5; table autoscaling re-verify post-#1451 GlobalTable work, 0 err 0 orph
@@ -144,7 +144,7 @@ importvalue-chain	2026-08-10T05:50:57Z	PASS	76	verify.sh	0810 P2 sweep b10; 3-st
 infra-security	2026-07-26T18:20:27Z	PASS	186	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 inplace-attr-propagation	2026-07-26T19:25:15Z	PASS	57	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 intrinsic-functions	2026-08-15T00:12:35Z	PASS	20	standard	0 err / 0 orph; resolver change regression check (#1916)
-intrinsics-torture	2026-08-10T05:19:05Z	PASS	42	verify.sh	0810 P2 sweep b6; 12 del 0 err, 0 orph
+intrinsics-torture	2026-08-25T16:27:19Z	PASS	52	verify.sh	issue #1882 region-fold feature arm (Fn::GetAZs + AWS::Region in Fn::Sub + FindInMap keyed on AWS::Region); 12 deleted 0 errors, state gone, 0 orphan SSM params. Regression net, NOT a discriminator: the run uses a canonical --region, so it passes with the fold reverted too
 intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 staleness re-run (rc=0); account clean
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-12T11:25:31Z	PASS	99	verify.sh	issue #609 post-rebase run on 0.281.0; provisionedBy=sdk, diff clean; destroy 0 errors 0 orphans

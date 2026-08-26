@@ -604,6 +604,103 @@ describe('IntrinsicFunctionResolver - Fn::GetAZs', () => {
     expect(mockEc2Send).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Issue [#1887](https://github.com/go-to-k/cdkd/issues/1887), closed by the
+   * source-level fold in `effectiveAccountInfoRegion` (issue
+   * [#1882](https://github.com/go-to-k/cdkd/issues/1882)).
+   *
+   * The empty-string branch takes its region from `accountInfo.region`, and
+   * that region is used for TWO things whose case-sensitivity differs from an
+   * ARN segment's: the EC2 `region-name` FILTER VALUE, and the module-level
+   * `cachedAvailabilityZones` key.
+   *
+   * The filter is the dangerous one, because EC2 matches it LITERALLY and
+   * answers a non-matching filter with SUCCESS and an EMPTY list rather than an
+   * error. Measured against real AWS on 2026-08-25 with a canonical client:
+   *
+   * ```text
+   * DescribeAvailabilityZones filter region-name=us-east-1 -> 6 AZs
+   * DescribeAvailabilityZones filter region-name=US-EAST-1 -> 0 AZs
+   * ```
+   *
+   * What the empty list does NEXT is worth stating precisely, because issue
+   * go-to-k/cdkd#1887's own wording is now out of date and this lane repeated it
+   * before checking: since issue go-to-k/cdkd#1957 the empty answer is REFUSED
+   * with a throw rather than propagating into an out-of-range `Fn::Select` or a
+   * silently empty subnet list. So the surviving defect is not silence -- it is
+   * that a deploy which should have resolved the region's AZs instead fails,
+   * and fails with a message blaming an unenabled region or a wrong endpoint,
+   * neither of which is what happened.
+   *
+   * This still asserts the filter cdkd SENDS rather than the AZ names it gets
+   * back: the names come from the mock and would look correct under either
+   * spelling, which makes them a confluence point rather than a discriminator.
+   *
+   * The region must be handed to the CONSTRUCTOR, not written into
+   * `process.env` after it: `resolverRegion` is captured once in the
+   * constructor and then passed to `getAccountInfo` as an explicit override,
+   * which short-circuits the env read entirely. A first cut of this case set
+   * the env var around an already-constructed resolver and passed with the fold
+   * DELETED -- the fixture, not the code, was deciding the outcome.
+   */
+  it('sends a CANONICAL region-name filter for a mis-cased resolver region (issue #1887)', async () => {
+    resetAccountInfoCache();
+    mockEc2Send.mockClear();
+
+    const misCased = new IntrinsicFunctionResolver('US-EAST-1');
+    const context: ResolverContext = { template: { Resources: {} }, resources: {} };
+    await misCased.resolve({ 'Fn::GetAZs': '' }, context);
+
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    const input = mockEc2Send.mock.calls[0]![0]!.input as {
+      Filters: { Name: string; Values: string[] }[];
+    };
+    expect(input.Filters.find((f) => f.Name === 'region-name')?.Values).toEqual(['us-east-1']);
+  });
+
+  /**
+   * The cache-key half of issue #1887: two spellings of one region must not
+   * become two entries, or a run mixing them pays two round trips and can hold
+   * divergent answers. Asserted through the observable the cache controls --
+   * the EC2 call count -- rather than by reaching into the module-global map.
+   */
+  it('keys the AZ cache canonically, so two spellings share one entry (issue #1887)', async () => {
+    resetAccountInfoCache();
+    mockEc2Send.mockClear();
+    const context: ResolverContext = { template: { Resources: {} }, resources: {} };
+
+    // Prime the FIRST call with a distinctive answer and let the suite's
+    // constant `mockResolvedValue` answer any second one. With a constant mock
+    // alone, a cache MISS returns the same array as a hit, so `second`
+    // equalling `first` is true either way and the value assertion below cannot
+    // fail -- it would read as covering "one entry" while covering nothing.
+    //
+    // Exactly ONE `*Once` primer, and the single EC2 call this case expects
+    // consumes it. Priming the second call too would leave an unconsumed
+    // primer in the queue precisely BECAUSE the cache hit means there is no
+    // second call, and it would then be consumed by an unrelated later test --
+    // the leak `vp run test:once-leak` exists to catch (issue #1618). Measured
+    // here: a two-primer version reddened `should return sorted AZ names`.
+    mockEc2Send.mockResolvedValueOnce({
+      AvailabilityZones: [{ ZoneName: 'zz-primed-1a', State: 'available' }],
+    });
+
+    const first = await new IntrinsicFunctionResolver('us-east-1').resolve(
+      { 'Fn::GetAZs': '' },
+      context
+    );
+    const second = await new IntrinsicFunctionResolver('US-EAST-1').resolve(
+      { 'Fn::GetAZs': '' },
+      context
+    );
+
+    expect(mockEc2Send).toHaveBeenCalledTimes(1);
+    // The POSITIVE marker: both answers are the primed one, so the second
+    // resolver read the first's cache entry rather than making its own call.
+    expect(first).toEqual(['zz-primed-1a']);
+    expect(second).toEqual(['zz-primed-1a']);
+  });
+
   it('should return sorted AZ names', async () => {
     mockEc2Send.mockResolvedValue({
       AvailabilityZones: [
@@ -965,6 +1062,130 @@ describe('IntrinsicFunctionResolver - Fn::GetStackOutput', () => {
     ).rejects.toThrow(
       "Fn::GetStackOutput: cannot reference own stack 'Consumer' in the same region 'us-east-1'"
     );
+  });
+
+  /**
+   * Issue [#1882](https://github.com/go-to-k/cdkd/issues/1882), found by review
+   * of the fold rather than by a failure: folding `AWS::Region` made this guard
+   * compare a FOLDED value against a RAW one and miss.
+   *
+   * `region` here is `canonicalizeRegion`d whenever the template names a
+   * `Region`, and `{"Ref": "AWS::Region"}` is such a case; `resolverRegion`
+   * keeps the caller's spelling because it keys `getState` / `saveState` and
+   * must not move. So for a resolver whose region arrived mis-cased, the
+   * self-reference test was `'us-east-1' === 'US-EAST-1'` -> false, the refusal
+   * did not fire, and with `cfnFallback` on the read could land on a same-named
+   * CloudFormation stack instead. The guard now folds both sides.
+   *
+   * The resolver is constructed with the mis-cased spelling on purpose: that is
+   * the only way in, since `resolverRegion` is captured in the constructor.
+   */
+  it('refuses a self-reference when the resolver region is mis-cased (issue #1882)', async () => {
+    const stateBackend = makeStateBackend({
+      Consumer: {
+        'us-east-1': { outputs: { Foo: 'x' } },
+      },
+    });
+    const misCased = new IntrinsicFunctionResolver('US-EAST-1');
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      misCased.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Consumer',
+            Region: { Ref: 'AWS::Region' },
+            OutputName: 'Foo',
+          },
+        },
+        context
+      )
+    ).rejects.toThrow(/cannot reference own stack 'Consumer'/);
+  });
+
+  /**
+   * The MIRROR of the case above, and the one two independent round-2 reviewers
+   * measured as broken by the first cut of that fix.
+   *
+   * `region` reaches the self-reference test by two paths: folded when the
+   * template names a `Region`, and RAW when it does not, because it then
+   * defaults to `this.resolverRegion`. Folding only the right-hand operand
+   * repaired the first path and broke this one -- a mis-cased resolver region
+   * with no `Region` argument compared `'US-EAST-1' === 'us-east-1'`, the
+   * refusal did not fire, and the resolver read its OWN stack's output as
+   * though it were a producer's. Both operands now fold at the comparison.
+   *
+   * This case is what stops the repair from oscillating between the two
+   * branches. Measured, since the exclusivity is not symmetric: folding the
+   * RIGHT operand alone reds only this case, folding NEITHER reds only the case
+   * above, and folding the LEFT alone reds both. So only folding both passes
+   * both, and neither case alone would have caught the one-sided repair.
+   */
+  it('refuses a self-reference with NO Region argument and a mis-cased resolver region (issue #1882)', async () => {
+    const stateBackend = makeStateBackend({
+      Consumer: {
+        'US-EAST-1': { outputs: { Foo: 'x' } },
+      },
+    });
+    const misCased = new IntrinsicFunctionResolver('US-EAST-1');
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    await expect(
+      misCased.resolve(
+        { 'Fn::GetStackOutput': { StackName: 'Consumer', OutputName: 'Foo' } },
+        context
+      )
+    ).rejects.toThrow(/cannot reference own stack 'Consumer'/);
+  });
+
+  /**
+   * Fences the DESIGN DECISION the both-operand fold rests on, which the two
+   * self-reference cases above do not: `region` must reach the state lookup in
+   * the caller's own spelling, so the fold may happen only AT the comparison.
+   *
+   * The plausible wrong fix is to fold at the initializer instead
+   * (`let region = canonicalizeRegion(this.resolverRegion)`) and keep the
+   * comparison one-sided. That satisfies both cases above -- measured: the full
+   * suite stayed green at 777 files / 16009 tests -- while silently moving the
+   * state key for a mis-cased resolver region from
+   * `cdkd/<stack>/US-EAST-1/state.json` to `.../us-east-1/`, so cdkd would look
+   * for a producer's outputs under a key its deploy never wrote.
+   *
+   * A NON-self-reference stack is required: a self-reference throws before the
+   * lookup, so the very cases that fence the guard cannot observe which key it
+   * would have used.
+   */
+  it('looks the producer up under the resolver region UNFOLDED (issue #1882)', async () => {
+    const stateBackend = makeStateBackend({
+      Producer: {
+        'US-EAST-1': { outputs: { Foo: 'from-producer' } },
+      },
+    });
+    const misCased = new IntrinsicFunctionResolver('US-EAST-1');
+    const context: ResolverContext = {
+      template: { Resources: {} },
+      resources: {},
+      stateBackend,
+      stackName: 'Consumer',
+    };
+
+    const result = await misCased.resolve(
+      { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Foo' } },
+      context
+    );
+
+    expect(result).toBe('from-producer');
+    expect(stateBackend!.getState).toHaveBeenCalledWith('Producer', 'US-EAST-1');
   });
 
   it('allows same-stackName cross-region reference', async () => {

@@ -323,10 +323,23 @@ export class AppSyncProvider implements ResourceProvider {
     // The REGION SEGMENT is folded too (issue #1850). `derivePartitionAndUrlSuffix`
     // canonicalizes its own input (issue #1795), so the PARTITION above is already
     // right for an upper-cased region — but `accountInfo.region` is whatever
-    // spelling the caller supplied (`--region || AWS_REGION || 'us-east-1'`),
-    // folded nowhere. `cdkd deploy --region US-EAST-1` is REACHABLE: DNS is
-    // case-insensitive so the SDK endpoint still resolves and the deploy
-    // SUCCEEDS, and cdkd then records `arn:aws:appsync:US-EAST-1:...` — a value
+    // spelling the caller supplied (`--region || AWS_REGION || 'us-east-1'`);
+    // the SOURCE now folds
+    // (`effectiveAccountInfoRegion`, issue #1882), so this local fold is defense
+    // in depth rather than the only one. Both are kept: double-folding is a
+    // no-op, and an earlier revision of this comment called the region "folded
+    // nowhere", which is exactly the claim that goes stale silently. The
+    // reachability it also claimed -- that `cdkd deploy --region US-EAST-1`
+    // SUCCEEDS because DNS is case-insensitive -- is FALSE and was corrected
+    // with issue #1882's measurement -- but the mechanism is the
+    // opposite of "it fails": `foldRegionOption` folds `--region` and
+    // `AWS_REGION` at every handler's entry (issue #2065) and `AwsClients`
+    // folds again, so the flag is CANONICAL before it can reach anything. It
+    // never dies, because a raw spelling never gets that far. (It would if it
+    // did: SigV4 compares a credential's region scope case-sensitively.) What
+    // IS reachable is a Cloud Assembly carrying a raw region in its
+    // `environment` string, which cdkd accepts and whose clients it folds.
+    // Unfolded, cdkd records `arn:aws:appsync:US-EAST-1:...` -- a value
     // no IAM policy matches (policy matching IS case-sensitive) and every SDK
     // call taking the ARN rejects. It is persisted into state.json, so it
     // outlives the deploy and is what every later `Fn::GetAtt` / `cdkd drift`

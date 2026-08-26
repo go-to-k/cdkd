@@ -1257,11 +1257,19 @@ export class CloudControlProvider implements ResourceProvider {
               physicalId
             );
             if (kmsAccountInfo) {
-              // The region segment is FOLDED (issue #1850). `accountInfo.region`
-              // is whatever spelling the caller supplied — `cdkd deploy --region
-              // US-EAST-1` is REACHABLE, because DNS is case-insensitive so the
-              // SDK endpoint resolves and the deploy SUCCEEDS, and cdkd then
-              // records `arn:aws:kms:US-EAST-1:...`, which no IAM policy matches
+              // The region segment is FOLDED (issue #1850). The SOURCE folds too
+              // (`effectiveAccountInfoRegion`, issue #1882), so this is defense
+              // in depth rather than the only fold; both are kept, since
+              // double-folding is a no-op. An earlier revision called
+              // `accountInfo.region` "whatever spelling the caller supplied" and
+              // said `cdkd deploy --region US-EAST-1` is REACHABLE because DNS
+              // is case-insensitive "and the deploy SUCCEEDS" -- both false, and
+              // corrected here with issue #1882's measurement: `foldRegionOption`
+              // makes the flag canonical at every handler's entry (issue #2065),
+              // so a raw spelling never gets that far, and SigV4 would refuse it
+              // if it did. What IS reachable is a Cloud Assembly carrying a raw
+              // region, whose clients cdkd folds. Unfolded, cdkd would record
+              // `arn:aws:kms:US-EAST-1:...`, which no IAM policy matches
               // (policy matching IS case-sensitive) and every SDK call taking the
               // ARN rejects. The value is persisted into state.json, so it is
               // also what every later `Fn::GetAtt` / `cdkd drift` reads. The
