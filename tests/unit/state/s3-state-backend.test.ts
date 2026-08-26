@@ -685,6 +685,81 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
     });
   });
 
+  describe('listRawObjects (issue #2052)', () => {
+    const D1 = new Date('2026-01-01T00:00:00.000Z');
+    const D2 = new Date('2026-02-01T00:00:00.000Z');
+
+    it('KEEPS an object whose Size is 0 — the empty placeholder is the common case', async () => {
+      // The whole point of the sweep. `CustomResourceProvider` PUTs an EMPTY
+      // object, so the natural-looking `if (!obj.Size) continue;` would discard
+      // every one of the objects this feature exists to collect, while the
+      // gc-side suites (which mock the backend wholesale) stayed green — a
+      // review probe measured exactly that: 367/367 passing with the feature's
+      // primary target silently dropped.
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [{ Key: 'custom-resource-responses/a.json', LastModified: D1, Size: 0 }],
+        IsTruncated: false,
+      });
+
+      await expect(backend.listRawObjects('custom-resource-responses/')).resolves.toEqual([
+        { key: 'custom-resource-responses/a.json', lastModified: D1, size: 0 },
+      ]);
+    });
+
+    it('DROPS an entry missing LastModified or Size rather than defaulting it', async () => {
+      // Defaulting the date would either exempt an object from the age guard
+      // forever or expose it immediately, and the caller cannot see which.
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [
+          { Key: 'custom-resource-responses/ok.json', LastModified: D1, Size: 5 },
+          { Key: 'custom-resource-responses/no-date.json', Size: 5 },
+          { Key: 'custom-resource-responses/no-size.json', LastModified: D1 },
+          { LastModified: D1, Size: 5 },
+        ],
+        IsTruncated: false,
+      });
+
+      const objects = await backend.listRawObjects('custom-resource-responses/');
+
+      expect(objects.map((o) => o.key)).toEqual(['custom-resource-responses/ok.json']);
+    });
+
+    it('collects across multiple ListObjectsV2 pages via ContinuationToken', async () => {
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [{ Key: 'custom-resource-responses/p1.json', LastModified: D1, Size: 1 }],
+        IsTruncated: true,
+        NextContinuationToken: 'token-page-2',
+      });
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [{ Key: 'custom-resource-responses/p2.json', LastModified: D2, Size: 2 }],
+        IsTruncated: false,
+      });
+
+      const objects = await backend.listRawObjects('custom-resource-responses/');
+
+      expect(objects).toEqual([
+        { key: 'custom-resource-responses/p1.json', lastModified: D1, size: 1 },
+        { key: 'custom-resource-responses/p2.json', lastModified: D2, size: 2 },
+      ]);
+      const listCalls = s3Client.send.mock.calls.filter(
+        (c: unknown[]) => c[0] instanceof ListObjectsV2Command
+      );
+      expect(listCalls).toHaveLength(2);
+      expect((listCalls[0][0] as ListObjectsV2Command).input.ContinuationToken).toBeUndefined();
+      expect((listCalls[1][0] as ListObjectsV2Command).input.ContinuationToken).toBe(
+        'token-page-2'
+      );
+      // The owner pin is what makes a foreign state bucket 403 rather than be
+      // listed; the asset-bucket arms carry it and this one must too.
+      expect((listCalls[0][0] as ListObjectsV2Command).input.ExpectedBucketOwner).toBeDefined();
+    });
+
+    it('returns an empty list when no objects match the prefix', async () => {
+      s3Client.send.mockResolvedValueOnce({ IsTruncated: false });
+      await expect(backend.listRawObjects('custom-resource-responses/')).resolves.toEqual([]);
+    });
+  });
+
   describe('listRawKeys', () => {
     it('collects keys across multiple ListObjectsV2 pages via ContinuationToken', async () => {
       // Page 1: truncated, hands back a continuation token.

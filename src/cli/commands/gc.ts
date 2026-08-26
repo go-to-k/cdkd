@@ -34,6 +34,7 @@ import {
   LOCK_FILE_SUFFIX,
   STATE_FILE_SUFFIX,
   DEFAULT_STATE_PREFIX,
+  CUSTOM_RESOURCE_RESPONSE_PREFIX,
 } from './state-file-keys.js';
 
 /**
@@ -52,9 +53,19 @@ import {
  *
  * - Names come from the region's bootstrap marker, never recomputed from
  *   the naming convention (custom-name compatibility, issue #1011). No
- *   marker → the region is not opted in; friendly no-op. CDK bootstrap
+ *   marker → no ASSET storage in scope; since issue #2052 the run continues
+ *   to the state-bucket placeholder sweep rather than ending, and is a
+ *   friendly no-op only when neither side has anything. CDK bootstrap
  *   storage (`cdk-hnb659fds-*`) is never touched — that stays `cdk gc`'s
  *   job.
+ * - Abandoned `custom-resource-responses/{requestId}.json` placeholders in
+ *   the STATE bucket are collected too (issue #2052). Two things make that
+ *   the one arm needing its own guard: it is gc's only DESTRUCTIVE call
+ *   against the state bucket, and it is ACCOUNT-scoped where every other arm
+ *   is region-scoped (the keys carry no region). It matches the producer's
+ *   own key shape rather than sweeping the prefix by age alone, so a stack
+ *   deployed with a colliding `--state-prefix` cannot have its `state.json`
+ *   collected.
  * - The reference scan lists EVERY state file in the WHOLE state bucket
  *   (any `--state-prefix`), and a state file that fails to JSON-parse
  *   aborts the whole run — deleting on partial knowledge is how a live
@@ -746,6 +757,118 @@ async function listS3Candidates(
  * than the cutoff. Images with no `imagePushedAt` are kept (treated as
  * new). A missing repo is an idempotent skip.
  */
+/**
+ * One abandoned custom-resource response placeholder in the STATE bucket.
+ *
+ * Distinct from an asset candidate: it lives in a different bucket, it is
+ * matched by PREFIX rather than by reachability from a state file, and its only
+ * guard is age.
+ */
+export interface ResponsePlaceholderCandidate {
+  key: string;
+  size: number;
+  lastModified: Date;
+}
+
+/**
+ * List abandoned custom-resource response placeholders (issue #2052).
+ *
+ * `CustomResourceProvider` PUTs an empty object at
+ * `custom-resource-responses/{requestId}.json` before each invocation so the
+ * handler has a pre-signed URL to write to. The happy paths clean up after
+ * themselves — the issue #2033 replay path via `cleanupResponseObject`, and the
+ * FAILED-response arm via `getCustomResourceResponse` / `pollS3Response` — but
+ * three shapes leave the key behind and NOTHING collected them:
+ *
+ *  - an interrupted deploy (Ctrl-C / SIGTERM / a cancelled CI job) between the
+ *    PUT and any cleanup;
+ *  - any throw on a path that does not reach a cleanup call;
+ *  - a LATE handler PUT, landing after cdkd stopped polling. This is the only
+ *    one with CONTENT: an empty body is a storage leak, but a real
+ *    CloudFormation `Data` payload sitting at a key nothing collects is also a
+ *    data-retention question.
+ *
+ * ## Why age alone is a sufficient staleness rule here
+ *
+ * The requirement is that a key belonging to an IN-FLIGHT concurrent run is
+ * never collected, and two independent things already guarantee it:
+ *
+ *  1. gc refuses outright while ANY stack holds a lock (the lock guard in
+ *     `gcCommand`), and every deploy that can write one of these keys holds
+ *     one for its whole duration. A concurrent run does not get this far.
+ *  2. `--older-than` (default 30d) is applied to each object's own
+ *     `LastModified`, which for a placeholder is the moment of the PUT that
+ *     opened the invocation.
+ *
+ * So this deliberately adds no clock of its own. The two are not ranked, and an
+ * earlier version of this note wrongly said (1) was the one that mattered: for
+ * a deploy that STARTS between the lock scan and this listing, (1) has already
+ * run and only (2) covers it. They close different windows.
+ *
+ * ## What this widens, stated rather than implied
+ *
+ * This is gc's first DESTRUCTIVE call against the state bucket — until now it
+ * only ever read from it. And unlike every other arm of this command it is
+ * ACCOUNT-scoped, not region-scoped: placeholder keys carry no region, so
+ * `cdkd gc --region us-east-1` collects ones written by deploys into any
+ * region. Both are deliberate (the objects are cdkd's own transient scratch,
+ * and a region-scoped sweep could never reach most of them), and both are why
+ * the key-shape filter below is not optional.
+ *
+ * ## Scope
+ *
+ * Only the DEFAULT prefix. `ProviderRegistry` can be configured with another
+ * `responsePrefix`, and nothing persists which one a past deploy used, so gc
+ * cannot discover a non-default layout — under-collecting, which is the safe
+ * direction, and the reason the constant is shared with the producer rather
+ * than re-spelled here.
+ */
+/**
+ * The only key shape `CustomResourceProvider` can mint under the prefix.
+ *
+ * `getResponseKey` builds `{prefix}/{requestId}.json` from
+ * `cdkd-${Date.now()}-${Math.random().toString(36).substring(7)}`.
+ *
+ * The trailing group is `*`, NOT `+`, and that is a measurement rather than
+ * caution: `substring(7)` returns the EMPTY string whenever the base-36
+ * rendering is shorter than eight characters (`(0.5).toString(36)` is `'0.i'`),
+ * so `cdkd-1756180000000-.json` is a real key this provider writes. A `+` here
+ * would skip exactly those and the sweep would silently under-collect — a
+ * shape filter defeating the sweep it is meant to protect.
+ *
+ * Why filter at all: `--state-prefix` is free-form and unvalidated, so a stack
+ * deployed with `--state-prefix custom-resource-responses` puts its
+ * `state.json`, `lock.json`, `rollback-journal.json` and `deployments/*` INSIDE
+ * this prefix. gc builds its own backend on `DEFAULT_STATE_PREFIX` and cannot
+ * see that collision, so an age-only sweep would delete live state and orphan
+ * every resource in the stack. Matching the producer's own shape is what keeps
+ * this command's "bias every ambiguity toward NOT deleting" posture true on the
+ * one path that deletes from the STATE bucket.
+ */
+const RESPONSE_PLACEHOLDER_KEY = /^cdkd-\d+-[0-9a-z]*\.json$/;
+
+export async function listResponsePlaceholderCandidates(
+  stateBackend: Pick<S3StateBackend, 'listRawObjects'>,
+  cutoffMs: number,
+  logger: { debug: (message: string) => void }
+): Promise<ResponsePlaceholderCandidate[]> {
+  const objects = await stateBackend.listRawObjects(`${CUSTOM_RESOURCE_RESPONSE_PREFIX}/`);
+  const candidates: ResponsePlaceholderCandidate[] = [];
+  for (const obj of objects) {
+    const leaf = obj.key.slice(`${CUSTOM_RESOURCE_RESPONSE_PREFIX}/`.length);
+    if (!RESPONSE_PLACEHOLDER_KEY.test(leaf)) {
+      logger.debug(`gc: keeping ${obj.key} — not a cdkd response placeholder`);
+      continue;
+    }
+    if (obj.lastModified.getTime() >= cutoffMs) {
+      logger.debug(`gc: keeping ${obj.key} — newer than the --older-than cutoff`);
+      continue;
+    }
+    candidates.push(obj);
+  }
+  return candidates;
+}
+
 async function listEcrCandidates(
   ecrClient: Pick<ECRClient, 'send'>,
   repositoryName: string,
@@ -833,7 +956,11 @@ export async function promptGcConfirm(input: {
   // (`cdkd-assets-<acct>-<region>`), but a bootstrap run with
   // `--asset-bucket` / `--container-repo` prints custom names with no region
   // anywhere, so `-y` deleted in an unnamed region.
-  logger.warn(`cdkd gc will delete the following unreferenced assets in ${input.region}:`);
+  // NOT "unreferenced assets in <region>": since issue #2052 the plan can also
+  // carry state-bucket custom-resource response placeholders, which are neither
+  // assets nor region-scoped. This is the CONSENT surface for that widened blast
+  // radius, so it must not describe less than it is about to delete.
+  logger.warn(`cdkd gc will delete the following (region: ${input.region}):`);
   for (const line of input.planLines) {
     logger.warn(`  - ${line}`);
   }
@@ -1060,9 +1187,15 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   try {
     // 1. Read the region's bootstrap marker — the source of truth for the
     //    asset bucket / repo names (never recompute the naming convention;
-    //    custom-name compatibility, issue #1011). No marker → the region
-    //    is not opted in to cdkd asset storage; nothing to gc. CDK
-    //    bootstrap storage is deliberately out of scope — `cdk gc` owns it.
+    //    custom-name compatibility, issue #1011). No marker → the region is not
+    //    opted in to cdkd ASSET storage, which since issue #2052 no longer ends
+    //    the run: the state-bucket placeholder sweep below is independent of it.
+    //    CDK bootstrap storage is deliberately out of scope — `cdk gc` owns it.
+    //
+    //    A marker that EXISTS but fails to PARSE still hard-errors, so it also
+    //    blocks the sweep — asymmetric with a MISSING one, and deliberately so:
+    //    a corrupt marker means gc cannot trust what it knows about this region,
+    //    and the remedy the parse error prints is one command.
     const markerKey = getBootstrapMarkerKey(region);
     const rawMarkerKey = getBootstrapMarkerKey(rawRegion);
     let markerBody: string | null;
@@ -1096,20 +1229,17 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     // a throw, and silently falling through to another key after finding a
     // CORRUPT one would hide the corruption while gc acted on second-choice
     // names. The remedy is the one the parse error already prints.
-    if (markerBody === null) {
-      const probed = rawMarkerKey === markerKey ? markerKey : `${markerKey}, ${rawMarkerKey}`;
-      logger.info(
-        `No bootstrap marker for region '${region}' (${probed}) — the region is not ` +
-          `opted in to cdkd asset storage; nothing to garbage-collect. ` +
-          `(CDK bootstrap storage is 'cdk gc' territory.)`
-      );
-      return;
-    }
-    const marker = parseBootstrapMarker(markerBody, resolvedMarkerKey);
-
     // 2. Lock guard: ANY stack lock in the bucket aborts — a deploy in
     //    flight may have published assets whose state write has not landed
     //    yet, and gc would see them as unreferenced. Simple and safe for v1.
+    //
+    //    Issue #2052 moved this AHEAD of the marker's "not opted in" return.
+    //    The custom-resource-response sweep below reads the STATE bucket, which
+    //    exists independently of whether this region opted in to cdkd ASSET
+    //    storage, so returning first would make the sweep unreachable for an
+    //    account that has placeholders and no asset marker. The guard now also
+    //    covers that case, which is the safe direction: gc refuses rather than
+    //    acting while a deploy is in flight.
     const lockKeys = await listAllLockKeys(stateBackend);
     if (lockKeys.length > 0) {
       const listing = lockKeys
@@ -1125,33 +1255,79 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       );
     }
 
-    // 3. Reference collection: scan EVERY state file in the WHOLE bucket.
-    const refs = await scanReferencedAssets(stateBackend, marker, logger);
-
-    // 4. Deletion candidates, age-guarded by --older-than.
+    // 3. Abandoned custom-resource response placeholders in the STATE bucket
+    //    (issue #2052). Collected here, before the asset-marker gate, because
+    //    they are not asset storage and their existence does not depend on it.
     const cutoffMs = Date.now() - options.olderThan;
-    const s3Candidates = await listS3Candidates(
-      awsClients.s3,
-      marker.assetBucket,
-      accountId,
-      refs,
+    const responseCandidates = await listResponsePlaceholderCandidates(
+      stateBackend,
       cutoffMs,
       logger
     );
-    const ecrCandidates = await listEcrCandidates(
-      ecrClient,
-      marker.containerRepo,
-      refs,
-      cutoffMs,
-      logger
-    );
+
+    if (markerBody === null) {
+      const probed = rawMarkerKey === markerKey ? markerKey : `${markerKey}, ${rawMarkerKey}`;
+      if (responseCandidates.length === 0) {
+        logger.info(
+          `No bootstrap marker for region '${region}' (${probed}) — the region is not ` +
+            `opted in to cdkd asset storage; nothing to garbage-collect. ` +
+            `(CDK bootstrap storage is 'cdk gc' territory.)`
+        );
+        return;
+      }
+      // There ARE placeholders to collect even though this region has no asset
+      // storage. Say both things: a bare "nothing to garbage-collect" would be
+      // false, and a bare reclaim plan would hide why no assets are listed.
+      logger.info(
+        `No bootstrap marker for region '${region}' (${probed}) — the region is not ` +
+          `opted in to cdkd asset storage, so no assets are in scope. ` +
+          `(CDK bootstrap storage is 'cdk gc' territory.) Continuing with the ` +
+          `state bucket's abandoned custom-resource response placeholders.`
+      );
+    }
+    const marker = markerBody === null ? null : parseBootstrapMarker(markerBody, resolvedMarkerKey);
+
+    // 4. Reference collection + asset candidates, age-guarded by --older-than.
+    //    Skipped entirely with no marker: there is no asset bucket to scan, and
+    //    `scanReferencedAssets` needs the marker to know what a reference to one
+    //    even looks like.
+    let s3Candidates: S3Candidate[] = [];
+    let ecrCandidates: EcrCandidate[] = [];
+    if (marker !== null) {
+      const refs = await scanReferencedAssets(stateBackend, marker, logger);
+      s3Candidates = await listS3Candidates(
+        awsClients.s3,
+        marker.assetBucket,
+        accountId,
+        refs,
+        cutoffMs,
+        logger
+      );
+      ecrCandidates = await listEcrCandidates(
+        ecrClient,
+        marker.containerRepo,
+        refs,
+        cutoffMs,
+        logger
+      );
+    }
 
     // 5. Nothing to do → info + exit 0, no prompt.
-    if (s3Candidates.length === 0 && ecrCandidates.length === 0) {
+    // `marker !== null` is not a redundant guard: reaching here with a null
+    // marker means the placeholder sweep found something (the marker-null arm
+    // above returns otherwise), so this branch is unreachable in that case and
+    // the message below could not be written truthfully anyway.
+    if (
+      marker !== null &&
+      s3Candidates.length === 0 &&
+      ecrCandidates.length === 0 &&
+      responseCandidates.length === 0
+    ) {
       logger.info(
         `Nothing to garbage-collect in region '${region}': every object in ` +
           `${marker.assetBucket} / image in ${marker.containerRepo} is either ` +
-          `referenced by a deployed stack or newer than the --older-than cutoff.`
+          `referenced by a deployed stack or newer than the --older-than cutoff, ` +
+          `and no abandoned custom-resource response placeholder is older than it either.`
       );
       return;
     }
@@ -1159,25 +1335,38 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     // 6. Reclaim plan + totals.
     const s3Bytes = s3Candidates.reduce((sum, c) => sum + c.size, 0);
     const ecrBytes = ecrCandidates.reduce((sum, c) => sum + c.size, 0);
+    const responseBytes = responseCandidates.reduce((sum, c) => sum + c.size, 0);
+    // Named from the marker when there is one. The asset arms are empty without
+    // it, so these are only ever interpolated under a marker — spelled as a
+    // narrowing rather than a `?? ''` fallback, which would quietly print
+    // `s3:///key` if the invariant ever broke.
+    const assetBucket = marker !== null ? marker.assetBucket : '';
+    const containerRepo = marker !== null ? marker.containerRepo : '';
     const planLines: string[] = [
       ...s3Candidates.map(
-        (c) =>
-          `s3://${marker.assetBucket}/${c.key} (${formatBytes(c.size)}, ${formatAge(c.lastModified)})`
+        (c) => `s3://${assetBucket}/${c.key} (${formatBytes(c.size)}, ${formatAge(c.lastModified)})`
       ),
       ...ecrCandidates.map(
         (c) =>
-          `${marker.containerRepo}${c.tags.length > 0 ? `:${c.tags.join(',')}` : ''}` +
+          `${containerRepo}${c.tags.length > 0 ? `:${c.tags.join(',')}` : ''}` +
           `@${c.digest} (${formatBytes(c.size)}, ${formatAge(c.pushedAt)})`
+      ),
+      ...responseCandidates.map(
+        (c) =>
+          `s3://${bucketName}/${c.key} (${formatBytes(c.size)}, ${formatAge(c.lastModified)}) ` +
+          `[abandoned custom-resource response]`
       ),
     ];
     const totals =
       `Total: ${s3Candidates.length} S3 object(s) (${formatBytes(s3Bytes)}) + ` +
-      `${ecrCandidates.length} ECR image(s) (${formatBytes(ecrBytes)}) = ` +
-      `${formatBytes(s3Bytes + ecrBytes)} reclaimable`;
+      `${ecrCandidates.length} ECR image(s) (${formatBytes(ecrBytes)}) + ` +
+      `${responseCandidates.length} custom-resource response placeholder(s) ` +
+      `(${formatBytes(responseBytes)}) = ` +
+      `${formatBytes(s3Bytes + ecrBytes + responseBytes)} reclaimable`;
 
     if (options.dryRun) {
       logger.info('');
-      logger.info(`Dry run — the following unreferenced assets in ${region} would be deleted:`);
+      logger.info(`Dry run — the following would be deleted in ${region}:`);
       for (const line of planLines) {
         logger.info(`  - ${line}`);
       }
@@ -1198,22 +1387,48 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       return;
     }
 
-    // 8. Delete.
-    if (s3Candidates.length > 0) {
+    // 8. Delete. Both asset arms are gated on a non-empty candidate list, which
+    //    is only reachable with a marker (they stay empty without one), so the
+    //    marker narrowing here restates a fact rather than adding a condition.
+    if (marker !== null && s3Candidates.length > 0) {
       await deleteS3Candidates(awsClients.s3, marker.assetBucket, accountId, s3Candidates);
       logger.info(
         `✓ Deleted ${s3Candidates.length} object(s) (${formatBytes(s3Bytes)}) from ` +
           `${marker.assetBucket}`
       );
     }
-    if (ecrCandidates.length > 0) {
+    if (marker !== null && ecrCandidates.length > 0) {
       await deleteEcrCandidates(ecrClient, marker.containerRepo, ecrCandidates);
       logger.info(
         `✓ Deleted ${ecrCandidates.length} image(s) (${formatBytes(ecrBytes)}) from ` +
           `${marker.containerRepo}`
       );
     }
-    logger.info(`\n✓ gc completed: ${formatBytes(s3Bytes + ecrBytes)} reclaimed`);
+    if (responseCandidates.length > 0) {
+      // Issue #2052. Deleted through the state backend, not `awsClients.s3`:
+      // the placeholders live in the STATE bucket, which is account-scoped and
+      // may sit in a different region than `--region`. The backend re-resolves
+      // that region itself; the asset client does not.
+      // Wrapped so a placeholder delete failure carries the same
+      // `GC_DELETE_FAILED` identity as both asset arms — `deleteRawObjects`
+      // raises a bare `StateError`, and one failure mode with two error
+      // identities is one a caller has to special-case.
+      try {
+        await stateBackend.deleteRawObjects(responseCandidates.map((c) => c.key));
+      } catch (deleteError) {
+        throw new CdkdError(
+          `Failed to delete ${responseCandidates.length} abandoned custom-resource ` +
+            `response placeholder(s) from ${bucketName}: ` +
+            `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
+          'GC_DELETE_FAILED'
+        );
+      }
+      logger.info(
+        `✓ Deleted ${responseCandidates.length} abandoned custom-resource response ` +
+          `placeholder(s) (${formatBytes(responseBytes)}) from ${bucketName}`
+      );
+    }
+    logger.info(`\n✓ gc completed: ${formatBytes(s3Bytes + ecrBytes + responseBytes)} reclaimed`);
   } finally {
     ecrClient.destroy();
     // If the backend rebuilt its client for the state bucket's region it
@@ -1230,8 +1445,9 @@ export function createGcCommand(): Command {
   const cmd = new Command('gc')
     .description(
       "Garbage-collect unreferenced objects / images from ONE region's cdkd-owned asset " +
-        'storage (asset bucket + container-asset ECR repo). References are collected from ' +
-        'every cdkd state file; CDK bootstrap storage is never touched (use cdk gc for that).'
+        'storage (asset bucket + container-asset ECR repo), plus abandoned custom-resource ' +
+        'response placeholders in the state bucket (account-wide). References are collected ' +
+        'from every cdkd state file; CDK bootstrap storage is never touched (use cdk gc).'
     )
     .option(
       '--state-bucket <bucket>',

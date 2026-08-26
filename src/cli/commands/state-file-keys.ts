@@ -33,6 +33,16 @@ export const STATE_FILE_SUFFIX = '/state.json';
 export { DEFAULT_STATE_PREFIX } from '../../state/state-prefix.js';
 
 /**
+ * The prefix `CustomResourceProvider` writes its response placeholders under.
+ *
+ * Re-exported here (rather than re-spelled) for exactly the reason the
+ * paragraph above gives for `DEFAULT_STATE_PREFIX`: `gc.ts` collects what the
+ * provider produces, and a second spelling is how a sweeper silently stops
+ * covering the family it was written for (issue #2052).
+ */
+export { CUSTOM_RESOURCE_RESPONSE_PREFIX } from '../../state/state-prefix.js';
+
+/**
  * Segments left under a known prefix for the legacy `{prefix}/{stack}` layout.
  *
  * The twin of `S3StateBackend`'s `LEGACY_KEY_DEPTH`, which counts the

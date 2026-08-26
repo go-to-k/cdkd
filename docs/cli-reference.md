@@ -1676,12 +1676,16 @@ auto-create-on-first-deploy behavior above will re-create the storage on
 the next `cdkd deploy` into the region unless you opt out
 (`--no-auto-asset-storage` / `context.cdkd.autoAssetStorage: false`).
 
-## `cdkd gc` (garbage-collect cdkd-owned asset storage)
+## `cdkd gc` (garbage-collect cdkd-owned storage)
 
 `cdkd gc [--region <r>] [--older-than <dur>] [--dry-run] [-y]` deletes
 unreferenced objects / images from ONE region's cdkd-owned asset storage
 (the asset bucket + container-asset ECR repo created by `cdkd bootstrap`,
-issue #1012). Assets are content-addressed and deliberately never deleted
+issue #1012), **and abandoned custom-resource response placeholders from the
+state bucket** (issue
+[#2052](https://github.com/go-to-k/cdkd/issues/2052) — see
+[Custom-resource response placeholders](#custom-resource-response-placeholders)
+below). Assets are content-addressed and deliberately never deleted
 on `cdkd destroy` (another stack or a future rollback may reference the
 same hash), so the storage grows without bound — and `cdk gc` cannot reach
 it by design. cdkd can gc it *precisely* because its state files record
@@ -1712,8 +1716,12 @@ second, so `--region US-EAST-1` finds the marker either way (issue
 because `cdkd bootstrap` still keys the marker off its region verbatim. The
 asset bucket / repo names are read from the region's bootstrap marker, never
 recomputed from the naming convention (custom-name compatible). A region with
-no marker is a friendly no-op. **CDK bootstrap storage (`cdk-hnb659fds-*`) is never
-touched** — that stays `cdk gc`'s job.
+no marker has no ASSET storage in scope, and gc says so — since issue
+[#2052](https://github.com/go-to-k/cdkd/issues/2052) it then continues to the
+state bucket's response-placeholder sweep rather than returning, because those
+objects exist whether or not the region opted in to asset storage. With nothing
+to collect on either side it is still a friendly no-op. **CDK bootstrap storage
+(`cdk-hnb659fds-*`) is never touched** — that stays `cdk gc`'s job.
 
 **Reference collection**: every state file in the state bucket is scanned
 (the whole bucket, so stacks deployed under any `--state-prefix` are
@@ -1756,6 +1764,51 @@ and where a case-variant therefore names a different bucket. The object KEY is
 kept verbatim in every shape, since S3 keys ARE case-sensitive — the same
 collected-yet-unmatchable trap the ECR digest note above describes, in reverse.
 
+### Custom-resource response placeholders
+
+`CustomResourceProvider` PUTs an empty object at
+`custom-resource-responses/{requestId}.json` in the **state** bucket before each
+invocation, so the handler has a pre-signed URL to write its response to. The
+happy paths delete it again; three shapes leave it behind, and until issue
+[#2052](https://github.com/go-to-k/cdkd/issues/2052) nothing collected those:
+
+- an interrupted deploy (Ctrl-C / SIGTERM / a cancelled CI job) between the PUT
+  and any cleanup;
+- any throw on a path that does not reach a cleanup call;
+- a LATE handler PUT, landing after cdkd stopped polling. This is the only one
+  with CONTENT — an empty body is just a storage leak, but a real CloudFormation
+  `Data` payload sitting at a key nothing collects is a data-retention question
+  too.
+
+Every `cdkd gc` run now lists that prefix and collects what is older than
+`--older-than`. Two independent things keep an IN-FLIGHT run's key safe: the
+**lock guard** below refuses the whole run while any stack holds a lock, and
+every deploy that can write one of these keys holds one for its duration; and
+the age guard is applied to the object's own `LastModified`, which for a
+placeholder is the moment of the PUT that opened the invocation.
+
+Placeholders appear in the reclaim plan and the byte totals alongside assets,
+marked `[abandoned custom-resource response]`, and are covered by `--dry-run`
+and the confirmation prompt exactly as assets are.
+
+**This arm is ACCOUNT-scoped, not region-scoped** — the only part of `cdkd gc`
+that is. Placeholder keys carry no region, so `cdkd gc --region us-east-1`
+collects ones written by deploys into *any* region. It is also gc's only
+DESTRUCTIVE call against the state bucket; every other arm only reads from it.
+Both follow from what the objects are (cdkd's own transient scratch, not
+per-region asset storage), and both are why the sweep matches the producer's own
+key shape — `cdkd-{epoch}-{suffix}.json` — rather than deleting everything under
+the prefix by age. A stack deployed with a colliding
+`--state-prefix custom-resource-responses` therefore keeps its `state.json`.
+
+**Scope**: only the DEFAULT prefix, and only keys matching the producer's shape.
+`ProviderRegistry` can be configured with a different `responsePrefix`, and
+nothing persists which one a past deploy used, so gc cannot discover a
+non-default layout — it under-collects, which is the safe direction. A **corrupt**
+bootstrap marker still ends the run before the sweep, unlike a missing one: gc
+cannot trust what it knows about the region, and the parse error names the
+remedy.
+
 **Guards** (this command deletes data — every ambiguity is biased toward
 NOT deleting):
 
@@ -1763,12 +1816,17 @@ NOT deleting):
   run — deleting on partial knowledge is how a live asset gets deleted.
 - **Lock guard**: any stack lock (`lock.json`) in the state bucket aborts
   with a listing of the locked stack(s) — a deploy in flight may have
-  published assets whose state write has not landed yet.
+  published assets whose state write has not landed yet, and may be about to
+  write a custom-resource response placeholder. Since issue
+  [#2052](https://github.com/go-to-k/cdkd/issues/2052) this runs BEFORE the
+  bootstrap-marker check, so it also covers a region with no asset storage.
 - **Age guard**: `--older-than <dur>` (default `30d`, accepts `<n>d` /
   `<n>h`) — an object (`LastModified`) / image (`imagePushedAt`) newer
   than the cutoff is never deleted, even when unreferenced. Protects
   in-flight publishes and recent rollback targets. Missing timestamps are
-  treated as "new" (kept).
+  treated as "new" (kept). It applies to custom-resource response
+  placeholders on the same terms, and the boundary is inclusive-KEEP: an
+  object exactly AT the cutoff survives.
 - **Ownership**: every S3 call pins `ExpectedBucketOwner`; a 403 on the
   asset bucket is a foreign-bucket refusal (never deleted).
 

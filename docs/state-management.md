@@ -49,7 +49,22 @@ s3://{STATE_BUCKET}/{STATE_PREFIX}/
                                       #   deploy and its `cdkd rollback` (issue #1183)
 s3://{STATE_BUCKET}/cdkd-bootstrap/
   └── {Region}.json          # Asset-storage bootstrap marker (issue #1002)
+s3://{STATE_BUCKET}/custom-resource-responses/
+  └── {RequestId}.json       # Transient — one placeholder per Custom Resource
+                             #   invocation, collected by `cdkd gc` (issue #2052)
 ```
+
+The `custom-resource-responses/{requestId}.json` placeholders are written by
+`CustomResourceProvider` before each invocation, so the handler has a
+pre-signed URL to PUT its `cfn-response` to. They are transient and the happy
+paths delete them again, but three shapes strand one: an interrupted deploy
+between the PUT and any cleanup, a throw on a path that reaches no cleanup
+call, and a LATE handler PUT landing after cdkd stopped polling (the only one
+that leaves real `Data` content rather than an empty body). Since issue
+[#2052](https://github.com/go-to-k/cdkd/issues/2052) `cdkd gc` collects the
+stranded ones — see
+[`cdkd gc`](cli-reference.md#custom-resource-response-placeholders) for the
+staleness rule and why an in-flight run's key is never taken.
 
 The `rollback-journal.json` sibling (issue
 [#1183](https://github.com/go-to-k/cdkd/issues/1183)) is written whenever a
