@@ -383,3 +383,136 @@ describe('SNSTopicProvider - resolved secrets in the DeliveryStatusLogging warni
     });
   });
 });
+
+/**
+ * Issue #2178 — the SECOND masked site in this provider, and the one the
+ * DeliveryStatusLogging block above does not reach.
+ *
+ * `subscribeInline` refuses an inline `Subscription` entry whose `Protocol` /
+ * `Endpoint` is not a string, and it QUOTES THE WHOLE ENTRY. That entry is
+ * RESOLVED template content, so a `{{resolve:secretsmanager:...}}` anywhere in
+ * it is already plaintext by then. Unlike the warn arms above there is no
+ * message-level sink on this path at all — the throw is wrapped by
+ * `ProvisioningError` with `error.message` interpolated verbatim — so the
+ * pre-stringify walk is the ONLY layer, and `not.toContain(SUB_SECRET)` is
+ * exactly what an identity masker fails.
+ */
+describe('SNSTopicProvider - resolved secrets in the inline Subscription refusal (issue #2178)', () => {
+  /** Distinctive, >= 8 chars, and a substring of nothing else in the message. */
+  const SUB_SECRET = 'sns2178-subscription-plaintext';
+
+  function subMasker(): ReturnType<typeof createSecretMasker> {
+    return createSecretMasker(
+      new Map([[SUB_SECRET, '{{resolve:secretsmanager:sns/sub:SecretString:v::}}']])
+    );
+  }
+
+  /**
+   * The secret at a NESTED string leaf of the entry rather than as the entry's
+   * own scalar: `maskDeep` walks leaves, so a top-level-only fixture would
+   * still pass against a walk that never descends.
+   */
+  const badEntry = (secret: string): Record<string, unknown> => ({
+    Protocol: { nested: { bad: secret } },
+    Endpoint: 'https://example.com/hook',
+  });
+
+  const maskedRendering = JSON.stringify(badEntry(SECRET_MASK));
+  const rawRendering = JSON.stringify(badEntry(SUB_SECRET));
+
+  let provider: SNSTopicProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({ TopicArn: 'arn:aws:sns:us-east-1:0:issue2178-topic' });
+    provider = new SNSTopicProvider();
+  });
+
+  async function refusalMessage(p: Promise<unknown>): Promise<string> {
+    try {
+      await p;
+    } catch (error) {
+      return (error as Error).message;
+    }
+    throw new Error('expected the inline Subscription refusal, but the call resolved');
+  }
+
+  it('masks the resolved secret in the create() refusal', async () => {
+    const message = await refusalMessage(
+      provider.create(
+        'MyTopic',
+        'AWS::SNS::Topic',
+        { TopicName: 'issue2178-topic', Subscription: [badEntry(SUB_SECRET)] },
+        { maskSecrets: subMasker() }
+      )
+    );
+
+    // Non-vacuity first: the refusal fired and still quotes the entry.
+    expect(message).toContain('requires string Protocol and Endpoint');
+    expect(message).toContain(maskedRendering);
+    expect(message).toContain(SECRET_MASK);
+    expect(message).not.toContain(SUB_SECRET);
+  });
+
+  it('masks the resolved secret in the update() refusal (the newly-added subscription)', async () => {
+    const message = await refusalMessage(
+      provider.update(
+        'MyTopic',
+        'arn:aws:sns:us-east-1:0:issue2178-topic',
+        'AWS::SNS::Topic',
+        { Subscription: [badEntry(SUB_SECRET)] },
+        { Subscription: [] },
+        { maskSecrets: subMasker() }
+      )
+    );
+
+    expect(message).toContain('requires string Protocol and Endpoint');
+    expect(message).toContain(maskedRendering);
+    expect(message).not.toContain(SUB_SECRET);
+  });
+
+  // THE CONTROL: absent context means unmasked, by contract — and without a
+  // case where the plaintext survives, a refusal that dropped the entry would
+  // satisfy every assertion above.
+  it('leaves the plaintext INTACT when no context is supplied — the control', async () => {
+    const message = await refusalMessage(
+      provider.create('MyTopic', 'AWS::SNS::Topic', {
+        TopicName: 'issue2178-topic',
+        Subscription: [badEntry(SUB_SECRET)],
+      })
+    );
+
+    expect(message).toContain('requires string Protocol and Endpoint');
+    expect(message).toContain(rawRendering);
+    expect(message).toContain(SUB_SECRET);
+    expect(message).not.toContain(SECRET_MASK);
+  });
+
+  it('leaves the plaintext INTACT for a context that carries no masker', async () => {
+    const message = await refusalMessage(
+      provider.create(
+        'MyTopic',
+        'AWS::SNS::Topic',
+        { TopicName: 'issue2178-topic', Subscription: [badEntry(SUB_SECRET)] },
+        { replayingState: true }
+      )
+    );
+
+    expect(message).toContain(SUB_SECRET);
+  });
+
+  it('does not mangle a non-secret entry when a masker IS supplied', async () => {
+    const message = await refusalMessage(
+      provider.create(
+        'MyTopic',
+        'AWS::SNS::Topic',
+        { TopicName: 'issue2178-topic', Subscription: [badEntry('definitely-not-a-protocol')] },
+        { maskSecrets: subMasker() }
+      )
+    );
+
+    expect(message).toContain('definitely-not-a-protocol');
+    expect(message).not.toContain(SECRET_MASK);
+  });
+});

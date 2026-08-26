@@ -4844,7 +4844,7 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
       // carries. `StartTime` stays clean while `EndTime` flags.
       expect(
         regressed('endtime', (source) =>
-          source.replace("        EndTime: toDate(r['EndTime']),\n", '')
+          source.replace("        EndTime: toDate(r['EndTime'], mask),\n", '')
         )
       ).toEqual(['Configuration.ExcludedTimeRanges.EndTime']);
     });
@@ -6230,7 +6230,7 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     const dir = regressedTree(
       'providers-builder-member',
       'cloudwatch-anomaly-detector-provider.ts',
-      (source) => source.replace("        EndTime: toDate(r['EndTime']),\n", '')
+      (source) => source.replace("        EndTime: toDate(r['EndTime'], mask),\n", '')
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);

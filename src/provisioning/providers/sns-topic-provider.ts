@@ -23,7 +23,7 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { maskDeep } from '../masked-retry-logger.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -250,7 +250,7 @@ export class SNSTopicProvider implements ResourceProvider {
         if (Array.isArray(properties['Subscription'])) {
           const subscriptions = properties['Subscription'] as Array<Record<string, unknown>>;
           for (const sub of subscriptions) {
-            await this.subscribeInline(topicArn, sub, logicalId);
+            await this.subscribeInline(topicArn, sub, logicalId, maskSecrets);
           }
         }
       } catch (innerError) {
@@ -458,7 +458,11 @@ export class SNSTopicProvider implements ResourceProvider {
         physicalId,
         (previousProperties['Subscription'] as Array<Record<string, unknown>>) || [],
         (properties['Subscription'] as Array<Record<string, unknown>>) || [],
-        logicalId
+        logicalId,
+        // Issue #2178: the refusal in `subscribeInline` quotes the whole
+        // inline entry, which is RESOLVED template content. Absent means
+        // unmasked, per the SecretMaskingContext contract.
+        maskerOrIdentity(maskSecrets)
       );
     }
 
@@ -517,13 +521,15 @@ export class SNSTopicProvider implements ResourceProvider {
   private async subscribeInline(
     topicArn: string,
     sub: Record<string, unknown>,
-    logicalId: string
+    logicalId: string,
+    mask: MaskerFn
   ): Promise<void> {
     const protocol = sub['Protocol'];
     const endpoint = sub['Endpoint'];
     if (typeof protocol !== 'string' || typeof endpoint !== 'string') {
       throw new Error(
-        `SNS topic ${logicalId}: inline Subscription entry requires string Protocol and Endpoint, got ${JSON.stringify(sub)}`
+        `SNS topic ${logicalId}: inline Subscription entry requires string Protocol and ` +
+          `Endpoint, got ${JSON.stringify(maskDeep(sub, mask))}`
       );
     }
 
@@ -561,7 +567,8 @@ export class SNSTopicProvider implements ResourceProvider {
     topicArn: string,
     oldSubs: Array<Record<string, unknown>>,
     newSubs: Array<Record<string, unknown>>,
-    logicalId: string
+    logicalId: string,
+    mask: MaskerFn
   ): Promise<void> {
     const key = (protocol: unknown, endpoint: unknown): string =>
       `${String(protocol)}${String(endpoint)}`;
@@ -572,7 +579,7 @@ export class SNSTopicProvider implements ResourceProvider {
     // Additions: in new, not in old.
     for (const sub of newSubs) {
       if (!oldKeys.has(key(sub['Protocol'], sub['Endpoint']))) {
-        await this.subscribeInline(topicArn, sub, logicalId);
+        await this.subscribeInline(topicArn, sub, logicalId, mask);
       }
     }
 

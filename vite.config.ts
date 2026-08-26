@@ -382,6 +382,22 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/check-withretry-interrupt.ts',
         cache: false,
       },
+      // Issue #2178 — a provider interpolating a `properties`-derived value into
+      // a message must mask it BEFORE `JSON.stringify`, not after. Masking the
+      // finished message cannot recover it: `JSON.stringify` escapes `"` / `\` /
+      // newlines so the secret no longer OCCURS in the line, and a message is
+      // always longer than the value inside it so only `maskSecretsInText`'s
+      // >= 4-character SUBSTRING arm is reachable. The rule has been prose since
+      // issue #1932 and was violated anyway in files already hardened for it
+      // (issue #2176), which is what turns it into a mechanical check. The
+      // classifier is DATAFLOW-aware, so a mask applied upstream of the
+      // stringify passes. `cache: false` for the same reason the two critics
+      // above carry it: a green that can be replayed from cache is a checker
+      // reporting "all masked" without having looked.
+      'audit:provider-secret-mask:check': {
+        command: 'node --experimental-strip-types scripts/check-provider-secret-mask.ts',
+        cache: false,
+      },
       // Escape hatch for issue #1842's evidence-loss verdict: the plain writer
       // above REFUSES to overwrite the matrix with weaker per-property evidence
       // than the committed one records. Use this only when the reduction is

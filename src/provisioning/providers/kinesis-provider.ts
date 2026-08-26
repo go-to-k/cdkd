@@ -33,7 +33,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 
 /**
  * Class 1/2 sanitize for `StreamEncryption` placeholder.
@@ -158,14 +160,14 @@ type ShardLevelMetricsRead =
  * previous side is never routed through the refusal at all — see
  * {@link previousMetricNames}.
  */
-function readShardLevelMetrics(value: unknown): ShardLevelMetricsRead {
+function readShardLevelMetrics(value: unknown, mask: MaskerFn): ShardLevelMetricsRead {
   if (value == null) return { kind: 'absent' };
   if (!isUsableMetricsList(value)) {
     return {
       kind: 'unusable',
       reason:
         `AWS::Kinesis::Stream DesiredShardLevelMetrics must be an array of metric-name ` +
-        `strings, got ${JSON.stringify(value)}`,
+        `strings, got ${JSON.stringify(maskDeep(value, mask))}`,
     };
   }
   const expanded = expandShardLevelMetrics(value);
@@ -203,7 +205,7 @@ type MaxRecordSizeRead =
   | { kind: 'usable'; size: number }
   | { kind: 'unusable'; reason: string };
 
-function readMaxRecordSize(value: unknown): MaxRecordSizeRead {
+function readMaxRecordSize(value: unknown, mask: MaskerFn): MaxRecordSizeRead {
   if (value == null) return { kind: 'absent' };
   if (typeof value === 'number' && Number.isFinite(value)) return { kind: 'usable', size: value };
   if (typeof value === 'string' && value.trim() !== '') {
@@ -213,7 +215,8 @@ function readMaxRecordSize(value: unknown): MaxRecordSizeRead {
   return {
     kind: 'unusable',
     reason:
-      `AWS::Kinesis::Stream MaxRecordSizeInKiB must be a number, got ` + `${JSON.stringify(value)}`,
+      `AWS::Kinesis::Stream MaxRecordSizeInKiB must be a number, got ` +
+      `${JSON.stringify(maskDeep(value, mask))}`,
   };
 }
 
@@ -224,8 +227,11 @@ function readMaxRecordSize(value: unknown): MaxRecordSizeRead {
  * Unusable / absent both yield `undefined`, which the caller treats as "no
  * declared size" rather than refusing — the previous side is state-borne.
  */
-function comparableRecordSize(value: unknown): number | undefined {
-  const read = readMaxRecordSize(value);
+function comparableRecordSize(value: unknown, mask: MaskerFn): number | undefined {
+  // The masker is threaded even though this arm never reads `reason`: the
+  // reader BUILDS the message either way, so leaving it unmasked here would
+  // make the walk's coverage depend on which field a caller happens to read.
+  const read = readMaxRecordSize(value, mask);
   return read.kind === 'usable' ? read.size : undefined;
 }
 
@@ -274,6 +280,14 @@ export class KinesisStreamProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    // Issue #2178: the sink for the lines that QUOTE a value read off the bag.
+    // `properties` arrives RESOLVED, so a `{{resolve:secretsmanager:...}}`
+    // scalar is already plaintext by the time the readers below refuse one.
+    // The remaining `this.logger.debug` lines in this method name the stream
+    // rather than a property value and are part of issue #2177's TIER A sweep.
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    const warn = (message: string): void => this.logger.warn(mask(message));
+
     this.logger.debug(`Creating Kinesis stream ${logicalId}`);
 
     const streamName =
@@ -287,13 +301,13 @@ export class KinesisStreamProvider implements ResourceProvider {
     // a deterministic hash, so the retry after the user fixes the template then
     // collides with `ResourceInUseException` and wedges the stack until someone
     // deletes the stream by hand. Neither check needs an AWS call.
-    const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics']);
+    const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics'], mask);
     if (desiredRead.kind === 'unusable') {
       if (context?.replayingState === true) {
         // A state replay cannot be fixed from the user's CDK code, so the
         // refusal downgrades to a warning and the restore proceeds without the
         // metrics rather than leaving the resource unrestorable (issue #1463).
-        this.logger.warn(
+        warn(
           `${desiredRead.reason}. Replaying a state record, so the shard-level metrics are ` +
             `left unset on ${streamName} rather than refusing the restore`
         );
@@ -301,10 +315,10 @@ export class KinesisStreamProvider implements ResourceProvider {
         throw new ProvisioningError(desiredRead.reason, resourceType, logicalId, streamName);
       }
     }
-    const maxRecordRead = readMaxRecordSize(properties['MaxRecordSizeInKiB']);
+    const maxRecordRead = readMaxRecordSize(properties['MaxRecordSizeInKiB'], mask);
     if (maxRecordRead.kind === 'unusable') {
       if (context?.replayingState === true) {
-        this.logger.warn(
+        warn(
           `${maxRecordRead.reason}. Replaying a state record, so ${streamName} is created with ` +
             `AWS's default maximum record size rather than refusing the restore`
         );
@@ -481,8 +495,16 @@ export class KinesisStreamProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // Issue #2178: the update path reaches the same two readers, so it needs
+    // the same sink. Absent means unmasked (the back-compatible default the
+    // SecretMaskingContext contract mandates). Same TIER A scope note as
+    // `create()` above.
+    const mask = maskerOrIdentity(context?.maskSecrets);
+    const warn = (message: string): void => this.logger.warn(mask(message));
+
     this.logger.debug(`Updating Kinesis stream ${logicalId}: ${physicalId}`);
 
     try {
@@ -657,15 +679,15 @@ export class KinesisStreamProvider implements ResourceProvider {
       // silent no-op on update — same template, opposite feedback, and no
       // signal at all on the update path (docs/provider-development.md 1a
       // requires the warn-and-skip arm to announce itself).
-      const desiredSizeRead = readMaxRecordSize(properties['MaxRecordSizeInKiB']);
+      const desiredSizeRead = readMaxRecordSize(properties['MaxRecordSizeInKiB'], mask);
       if (desiredSizeRead.kind === 'unusable') {
-        this.logger.warn(
+        warn(
           `${desiredSizeRead.reason}. Leaving the maximum record size on ${physicalId} ` +
             `unchanged; the same value is REFUSED on a template-path create`
         );
       }
-      const newMaxRecordSize = comparableRecordSize(properties['MaxRecordSizeInKiB']);
-      const oldMaxRecordSize = comparableRecordSize(previousProperties['MaxRecordSizeInKiB']);
+      const newMaxRecordSize = comparableRecordSize(properties['MaxRecordSizeInKiB'], mask);
+      const oldMaxRecordSize = comparableRecordSize(previousProperties['MaxRecordSizeInKiB'], mask);
       if (newMaxRecordSize !== undefined && newMaxRecordSize !== oldMaxRecordSize) {
         this.logger.debug(
           `Updating max record size for ${physicalId}: ${oldMaxRecordSize} -> ${newMaxRecordSize}`
@@ -691,10 +713,10 @@ export class KinesisStreamProvider implements ResourceProvider {
       // it WARNS and skips the whole reconcile (the update path cannot refuse —
       // `rollback-executor` and `drift --revert` replay state records through
       // `update()`, where a throw has no template-side remedy).
-      const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics']);
+      const desiredRead = readShardLevelMetrics(properties['DesiredShardLevelMetrics'], mask);
       let desiredMetrics: unknown;
       if (desiredRead.kind === 'unusable') {
-        this.logger.warn(
+        warn(
           `${desiredRead.reason}. Leaving the shard-level metrics on ${physicalId} unchanged ` +
             `rather than disabling the live ones; the same value is REFUSED on a ` +
             `template-path create`

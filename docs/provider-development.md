@@ -1531,7 +1531,59 @@ implementation. Three details are worth copying:
     SHAPE rather than a name — two of the six were nearly missed twice because
     they spell it `maskLeaf` / `maskLeafValue` and declare no named depth
     constant to grep for.
-    It covers cdkd's
+    **The leaf pass is now MECHANICALLY ENFORCED for the `JSON.stringify` case**
+    (issue [#2178](https://github.com/go-to-k/cdkd/issues/2178)).
+    `vp run audit:provider-secret-mask:check`
+    (`scripts/check-provider-secret-mask.ts`, a CI step) fails on any
+    `${JSON.stringify(X)}` interpolated into a message under
+    `src/provisioning/providers/**` (plus `composite-id.ts`) where `X` reaches
+    no masker. It is DATAFLOW-aware, so the mask may sit anywhere upstream —
+    through a `const` binding, a `?:` / `??` arm, an array or object literal, a
+    `.map()` callback, or a helper — and both real upstream-mask sites
+    (`asg-provider.ts`, `cloudfront-distribution-provider.ts`) pass unchanged.
+    It became a check rather than another sentence because the rule above was
+    already written and violated anyway: the #2176 sweep found raw sites in
+    files already hardened for this exact contract.
+
+    **An IDENTITY masker does NOT satisfy it.** A binding such as
+    `const M: MaskerFn = maskerOrIdentity(undefined)` type-checks, reads as
+    protection, and masks nothing — so the critic classifies a site masked only
+    by one as `raw`. Issue
+    [#2007](https://github.com/go-to-k/cdkd/issues/2007) is why that is worse
+    than having no masker at all: its presence stops the next author looking.
+    This holds in the ARGUMENT position too, which is the one you are most
+    likely to write: `maskDeep(value, maskerOrIdentity(undefined))` walks every
+    leaf and changes nothing, so the critic classifies it `raw` exactly as it
+    does a bare value. That position is an ALLOW-LIST — it accepts only what
+    resolves to the shared capability and refuses anything else, so an inline
+    `(t) => t`, a cast, a hand-rolled `function noMask(v) { return v; }` and an
+    arbitrary object property are all refused without the check having to
+    enumerate them.
+
+    **What the check does NOT prove.** It is syntactic, so a no-op DECLARED to
+    be the capability is believed: `const m: MaskerFn = someNoOp` and
+    `{ maskSecrets: (t) => t }` both pass. A green run means the value reached
+    something declared to be the project's masker — not that it was masked.
+    Thread the real capability; do not satisfy the checker.
+    Where a path genuinely has no masker to thread — `DeleteContext` carries
+    none by the `SecretMaskingContext` contract — thread the capability first,
+    or record the site in the critic's `EXEMPT` list, where it is COUNTED and
+    re-audited on every run and fails the moment the capability arrives. Do not
+    reach for an identity default to make the check pass. A parameter's
+    identity DEFAULT is a different thing and stays legitimate: it is the
+    contract's back-compatible absent-means-unmasked answer, and what the
+    critic checks there is that every CALL SITE threads a real masker — but
+    only for an UNTYPED parameter of a non-exported function. A parameter
+    ANNOTATED `MaskerFn` / `SecretMasker` is treated as a masker by TYPE, so it
+    joins the file's masker set unconditionally and its call sites are NOT
+    checked; the same is true of any exported function. Prefer the REQUIRED
+    spelling (`mask: MaskerFn`, no identity default) for new sites: the
+    compiler then enforces threading, which is the only mechanism that does not
+    depend on the critic noticing. Every in-repo call site does thread today —
+    verified, not assumed — so this is a shape to prefer, not a live gap.
+
+    Back to the masker itself, whose scope the paragraphs above interrupted.
+    `maskDeep` covers cdkd's
     dynamic-reference secret model only — a `NoEcho: true` template PARAMETER
     is outside that model and is not masked by it, and that residual is
     PERSISTED rather than log-only (a `NoEcho` value quoted inside an AWS error

@@ -44,7 +44,34 @@ import type {
   ResourceDeleteResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
+  UpdateContext,
 } from '../../types/resource.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+
+/**
+ * The DELETE path threads NO masker (issue #2178).
+ *
+ * `DeleteContext` carries no masker by the `SecretMaskingContext` contract — a
+ * delete's payload is a physical id rather than a resolved property bag — so
+ * there is no capability to thread here.
+ *
+ * This is deliberately `undefined` and NOT `maskerOrIdentity(undefined)`, which
+ * is what it was until the review of this change. An identity function typed
+ * `MaskerFn` is a masker that fences nothing, and issue
+ * [#2007](https://github.com/go-to-k/cdkd/issues/2007) records why that is
+ * WORSE than no masker at all: its presence stops the next author looking. The
+ * critic now REFUSES an identity-bound masker (see
+ * `scripts/check-provider-secret-mask.ts`), so this spelling is the only one
+ * that both compiles and states the truth — and the message site it feeds is
+ * recorded in that critic's `EXEMPT` list, where it is counted and re-audited
+ * on every run rather than hidden inside the masked count.
+ *
+ * `src/types/resource.ts` requires the capability to be THREADED before a
+ * delete-path message may claim to mask; retiring this constant is that work,
+ * not a rename.
+ */
+const DELETE_PATH_UNMASKED = undefined;
 
 /**
  * The short `ResourceDeleteResult.reason` the no-properties DELETE arm reports
@@ -247,7 +274,10 @@ function isCustomResourceResponsePayload(value: unknown): value is CustomResourc
 /**
  * Parse Lambda response payload with type safety
  */
-function parseLambdaPayload(payloadBytes: Uint8Array | undefined): CustomResourceResponsePayload {
+function parseLambdaPayload(
+  payloadBytes: Uint8Array | undefined,
+  mask: MaskerFn | undefined
+): CustomResourceResponsePayload {
   if (!payloadBytes) {
     return {};
   }
@@ -262,7 +292,35 @@ function parseLambdaPayload(payloadBytes: Uint8Array | undefined): CustomResourc
   const parsed: unknown = JSON.parse(payloadString);
 
   if (!isCustomResourceResponsePayload(parsed)) {
-    throw new Error(`Invalid Lambda response payload format: ${JSON.stringify(parsed)}`);
+    // Issue #2178: masked BEFORE stringifying, on the paths that HAVE a masker.
+    // A handler routinely echoes its `ResourceProperties` back in `Data`, and
+    // those arrive RESOLVED, so this payload can carry plaintext. Masking the
+    // FINISHED message cannot recover it — `JSON.stringify` escapes `"` / `\` /
+    // newlines out of existence.
+    //
+    // Two arms rather than an identity default, because the DELETE path has no
+    // masker to thread (see {@link DELETE_PATH_UNMASKED}) and a per-SITE critic
+    // cannot say "masked on two of three paths". Splitting the message makes
+    // the unmasked path its OWN site, so it is recorded in
+    // `scripts/check-provider-secret-mask.ts`'s `EXEMPT` list — counted,
+    // re-audited every run, and self-retiring the moment `DeleteContext` gains
+    // the capability — while the masked arm stays fenced: deleting its
+    // `maskDeep` wrap reds the critic.
+    //
+    // Exposure TODAY is nil in both arms, and saying so is the point: the only
+    // caller wraps this in `try { … } catch { this.logger.debug('Lambda payload
+    // parse failed …') }`, which DISCARDS the error without reading
+    // `error.message`. Swallowing a parse failure that way is its own smell —
+    // it is recorded here rather than hidden behind the mask. The mask stays
+    // because the bound is forward-looking: the moment that catch logs
+    // `error.message`, the delete arm leaks, and the split above is what keeps
+    // that visible instead of letting one masked-looking site cover both.
+    if (mask === undefined) {
+      throw new Error(`Invalid Lambda response payload format: ${JSON.stringify(parsed)}`);
+    }
+    throw new Error(
+      `Invalid Lambda response payload format: ${JSON.stringify(maskDeep(parsed, mask))}`
+    );
   }
 
   return parsed;
@@ -1015,7 +1073,8 @@ export class CustomResourceProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating custom resource ${logicalId} (${resourceType})`);
 
@@ -1052,7 +1111,11 @@ export class CustomResourceProvider implements ResourceProvider {
           LogicalResourceId: logicalId,
           StackId: invocation.stackId,
           ResourceProperties: this.stringifyProperties(properties),
-        })
+        }),
+        // Issue #2178: the handler's response can echo the RESOLVED
+        // `ResourceProperties` back, so the payload refusal masks before it
+        // stringifies. Absent means unmasked.
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -1087,7 +1150,8 @@ export class CustomResourceProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating custom resource ${logicalId}: ${physicalId} (${resourceType})`);
 
@@ -1128,7 +1192,9 @@ export class CustomResourceProvider implements ResourceProvider {
           StackId: invocation.stackId,
           ResourceProperties: this.stringifyProperties(properties),
           OldResourceProperties: this.stringifyProperties(previousProperties),
-        })
+        }),
+        // Issue #2178: see `create()` — same payload refusal, same bag.
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -1271,7 +1337,10 @@ export class CustomResourceProvider implements ResourceProvider {
           PhysicalResourceId: physicalId,
           StackId: invocation.stackId,
           ResourceProperties: this.stringifyProperties(properties),
-        })
+        }),
+        // `DeleteContext` carries no masker by the SecretMaskingContext
+        // contract — see DELETE_PATH_UNMASKED.
+        DELETE_PATH_UNMASKED
       );
 
       // Issue #2054: the handler RAN and said it did not delete. This arm used
@@ -1424,7 +1493,8 @@ export class CustomResourceProvider implements ResourceProvider {
       responseKey: string;
       responseURL: string;
       stackId: string;
-    }) => Record<string, unknown>
+    }) => Record<string, unknown>,
+    mask: MaskerFn | undefined
   ): Promise<CfnCustomResourceResponse> {
     // One watch for the whole invocation, disposed in the `finally` below, so
     // Ctrl-C aborts a 47.75s pre-delivery backoff and the placeholder
@@ -1472,7 +1542,8 @@ export class CustomResourceProvider implements ResourceProvider {
             operation,
             () => {
               delivered = true;
-            }
+            },
+            mask
           );
           cfnResponse = sent.response;
           logResult = sent.logResult;
@@ -1829,7 +1900,8 @@ export class CustomResourceProvider implements ResourceProvider {
     responseKey: string,
     logicalId: string,
     operation: string,
-    onDelivered: () => void
+    onDelivered: () => void,
+    mask: MaskerFn | undefined
   ): Promise<{ response: CfnCustomResourceResponse; logResult?: string }> {
     if (this.isSnsServiceToken(serviceToken)) {
       this.logger.debug(`ServiceToken is SNS topic, publishing to: ${serviceToken}`);
@@ -1855,7 +1927,8 @@ export class CustomResourceProvider implements ResourceProvider {
         invokeResponse,
         responseKey,
         logicalId,
-        operation
+        operation,
+        mask
       ),
       ...(invokeResponse.LogResult === undefined ? {} : { logResult: invokeResponse.LogResult }),
     };
@@ -1996,7 +2069,8 @@ export class CustomResourceProvider implements ResourceProvider {
     lambdaResponse: InvocationResponse,
     responseKey: string,
     logicalId: string,
-    operation: string
+    operation: string,
+    mask: MaskerFn | undefined
   ): Promise<CfnCustomResourceResponse> {
     // Check for Lambda execution errors
     if (lambdaResponse.FunctionError) {
@@ -2048,7 +2122,7 @@ export class CustomResourceProvider implements ResourceProvider {
     // to Step Functions for polling).
     let hasDirectPayload = false;
     try {
-      const payload = parseLambdaPayload(lambdaResponse.Payload);
+      const payload = parseLambdaPayload(lambdaResponse.Payload, mask);
 
       // Check if this is a full cfn-response (has Status field)
       if (
@@ -2080,7 +2154,15 @@ export class CustomResourceProvider implements ResourceProvider {
       // CDK Provider framework after starting Step Functions). Mark as no direct payload.
       hasDirectPayload = Object.keys(payload).length > 0;
     } catch {
-      // Payload parsing failed, try S3
+      // Payload parsing failed, try S3.
+      //
+      // DISCARDING `error.message` is LOAD-BEARING here, not incidental. On the
+      // DELETE path `parseLambdaPayload` is handed no masker (see
+      // DELETE_PATH_UNMASKED and issue #2007), so its refusal message can quote
+      // a delete-bag value verbatim, and the delete bag CAN be resolved
+      // plaintext on the in-process rollback path. Logging the error object
+      // would turn today's nil exposure into a live leak. Thread the capability
+      // before widening this catch.
       this.logger.debug(`Lambda payload parse failed for ${logicalId}, checking S3 response`);
     }
 

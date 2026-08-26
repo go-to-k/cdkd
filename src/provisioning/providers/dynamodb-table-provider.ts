@@ -3894,10 +3894,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // the drift signal this leaves standing is erased by the next deploy.
       warn(
         `GSI ${safeIndexName} on DynamoDB table ${physicalId}: the requested WarmThroughput ` +
-          `${JSON.stringify(sendable)} is lower than the ${JSON.stringify({
-            ReadUnitsPerSecond: live?.WarmThroughput?.ReadUnitsPerSecond,
-            WriteUnitsPerSecond: live?.WarmThroughput?.WriteUnitsPerSecond,
-          })} DynamoDB currently holds for that index. Warm throughput only ever RISES with an ` +
+          `${JSON.stringify(maskDeep(sendable, maskSecrets))} is lower than the ${JSON.stringify(
+            maskDeep(
+              {
+                ReadUnitsPerSecond: live?.WarmThroughput?.ReadUnitsPerSecond,
+                WriteUnitsPerSecond: live?.WarmThroughput?.WriteUnitsPerSecond,
+              },
+              maskSecrets
+            )
+          )} DynamoDB currently holds for that index. Warm throughput only ever RISES with an ` +
           `index's traffic and cannot be lowered — AWS rejects the UpdateTable with "decreasing ` +
           `WarmThroughput is not supported" — so it was NOT sent and every other change on this ` +
           `table still applied. On a deploy this warning may be the only signal you get: a ` +
@@ -4028,10 +4033,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (!isWarmThroughputDecrease(desired, live)) return false;
     warn(
       `AWS::DynamoDB::Table ${logicalId}: the requested WarmThroughput ` +
-        `${JSON.stringify(desired)} is lower than the ${JSON.stringify({
-          ReadUnitsPerSecond: live?.ReadUnitsPerSecond,
-          WriteUnitsPerSecond: live?.WriteUnitsPerSecond,
-        })} DynamoDB currently holds for table ${physicalId}. Warm throughput only ever RISES ` +
+        `${JSON.stringify(maskDeep(desired, maskSecrets))} is lower than the ${JSON.stringify(
+          maskDeep(
+            {
+              ReadUnitsPerSecond: live?.ReadUnitsPerSecond,
+              WriteUnitsPerSecond: live?.WriteUnitsPerSecond,
+            },
+            maskSecrets
+          )
+        )} DynamoDB currently holds for table ${physicalId}. Warm throughput only ever RISES ` +
         `with a table's traffic and cannot be lowered — AWS rejects the UpdateTable with ` +
         `"decreasing WarmThroughput is not supported" — so it was NOT sent and every other ` +
         `change on this resource still applied. On a deploy this warning may be the only signal ` +
