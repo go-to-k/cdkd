@@ -1,3 +1,10 @@
+## [0.284.60](https://github.com/go-to-k/cdkd/compare/v0.284.59...v0.284.60) (2026-08-26)
+
+
+### Bug Fixes
+
+* **assets:** refuse an asset bucket this account owns in another region ([#2255](https://github.com/go-to-k/cdkd/issues/2255)) ([aa130a1](https://github.com/go-to-k/cdkd/commit/aa130a15cfeb2147bce72f3f8e332953197c590e))
+
 ## [0.284.59](https://github.com/go-to-k/cdkd/compare/v0.284.58...v0.284.59) (2026-08-26)
 
 
