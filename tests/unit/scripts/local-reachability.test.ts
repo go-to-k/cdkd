@@ -26,12 +26,15 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 
 import {
   analyzeReachability,
   checkBuildEntriesInSync,
+  checkScopeIsNotVacuous,
+  FLOORS,
+  readPackEntries,
   NO_LIVE_CALLER_TAG,
   readSourceTree,
   runSelfProbe,
@@ -49,6 +52,12 @@ const ENTRIES = [join(SRC_ROOT, 'index.ts'), join(SRC_ROOT, 'cli', 'index.ts')];
 const SPAWN_TIMEOUT_MS = 120_000;
 /** The per-file annotation sweep re-analyzes the whole tree once per file. */
 const SWEEP_TIMEOUT_MS = 120_000;
+/**
+ * Every real-tree probe analyzes ~330 files, and the ones that analyze TWICE
+ * (baseline plus mutation) crossed vitest's default 5 s in 1 run of 14. A
+ * CI-blocking critic that flakes teaches people to re-run rather than read.
+ */
+const ANALYZE_TIMEOUT_MS = 60_000;
 
 const REAL_SOURCES = readSourceTree(SRC_ROOT);
 
@@ -87,7 +96,7 @@ const symbolsReported = (report: ReachabilityReport, kind?: Finding['kind']): Se
 describe('local reachability critic — the real tree', () => {
   it('reports nothing: every orphan is annotated and no annotation is stale', () => {
     expect(analyze().findings).toEqual([]);
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('sees the whole of src/, not a fragment', () => {
     const report = analyze();
@@ -96,7 +105,7 @@ describe('local reachability critic — the real tree', () => {
     expect(report.loadedModules).toBeGreaterThanOrEqual(280);
     expect(report.reachableSymbols).toBeGreaterThanOrEqual(2000);
     expect(report.scopeFiles).toBeGreaterThanOrEqual(50);
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('classifies the three states a module-level rule collapses together', () => {
     const byFile = new Map(analyze().modules.map((m) => [m.file, m]));
@@ -112,7 +121,7 @@ describe('local reachability critic — the real tree', () => {
     // UNREFERENCED: nothing in `src/` imports it at all.
     expect(byFile.get('src/local/httpv2-service-integration.ts')?.moduleClass).toBe('unreferenced');
     expect(byFile.get('src/local/httpv2-service-integration.ts')?.loaded).toBe(false);
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('splits a module whose live and dead halves sit in one file', () => {
     const rie = analyze().modules.find((m) => m.file === 'src/local/rie-client.ts');
@@ -122,7 +131,7 @@ describe('local reachability critic — the real tree', () => {
     expect(rie?.deadSymbols).toContain('invokeRieStreaming');
     expect(rie?.deadSymbols).not.toContain('invokeRie');
     expect(rie?.deadSymbols).not.toContain('waitForRieReady');
-  });
+  }, ANALYZE_TIMEOUT_MS);
 });
 
 describe('local reachability critic — must NOT fire on legitimate shims', () => {
@@ -133,7 +142,7 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
     expect(shims.map((m) => m.file)).toContain('src/local/http-server.ts');
     // `startApiServer` is the live server; the shim is right, not an orphan.
     expect(symbolsReported(report)).not.toContain('startApiServer');
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('exempts a shim by CONSTRUCTION, so an unconsumed one is exempt too', () => {
     // A shim declares no value symbol of its own, so there is no cdkd-authored
@@ -141,8 +150,27 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
     // allowlist — and why it cannot be quietly widened to cover a fork.
     const report = analyze();
     const orphanShims = report.modules.filter((m) => m.moduleClass === 'shim-unreferenced');
-    expect(orphanShims.length).toBeGreaterThan(0);
-    for (const shim of orphanShims) expect(shim.exportedSymbols).toBe(0);
+    // `exportedSymbols === 0` is IMPLIED by the class (a file with exports can
+    // never be classified a shim), so asserting it proves nothing and passes on
+    // an empty list. Name the files instead: those are facts about the tree the
+    // classification does not supply.
+    expect(orphanShims.length).toBeGreaterThanOrEqual(5);
+    expect(orphanShims.map((m) => m.file)).toEqual(
+      expect.arrayContaining([
+        'src/local/route-matcher.ts',
+        'src/local/parameter-mapping.ts',
+        'src/local/api-gateway-event.ts',
+      ])
+    );
+    // ...and that none of them is a fork wearing a shim's classification.
+    for (const shim of orphanShims) {
+      const source = REAL_SOURCES.get(join(REPO_ROOT, shim.file));
+      expect(source, `${shim.file} must be in the scanned tree`).toBeDefined();
+      expect(source, `${shim.file} must re-export from cdk-local, not declare a body`).toContain(
+        "from 'cdk-local"
+      );
+      expect(source).not.toMatch(/^export (async )?function /m);
+    }
   });
 
   it('does not resurrect a symbol through a TYPE-only import binding', () => {
@@ -156,7 +184,7 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
       "import {\n  type createReloadOrchestrator,\n  type NextStateMaterial,\n} from '../../local/reload-orchestrator.js';\nvoid createReloadOrchestrator;"
     );
     expect(analyze(mutated).findings).toEqual([]);
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('...but a VALUE import of the same name DOES resurrect it', () => {
     // The twin of the probe above: without it, a green there could mean the
@@ -168,12 +196,61 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
     );
     const stale = analyze(mutated).findings.filter((f) => f.kind === 'stale-annotation');
     expect(stale.map((f) => f.symbol)).toEqual(['createReloadOrchestrator']);
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('does not treat a file that only declares types as a fork', () => {
+    // `deadSymbols` is a subset of `exportedSymbols`, which `types-only` forces
+    // to zero, so `toEqual([])` cannot fail and also passes over an empty list.
+    // Assert the module that must be there and a property the class does NOT
+    // imply: it is loaded at runtime, i.e. it is reached, just not for a value.
     const typesOnly = analyze().modules.filter((m) => m.moduleClass === 'types-only');
-    for (const mod of typesOnly) expect(mod.deadSymbols).toEqual([]);
-  });
+    expect(typesOnly.map((m) => m.file)).toContain('src/local/local-state-provider.ts');
+    const mod = typesOnly.find((m) => m.file === 'src/local/local-state-provider.ts');
+    // Not loaded at runtime either: every importer reaches it through a whole
+    // `import type` declaration, which is erased. That is a fact about the tree,
+    // not something `types-only` implies -- the class only says "zero value
+    // exports", and a types-only module CAN be loaded (by a value import of a
+    // sibling, or an inline `{ type X }` under verbatimModuleSyntax).
+    expect(mod?.loaded).toBe(false);
+    const source = REAL_SOURCES.get(join(REPO_ROOT, 'src/local/local-state-provider.ts'));
+    expect(source).toMatch(/^export (interface|type) /m);
+    expect(source).not.toMatch(/^export (async )?(function|class|const) /m);
+  }, ANALYZE_TIMEOUT_MS);
+
+  it('measures the ONE namespace edge, which clears every export of its target', () => {
+    // A namespace / default import marks EVERY export of its target reachable,
+    // because the binding's property accesses are not tracked. The single such
+    // edge into this scope is `websocket-server.ts:28`'s `import * as
+    // websocketBody`, and it is inert only while `websocket-body.ts` exports
+    // exactly one value -- a second one would be live forever with no caller.
+    // The measurement is asserted rather than written down, so it expires
+    // loudly.
+    const importer = REAL_SOURCES.get(join(REPO_ROOT, 'src/local/websocket-server.ts'));
+    expect(importer).toContain("import * as websocketBody from './websocket-body.js';");
+    const target = analyze().modules.find((m) => m.file === 'src/local/websocket-body.ts');
+    expect(
+      target?.exportedSymbols,
+      'websocket-body.ts gained an export: it is now auto-live via the namespace ' +
+        'import regardless of whether anything calls it. Either give the new symbol a ' +
+        'real caller, or narrow the namespace edge in check-local-reachability.ts.'
+    ).toBe(1);
+    // No OTHER scope module may be pulled in by a namespace or default import.
+    // The specifier is RESOLVED rather than pattern-matched: the one real edge
+    // is a SIBLING import (`./websocket-body.js`), so a regex looking for
+    // `/local/` in the path finds nothing and the sweep reads as clean.
+    const edges: string[] = [];
+    for (const [file, text] of REAL_SOURCES) {
+      for (const m of text.matchAll(/^import (?:\* as \w+|\w+) from '([^']+)';$/gm)) {
+        const spec = m[1]!;
+        if (!spec.startsWith('.')) continue;
+        const target = resolve(join(file, '..'), spec.replace(/\.js$/, '.ts'));
+        if (target.startsWith(join(SRC_ROOT, 'local') + '/')) {
+          edges.push(`${relative(REPO_ROOT, file)} -> ${relative(REPO_ROOT, target)}`);
+        }
+      }
+    }
+    expect(edges).toEqual(['src/local/websocket-server.ts -> src/local/websocket-body.ts']);
+  }, ANALYZE_TIMEOUT_MS);
 });
 
 describe('local reachability critic — RED probes against real code', () => {
@@ -190,7 +267,7 @@ describe('local reachability critic — RED probes against real code', () => {
     expect(symbolsReported(after, 'unannotated')).toContain('runEcsTask');
     const runner = after.modules.find((m) => m.file === 'src/local/ecs-task-runner.ts');
     expect(runner?.moduleClass).toBe('loaded-only');
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('fires transitively, not just on the module that lost its importer', () => {
     // The point of a SYMBOL-level walk: dropping the top of a chain must take
@@ -205,7 +282,7 @@ describe('local reachability critic — RED probes against real code', () => {
     // runner. It is live today (issue #2189's fix does reach users).
     expect(symbolsReported(analyze(), 'unannotated')).not.toContain('resolveEcsSecrets');
     expect(reported).toContain('resolveEcsSecrets');
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('fires when a live importer degrades to a TYPE-only import', () => {
     // The quietest way to orphan a module: the file still imports it, the
@@ -220,7 +297,7 @@ describe('local reachability critic — RED probes against real code', () => {
     expect(reported).toContain('warnSsrfRiskyUri');
     // ...and the helper only it reached goes with it.
     expect(reported).toContain('classifyInternalHost');
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('fires on a NEW unannotated export in a live file', () => {
     // Deliberately NOT `websocket-body.ts`: `websocket-server.ts` imports that
@@ -233,7 +310,7 @@ describe('local reachability critic — RED probes against real code', () => {
       'export function neverCalledByAnything(): number {\n  return 1;\n}\n\nexport function classifySecretArn'
     );
     expect(symbolsReported(analyze(mutated), 'unannotated')).toContain('neverCalledByAnything');
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('fires when an annotation goes STALE because the symbol became live', () => {
     // The direction that stops the annotations rotting into decoration — and,
@@ -249,7 +326,7 @@ describe('local reachability critic — RED probes against real code', () => {
     const stale = analyze(mutated).findings.filter((f) => f.kind === 'stale-annotation');
     expect(stale.map((f) => f.symbol)).toContain('evaluateVtl');
     expect(stale[0]?.tag).toBe(NO_LIVE_CALLER_TAG);
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('fires when an annotation is a bare token with no reason', () => {
     // `reload-orchestrator.ts` carries exactly one annotation, so the anchor is
@@ -263,7 +340,7 @@ describe('local reachability critic — RED probes against real code', () => {
     );
     const bare = analyze(mutated).findings.filter((f) => f.kind === 'bare-annotation');
     expect(bare.map((f) => f.symbol)).toContain('createReloadOrchestrator');
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('reports a symbol whose annotation is DELETED, one file at a time', () => {
     // A per-file sweep, because a single probe proves only that ONE annotation
@@ -327,13 +404,58 @@ describe('local reachability critic — defences against itself', () => {
     expect(failures.join('\n')).toContain('expected 2 shims');
   });
 
-  it('notices when the build entry points move out from under it', () => {
+  it('refuses a vacuous scope WITHOUT consulting the floors', () => {
+    // Both branches directly, because the second cannot be produced by any
+    // directory in this repo -- and a clause no input exercises is one a later
+    // refactor deletes with every test still green.
+    expect(checkScopeIsNotVacuous({ scopeFiles: 0, scopeExportedSymbols: 0 }, 'src/nope')).toEqual([
+      expect.stringContaining('matched NO files'),
+    ]);
+    expect(
+      checkScopeIsNotVacuous({ scopeFiles: 12, scopeExportedSymbols: 0 }, 'src/nope')
+    ).toEqual([expect.stringContaining('NOT ONE exported symbol')]);
+    // ...and the healthy case stays silent.
+    expect(checkScopeIsNotVacuous({ scopeFiles: 57, scopeExportedSymbols: 84 }, 'src/local')).toEqual(
+      []
+    );
+  });
+
+  it('reads pack.entry by PARSING it, not by matching the file text', () => {
+    const config = readFileSync(join(REPO_ROOT, 'vite.config.ts'), 'utf8');
+    expect(readPackEntries(config)).toEqual(['src/index.ts', 'src/cli/index.ts']);
+    // A whole-file substring match is satisfied by a COMMENT naming the path,
+    // so it survives the very rename it exists to catch.
+    const commentOnly =
+      "export default { pack: { entry: { cli: 'src/cli/main.ts' } } };\n// was 'src/index.ts'";
+    expect(checkBuildEntriesInSync(commentOnly).length).toBeGreaterThan(0);
+    // ...and refuses outright when the map cannot be read at all.
+    expect(checkBuildEntriesInSync('export default {}').length).toBe(1);
+    expect(checkBuildEntriesInSync('export default {}')[0]).toContain('pack.entry');
+  });
+
+  it('notices when a build entry point is REMOVED', () => {
     expect(checkBuildEntriesInSync(readFileSync(join(REPO_ROOT, 'vite.config.ts'), 'utf8'))).toEqual(
       []
     );
-    const failures = checkBuildEntriesInSync("pack: { entry: { cli: 'src/cli/main.ts' } }");
-    expect(failures.length).toBe(2);
+    const failures = checkBuildEntriesInSync(
+      "export default { pack: { entry: { cli: 'src/cli/main.ts' } } };"
+    );
+    expect(failures.length).toBe(3);
     expect(failures.join('\n')).toContain('ENTRY_RELATIVE');
+  });
+
+  it('notices when a build entry point is ADDED, which is the SILENT direction', () => {
+    // A missing entry is loud: the critic reports the whole tree dead. An ADDED
+    // one is quiet -- symbols reachable only from the new binary read as
+    // unreachable, and this critic's own message then tells the author to
+    // ANNOTATE them, converting a wrong verdict into a self-certifying one.
+    const failures = checkBuildEntriesInSync(
+      "export default { pack: { entry: { index: 'src/index.ts', cli: 'src/cli/index.ts', " +
+        "daemon: 'src/daemon/index.ts' } } };"
+    );
+    expect(failures.length).toBe(1);
+    expect(failures[0]).toContain('src/daemon/index.ts');
+    expect(failures[0]).toContain('Add it to ENTRY_RELATIVE');
   });
 
   it('fails loudly rather than silently when the tree stops parsing', () => {
@@ -341,7 +463,7 @@ describe('local reachability critic — defences against itself', () => {
     const copy = new Map(REAL_SOURCES);
     copy.set(path, 'export function broken( {');
     expect(analyze(copy).parseErrors.length).toBeGreaterThan(0);
-  });
+  }, ANALYZE_TIMEOUT_MS);
 });
 
 describe('local reachability critic — the probes wrote nothing to src/', () => {
@@ -356,7 +478,7 @@ describe('local reachability critic — the probes wrote nothing to src/', () =>
       return hash.digest('hex');
     };
     expect(digest(readSourceTree(SRC_ROOT))).toBe(digest(REAL_SOURCES));
-  });
+  }, ANALYZE_TIMEOUT_MS);
 });
 
 describe('local reachability critic — CLI and wiring', () => {
@@ -372,14 +494,70 @@ describe('local reachability critic — CLI and wiring', () => {
     expect(proc.status).toBe(0);
     expect(proc.stdout).toContain('local reachability check OK');
     expect(proc.stdout).toContain('re-export shims');
+    // The two assertions above match UNCONDITIONAL literals, so they hold for a
+    // critic that examined nothing. Pin the magnitudes the summary reports.
+    expect(proc.stdout).toContain('57 files in src/local');
+    expect(proc.stdout).toContain('36 re-export shims');
   }, SPAWN_TIMEOUT_MS);
 
-  it('emits COMPLETE json on a pipe', () => {
+  it('emits json and NOTHING else on stdout, so it survives a pipe', () => {
     const proc = run(['--json']);
     expect(proc.status).toBe(0);
-    const parsed = JSON.parse(proc.stdout.slice(0, proc.stdout.lastIndexOf('}') + 1));
+    // No `lastIndexOf('}')` slice: a test that trims trailing text to make the
+    // parse succeed PINS the unpipeable output rather than catching it.
+    const parsed = JSON.parse(proc.stdout);
     expect(parsed.findings).toEqual([]);
-    expect(parsed.modules.length).toBe(parsed.scopeFiles);
+    // The human summary still has to go somewhere.
+    expect(proc.stderr).toContain('local reachability check OK');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('reports the REAL magnitudes, so a critic that examined nothing fails', () => {
+    // Measured 2026-08-26. `modules.length === scopeFiles` is `0 === 0` for a
+    // dark run, and `liveScopeSymbols` was asserted NOWHERE: zeroing all six
+    // FLOORS and pointing the scope at a nonexistent directory produced
+    // `check OK -- 0 files ... 0 exported symbols` at exit 0 with 30/30 green.
+    const proc = run(['--json']);
+    const parsed = JSON.parse(proc.stdout);
+    expect(parsed.scopeFiles).toBe(57);
+    expect(parsed.modules.length).toBe(57);
+    expect(parsed.shimFiles).toBe(36);
+    expect(parsed.liveScopeSymbols).toBe(55);
+    expect(parsed.scopeExportedSymbols).toBe(84);
+    expect(parsed.deadScopeSymbols).toBe(29);
+    expect(parsed.annotatedNoLiveCaller + parsed.annotatedTestOnly).toBe(29);
+    expect(parsed.filesScanned).toBeGreaterThanOrEqual(320);
+    expect(parsed.loadedModules).toBeGreaterThanOrEqual(300);
+    expect(parsed.reachableSymbols).toBeGreaterThanOrEqual(2300);
+  }, SPAWN_TIMEOUT_MS);
+
+  it('pins the FLOOR constants, which can be neutralised with no verdict change', () => {
+    // Literals, deliberately NOT derived from the exported record: a table
+    // driven off the thing it validates cannot see a value being lowered.
+    expect(FLOORS.srcFiles).toBe(250);
+    expect(FLOORS.loadedModules).toBe(240);
+    expect(FLOORS.reachableSymbols).toBe(900);
+    expect(FLOORS.scopeFiles).toBe(40);
+    expect(FLOORS.liveScopeSymbols).toBe(40);
+    expect(FLOORS.shimFiles).toBe(30);
+    expect(Object.keys(FLOORS).length).toBe(6);
+  });
+
+  it('refuses a scope that matched nothing, WITHOUT relying on a floor', () => {
+    // Every FLOORS value can be zeroed in a one-line diff. "the scope matched no
+    // files" is not a magnitude, so this refusal survives that diff and is what
+    // makes the dark run fail at the script rather than only in this suite.
+    const proc = run(['--scope=src/locale']);
+    expect(proc.status).toBe(1);
+    expect(proc.stderr).toContain('matched NO files');
+    expect(proc.stderr).toContain('cannot report success');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('refuses --scope= with an empty value instead of checking the default', () => {
+    // `--scope=$DIR` with DIR unset. Falling back would report a green for a
+    // directory the caller never named.
+    const proc = run(['--scope=']);
+    expect(proc.status).toBe(2);
+    expect(proc.stderr).toContain('empty value');
   }, SPAWN_TIMEOUT_MS);
 
   it('exits 1 when the self-probe fails, proving main consults it', () => {

@@ -74,12 +74,21 @@
  * ------------------------------------
  *  1. COLLAPSE TOWARD ZERO — the scan silently yields nothing (a renamed
  *     directory, a compiler-API change, an entry point that moved, a file that
- *     stops parsing). The FLOORS below catch this, plus a hard failure on any
+ *     stops parsing). {@link FLOORS} catches this, plus a hard failure on any
  *     file with parse diagnostics and on a missing entry point. A build entry
  *     that moves without this file moving with it is caught separately by
- *     {@link checkBuildEntriesInSync}, because a critic rooted at a path that
- *     is no longer the shipped entry reports everything as dead — loudly, but
- *     for the wrong reason — or, if it were written to tolerate that, silently.
+ *     {@link checkBuildEntriesInSync}, which requires SET EQUALITY with
+ *     `vite.config.ts`'s `pack.entry`: a missing entry makes the critic report
+ *     everything as dead (loud), and an ADDED one makes it report the new
+ *     binary's symbols as dead while telling the author to annotate them
+ *     (silent, and self-certifying — the worse of the two).
+ *
+ *     The floors themselves are the part that can be neutralised without
+ *     changing a verdict, so they are EXPORTED and pinned to literals by the
+ *     unit test, which also asserts the real magnitudes off `--json`. Measured
+ *     before that fence existed: zeroing all six left 30/30 green, and zeroing
+ *     them alongside a scope matching nothing produced `check OK — 0 files ...
+ *     0 exported symbols` at exit 0.
  *
  *  2. COLLAPSE TOWARD GREEN — the reachability computation degrades so that
  *     everything reads as reachable. No floor sees this: file and symbol counts
@@ -125,6 +134,24 @@
  * it cannot manufacture a false accusation — and it means a "no finding" result
  * is not proof that a symbol executes, only that something references it.
  *
+ * Two over-approximations are worth naming because they are silent rather than
+ * merely imprecise:
+ *
+ *  - A NAMESPACE or DEFAULT import clears EVERY export of its target, since the
+ *    binding's property accesses are not tracked. Measured 2026-08-26: the only
+ *    such edge into the scope is `websocket-server.ts:28`'s `import * as
+ *    websocketBody`, and `websocket-body.ts` exports exactly ONE value, so the
+ *    widening is currently inert. It stops being inert the moment a second
+ *    export is added there, which would then be live forever with no caller —
+ *    so the unit test asserts that export count rather than trusting the note.
+ *
+ *  - An entry point re-exporting through TWO levels of `export *` loses
+ *    reachability at the second hop, because the entry-root walk expands
+ *    `export *` one level. Latent: `src/index.ts` uses direct named re-exports.
+ *    This one under-approximates, so it could manufacture a false accusation;
+ *    it is recorded rather than fixed because closing it means a general
+ *    star-expansion the tree gives no way to exercise.
+ *
  * USAGE
  *   node --experimental-strip-types scripts/check-local-reachability.ts
  *   node --experimental-strip-types scripts/check-local-reachability.ts --json
@@ -165,26 +192,44 @@ const MIN_REASON_CHARS = 24;
 // ---------------------------------------------------------------------------
 // FLOORS — collapse toward zero
 // ---------------------------------------------------------------------------
-/** Minimum `src/**` files a healthy scan parses. */
-const MIN_SRC_FILES = 250;
-/** Minimum modules the load closure reaches from the entry points. */
-const MIN_LOADED_MODULES = 240;
-/** Minimum symbols the reachability walk marks live across all of `src/`. */
-const MIN_REACHABLE_SYMBOLS = 900;
-/** Minimum files in the checked scope. */
-const MIN_SCOPE_FILES = 40;
-/** Minimum LIVE exported symbols in the checked scope. */
-const MIN_LIVE_SCOPE_SYMBOLS = 40;
 /**
- * Minimum re-export shims in the checked scope.
+ * The magnitudes a healthy scan must exceed.
  *
- * This one is not decoration. Shims are exempt BY CONSTRUCTION (they declare no
- * value symbol), so a parser regression that stopped recognising `export ...
- * from` would move every shim into "declares nothing" — which is also exempt —
- * and the run would stay green having lost the distinction the exemption rests
- * on. The floor is what makes that regression loud.
+ * EXPORTED, and pinned to literals by `tests/unit/scripts/local-reachability.test.ts`,
+ * because a floor is the one part of a critic that can be neutralised without
+ * changing a single verdict: zeroing all six left every test green, and zeroing
+ * them WITH a scope that matches nothing produced `check OK — 0 files ... 0
+ * exported symbols` at exit 0. A critic that examined nothing reported success,
+ * which is the confluence-point shape this whole file exists to prevent.
+ *
+ * Two fences, because they fail differently. The test pins these constants, so
+ * lowering one is a diff a reviewer sees. And the same test asserts the REAL
+ * magnitudes off `--json`, which is what catches the other half: a scope that
+ * silently stops matching leaves the constants untouched and every count at
+ * zero.
  */
-const MIN_SHIM_FILES = 30;
+export const FLOORS = {
+  /** Minimum `src/**` files a healthy scan parses. */
+  srcFiles: 250,
+  /** Minimum modules the load closure reaches from the entry points. */
+  loadedModules: 240,
+  /** Minimum symbols the reachability walk marks live across all of `src/`. */
+  reachableSymbols: 900,
+  /** Minimum files in the checked scope. */
+  scopeFiles: 40,
+  /** Minimum LIVE exported symbols in the checked scope. */
+  liveScopeSymbols: 40,
+  /**
+   * Minimum re-export shims in the checked scope.
+   *
+   * This one is not decoration. Shims are exempt BY CONSTRUCTION (they declare
+   * no value symbol), so a parser regression that stopped recognising `export
+   * ... from` would move every shim into "declares nothing" — which is also
+   * exempt — and the run would stay green having lost the distinction the
+   * exemption rests on. The floor is what makes that regression loud.
+   */
+  shimFiles: 30,
+} as const;
 
 export type ModuleClass =
   | 'live'
@@ -412,8 +457,12 @@ function parseFile(path: string, text: string): { info: FileInfo; parseError?: s
       info.decls.set(name, { exported, refs, dynamicSpecs, line, tag, reasonChars });
     };
 
-    if (ts.isFunctionDeclaration(st) && st.name) addDecl(st.name.text, st);
-    else if (ts.isClassDeclaration(st) && st.name) addDecl(st.name.text, st);
+    // An ANONYMOUS `export default function () {}` has no `st.name`. Falling
+    // through would drop it, and a module whose only export is one would then
+    // classify `types-only` and be silently exempt from the whole rule. It is
+    // registered under `default`, which is the name an importer resolves.
+    if (ts.isFunctionDeclaration(st)) addDecl(st.name?.text ?? 'default', st);
+    else if (ts.isClassDeclaration(st)) addDecl(st.name?.text ?? 'default', st);
     else if (ts.isEnumDeclaration(st)) addDecl(st.name.text, st);
     else if (ts.isVariableStatement(st)) {
       for (const d of st.declarationList.declarations) {
@@ -495,13 +544,18 @@ export function analyzeReachability(input: AnalysisInput): ReachabilityReport {
   // ---- symbol graph --------------------------------------------------------
   const key = (file: string, name: string): string => `${file}#${name}`;
   const MODULE_SYMBOL = '<module>';
+  /** Re-export lookups whose recursion hit a cycle; see `resolveExport`. */
+  const cycleTruncated = new Set<string>();
 
   const exportCache = new Map<string, string[]>();
   const resolveExport = (file: string, name: string, seen: Set<string>): string[] => {
     const ck = key(file, name);
     const cached = exportCache.get(ck);
     if (cached) return cached;
-    if (seen.has(ck)) return [];
+    if (seen.has(ck)) {
+      cycleTruncated.add(ck);
+      return [];
+    }
     seen.add(ck);
     const info = infos.get(file);
     if (!info) return [];
@@ -510,14 +564,23 @@ export function analyzeReachability(input: AnalysisInput): ReachabilityReport {
       return [ck];
     }
     const out: string[] = [];
+    let truncated = false;
     for (const re of info.reexports) {
       if (re.typeOnly) continue;
       const target = resolveSpec(file, re.spec);
       if (!target) continue;
+      const before = cycleTruncated.size;
       if (re.star) out.push(...resolveExport(target, name, seen));
       else if (re.exported === name) out.push(...resolveExport(target, re.imported, seen));
+      if (cycleTruncated.size !== before) truncated = true;
     }
-    exportCache.set(ck, out);
+    // A frame whose recursion short-circuited on `seen` is INCOMPLETE for this
+    // call's cycle, not a general answer. Memoizing it would hand the truncated
+    // result to a later, cycle-free lookup and make a genuinely reachable symbol
+    // read as dead — an under-approximation, which is the one direction that can
+    // manufacture a FALSE accusation. Cheaper to not cache it than to reason
+    // about when it is safe.
+    if (!truncated) exportCache.set(ck, out);
     return out;
   };
 
@@ -694,20 +757,93 @@ export function readSourceTree(root: string): Map<string, string> {
 }
 
 /**
- * A critic rooted at a path that is no longer a shipped entry point reports the
- * whole tree as dead. That is loud, but it points at the source files rather
- * than at this constant, so it is worth naming the real cause directly.
+ * Reads the `pack.entry` map out of `vite.config.ts`.
+ *
+ * Parsed rather than substring-matched. A whole-file `includes("'src/index.ts'")`
+ * is satisfied by a COMMENT that merely names the path, so it keeps passing
+ * through the very rename it exists to catch.
+ */
+export function readPackEntries(viteConfigText: string): string[] | undefined {
+  const sf = ts.createSourceFile(
+    'vite.config.ts',
+    viteConfigText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  let entries: string[] | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      entries === undefined &&
+      ts.isPropertyAssignment(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'pack' &&
+      ts.isObjectLiteralExpression(node.initializer)
+    ) {
+      for (const prop of node.initializer.properties) {
+        if (
+          !ts.isPropertyAssignment(prop) ||
+          !ts.isIdentifier(prop.name) ||
+          prop.name.text !== 'entry' ||
+          !ts.isObjectLiteralExpression(prop.initializer)
+        ) {
+          continue;
+        }
+        const found: string[] = [];
+        for (const e of prop.initializer.properties) {
+          if (ts.isPropertyAssignment(e) && ts.isStringLiteralLike(e.initializer)) {
+            found.push(e.initializer.text);
+          }
+        }
+        entries = found;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return entries;
+}
+
+/**
+ * Requires {@link ENTRY_RELATIVE} to EQUAL `vite.config.ts`'s `pack.entry` set.
+ *
+ * Equality, not containment, and the difference is the whole point. A missing
+ * entry is the loud failure — a critic rooted at a path that no longer ships
+ * reports the entire tree as dead, which at least points somewhere. An ADDED
+ * entry is the quiet one: symbols reachable only from the new binary read as
+ * unreachable, and this file's own message then tells the author to ANNOTATE
+ * them as dead. That turns a wrong verdict into a permanent, self-certifying
+ * one, which is strictly worse than the bug it replaces.
  */
 export function checkBuildEntriesInSync(viteConfigText: string): string[] {
+  const declared = readPackEntries(viteConfigText);
+  if (declared === undefined) {
+    return [
+      `could not read \`pack.entry\` from vite.config.ts. This critic's reachability ` +
+        `roots are ENTRY_RELATIVE in scripts/check-local-reachability.ts and are ` +
+        `verified against that map; with the map unreadable the roots are unverified, ` +
+        `so this refuses rather than assuming they still agree.`,
+    ];
+  }
+  const declaredSet = new Set(declared);
+  const expectedSet = new Set<string>(ENTRY_RELATIVE);
+  const missing = [...expectedSet].filter((e) => !declaredSet.has(e));
+  const extra = [...declaredSet].filter((e) => !expectedSet.has(e));
   const failures: string[] = [];
-  for (const entry of ENTRY_RELATIVE) {
-    if (!viteConfigText.includes(`'${entry}'`)) {
-      failures.push(
-        `vite.config.ts no longer lists \`${entry}\` as a pack entry. This critic's ` +
-          `reachability roots are ENTRY_RELATIVE in scripts/check-local-reachability.ts; ` +
-          `update them together or every symbol reads as unreachable.`
-      );
-    }
+  for (const entry of missing) {
+    failures.push(
+      `vite.config.ts no longer lists \`${entry}\` as a pack entry, but ENTRY_RELATIVE ` +
+        `in scripts/check-local-reachability.ts still roots reachability there. Update ` +
+        `them together or every symbol reads as unreachable.`
+    );
+  }
+  for (const entry of extra) {
+    failures.push(
+      `vite.config.ts ships a pack entry \`${entry}\` that ENTRY_RELATIVE in ` +
+        `scripts/check-local-reachability.ts does not root reachability at. Symbols ` +
+        `reachable ONLY from it will be reported unreachable, and this critic's own ` +
+        `message will tell the author to annotate them as dead. Add it to ENTRY_RELATIVE.`
+    );
   }
   return failures;
 }
@@ -727,14 +863,15 @@ const PROBE_SRC = `${PROBE_ROOT}${sep}src`;
  * every finding kind, so a classifier degrading toward "everything is
  * reachable" and one degrading toward "everything is dead" are BOTH caught.
  *
- * It also carries four SHAPES THE REAL TREE HAPPENS NOT TO CONTAIN today - a
+ * It also carries six SHAPES THE REAL TREE HAPPENS NOT TO CONTAIN today - a
  * type-only re-export, a module reached only by `import type`, an entry point
- * that declares (rather than re-exports) its own API, and a class reaching its
- * base through `extends`. Each of those is a clause in the analysis whose
- * removal changes nothing about `src/`, so the real-tree probes cannot see it
- * and a later refactor would silently lose it. The real tree stays the primary
- * subject; this corpus is where the clauses that have no real instance yet get
- * their fence.
+ * that declares (rather than re-exports) its own API, a class reaching its base
+ * through `extends`, a re-export CYCLE (whose truncated frame must not be
+ * memoized), and an ANONYMOUS default export (which has no declaration name).
+ * Each of those is a clause in the analysis whose removal changes nothing about
+ * `src/`, so the real-tree probes cannot see it and a later refactor would
+ * silently lose it. The real tree stays the primary subject; this corpus is
+ * where the clauses that have no real instance yet get their fence.
  */
 function probeSources(): Map<string, string> {
   const f = (p: string): string => join(PROBE_SRC, ...p.split('/'));
@@ -746,6 +883,23 @@ function probeSources(): Map<string, string> {
         `export { libExport } from './scope/lib.js';\n` +
         `export function libraryApi(): number { return libExport2; }\n`,
     ],
+    // A re-export CYCLE, and its MAP POSITION IS LOAD-BEARING. Edges are built
+    // in insertion order, so `dead-caller.ts` must be walked BEFORE the entry
+    // point: its lookup goes hub -> leg -> hub, which truncates the leg's frame
+    // on `seen`. Memoizing that truncated frame then hands `[]` to the entry
+    // point's later, cycle-free lookup through the leg, and `cyclicTarget`
+    // reads as dead with no caller having changed -- an UNDER-approximation,
+    // the one direction that manufactures a FALSE accusation. Ordered the other
+    // way round the entry point resolves first, caches the correct answer, and
+    // the probe passes whether or not the guard exists.
+    [
+      f('scope/dead-caller.ts'),
+      `import { cyclicTarget } from './cyc-hub.js';\n` +
+        `export function deadCaller(): number { return cyclicTarget(); }\n`,
+    ],
+    [f('scope/cyc-hub.ts'), `export * from './cyc-leg.js';\nexport * from './cyc-real.js';\n`],
+    [f('scope/cyc-leg.ts'), `export * from './cyc-hub.js';\n`],
+    [f('scope/cyc-real.ts'), `export function cyclicTarget(): number { return 10; }\n`],
     [
       f('cli/index.ts'),
       `import { entryUsed } from '../scope/live.js';\n` +
@@ -753,12 +907,14 @@ function probeSources(): Map<string, string> {
         `import { stillLive } from '../scope/stale.js';\n` +
         `import { Derived } from '../scope/derived.js';\n` +
         `import { orphan as viaTypeHub } from '../scope/type-hub.js';\n` +
+        `import { cyclicTarget } from '../scope/cyc-leg.js';\n` +
         `import type { typeOnlyTarget } from '../scope/type-only-target.js';\n` +
         `entryUsed();\n` +
         `startApiServer();\n` +
         `stillLive();\n` +
         `void Derived;\n` +
-        `void viaTypeHub;\n`,
+        `void viaTypeHub;\n` +
+        `cyclicTarget();\n`,
     ],
     [
       f('scope/live.ts'),
@@ -799,10 +955,10 @@ function probeSources(): Map<string, string> {
     [f('scope/type-hub.ts'), `export type { orphan } from './unreferenced.js';\n`],
     // Reached only by `import type`, which is erased whole, so the module is
     // never even loaded.
-    [
-      f('scope/type-only-target.ts'),
-      `export function typeOnlyTarget(): number { return 9; }\n`,
-    ],
+    [f('scope/type-only-target.ts'), `export function typeOnlyTarget(): number { return 9; }\n`],
+    // An ANONYMOUS default export has no declaration name; dropping it would
+    // leave the module classified `types-only` and silently exempt.
+    [f('scope/anon-default.ts'), `export default function (): number { return 11; }\n`],
   ]);
 }
 
@@ -834,6 +990,8 @@ export function runSelfProbe(analyze: (input: AnalysisInput) => ReachabilityRepo
     ['shim-orphan.ts', 'shim-unreferenced'],
     ['base.ts', 'live'],
     ['derived.ts', 'live'],
+    ['cyc-real.ts', 'live'],
+    ['anon-default.ts', 'unreferenced'],
     ['type-hub.ts', 'types-only'],
     ['type-only-target.ts', 'unreferenced'],
   ] as const) {
@@ -856,6 +1014,8 @@ export function runSelfProbe(analyze: (input: AnalysisInput) => ReachabilityRepo
     ['typeOnlyTarget', 'unannotated'],
     ['bareAnnotated', 'bare-annotation'],
     ['stillLive', 'stale-annotation'],
+    ['deadCaller', 'unannotated'],
+    ['default', 'unannotated'],
   ] as const) {
     const actual = kinds.get(symbol);
     if (actual !== kind) {
@@ -876,6 +1036,7 @@ export function runSelfProbe(analyze: (input: AnalysisInput) => ReachabilityRepo
     'startApiServer',
     'Base',
     'Derived',
+    'cyclicTarget',
   ]) {
     if (kinds.has(symbol)) {
       failures.push(`self-probe: \`${symbol}\` must not be reported, saw ${kinds.get(symbol)}`);
@@ -883,8 +1044,8 @@ export function runSelfProbe(analyze: (input: AnalysisInput) => ReachabilityRepo
   }
 
   if (report.shimFiles !== 2) failures.push(`self-probe: expected 2 shims, saw ${report.shimFiles}`);
-  if (report.findings.length !== 6) {
-    failures.push(`self-probe: expected exactly 6 findings, saw ${report.findings.length}`);
+  if (report.findings.length !== 8) {
+    failures.push(`self-probe: expected exactly 8 findings, saw ${report.findings.length}`);
   }
   return failures;
 }
@@ -920,9 +1081,58 @@ function describe(finding: Finding): string {
   }
 }
 
+/**
+ * Refuses a run that had no subject, WITHOUT consulting {@link FLOORS}.
+ *
+ * Every floor can be lowered to zero in a one-line diff, and doing that to all
+ * six left the whole suite green; doing it alongside a scope matching nothing
+ * printed `check OK — 0 files ... 0 exported symbols` at exit 0. These two
+ * conditions cannot be satisfied by any setting of the floors, because "the
+ * scope matched no file" and "not one exported symbol came out of it" are not
+ * magnitudes to calibrate — they are the absence of a subject.
+ *
+ * Exported so both branches are directly testable. The second is unreachable
+ * from any directory in this repo, which is exactly why it needs a unit test
+ * rather than a CLI probe: a clause no input can exercise is one a later
+ * refactor deletes with every test still green.
+ */
+export function checkScopeIsNotVacuous(
+  report: Pick<ReachabilityReport, 'scopeFiles' | 'scopeExportedSymbols'>,
+  scopeLabel: string
+): string[] {
+  if (report.scopeFiles === 0) {
+    return [
+      `the scope ${scopeLabel} matched NO files. A critic that examined nothing cannot ` +
+        `report success -- check the --scope= value, or the directory has been renamed ` +
+        `out from under this check.`,
+    ];
+  }
+  if (report.scopeExportedSymbols === 0) {
+    return [
+      `the scope ${scopeLabel} has ${report.scopeFiles} files but NOT ONE exported symbol ` +
+        `was parsed out of them, which no healthy tree produces -- the declaration walk ` +
+        `has stopped seeing exports.`,
+    ];
+  }
+  return [];
+}
+
 export function main(argv: readonly string[]): number {
   const json = argv.includes('--json');
-  const scopeArg = argv.find((a) => a.startsWith('--scope='))?.slice('--scope='.length);
+  const scopeFlag = argv.find((a) => a.startsWith('--scope='));
+  const scopeArg = scopeFlag?.slice('--scope='.length);
+  // `--scope=$DIR` with DIR unset expands to `--scope=`, and a falsy-check would
+  // quietly fall back to the DEFAULT scope and exit 0 — reporting a green for a
+  // directory the caller never named. The flag being PRESENT is what matters,
+  // not whether its value is truthy.
+  if (scopeFlag !== undefined && scopeArg === '') {
+    process.stderr.write(
+      `--scope= was given an empty value (an unset shell variable?). Refusing rather ` +
+        `than falling back to the default scope, which would report a green for a ` +
+        `directory you did not name.\n`
+    );
+    return 2;
+  }
   const scopeRoot = scopeArg ? resolve(REPO_ROOT, scopeArg) : join(SRC_ROOT, 'local');
 
   // A mistyped `--scope=` silently checks the DEFAULT scope and reports a green
@@ -964,13 +1174,15 @@ export function main(argv: readonly string[]): number {
 
     for (const parseError of report.parseErrors) failures.push(parseError);
 
+    failures.push(...checkScopeIsNotVacuous(report, relative(REPO_ROOT, scopeRoot)));
+
     const floors: [number, number, string][] = [
-      [report.filesScanned, MIN_SRC_FILES, 'src files parsed'],
-      [report.loadedModules, MIN_LOADED_MODULES, 'modules in the load closure'],
-      [report.reachableSymbols, MIN_REACHABLE_SYMBOLS, 'reachable symbols'],
-      [report.scopeFiles, MIN_SCOPE_FILES, 'files in scope'],
-      [report.liveScopeSymbols, MIN_LIVE_SCOPE_SYMBOLS, 'live exported symbols in scope'],
-      [report.shimFiles, MIN_SHIM_FILES, 're-export shims in scope'],
+      [report.filesScanned, FLOORS.srcFiles, 'src files parsed'],
+      [report.loadedModules, FLOORS.loadedModules, 'modules in the load closure'],
+      [report.reachableSymbols, FLOORS.reachableSymbols, 'reachable symbols'],
+      [report.scopeFiles, FLOORS.scopeFiles, 'files in scope'],
+      [report.liveScopeSymbols, FLOORS.liveScopeSymbols, 'live exported symbols in scope'],
+      [report.shimFiles, FLOORS.shimFiles, 're-export shims in scope'],
     ];
     for (const [actual, minimum, label] of floors) {
       if (actual < minimum) {
@@ -988,7 +1200,11 @@ export function main(argv: readonly string[]): number {
     return 1;
   }
 
-  process.stdout.write(
+  // Under `--json`, stdout is a DATA channel: appending the human summary to it
+  // makes `--json | jq` fail on trailing text, and a test that slices back to
+  // the last `}` to work around that pins the defect instead of catching it.
+  const summary = json ? process.stderr : process.stdout;
+  summary.write(
     `local reachability check OK — ${report?.scopeFiles} files in ${relative(REPO_ROOT, scopeRoot)} ` +
       `(${report?.shimFiles} re-export shims), ${report?.scopeExportedSymbols} exported symbols: ` +
       `${report?.liveScopeSymbols} reachable, ${report?.deadScopeSymbols} annotated ` +
