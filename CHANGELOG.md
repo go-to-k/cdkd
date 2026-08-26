@@ -1,3 +1,10 @@
+## [0.284.55](https://github.com/go-to-k/cdkd/compare/v0.284.54...v0.284.55) (2026-08-26)
+
+
+### Bug Fixes
+
+* **destroy:** stop --all on a Ctrl-C the per-stack runner never sees ([#2237](https://github.com/go-to-k/cdkd/issues/2237)) ([3c18019](https://github.com/go-to-k/cdkd/commit/3c1801914aeaf341b1ae4fb655bfb7aca2998daa))
+
 ## [0.284.54](https://github.com/go-to-k/cdkd/compare/v0.284.53...v0.284.54) (2026-08-26)
 
 
