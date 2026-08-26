@@ -30,6 +30,7 @@ import {
   IAM_PROPAGATION_MAX_RETRIES,
 } from '../../deployment/retry.js';
 import { startInterruptWatch, type InterruptWatch } from '../interrupt-watch.js';
+import { CUSTOM_RESOURCE_RESPONSE_PREFIX } from '../../state/state-prefix.js';
 import {
   isIamPropagationError,
   isMarkedNonRetryable,
@@ -868,7 +869,7 @@ export class CustomResourceProvider implements ResourceProvider {
     this.s3Client = awsClients.s3;
     this.configuredRegion = awsClients.configuredRegion;
     this.responseBucket = config?.responseBucket;
-    this.responsePrefix = config?.responsePrefix ?? 'custom-resource-responses';
+    this.responsePrefix = config?.responsePrefix ?? CUSTOM_RESOURCE_RESPONSE_PREFIX;
     this.asyncResponseTimeoutMs =
       config?.asyncResponseTimeoutMs ?? CustomResourceProvider.DEFAULT_ASYNC_RESPONSE_TIMEOUT_MS;
   }

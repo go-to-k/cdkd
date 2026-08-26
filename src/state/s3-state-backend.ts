@@ -677,6 +677,48 @@ export class S3StateBackend {
   }
 
   /**
+   * Raw sidecar-object listing WITH metadata under the state bucket.
+   *
+   * {@link listRawKeys}'s twin, and it exists because an age-guarded sweep
+   * needs `LastModified` and the reclaim plan needs `Size` — neither of which a
+   * key list carries. Used by `cdkd gc`'s custom-resource-response sweep
+   * (issue #2052), where the age is the only thing separating an abandoned
+   * placeholder from one a concurrent run is about to write to.
+   *
+   * `LastModified` / `Size` are omitted from the response only for a key S3
+   * did not return metadata for, which does not happen for `ListObjectsV2`
+   * `Contents` entries; an entry missing either is DROPPED rather than
+   * defaulted, because defaulting the date would either exempt an object from
+   * the age guard forever or expose it immediately, and both are wrong in a
+   * direction the caller cannot see.
+   */
+  async listRawObjects(
+    keyPrefix: string
+  ): Promise<Array<{ key: string; lastModified: Date; size: number }>> {
+    await this.ensureClientForBucket();
+    const objects: Array<{ key: string; lastModified: Date; size: number }> = [];
+    let continuationToken: string | undefined;
+    do {
+      const response = await this.s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Prefix: keyPrefix,
+          ...(continuationToken && { ContinuationToken: continuationToken }),
+        })
+      );
+      for (const obj of response.Contents ?? []) {
+        if (obj.Key === undefined || obj.LastModified === undefined || obj.Size === undefined) {
+          continue;
+        }
+        objects.push({ key: obj.Key, lastModified: obj.LastModified, size: obj.Size });
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return objects;
+  }
+
+  /**
    * Raw sidecar-object batch delete under the state bucket. Used by the
    * deployment-events pruner (issue #885) to drop superseded `{runId}.jsonl`
    * streams + their index. Chunked to the 1,000-key `DeleteObjects` ceiling.

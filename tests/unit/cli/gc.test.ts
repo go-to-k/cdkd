@@ -9,6 +9,12 @@ const { mockS3Send, mockStsSend, mockEcrSend, mockQuestion, stateBackendMocks, l
     stateBackendMocks: {
       getRawObject: vi.fn(),
       listRawKeys: vi.fn(),
+      // Issue #2052: gc now also sweeps the STATE bucket's abandoned
+      // custom-resource response placeholders, on EVERY run. Defaulted to
+      // "none" here so this suite keeps measuring the asset paths; the sweep's
+      // own matrix lives in `gc-custom-resource-responses.test.ts`.
+      listRawObjects: vi.fn(),
+      deleteRawObjects: vi.fn(),
     },
     // Hoisted rather than created per `getLogger()` call so what gc PRINTS is
     // assertable: the not-opted-in message is the whole user-visible outcome of
@@ -319,6 +325,9 @@ function expectNothingDeleted(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   mockStsSend.mockResolvedValue({ Account: ACCOUNT });
+  // Issue #2052 — no abandoned response placeholders by default.
+  stateBackendMocks.listRawObjects.mockResolvedValue([]);
+  stateBackendMocks.deleteRawObjects.mockResolvedValue(undefined);
 
   // Default scripting: marker present, two state files (default + custom
   // prefix), no locks; asset bucket holds every referenced key (all OLD)

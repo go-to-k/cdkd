@@ -22,7 +22,15 @@ const { mockS3Send, mockStsSend, mockEcrSend, stateBackendMocks, loggerMocks, am
     mockS3Send: vi.fn(),
     mockStsSend: vi.fn(),
     mockEcrSend: vi.fn(),
-    stateBackendMocks: { getRawObject: vi.fn(), listRawKeys: vi.fn() },
+    // `listRawObjects` / `deleteRawObjects`: issue #2052's response-placeholder
+    // sweep runs on every gc, so the backend mock owes them even here, where
+    // the subject is region resolution.
+    stateBackendMocks: {
+      getRawObject: vi.fn(),
+      listRawKeys: vi.fn(),
+      listRawObjects: vi.fn(),
+      deleteRawObjects: vi.fn(),
+    },
     loggerMocks: {
       setLevel: vi.fn(),
       debug: vi.fn(),
@@ -169,6 +177,8 @@ beforeEach(() => {
   // below focused on the region RESOLUTION rather than on the collection walk.
   stateBackendMocks.getRawObject.mockResolvedValue(null);
   stateBackendMocks.listRawKeys.mockResolvedValue([]);
+  stateBackendMocks.listRawObjects.mockResolvedValue([]);
+  stateBackendMocks.deleteRawObjects.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
