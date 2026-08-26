@@ -762,8 +762,32 @@ export function readSourceTree(root: string): Map<string, string> {
  * Parsed rather than substring-matched. A whole-file `includes("'src/index.ts'")`
  * is satisfied by a COMMENT that merely names the path, so it keeps passing
  * through the very rename it exists to catch.
+ *
+ * Returns `undefined` when the MAP itself is unreadable (no `pack.entry`, or it
+ * is not an object literal), and a non-zero {@link PackEntries.unreadable} when
+ * the map is readable but some MEMBER of it is not. Those are different
+ * failures and both must refuse: an earlier revision skipped unreadable members
+ * silently, and a real pack entry written as a spread, an identifier, a ternary
+ * or a template then produced an empty `extra` list at exit 0 — the header
+ * below claimed the map was "refused outright", which was true of the map and
+ * false of a member.
  */
-export function readPackEntries(viteConfigText: string): string[] | undefined {
+export interface PackEntries {
+  /** Statically resolvable `name: 'literal'` members, in source order. */
+  readonly entries: readonly string[];
+  /**
+   * Members that are PRESENT but not statically resolvable.
+   *
+   * Counted rather than skipped. `checkBuildEntriesInSync` refuses on a
+   * non-zero count, which is the fail-closed convention the sibling critics
+   * already use for an unresolvable delete key: a member this reader cannot
+   * see is a member it cannot compare, and comparing the rest would report
+   * agreement it never established.
+   */
+  readonly unreadable: number;
+}
+
+export function readPackEntries(viteConfigText: string): PackEntries | undefined {
   const sf = ts.createSourceFile(
     'vite.config.ts',
     viteConfigText,
@@ -771,10 +795,10 @@ export function readPackEntries(viteConfigText: string): string[] | undefined {
     true,
     ts.ScriptKind.TS
   );
-  let entries: string[] | undefined;
+  let result: PackEntries | undefined;
   const visit = (node: ts.Node): void => {
     if (
-      entries === undefined &&
+      result === undefined &&
       ts.isPropertyAssignment(node) &&
       ts.isIdentifier(node.name) &&
       node.name.text === 'pack' &&
@@ -789,19 +813,28 @@ export function readPackEntries(viteConfigText: string): string[] | undefined {
         ) {
           continue;
         }
-        const found: string[] = [];
+        const entries: string[] = [];
+        let unreadable = 0;
         for (const e of prop.initializer.properties) {
+          // Anything that is not a plain `name: 'literal'` is a member this
+          // reader cannot resolve: a spread, a shorthand, an identifier value, a
+          // ternary, a template with substitutions, a call. Skipping it silently
+          // is the failure this counter exists to prevent -- a real pack entry
+          // added in any of those shapes would leave `entries` short, `extra`
+          // empty and the whole check green.
           if (ts.isPropertyAssignment(e) && ts.isStringLiteralLike(e.initializer)) {
-            found.push(e.initializer.text);
+            entries.push(e.initializer.text);
+          } else {
+            unreadable++;
           }
         }
-        entries = found;
+        result = { entries, unreadable };
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return entries;
+  return result;
 }
 
 /**
@@ -825,7 +858,17 @@ export function checkBuildEntriesInSync(viteConfigText: string): string[] {
         `so this refuses rather than assuming they still agree.`,
     ];
   }
-  const declaredSet = new Set(declared);
+  if (declared.unreadable > 0) {
+    return [
+      `vite.config.ts's \`pack.entry\` has ${declared.unreadable} member(s) this reader ` +
+        `cannot resolve statically (a spread, a shorthand, an identifier, a ternary, a ` +
+        `template with substitutions, or a call). Skipping them would under-report the ` +
+        `entry set, leave the ADDED-entry check with nothing to find, and report ` +
+        `agreement that was never established -- so this refuses. Either write the ` +
+        `entry as a plain \`name: 'src/...'\` literal, or teach readPackEntries the shape.`,
+    ];
+  }
+  const declaredSet = new Set(declared.entries);
   const expectedSet = new Set<string>(ENTRY_RELATIVE);
   const missing = [...expectedSet].filter((e) => !declaredSet.has(e));
   const extra = [...declaredSet].filter((e) => !expectedSet.has(e));

@@ -40,8 +40,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Keep this on every function in this fixture: a new handler that omits it
  * silently reintroduces the arm64-only flake, and it passes on CI (amd64,
  * where the default IS the host arch). The fence lives in
- * `tests/unit/scripts/integ-fixture-host-architecture.test.ts`. The other 16
- * `local-*` fixtures are still unfixed -- go-to-k/cdkd#2287.
+ * `tests/unit/scripts/integ-fixture-host-architecture.test.ts`. 16 further
+ * `local-*` fixtures still declare no architecture (go-to-k/cdkd#2287). They are
+ * NOT a mechanical sweep: a `provided.*` fixture pins the arch to a prebuilt
+ * BINARY and `DockerImageFunction` takes it from the image that was built, so
+ * neither wants `HOST_ARCHITECTURE` without a per-arch build.
  */
 const HOST_ARCHITECTURE =
   process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;

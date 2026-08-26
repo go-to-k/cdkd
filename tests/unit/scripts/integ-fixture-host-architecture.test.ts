@@ -37,6 +37,18 @@ const REPO_ROOT = resolve(import.meta.dirname, '../../..');
  * fixtures still declare no architecture (go-to-k/cdkd#2287); they join this
  * list one at a time, after a green arm64 run each.
  */
+/**
+ * ...and note what widening this list COSTS, because the constraint is real and
+ * not obvious: this fence demands `architecture: HOST_ARCHITECTURE`, so adding
+ * `local-invoke-provided` would require BREAKING it. That fixture pins
+ * `lambda.Architecture.X86_64` deliberately -- it ships a prebuilt `bootstrap`
+ * binary, so the declared arch must match the BINARY, not the host, and
+ * `architecture: lambda.Architecture.X86_64` fails this fence as written. The
+ * same holds for `lambda.DockerImageFunction`, whose arch comes from the image
+ * that was built. Both need a per-arch build (or their own exemption) before
+ * they can join, which is why go-to-k/cdkd#2287 calls them a judgement rather
+ * than an edit.
+ */
 const FIXTURE_STACKS = [
   'tests/integration/local-start-api/lib/local-start-api-stack.ts',
   'tests/integration/local-invoke/lib/local-invoke-stack.ts',
@@ -58,8 +70,18 @@ const CANONICAL_CTOR = 'new lambda.Function(';
  * `cloudfront.Function`), and the last is not a Lambda at all. Matching the
  * broad shape and then REQUIRING every hit to be canonical turns an
  * unrecognized spelling into a loud failure instead of a silent pass.
+ *
+ * The namespace part is `*`, not `?`, and that quantifier is load-bearing. With
+ * `?` the pattern allowed exactly ONE segment, so
+ * `new cdk.aws_lambda.Function(this, 'X', ...)` -- the ordinary `aws-cdk-lib`
+ * submodule form, and the spelling a contributor is most likely to reach for --
+ * matched nothing at all. Matching nothing means the call is absent from BOTH
+ * the broad-shape list and the canonical list, so the counts still agree and
+ * the architecture assertion is VACUOUSLY true of it: measured at 7/7 green
+ * with such a handler added. That is the silent direction, which is exactly
+ * what this constant exists to close.
  */
-const ANY_FUNCTION_CTOR = /new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)?[\w$]*Function\s*\(/g;
+const ANY_FUNCTION_CTOR = /new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)*[\w$]*Function\s*\(/g;
 
 /**
  * The exact derivation both fixtures must carry, whitespace-normalized.
@@ -142,12 +164,19 @@ describe('integ fixture Lambdas run at the host architecture (go-to-k/cdk-local#
       it('declares architecture: HOST_ARCHITECTURE on every lambda.Function', () => {
         const source = read();
         const calls = lambdaFunctionCalls(source);
-        // The two counts must agree, or the paren matcher mis-delimited a call
-        // and the filter below ran over the wrong text.
-        expect(
-          calls.length,
-          `${relPath}: paren matcher and regex disagree on the Lambda count`
-        ).toBe([...source.matchAll(ANY_FUNCTION_CTOR)].length);
+        const found = [...source.matchAll(ANY_FUNCTION_CTOR)].map((m) => m[0]);
+        // The count check is GUARDED on the spelling being canonical. A
+        // non-canonical spelling makes the counts disagree BY CONSTRUCTION --
+        // the paren matcher only walks `new lambda.Function(` -- so running it
+        // anyway produced a second failure blaming the paren matcher for what
+        // the test above has already reported correctly, sending the reader
+        // after a mis-delimitation that never happened.
+        if (found.every((spelling) => spelling === CANONICAL_CTOR)) {
+          expect(
+            calls.length,
+            `${relPath}: paren matcher and regex disagree on the Lambda count`
+          ).toBe(found.length);
+        }
         expect(calls.length, `${relPath} should declare at least one Lambda`).toBeGreaterThan(0);
 
         const missing = calls

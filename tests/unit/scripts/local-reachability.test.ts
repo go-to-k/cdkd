@@ -422,7 +422,10 @@ describe('local reachability critic — defences against itself', () => {
 
   it('reads pack.entry by PARSING it, not by matching the file text', () => {
     const config = readFileSync(join(REPO_ROOT, 'vite.config.ts'), 'utf8');
-    expect(readPackEntries(config)).toEqual(['src/index.ts', 'src/cli/index.ts']);
+    expect(readPackEntries(config)).toEqual({
+      entries: ['src/index.ts', 'src/cli/index.ts'],
+      unreadable: 0,
+    });
     // A whole-file substring match is satisfied by a COMMENT naming the path,
     // so it survives the very rename it exists to catch.
     const commentOnly =
@@ -431,6 +434,36 @@ describe('local reachability critic — defences against itself', () => {
     // ...and refuses outright when the map cannot be read at all.
     expect(checkBuildEntriesInSync('export default {}').length).toBe(1);
     expect(checkBuildEntriesInSync('export default {}')[0]).toContain('pack.entry');
+  });
+
+  it('refuses a pack.entry MEMBER it cannot resolve, instead of skipping it', () => {
+    // The silent half of the same hole. Skipping an unresolvable member leaves
+    // the entry set short and the ADDED-entry list EMPTY, so a real new binary
+    // passes at exit 0 -- measured across all four shapes below before the
+    // member counter existed.
+    const wrap = (members: string): string =>
+      `export default { pack: { entry: { index: 'src/index.ts', cli: 'src/cli/index.ts', ${members} } } };`;
+    const shapes: Record<string, string> = {
+      spread: '...extraEntries',
+      identifier: 'daemon: DAEMON_ENTRY',
+      conditional: "daemon: isProd ? 'src/daemon/index.ts' : 'src/dev.ts'",
+      template: 'daemon: `src/${name}/index.ts`',
+      shorthand: 'daemon',
+      call: 'daemon: resolveEntry()',
+    };
+    for (const [name, member] of Object.entries(shapes)) {
+      const source = wrap(member);
+      expect(readPackEntries(source)?.unreadable, `${name} must count as unreadable`).toBe(1);
+      const failures = checkBuildEntriesInSync(source);
+      expect(failures.length, `${name} must be refused`).toBe(1);
+      expect(failures[0]).toContain('cannot resolve statically');
+    }
+    // ...and a readable member alongside them is still counted, so the refusal
+    // is about the unreadable one rather than about the map being odd.
+    expect(readPackEntries(wrap('...extra'))?.entries).toEqual([
+      'src/index.ts',
+      'src/cli/index.ts',
+    ]);
   });
 
   it('notices when a build entry point is REMOVED', () => {
@@ -493,11 +526,16 @@ describe('local reachability critic — CLI and wiring', () => {
     const proc = run();
     expect(proc.status).toBe(0);
     expect(proc.stdout).toContain('local reachability check OK');
-    expect(proc.stdout).toContain('re-export shims');
-    // The two assertions above match UNCONDITIONAL literals, so they hold for a
-    // critic that examined nothing. Pin the magnitudes the summary reports.
-    expect(proc.stdout).toContain('57 files in src/local');
-    expect(proc.stdout).toContain('36 re-export shims');
+    // The assertion above matches an UNCONDITIONAL literal, so it holds for a
+    // critic that examined nothing. Read the magnitudes back out of the summary
+    // instead -- as a BAND, not an equality: a dark run reports 0, so a floor
+    // catches it identically, while an exact pin would red on any correct
+    // `src/local/**` addition and teach the next author to bump the number.
+    const summary = /OK — (\d+) files in (\S+) \((\d+) re-export shims\)/.exec(proc.stdout);
+    expect(summary, `summary line did not match: ${proc.stdout}`).not.toBeNull();
+    expect(Number(summary![1])).toBeGreaterThanOrEqual(45);
+    expect(summary![2]).toBe('src/local');
+    expect(Number(summary![3])).toBeGreaterThanOrEqual(32);
   }, SPAWN_TIMEOUT_MS);
 
   it('emits json and NOTHING else on stdout, so it survives a pipe', () => {
@@ -516,18 +554,34 @@ describe('local reachability critic — CLI and wiring', () => {
     // dark run, and `liveScopeSymbols` was asserted NOWHERE: zeroing all six
     // FLOORS and pointing the scope at a nonexistent directory produced
     // `check OK -- 0 files ... 0 exported symbols` at exit 0 with 30/30 green.
+    //
+    // Magnitudes are BANDS, invariants are EXACT, and the split is deliberate.
+    // A dark run yields 0 for every one of these, so a floor discriminates just
+    // as well as an equality -- while an equality also reds on any correct
+    // addition under `src/local/**`, whose only remedy is to bump the number,
+    // which is the reflex that makes an assertion worthless. go-to-k/cdkd#2277
+    // (deleting the orphans) will move four of these BY DESIGN: it takes
+    // scopeFiles 57 -> ~53 and scopeExportedSymbols 84 -> 55, so each band sits
+    // BELOW that state as well as ABOVE the checker's own FLOORS -- above the
+    // floors because a band equal to one adds nothing the floor does not
+    // already catch, below the post-2277 state because a band that reds on a
+    // planned, correct change is the same ratchet in the other direction.
     const proc = run(['--json']);
     const parsed = JSON.parse(proc.stdout);
-    expect(parsed.scopeFiles).toBe(57);
-    expect(parsed.modules.length).toBe(57);
-    expect(parsed.shimFiles).toBe(36);
-    expect(parsed.liveScopeSymbols).toBe(55);
-    expect(parsed.scopeExportedSymbols).toBe(84);
-    expect(parsed.deadScopeSymbols).toBe(29);
-    expect(parsed.annotatedNoLiveCaller + parsed.annotatedTestOnly).toBe(29);
+    expect(parsed.scopeFiles).toBeGreaterThanOrEqual(45);
+    expect(parsed.shimFiles).toBeGreaterThanOrEqual(32);
+    expect(parsed.liveScopeSymbols).toBeGreaterThanOrEqual(45);
+    expect(parsed.scopeExportedSymbols).toBeGreaterThanOrEqual(45);
     expect(parsed.filesScanned).toBeGreaterThanOrEqual(320);
     expect(parsed.loadedModules).toBeGreaterThanOrEqual(300);
     expect(parsed.reachableSymbols).toBeGreaterThanOrEqual(2300);
+    // Invariants: these are relations the report must satisfy at ANY size, so
+    // they neither ratchet nor weaken when the tree changes.
+    expect(parsed.modules.length).toBe(parsed.scopeFiles);
+    expect(parsed.deadScopeSymbols).toBe(
+      parsed.annotatedNoLiveCaller + parsed.annotatedTestOnly
+    );
+    expect(parsed.liveScopeSymbols + parsed.deadScopeSymbols).toBe(parsed.scopeExportedSymbols);
   }, SPAWN_TIMEOUT_MS);
 
   it('pins the FLOOR constants, which can be neutralised with no verdict change', () => {
