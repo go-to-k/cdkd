@@ -498,10 +498,18 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
     ]);
   });
 
-  // BOUND, not a fix (documented on `identityKeyFor`): an array of ARRAYS has no
-  // identity field on its OUTER elements, and descending it positionally would
-  // reintroduce the order assumption the keyed pass exists to avoid.
-  it('does not reach a secret nested in an array of ARRAYS', () => {
+  // FLIPPED DELIBERATELY for issue #2012, and the bound it used to pin is kept
+  // by the case below rather than dropped.
+  //
+  // `identityKeyFor` still refuses this shape — the OUTER elements are arrays,
+  // so there is no identity field to key on — and that half of the bound is
+  // unchanged. What changed is that refusing a keyed pairing is no longer the
+  // end of the readback walk: the anchor pass descends the outer list
+  // positionally once the inner elements' own anchors vouch for the alignment
+  // (`Name: 'db'` here), which answers the order objection instead of ignoring
+  // it. The old assertion pinned a LEAK, so closing it is the point of the
+  // lane; what must stay pinned is that the closure rests on corroboration.
+  it('reaches a secret nested in an array of ARRAYS once the positions corroborate', () => {
     const scrubbed = scrubResourceRecord(
       {
         properties: { Matrix: [[{ Name: 'db', Value: EXPR }]] },
@@ -509,7 +517,37 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
       },
       new Map()
     );
-    expect(scrubbed.observedProperties!['Matrix']).toEqual([[{ Name: 'db', Value: PLAINTEXT }]]);
+    expect(scrubbed.observedProperties!['Matrix']).toEqual([[{ Name: 'db', Value: EXPR }]]);
+    expect(JSON.stringify(scrubbed)).not.toContain(PLAINTEXT);
+  });
+
+  // ...and the BOUND the case above used to carry, restated on a fixture that
+  // can still express it. Positional descent into an outer list is exactly what
+  // `descendArrays: false` refuses, so the relaxation must die the moment the
+  // order assumption is demonstrably false: AWS returned the two inner lists
+  // the other way round, index 0's anchors disagree, the whole array is refused
+  // and the plaintext survives — a residual, and the honest one.
+  //
+  // The inner elements are KEYLESS on purpose, and an earlier version of this
+  // case was INERT because they were not. With `{Name:'db', ...}` inside, the
+  // plaintext survived because the inner KEYED descent found no `Name` partner
+  // across the reorder — nothing to do with outer anchors — so the case stayed
+  // green under gate-deletion, anchor-deletion AND the pre-change source, i.e.
+  // it pinned the bound it exists for under no mutation at all. With plain
+  // strings inside, only the anchor pass can refuse this, and deleting the gate
+  // reds it.
+  it('does NOT reach an array of ARRAYS whose outer list was REORDERED', () => {
+    const scrubbed = scrubResourceRecord(
+      {
+        properties: { Matrix: [['--pw', EXPR], ['--verbose', 'plain']] },
+        observedProperties: { Matrix: [['--verbose', 'plain'], ['--pw', PLAINTEXT]] },
+      },
+      new Map()
+    );
+    expect(scrubbed.observedProperties!['Matrix']).toEqual([
+      ['--verbose', 'plain'],
+      ['--pw', PLAINTEXT],
+    ]);
   });
 
   // ORDERING: keyed descent must run BEFORE positional, not merely where
@@ -673,17 +711,39 @@ describe('secret-redaction - keyed array descent (issue #1915)', () => {
   // `Value` is the tempting wrong addition — it is a field name that looks like
   // an identity and is exactly where secrets live, so admitting it would pair
   // elements BY THEIR SECRET and copy a reference onto an unrelated element.
+  //
+  // REORDERED and TWO elements, both load-bearing (issue #2012). The earlier
+  // fixture was a single element carrying `Value: 'shared-id'` on both sides,
+  // and the anchor pass added for #2012 pairs exactly that shape — one matching
+  // non-reference position IS the corroboration it asks for — so the case
+  // stopped discriminating: it produced `Data: <expr>` whether or not `Value`
+  // sat in the list, and the assertion could only be flipped, not kept. Order
+  // is what separates the two mechanisms. Anchor pairing refuses this array
+  // outright (`Value` differs at index 0, so the positions do not corroborate),
+  // while a widened ARRAY_IDENTITY_KEYS pairs bag[1] to source[0] ACROSS the
+  // reorder and copies EXPR onto a literal — the harm this case exists to name.
   it('does not key on a field outside ARRAY_IDENTITY_KEYS', () => {
     const scrubbed = scrubResourceRecord(
       {
-        properties: { Entries: [{ Value: 'shared-id', Data: EXPR }] },
-        observedProperties: { Entries: [{ Value: 'shared-id', Data: 'an-unrelated-literal' }] },
+        properties: {
+          Entries: [
+            { Value: 'id-1', Data: EXPR },
+            { Value: 'id-2', Data: 'plain' },
+          ],
+        },
+        observedProperties: {
+          Entries: [
+            { Value: 'id-2', Data: 'plain' },
+            { Value: 'id-1', Data: 'an-unrelated-literal' },
+          ],
+        },
       },
       new Map()
     );
 
     expect(scrubbed.observedProperties!['Entries']).toEqual([
-      { Value: 'shared-id', Data: 'an-unrelated-literal' },
+      { Value: 'id-2', Data: 'plain' },
+      { Value: 'id-1', Data: 'an-unrelated-literal' },
     ]);
   });
 
