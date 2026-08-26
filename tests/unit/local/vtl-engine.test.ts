@@ -211,3 +211,111 @@ describe('VtlEvaluationError shape', () => {
     }
   });
 });
+
+describe('$util.parseJson - the failure message must not echo the parsed input (issue #2203)', () => {
+  // Under `cdkd local start-api` the argument of `$util.parseJson(...)` is
+  // routinely `$input.body` -- the incoming HTTP request body, which on a
+  // login endpoint carries a password. V8 embeds a prefix of the PARSED
+  // INPUT in `SyntaxError.message`, so interpolating the parser's message
+  // put that prefix on the terminal AND (via `vtlFailure` in
+  // `src/local/rest-v1-integrations.ts`, which copies the reason into the
+  // 502 body) back over the wire.
+  //
+  // Each case pairs the negative with POSITIVES. "the needle is absent" on
+  // its own is a confluence point -- any unrelated rejection satisfies it --
+  // so the discriminators that have to SURVIVE are asserted too.
+
+  function parseJsonFailure(body: string): string {
+    const ctx = buildContext({ input: { body } as VtlContext['input'] });
+    try {
+      evaluateVtl('$util.parseJson($input.body)', ctx);
+    } catch (err) {
+      expect(err).toBeInstanceOf(VtlEvaluationError);
+      return (err as Error).message;
+    }
+    expect.fail('$util.parseJson should have thrown on a non-JSON body');
+  }
+
+  it('withholds the ~10-character prefix V8 quotes from a long body', () => {
+    // `JSON.parse('hunter2-my-db-password')` yields
+    // `Unexpected token 'h', "hunter2-my"... is not valid JSON` on the pinned
+    // Node 24.15. The needle is the PREFIX, not the whole body: asserting
+    // `not.toContain('hunter2-my-db-password')` would pass WITHOUT the fix,
+    // because V8 never emits more than its prefix window.
+    const body = 'hunter2-my-db-password';
+    const message = parseJsonFailure(body);
+
+    expect(message).not.toContain('hunter2-my');
+    // Also fence the parser's PHRASING, not just the quoted segment: a
+    // message keeping `Unexpected token 'h', is not valid JSON` with only
+    // the quote stripped still leaks the first character and the offset.
+    expect(message).not.toContain('Unexpected token');
+    // Deliberately NOT `not.toContain(body)`: for an input this long that
+    // assertion is vacuous -- V8 never emits past its prefix window, so it
+    // holds with the fix reverted. The full-quote shape has its own case
+    // below, where the same assertion is real.
+
+    expect(message).toContain('$util.parseJson');
+    expect(message).toContain('SyntaxError');
+    // Anchored with the trailing `)`: a bare `argument length 22` is a
+    // substring of `argument length 220`, so an inflated count would pass.
+    expect(message).toContain(`argument length ${body.length})`);
+  });
+
+  it('withholds a SHORT body, which V8 quotes in FULL rather than truncating', () => {
+    // A distinct leak shape: V8 appends `...` only past its prefix window,
+    // so `JSON.parse('pw42')` quotes the whole string --
+    // `Unexpected token 'p', "pw42" is not valid JSON`. A guard written only
+    // against the truncated shape would miss this one entirely.
+    const body = 'pw42';
+    const message = parseJsonFailure(body);
+
+    expect(message).not.toContain(body);
+    expect(message).not.toContain('Unexpected token');
+
+    expect(message).toContain('$util.parseJson');
+    expect(message).toContain('SyntaxError');
+    expect(message).toContain('argument length 4)');
+  });
+
+  it('reports the COERCED length for every value that coerces to the empty string', () => {
+    // `coerce` answers `''` two different ways, and only one was covered
+    // before: `JSON.stringify` THROWS on a circular object, and RETURNS
+    // `undefined` for a function / symbol / `toJSON`-yielding-undefined. The
+    // second kind used to make the `.length` read throw a TypeError, so the
+    // caller got something OTHER than a `VtlEvaluationError`.
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+
+    for (const [label, value] of [
+      ['circular (stringify throws)', circular],
+      ['function (stringify returns undefined)', () => 'x'],
+      ['symbol (stringify returns undefined)', Symbol('s')],
+      ['toJSON -> undefined', { toJSON: () => undefined }],
+    ] as const) {
+      let caught: unknown;
+      try {
+        buildDefaultUtil().parseJson(value);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught, label).toBeInstanceOf(VtlEvaluationError);
+      expect((caught as Error).message, label).toContain('argument length 0)');
+    }
+  });
+
+  it('reaches the empty-coercion path from a TEMPLATE, not just a direct call', () => {
+    // `$input.json` / `$input.path` / `$input.params` are own-property
+    // FUNCTIONS on the object `buildVtlInput` returns, so forgetting the call
+    // parens hands one straight to `$util.parseJson`.
+    const ctx = buildContext({ input: { body: '{"a":1}' } as VtlContext['input'] });
+    let caught: unknown;
+    try {
+      evaluateVtl('$util.parseJson($input.params)', ctx);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(VtlEvaluationError);
+    expect((caught as Error).message).toContain('argument length 0)');
+  });
+});

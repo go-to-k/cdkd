@@ -156,7 +156,17 @@ export function buildDefaultUtil(): VtlUtil {
     }
     // Object / array — JSON-stringify to avoid the `[object Object]` trap.
     try {
-      return JSON.stringify(v);
+      // `?? ''` is load-bearing, not defensive: `JSON.stringify` RETURNS
+      // `undefined` (it does not throw) for a function, a symbol, or an
+      // object whose `toJSON` yields undefined, and TypeScript hides that
+      // because `JSON.stringify(unknown)` selects the `any` overload. All
+      // three are reachable from a template -- `$input.json` / `$input.path`
+      // / `$input.params` are own-property FUNCTIONS on the object
+      // `buildVtlInput` returns, so `$util.parseJson($input.params)` (the
+      // call parens forgotten) hands one straight in. Without the coalesce
+      // the `.length` read below throws a TypeError, escaping as something
+      // other than the `VtlEvaluationError` callers match on.
+      return JSON.stringify(v) ?? '';
     } catch {
       return '';
     }
@@ -196,8 +206,68 @@ export function buildDefaultUtil(): VtlUtil {
       try {
         return JSON.parse(s);
       } catch (err) {
+        // MIRROR ONLY -- and, as in `rie-client.ts`, the claim is about
+        // reachability of THIS CODE, not about the file being dead. cdkd's
+        // `src/local/http-server.ts` re-exports `startApiServer` from
+        // `cdk-local/internal`, so `cdkd local start-api` runs cdk-local's
+        // copy of the VTL engine. Every export of this file is consumed only
+        // by cdkd's own `rest-v1-integrations.ts`, and the one thing anything
+        // live imports from THERE is `warnSsrfRiskyUri` (by
+        // `src/cli/commands/local-start-api.ts`) -- so this module is LOADED
+        // at runtime, and none of its functions is called. `evaluateVtl` and
+        // `buildDefaultUtil` have no live call site. That the fork is
+        // unreachable at all is issue #2228, tracked separately.
+        //
+        // The user-facing leak is CLOSED: the fix shipped in cdk-local
+        // 0.147.6 (cdk-local PR #556), and cdkd consumes it through the
+        // `cdk-local` dependency bump in this same change. Verified against
+        // the built CLI on 2026-08-26 -- `cdkd local start-api`, a MOCK REST
+        // v1 request template calling `$util.parseJson` on a header holding
+        // `hunter2-my-password`, answered 502 with the redacted reason and
+        // no byte of the payload in the body or the server log. This copy is
+        // kept byte-for-byte in step with cdk-local's so the fork cannot
+        // drift back to the leaking shape (issue #2203).
+        //
+        // NEVER interpolate the parser's own message. V8 embeds a
+        // ~10-character prefix of the PARSED INPUT in `SyntaxError.message`
+        // (`Unexpected token 'h', "hunter2-my"... is not valid JSON`) and
+        // appends `...` only past that window, so a SHORT input is quoted in
+        // FULL. In cdk-local's live copy the argument of
+        // `$util.parseJson(...)` is routinely a value the caller sent over
+        // the local HTTP server -- `$input.body`, or a header via
+        // `$input.params(...)` -- and `vtlFailure` in
+        // `rest-v1-integrations.ts` copies the message into the 502 RESPONSE
+        // BODY, so the prefix travels back over the wire. Measured against
+        // cdk-local: a 9-character non-JSON header came back whole.
+        //
+        // `err.name` is input-independent and safe as a discriminator, and
+        // the argument's LENGTH is reported because it is the one property
+        // of the input a developer can act on without being shown it. The
+        // length is that of the COERCED string, and `coerce` answers `''` for
+        // two different kinds of value: one `JSON.stringify` THROWS on (a
+        // circular object) and one it RETURNS `undefined` for (a function, a
+        // symbol, a `toJSON` yielding undefined). So a reported length of 0
+        // means "nothing was there to parse" and NOT necessarily "the caller
+        // sent an empty body". The count is in UTF-16 code units, unlike the
+        // sibling message in `rie-client.ts`, which counts BYTES.
+        //
+        // Known and accepted: on the RESPONSE-template path the length is an
+        // oracle over BACKEND data, not caller data. That context is built
+        // from the upstream / Lambda response, so a 502 there reports the
+        // length of a value the HTTP caller never supplied. It is left as is
+        // because the same 502 body already echoes up to 200 characters of
+        // the template itself, which bounds what withholding a single integer
+        // could buy.
+        //
+        // `'unknown'` rather than `'SyntaxError'` on the non-Error arm: that
+        // arm is unreachable today (this `JSON.parse` takes no reviver, so V8
+        // throws only a SyntaxError), and naming a class the throw was not
+        // would become a lie the moment it turns reachable.
+        const kind = err instanceof Error ? err.name : 'unknown';
         throw new VtlEvaluationError(
-          `$util.parseJson: invalid JSON input: ${err instanceof Error ? err.message : String(err)}`
+          `$util.parseJson: the argument is not valid JSON (${kind}; argument length ${s.length}). ` +
+            'The parser detail is withheld because it would echo a prefix of the parsed input, ' +
+            'which for a start-api request template can be the incoming HTTP request body.'
         );
       }
     },
@@ -906,7 +976,9 @@ function safeStringify(v: unknown): string {
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
   try {
-    return JSON.stringify(v);
+    // See `coerce` above: `JSON.stringify` RETURNS `undefined` for a
+    // function / symbol / `toJSON`-returning-undefined rather than throwing.
+    return JSON.stringify(v) ?? '';
   } catch {
     return '';
   }

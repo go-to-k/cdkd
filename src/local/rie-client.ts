@@ -462,8 +462,59 @@ export async function invokeRieStreaming(
     } catch (err) {
       clearTimeout(timer);
       reader.cancel().catch(() => undefined);
+      // MIRROR ONLY -- and the claim is about THIS FUNCTION, not this file.
+      // `rie-client.ts` very much has live callers: `invokeRie` is imported
+      // by `src/cli/commands/local-invoke.ts`, `rest-v1-integrations.ts` and
+      // `websocket-server.ts`, and `waitForRieReady` by `container-pool.ts`.
+      // What has no caller in cdkd's `src/` is `invokeRieStreaming` (and the
+      // `parseStreamingPrelude` it wraps), because the STREAMING path is
+      // reached only through `startApiServer`, and `src/local/http-server.ts`
+      // re-exports that from `cdk-local/internal` -- so `cdkd local
+      // start-api` runs cdk-local's copy. Do NOT read this as "the file is
+      // dead": editing `invokeRie` above ships to users. That the streaming
+      // fork is unreachable at all is issue #2228, tracked separately.
+      //
+      // The user-facing leak is CLOSED: the fix shipped in cdk-local
+      // 0.147.6 (cdk-local PR #556), and cdkd consumes it through the
+      // `cdk-local` dependency bump in this same change. This copy is kept
+      // byte-for-byte in step with cdk-local's so the fork cannot drift
+      // back to the leaking shape (issue #2203).
+      //
+      // Only the `JSON.parse` failure carries the bytes it was given, and it
+      // is the only one suppressed. V8 embeds a ~10-character prefix of the
+      // PARSED INPUT in `SyntaxError.message` (quoting a short input in
+      // FULL), and those bytes are NOT guaranteed to be protocol framing:
+      // the split above scans the response for an 8-NUL run (up to
+      // `STREAM_PRELUDE_MAX_BYTES`, 1 MiB, past which it gives up with its
+      // own error rather than reaching here), and the
+      // #664 block ABOVE records that the commonest handler shape in the
+      // wild -- `streamifyResponse` plus `setContentType` / `write`, never
+      // calling `HttpResponseStream.from` -- emits no framing at all, so
+      // what is scanned is raw function OUTPUT. An 8-NUL run inside binary
+      // output therefore matches by COINCIDENCE and makes `preludeBytes` a
+      // slice of application data. Reproduced on the pinned Node 24.15 with
+      // a tar stream, whose 512-byte member header NUL-pads everything after
+      // the name field: the first run sits immediately after the file name,
+      // and the parser answers
+      // `Unexpected token 'c', "customer-d"... is not valid JSON`.
+      //
+      // `parseStreamingPrelude`'s OTHER three throws -- `empty prelude`,
+      // `prelude is not a JSON object`, and `statusCode must be a number
+      // (got <typeof>)` -- are input-INDEPENDENT. Suppressing them would buy
+      // no privacy at all while telling a correctly-framed handler that its
+      // valid JSON is "not valid JSON", so they stay legible.
+      if (err instanceof SyntaxError) {
+        throw new Error(
+          `RIE streaming response prelude is not valid JSON (SyntaxError; ${preludeBytes.length} bytes before the 8-NUL separator). ` +
+            'The 8-NUL run in this response was taken as the prelude/body separator, and the bytes before it as the prelude. ' +
+            'A handler that does not call awslambda.HttpResponseStream.from(stream, metadata) sends no framing at all, so such a ' +
+            'run can occur by coincidence inside binary output and those bytes are then raw function output -- which is why the ' +
+            'parser detail is withheld here instead of echoed. ' +
+            'Check the container logs; calling HttpResponseStream.from(...) frames the response explicitly and rules the misread out.'
+        );
+      }
       throw new Error(
-        `RIE streaming response prelude is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+        `RIE streaming response prelude is invalid: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
