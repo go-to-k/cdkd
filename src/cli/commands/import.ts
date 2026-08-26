@@ -1747,14 +1747,34 @@ async function captureObservedForImportedResources(
  * than silently using a non-ARN string. The format MUST match
  * `NestedStackProvider.synthesizeArn` so an import-then-deploy cycle does
  * not surface phantom property changes on the nested-stack row.
+ *
+ * THE REGION SEGMENT IS READ BACK, so it must be the CHILD's region and must
+ * not be collapsed with the parent's (issue
+ * [#2055](https://github.com/go-to-k/cdkd/issues/2055)).
+ * `nestedStackChildRegionFromLocalArn` in
+ * [src/deployment/intrinsic-function-resolver.ts](../../deployment/intrinsic-function-resolver.ts)
+ * parses this segment to learn which region to resolve a child's persisted
+ * `{{resolve:...}}` output in — a secret NAME is regional, so resolving it in
+ * the wrong region can answer with a DIFFERENT secret. Reading the child's own
+ * state record instead is not an option: the region is part of that record's S3
+ * key, so the lookup would be circular. That reader's doc block carries the
+ * full rationale; this note exists because the value is produced HERE and the
+ * next edit to the import walk would otherwise have nothing in front of it.
+ *
+ * Both call sites already pass a child-scoped value — the top-level walk passes
+ * `targetRegion` (the stack being imported) and the recursive nested walk
+ * passes `childRegion` — and parent and child region are necessarily equal
+ * until cross-region nested stacks ship. The parameter is named `childRegion`
+ * anyway, matching `NestedStackProvider.synthesizeArn`, so the requirement is
+ * visible at the signature rather than only in prose.
  */
 function synthesizeNestedStackArn(
-  region: string,
+  childRegion: string,
   accountId: string,
   parentStackName: string,
   logicalId: string
 ): string {
-  return `arn:cdkd-local:${region}:${accountId}:nested-stack/${parentStackName}/${logicalId}`;
+  return `arn:cdkd-local:${childRegion}:${accountId}:nested-stack/${parentStackName}/${logicalId}`;
 }
 
 /**
