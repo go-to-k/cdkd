@@ -1,3 +1,10 @@
+## [0.284.50](https://github.com/go-to-k/cdkd/compare/v0.284.49...v0.284.50) (2026-08-26)
+
+
+### Bug Fixes
+
+* **dynamodb:** undo a --remove-protection flip when the delete then fails terminally ([#2222](https://github.com/go-to-k/cdkd/issues/2222)) ([f43ac57](https://github.com/go-to-k/cdkd/commit/f43ac57afa9f2e5b49c94980edb16f14b25625e6))
+
 ## [0.284.49](https://github.com/go-to-k/cdkd/compare/v0.284.48...v0.284.49) (2026-08-26)
 
 
