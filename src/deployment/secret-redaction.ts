@@ -245,6 +245,53 @@ function literalStringOrUndefined(value: unknown): string | undefined {
 }
 
 /**
+ * Split the STRING spelling of an `Fn::GetAtt` argument into its logical id and
+ * its attribute name, or `undefined` when the string is not a well-formed one.
+ *
+ * THE ONE ANSWER TO "what arity does the string form accept", shared by the two
+ * sites that must agree about it (issue
+ * [#2270](https://github.com/go-to-k/cdkd/issues/2270)):
+ * `IntrinsicFunctionResolver.resolveGetAtt`, which RESOLVES the reference, and
+ * {@link crossStackSourceKey} below, which keys the same leaf for the persist
+ * path. They were two spellings of one question and they disagreed -- the
+ * resolver split on every dot and rejected anything but two segments, so the
+ * key function copied that rule ("the string form only at exactly two
+ * dot-separated segments, `resolveGetAtt` throws otherwise"). When #2270
+ * widened the resolver to CloudFormation's actual rule, a paraphrase here would
+ * have gone silently stale in the direction that matters: the resolver would
+ * key a leaf the persist path refuses, and issue
+ * [#2059](https://github.com/go-to-k/cdkd/issues/2059)'s per-leaf positioning
+ * would degrade to the plaintext-keyed value scan for exactly the nested-stack
+ * OUTPUT references that positioning exists for. A shared function cannot drift.
+ *
+ * IT LIVES HERE, in a module that is a LEAF by design (see the file header --
+ * it imports nothing, because both the resolver and the deploy engine consume
+ * it), rather than in the resolver: the resolver ALREADY imports this module,
+ * so the dependency runs in the only direction that does not create a cycle.
+ *
+ * The rule is CloudFormation's: split on the FIRST dot only, because an
+ * ATTRIBUTE NAME may itself contain dots (`Outputs.<Key>` on an
+ * `AWS::CloudFormation::Stack`, `Endpoint.Address` on an RDS cluster), so
+ * `Child.Outputs.Foo` parses as `["Child", "Outputs.Foo"]`. BOTH halves must be
+ * non-empty, which is what still rejects the shapes the old arity test rejected
+ * for a real reason -- a bare `MyResource` (no attribute), a leading `.Attr`
+ * (no logical id) and a trailing `MyResource.` (empty attribute). `indexOf`
+ * answers all three: -1, 0, and `length - 1` respectively.
+ *
+ * Callers differ only in what they DO with a refusal -- the resolver throws
+ * `Invalid Fn::GetAtt format`, this module's key function returns `undefined`
+ * and degrades to the value scan -- which is why this returns a value rather
+ * than throwing.
+ */
+export function splitGetAttStringForm(
+  getAtt: string
+): { logicalId: string; attributeName: string } | undefined {
+  const firstDot = getAtt.indexOf('.');
+  if (firstDot <= 0 || firstDot === getAtt.length - 1) return undefined;
+  return { logicalId: getAtt.slice(0, firstDot), attributeName: getAtt.slice(firstDot + 1) };
+}
+
+/**
  * The canonical key identifying a cross-stack source leaf, or `undefined` when
  * this leaf's identity is not LITERALLY COMPUTABLE from the source alone
  * (issue #2059).
@@ -364,27 +411,134 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
   // `Fn::ImportValue` note above gives.
   //
   // The two authored spellings are accepted on the SAME terms the resolver
-  // accepts them -- the string form only at exactly two dot-separated segments
-  // (`resolveGetAtt` throws otherwise), the array form only at exactly two
-  // elements -- and a NON-LITERAL attribute name refuses, because the persist
-  // path holds the unresolved template and could not recompute it. Every
-  // refusal degrades to today's behaviour (the skeleton pass, then the value
-  // scan).
+  // accepts them, and for the string form that is now literally the same
+  // FUNCTION rather than a restatement of its rule: {@link
+  // splitGetAttStringForm} is what `resolveGetAtt` splits with too, so the two
+  // cannot drift apart (issue #2270 -- see that helper for what the drift cost
+  // and why the helper lives in this module). It splits on the FIRST dot, so a
+  // nested stack's `Child.Outputs.Foo` keys identically to its array spelling
+  // `["Child", "Outputs.Foo"]`; the array form is still accepted only at
+  // exactly two elements. A NON-LITERAL attribute name refuses, because the
+  // persist path holds the unresolved template and could not recompute it.
+  // Every refusal degrades to today's behaviour (the skeleton pass, then the
+  // value scan).
   if (key === 'Fn::GetAtt') {
     const raw = source[key];
     let logicalId: string | undefined;
     let attributeName: string | undefined;
     if (typeof raw === 'string') {
-      const parts = raw.split('.');
-      if (parts.length !== 2) return undefined;
-      logicalId = literalStringOrUndefined(parts[0]);
-      attributeName = literalStringOrUndefined(parts[1]);
+      // Both halves come back non-empty or the whole split refuses, so the
+      // `literalStringOrUndefined` pass the array arm still needs would be a
+      // no-op here.
+      const split = splitGetAttStringForm(raw);
+      if (split === undefined) return undefined;
+      logicalId = split.logicalId;
+      attributeName = split.attributeName;
     } else if (Array.isArray(raw) && raw.length === 2) {
       logicalId = literalStringOrUndefined(raw[0]);
       attributeName = literalStringOrUndefined(raw[1]);
     }
     if (logicalId === undefined || attributeName === undefined) return undefined;
     return ['Fn::GetAtt', logicalId, attributeName].join(CROSS_STACK_KEY_SEPARATOR);
+  }
+
+  // `Fn::Sub` over a SINGLE nested-stack output placeholder, normalized to the
+  // `Fn::GetAtt` key above (issue
+  // [#2270](https://github.com/go-to-k/cdkd/issues/2270), round 3).
+  //
+  // WHY THIS ARM EXISTS AT ALL: the same PR that made `${Child.Outputs.Foo}`
+  // resolve CREATED a collapse population here. Before it, that placeholder was
+  // kept as literal text and carried no secret; after it, the leaf resolves to a
+  // plaintext and needs positioning like any other cross-stack read. It had
+  // none -- this function refused every `Fn::Sub`, and `intrinsicSkeletonPattern`
+  // cannot position it either (its wildcard is `[^}]*`, which cannot cross a
+  // `{{resolve:...}}` token's own `}}`), so the leaf fell to the plaintext-keyed
+  // value scan. A child exporting two staging labels of ONE rotating secret has
+  // both resolve EQUAL during the `AWSPENDING` window, so both parent properties
+  // persisted the SURVIVOR's expression and `resolveReplayProps` applied the
+  // wrong stage to the live resource on a rollback / `cdkd drift --revert`.
+  //
+  // IT KEYS AS `Fn::GetAtt`, NOT AS `Fn::Sub`, and that is the whole mechanism
+  // rather than a tidiness choice. The WRITER is `resolveGetAtt`, which
+  // `resolveSub` calls with the bare placeholder TEXT (`Child.Outputs.Foo`), so
+  // the key it records is `crossStackSourceKey({'Fn::GetAtt': 'Child.Outputs.Foo'})`
+  // -- it never sees the `Fn::Sub` wrapper at all. Keying this leaf by its
+  // `Fn::Sub` text would therefore produce a string the writer's half can never
+  // equal, i.e. a key that looks present and never matches. Both halves instead
+  // reach `splitGetAttStringForm` with the IDENTICAL substring.
+  //
+  // EXACTLY ONE PLACEHOLDER AND NOTHING ELSE. A template with surrounding text
+  // (`sub-${Child.Outputs.Foo}-end`) resolves to a value that merely EMBEDS the
+  // producer's token rather than BEING it, and `recordCrossStackExpression` is
+  // whole-token only -- so such a leaf has no single expression to persist and
+  // is refused here. `${!Literal}` is CloudFormation's ESCAPE and never resolves
+  // anything, so it refuses on the `!` group. A `${Child}` Ref form refuses
+  // because `splitGetAttStringForm` requires a dotted attribute -- there is no
+  // `Fn::GetAtt` writer behind it.
+  //
+  // THE 2-ARG `[template, vars]` FORM IS ACCEPTED, but ONLY when the
+  // placeholder is genuinely UNBOUND by the variable map. The test is the
+  // WRITER's: `resolveSub` consults the map FIRST and a bound variable wins
+  // outright, so a bound placeholder never reaches `resolveGetAtt` and no key
+  // was ever recorded for it -- while an UNBOUND one falls through to the
+  // same-stack lookup and IS keyed, identically to the bare-string form. An
+  // earlier revision refused the whole 2-arg form on that first fact alone,
+  // which left the unbound spelling in exactly the collapse this arm exists to
+  // close (found by review; this PR created that population too, since
+  // pre-#2270 the placeholder stayed literal).
+  //
+  // Dropping the guard and keying every 2-arg form would be the WRONG fix and
+  // is worse than the bug: it would certify a leaf the writer never recorded,
+  // i.e. attach some other leaf's expression to a bound-variable value. On this
+  // path over-redaction beats under-redaction in the wrong direction --
+  // `resolveReplayProps` re-resolves the persisted expression and `cdkd drift
+  // --revert` PUSHES that baseline back to AWS.
+  if (key === 'Fn::Sub') {
+    const raw = source[key];
+    let template: string | undefined;
+    let variables: Record<string, unknown> | undefined;
+    if (typeof raw === 'string') {
+      template = raw;
+    } else if (Array.isArray(raw) && raw.length === 2 && isPlainObject(raw[1])) {
+      // Shapes outside `[string, object]` are left refused, but NOT because the
+      // writer never records them -- measured, that is only true of some. Arity
+      // 1, a `null` / number / string second element and a non-string template
+      // all THROW during resolution (0 keys recorded). But `['${A.B}', ['x']]`
+      // and a 3-element array both RESOLVE cleanly and ARE recorded, because
+      // `resolveSub` destructures the first two elements and `Object.entries`
+      // does not throw on an array. Those are refused here for a different
+      // reason: CloudFormation rejects them, so the population is not worth
+      // widening acceptance for. The refusal degrades to the plaintext-keyed
+      // value scan -- whose dominant failure is COLLAPSE onto a colliding
+      // sibling, not under-redaction (that is only the empty-map case). It is
+      // still the better direction than certifying a key the writer never
+      // recorded, on a path where `drift --revert` pushes the baseline to AWS.
+      if (typeof raw[0] !== 'string') return undefined;
+      template = raw[0];
+      variables = raw[1];
+    }
+    if (template === undefined) return undefined;
+    const only = /^\$\{(!)?([^}]*)\}$/.exec(template);
+    if (only === null || only[1] === '!') return undefined;
+    const varName = only[2] ?? '';
+    // `in` over `(variables ?? {})`, NOT `Object.hasOwn`, and NOT guarded on
+    // `variables !== undefined` -- this is the WRITER's predicate character for
+    // character. `resolveSub` defaults `variables = {}` and always tests
+    // `varNameStr in variables`, so BOTH arms here must test too: skipping it for
+    // the bare-string form left the identical hole one line over.
+    // `in` is a SUPERSET of `hasOwn`. For an INHERITED key the writer substitutes
+    // locally and records NO key, while a `hasOwn` reader would not refuse and
+    // would key the leaf -- certifying an expression the writer never recorded,
+    // i.e. a sibling's. Condition 2 (`association.plaintext !== bag`) does NOT
+    // fence that in the target population: two staging labels of one rotating
+    // secret resolve EQUAL during `AWSPENDING`, which is why this arm exists.
+    // Unreachable today -- it needs a dotted key on `Object.prototype`, and
+    // `JSON.parse` makes `__proto__` an own property rather than polluting -- so
+    // the old spelling was safe by a runtime property rather than by this code.
+    if (varName in (variables ?? {})) return undefined;
+    const split = splitGetAttStringForm(varName);
+    if (split === undefined) return undefined;
+    return ['Fn::GetAtt', split.logicalId, split.attributeName].join(CROSS_STACK_KEY_SEPARATOR);
   }
 
   return undefined;

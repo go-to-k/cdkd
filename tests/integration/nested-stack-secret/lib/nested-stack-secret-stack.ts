@@ -28,7 +28,7 @@ import { Construct } from 'constructs';
  * receives PLAINTEXT and the child's own template spells the consumption as
  * `{Ref: <ParamName>}` — an intrinsic OBJECT, never a `{{resolve:` string.
  *
- * THE FOUR RESOURCES, and what each one discriminates:
+ * THE SIX RESOURCES, and what each one discriminates:
  *
  *  - `StageParam` (child) — consumes the secretsmanager-backed parameter. Its
  *    persisted `Value` must be the EXPRESSION while the live SSM parameter
@@ -49,6 +49,26 @@ import { Construct } from 'constructs';
  *    child persists that output REDACTED, so before #2055 the parent shipped
  *    the literal `{{resolve:...}}` token to AWS. The live parameter must hold
  *    the resolved secret and the parent's own state must hold the expression.
+ *  - `SubConsumer` (parent) — THE #2270 ARM. The same cross-boundary read
+ *    spelled as an `Fn::Sub` placeholder (`${Child.Outputs.ChildPlainOutput}`)
+ *    rather than an `Fn::GetAtt`. The resolver rejected that three-segment
+ *    STRING form, and `Fn::Sub`'s catch turned the rejection into a KEPT
+ *    literal, so the parameter was created holding the placeholder TEXT with a
+ *    green deploy. It reads a NON-secret output on purpose, so a failure here
+ *    is unambiguously about placeholder resolution rather than redaction.
+ *
+ *  - `SubSecretPair` (parent) — THE #2270 ROUND-3 ARM, and the one
+ *    `SubConsumer` cannot see. ONE resource with TWO `Fn::Sub` leaves (its
+ *    `Value` and its `Description`) reading two child outputs that resolve to
+ *    ONE plaintext through DIFFERENT expressions. Making `${Child.Outputs.X}`
+ *    resolve CREATED a collapse population: the leaf now carries a secret and
+ *    had no positioning, so both leaves persisted the SURVIVOR's expression and
+ *    a rollback applied the wrong one. Each leaf must persist ITS OWN. One
+ *    resource, not two, because `perResourceSecrets` is keyed by logical id —
+ *    two resources get two bags and would pass either way.
+ *
+ * Issue [#2270](https://github.com/go-to-k/cdkd/issues/2270) is the `Fn::Sub`
+ * spelling of the #2055 read above.
  */
 class SecretBearingChild extends cdk.NestedStack {
   /** The child's output, for the parent to consume via `Fn::GetAtt`. */
@@ -62,6 +82,9 @@ class SecretBearingChild extends cdk.NestedStack {
       secureParamName: string;
       unrelatedParamName: string;
       unrelatedLiteral: string;
+      plainOutputValue: string;
+      sharedReferenceA: string;
+      sharedReferenceB: string;
       stageParamDescription: string;
     },
     props?: cdk.NestedStackProps
@@ -125,6 +148,57 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     output.overrideLogicalId('ChildSecretOutput');
 
+    // THE #2270 ARM's producer. A NON-secret output, deliberately: the defect
+    // it fences is about an `Fn::Sub` shipping the placeholder TEXT, which has
+    // nothing to do with redaction, and routing it through the secret output
+    // would make a failure here ambiguous between the two.
+    //
+    // The literal must not overlap any other needle in this fixture (the
+    // #2087 arm is a standing reminder of what an overlapping literal costs),
+    // so it carries the issue number and shares no substring with
+    // `SECRET_STAGE_VALUE` / `SECURE_PW_VALUE` / any parameter name.
+    const plainOutput = new cdk.CfnOutput(this, 'ChildPlainOutput', {
+      value: names.plainOutputValue,
+      description:
+        'cdkd nested-stack-secret integ - non-secret child output read back through Fn::Sub (issue #2270)',
+    });
+    plainOutput.overrideLogicalId('ChildPlainOutput');
+
+    // THE #2270 ROUND-3 COLLAPSE PREMISE, and it lives ENTIRELY inside the
+    // child. Two references to ONE secret whose EXPRESSIONS differ while their
+    // resolved plaintext does not: an empty version-stage defaults to
+    // `AWSCURRENT`, so `:pw::` and `:pw:AWSCURRENT:` are byte-different strings
+    // with one value. That is issue #2059's rotating-secret shape made
+    // DETERMINISTIC -- no rotation window to race.
+    //
+    // THEY ARE LITERAL TOKENS RESOLVED BY THE CHILD, deliberately, NOT values
+    // handed down through the child's `Parameters`. A parameter-borne pair
+    // cannot work here: the parent's `inheritedSecrets` bag is
+    // `Map<plaintext, expression>`, so two expressions with one plaintext
+    // COLLAPSE to a single entry in the parent before the child is ever
+    // invoked, and the child's `{Ref: Param}` source leaves carry no expression
+    // for the position pass to certify against. Resolved in the child, each
+    // output's source leaf IS its own whole token, which the position pass
+    // certifies per leaf -- so the child's two outputs persist DISTINCT
+    // expressions, which is what the parent's arm then needs.
+    //
+    // They also use a DIFFERENT JSON key (and so a different plaintext) from
+    // `SecretStage`. Sharing that one would drag `StageParam` into the same
+    // collapse -- which is exactly what the first cut of this arm did.
+    const sharedOutputA = new cdk.CfnOutput(this, 'ChildSharedOutputA', {
+      value: names.sharedReferenceA,
+      description:
+        'cdkd nested-stack-secret integ - shared-plaintext secret output, default stage (issue #2270)',
+    });
+    sharedOutputA.overrideLogicalId('ChildSharedOutputA');
+
+    const sharedOutputB = new cdk.CfnOutput(this, 'ChildSharedOutputB', {
+      value: names.sharedReferenceB,
+      description:
+        'cdkd nested-stack-secret integ - the SIBLING, same plaintext, different expression (issue #2270)',
+    });
+    sharedOutputB.overrideLogicalId('ChildSharedOutputB');
+
     this.stageOutput = cdk.Token.asString(
       (this.nestedStackResource as cdk.CfnResource).getAtt('Outputs.ChildSecretOutput')
     );
@@ -166,6 +240,14 @@ export class NestedStackSecretStack extends cdk.Stack {
     // exercises the exact dynamic-reference grammar rather than whichever token
     // shape the installed CDK happens to emit.
     const stageReference = `{{resolve:secretsmanager:${secretName}:SecretString:stage::}}`;
+    // The SHARED-plaintext pair for the #2270 round-3 arm: a DIFFERENT JSON key
+    // (so a different plaintext from `stage`, keeping `StageParam` the only
+    // leaf carrying its own), spelled two ways that resolve identically because
+    // an empty version-stage defaults to `AWSCURRENT`. Handed to the CHILD as
+    // literal output values rather than as `Parameters` -- see the child's
+    // `ChildSharedOutputA` for why a parameter-borne pair cannot work.
+    const sharedReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:shared::}}`;
+    const sharedReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:shared:AWSCURRENT:}}`;
     const secureReference = `{{resolve:ssm:${secureParamName}}}`;
 
     const child = new SecretBearingChild(
@@ -181,6 +263,10 @@ export class NestedStackSecretStack extends cdk.Stack {
         // because a drift here would leave the #2087 arm passing VACUOUSLY (a
         // non-overlapping literal cannot see the defect at all).
         unrelatedLiteral: 'cdkd-bucket-prodstage2087-logs',
+        // Kept in sync with verify.sh's CHILD_PLAIN_OUTPUT_VALUE.
+        plainOutputValue: 'plainout2270',
+        sharedReferenceA,
+        sharedReferenceB,
         stageParamDescription,
       },
       {
@@ -203,5 +289,65 @@ export class NestedStackSecretStack extends cdk.Stack {
     // Pinned so verify.sh can assert on this row by a stable key. CDK's
     // default logical id carries a hash that moves with the construct path.
     ((parentConsumer.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('ParentConsumer');
+
+    // THE #2270 ARM. The SAME cross-boundary reference as `ParentConsumer`,
+    // spelled as an `Fn::Sub` placeholder instead of an `Fn::GetAtt`.
+    //
+    // `resolveGetAtt` used to reject the three-segment STRING form
+    // (`Child.Outputs.ChildPlainOutput`) outright. In `Fn::GetAtt` position
+    // that throw was loud; inside `Fn::Sub` the surrounding catch turned it
+    // into a KEPT literal, so the parameter was CREATED holding the text
+    // `sub-${Child.Outputs.ChildPlainOutput}-end` -- SSM accepts any string,
+    // so the deploy went green and the only signal was a warn line. That is
+    // why the assertion has to read the LIVE parameter: a fix that resolved at
+    // persist time but not on the wire would pass a state-only check.
+    //
+    // Written as a raw `Fn.sub` body rather than through `child.getAtt` so the
+    // template really carries the string spelling under test; the DAG edge on
+    // `Child` comes from `template-parser.ts`, which reads the same
+    // placeholder.
+    const subConsumer = new ssm.StringParameter(this, 'SubConsumer', {
+      parameterName: `cdkd-nested-parent-sub-${account}`,
+      stringValue: cdk.Fn.sub('sub-${Child.Outputs.ChildPlainOutput}-end'),
+      description:
+        'cdkd nested-stack-secret integ - parent consumer of a child output via Fn::Sub (issue #2270)',
+    });
+    // Pinned so verify.sh can assert on this row by a stable key. CDK's
+    // default logical id carries a hash that moves with the construct path.
+    ((subConsumer.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('SubConsumer');
+
+    // THE #2270 ROUND-3 ARM -- the collapse the round-2 fix CREATED.
+    //
+    // `SubConsumer` above deliberately reads a NON-secret output, which makes
+    // it blind to this: once `${Child.Outputs.X}` resolves, a SECRET-bearing
+    // one needs POSITIONING, and it had none. `crossStackSourceKey` refused
+    // every `Fn::Sub`, and `intrinsicSkeletonPattern`'s `[^}]*` wildcard cannot
+    // cross a `{{resolve:...}}` token's own `}}`, so the leaves fell to the
+    // plaintext-keyed value scan -- which collapses two references resolving to
+    // ONE plaintext onto whichever expression was recorded last, and
+    // `resolveReplayProps` then applies the WRONG one to the live resource on a
+    // rollback or a `cdkd drift --revert`.
+    //
+    // BOTH LEAVES SIT IN ONE RESOURCE, and that is load-bearing rather than
+    // tidy. `perResourceSecrets` is keyed by logical id, so two SEPARATE
+    // resources get two SEPARATE bags, each holding a single pair -- and each
+    // would redact correctly with or without the fix, making the arm prove
+    // nothing. One resource means one bag holding one collapsed entry, which is
+    // the only shape where positioning is what decides the answer.
+    //
+    // EXACTLY ONE PLACEHOLDER PER LEAF, with nothing around it: that is the
+    // shape whose resolved value IS the producer's whole token, so an
+    // expression can be persisted for it, and therefore the shape the new key
+    // arm accepts. `SubConsumer`'s `sub-...-end` spelling is deliberately the
+    // other case.
+    const subSecretPair = new ssm.StringParameter(this, 'SubSecretPair', {
+      parameterName: `cdkd-nested-parent-subpair-${account}`,
+      stringValue: cdk.Fn.sub('${Child.Outputs.ChildSharedOutputA}'),
+      // The SECOND leaf of the same resource. A description rather than another
+      // parameter precisely so both land in one bag; it holds the same test
+      // secret the value does, and the fixture deletes it at teardown.
+      description: cdk.Fn.sub('${Child.Outputs.ChildSharedOutputB}'),
+    });
+    ((subSecretPair.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('SubSecretPair');
   }
 }

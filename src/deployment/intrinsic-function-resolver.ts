@@ -44,6 +44,7 @@ import {
   isRecordedSecretExpression,
   clearRecordedSecretExpressions,
   crossStackSourceKey,
+  splitGetAttStringForm,
   recordCrossStackExpression,
   isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
@@ -2680,7 +2681,10 @@ export class IntrinsicFunctionResolver {
     } else {
       this.logger.warn(notFoundMsg);
     }
-    throw new Error(`Ref ${logicalId} not found`);
+    // `markNonRetryable` for the same reason as the two `Fn::GetAtt` throws
+    // above: `logicalId` is template-controlled and reaches a substring-matching
+    // retry classifier. `resolveSub`'s no-dot arm re-throws this one.
+    throw markNonRetryable(new Error(`Ref ${logicalId} not found`));
   }
 
   /**
@@ -2780,16 +2784,55 @@ export class IntrinsicFunctionResolver {
       }
       attributeName = resolvedAttributeName;
     } else {
-      const parts = getAtt.split('.');
-      if (parts.length !== 2) {
-        throw new Error(`Invalid Fn::GetAtt format: ${getAtt}`);
+      // The STRING spelling (what the shorthand YAML `!GetAtt A.B` produces).
+      // The SPLIT RULE ITSELF is deliberately not written here: it lives in
+      // `splitGetAttStringForm`, which `crossStackSourceKey` calls too, and
+      // that helper's doc carries the reasoning. Two copies of this rule is
+      // exactly the defect issue #2270 fixed -- the resolver and the key
+      // function each spelled it, and they disagreed.
+      //
+      // What matters AT THIS SITE: the rule accepts `Child.Outputs.Foo` as
+      // `["Child", "Outputs.Foo"]`, which the ARRAY branch above already
+      // resolves (the flat `Outputs.` dot-key
+      // `NestedStackProvider.buildOutputsAttributes` writes, then the #2055
+      // re-resolution arm below). The previous every-dot `parts.length !== 2`
+      // test refused it: in `Fn::GetAtt` position that throw was loud, but
+      // inside `Fn::Sub` the surrounding catch turned it into a KEPT literal,
+      // so a property deployed with `${Child.Outputs.Foo}` still in it.
+      // `template-parser.ts` already split the identical `Fn::Sub` placeholder
+      // on the first dot to build the DAG edge, so the resolver had disagreed
+      // with the dependency graph feeding it: the edge was drawn, the
+      // reference was then not resolvable.
+      const split = splitGetAttStringForm(getAtt);
+      if (split === undefined) {
+        // `markNonRetryable` (issue #2270 round 3). The verdict is a function of
+        // the TEMPLATE TEXT, which no retry rewrites, and the message
+        // interpolates that same template-controlled text into a string the
+        // retry classifiers match by BARE SUBSTRING
+        // (`isRetryableTransientError`) -- so a logical id like
+        // `ThrottlingWidget` puts `Throttling` into a deterministic refusal and
+        // makes it read as transient. That became REACHABLE when this PR let a
+        // structural `Fn::Sub` failure escape its catch: the error crosses
+        // `NestedStackProvider.create`, which the parent wraps in `withRetry`.
+        // The MARK is the remedy rather than a re-worded message, deliberately
+        // -- see `rethrowStructuralSubFailure`, which must re-throw the error
+        // OBJECT untouched, and marking rides the object.
+        throw markNonRetryable(new Error(`Invalid Fn::GetAtt format: ${getAtt}`));
       }
-      [logicalId, attributeName] = parts as [string, string];
+      logicalId = split.logicalId;
+      attributeName = split.attributeName;
     }
 
     const resource = context.resources[logicalId];
     if (!resource) {
-      throw new Error(`Resource ${logicalId} not found for Fn::GetAtt`);
+      // `markNonRetryable` for the reason given at the `Invalid Fn::GetAtt
+      // format` throw above: `logicalId` is template-controlled and the retry
+      // classifiers match by bare substring, so `Throttling*` / `SlowDown*` /
+      // `*DependencyViolation*` construct names turn this deterministic
+      // refusal transient. Scoped to THIS cdkd-authored throw -- a transient
+      // SDK error surfacing out of `reresolveCrossStackValue` below must stay
+      // retryable, which is why the mark is here and not in the `Fn::Sub` catch.
+      throw markNonRetryable(new Error(`Resource ${logicalId} not found for Fn::GetAtt`));
     }
 
     // Check if attribute exists in resource.attributes
@@ -2919,6 +2962,50 @@ export class IntrinsicFunctionResolver {
     }
 
     // Construct attribute value based on resource type
+    // A nested stack's outputs are known EXACTLY -- `NestedStackProvider` writes
+    // one flat `Outputs.<Key>` attribute per output the child actually declared
+    // -- so an `Outputs.` attribute that reached here names an output that does
+    // not exist (issue #2270 round 3). Falling through would be silently wrong
+    // rather than merely unhelpful: `constructAttribute` has NO
+    // `AWS::CloudFormation::Stack` case, so it lands on
+    // `guardedPhysicalIdFallback`, whose ARN-shape test is
+    // `!physicalId.startsWith('arn:')` -- and a nested stack's physical id is
+    // the SYNTHETIC `arn:cdkd-local:<region>:<account>:nested-stack/<parent>/<id>`,
+    // which starts with `arn:`. So the #1103 guard PASSES and a free-text
+    // property (an SSM value, a tag, an env var) accepts that bogus
+    // `cdkd-local` partition with a green deploy. Suffix matching cannot see
+    // this -- measured -- because the value is ARN-shaped for an `*Arn`
+    // attribute and the attribute here is usually not `*Arn` at all; the type
+    // plus the `Outputs.` prefix is what identifies it.
+    //
+    // This became REACHABLE for the string spelling in this PR: it previously
+    // threw `Invalid Fn::GetAtt format` before ever looking the resource up.
+    // The array spelling could always reach it.
+    //
+    // `markNonRetryable` (issue #1838): the verdict is read off a PERSISTED
+    // state record that no retry of this deploy rewrites, and the message
+    // interpolates template-controlled names into a string the retry
+    // classifiers match by bare substring.
+    if (
+      resource.resourceType === NESTED_STACK_RESOURCE_TYPE &&
+      attributeName.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX)
+    ) {
+      const declared = Object.keys(resource.attributes ?? {})
+        .filter((k) => k.startsWith(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX))
+        .map((k) => k.slice(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX.length))
+        .sort();
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Cannot resolve Fn::GetAtt [${logicalId}, ${attributeName}]: the nested stack ` +
+            `'${logicalId}' declares no output named ` +
+            `'${attributeName.slice(NESTED_STACK_OUTPUT_ATTRIBUTE_PREFIX.length)}'. ` +
+            `Its outputs are ${declared.length > 0 ? declared.join(', ') : '(none)'}. ` +
+            `Check the output name in the nested stack's template, and deploy the child ` +
+            `stack again if you have just added it.`
+        )
+      );
+    }
+
     const value = await this.constructGuardedAttribute(resource, attributeName, context, logicalId);
     this.logger.debug(
       `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, value)}`
@@ -3934,6 +4021,115 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
+   * Does this `Fn::Sub` placeholder NAME a resource of this template
+   * (issue [#2270](https://github.com/go-to-k/cdkd/issues/2270))?
+   *
+   * The discriminator `resolveSub`'s catch was missing. Two very different
+   * things reach that catch and it collapsed both into "keep the placeholder":
+   *
+   *  - `${some_shell_var}` / `${config.value}` — ORDINARY TEXT that merely
+   *    looks like a placeholder. Real CloudFormation rejects it (a `${}` in a
+   *    `Fn::Sub` body must name something, or be escaped `${!...}`), but cdkd
+   *    has always accepted it, and templates in the wild rely on that. Keeping
+   *    it is right.
+   *  - `${Child.Outputs.Foo}` — a REFERENCE to a resource this very template
+   *    declares, whose resolution failed. Keeping it ships `${Child.Outputs.Foo}`
+   *    into a live resource's property with a warn line as the only signal,
+   *    which is the defect. Refusing is right.
+   *
+   * The test is on the HEAD SEGMENT (everything before the first dot — the
+   * same split `template-parser.ts` uses to draw the DAG edge for this exact
+   * placeholder, and the same one `resolveGetAtt` now uses). A head that names
+   * a declared resource cannot be ordinary text: the template author picked
+   * that logical id.
+   *
+   * BOTH the live `context.resources` map and the TEMPLATE's `Resources` block
+   * count, and they answer for DIFFERENT populations rather than one being a
+   * superset of the other:
+   *
+   * - the TEMPLATE arm is what fences the reported defect — a resource the
+   *   template DECLARES which is absent from state, whose `Fn::GetAtt` throws
+   *   `Resource X not found`. A `context.resources`-only test would leave that
+   *   unfenced, which is why the template arm exists.
+   * - the `context.resources` arm answers when the head IS live but the
+   *   reference still fails for a NON-refusal reason: a malformed attribute
+   *   (`${Child.}` reaches `Invalid Fn::GetAtt format`), or a transient SDK
+   *   error surfacing out of `reresolveCrossStackValue`. It is also the ONLY
+   *   arm that fires when the two maps DISAGREE in the other direction — a
+   *   resource in state that the template no longer declares.
+   *
+   * Neither arm is redundant, and neither is dead: `tests/unit/deployment/
+   * intrinsic-sub-nested-stack-outputs.test.ts` drives each one in isolation
+   * (an empty `Resources` with a populated `resources`, and the reverse).
+   *
+   * PARAMETERS are deliberately NOT included, and the reason is NOT that
+   * parameters are somehow safer. `resolvePseudoParameter` and `resolveRef`
+   * already answer for every parameter that HAS a value, so the only thing a
+   * `template.Parameters` arm would newly refuse is a placeholder naming a
+   * DECLARED parameter with no bound value — and that includes a parameter
+   * carrying a `Default` which the caller never merged into
+   * `context.parameters`. Those deploys succeed today, and refusing them would
+   * be a hard-failure regression on working templates, so the arm stays out.
+   * The residual is real and is tracked separately: such a placeholder still
+   * ships `${Stage}` as literal text.
+   *
+   * An earlier revision justified the exclusion by "the routine `cdkd scrub`
+   * case (it takes no `--parameters`)". That reason was FALSE and is recorded
+   * here so it is not reintroduced: `scrub.ts`'s `resolverContext` factory sets
+   * `bestEffort: true` in the same object literal that binds `template` and
+   * `resources`, so scrub short-circuits in `rethrowStructuralSubFailure`
+   * before this predicate is consulted at all — it can neither benefit from
+   * nor be harmed by what this function includes.
+   */
+  private subPlaceholderNamesADeclaredResource(varName: string, context: ResolverContext): boolean {
+    const firstDot = varName.indexOf('.');
+    const head = firstDot >= 0 ? varName.slice(0, firstDot) : varName;
+    if (head === '') return false;
+    if (Object.hasOwn(context.resources, head)) return true;
+    const declared = context.template?.Resources;
+    if (declared === undefined || declared === null || typeof declared !== 'object') return false;
+    return Object.hasOwn(declared, head);
+  }
+
+  /**
+   * Refuse to launder a STRUCTURAL `Fn::Sub` failure into a literal
+   * (issue [#2270](https://github.com/go-to-k/cdkd/issues/2270)).
+   *
+   * Called from both arms of `resolveSub`'s catch — the dotted (GetAtt) one
+   * and the bare (Ref) one — after the
+   * {@link IntrinsicResolutionRefusalError} re-throw that issue #1740 added.
+   * That earlier fix made the DELIBERATE refusals loud; this one covers the
+   * rest, which is where #2270 lived: `Invalid Fn::GetAtt format` and
+   * `Resource X not found for Fn::GetAtt` are plain `Error`s, so they were
+   * laundered.
+   *
+   * The ORIGINAL error is re-thrown UNCHANGED — not wrapped, not re-worded.
+   * The retry classifiers in `retryable-errors.ts` match on the message by
+   * SUBSTRING and `markNonRetryable` rides the error OBJECT, so wrapping would
+   * silently re-classify a genuinely transient failure (an SDK error surfacing
+   * out of the nested-stack output re-resolution below) as terminal, or a
+   * terminal one as retryable via a template-controlled logical id spliced
+   * into a new message. Loudness is the fix; changing the error is not part of
+   * it.
+   *
+   * `bestEffort` is EXEMPT. That flag marks the diff / `cdkd scrub` callers,
+   * whose documented expected case is a reference to a resource this same
+   * deploy will CREATE (the CDK logical-id-churn dance, issue #1017) — exactly
+   * the "declared but not in state" shape this refuses. Those callers also
+   * catch resolution failures and keep the raw intrinsic, so refusing there
+   * would change diff output for no gain.
+   */
+  private rethrowStructuralSubFailure(
+    varName: string,
+    error: unknown,
+    context: ResolverContext
+  ): void {
+    if (context.bestEffort) return;
+    if (!this.subPlaceholderNamesADeclaredResource(varName, context)) return;
+    throw error;
+  }
+
+  /**
    * Resolve Fn::Sub intrinsic function
    *
    * Fn::Sub supports two forms:
@@ -4014,6 +4210,10 @@ export class IntrinsicFunctionResolver {
                 // unexpected failure whose cause the warning now names — falls
                 // through to keeping the placeholder.
                 if (getAttError instanceof IntrinsicResolutionRefusalError) throw getAttError;
+                // Issue #2270: a plain `Error` from a placeholder that NAMES a
+                // resource of this template is structural too, and keeping it
+                // ships `${Child.Outputs.Foo}` into a live property.
+                this.rethrowStructuralSubFailure(varNameStr, getAttError, context);
                 this.logger.warn(this.subPlaceholderWarning(varNameStr, getAttError));
                 replacement = match[0]; // Keep original placeholder
               }
@@ -4026,6 +4226,11 @@ export class IntrinsicFunctionResolver {
               // silently laundered the way the GetAtt ones were, which is the
               // whole defect this change fixes.
               if (refError instanceof IntrinsicResolutionRefusalError) throw refError;
+              // Issue #2270's other half, on the SAME terms as the dotted arm
+              // above: `${MyBucket}` naming a resource this template declares
+              // is an implicit `Ref`, never ordinary text, so a `Ref MyBucket
+              // not found` here is structural and must not become a literal.
+              this.rethrowStructuralSubFailure(varNameStr, refError, context);
               this.logger.warn(this.subPlaceholderWarning(varNameStr, refError));
               replacement = match[0]; // Keep original placeholder
             }
@@ -4172,12 +4377,13 @@ export class IntrinsicFunctionResolver {
       // three-element GetAtt that does not exist, which is worse than useless
       // in a message whose whole job is to name the site.
       //
-      // This branch is deliberately UNFENCED end to end and that is expected,
-      // not an oversight: the only input that discriminates it is a 3+-segment
-      // dotted spelling, which `resolveGetAtt` rejects at `parts.length !== 2`
-      // before `resolveSplit` can classify anything. The unit test pins that
-      // unreachability instead, so it reds — and this rendering is found
-      // already correct — the day nested-path `Fn::GetAtt` lands.
+      // This branch WAS unreachable end to end and its unit test pinned that
+      // unreachability, on the note that it would red the day nested-path
+      // `Fn::GetAtt` landed. It landed (issue #2270): `resolveGetAtt` now
+      // splits the string spelling on the FIRST dot, so a 3+-segment
+      // `Child.Outputs.Key` resolves and can reach `resolveSplit`'s refusal.
+      // The rendering below was found already correct, and the test now drives
+      // this branch through the live path instead of pinning the old throw.
       const dot = args.indexOf('.');
       const rendered = dot === -1 ? args : `${args.slice(0, dot)}, ${args.slice(dot + 1)}`;
       return { label: `Fn::GetAtt [${rendered}]`, kind: 'getatt' };

@@ -19,6 +19,22 @@
 #           resource that actually consumed the parameter. `UnrelatedParam`
 #           below is the discriminator: an ordinary literal that CONTAINS the
 #           plaintext as a substring and references nothing.
+#   #2270 - the `Fn::Sub` SPELLING of that same outputs-OUT read. The resolver
+#           rejected the three-segment STRING form
+#           (`${Child.Outputs.X}` -> `Fn::GetAtt "Child.Outputs.X"`), and
+#           `Fn::Sub`'s catch turned the rejection into a KEPT literal, so the
+#           resource was created holding the placeholder TEXT with a green
+#           deploy. `SubConsumer` reads a NON-secret child output, so its
+#           failure cannot be confused with a redaction failure. ROUND 3 adds
+#           the half `SubConsumer` cannot see: making that placeholder resolve
+#           CREATED a #2059 collapse population, because the leaf now carries a
+#           secret and `crossStackSourceKey` refused every `Fn::Sub`.
+#           `SubSecretPair` holds BOTH leaves in ONE resource (its Value and its
+#           Description) reading two expressions of one secret that resolve
+#           EQUAL, and each must persist its OWN. One resource, not two:
+#           `perResourceSecrets` is keyed by logical id, so two resources get
+#           two bags and would pass either way. The pair uses its own JSON key,
+#           so `StageParam` stays the only leaf carrying ITS plaintext.
 #   #2086 - the rollback executor binds the same seed. Not directly provoked
 #           here (that needs a mid-deploy failure); its unit coverage is
 #           `tests/unit/deployment/rollback-executor-nested-stack-secret-scope.test.ts`.
@@ -140,6 +156,8 @@ CHILD_STAGE_PARAM="cdkd-nested-child-stage-${ACCOUNT_ID}"
 CHILD_SECURE_PARAM="cdkd-nested-child-secure-${ACCOUNT_ID}"
 CHILD_UNRELATED_PARAM="cdkd-nested-child-unrelated-${ACCOUNT_ID}"
 PARENT_CONSUMER_PARAM="cdkd-nested-parent-consumer-${ACCOUNT_ID}"
+PARENT_SUB_PARAM="cdkd-nested-parent-sub-${ACCOUNT_ID}"
+PARENT_SUBPAIR_PARAM="cdkd-nested-parent-subpair-${ACCOUNT_ID}"
 
 # The two secret plaintexts, and the expressions they must be persisted as.
 # `prodstage2087` is deliberately UNUSUAL rather than a word like `production`:
@@ -149,11 +167,34 @@ PARENT_CONSUMER_PARAM="cdkd-nested-parent-consumer-${ACCOUNT_ID}"
 SECRET_STAGE_VALUE="prodstage2087"
 SECURE_PW_VALUE="securepw2086"
 STAGE_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:stage::}}"
+# The #2270 round-3 SHARED pair. A DIFFERENT JSON key from `stage`, so a
+# different plaintext: sharing `stage` would drag `StageParam` into the same
+# collapse, which is exactly how the first cut of this arm broke the #1903
+# assertion below. Two spellings that resolve IDENTICALLY, because
+# `resolveDynamicReferences` defaults an empty version-stage to `AWSCURRENT` --
+# issue #2059's rotating-secret shape made deterministic. Neither expression is
+# a substring of the other (one ends `shared::}}`, the other
+# `shared:AWSCURRENT:}}`), so an assertion naming one cannot be satisfied by the
+# other.
+SHARED_PW_VALUE="sharedpw2270"
+SHARED_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:shared::}}"
+SHARED_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:shared:AWSCURRENT:}}"
 SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
 # The #2087 discriminator's literal, kept in sync with the fixture stack. It
 # CONTAINS `SECRET_STAGE_VALUE`, which is the whole point: a non-overlapping
 # literal cannot see the defect.
 UNRELATED_LITERAL="cdkd-bucket-prodstage2087-logs"
+
+# The #2270 arm's NON-secret child output, kept in sync with the fixture stack,
+# plus the string the parent's `Fn::Sub` must produce from it and the literal
+# placeholder a pre-fix cdkd shipped instead. `plainout2270` shares no substring
+# with either secret plaintext or with any parameter name in this fixture, so
+# no other grep here can hit it and no assertion of this arm can pass for a
+# reason belonging to another one.
+CHILD_PLAIN_OUTPUT_VALUE="plainout2270"
+PARENT_SUB_EXPECTED="sub-${CHILD_PLAIN_OUTPUT_VALUE}-end"
+# shellcheck disable=SC2016  # the ${...} here is CloudFormation's, not the shell's
+PARENT_SUB_PLACEHOLDER='sub-${Child.Outputs.ChildPlainOutput}-end'
 
 # ASSERTED, not merely commented. The literal is triplicated -- here, in the
 # assertion below, and in lib/nested-stack-secret-stack.ts -- and kept in sync
@@ -170,6 +211,48 @@ case "${UNRELATED_LITERAL}" in
     exit 1
     ;;
 esac
+
+# The MIRROR of the check above, for the #2270 arms. That one needs an overlap;
+# these need the OPPOSITE -- a literal of theirs that collided with a secret
+# plaintext, with the #2087 literal, OR WITH EACH OTHER would make an assertion
+# pass or fail for a reason belonging to a different arm, and the wholesale "no
+# plaintext in state" greps would start reporting a leak that is not one.
+#
+# The one property this most concretely protects, because its violation is what
+# broke this fixture's first real-AWS run: `SHARED_PW_VALUE` must not equal (or
+# contain, or be contained by) `SECRET_STAGE_VALUE`. Giving the round-3 arm its
+# own secret JSON key is what puts `StageParam` back to being the ONLY leaf
+# carrying its plaintext; the moment the two coincide, the #1903 assertion below
+# starts failing again for exactly the reason that split exists to remove.
+#
+# ITERATED BY VARIABLE NAME, not by value, and that is the whole correctness of
+# the self-comparison guard: skipping when the two VALUES are equal would skip
+# precisely the case this exists to catch (two literals that have become
+# identical), so the guard tests the NAMES and the comparison tests the values.
+# The pre-existing three are inner-only -- `UNRELATED_LITERAL` legitimately
+# CONTAINS `SECRET_STAGE_VALUE`, which the #2087 assertion above requires, so
+# they must never be compared against each other.
+CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE"
+CDKD_ALL_LITERALS="SECRET_STAGE_VALUE SECURE_PW_VALUE UNRELATED_LITERAL ${CDKD_2270_LITERALS}"
+for mine_name in ${CDKD_2270_LITERALS}; do
+  mine="${!mine_name}"
+  for needle_name in ${CDKD_ALL_LITERALS}; do
+    [ "${mine_name}" = "${needle_name}" ] && continue
+    needle="${!needle_name}"
+    case "${needle}" in
+      *"${mine}"*)
+        echo "FAIL: ${needle_name} contains ${mine_name} -- the two literals collide" >&2
+        exit 1
+        ;;
+    esac
+    case "${mine}" in
+      *"${needle}"*)
+        echo "FAIL: ${mine_name} contains ${needle_name} -- the two literals collide" >&2
+        exit 1
+        ;;
+    esac
+  done
+done
 
 mask() {
   local v="$1"
@@ -220,6 +303,12 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
     echo "FAIL: ${label}: the child's state.json carries the resolved SecureString plaintext" >&2
     exit 1
   fi
+  # The #2270 round-3 pair resolves inside the CHILD, so its plaintext must be
+  # absent from the child's record too -- the outputs are persisted redacted.
+  if printf '%s' "${scan}" | grep -qF "${SHARED_PW_VALUE}"; then
+    echo "FAIL: ${label}: the child's state.json carries the resolved shared plaintext" >&2
+    exit 1
+  fi
   echo "    OK: ${label}: no resolved plaintext anywhere else in the child's state.json"
 }
 
@@ -240,7 +329,7 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
     echo "      the log format drifted, so the plaintext scan below proves nothing" >&2
     exit 1
   fi
-  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}"; then
+  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}"; then
     echo "FAIL: ${label}: --verbose printed a resolved secret plaintext" >&2
     exit 1
   fi
@@ -266,7 +355,8 @@ cleanup() {
     # out-of-band resources are cdkd's responsibility NOWHERE, so this sweep is
     # the only thing that keeps them from being orphans.
     for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
-             "${PARENT_CONSUMER_PARAM}" "${SECURE_PARAM_NAME}"; do
+             "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" \
+             "${PARENT_SUBPAIR_PARAM}" "${SECURE_PARAM_NAME}"; do
       aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
     done
     aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
@@ -317,7 +407,8 @@ cleanup
 # --- Out-of-band secret + SecureString parameter ---------------------------
 echo "==> Creating the secretsmanager secret and the SecureString SSM parameter out of band"
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\"}" --region "${REGION}" >/dev/null
+  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\"}" \
+  --region "${REGION}" >/dev/null
 aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
   --value "${SECURE_PW_VALUE}" --overwrite --region "${REGION}" >/dev/null
 
@@ -395,7 +486,105 @@ assert_eq "the parent consumer's own state holds the EXPRESSION" \
   "$(jq_state "${PARENT_STATE}" '.resources.ParentConsumer.properties.Value')" "${STAGE_EXPR}"
 assert_eq "the parent's nested-stack row keeps the input parameter as its EXPRESSION" \
   "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.SecretStage')" "${STAGE_EXPR}"
-if printf '%s' "${PARENT_STATE}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}"; then
+
+# --- #2270: the Fn::Sub spelling of the same read reaches AWS RESOLVED -------
+# The assertion is on the LIVE parameter, and that is the point: a fix that
+# resolved at persist time but not on the wire would pass a state-only check.
+# SSM accepts any string, so a pre-fix cdkd created this parameter holding the
+# placeholder TEXT and still exited 0 -- the value is the only witness.
+echo "==> #2270: an Fn::Sub over a child output resolves instead of shipping the placeholder"
+assert_eq "the child's persisted NON-secret output is the plain value" \
+  "$(jq_state "${CHILD_STATE}" '.outputs.ChildPlainOutput')" "${CHILD_PLAIN_OUTPUT_VALUE}"
+LIVE_PARENT_SUB=$(aws ssm get-parameter --name "${PARENT_SUB_PARAM}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+# The named-defect test runs BEFORE the equality one, and the order is the whole
+# reason it exists: `assert_eq` exits on any mismatch, so placing this after it
+# would make this branch DEAD -- reachable only when the two values are already
+# equal. First name the ONE value the pre-fix binary produced, then let the
+# equality assert catch everything else. The value is echoed unmasked, unlike
+# `assert_eq`'s, because this arm reads a NON-secret output by construction; if
+# it is ever re-pointed at `ChildSecretOutput`, mask it.
+if [ "${LIVE_PARENT_SUB}" = "${PARENT_SUB_PLACEHOLDER}" ]; then
+  echo "FAIL: the LIVE Fn::Sub consumer holds the UNRESOLVED placeholder (issue #2270)" >&2
+  echo "      value: ${LIVE_PARENT_SUB}" >&2
+  exit 1
+fi
+assert_eq "the LIVE Fn::Sub consumer holds the RESOLVED child output" \
+  "${LIVE_PARENT_SUB}" "${PARENT_SUB_EXPECTED}"
+assert_eq "the Fn::Sub consumer's own state holds the resolved value too" \
+  "$(jq_state "${PARENT_STATE}" '.resources.SubConsumer.properties.Value')" "${PARENT_SUB_EXPECTED}"
+
+# --- #2270 round 3: the collapse the round-2 fix CREATED ---------------------
+# `SubConsumer` above reads a NON-secret output, so it is blind to this. Once
+# `${Child.Outputs.X}` resolves, a SECRET-bearing one needs POSITIONING and had
+# none: `crossStackSourceKey` refused every `Fn::Sub` and `intrinsicSkeletonPattern`
+# cannot cross a `{{resolve:...}}` token's `}}`, so the leaves fell to the
+# plaintext-keyed value scan. That scan collapses two references resolving to
+# ONE plaintext onto whichever expression was recorded last, and
+# `resolveReplayProps` applies the WRONG one to the live resource on rollback /
+# `cdkd drift --revert`.
+#
+# BOTH LEAVES ARE ONE RESOURCE'S: `SubSecretPair`'s Value and its Description.
+# `perResourceSecrets` is keyed by logical id, so two separate resources would
+# get two separate bags, each holding a single pair, and would redact correctly
+# WITH OR WITHOUT the fix -- the arm would prove nothing. One resource is the
+# only shape in which positioning decides the answer.
+echo "==> #2270 round 3: two Fn::Sub secret leaves of ONE resource keep their OWN expressions"
+
+# The collapse PREMISE, asserted rather than assumed: both live leaves must hold
+# the SAME plaintext. If they differed, the value scan could tell them apart and
+# the whole arm would pass vacuously.
+LIVE_SUBPAIR_VALUE=$(aws ssm get-parameter --name "${PARENT_SUBPAIR_PARAM}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+LIVE_SUBPAIR_DESC=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${PARENT_SUBPAIR_PARAM}" \
+  --query 'Parameters[0].Description' --output text)
+assert_eq "the LIVE Fn::Sub Value holds the resolved shared secret" \
+  "${LIVE_SUBPAIR_VALUE}" "${SHARED_PW_VALUE}"
+assert_eq "the LIVE Fn::Sub Description holds the SAME resolved shared secret" \
+  "${LIVE_SUBPAIR_DESC}" "${SHARED_PW_VALUE}"
+
+# THE DISCRIMINATOR: each persisted leaf back on ITS OWN expression. Under the
+# collapse both carry the SURVIVOR's, so whichever lost reads as the other.
+SUBPAIR_VALUE_STATE="$(jq_state "${PARENT_STATE}" '.resources.SubSecretPair.properties.Value')"
+SUBPAIR_DESC_STATE="$(jq_state "${PARENT_STATE}" '.resources.SubSecretPair.properties.Description')"
+assert_eq "SubSecretPair.Value persists the DEFAULT-stage expression" \
+  "${SUBPAIR_VALUE_STATE}" "${SHARED_EXPR_A}"
+assert_eq "SubSecretPair.Description persists the AWSCURRENT-spelled expression" \
+  "${SUBPAIR_DESC_STATE}" "${SHARED_EXPR_B}"
+if [ "${SUBPAIR_VALUE_STATE}" = "${SUBPAIR_DESC_STATE}" ]; then
+  echo "FAIL: both Fn::Sub secret leaves persisted the SAME expression (collapse, issue #2270)" >&2
+  exit 1
+fi
+
+# READ THE TWO COUNTS AS A PAIR. "no plaintext" alone is satisfied by an arm
+# that did nothing at all -- if the resource were missing, or its leaves empty,
+# the plaintext count is zero for the wrong reason. Requiring the expressions to
+# be PRESENT is what makes the absence mean something.
+SUBPAIR_PLAINTEXT_HITS=$(printf '%s' "${SUBPAIR_VALUE_STATE}${SUBPAIR_DESC_STATE}" \
+  | grep -c "${SHARED_PW_VALUE}" || true)
+SUBPAIR_EXPR_HITS=0
+case "${SUBPAIR_VALUE_STATE}" in *"{{resolve:secretsmanager:"*) SUBPAIR_EXPR_HITS=$(( SUBPAIR_EXPR_HITS + 1 ));; esac
+case "${SUBPAIR_DESC_STATE}" in *"{{resolve:secretsmanager:"*) SUBPAIR_EXPR_HITS=$(( SUBPAIR_EXPR_HITS + 1 ));; esac
+if [ "${SUBPAIR_PLAINTEXT_HITS}" -ne 0 ] || [ "${SUBPAIR_EXPR_HITS}" -ne 2 ]; then
+  echo "FAIL: expected 0 plaintext hits AND 2 expression hits across SubSecretPair's two leaves" >&2
+  echo "      plaintext hits: ${SUBPAIR_PLAINTEXT_HITS}, expression hits: ${SUBPAIR_EXPR_HITS}" >&2
+  exit 1
+fi
+echo "    OK: 0 plaintext / 2 expressions, each leaf on its own"
+
+# The CHILD's two shared outputs must themselves be redacted and DISTINCT: the
+# parent's positioning can only be right if the producer kept them apart. These
+# are LITERAL tokens the child resolves itself, so the child's own position pass
+# certifies each against its own whole-token source -- which is precisely why
+# the pair is NOT routed through the child's `Parameters` (a plaintext-keyed
+# inherited bag collapses two expressions before the child ever runs).
+assert_eq "the child's shared output A is its own expression" \
+  "$(jq_state "${CHILD_STATE}" '.outputs.ChildSharedOutputA')" "${SHARED_EXPR_A}"
+assert_eq "the child's shared output B is its own expression" \
+  "$(jq_state "${CHILD_STATE}" '.outputs.ChildSharedOutputB')" "${SHARED_EXPR_B}"
+
+if printf '%s' "${PARENT_STATE}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
   exit 1
 fi
@@ -417,7 +606,7 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd diff --recursive --fail exited 0"
-if printf '%s' "${DIFF_OUT}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}"; then
+if printf '%s' "${DIFF_OUT}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}"; then
   echo "FAIL: the diff output printed a resolved secret plaintext" >&2
   exit 1
 fi
@@ -510,7 +699,7 @@ assert_eq "child SecureParam is the EXPRESSION after an UPDATE-driven redeploy" 
 assert_eq "child UnrelatedParam is STILL verbatim after an UPDATE-driven redeploy" \
   "$(jq_state "${CHILD_STATE3}" '.resources.UnrelatedParam.properties.Value')" "${UNRELATED_LITERAL}"
 assert_child_state_carries_no_plaintext "after the UPDATE-driven redeploy" "${CHILD_STATE3}"
-if printf '%s' "${PARENT_STATE3}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}"; then
+if printf '%s' "${PARENT_STATE3}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext after the update" >&2
   exit 1
 fi
@@ -540,11 +729,11 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
-         "${PARENT_CONSUMER_PARAM}"; do
+         "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}"; do
   assert_gone "SSM parameter '${p}' still exists after destroy" \
     aws ssm get-parameter --name "${p}" --region "${REGION}"
 done
-echo "    OK: all four stack-owned SSM parameters are gone"
+echo "    OK: all six stack-owned SSM parameters are gone"
 
 # The out-of-band pair is NOT in the stack, so destroy must have left it alone
 # -- deleting a resource cdkd does not manage would be the real failure. Then

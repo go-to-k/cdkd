@@ -135,22 +135,25 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     // three-element Fn::GetAtt that does not exist, which is worse than
     // useless in a message whose only job is to name the site.
     //
-    // The three-segment STRING spelling cannot reach the refusal today:
-    // `resolveGetAtt` rejects `parts.length !== 2` first, so `resolveValue`
-    // throws before `resolveSplit` classifies anything. That is pinned below,
-    // so if nested-path GetAtt ever lands, this test reds and the reader finds
-    // the rendering already correct. The reachable arm drives the equivalent
-    // shape through the ARRAY spelling.
+    // The three-segment STRING spelling USED to be unable to reach the
+    // refusal: `resolveGetAtt` rejected `parts.length !== 2` first, so
+    // `resolveValue` threw before `resolveSplit` classified anything, and this
+    // test pinned that throw on the note that it would red the day nested-path
+    // GetAtt landed. It landed — issue #2270 made the string spelling split on
+    // the FIRST dot — so the rendering is now driven through the LIVE path,
+    // where it is found already correct.
     const resolver = new IntrinsicFunctionResolver();
-    const unreachable = await splitError(
+    const dotted = mkContext({ Child: mkResource({ 'Outputs.Key': ['a', 'b'] }) });
+
+    const viaString = await splitError(
       resolver,
       [',', { 'Fn::GetAtt': 'Child.Outputs.Key' }],
-      mkContext()
+      dotted
     );
-    expect(unreachable.message).toContain('Invalid Fn::GetAtt format');
-    expect(unreachable).not.toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(viaString).toBeInstanceOf(IntrinsicResolutionRefusalError);
+    expect(viaString.message).toContain('(from Fn::GetAtt [Child, Outputs.Key])');
+    expect(viaString.message).not.toContain('[Child, Outputs, Key]');
 
-    const dotted = mkContext({ Child: mkResource({ 'Outputs.Key': ['a', 'b'] }) });
     const rendered = await splitError(
       resolver,
       [',', { 'Fn::GetAtt': ['Child', 'Outputs.Key'] }],

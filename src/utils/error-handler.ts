@@ -222,14 +222,24 @@ function formatDuration(ms: number): string {
  * 1. Reachable from `Fn::Sub`'s `${LogicalId.Attribute}` form, i.e. the ones
  *    the laundering fix above is actually about: `guardedPhysicalIdFallback`'s
  *    ARN / URL shape hard-fail (the #1103 class), the `--strict-getatt`
- *    rejection, `rejectPlaceholderArnAttribute` (#1729), and the
+ *    rejection, `rejectPlaceholderArnAttribute` (#1729), the
  *    fabricated-account guard (#1730), which refuses to build a value from the
- *    placeholder account id when STS did not answer.
+ *    placeholder account id when STS did not answer, and the nested-stack
+ *    MISSING-OUTPUT refusal
+ *    ([#2270](https://github.com/go-to-k/cdkd/issues/2270)), which refuses an
+ *    `Outputs.<Key>` the child does not declare rather than letting
+ *    `guardedPhysicalIdFallback` serve the synthetic
+ *    `arn:cdkd-local:...` physical id — that id starts with `arn:`, so the
+ *    #1103 ARN-shape guard passes it.
  * 2. NOT reachable from it, and thrown as this class only so that "deliberate
  *    refusal" is a property of the THROW rather than of the one catch that
- *    inspects it: `resolveSplit`'s two refusals of a non-string value (#1874).
- *    `Fn::Sub` cannot syntactically contain an `Fn::Split`, so those change no
- *    behavior by being this class.
+ *    inspects it: `resolveSplit`'s two refusals of a non-string value (#1874),
+ *    and `refuseCoercedInheritedSecret`, which refuses an already-resolved
+ *    value whose type cannot be coerced. Their non-reachability has two
+ *    DIFFERENT reasons, so do not collapse them: `Fn::Sub` cannot syntactically
+ *    contain an `Fn::Split`, while `refuseCoercedInheritedSecret` runs in the
+ *    nested-stack PARAMETER pre-pass, before any `Fn::Sub` is resolved. Neither
+ *    changes behavior by being this class.
  * 3. PERMANENT — the one site where no user action and no re-run can make the
  *    read succeed: `resolveGetStackOutput`'s cross-account refusal to resolve a
  *    producer account's redacted dynamic reference with the consumer's
@@ -237,9 +247,11 @@ function formatDuration(ms: number): string {
  *    {@link CrossAccountSecretRefusalError} rather than this class, because
  *    every site in groups 1 and 2 is USER-FIXABLE (correct the stale
  *    placeholder ARN, deploy the producer so STS resolves, enrich the
- *    `Fn::GetAtt`, drop `--strict-getatt`, fix the malformed `Fn::Split`) and a
+ *    `Fn::GetAtt`, drop `--strict-getatt`, fix the malformed `Fn::Split`,
+ *    correct the nested stack's output name, declare the nested-stack parameter
+ *    `Type: String`) and a
  *    consumer that treats "permanent" as a property of the CLASS silently
- *    downgrades all five. `cdkd scrub`'s cross-stack pre-pass is that consumer:
+ *    downgrades every one of them. `cdkd scrub`'s cross-stack pre-pass is that consumer:
  *    it records a permanent refusal as a FINDING and scrubs the rest of the
  *    stack, but must REFUSE the stack for a fixable one, since a re-run after
  *    the fix would scrub it (issue
@@ -251,10 +263,11 @@ function formatDuration(ms: number): string {
  * genuinely time-dependent — the fabricated-account guard, where
  * `getAccountInfo` caches a fabricated answer for only 10s precisely so a
  * later attempt can heal — so a constructor-level marker would wrongly make
- * that one terminal. Every OTHER site marks at its own `throw`: all six
- * decide from inputs a retry cannot change (a persisted state record, an
+ * that one terminal. Every OTHER site marks at its own `throw`: each
+ * decides from inputs a retry cannot change (a persisted state record, an
  * attribute-name suffix, a CLI flag, an already-resolved value's type, a
- * template's literal `RoleArn`), and all six interpolate
+ * template's literal `RoleArn`, a child stack's declared output names), and
+ * each interpolates
  * template-controlled text into their message, which the
  * SUBSTRING-matching retry classifiers can read as transient (issue #1838 —
  * a logical id like `MyDependencyViolationHandler` is enough). So the split is
@@ -280,7 +293,7 @@ export class IntrinsicResolutionRefusalError extends CdkdError {
  * `resolveSub`'s catch re-raises on (making this refusal propagate out of an
  * `Fn::Sub` instead of being laundered into a literal `${...}`), while
  * consumers that need "no re-run can change this" match on THIS class and
- * therefore cannot capture the five user-fixable siblings.
+ * therefore cannot capture its user-fixable siblings.
  *
  * `code` is distinct for the same reason a message is not: a consumer keying
  * on `INTRINSIC_RESOLUTION_REFUSAL` would capture every sibling, and one
