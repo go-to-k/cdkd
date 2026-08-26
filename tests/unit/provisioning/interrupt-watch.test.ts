@@ -337,14 +337,24 @@ describe('interrupt watch — the LAST-listener force-quit (multi-stack destroy 
     }
   });
 
-  it('DOES force-quit in the gap between two stacks of a multi-stack destroy', () => {
-    // `destroy.ts` registers no SIGINT handler of its own; `destroy-runner.ts`
-    // registers the only one a destroy has and removes it in its `finally`. So
-    // between two `runDestroyForStack` calls the shared watch is the ONLY
-    // listener — and merely latching there SWALLOWS the Ctrl-C: the process
-    // does not exit, `draining` is never set, `result.interrupted` stays false,
-    // and the loop proceeds to delete the NEXT stack after the user asked to
-    // stop. That is this whole change's headline failure, one layer out.
+  it('DOES force-quit once every graceful handler is gone', () => {
+    // The mechanism: with no command handler left, merely LATCHING would
+    // swallow the Ctrl-C — the process does not exit and whatever loop is
+    // running proceeds as if nothing happened.
+    //
+    // This used to be reachable on `cdkd destroy --all`: `destroy.ts` had no
+    // SIGINT handler of its own, so between two `runDestroyForStack` calls the
+    // shared watch really was the only listener. Issue #2117 closed THAT
+    // instance — `destroy.ts` / `state.ts` now hold a command-scoped handler
+    // for their whole run (`watchCommandInterrupt`), so the destroy gap is
+    // covered and the force-quit there is the command's own, which also stops
+    // the loop rather than only exiting.
+    //
+    // The case is kept because the mechanism still has a live population: the
+    // commands that register NO handler at all — `import` / `export` / `scrub`
+    // / `orphan` / `drift` / `state refresh-observed` — as the source's own
+    // scope note next to this handler records. It is that population this now
+    // pins, not the destroy gap.
     const removeCommandHandler = installCommandHandler();
     const stackOne = startInterruptWatch('stack 1 wait');
     stackOne.dispose();

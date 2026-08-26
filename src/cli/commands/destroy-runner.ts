@@ -1666,6 +1666,14 @@ export async function runDestroyForStack(
     } finally {
       // Each call registers and removes its own function reference — important
       // for nested-stack recursion, where one handler exists per level.
+      //
+      // DO NOT introduce an `await` between this line and the function's
+      // return. `watchCommandInterrupt` (issue #2117) takes over the moment
+      // this handler is gone, and its force-quit tells the user "no stack lock
+      // is held" — true only because nothing suspends here, so a signal cannot
+      // land after a `releaseLock` that FAILED (caught and warned above, not
+      // thrown). One added `await` turns that message into a lie on the one
+      // path where the lock really is stranded.
       process.removeListener('SIGINT', sigintHandler);
       // Restore the cross-region switch HERE, in the guaranteed `finally`, so a
       // throwing `releaseLock` above cannot skip it and leak the target region
@@ -1689,10 +1697,22 @@ export async function runDestroyForStack(
     // earlier; this only ever turns false into true. The `return` sits after
     // this `finally`, so the caller sees the corrected value.
     //
-    // TACTICAL by design. `result.interrupted` being the ONLY channel from here
-    // to the `--all` loop is the actual defect — `destroy.ts` registers no
-    // SIGINT handler of its own, where `deploy.ts` does — and closing THAT is
-    // https://github.com/go-to-k/cdkd/issues/2117 rather than this line.
+    // Kept, and no longer the only thing standing between a Ctrl-C and the next
+    // stack. This line was TACTICAL by design: `result.interrupted` being the
+    // ONLY channel from here to the `--all` loop was the actual defect, because
+    // `destroy.ts` registered no SIGINT handler of its own where `deploy.ts`
+    // did. https://github.com/go-to-k/cdkd/issues/2117 closed that — both
+    // destroy commands now hold a command-scoped handler
+    // (`watchCommandInterrupt`) for their whole run, and their loops read it
+    // live, so a signal landing after this `finally` (or after the
+    // `removeListener` above, which this line cannot see either) still stops
+    // the run.
+    //
+    // This stays because it answers a DIFFERENT question: `result.interrupted`
+    // is the PER-STACK outcome, and it decides this stack's state preservation,
+    // its summary line and its `--purge-events` skip. Deleting it would leave
+    // those three reading a value stale by exactly the window the reordering
+    // opened.
     result.interrupted ||= draining;
     // (The cross-region region/client restore now runs in the inner `finally`
     // above, so it happens even if `releaseLock` rejected — issue #2161.)
