@@ -1951,6 +1951,22 @@ indistinguishable from any other crash. Pair it with a `Monitor` that emits on
 phase lines AND on log-growth stalling, so a wedge announces itself instead of
 being discovered hours later.
 
+**ANCHOR the predicate the poller waits on, or it reports DONE while the job
+runs.** This flow polls constantly — for a lane agent, a gate chain, a real-AWS
+run — and a loose predicate fails in the one direction that matters, since a
+premature DONE is acted on. Two shapes, both hit on 2026-08-26 in one run.
+A non-empty test (`[ -s "$f" ]`) on an output file the job ECHOES INTO before
+starting: the `PWD=...` line the chain prints first satisfies it, so the poller
+returned at once and the integ looked finished seconds in. And an unanchored
+substring: `grep -q "test_rc="` matches `typecheck_test_rc=` from an EARLIER
+step in the same chain, so a poller waiting for the suite reported done at the
+typecheck. Wait on a line the job writes only at the END, matched anchored
+(`grep -q "^suite_rc="`), and where the job has a process, confirm it is gone
+(`pgrep -f` on its command) rather than inferring it from the file. Neither bug
+touched the work — both were caught by reading the output — but each cost a
+round of re-checking, and the second one nearly had a merge sequence start
+against an unfinished suite.
+
 **The harness's "completed, exit 0" is the exit code of the command you
 BACKGROUNDED, which is not always the job you care about.** Write
 `nohup <long job> > log 2>&1 & echo started` into a backgrounded call and the
@@ -2403,6 +2419,22 @@ without touching the working tree, which matters because an actual `git merge` c
 itself be refused by a gate whose scope the incoming range touches. Then say the
 resulting HEADROOM out loud in the report, because it is what tells the next lane
 whether its own addition will red the same fence.
+
+**And when you hand the trim to someone else, check the target is REACHABLE from
+that lane's own bytes before naming it.** The lane can only spend what it added;
+everything else in the file belongs to other lanes and is not its to cut. So the
+floor is `merge-base size`, not zero, and a target below that floor is an
+instruction to cut somebody else's entry — which is the one thing the same
+paragraph forbids. Measured 2026-08-26: `.claude/rules/hooks.md` came to
+122,724 B against a 120,000 B cap, a trim was dispatched with a target of
+"≤ 118,000 B, i.e. at least 2,000 B of headroom", and that was arithmetically
+impossible — the merge base ALONE was 118,586 B, so reverting the lane's entry
+in full still lands 586 B above the target. The agent did the arithmetic,
+refused, and reported the ceiling (1,414 B of possible headroom) instead of
+quietly cutting a neighbour. Do that subtraction when you WRITE the target:
+`cap - merge_base_size` is the most headroom any single lane can leave, and if
+that number is small the finding is that the FILE is full, which is a different
+issue from this lane's diff.
 
 ```bash
 git checkout main && git pull origin main    # bring the merges local
