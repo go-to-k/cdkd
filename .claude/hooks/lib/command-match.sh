@@ -1285,3 +1285,244 @@ cmd_last_cd_target() {
     printf '%s' "$cur"
   fi
 }
+
+# =============================================================================
+# Cross-repo marker naming (go-to-k/cdkd#2236)
+# =============================================================================
+#
+# These hooks fire on EVERY Bash call the session makes, including ones that
+# target a SIBLING repository -- deliberate policy (CLAUDE.md: "cdkd's gate
+# policy is applied to that repo's commands ... never route around it"). The
+# integ gates then `cd` to the resolved target tree and ask markgate about a
+# gate named for cdkd: `integ-local`, `integ-destroy`, `integ-broad`,
+# `integ-schema-migration`. A repo that spells the same gate differently --
+# cdk-local names its Docker local-execution gate `integ` -- fails that verify
+# NO MATTER WHAT, so the merge became unsatisfiable by any legitimate action.
+#
+# Measured 2026-08-26 with markgate 0.4.1: markgate gives the caller NO way to
+# tell "this repo does not declare that gate" from "the marker is stale".
+# `verify <undeclared>` exits 1 with no output, and `status <undeclared>` exits
+# 1 printing `state: no marker` -- byte-identical to a declared-but-unset gate.
+# There is also no `config list` / `gates` subcommand. So the definedness
+# question can only be answered by reading `.markgate.yml` directly, which is
+# what gate_markgate_declares does.
+#
+# WHY AN EXPLICIT PER-REPO TABLE RATHER THAN DISCOVERY. Discovering "the gate
+# that means the same thing" from the target's `.markgate.yml` needs a property
+# that separates it from the repo's other gates, and none exists: cdk-local's
+# `integ` include is `src/**` + `tests/integration/**`, a strict SUPERSET of its
+# `check` gate's `src/**`, and both `check` and `integ` would match any
+# scope-overlap heuristic. `ttl:` + `hash: diff` is not a discriminator either
+# -- cdk-real-drift's `integ` gate carries both and is a READ-ONLY AWS gate with
+# no Docker in it. Every heuristic's failure mode is a false ACCEPT: merging on
+# the strength of a marker that attests to something else, which is exactly the
+# defect `markgate-gate-name-class.test.sh` exists to refuse. So the mapping is
+# DECLARED, keyed on the target repo as well as the gate name, and an unknown
+# repo gets a refusal rather than a guess.
+#
+# GATE_MARKER_ALIASES rows: <repo-slug>|<cdkd gate>|<that repo's gate>|<how to refresh it there>
+#
+# Only same-PURPOSE pairs belong here. `integ-destroy` / `integ-broad` /
+# `integ-schema-migration` deliberately have NO row: neither sibling has a
+# destroy path, a broad real-AWS matrix, or a state schema, so mapping any of
+# them onto cdk-local's Docker `integ` (or cdk-real-drift's read-only one) would
+# accept a marker that never exercised the code being gated.
+GATE_MARKER_ALIASES='
+go-to-k/cdk-local|integ-local|integ|/run-integ local-<test> (cdk-local'"'"'s /run-integ sets its integ marker after a clean Docker run with an empty container / network sweep)
+'
+
+# gate_markgate_declares <repo-top> <gate-name>
+#
+# Exit 0  the repo DECLARES that gate under `gates:` in its `.markgate.yml`.
+# Exit 1  the repo positively does NOT declare it (a `gates:` block was parsed
+#         and the name is absent, or there is no `.markgate.yml` at all).
+# Exit 2  UNDETERMINABLE -- the file exists but no `gates:` block with at least
+#         one entry could be parsed. Callers must fail CLOSED on 2 and keep the
+#         cdkd gate name, so a config this parser does not understand can never
+#         route a merge onto some other repo's marker.
+gate_markgate_declares() {
+  local top="$1" want="$2" file names
+  file="$top/.markgate.yml"
+  # No config at the repo top is how every other hook in this repo decides a
+  # checkout is not a markgate repo (branch-gate.sh, check-gate.sh). Nothing is
+  # declared there, so the answer is a definite "no", not "cannot tell".
+  [ -f "$file" ] || return 1
+  names=$(gate_markgate_declared_gates "$file") || return 2
+  case "
+$names
+" in
+    *"
+$want
+"*) return 0 ;;
+  esac
+  return 1
+}
+
+# gate_markgate_declared_gates <markgate-yml-path>
+#
+# Prints the first-level keys of the `gates:` block, one per line. Exit 2 (and
+# no output) when no such block with at least one entry is found.
+gate_markgate_declared_gates() {
+  awk '
+    { line = $0; sub(/\r$/, "", line) }
+    line ~ /^[ \t]*$/  { next }
+    line ~ /^[ \t]*#/  { next }
+    !in_gates {
+      if (line ~ /^gates:[ \t]*(#.*)?$/) { in_gates = 1 }
+      next
+    }
+    # Any other column-0 key ends the block.
+    line ~ /^[^ \t]/ { in_gates = 0; next }
+    {
+      match(line, /^[ \t]+/)
+      indent = RLENGTH
+      if (ref == 0) ref = indent
+      if (indent != ref) next
+      rest = substr(line, indent + 1)
+      # A trailing value or comment is tolerated (`check: {}`, `check: # x`):
+      # a key that only ever matched a bare `name:` would report a declared gate
+      # as ABSENT, and that direction routes the merge somewhere else.
+      if (rest ~ /^[A-Za-z0-9_.-]+:([ \t].*)?$/) {
+        sub(/:.*$/, "", rest)
+        print rest
+        found = 1
+      }
+    }
+    END { exit (found ? 0 : 2) }
+  ' "$1"
+}
+
+# gate_repo_slug <dir>
+#
+# Prints `<owner>/<name>` for the checkout's `origin` remote, or exits 1 when
+# there is no origin (a local-only fixture repo). Used only to key the alias
+# table, so "unknown" degrades to "no alias declared" -- a refusal, never a pass.
+gate_repo_slug() {
+  local url name rest owner
+  url=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || return 1
+  [ -n "$url" ] || return 1
+  url="${url%.git}"
+  url="${url%/}"
+  name="${url##*/}"
+  rest="${url%/*}"
+  owner="${rest##*[:/]}"
+  [ -n "$owner" ] && [ -n "$name" ] || return 1
+  [ "$owner" != "$url" ] || return 1
+  printf '%s/%s' "$owner" "$name"
+}
+
+# gate_resolve_marker_gate <target-dir> <cdkd-gate>
+#
+# Decides WHICH marker the calling gate must verify in <target-dir>, and prints
+# one tab-separated line:
+#
+#   canonical<TAB><cdkd-gate><TAB>
+#   alias<TAB><that repo's gate><TAB><how to refresh it there>
+#   none<TAB><TAB>
+#
+# `canonical` is returned whenever the target declares the cdkd gate AND
+# whenever definedness cannot be determined, so the cdkd repo's own path is
+# unchanged in every case. Always exits 0; the caller decides what `none` means.
+gate_resolve_marker_gate() {
+  local dir="$1" gate="$2" top slug row alias_gate alias_fix rc
+  top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top=""
+  if [ -z "$top" ]; then
+    printf 'canonical\t%s\t\n' "$gate"
+    return 0
+  fi
+  gate_markgate_declares "$top" "$gate"
+  rc=$?
+  # 0 = declared, 2 = undeterminable. Both keep the cdkd name (fail closed).
+  if [ "$rc" -ne 1 ]; then
+    printf 'canonical\t%s\t\n' "$gate"
+    return 0
+  fi
+  slug=$(gate_repo_slug "$dir" 2>/dev/null) || slug=""
+  if [ -n "$slug" ]; then
+    while IFS='|' read -r row_slug row_gate row_alias row_fix; do
+      [ -n "$row_slug" ] || continue
+      [ "$row_slug" = "$slug" ] || continue
+      [ "$row_gate" = "$gate" ] || continue
+      alias_gate="$row_alias"
+      alias_fix="$row_fix"
+      break
+    done <<GATE_ALIAS_EOF
+$GATE_MARKER_ALIASES
+GATE_ALIAS_EOF
+  fi
+  # The alias must itself be DECLARED there; a table row that has gone stale
+  # against the sibling's config must not send the merge to a marker that does
+  # not exist either.
+  if [ -n "${alias_gate:-}" ] && gate_markgate_declares "$top" "$alias_gate"; then
+    printf 'alias\t%s\t%s\n' "$alias_gate" "${alias_fix:-}"
+    return 0
+  fi
+  printf 'none\t\t\n'
+  return 0
+}
+
+# gate_refuse_no_equivalent_marker <gate-name> <cdkd-gate> <target-dir> <what-the-diff-touches>
+#
+# The refusal for the `none` case. It must NEVER tell the reader to refresh the
+# cdkd gate: in this repo that gate cannot exist, which is the whole defect of
+# go-to-k/cdkd#2236. It names the mapping row to add instead. EXITS the hook (2).
+gate_refuse_no_equivalent_marker() {
+  local gate="$1" cdkd_gate="$2" dir="$3" scope="$4" top slug
+  top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || top="$dir"
+  slug=$(gate_repo_slug "$dir" 2>/dev/null) || slug="no origin remote"
+  {
+    echo "Blocked by $gate: this merge touches $scope, which cdkd requires to be"
+    echo "verified before it reaches main -- but the repository this command targets"
+    echo "declares no gate for that verification, so there is no marker to refresh."
+    echo ""
+    echo "  target repo : $top ($slug)"
+    echo "  cdkd gate   : $cdkd_gate -- NOT declared in $top/.markgate.yml"
+    echo ""
+    echo "cdkd's gate policy deliberately applies to commands this session runs"
+    echo "against another repository, so re-running this from somewhere else is not"
+    echo "the fix. Do ONE of:"
+    echo ""
+    echo "  1. That repo already verifies this under a DIFFERENT gate name: record"
+    echo "     the mapping once, in GATE_MARKER_ALIASES in"
+    echo "     .claude/hooks/lib/command-match.sh, as one row"
+    echo "       $slug|$cdkd_gate|<that repo's gate>|<command that refreshes it>"
+    echo "     then run that command in that repo and retry the merge."
+    echo "  2. That repo does not verify this at all: add the gate and its setter"
+    echo "     skill there first -- the change is genuinely unverified."
+    echo "  3. The matched files are genuinely unrelated to this gate's subject:"
+    echo "     narrow this gate's scope pattern in .claude/hooks/$gate.sh."
+    echo ""
+    echo "Do NOT set any marker by hand to get past this."
+  } >&2
+  exit 2
+}
+
+# gate_refuse_stale_alias_marker <gate-name> <cdkd-gate> <target-dir> <alias-gate> <remediation> <what-the-diff-touches>
+#
+# The refusal for the `alias` case: the target repo DOES declare an equivalent
+# gate, and it is not fresh. Unlike the canonical refusal this one is
+# SATISFIABLE -- it names the gate that repo actually has and the command that
+# refreshes it. EXITS the hook (2).
+#
+# Shared by all four integ gates so they cannot drift into naming a cdkd-only
+# gate at a sibling. Today only `integ-local` has an alias row, so the other
+# three reach this through the table rather than through their own text; adding
+# a row is then the whole change, with no per-hook message to write.
+gate_refuse_stale_alias_marker() {
+  local gate="$1" cdkd_gate="$2" dir="$3" alias_gate="$4" fix="$5" scope="$6"
+  {
+    echo "Blocked by $gate: this merge touches $scope, and the gate that"
+    echo "repository declares for it is not fresh."
+    echo ""
+    echo "  target repo : $dir"
+    echo "  its gate    : $alias_gate (cdkd calls the same gate $cdkd_gate)"
+    echo ""
+    echo "Required action, IN THAT REPOSITORY -- no exceptions:"
+    echo "  ${fix:-run the verification that repository declares for this gate, then retry}"
+    echo ""
+    echo "Do NOT run 'markgate set' by hand to get past this, and do not re-run the"
+    echo "merge from another checkout: cdkd applies this policy to whichever tree the"
+    echo "command targets, precisely so an unverified code path cannot reach main."
+  } >&2
+  exit 2
+}

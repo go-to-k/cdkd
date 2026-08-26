@@ -40,6 +40,9 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_matches >/dev/null \
   || ! declare -F gate_target_dir_strict >/dev/null \
   || ! declare -F gate_refuse_unresolved_target >/dev/null \
+  || ! declare -F gate_resolve_marker_gate >/dev/null \
+  || ! declare -F gate_refuse_no_equivalent_marker >/dev/null \
+  || ! declare -F gate_refuse_stale_alias_marker >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -226,11 +229,35 @@ else
   exit 2
 fi
 
-"${markgate[@]}" verify integ-destroy >/dev/null 2>&1
+# --- which marker to ask about in THIS target repo (go-to-k/cdkd#2236) ---
+# Same structural defect as integ-local-gate: this hook also fires on merges
+# whose target is a SIBLING repo, and `integ-destroy` is a cdkd-only gate name,
+# so a sibling took a refusal it could never clear. Unlike integ-local there is
+# deliberately NO alias row for this gate -- neither sibling has a destroy path,
+# so mapping it onto their Docker / read-only `integ` gate would accept a marker
+# that never exercised a delete. A repo with no equivalent therefore gets a
+# refusal that names what to add, not a gate it cannot have.
+__plan=$(gate_resolve_marker_gate "$target_dir" integ-destroy)
+__mode=$(printf '%s' "$__plan" | cut -f1)
+__gate=$(printf '%s' "$__plan" | cut -f2)
+__gate_fix=$(printf '%s' "$__plan" | cut -f3)
+
+if [ "$__mode" = "none" ]; then
+  gate_refuse_no_equivalent_marker "integ-destroy-gate" "integ-destroy" "$target_dir" \
+    "deletion logic (provider delete(), destroy.ts, dag-builder, rollback-executor)"
+fi
+
+"${markgate[@]}" verify "$__gate" >/dev/null 2>&1
 status=$?
 
 if [ "$status" -eq 0 ]; then
   exit 0
+fi
+
+if [ "$__mode" = "alias" ]; then
+  gate_refuse_stale_alias_marker "integ-destroy-gate" "integ-destroy" "$target_dir" \
+    "$__gate" "$__gate_fix" \
+    "deletion logic (provider delete(), destroy.ts, dag-builder, rollback-executor)"
 fi
 
 # markgate 0.4's `hash: diff` adds a THIRD outcome: exit 2 is a hard
@@ -273,7 +300,7 @@ fi
 # confusion. Fails open to the pre-0.3 generic message when extraction
 # fails — which is also what happens on the exit-2 path below, where
 # `markgate status` itself errors and prints no `state:` line.
-reason=$("${markgate[@]}" status integ-destroy 2>/dev/null \
+reason=$("${markgate[@]}" status "$__gate" 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
 if [ -n "$reason" ]; then

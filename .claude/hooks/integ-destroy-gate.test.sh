@@ -19,14 +19,28 @@ set -u
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/integ-destroy-gate.sh"
 
+# go-to-k/cdkd#2236: a fixture repo must DECLARE the gate the hook asks about,
+# the way the real repo does. The gates now read the target repo's own
+# `.markgate.yml` to tell "this repo does not have that gate" (unsatisfiable --
+# the sibling-repo defect) from "the marker is stale", so a fixture with no
+# config takes the no-equivalent-gate refusal and never reaches markgate at all.
+# Without this the cwd assertions below go green-to-red, and worse, the exit-2
+# cases would pass for the wrong reason.
+declare_gate() {
+  printf 'gates:\n  %s:\n    hash: files\n    include:\n      - "src/**"\n' "$2" > "$1/.markgate.yml"
+}
+
+
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 side_repo="$TMPDIR/side-repo"
 main_repo="$TMPDIR/main-repo"
 git init -q -b feature/x "$side_repo"
+declare_gate "$side_repo" integ-destroy
 git -C "$side_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 git init -q -b main "$main_repo"
+declare_gate "$main_repo" integ-destroy
 git -C "$main_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 
 SHIM_DIR="$TMPDIR/bin"
@@ -221,6 +235,7 @@ run_msg_case "stale marker still advises /run-integ" stale \
 
 filter_repo="$TMPDIR/filter-repo"
 git init -q -b feature/x "$filter_repo"
+declare_gate "$filter_repo" integ-destroy
 mkdir -p "$filter_repo/src/deployment" "$filter_repo/docs"
 echo "base" > "$filter_repo/docs/readme.md"
 git -C "$filter_repo" add -A
@@ -289,6 +304,80 @@ run_case "diff filter: retry.ts is delete-touching (#2042)" 2 stale "$filter_rep
 stage_filter_change "src/deployment/rollback-executor.ts" "const REPLAY_LIMIT = 3;"
 run_case "diff filter: rollback-executor.ts is delete-touching (#2042)" 2 stale "$filter_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge 42 --squash"}}' "$filter_repo")"
+
+
+# --- CROSS-REPO GATE NAMING (go-to-k/cdkd#2236) ---
+#
+# This hook fires on every Bash call the session makes, including merges whose
+# target is a SIBLING repository -- deliberate policy. It then asked that repo
+# about `integ-destroy`, a cdkd-only gate name, and markgate exits 1 for an
+# UNDECLARED gate exactly as it does for a stale marker (measured with markgate
+# 0.4.1: `status` prints `state: no marker` in both cases). The refusal was
+# therefore unsatisfiable by any legitimate action -- hit live on
+# `integ-local-gate`, and structurally identical here.
+#
+# Case 2 is the load-bearing one for THIS gate: unlike `integ-local` there is
+# deliberately NO alias row for `integ-destroy`, because neither sibling verifies
+# anything equivalent. It drives a FRESH verdict, so a hook that had guessed an
+# alias by name would exit 0 and the case would fail.
+x2236_mk_repo() {
+  local dir="$1" origin="$2"; shift 2
+  git init -q -b feature/x "$dir"
+  git -C "$dir" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  [ "$origin" = "-" ] || git -C "$dir" remote add origin "$origin"
+  if [ "$#" -gt 0 ]; then
+    printf 'gates:\n' > "$dir/.markgate.yml"
+    local g
+    for g in "$@"; do
+      printf '  %s:\n    hash: files\n    include:\n      - "src/**"\n' "$g" >> "$dir/.markgate.yml"
+    done
+  fi
+}
+
+x2236_declares="$TMPDIR/x2236-declares"
+x2236_mk_repo "$x2236_declares" "https://github.com/go-to-k/cdkd.git" check integ-destroy
+x2236_other="$TMPDIR/x2236-other"
+x2236_mk_repo "$x2236_other" "https://github.com/go-to-k/cdk-local.git" check docs integ
+x2236_bare="$TMPDIR/x2236-bare"
+x2236_mk_repo "$x2236_bare" "https://github.com/go-to-k/cdk-local.git"
+x2236_emptycfg="$TMPDIR/x2236-emptycfg"
+x2236_mk_repo "$x2236_emptycfg" "https://github.com/go-to-k/cdk-local.git" check
+: > "$x2236_emptycfg/.markgate.yml"
+
+# x2236_case <name> <want_exit> <verdict> <CALLED|NOT_CALLED> <want-stderr|-> <repo>
+#   The marker expectation reads $CWD_TRACE_FILE, which the mocked markgate
+#   appends to on every call: an empty trace means the gate answered without
+#   consulting a marker at all, which is what the no-equivalent refusal must do.
+x2236_case() {
+  local name="$1" want="$2" verdict="$3" mg="$4" want_txt="$5" repo="$6"
+  local out got detail=""
+  : > "$CWD_TRACE_FILE"
+  out=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr merge --squash"}}' "$repo" \
+    | MARKGATE_MOCK_VERDICT="$verdict" "$HOOK" 2>&1)
+  got=$?
+  [ "$got" = "$want" ] || detail="$detail; want exit $want, got $got"
+  if [ "$mg" = "NOT_CALLED" ] && [ -s "$CWD_TRACE_FILE" ]; then
+    detail="$detail; markgate must not be consulted, trace: $(tr '\n' '|' < "$CWD_TRACE_FILE")"
+  fi
+  if [ "$mg" = "CALLED" ] && [ ! -s "$CWD_TRACE_FILE" ]; then
+    detail="$detail; markgate was never consulted"
+  fi
+  if [ "$want_txt" != "-" ] && ! printf '%s' "$out" | grep -qF "$want_txt"; then
+    detail="$detail; stderr missing [$want_txt]"
+  fi
+  if [ -z "$detail" ]; then
+    pass=$((pass + 1)); printf 'OK   %s (exit %s)\n' "$name" "$got"
+  else
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL $name$detail\n  output: $out\n"
+    printf 'FAIL %s%s\n' "$name" "$detail"
+  fi
+}
+
+x2236_case "target declaring integ-destroy consults that marker" 2 stale CALLED - "$x2236_declares"
+x2236_case "sibling declaring only its own gate is NOT accepted on it" 2 fresh NOT_CALLED "declares no gate" "$x2236_other"
+x2236_case "checkout with no .markgate.yml refuses actionably" 2 fresh NOT_CALLED "GATE_MARKER_ALIASES" "$x2236_bare"
+x2236_case "unparsable config keeps the cdkd gate name (fail closed)" 2 stale CALLED "integ-destroy" "$x2236_emptycfg"
 
 echo
 echo "Pass: $pass  Fail: $fail"

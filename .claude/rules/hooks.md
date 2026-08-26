@@ -323,6 +323,104 @@ The hooks a session runs come from ONE repo's `.claude/settings.json` — whiche
 
 **Delegation was tried and abandoned.** PR 1970 made each gate hand its decision to `<target-repo>/.claude/hooks/<same-name>` when one existed. It works, and it introduces arbitrary code execution: the target directory is named by the command itself (a `cd`, a `git -C` / `gh -C` flag, the payload's `cwd`), so any directory the agent can be induced to touch that carries an executable file at that path gets it run with the session's environment. Reproduced with a planted hook and a plain `git checkout`, which read `AWS_*` / `GH_TOKEN`-shaped variables and captured the payload. It is not patchable from inside the design — every trust signal available from the target repo is forgeable, because the attacker controls that repo — so trust would have to come from a maintainer-maintained allow-list. Read the closed PR before proposing delegation again; it also records two independent defects worth knowing (an exit status of 128+N from a signal-killed hook propagates as a non-blocking error and turns a block into a pass, and `git -C ""` silently resolves the hook process's own cwd).
 
+
+### A gate whose NAME the target repo does not have (go-to-k/cdkd#2236)
+
+"Retry after completing the target repo's checklist" presumes the retry CAN
+succeed. For the four `integ-*` gates it could not. Each `cd`s to the resolved
+target tree and asks markgate about a gate named for cdkd -- `integ-local`,
+`integ-destroy`, `integ-broad`, `integ-schema-migration` -- and a sibling that
+spells the same gate differently fails that verify NO MATTER WHAT. Hit live
+merging go-to-k/cdk-local#558 (a secret-plaintext redaction under `src/local/`)
+from a cdk-local worktree: cdk-local names its Docker local-execution gate
+`integ`, `markgate verify integ` returned **0** there, and cdkd's hook demanded
+`integ-local`, which cdk-local does not declare. The merge was unsatisfiable by
+any legitimate action -- the only ways past were the two the rules forbid
+(merging from outside the worktree, which silently bypasses the target repo's
+OWN gates, or setting a marker by hand). This is the fail-CLOSED-with-no-exit
+shape, not the sanctioned sibling-repo block above.
+
+**The existing PR-diff scope guard does not cover it.** That guard asks "does
+the DIFF touch this gate's scope?", and cdk-local's entire runtime lives under
+`src/local/`, so it answers yes and hands the merge to the blocking path. The
+question nobody was asking is "does the TARGET repo DECLARE this gate?".
+
+**markgate cannot answer that question, measured rather than assumed** (0.4.1,
+2026-08-26): `verify <undeclared>` exits 1 with no output, and
+`status <undeclared>` exits 1 printing `state: no marker` -- byte-identical to a
+declared-but-unset gate. There is no `config list` / `gates` subcommand either
+(`markgate config` has only `lint`). So definedness can only be answered by
+reading the target's own `.markgate.yml`, which is what
+`gate_markgate_declares` in `lib/command-match.sh` does.
+
+**The mapping is DECLARED, keyed on the repo as well as the gate, not
+discovered.** Discovery needs a property separating "the gate that means the
+same thing" from the repo's other gates, and none exists: cdk-local's `integ`
+include is `src/**` + `tests/integration/**`, a strict SUPERSET of its `check`
+gate's `src/**`, so any scope-overlap heuristic matches both. `ttl:` plus
+`hash: diff` is not a discriminator either -- cdk-real-drift's `integ` carries
+both and is a READ-ONLY AWS gate with no Docker in it. Every heuristic's failure
+mode is a false ACCEPT: merging on the strength of a marker that attests to
+something else, which is exactly what `markgate-gate-name-class.test.sh` exists
+to refuse. `GATE_MARKER_ALIASES` is therefore one reviewable row per
+(repo, cdkd gate, that repo's gate, command that refreshes it).
+
+`gate_resolve_marker_gate <target-dir> <cdkd-gate>` returns one of three modes:
+
+- **canonical** -- the target declares the cdkd gate, OR definedness could not be
+  determined. Behaviour is then byte-identical to before, which is why the cdkd
+  path is untouched: this repo declares all four.
+- **alias** -- the target declares an equivalent under its own name. The gate
+  verifies THAT marker, and a stale one is refused by
+  `gate_refuse_stale_alias_marker`, which names the target's gate and the
+  command that refreshes it there. The refusal is satisfiable.
+- **none** -- nothing equivalent is declared. Still a REFUSAL, exit 2, same as
+  before; what changed is that `gate_refuse_no_equivalent_marker` names the
+  mapping row to add rather than a gate that cannot exist. Passing here was
+  never an option: it would silently drop the policy cdkd deliberately applies
+  to sibling-repo commands.
+
+**Fail closed on UNDETERMINABLE.** Only a positively parsed `gates:` block with
+the name absent counts as "not declared"; a `.markgate.yml` that exists but
+yields no parsable block keeps the cdkd gate name, so a config this parser does
+not understand can never route a merge onto some other repo's marker. An absent
+`.markgate.yml` does count as "declares nothing" -- that is already how every
+other hook here decides a checkout is not a markgate repo.
+
+**Per-gate audit.** All four share the defect structurally -- same resolve,
+same `cd`, same cdkd-only gate name -- so all four were fixed. They differ only
+in REACHABILITY and in whether an alias exists:
+
+| gate | reachable in a sibling today | alias row |
+| --- | --- | --- |
+| `integ-local` | YES -- cdk-local's whole runtime is `src/local/**` / `src/cli/commands/local-*.ts`; demonstrated live | `go-to-k/cdk-local` -> `integ` |
+| `integ-destroy` | not today -- neither sibling has `src/provisioning/**`, `src/deployment/**` or `src/analyzer/**` | none: neither sibling has a destroy path, so their `integ` never exercised a delete |
+| `integ-broad` | not today -- same paths | none: the marker is bound to a broad-set real-AWS sentinel with no sibling counterpart |
+| `integ-schema-migration` | not today -- neither sibling has `src/types/state.ts` | none: neither persists a versioned state document |
+
+"Not reachable today" is a property of the siblings' current file layout, not of
+the gate, so it is not a reason to leave the shape in place.
+
+**The other four markgate gates are NOT affected, and that is a measurement
+rather than an assumption.** Comparing the three `gates:` blocks: cdkd declares
+`check`, `docs`, `verify-pr`, `pr-review` and the four `integ-*` above;
+cdk-local declares `check`, `docs`, `verify-pr`, `pr-review`, `integ`,
+`cdkd-parity`, `create-integ`, `merge-pr`; cdk-real-drift declares `check`,
+`docs`, `verify-pr`, `pr-review`, `integ`. So `check-gate` (`check` + `docs`),
+`verify-pr-gate` and `pr-review-gate` ask about names BOTH siblings declare, and
+the cdkd-only names are exactly the four fixed here. Re-run that comparison
+before assuming it still holds -- a gate renamed in any of the three repos puts
+its hook back into this class.
+
+Driven in BOTH directions by `.claude/hooks/integ-local-gate.test.sh` (13 added
+cases) and four cases each in the three sibling suites. The ACCEPT direction is
+the one that matters, since the defect is an over-tightening and a guard fenced
+only on "refuses what it must" cannot see one. The sibling suites drive their
+"a repo declaring only its own `integ` is NOT accepted on it" case with a FRESH
+verdict, so a hook that guessed an alias by name would exit 0 and fail the case.
+Eleven mutation probes were taken and every one went RED, with a comment-only
+control that did not.
+
 ## Class fences
 
 Two suites whose subject is EVERY hook at once -- the unresolved-target-directory

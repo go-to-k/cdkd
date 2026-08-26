@@ -52,6 +52,9 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_matches >/dev/null \
   || ! declare -F gate_target_dir_strict >/dev/null \
   || ! declare -F gate_refuse_unresolved_target >/dev/null \
+  || ! declare -F gate_resolve_marker_gate >/dev/null \
+  || ! declare -F gate_refuse_no_equivalent_marker >/dev/null \
+  || ! declare -F gate_refuse_stale_alias_marker >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -204,15 +207,37 @@ else
   exit 2
 fi
 
-"${markgate[@]}" verify integ-broad >/dev/null 2>&1
+# --- which marker to ask about in THIS target repo (go-to-k/cdkd#2236) ---
+# Same structural defect as integ-local-gate: this hook fires on merges whose
+# target is a SIBLING repo too, and `integ-broad` is a cdkd-only gate name, so a
+# sibling took a refusal it could never clear. No alias row for this gate:
+# `integ-broad` is bound to the broad-set sentinel a multi-resource real-AWS run
+# writes, which neither sibling has any counterpart for.
+__plan=$(gate_resolve_marker_gate "$target_dir" integ-broad)
+__mode=$(printf '%s' "$__plan" | cut -f1)
+__gate=$(printf '%s' "$__plan" | cut -f2)
+__gate_fix=$(printf '%s' "$__plan" | cut -f3)
+
+if [ "$__mode" = "none" ]; then
+  gate_refuse_no_equivalent_marker "integ-broad-gate" "integ-broad" "$target_dir" \
+    "cross-cutting deploy / destroy code (deploy-engine, dag-builder, retry, register-providers)"
+fi
+
+"${markgate[@]}" verify "$__gate" >/dev/null 2>&1
 status=$?
 if [ "$status" -eq 0 ]; then
   exit 0
 fi
 
+if [ "$__mode" = "alias" ]; then
+  gate_refuse_stale_alias_marker "integ-broad-gate" "integ-broad" "$target_dir" \
+    "$__gate" "$__gate_fix" \
+    "cross-cutting deploy / destroy code (deploy-engine, dag-builder, retry, register-providers)"
+fi
+
 # Extract the parenthesized reason (`digest differs` vs `expired by ttl`
 # vs `marker missing`) for a more actionable error message.
-reason=$("${markgate[@]}" status integ-broad 2>/dev/null \
+reason=$("${markgate[@]}" status "$__gate" 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
 if [ -n "$reason" ]; then
