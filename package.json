@@ -98,7 +98,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1016.0",
     "adm-zip": "^0.5.18",
     "archiver": "^7.0.0",
-    "cdk-local": "^0.147.0",
+    "cdk-local": "^0.147.6",
     "chokidar": "^5.0.0",
     "commander": "^12.0.0",
     "graphlib": "^2.1.8",

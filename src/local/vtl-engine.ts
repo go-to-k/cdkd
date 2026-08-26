@@ -206,13 +206,23 @@ export function buildDefaultUtil(): VtlUtil {
       try {
         return JSON.parse(s);
       } catch (err) {
-        // MIRROR ONLY -- this file is not on the shipped code path. cdkd's
+        // MIRROR ONLY -- this file has no runtime caller. cdkd's
         // `src/local/http-server.ts` re-exports `startApiServer` from
         // `cdk-local/internal`, so `cdkd local start-api` runs cdk-local's
         // implementation; `evaluateVtl` here is reached only from cdkd's own
-        // `rest-v1-integrations.ts`, which has no live caller either. The
-        // LIVE fix is cdk-local's `src/local/vtl-engine.ts`; this copy is
-        // kept in step so the fork does not drift (issue #2203).
+        // `rest-v1-integrations.ts`, whose sole live import is
+        // `warnSsrfRiskyUri`. That the fork is unreachable at all is issue
+        // #2228, tracked separately.
+        //
+        // The user-facing leak is CLOSED: the fix shipped in cdk-local
+        // 0.147.6 (cdk-local PR #556), and cdkd consumes it through the
+        // `cdk-local` dependency bump in this same change. Verified against
+        // the built CLI on 2026-08-26 -- `cdkd local start-api`, a MOCK REST
+        // v1 request template calling `$util.parseJson` on a header holding
+        // `hunter2-my-password`, answered 502 with the redacted reason and
+        // no byte of the payload in the body or the server log. This copy is
+        // kept byte-for-byte in step with cdk-local's so the fork cannot
+        // drift back to the leaking shape (issue #2203).
         //
         // NEVER interpolate the parser's own message. V8 embeds a
         // ~10-character prefix of the PARSED INPUT in `SyntaxError.message`

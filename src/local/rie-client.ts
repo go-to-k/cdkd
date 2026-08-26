@@ -462,13 +462,18 @@ export async function invokeRieStreaming(
     } catch (err) {
       clearTimeout(timer);
       reader.cancel().catch(() => undefined);
-      // MIRROR ONLY -- this file is not on the shipped code path. cdkd's
+      // MIRROR ONLY -- this file has no runtime caller. cdkd's
       // `src/local/http-server.ts` re-exports `startApiServer` from
       // `cdk-local/internal`, so `cdkd local start-api` runs cdk-local's
       // implementation and `invokeRieStreaming` here has no caller in
-      // cdkd's `src/`. The LIVE fix is cdk-local's
-      // `src/local/rie-client.ts`; this copy is kept in step so the fork
-      // does not drift (issue #2203).
+      // cdkd's `src/`. That the fork is unreachable at all is issue #2228,
+      // tracked separately.
+      //
+      // The user-facing leak is CLOSED: the fix shipped in cdk-local
+      // 0.147.6 (cdk-local PR #556), and cdkd consumes it through the
+      // `cdk-local` dependency bump in this same change. This copy is kept
+      // byte-for-byte in step with cdk-local's so the fork cannot drift
+      // back to the leaking shape (issue #2203).
       //
       // Only the `JSON.parse` failure carries the bytes it was given, and it
       // is the only one suppressed. V8 embeds a ~10-character prefix of the
