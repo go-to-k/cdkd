@@ -629,6 +629,33 @@ implied. The CONCLUSION held, which is exactly why this is easy to ship: a
 right conclusion with an unreproducible measurement reads as evidence and is
 not.
 
+**A count RELAYED from a subagent's report is unearned in the same way, and it
+is the harder half — there is no command to paste, because you never ran one.**
+The rule above assumes the number came from a sweep you performed. The numbers
+that actually get published usually do not: they arrive inside a fan-out agent's
+summary or a reviewer's finding, already phrased as fact, and get copied onward
+without anyone re-deriving them. On 2026-08-26 one run of this skill published
+FOUR such counts, every one wrong and every one relayed: "all nine sibling
+`clearOnUpdateRemoval` sites" (grep: **78** call sites across 14 provider files
+— wrong by ~9x, and it under-scoped the deferred work it was justifying), "nine
+mutation probes" (fourteen), "ten unit shapes" (thirteen), and "if a third copy
+ever appears" for a predicate that already had **nine**. Two of them went into
+GitHub artifacts — an umbrella-issue comment and a PR body — where they outlive
+the session that got them wrong, and one of those was the load-bearing argument
+for deferring the work to the umbrella at all.
+
+The tell is grammatical rather than technical: a number arriving as a WORD
+("nine sites", "a third copy") has almost always been counted by a person or an
+agent, while one arriving as output has been counted by a machine. So before a
+relayed count is published anywhere durable, run the query yourself and put it
+in the text. It is one command, and the reviewers on that run spent three
+separate rounds catching these instead of catching code. Two forms of the same
+discipline are what finally worked there: the implementing agent derived its
+next count with `awk` over the test file's `it(` titles and CAUGHT ITS OWN
+correction mid-flight (its first fix said fifteen by double-counting one entry),
+and it declined to relay a path from the orchestrator's own message after
+grepping and finding the file did not exist.
+
 **Before deriving a fix, grep the repo for the SYMPTOM -- something may already
 have solved it.** This is a different search from the sibling-site sweep above:
 that one looks for the same BUG elsewhere and greps the defect's shape, while
@@ -1572,6 +1599,22 @@ that are cheap to check and expensive to skip:
   also touches invalidates it. That is the one case where re-running is
   unavoidable rather than self-inflicted — so do the rebase BEFORE the integ,
   not after, and expect `markgate verify` to be the thing that tells you.
+- **Under ITERATIVE review rounds, "last" does not hold still — so DECLARE the
+  tree final, in words, to whoever is still editing it.** The rule above is
+  written for one review pass. A lane that runs rounds 2 and 3 has a "final
+  edit" that moves each time, and each round that touches a gate-scoped file
+  buys another real-AWS run — including a round whose delta is comment-only,
+  since `hash: diff` digests the delta, not the behaviour. Measured 2026-08-26:
+  one lane paid THREE `ecs-service-update-props` runs, the third for a round
+  whose `ecs-provider.ts` change was verified to have zero non-comment lines.
+  What ended it was telling the implementing agent, before its last pass,
+  to **batch every remaining finding into a single commit and report when the
+  tree is FINAL, with no second pass** — after which the integ ran once. Say
+  that explicitly rather than assuming it: an agent handed a list of findings
+  will otherwise fix, verify, and hand back, which is the right instinct
+  everywhere except in front of a real-AWS gate. The corollary for reviewers is
+  the reverse — dispatch a round SCOPED to the delta and ask for the whole
+  round's findings at once, rather than trickling them.
 
 Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup, code
 review, and a **live-test of the changed behavior** on top of `/check`. Unit tests
