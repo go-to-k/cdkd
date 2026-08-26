@@ -59,7 +59,23 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
   }),
 }));
 
+// Mocked for the issue #2259 block at the bottom of this file, which is the
+// only one that lets the per-stack confirmation prompt run — every case in the
+// SIGINT block above passes `skipConfirmation: true`, so readline is never
+// reached there and this mock is inert for them.
+const readlineQuestion = vi.hoisted(() =>
+  vi.fn<(prompt: string) => Promise<string>>(async () => await Promise.resolve('y'))
+);
+const readlineClose = vi.hoisted(() => vi.fn());
+vi.mock('node:readline/promises', () => ({
+  createInterface: vi.fn(() => ({
+    question: readlineQuestion,
+    close: readlineClose,
+  })),
+}));
+
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { CdkdError } from '../../../src/utils/error-handler.js';
 
 const REGION = 'us-east-1';
 
@@ -353,5 +369,228 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
 
     expect(removeListenerSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
     expect(capturedSigintHandlers.length).toBe(0);
+  });
+});
+
+/**
+ * Issue #2259: the per-stack confirmation prompt hung forever on an EOF stdin.
+ *
+ * `rl.question` never settles when stdin is already at EOF, and EOF carries no
+ * signal, so the abort arm the SIGINT block above fences could not help: there
+ * was nothing to abort ON. Measured on Node 24.15.0, the version `.node-version` pins (and 24.19 before it) against real
+ * `node:readline/promises` -- `echo y |` resolves `"y"`, while `printf 'y' |`
+ * (a real answer with no trailing newline) and `< /dev/null` both stay pending
+ * indefinitely.
+ *
+ * Both entry points reach this one prompt: `cdkd destroy <stack>` /
+ * `cdkd destroy --all` via `destroy.ts`, and `cdkd state destroy <stack>` via
+ * `state.ts`. The nested-stack recursion passes `skipConfirmation: true`, so a
+ * cascading child destroy never consults stdin and is unaffected.
+ *
+ * The guard is the same non-interactive REFUSAL issue #2247 chose for the
+ * `state destroy --all` BATCH prompt one layer up, and it is fenced the same
+ * way: the probe reproduces the PRODUCTION SYMPTOM as a TIMEOUT, not as an
+ * assertion about a mock. Remove the guard and the first case below hangs on a
+ * question that never settles, exactly as CI did, and the 5 s per-case timeout
+ * is what reds it.
+ */
+describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => {
+  const mockSaveState = vi.fn();
+  const mockDeleteState = vi.fn();
+  const mockProviderDelete = vi.fn();
+  const mockAcquireLock = vi.fn();
+  const mockReleaseLock = vi.fn();
+  const mockRemoveStack = vi.fn();
+
+  let originalIsTTY: boolean | undefined;
+
+  /**
+   * `defineProperty`, not a plain assignment: `process.stdin.isTTY` is typed
+   * `boolean` while its real value is `undefined` whenever stdin is not a
+   * terminal, which is vitest's normal state. Same stub as
+   * `state-destroy-command-sigint.test.ts`.
+   */
+  function setStdinIsTty(value: boolean | undefined): void {
+    Object.defineProperty(process.stdin, 'isTTY', {
+      value,
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  function makeConfirmCtx(skipConfirmation: boolean) {
+    return {
+      stateBackend: {
+        saveState: mockSaveState,
+        deleteState: mockDeleteState,
+        listStacks: vi.fn().mockResolvedValue([]),
+      } as unknown as S3StateBackend,
+      lockManager: {
+        acquireLock: mockAcquireLock,
+        releaseLock: mockReleaseLock,
+      } as unknown as LockManager,
+      providerRegistry: {
+        getProviderFor: () => ({ provider: { delete: mockProviderDelete } }),
+      } as unknown as ProviderRegistry,
+      baseAwsClients: {} as AwsClients,
+      baseRegion: REGION,
+      stateBucket: 'test-bucket',
+      skipConfirmation,
+      exportIndexStore: { removeStack: mockRemoveStack } as never,
+    };
+  }
+
+  beforeEach(() => {
+    originalIsTTY = process.stdin.isTTY;
+    mockSaveState.mockReset().mockResolvedValue('"etag"');
+    mockDeleteState.mockReset().mockResolvedValue(undefined);
+    mockProviderDelete.mockReset().mockResolvedValue(undefined);
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRemoveStack.mockReset().mockResolvedValue(undefined);
+    readlineQuestion.mockReset().mockResolvedValue('y');
+    readlineClose.mockReset();
+  });
+
+  afterEach(() => {
+    setStdinIsTty(originalIsTTY);
+  });
+
+  it(
+    'REFUSES on a non-TTY stdin instead of hanging on a question that never settles',
+    async () => {
+      setStdinIsTty(undefined);
+      // A question that never settles is what an EOF stdin actually produces.
+      // With the guard removed this case does not fail an assertion -- it
+      // HANGS, and the 5 s timeout below is the fence. That is the only shape
+      // that distinguishes the production hang from a proxy for it.
+      readlineQuestion.mockImplementation(async () => await new Promise<string>(() => {}));
+
+      await expect(
+        runDestroyForStack('TestStack', makeState({ A: res() }), makeConfirmCtx(false))
+      ).rejects.toThrow(/cannot run in a non-interactive environment/);
+
+      // Refused BEFORE the interface exists, which is the whole point: there
+      // is no window in which a never-settling question could be awaited.
+      expect(readlineQuestion).not.toHaveBeenCalled();
+      // And refused before anything was locked or deleted.
+      expect(mockAcquireLock).not.toHaveBeenCalled();
+      expect(mockProviderDelete).not.toHaveBeenCalled();
+      expect(mockDeleteState).not.toHaveBeenCalled();
+    },
+    5000
+  );
+
+  it('READS other stacks before refusing, but locks and deletes nothing', async () => {
+    // The docs contrast this refusal against the batch prompt's "nothing is
+    // read, locked or deleted". The READ half is real -- a state record WITH
+    // outputs triggers the strong-reference scan, which lists stacks and reads
+    // their records -- and no case pinned it, because every fixture here uses
+    // `outputs: {}` and so skips the scan entirely.
+    const ctx = makeConfirmCtx(false);
+    const listStacks = ctx.stateBackend.listStacks as unknown as ReturnType<typeof vi.fn>;
+    const state = makeState({ A: res() });
+    (state as unknown as { outputs: Record<string, unknown> }).outputs = { Out: 'v' };
+
+    await expect(runDestroyForStack('TestStack', state, ctx)).rejects.toMatchObject({
+      code: 'NON_INTERACTIVE_CONFIRM',
+    });
+
+    expect(listStacks).toHaveBeenCalled();
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+    expect(mockDeleteState).not.toHaveBeenCalled();
+  });
+
+
+  it('throws CdkdError with the NON_INTERACTIVE_CONFIRM code so CI can branch on it', async () => {
+    // Only `gc.ts` and `bootstrap-destroy.ts` carry this code among the five
+    // guarded prompts; the other three throw a bare `Error` /
+    // `LocalMigrateError`. Matching the two that carry it is deliberate, so
+    // asserting the CODE (not merely that something threw) is what keeps a
+    // later refactor from silently downgrading the shape.
+    setStdinIsTty(undefined);
+
+    const error = await runDestroyForStack(
+      'TestStack',
+      makeState({ A: res() }),
+      makeConfirmCtx(false)
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CdkdError);
+    expect((error as CdkdError).code).toBe('NON_INTERACTIVE_CONFIRM');
+  });
+
+  it('names --yes and the stack in the refusal, since that is the way through', async () => {
+    // The refusal is the only thing a CI user sees, so it has to carry the
+    // remedy. Asserting the message and not merely the throw is what stops it
+    // from degrading into a bare "not a TTY".
+    setStdinIsTty(undefined);
+
+    const error = await runDestroyForStack(
+      'TestStack',
+      makeState({ A: res() }),
+      makeConfirmCtx(false)
+    ).catch((e: unknown) => e);
+
+    const message = (error as Error).message;
+    expect(message).toContain('--yes');
+    expect(message).toContain('TestStack');
+  });
+
+  it('still prompts, and still destroys, when stdin IS a TTY', async () => {
+    // The negative control. Without it a guard that refused unconditionally --
+    // or one whose predicate was inverted -- would satisfy every case above
+    // while making the interactive per-stack prompt unusable.
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('y');
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      makeState({ A: res() }),
+      makeConfirmCtx(false)
+    );
+
+    expect(readlineQuestion).toHaveBeenCalledTimes(1);
+    expect(readlineClose).toHaveBeenCalled();
+    expect(result.cancelled).toBe(false);
+    expect(result.deletedCount).toBe(1);
+    expect(mockProviderDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('a TTY user answering "n" still cancels, and destroys nothing', async () => {
+    // The other half of the negative control: the guard must not have eaten
+    // the DECLINE path on its way past. A refusal-shaped `cancelled` and a
+    // user-declined `cancelled` are different outcomes reached the same way.
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('n');
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      makeState({ A: res() }),
+      makeConfirmCtx(false)
+    );
+
+    expect(result.cancelled).toBe(true);
+    expect(mockProviderDelete).not.toHaveBeenCalled();
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+  });
+
+  it('does not consult stdin at all under --yes / --force, even on a non-TTY', async () => {
+    // `skipConfirmation` short-circuits ABOVE the guard, so the documented CI
+    // path must neither refuse nor prompt. This is what pins the guard's
+    // POSITION rather than just its existence: hoisting it above the
+    // short-circuit would red this case while leaving every case above green.
+    setStdinIsTty(undefined);
+    readlineQuestion.mockImplementation(async () => await new Promise<string>(() => {}));
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      makeState({ A: res() }),
+      makeConfirmCtx(true)
+    );
+
+    expect(readlineQuestion).not.toHaveBeenCalled();
+    expect(result.cancelled).toBe(false);
+    expect(result.deletedCount).toBe(1);
   });
 });

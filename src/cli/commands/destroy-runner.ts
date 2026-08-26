@@ -44,6 +44,7 @@ import {
   DEFAULT_RESOURCE_TIMEOUT_MS,
 } from '../../deployment/deploy-engine.js';
 import {
+  CdkdError,
   ProvisioningError,
   ResourceTimeoutError,
   StackHasActiveImportsError,
@@ -627,6 +628,53 @@ export async function runDestroyForStack(
   const protectedCount = ctx.removeProtection ? countProtectedResources(state) : 0;
 
   if (!ctx.skipConfirmation) {
+    // Issue #2259: refuse a NON-INTERACTIVE run before the interface exists.
+    //
+    // `rl.question` never settles when stdin is already at EOF, and EOF
+    // delivers no signal, so nothing wakes it. Measured on Node 24.15.0, the version `.node-version` pins (and 24.19 before it) against
+    // real `node:readline/promises`: `echo y |` resolves `"y"`, while both
+    // `printf 'y' |` (a real answer with no trailing newline) and
+    // `< /dev/null` stay pending indefinitely. Without this guard
+    // `cdkd destroy <stack>`, `cdkd destroy --all` and
+    // `cdkd state destroy <stack>` without `--yes` / `--force` parked forever
+    // in CI on nothing more than an absent stdin -- a hang, not a failure, so
+    // the job burned its whole timeout budget before reporting anything.
+    //
+    // REFUSE rather than auto-confirm. `deploy.ts` takes the other branch
+    // (`!process.stdin.isTTY` -> proceed), but a deploy that assumes "yes" is
+    // recoverable and a destroy is not: silently answering "yes" on behalf of
+    // an absent operator would delete every resource in the stack. Five
+    // prompts already refuse -- `gc.ts`, `bootstrap-destroy.ts`,
+    // `recreate-confirm-prompt.ts`, `prefix-migration-check.ts` and
+    // `migrate-command.ts` all test `isTTY` before creating the interface --
+    // and issue #2247 chose the same refusal for `state destroy --all`'s BATCH
+    // prompt one layer up. This is the per-stack twin of that guard, so the
+    // two layers of the same command now agree.
+    //
+    // Only TWO of those five share the error SHAPE copied here: `gc.ts` and
+    // `bootstrap-destroy.ts` throw `CdkdError` with `NON_INTERACTIVE_CONFIRM`.
+    // The other three throw a bare `Error` (`recreate-confirm-prompt.ts`,
+    // `prefix-migration-check.ts`) or a `LocalMigrateError`
+    // (`migrate-command.ts`). Matching the two that carry the code is
+    // deliberate: a destroy refusal is something CI should be able to branch
+    // on. (An earlier comment in this repo claimed all five carried the code;
+    // that was measured false -- do not restore it.)
+    //
+    // Position is load-bearing: this sits AFTER the `--yes` / `--force`
+    // short-circuit, so a non-interactive run that already passed a flag never
+    // consults stdin at all, and after the resource banner, so the refusal
+    // still names what would have been destroyed. Nested-stack children reach
+    // this function with `skipConfirmation: true` (the parent already
+    // confirmed the cascade), so a cascading destroy is unaffected.
+    if (process.stdin.isTTY !== true) {
+      throw new CdkdError(
+        `The destroy confirmation prompt for stack "${stackName}" cannot run in a ` +
+          'non-interactive environment. Pass --yes / -y to confirm the destroy ' +
+          '(cdkd destroy also accepts -f / --force), or run the command from a real ' +
+          'terminal.',
+        'NON_INTERACTIVE_CONFIRM'
+      );
+    }
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,

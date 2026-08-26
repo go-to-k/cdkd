@@ -3046,6 +3046,46 @@ deleted. This is the same non-interactive rule `cdkd gc` and
 non-interactively; that flag short-circuits above the check, so it never
 consults stdin at all.
 
+### The PER-STACK destroy prompt is interactive-only too
+
+**Upgrade note — this is a behaviour change, and it adds an exit-code
+contract** (issue [#2259](https://github.com/go-to-k/cdkd/issues/2259)). The
+per-stack confirmation — the `Are you sure you want to destroy stack "X" ...`
+prompt that `cdkd destroy <stack>`, `cdkd destroy --all` and
+`cdkd state destroy <stack>` all share — now follows the same rule as the batch
+prompt above: on a non-TTY stdin it refuses **before** creating the prompt,
+throwing `CdkdError` with the code `NON_INTERACTIVE_CONFIRM` and exiting
+exit code `1`. Note this is NOT the same guarantee the batch prompt above carries. That one
+promises nothing is read, locked or deleted; here the refusal is preceded by the
+strong-reference scan, which READS other stacks' state records. Nothing is locked and
+nothing is deleted on the path that refuses.
+
+A stack whose state record holds ZERO resources never reaches the refusal at all: that
+branch returns earlier, having taken the lock and deleted the record, and a non-interactive
+run of it still succeeds. The two are mutually exclusive, so this is not a case of the
+refusal deleting something first.
+
+Before this change that prompt had no non-TTY guard at all, and
+`rl.question` never settles once stdin is at EOF. A CI job running
+`cdkd destroy MyStack` without `--yes` therefore **hung until its own
+timeout** rather than failing — no signal is delivered on EOF, so nothing woke
+it. Measured on Node 24.15.0, the version `.node-version` pins (and 24.19 before it): `echo y |` resolved, while `printf 'y' |` (no
+trailing newline) and `< /dev/null` both hung indefinitely.
+
+What breaks: a pipeline that answered the prompt with `printf 'y\n' | cdkd
+destroy MyStack` succeeded before (piped stdin does settle `rl.question` when
+the input ends in a newline) and now exits **1**. Pass `--yes` / `-y` — or
+`-f` / `--force` on `cdkd destroy` — which short-circuits above the check and
+never consults stdin at all. Refusing rather than auto-confirming is the
+deliberate choice for a destroy: `cdkd deploy` assumes "yes" on a non-TTY
+because a deploy is recoverable, whereas silently answering "yes" for an absent
+operator here would delete every resource in the stack.
+
+Not affected: nested-stack children, which are destroyed as part of their
+parent's cascade and never prompt separately, and `cdkd state destroy --all`,
+whose per-stack prompts are already skipped once the batch prompt above is
+answered.
+
 A stack whose deletes were interrupted keeps its `state.json` and its
 deployment-event history — the events are the post-mortem for the retry, which
 is why `--purge-events` below is skipped on an interrupted run.
