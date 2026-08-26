@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import {
   DescribeTableCommand,
   DeleteTableCommand,
+  ResourceNotFoundException,
   UpdateTableCommand,
 } from '@aws-sdk/client-dynamodb';
 
@@ -104,11 +105,14 @@ import {
 } from '../../../../src/provisioning/interrupt-watch.js';
 import type { DeleteContext } from '../../../../src/provisioning/region-check.js';
 import {
+  DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
   ProtectionFlipRegistry,
   compensateRemovedDeletionProtection,
+  dynamoDbDeleteBudgetOverride,
 } from '../../../../src/provisioning/providers/dynamodb-delete-budget.js';
 
 const logger = getLogger() as unknown as {
+  debug: ReturnType<typeof vi.fn>;
   warn: ReturnType<typeof vi.fn>;
   error: ReturnType<typeof vi.fn>;
 };
@@ -118,6 +122,9 @@ function warnLines(): string {
 }
 function errorLines(): string {
   return logger.error.mock.calls.map((c) => String(c[0])).join('\n');
+}
+function debugLines(): string {
+  return logger.debug.mock.calls.map((c) => String(c[0])).join('\n');
 }
 
 const TABLE_NAME = 'orders';
@@ -195,6 +202,12 @@ interface Behaviour extends TableShape {
   onDelete: () => Promise<unknown>;
   /** Whether the compensating `UpdateTable(true)` itself fails. */
   reEnableFails?: boolean;
+  /**
+   * What the compensating `UpdateTable(true)` rejects with when
+   * `reEnableFails` is set. Defaults to a `ResourceInUseException`; the
+   * `ResourceNotFoundException` shape is the one issue #2224 is about.
+   */
+  reEnableError?: () => Error;
   /** Called on each `DescribeTable`, with the 1-based call number. */
   onDescribe?: (n: number) => void;
   /**
@@ -268,7 +281,10 @@ function install(behaviour: Behaviour): void {
       if (command.input.DeletionProtectionEnabled === true) {
         return behaviour.reEnableFails
           ? Promise.reject(
-              Object.assign(new Error('Table is being updated'), { name: 'ResourceInUseException' })
+              behaviour.reEnableError?.() ??
+                Object.assign(new Error('Table is being updated'), {
+                  name: 'ResourceInUseException',
+                })
             )
           : Promise.resolve({});
       }
@@ -396,6 +412,7 @@ describe.each(PROVIDERS)(
     beforeEach(() => {
       mockSend.mockReset();
       mockAutoScalingSend.mockReset();
+      logger.debug.mockClear();
       logger.warn.mockClear();
       logger.error.mockClear();
       mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
@@ -607,6 +624,115 @@ describe.each(PROVIDERS)(
       expect(warnLines()).toContain(`re-enabled on ${TABLE_NAME}`);
     }, 120_000);
 
+    it('re-enables after a retry sequence that OUTLIVES the reuse window (#2211)', async () => {
+      // Issue #2211, driven THROUGH `delete()` rather than through the registry:
+      // `resolveDynamoDbDeleteBudgetClock()` is threaded into
+      // `protectionFlips.acquire`, and until this case nothing exercised that
+      // third argument at all.
+      //
+      // `destroy-runner.ts` re-invokes `delete()` on the SAME provider instance
+      // for anything it classes as retryable, under ONE per-resource deadline a
+      // `--resource-timeout` overshoot can push past
+      // `DELETE_BUDGET_REUSE_WINDOW_MS`. Each attempt below arrives one minute
+      // INSIDE the window, so no idle gap ever exceeds it — but the total age at
+      // attempt 3 is ~58 minutes. Measured from FIRST acquisition, attempt 3
+      // gets a fresh `{ flippedOffByThisRun: false }`, its pre-flip
+      // `DescribeTable` reports the guard already OFF (attempt 1 turned it off,
+      // and this fixture's describe is a genuine read of that), and the terminal
+      // failure compensates NOTHING — #1978's residue, reached through #1978's
+      // own mechanism.
+      const WINDOW_MS = DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS;
+      let now = 0;
+      dynamoDbDeleteBudgetOverride.clock = () => now;
+      try {
+        let deleteAttempts = 0;
+        install({
+          protectionOn: true,
+          onDelete: () => {
+            deleteAttempts += 1;
+            return Promise.reject(
+              deleteAttempts < 3 ? throttleRefusal() : terminalDeleteRefusal()
+            );
+          },
+        });
+        const instance = provider.make();
+
+        await expect(
+          instance.delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, REMOVE_PROTECTION)
+        ).rejects.toThrow(/Rate exceeded/);
+        expect(reEnableCalls()).toHaveLength(0);
+
+        now += WINDOW_MS - 60_000;
+        await expect(
+          instance.delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, REMOVE_PROTECTION)
+        ).rejects.toThrow(/Rate exceeded/);
+        expect(reEnableCalls()).toHaveLength(0);
+
+        now += WINDOW_MS - 60_000;
+        await expect(
+          instance.delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, REMOVE_PROTECTION)
+        ).rejects.toThrow(/Attempt to change a resource which is still in use/);
+
+        expect(deleteAttempts).toBe(3);
+        expect(flipOffCalls()).toHaveLength(3);
+        // THE discriminator: the latch survived the whole sequence, so the
+        // terminal attempt put the guard back.
+        expect(reEnableCalls()).toHaveLength(1);
+        expect(reEnableCalls()[0]?.input).toMatchObject({
+          TableName: TABLE_NAME,
+          DeletionProtectionEnabled: true,
+        });
+        expect(warnLines()).toContain(`re-enabled on ${TABLE_NAME}`);
+      } finally {
+        delete dynamoDbDeleteBudgetOverride.clock;
+      }
+    }, 120_000);
+
+    it('does NOT claim the table is LIVE when the re-enable itself gets ResourceNotFound (#2224)', async () => {
+      // Issue #2224, the whole race end to end: `DeleteTable` answers
+      // ResourceNotFound (a success for the provider), `assertRegionMatch`
+      // throws inside that branch BEFORE its `protectionFlips.release`, so the
+      // record reaches the wrapper still latched and the compensation fires
+      // against a table that is GONE. Its `UpdateTable` gets its own
+      // ResourceNotFound, and the error line used to assert the opposite of the
+      // truth — that the table is LIVE with its protection off, plus a restore
+      // command naming a table that does not exist.
+      install({
+        protectionOn: true,
+        onDelete: () =>
+          Promise.reject(new ResourceNotFoundException({ message: 'not found', $metadata: {} })),
+        reEnableFails: true,
+        reEnableError: () =>
+          new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} }),
+      });
+
+      await expect(
+        provider.make().delete(LOGICAL_ID, TABLE_NAME, provider.resourceType, {}, {
+          ...REMOVE_PROTECTION,
+          // The client is us-east-1 (see the module mock); state says otherwise.
+          expectedRegion: 'eu-west-1',
+        })
+      ).rejects.toThrow(/Refusing to treat NotFound as idempotent delete success/);
+
+      // The compensation still RAN — this issue is about the narration, and
+      // skipping the compensation on an RNF-shaped DELETE error is the fix the
+      // issue rules out.
+      expect(reEnableCalls()).toHaveLength(1);
+      expect(errorLines()).not.toContain('LIVE with its deletion protection still off');
+      expect(errorLines()).not.toContain('could NOT re-enable');
+      // Narration only: the line stays VISIBLE (warn, not debug) because RNF
+      // from `UpdateTable` also covers a live table whose status is not ACTIVE.
+      // What is dropped is the ASSERTION that the table is live, not the line.
+      // Nothing may land at debug on this arm: RNF from `UpdateTable` also
+      // covers a LIVE table whose status is not ACTIVE, so silencing it would
+      // hide the case the line exists for. Asserting the ABSENCE OF THE LEVEL
+      // rather than the absence of a string -- the old form named text that no
+      // longer exists anywhere in src/, so it could not fail.
+      expect(debugLines()).not.toContain('ResourceNotFound');
+      expect(warnLines()).toContain('could not re-enable');
+      expect(warnLines()).toContain('not in this region or account');
+    }, 120_000);
+
     it('does NOT re-enable when the pre-flip OBSERVATION itself failed', async () => {
       // The guard really is ON here, and the run still leaves it alone: a
       // throttled `DescribeTable` means cdkd never learned what the user had,
@@ -680,6 +806,7 @@ describe('AWS::DynamoDB::GlobalTable: an ACCEPTED delete is never compensated (#
   beforeEach(() => {
     mockSend.mockReset();
     mockAutoScalingSend.mockReset();
+    logger.debug.mockClear();
     logger.warn.mockClear();
     logger.error.mockClear();
     mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
@@ -769,13 +896,83 @@ describe('ProtectionFlipRegistry (#1978)', () => {
     // Retained entries must not be inherited forever: past the deadline the
     // path is sized against, whoever arrives is a NEW operation. Driven by an
     // injected clock — the real window is 30 minutes.
+    //
+    // The window SLIDES (#2211), so what has to elapse is the IDLE gap since
+    // the LAST acquire. Hence one registry per arm: three acquires on a single
+    // one would have the middle acquire (correctly) restart the clock, and the
+    // aged-out arm would then be asserting the opposite of the contract.
     let now = 0;
-    const registry2 = new ProtectionFlipRegistry();
-    registry2.acquire(KEY, WINDOW_MS, () => now).flippedOffByThisRun = true;
+    const atBoundary = new ProtectionFlipRegistry();
+    atBoundary.acquire(KEY, WINDOW_MS, () => now).flippedOffByThisRun = true;
     now = WINDOW_MS;
-    expect(registry2.acquire(KEY, WINDOW_MS, () => now).flippedOffByThisRun).toBe(true);
+    expect(atBoundary.acquire(KEY, WINDOW_MS, () => now).flippedOffByThisRun).toBe(true);
+
+    now = 0;
+    const pastWindow = new ProtectionFlipRegistry();
+    pastWindow.acquire(KEY, WINDOW_MS, () => now).flippedOffByThisRun = true;
     now = WINDOW_MS + 1;
-    expect(registry2.acquire(KEY, WINDOW_MS, () => now).flippedOffByThisRun).toBe(false);
+    expect(pastWindow.acquire(KEY, WINDOW_MS, () => now).flippedOffByThisRun).toBe(false);
+  });
+
+  it('still AGES OUT a record that was reused, so sliding does not make it permanent', () => {
+    // The inverse hazard the registry JSDoc names, and the one the slide makes
+    // easier to reach: a RETAINED record letting a much LATER destroy of the
+    // same table re-enable a guard it never touched. Entries are retained on a
+    // throw and the slide moves aging from the FIRST acquire to the LAST, so
+    // "the window still works" has to be proven AFTER a reuse, not only on a
+    // virgin record.
+    //
+    // Without this case the suite passes with the window made permanent-on-
+    // reuse (measured: adding `|| existing.slid === true` to the reuse test and
+    // setting `slid` leaves 33/33 green), which is exactly the forbidden
+    // "drop the window entirely" fix arriving through the back door.
+    let now = 0;
+    const clock = (): number => now;
+    const registry = new ProtectionFlipRegistry();
+
+    registry.acquire(KEY, WINDOW_MS, clock).flippedOffByThisRun = true;
+
+    // A reuse INSIDE the window keeps the latch and restarts the stopwatch.
+    now = WINDOW_MS - 1;
+    expect(registry.acquire(KEY, WINDOW_MS, clock).flippedOffByThisRun).toBe(true);
+
+    // Now go idle past the window FROM THAT REUSE. The record must be dropped
+    // and a fresh, unlatched one handed back.
+    now += WINDOW_MS + 1;
+    expect(registry.acquire(KEY, WINDOW_MS, clock).flippedOffByThisRun).toBe(false);
+  });
+
+  it('SLIDES the window on reuse, so a retry sequence outliving it keeps its latch (#2211)', () => {
+    // Issue #2211. The window measured from FIRST acquisition is a wall clock
+    // while the retry sequence is unbounded, so a `--resource-timeout`
+    // overshoot lets a LIVE sequence age out mid-flight: attempt 3 gets a fresh
+    // `{ flippedOffByThisRun: false }`, its pre-flip `DescribeTable` sees the
+    // guard already off (attempt 1 turned it off), and a terminal failure there
+    // compensates nothing — #1978's residue through #1978's own mechanism.
+    //
+    // Three attempts, each arriving one minute INSIDE the window but with a
+    // total age of ~58 minutes, i.e. well past it. The discriminator is record
+    // IDENTITY plus the latch, not "acquire returned something": a fixed window
+    // returns a perfectly good object here, just not the one carrying the flip.
+    let now = 0;
+    const clock = (): number => now;
+    const registry = new ProtectionFlipRegistry();
+
+    const attempt1 = registry.acquire(KEY, WINDOW_MS, clock);
+    attempt1.flippedOffByThisRun = true;
+
+    now += WINDOW_MS - 60_000;
+    const attempt2 = registry.acquire(KEY, WINDOW_MS, clock);
+    expect(attempt2).toBe(attempt1);
+    expect(attempt2.flippedOffByThisRun).toBe(true);
+
+    now += WINDOW_MS - 60_000;
+    const attempt3 = registry.acquire(KEY, WINDOW_MS, clock);
+    expect(attempt3).toBe(attempt1);
+    expect(attempt3.flippedOffByThisRun).toBe(true);
+    // Still ONE entry: the slide refreshes the stopwatch, it does not stack
+    // records under the same key.
+    expect(registry.size).toBe(1);
   });
 
   it('skips the compensation once the delete was ACCEPTED', async () => {
@@ -817,5 +1014,136 @@ describe('ProtectionFlipRegistry (#1978)', () => {
     });
     expect(reEnables).toBe(1);
     expect(calls.join('\n')).toContain(`re-enabled on ${TABLE_NAME}`);
+  });
+});
+
+/**
+ * The LOG LEVEL of a failed compensation, fenced directly on
+ * `compensateRemovedDeletionProtection` (issue #2224).
+ *
+ * The error line is the mechanism's last resort: it names a LIVE table whose
+ * guard is down and the one command that restores it. That is worth an ERROR
+ * exactly when it is TRUE.
+ *
+ * On the RNF arm cdkd cannot establish it, so the ASSERTION is dropped while
+ * the line stays VISIBLE. `ResourceNotFoundException` from `UpdateTable` does
+ * not mean "the table is gone": the SDK model covers a table whose status is
+ * not ACTIVE, which a GlobalTable replica-removal timeout reaches with the
+ * table still live and unprotected. Downgrading to `debug` there would hide, at
+ * default verbosity, the one case this line exists to report — so the arm logs
+ * at `warn` with the ambiguity spelled out, plus a `describe-table` check
+ * before the restore command.
+ *
+ * Three arms, because each kills a different wrong fix: the RNF arm alone
+ * passes under a blanket downgrade of the whole `catch`; the control alone
+ * passes if RNF is not special-cased at all; and neither notices a downgrade
+ * to `debug` that silences a live table, which is what the level assertions
+ * pin.
+ */
+describe('compensateRemovedDeletionProtection: failed re-enable log level (#2224)', () => {
+  interface Captured {
+    debug: string[];
+    warn: string[];
+    error: string[];
+  }
+
+  function run(reEnableError: unknown, region?: string): Promise<Captured> {
+    const captured: Captured = { debug: [], warn: [], error: [] };
+    const stub = {
+      debug: (line: string) => captured.debug.push(line),
+      info: () => {},
+      warn: (line: string) => captured.warn.push(line),
+      error: (line: string) => captured.error.push(line),
+    };
+    return compensateRemovedDeletionProtection({
+      flip: { flippedOffByThisRun: true, deleteAccepted: false },
+      error: terminalDeleteRefusal(),
+      logicalId: LOGICAL_ID,
+      physicalId: TABLE_NAME,
+      typeLabel: 'table',
+      logger: stub as never,
+      ...(region ? { region } : {}),
+      reEnable: () => Promise.reject(reEnableError),
+    }).then(() => captured);
+  }
+
+  it('WARNS, without asserting the table is live, when the re-enable gets ResourceNotFound', async () => {
+    const captured = await run(
+      new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} })
+    );
+
+    expect(captured.error).toHaveLength(0);
+    // NOT debug: a live table whose status is merely not ACTIVE also answers
+    // RNF here, and silencing that hides the case the line exists for.
+    expect(captured.debug).toHaveLength(0);
+
+    const warned = captured.warn.join('\n');
+    // The claim issue #2224 objected to must NOT survive: cdkd does not know
+    // the table is live, so it may not say so.
+    expect(warned).not.toContain('that table is LIVE');
+    // ...but it must still say what MIGHT be true, and how to find out.
+    // The enumeration must NOT read as exhaustive: a third meaning is "not in
+    // this region or account", and the race that reaches this arm IS a region
+    // mismatch.
+    expect(warned).toContain('most commonly');
+    expect(warned).toContain('not in this region or account');
+    expect(warned).toContain(`aws dynamodb describe-table --table-name ${TABLE_NAME}`);
+    expect(warned).toContain(`aws dynamodb update-table --table-name ${TABLE_NAME}`);
+    // The underlying AWS text is still carried, so the line is diagnosable.
+    expect(warned).toContain('Requested resource not found');
+  });
+
+  it('renders --region on BOTH remediation commands when the caller knows it', async () => {
+    // Without it the suggested `describe-table` runs against the operator's
+    // default profile region. The race that reaches this arm is a REGION
+    // MISMATCH, so that lookup answers the same ResourceNotFound and the
+    // operator concludes "gone" -- the one thing this message stops asserting.
+    const captured = await run(
+      new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} }),
+      'eu-west-1'
+    );
+
+    const warned = captured.warn.join('\n');
+    expect(warned).toContain(`describe-table --table-name ${TABLE_NAME} --region eu-west-1`);
+    expect(warned).toContain(`update-table --table-name ${TABLE_NAME} --region eu-west-1`);
+  });
+
+  it('omits --region entirely when the caller does not know it', async () => {
+    const captured = await run(
+      new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} })
+    );
+
+    expect(captured.warn.join('\n')).not.toContain('--region');
+  });
+
+  it('keeps the ERROR line for a re-enable that fails any OTHER way (control)', async () => {
+    // Without this arm a blanket downgrade of the whole `catch` passes the case
+    // above, and the mechanism's one loud signal is lost for the failures that
+    // DO leave a live table unprotected.
+    const captured = await run(
+      Object.assign(new Error('Table is being updated'), { name: 'ResourceInUseException' })
+    );
+
+    expect(captured.debug).toHaveLength(0);
+    expect(captured.warn).toHaveLength(0);
+    expect(captured.error.join('\n')).toContain('could NOT re-enable');
+    expect(captured.error.join('\n')).toContain('LIVE with its deletion protection still off');
+    expect(captured.error.join('\n')).toContain(
+      `aws dynamodb update-table --table-name ${TABLE_NAME}`
+    );
+  });
+
+  it('matches on the SDK error NAME, not on the class identity', async () => {
+    // The predicate is name-keyed so this module needs no SDK import and a
+    // second copy of the class (two client versions in one tree) still matches.
+    const captured = await run(
+      Object.assign(new Error('Requested resource not found'), {
+        name: 'ResourceNotFoundException',
+      })
+    );
+
+    expect(captured.error).toHaveLength(0);
+    expect(captured.debug).toHaveLength(0);
+    expect(captured.warn.join('\n')).toContain('could not re-enable');
   });
 });

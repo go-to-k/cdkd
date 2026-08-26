@@ -229,7 +229,7 @@ recreate-mixed-direction	2026-08-08T16:42:21Z	PASS	92	verify.sh	P1 post-#1360 re
 recreate-via-cc-api	2026-08-01T10:00:06Z	PASS	93	verify.sh	0801 regression sweep; SDK->CC mid-life migration ok, 0 orphans
 recreate-via-sdk-provider	2026-08-08T16:40:35Z	PASS	78	verify.sh	P1 post-#1360 replacement-rules touch; CC->SDK mid-life recreate ok, 2 del/0 err, 0 orphans
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-08-26T02:50:36Z	PASS	1600	verify.sh	re-run after post-review polish to the providers; bare destroy rejected exit 2, --remove-protection destroy 12 deleted 0 errors, 0 orphans
+remove-protection	2026-08-26T06:23:16Z	PASS	1346	verify.sh	issues 2211/2224 lane, 3rd run (round-2 review fixes touched providers and re-staled integ-destroy); protected LogGroup/Table/UserPool refused without the flag (9 del/12 err, expected) then deleted with it (12 deleted, 0 errors); 0 orphans. Regression net rather than a discriminating arm: neither residual is live-inducible and no fixture reaches a terminal delete failure (issue 2239); both fenced by unit tests on the injected clock
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacement-rules touch; SNS replacement fanout to 10 dependents, 12 del/0 err, 0 orphans
 replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans
