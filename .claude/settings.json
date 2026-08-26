@@ -283,6 +283,10 @@
             "command": ".claude/hooks/stop-warn.sh",
             "timeout": 10,
             "statusMessage": "Checking working tree and /check marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/stop-unmerged-lane-warn.sh"
           }
         ]
       }
