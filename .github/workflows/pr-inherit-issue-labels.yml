@@ -1,0 +1,144 @@
+name: PR inherit issue labels
+
+# Copy the labels of every issue a PR CLOSES onto the PR itself.
+#
+# WHY: the classification labels `severity:*` / `effort:*` (CLAUDE.md -> the
+# four TODO classification fields) live on the ISSUE, so a PR list shows no
+# indication of how severe the defect being fixed was or what verification it
+# drags. Copying them makes `gh pr list --label severity:high` answer the same
+# question the issue query does, and a reviewer sees the classification without
+# opening the linked issue.
+#
+# `pull_request_target`, NOT `pull_request`, and NOTHING from the head is
+# checked out or executed. A fork PR's `pull_request` token is read-only, so the
+# copy would silently no-op on exactly the PRs a maintainer did not open -- a
+# workflow that works only for the trusted case is the shape that reads as
+# working while doing nothing. `pull_request_target` runs the workflow
+# definition from the BASE branch with a write token, which is safe here only
+# because the sole PR-controlled input is the body TEXT: it is fetched
+# server-side with `gh pr view` rather than interpolated from the event payload,
+# and it is scanned for `#<digits>` and never handed to a shell.
+#
+# ADD-ONLY. Labels already on the PR are never removed: a human may have
+# curated them, and this workflow re-runs on every `edited`.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: pr-inherit-issue-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  inherit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Copy linked issues' labels onto the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # Release-management labels are applied AFTER the fix ships. Copying
+          # one onto a PR that has not merged yet states the opposite of the
+          # truth, so they are the one family excluded. `duplicate` / `wontfix`
+          # / `invalid` are triage verdicts on the ISSUE and say nothing about
+          # the PR that fixes it.
+          # `released on @experimental` is not a fixed string: semantic-release
+          # emits `released on @<channel>` per release channel, so enumerating
+          # today's channels defeats the exclusion the moment one is added.
+          DENY='^(released( on @.+)?|duplicate|wontfix|invalid)[[:space:]]*$'
+
+          body=$(gh pr view "$PR_NUMBER" -R "$REPO" --json title,body \
+            -q '"\(.title)\n\(.body // "")"')
+
+          # GitHub's auto-close grammar: a closing keyword, then a parens-FREE
+          # `#N` or a full issue URL in THIS repo. The `Closes (#N)` paren form
+          # is deliberately NOT matched -- it does not auto-close either, and
+          # `.claude/hooks/closes-paren-form-gate.sh` refuses a merge that uses
+          # it, so matching it here would paper over that gate.
+          #
+          # `|| true` on both greps: `set -o pipefail` plus a no-match grep
+          # makes the whole substitution fail, and "this PR closes no issue" is
+          # the ordinary case, not an error.
+          numbers=$( { printf '%s\n' "$body" \
+            | grep -oiE "\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\b[[:space:]]*:?[[:space:]]+(https://github\\.com/$REPO/issues/|#)[0-9]+" \
+            | grep -oE '[0-9]+$' \
+            | sort -u; } || true)
+
+          if [ -z "$numbers" ]; then
+            echo "No closing reference in the title or body -- nothing to copy."
+            exit 0
+          fi
+
+          # A CAP, stated out loud rather than applied silently. A PR body is
+          # capped at 65536 bytes, which fits ~5000 `Closes #N` references, and
+          # each one costs a `gh issue view` against a GITHUB_TOKEN budget of
+          # ~1000 requests/hour SHARED with every other workflow in the repo. A
+          # fork PR can therefore starve CI. 20 is far above any real PR.
+          found=$(printf '%s\n' "$numbers" | grep -c .)
+          if [ "$found" -gt 20 ]; then
+            echo "::warning::$found closing references found; following only the first 20."
+            numbers=$(printf '%s\n' "$numbers" | head -20)
+          fi
+
+          want=""
+          for n in $numbers; do
+            # `gh issue view` on a PULL REQUEST number fails, which is exactly
+            # the filter wanted: a PR saying "Closes #<another PR>" must not
+            # inherit that PR's labels.
+            err=$(mktemp)
+            labels=$(gh issue view "$n" -R "$REPO" --json labels \
+              -q '.labels[].name' 2>"$err") || {
+              # "not an issue" and "gh could not reach GitHub" are different
+              # states, and mapping both to `continue` made a rate-limit 403
+              # look like a clean skip: the loop would burn the rest of the
+              # budget and report success while copying nothing.
+              if grep -qiE 'rate limit|API rate|HTTP 40[13]|HTTP 5[0-9][0-9]|timeout' "$err"; then
+                echo "::error::gh failed on #$n (transport or rate limit), not a missing issue:"
+                cat "$err"
+                exit 1
+              fi
+              echo "#$n is not an issue in $REPO -- skipped."
+              rm -f "$err"
+              continue
+            }
+            rm -f "$err"
+            [ -n "$labels" ] || continue
+            echo "#$n carries: $(printf '%s' "$labels" | tr '\n' ' ')"
+            # `printf` rather than an embedded newline in the assignment: a
+            # literal line break inside this `run: |` block would have to start
+            # at column 0 to be a bare continuation, which ends the block scalar
+            # and makes the YAML unparseable.
+            want=$(printf '%s\n%s' "$want" "$labels")
+          done
+
+          want=$( { printf '%s\n' "$want" | grep -v '^$' | grep -viE "$DENY" | sort -u; } || true)
+          if [ -z "$want" ]; then
+            echo "Nothing left to copy after the deny list."
+            exit 0
+          fi
+
+          have=$(gh pr view "$PR_NUMBER" -R "$REPO" --json labels -q '.labels[].name' || true)
+          add=$( { printf '%s\n' "$want" \
+            | grep -vxF -f <(printf '%s\n' "$have"); } || true)
+          if [ -z "$add" ]; then
+            echo "The PR already carries every label -- nothing to add."
+            exit 0
+          fi
+
+          echo "Adding: $(printf '%s' "$add" | tr '\n' ' ')"
+          # A JSON payload rather than repeated `-f labels[]=...`: label names
+          # contain spaces in this repo (`good first issue`, `help wanted`), and
+          # word-splitting a built-up argument string drops them mid-name.
+          printf '%s\n' "$add" \
+            | jq -R -s '{labels: (split("\n") | map(select(length > 0)))}' \
+            | gh api --method POST "repos/$REPO/issues/$PR_NUMBER/labels" --input - --silent

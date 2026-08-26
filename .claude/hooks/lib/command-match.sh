@@ -690,6 +690,12 @@ GATE_RE_GH_BODY_CARRIER="^gh${GATE_GH_C}[[:space:]]+(pr[[:space:]]+(create|edit)
 # already exists is the outcome this gate exists to steer toward, so gating it
 # would tax the cheap path and leave the expensive one untouched.
 GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
+# issue-classification-label-gate: the CLAIM site. `/work-issues` section 3
+# says most open bodies are still in the old packed shape and are upgraded to
+# the four-line shape when the issue is claimed, so `edit` -- not `create` -- is
+# where `Severity` first exists for the bulk of the backlog. `comment` stays
+# absent: a comment is not the issue's classification.
+GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space:]]|$)"
 # The same mint through the REST verb. `gh api repos/<o>/<r>/issues` with a
 # `title=` field creates an issue; the path must NOT continue past `issues`,
 # which is what separates it from `/issues/<n>/comments` (a comment) and

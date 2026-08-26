@@ -72,6 +72,12 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/issue-classification-label-gate.sh",
+            "timeout": 15,
+            "statusMessage": "Checking the issue's Severity / Effort labels match its body..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/closes-paren-form-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking PR body for Closes (#N) auto-close trap..."
