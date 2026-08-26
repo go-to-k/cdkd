@@ -484,6 +484,50 @@ before:
   to whatever tier its size gives (`CLAUDE.md` → "PR review pattern"), since urgency
   is a reason to start it sooner, never to check it less.
 
+### 3-b. Before writing `next`, NAME the next session's verification
+
+Every deferral is a prediction: *a later session can finish this*. The prediction is
+usually never stated, so it is never checked — and the classification degrades into
+naming the KIND of work ("a fixture change", "a different subsystem", "its own review
+round"), which is the classify-by-MEANS-not-by-PURPOSE error `CLAUDE.md` already
+forbids, and which no list of `now` triggers can catch, because the next miss arrives in a shape the list does
+not contain.
+
+So make the prediction explicit. **You may not write `Session-fit: next` until you can
+name, concretely, the command the NEXT session will run to verify the fix — and can
+say that a fresh session will be able to run it.** Not "run the integ"; the fixture
+name. Not "test it"; the assertion that will go from red to green.
+
+This is a GENERATIVE check, not a lookup, which is the whole point: it fires on
+conditions nobody enumerated. If naming it is hard, that difficulty IS the finding —
+usually one of:
+
+- **The verifier is bound to THIS host.** CPU architecture, OS version, an installed
+  toolchain, the Docker daemon's image or platform state.
+- **The verifier is bound to THIS account or region.** A bootstrapped region, a live
+  resource someone else's fixture created, a quota that took a support ticket.
+- **The verifier does not exist yet**, and writing it is most of the work — the one
+  case where `next` is genuinely right, and it is right BECAUSE you could name what
+  is missing.
+- **You cannot name it at all**, which means nobody can confirm the fix later either.
+  That is not a deferral, it is an unbounded one.
+
+Measured 2026-08-26: cdk-local go-to-k/cdk-local#560 was filed and classified
+`Session-fit: next` on the reasoning "a fixture / base-image change on a different
+axis" — a statement about the work's CATEGORY. The defect is a Go RIE segfault under
+`linux/amd64` emulation on an arm64 host, and `uname -m` on the machine that filed it
+was **arm64**. The next session's verification is "run the two start-api fixtures on
+an arm64 host", and nothing guarantees a fresh session HAS one. Deferring would have
+handed the work to a session that might be structurally unable to confirm it, and the
+maintainer caught the misclassification rather than the flow doing so. Had the
+question been asked, the answer names the host in one sentence.
+
+**Its converse is the honest use of `next`.** When you CAN name the verification and a
+fresh session will plainly have it — an existing fixture on any machine, a unit
+assertion, an ordinary `gh` query — the deferral is sound and the naming costs one
+line. Put that line in the issue body next to `Session-fit`, so the next session
+starts from the check rather than re-deriving it.
+
 ## 4. CLAIM the chosen issues BEFORE editing
 
 For EACH issue you will start:

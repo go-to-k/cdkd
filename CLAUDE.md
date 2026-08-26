@@ -271,6 +271,28 @@ high.
 
   **Session-fit** — the question it answers is always the same one, and it is the one that otherwise gets re-litigated after every merge: **do I keep going in THIS session, or hand this to a fresh session / another agent?** Answer it once, when the item is created, and the post-merge moment stops being a decision point at all.
   - **`now`** — finish it in this session. Any of: it lands in files this session already has open or changed (**re-acquiring the context costs more than the work**); skipping it leaves main self-inconsistent (docs contradicting shipped code, a stale rationale comment, a fixture that no longer discriminates, an unearned claim in a PR body); it blocks another lane in this session; **it rides an EXISTING integ fixture** (see the calibration below); or **its evidence exists only in this session** — a live repro, a real-AWS observation, a measurement you took. Understanding survives in an issue body; evidence does not.
+
+    **Before writing `next`, NAME the next session's verification.** A deferral is an
+    unstated PREDICTION that a later session can finish the work; unstated, it is
+    never checked, and the classification decays into naming the KIND of work ("a
+    fixture change", "a different subsystem") — classifying by MEANS rather than by
+    PURPOSE, which the calibration below already forbids and which no list of `now`
+    triggers can catch, because the next miss arrives in a shape the list does not
+    contain. So the gate is GENERATIVE rather than a lookup: you may not write
+    `Session-fit: next` until you can name the concrete command the next session will
+    run to verify the fix, and say a fresh session will be able to run it. Not "run
+    the integ" — the fixture name. If naming it is hard, that difficulty IS the
+    finding: the verifier may be bound to THIS host (CPU architecture, toolchain,
+    Docker image state), to THIS account or region (a bootstrapped region, a live
+    resource, a quota), may not exist yet (the one case where `next` is genuinely
+    right, and right BECAUSE you could name what is missing), or may be unnameable at
+    all — which is not a deferral but an unbounded one. Measured 2026-08-26:
+    go-to-k/cdk-local#560 was classified `next` on "a fixture / base-image change on a
+    different axis"; the defect is a Go RIE segfault under `linux/amd64` emulation on
+    an arm64 host and the filing machine WAS arm64, so the verification is "run those
+    fixtures on an arm64 host" and nothing guarantees a fresh session has one. The
+    maintainer caught it, not the flow. Put the named command in the issue body beside
+    `Session-fit`, so the next session starts from the check instead of re-deriving it.
   - **`next`** — hand off to a fresh session / another agent. Any of: a NEW integ fixture has to be WRITTEN for it; it is a schema bump or a behavior change that must not share a PR (if either half fails, both become unmergeable); bundling it would make the PR unreviewable; it waits on external input (an AWS quota, a maintainer decision, an upstream fix); or it is an independent subsystem with no file overlap AND none of the `now` criteria fire.
 
   **Calibration: RUNNING an existing integ is not a reason to defer, and this rule used to say it was.** Measured over the 268 rows of `docs/_generated/integ-last-run.tsv` on 2026-08-20: median run **85 s**, mean 4.6 min, p90 8.8 min, and the heaviest broad fixture (`multi-stack-deps`) 8.0 min. A passing run costs a few hundred tokens of output. If the session is running an integ for its current lane anyway, a fix riding the same fixture costs **zero** — the same run refreshes the same 14-day gate. What is genuinely expensive is *writing* a new fixture (a CDK app plus `verify.sh` plus a ledger row plus the coverage matrix), an integ that FAILS (unbounded, and you would pay it next session too), and above all **review of a larger diff, which grows superlinearly** because a reviewer reads the whole thing and cross-file interactions multiply. Defer on those, never on "it needs an integ".
