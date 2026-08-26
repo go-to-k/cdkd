@@ -1,3 +1,10 @@
+## [0.284.71](https://github.com/go-to-k/cdkd/compare/v0.284.70...v0.284.71) (2026-08-26)
+
+
+### Bug Fixes
+
+* **dynamodb:** release the protection-flip latch on a terminal delete failure ([#2308](https://github.com/go-to-k/cdkd/issues/2308)) ([468b4cc](https://github.com/go-to-k/cdkd/commit/468b4cc3a6e83f2135343f6a10d351f6eecf5041))
+
 ## [0.284.70](https://github.com/go-to-k/cdkd/compare/v0.284.69...v0.284.70) (2026-08-26)
 
 
