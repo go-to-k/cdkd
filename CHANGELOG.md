@@ -1,3 +1,10 @@
+## [0.284.51](https://github.com/go-to-k/cdkd/compare/v0.284.50...v0.284.51) (2026-08-26)
+
+
+### Bug Fixes
+
+* **drift:** --accept / --revert no longer report a clean bill of health over a stack they never compared ([#2231](https://github.com/go-to-k/cdkd/issues/2231)) ([3df66df](https://github.com/go-to-k/cdkd/commit/3df66dfae091c2044fd3464def06514be35aa4fa))
+
 ## [0.284.50](https://github.com/go-to-k/cdkd/compare/v0.284.49...v0.284.50) (2026-08-26)
 
 
