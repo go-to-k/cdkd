@@ -18,7 +18,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
+import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { displaySafe } from '../../utils/display-safe.js';
@@ -61,7 +61,11 @@ import { buildCdkdStateStackTree, type CdkdStateStackTree } from './export.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState } from '../../types/state.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
-import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
+import {
+  forwardSigtermToSigint,
+  isPromptAbortError,
+  watchCommandInterrupt,
+} from '../../utils/interrupt-signals.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
 
 /**
@@ -1297,12 +1301,95 @@ async function stateDestroyCommand(
         process.stdout.write(`  - ${name}\n`);
       }
       process.stdout.write('\n');
+      // NON-INTERACTIVE runs are refused BEFORE the prompt, which is this
+      // repo's existing answer to exactly this question. FIVE sites place the
+      // guard the same way -- `gc.ts`, `bootstrap-destroy.ts`,
+      // `recreate-confirm-prompt.ts`, `prefix-migration-check.ts` and
+      // `migrate-command.ts` all test `process.stdin.isTTY` before creating
+      // the interface -- but only TWO share the error SHAPE this one copies:
+      // `gc.ts` and `bootstrap-destroy.ts` throw `CdkdError` with the
+      // `NON_INTERACTIVE_CONFIRM` code. The other three throw a bare `Error`
+      // (`recreate-confirm-prompt.ts`, `prefix-migration-check.ts`) or a
+      // `LocalMigrateError` (`migrate-command.ts`). Matching the two that
+      // carry the code is deliberate: a destroy refusal is something CI should
+      // be able to branch on. An earlier revision of this comment said all
+      // five threw the code, which is not true and was measured to be wrong.
+      //
+      // It closes the hang issue #1342 is about — `rl.question` never settles
+      // when stdin is already at EOF, so `cdkd state destroy --all` without
+      // `--yes` parked forever in CI on nothing more than an absent stdin —
+      // and it does so without a race. A first cut of this fix raced the
+      // question against readline's `close` event and turned EOF into a
+      // decline; measured against real `node:readline/promises` on Node
+      // 24.15.0, that lost three ways:
+      //
+      //   - `printf 'y' |` (a real answer with no trailing newline) DECLINED,
+      //     silently discarding the answer, because `rl.line` is `''` at close;
+      //   - `(sleep 0.3; echo y) |` DECLINED — a delayed answer simply loses
+      //     the race;
+      //   - at a TTY readline consumes `^C` itself and calls `close()` (no
+      //     process SIGINT in raw mode), so the INTERACTIVE Ctrl-C landed on
+      //     the EOF arm and exited 0 with "stdin closed" instead of the 130 +
+      //     "Destroy cancelled" the abort arm below deliberately produces.
+      //
+      // A refusal has none of those: no answer can be discarded, the TTY path
+      // is untouched, and a piped CI run gets a non-zero exit naming `--yes`
+      // rather than an exit 0 that is success-shaped over a destroy that did
+      // nothing.
+      if (process.stdin.isTTY !== true) {
+        throw new CdkdError(
+          'The state destroy --all confirmation prompt cannot run in a non-interactive ' +
+            'environment. Pass --yes / -y to confirm the batch, or run the command ' +
+            'from a real terminal.',
+          'NON_INTERACTIVE_CONFIRM'
+        );
+      }
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
       });
-      const answer = await rl.question(`Destroy all ${stackNames.length} stack(s)? (y/N): `);
-      rl.close();
+      // Issue #2117: the prompt takes the watch's abort signal, because this
+      // await blocks on the USER rather than on AWS. Registering any SIGINT
+      // listener disables Node's default terminate, so once this command owns
+      // a handler a Ctrl-C here would be RECORDED and then wait forever for an
+      // answer that is never coming — a single SIGTERM from CI or `kill` hung
+      // the process where it previously exited 130. At a TTY readline
+      // intercepts ^C itself; the piped / non-TTY shape is exactly the CI
+      // population issue #1342 exists for.
+      //
+      // `destroy.ts` needs no counterpart: it owns no prompt, and the per-stack
+      // prompt inside `runDestroyForStack` runs BEFORE that runner arms its own
+      // handler, so the watch takes its pre-registration force-quit there
+      // rather than deferring — an exit, not a hang.
+      //
+      // This arm covers a SIGNALLED run and nothing else. The OTHER way this
+      // await never returned — an already-at-EOF stdin, which carries no
+      // signal at all — is handled by the non-interactive REFUSAL above,
+      // before the interface is even created. See that comment for why the
+      // refusal replaced a `Promise.race` against readline's `close`.
+      let answer: string;
+      try {
+        answer = await rl.question(`Destroy all ${stackNames.length} stack(s)? (y/N): `, {
+          signal: interruptWatch.signal,
+        });
+      } catch (error) {
+        if (interruptWatch.interrupted() && isPromptAbortError(error)) {
+          // Nothing has been read, locked or deleted at this point, so exiting
+          // straight out is safe and is what the user asked for. 130 is the
+          // code Node's own default terminate would have produced here before
+          // this command owned a SIGINT handler.
+          //
+          // `rl.close()` here as well as in the `finally`: `process.exit` is
+          // synchronous and never unwinds, so the `finally` below does NOT run
+          // on this path. Closing twice is a documented no-op.
+          process.stderr.write('\nDestroy cancelled — nothing was destroyed.\n');
+          rl.close();
+          process.exit(130);
+        }
+        throw error;
+      } finally {
+        rl.close();
+      }
       const trimmed = answer.trim().toLowerCase();
       if (trimmed !== 'y' && trimmed !== 'yes') {
         logger.info('Destroy cancelled');
@@ -1324,10 +1411,41 @@ async function stateDestroyCommand(
     // #816) — the PER-STACK outcome, as the runner reported it.
     let interrupted = false;
     // Issue #2117 — see the twin in `destroy.ts` for why the loop and the exit
-    // code ask the COMMAND-level question instead, and why this stays a call
-    // rather than becoming a local.
+    // code ask the COMMAND-level question instead, why this stays a call
+    // rather than becoming a local, and why the `interrupted ||` disjunct is
+    // kept rather than folded into the watch (it fences the CALLEE's reported
+    // outcome, which a probe showed is not subsumed).
     const runInterrupted = (): boolean => interrupted || interruptWatch.interrupted();
-    for (const stackName of stackNames) {
+    // Set only where a `break` leaves at least one target UNPROCESSED — see
+    // the twin in `destroy.ts` for why the exit code asks this rather than
+    // `runInterrupted()` (a signal in the run's tail must not report a
+    // completed destroy as unfinished).
+    let stoppedEarly = false;
+    /**
+     * Would any stack AFTER `stackIndex` actually have been destroyed?
+     *
+     * `stackIndex < stackNames.length - 1` answers "does an INDEX remain",
+     * which is not the same question and over-claims: with
+     * `--stack-region us-east-1`, a later name whose only state record lives in
+     * eu-west-1 is warn-and-skipped by the `targets.length === 0` branch below
+     * — it was never going to be destroyed, so a signal before it leaves
+     * nothing undone and the run must still exit 0. Measured on
+     * `state destroy --all --yes --stack-region us-east-1` with StackA in
+     * us-east-1 and StackB only in eu-west-1: the index form exited 2 having
+     * dispatched StackA, i.e. every target it had.
+     *
+     * The predicate mirrors that branch's own filter over `stateRefs`, the
+     * same list the loop selects from. `destroy.ts` needs no counterpart: its
+     * `candidateStacks` is already pre-filtered by the set of stack names that
+     * have state, so an index there IS a target.
+     */
+    const targetRemainsAfter = (stackIndex: number): boolean =>
+      stackNames.slice(stackIndex + 1).some((name) => {
+        const laterRefs = stateRefs.filter((r) => r.stackName === name);
+        if (!options.stackRegion) return laterRefs.length > 0;
+        return laterRefs.some((r) => r.region === options.stackRegion || !r.region);
+      });
+    for (const [stackIndex, stackName] of stackNames.entries()) {
       // After PR 1, the same stackName can have state in multiple regions.
       // Pick the right ref(s):
       // - If --stack-region is given, take the matching ref (skip with warning if none).
@@ -1353,7 +1471,7 @@ async function stateDestroyCommand(
         );
       }
 
-      for (const ref of targets) {
+      for (const [refIndex, ref] of targets.entries()) {
         logger.info(
           `\nPreparing to destroy stack: ${stackName}${ref.region ? ` (${ref.region})` : ''}`
         );
@@ -1369,15 +1487,21 @@ async function stateDestroyCommand(
           continue;
         }
 
+        // Issue #2117 — the last check before any delete is issued; see the
+        // twin in `destroy.ts`. Unconditionally `stoppedEarly`: THIS target is
+        // the one left undestroyed, whether or not any follow it.
+        if (runInterrupted()) {
+          stoppedEarly = true;
+          break;
+        }
+
         // Set the NestedStackProvider context — fires only when the state
         // file carries an AWS::CloudFormation::Stack record. `state destroy`
         // does not synth, so accountId is not separately resolved here;
         // the field is unused on the destroy path (only `create` builds
-        // the synthesized ARN).
-        // Issue #2117 — the last check before any delete is issued; see the
-        // twin in `destroy.ts`.
-        if (runInterrupted()) break;
-
+        // the synthesized ARN). Bracketed by `interruptWatch.runStack` so a
+        // second Ctrl-C in this window escalates through the RUNNER's handler,
+        // the only one that can release this stack's lock.
         const result = await interruptWatch.runStack(() =>
           withNestedStackContext(
             {
@@ -1449,15 +1573,25 @@ async function stateDestroyCommand(
         totalSkipped += result.skippedCount;
         if (result.interrupted) interrupted = true;
         // Graceful interrupt (issue #816): stop iterating this stack's regions.
-        // Issue #2117: read LIVE — see the twin in `destroy.ts`.
-        if (runInterrupted()) break;
+        // Issue #2117: read LIVE — see the twin in `destroy.ts`. `stoppedEarly`
+        // only when a target of THIS stack actually remains; the outer break
+        // below decides the same question for the remaining stacks.
+        if (runInterrupted()) {
+          if (refIndex < targets.length - 1) stoppedEarly = true;
+          break;
+        }
       }
 
       // Graceful interrupt (issue #816): stop the outer multi-stack loop too —
       // do not start destroying further stacks once the user has asked to
       // stop. Explicit guard mirroring destroy.ts's stack-loop break (the
-      // inner `break` above only exits the per-region loop).
-      if (runInterrupted()) break;
+      // inner `break` above only exits the per-region loop). `stoppedEarly`
+      // asks whether a real TARGET remains, not whether an index does — see
+      // `targetRemainsAfter`.
+      if (runInterrupted()) {
+        if (targetRemainsAfter(stackIndex)) stoppedEarly = true;
+        break;
+      }
     }
 
     if (totalErrors > 0) {
@@ -1470,10 +1604,14 @@ async function stateDestroyCommand(
           `If the same resource keeps failing, 'cdkd state orphan <stack>' removes the state record without deleting AWS resources.`
       );
     }
-    if (runInterrupted()) {
+    if (interrupted || (interruptWatch.interrupted() && stoppedEarly)) {
       // Graceful SIGINT (issue #816): in-flight deletes finished, state was
       // preserved (trimmed), and the lock was released. Surface a non-zero
       // exit so scripts / CI see the destroy did not complete.
+      //
+      // NOT `runInterrupted()` — see the twin in `destroy.ts`: a signal in the
+      // tail of a run that destroyed every target must not report unfinished
+      // work there is none of.
       throw new PartialFailureError(
         `Destroy interrupted by Ctrl-C. State preserved — re-run 'cdkd state destroy' to finish.`
       );

@@ -53,8 +53,10 @@
  *    at command start. It is deliberately NOT
  *    `process.listenerCount('SIGINT') > 0`, which was the first cut and is
  *    defeated by the very case it was meant to catch: `cdkd drift` runs
- *    `provider.update` at concurrency 4, and a concurrent CloudFront / ACM /
- *    Route53 wait installs a TRANSIENT SIGINT listener of its own — so an ELBv2
+ *    `provider.update` at concurrency 4, and a concurrent CustomResource /
+ *    CloudFront / ACM wait (`grep -rn "process.on('SIGINT'"
+ *    src/provisioning/providers/` for the closed set — Route53's provider
+ *    registers none) installs a TRANSIENT SIGINT listener of its own — so an ELBv2
  *    update starting inside that window saw a non-zero count, armed, and then
  *    kept the listener for the rest of the command after the transient one was
  *    removed. A count answers "is anyone listening right now"; the question is
@@ -87,9 +89,29 @@
  *    graceful owner, that watch must NOT treat its presence as "someone else
  *    will handle this" (it subtracts `interruptWatchListenerCount()` for
  *    exactly that reason), or the swallow above returns one window inward.
- *    The remaining population here is the commands that register no handler at
- *    all — `import` / `export` / `scrub` / `orphan` / `drift` /
- *    `state refresh-observed`.
+ *
+ *    **That leaves this force-quit with NO population among today's commands,
+ *    and it is worth being exact about why**, because the obvious guess — the
+ *    commands that register no handler at all, `import` / `export` / `scrub` /
+ *    `orphan` / `drift` / `state refresh-observed` — is wrong in a way an
+ *    earlier version of this note shipped. Property 3 gates ARMING on the
+ *    command scope, and those commands never open one (only
+ *    `forwardSigtermToSigint()` does, and only `deploy` / `destroy` /
+ *    `rollback` / `state destroy` call it), so this handler is never installed
+ *    during them and cannot force-quit there. See the scope note below, which
+ *    says the same thing from the lock's side and is what this contradicted.
+ *    Among the four commands that DO open a scope, each holds a graceful
+ *    SIGINT handler across the whole of it — `deploy.ts`'s top-level handler,
+ *    `rollback.ts`'s (removed adjacent to, and synchronously with, its
+ *    `unforwardSigterm()`), and now `watchCommandInterrupt` in both destroy
+ *    commands — so `others.length` is never 0 while armed.
+ *
+ *    The branch is therefore a STRUCTURAL guarantee rather than a live code
+ *    path: it becomes reachable again the moment a command opens the interrupt
+ *    scope without holding a SIGINT handler across it, or an existing one tears
+ *    its handler down before closing the scope. That is a one-line mistake in a
+ *    command file, and the failure it produces — a swallowed Ctrl-C during a
+ *    provider wait — is silent, which is exactly why the branch stays.
  *
  *    So when no other listener remains, the handler restores exactly what Node
  *    would have done with no listener at all. That is deliberately not a second
@@ -179,8 +201,12 @@ let sigintLatched = false;
  * default terminate, and a swallowed Ctrl-C in a multi-stack destroy really is
  * a blocker. `cdkd drift --revert` is the live instance of the first. The second
  * was `cdkd destroy`, until issue #2117 gave both destroy commands a
- * command-scoped handler of their own; the force-quit's remaining population is
- * the commands that register none at all (see property 4).
+ * command-scoped handler of their own — which leaves the force-quit with no
+ * live population among today's commands at all. Property 4 works through why,
+ * including why the commands that register no handler are NOT it: they never
+ * open the interrupt scope, so this handler never arms for them. The seam is
+ * what keeps the branch testable now that only a future command shape reaches
+ * it.
  *
  * `commandOwnsInterrupts` exists because a provider suite never runs a COMMAND,
  * so every interrupt test would otherwise exercise the UNARMED path while

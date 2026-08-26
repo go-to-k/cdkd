@@ -20,7 +20,9 @@ import {
  * cancellation, and GitLab CI / `docker stop` / Kubernetes send SIGTERM
  * directly. cdkd's graceful-interrupt handling (the top-level command
  * handlers, the deploy engine's partial-state save, and the per-provider
- * poll-abort listeners in CustomResource / ACM / CloudFront / Route53) is
+ * poll-abort listeners in CustomResource / CloudFront / ACM — `grep -rn
+ * "process.on('SIGINT'" src/provisioning/providers/` regenerates that closed
+ * set, and Route53 is NOT in it) is
  * registered on SIGINT only, so an unhandled SIGTERM killed the process
  * mid-run, skipped every `finally`, and stranded the stack lock for its
  * full TTL.
@@ -47,8 +49,10 @@ export function forwardSigtermToSigint(): () => void {
   // This is also where the provider-side interrupt watch is told a command with
   // a graceful shutdown path is now running (issues #2053 / #1952). It gates on
   // THIS rather than on `process.listenerCount('SIGINT')`, because a count is
-  // satisfied by the transient listeners CloudFront / ACM / Route53 install
-  // around their own waits — so `cdkd drift`, which owns no shutdown path and
+  // satisfied by the transient listeners CustomResource / CloudFront / ACM
+  // install around their own waits (`grep -rn "process.on('SIGINT'"
+  // src/provisioning/providers/` — Route53 registers none)
+  // — so `cdkd drift`, which owns no shutdown path and
   // runs `provider.update` at concurrency 4, could arm the watch through a
   // concurrent resource's listener and then keep it after that listener went
   // away, leaving Ctrl-C unable to terminate the command at all.
@@ -116,9 +120,26 @@ export interface CommandInterruptWatch {
    *
    * Read it at every point the multi-stack loop decides whether to keep
    * going. It is a LIVE read of a flag a handler writes, not a value sampled
-   * once, which is the whole difference from `DestroyRunResult.interrupted`.
+   * once, which is the whole difference from `DestroyRunnerResult.interrupted`.
    */
   interrupted(): boolean;
+  /**
+   * Aborted the instant the first signal is RECORDED.
+   *
+   * Recording a flag is enough for anything that polls it — the `--all` loop
+   * checks between stacks — and useless for anything BLOCKED. The command's
+   * own `readline` prompt is the live instance: `await rl.question(...)` is
+   * waiting on the USER, not on AWS, and installing any SIGINT listener
+   * disables Node's default terminate, so a Ctrl-C at the prompt used to end
+   * the process and now would leave it parked there forever. Pass this to
+   * `rl.question(prompt, { signal })` and treat the resulting `AbortError` as
+   * "the user cancelled".
+   *
+   * Only the piped / non-TTY shape reaches that hang at a real terminal —
+   * readline intercepts ^C itself when stdin is a TTY — which is the CI
+   * population issue #1342 exists for, and exactly where nobody is watching.
+   */
+  readonly signal: AbortSignal;
   /**
    * Bracket one per-stack destroy.
    *
@@ -142,7 +163,7 @@ export interface CommandInterruptWatch {
  * `cdkd deploy` has had one of these since issue #1348 (`deploy.ts`'s
  * `topLevelSigintHandler`). The destroy side had none, so the ONLY channel
  * carrying "the user interrupted" from `runDestroyForStack` back to the
- * `--all` loop was `DestroyRunResult.interrupted` — a boolean assigned ONCE,
+ * `--all` loop was `DestroyRunnerResult.interrupted` — a boolean assigned ONCE,
  * inside the runner's `try`, after its level loop. Every instant where the
  * runner's `draining` flag flips AFTER that assignment is an instant where
  * `cdkd destroy --all` went on to delete the NEXT stack after the user asked
@@ -166,10 +187,38 @@ export interface CommandInterruptWatch {
  *
  * A handler that lives for the whole command closes both, because it is armed
  * in every window rather than in the ones the runner happens to span. The two
- * flags answer different questions and both are kept: `result.interrupted` is
- * the PER-STACK outcome (it decides that stack's state preservation, its
- * summary line and its `--purge-events` skip), while this one is the
- * COMMAND-level "stop" the loop wants.
+ * flags answer different questions and both are kept, one owner each:
+ *
+ *  - PER-STACK, "did THIS stack finish, or is there work left in it?" —
+ *    `DestroyRunnerResult.interrupted`, owned by `destroy-runner.ts`. It has FOUR
+ *    consumers: that stack's state preservation, its summary line,
+ *    `destroy.ts`'s `--purge-events` skip, and — the one earlier revisions of
+ *    this list omitted — `NestedStackProvider.delete`, which reads the CHILD's
+ *    result to decide whether the child row is `{ outcome: 'skipped' }` on the
+ *    parent and whether its failure is `markNonRetryable`.
+ *
+ *    That fourth consumer is why the `&& statePreserved` gate below is a
+ *    behavior change beyond the exit code: a fully-destroyed child that takes
+ *    a tail signal no longer reports `interrupted`, so the parent no longer
+ *    marks its row skipped. That is the CORRECT reading — `skipped` means
+ *    "cdkd could not address this, the resources may still exist in AWS",
+ *    which is false of a child whose every resource was deleted and whose
+ *    state record is gone; it would preserve the parent's row for a child that
+ *    no longer exists and exit 2 over a completed teardown. Stopping the
+ *    surrounding `--all` run is a DIFFERENT question, still answered by this
+ *    watch, which the parent command holds for its whole run.
+ *  - PER-RUN, "has the user asked this COMMAND to stop?" — this watch. Its
+ *    consumers are the loops' `break`s and the terminal exit-code verdict
+ *    (which pairs it with `stoppedEarly`, so a signal in a completed run's
+ *    tail does not report unfinished work there is none of).
+ *
+ * `--purge-events` moved onto the per-stack answer when the runner's outer
+ * re-sync was gated on `statePreserved`. Before that the per-stack flag could
+ * be true over a stack whose state was already DELETED, so the purge had to
+ * read the command-level one to stay conservative — at the cost of the
+ * opposite error: a tail signal on the LAST stack skipped the purge while the
+ * command exited 0, reporting full success with the events left behind. With
+ * the per-stack flag accurate, one read serves both directions.
  *
  * Note on the counterpart contract: `deploy-engine.ts` removes its own SIGINT
  * handler before releasing its lock, which is safe only because `deploy.ts`'s
@@ -183,6 +232,15 @@ export interface CommandInterruptWatch {
  */
 export function watchCommandInterrupt(opts: { command: string }): CommandInterruptWatch {
   let interrupted = false;
+  // The push half of the record. `interrupted` serves everything that POLLS;
+  // this serves everything that is BLOCKED and would otherwise never look
+  // again — today, the batch confirm prompt in `state.ts`. Aborting is
+  // idempotent, so every path that records the signal may call it.
+  const promptAbort = new AbortController();
+  function markInterrupted(): void {
+    interrupted = true;
+    promptAbort.abort();
+  }
   // Depth rather than a boolean: `runStack` is not nested today, but a counter
   // cannot be desynchronised by a future caller that does nest it, whereas a
   // boolean would be cleared by the inner scope's exit while the outer one is
@@ -210,11 +268,14 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
    *  - `interrupt-watch.ts`'s shared handler, which is a LATCH rather than a
    *    graceful owner — deferring to it is exactly the swallow above.
    *
-   * A provider's transient wait listener (CustomResource / ACM / CloudFront /
-   * Route53) does count, and that is correct rather than a false positive:
-   * those exist only DURING a provider wait, which is strictly inside the
-   * runner handler's own lifetime, so one cannot be present while the runner's
-   * is absent.
+   * A provider's transient wait listener does count, and that is correct
+   * rather than a false positive: three providers install one — grep
+   * `process.on('SIGINT'` under `src/provisioning/providers/**` for the
+   * closed set, today `acm-certificate-provider.ts`,
+   * `cloudfront-distribution-provider.ts` and `custom-resource-provider.ts`,
+   * NOT Route53, whose provider registers none — and each exists only
+   * DURING a provider wait, which is strictly inside the runner handler's own
+   * lifetime, so one cannot be present while the runner's is absent.
    */
   function gracefulOwnerArmed(): boolean {
     const others = process.listeners('SIGINT').filter((l) => l !== handler).length;
@@ -230,36 +291,59 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
       // region-qualified `cdkd force-unlock` line on the second — strictly
       // better than anything reachable from here. Record the signal and stay
       // out of the way.
-      interrupted = true;
+      markInterrupted();
       return;
     }
     if (interrupted) {
-      // Second signal with no graceful owner. No stack lock is held in this
-      // window: the interrupted stack released its own in
+      // Second signal with no graceful owner. A stack lock is ALMOST never
+      // held in this window: the interrupted stack released its own in
       // `runDestroyForStack`'s `finally` before returning, the loop takes none,
       // and the runner's pre-registration window sits entirely before its
-      // `acquireLock`. So there is no recovery command to print, unlike the
-      // runner's force-quit path.
+      // `acquireLock`.
       //
-      // That first clause rests on there being NO `await` between the runner's
-      // `removeListener` and its return — add one and a signal could land here
-      // after a completed destroy, where the release may itself have failed
-      // (the runner catches and warns). `destroy-runner.ts` records the
-      // dependency at that site.
-      process.stderr.write('\nForce-quit.\n');
+      // "Almost" is why the hedged recovery line is printed anyway, matching
+      // what `interrupt-watch.ts`'s force-quit used to print in this exact
+      // window before this watch took it over. That release is best-effort:
+      // `destroy-runner.ts` catches a failing `releaseLock` and only WARNS, so
+      // a stack that finished with a 409 / throttle on the release leaves the
+      // lock live for its full TTL — and this is the one place a user is about
+      // to lose the process without being told how to recover. The line cannot
+      // be qualified with region / profile / bucket the way the runner's own
+      // force-quit is (issue #2170), because this handler holds no such
+      // context; a placeholder that is honest about being a guess beats
+      // inventing defaults that point at a different lock object.
+      //
+      // The window is narrow for a second reason worth keeping: there is NO
+      // `await` between the runner's `removeListener` and its return, so a
+      // signal cannot land here mid-teardown. `destroy-runner.ts` records that
+      // dependency at the site.
+      process.stderr.write(
+        '\nForce-quit.\n' +
+          'If the next run reports a stack lock, release it with: cdkd force-unlock <stack-name>\n'
+      );
       process.exit(130);
     }
-    interrupted = true;
+    markInterrupted();
     if (stacksInFlight > 0) {
       // In the runner's pre-registration window. It has not armed its handler,
       // so it will never observe this signal, and returning gracefully would
       // let it delete the whole stack anyway. Exiting is what happened here
       // BEFORE this watch existed (the shared watch's last-listener
-      // force-quit), so this preserves that guarantee rather than narrowing
-      // it: nothing has been deleted and no lock is held.
+      // force-quit), so this preserves that guarantee rather than narrowing it.
+      //
+      // The claim is scoped to THIS stack, and both halves of the flat
+      // "nothing was deleted and no stack lock is held" this used to print are
+      // false on an `--all` run whose earlier stacks already completed. The
+      // lock half is hedged for the same reason as the branch above:
+      // `destroy-runner.ts` catches a failing `releaseLock` and only WARNS, so
+      // a completed stack can leave its lock live for the full TTL, and this
+      // is one of the two places a user loses the process without being told
+      // how to recover.
       process.stderr.write(
         `\nInterrupted before ${opts.command} armed its per-stack teardown — ` +
-          `quitting now. Nothing was deleted and no stack lock is held.\n`
+          `quitting now. No delete was issued for this stack; on an --all run, ` +
+          `stacks processed earlier are already destroyed.\n` +
+          `If the next run reports a stack lock, release it with: cdkd force-unlock <stack-name>\n`
       );
       process.exit(130);
     }
@@ -273,6 +357,7 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
 
   return {
     interrupted: (): boolean => interrupted,
+    signal: promptAbort.signal,
     async runStack<T>(fn: () => Promise<T>): Promise<T> {
       stacksInFlight += 1;
       try {
@@ -285,4 +370,21 @@ export function watchCommandInterrupt(opts: { command: string }): CommandInterru
       process.removeListener('SIGINT', handler);
     },
   };
+}
+
+/**
+ * Did this rejection come from a prompt aborted through
+ * {@link CommandInterruptWatch.signal}?
+ *
+ * Deliberately duck-typed rather than `instanceof`: what `readline/promises`
+ * rejects with is an internal Node error class in some versions and a
+ * `DOMException` in others, and neither is importable. Both spellings carry
+ * `name === 'AbortError'` / `code === 'ABORT_ERR'`, and the caller pairs this
+ * with its own `watch.interrupted()` check, so a same-named error from an
+ * unrelated abort cannot be mistaken for the user's Ctrl-C.
+ */
+export function isPromptAbortError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { name, code } = error as { name?: unknown; code?: unknown };
+  return name === 'AbortError' || code === 'ABORT_ERR';
 }

@@ -139,6 +139,30 @@ vi.mock('../../../src/state/deployment-events-store.js', async (importOriginal) 
   };
 });
 
+/**
+ * `forwardSigtermToSigint` is the ONE call `destroy.ts` guards with a catch
+ * that disposes the watch before re-throwing, and that catch had no coverage:
+ * deleting `interruptWatch.dispose()` from it reddened nothing. The leak it
+ * prevents is permanent and invisible — a stray SIGINT listener makes
+ * `forwardSigtermToSigint`'s own `listenerCount('SIGINT') === 0` fallback stop
+ * firing for every command that runs after, in the same process.
+ *
+ * The rest of the module (`watchCommandInterrupt`, `isPromptAbortError`) stays
+ * REAL — the whole file is about that watch's behaviour.
+ */
+const forwardOverride = vi.hoisted(() => ({ fn: undefined as (() => () => void) | undefined }));
+vi.mock('../../../src/utils/interrupt-signals.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/utils/interrupt-signals.js')>();
+  return {
+    ...actual,
+    // Delegates to the REAL forwarder unless a case installs an override. The
+    // SIGTERM case below needs the genuine SIGTERM -> SIGINT re-emission, so a
+    // blanket stub would quietly turn it into a test of nothing.
+    forwardSigtermToSigint: (): (() => void) =>
+      forwardOverride.fn ? forwardOverride.fn() : actual.forwardSigtermToSigint(),
+  };
+});
+
 const mockSynthesize = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mockSynthesize })),
@@ -185,6 +209,31 @@ function cleanRunResult(): Record<string, unknown> {
   };
 }
 
+/**
+ * The runner's 0-resource branch, as the command sees it.
+ *
+ * It DELETES the state record, drains on a first Ctrl-C rather than exiting,
+ * and returns `interrupted: false` — because after the delete there is no work
+ * left in this stack. Round 3 of issue #2117 removed a `result.interrupted ||=
+ * emptyInterrupted` that reported the opposite.
+ *
+ * Registering a listener is load-bearing, not decoration: `interruptWatch`
+ * defers to a graceful owner only when one is actually armed, so a mock that
+ * registers nothing takes the pre-registration `process.exit(130)` and pins a
+ * different path entirely. The real branch arms `emptySigintHandler` around
+ * exactly this window.
+ */
+async function emptyStateRunTakingASignal(): Promise<Record<string, unknown>> {
+  const drain = vi.fn();
+  process.on('SIGINT', drain);
+  try {
+    process.emit('SIGINT', 'SIGINT');
+  } finally {
+    process.removeListener('SIGINT', drain);
+  }
+  return { ...cleanRunResult(), deletedCount: 0, skippedEmpty: true };
+}
+
 function silenceStd(): () => void {
   const outw = process.stdout.write.bind(process.stdout);
   const errw = process.stderr.write.bind(process.stderr);
@@ -225,6 +274,7 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     }));
     mockRunDestroyForStack.mockResolvedValue(cleanRunResult());
     mockPruneRuns.mockResolvedValue({ deletedRunIds: [], indexDeleted: false });
+    forwardOverride.fn = undefined;
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit-mock');
     }) as never);
@@ -329,17 +379,84 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
   });
 
-  it('does NOT purge the event history for a signal that landed in the gap', async () => {
-    // The events are the post-mortem for the retry, so an interrupted destroy
-    // must keep them. Pins the CALLER: reverting `interrupted: runInterrupted()`
-    // to the stale per-stack local passes every other case in this file.
-    finalizeHooks.set('StackA', () => {
-      process.emit('SIGINT', 'SIGINT');
-    });
+  it('does NOT purge the event history of a stack the runner reported interrupted', async () => {
+    // The events are the post-mortem for the retry, so a stack whose destroy
+    // was interrupted — state preserved, resources left — must keep them.
+    //
+    // Pins the CALLER's argument, which now reads the PER-STACK
+    // `result.interrupted` rather than the command-level `runInterrupted()`.
+    // A skip-only / interrupt-only run still maps to `SUCCEEDED`, so the
+    // recorder result cannot stand in for this flag: drop the argument and the
+    // purge runs over an interrupted stack's post-mortem.
+    mockRunDestroyForStack.mockResolvedValueOnce({ ...cleanRunResult(), interrupted: true });
 
     await expect(runDestroy(['destroy', '--all', '--yes', '--purge-events'])).rejects.toThrow();
 
     expect(mockPruneRuns).not.toHaveBeenCalled();
+    // Positive marker that the run took the interrupted path rather than
+    // failing early: StackA ran, StackB never did, and the exit is 2.
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('DOES purge when the signal lands in the TAIL of a run that destroyed everything', async () => {
+    // The other direction of the same argument, and the reason it reads the
+    // per-stack flag. With the command-level `runInterrupted()` here, a signal
+    // after the LAST stack finished cleanly made this skip the purge while the
+    // terminal verdict (correctly) exited 0 — so the command reported full
+    // success and silently left the event history behind, i.e. the two reads
+    // of "did anything go unfinished?" disagreed inside one iteration.
+    finalizeHooks.set('StackB', () => {
+      process.emit('SIGINT', 'SIGINT');
+    });
+
+    // Must NOT throw: every stack was destroyed.
+    await runDestroy(['destroy', '--all', '--yes', '--purge-events']);
+
+    // Both stacks purged — including the one the tail signal landed on.
+    expect(mockPruneRuns).toHaveBeenCalledTimes(2);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('does NOT purge the event history of a stack the user DECLINED', async () => {
+    // The second way a stack comes back with its resources still standing, and
+    // the one the round-2 gate missed. Answering `n` at the runner's per-stack
+    // prompt returns `{cancelled: true, deletedCount: 0}`: nothing deleted, but
+    // `errorCount` and `skippedCount` are both 0, so the run maps to
+    // `SUCCEEDED` and `interrupted` is false — and `--purge-events` deleted the
+    // event history of a stack that still exists.
+    mockRunDestroyForStack.mockResolvedValue({
+      ...cleanRunResult(),
+      deletedCount: 0,
+      cancelled: true,
+    });
+
+    await runDestroy(['destroy', '--all', '--yes', '--purge-events']);
+
+    // Neither stack purged — both still exist.
+    expect(mockPruneRuns).not.toHaveBeenCalled();
+    // Positive marker that the run really walked both stacks rather than
+    // failing early: a declined stack is not an error, so the loop continues.
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual([
+      'StackA',
+      'StackB',
+    ]);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('DOES purge a stack that was NOT declined, so the case above is not vacuous', async () => {
+    // The discriminator: identical shape except `cancelled: false`. Without it
+    // a gate that never purges at all — or one keyed on `deletedCount === 0` —
+    // would satisfy the case above.
+    mockRunDestroyForStack.mockResolvedValue({
+      ...cleanRunResult(),
+      deletedCount: 0,
+      cancelled: false,
+    });
+
+    await runDestroy(['destroy', '--all', '--yes', '--purge-events']);
+
+    expect(mockPruneRuns).toHaveBeenCalledTimes(2);
   });
 
   it('DOES purge when the run is clean, so the case above is not vacuous', async () => {
@@ -368,5 +485,154 @@ describe('cdkd destroy --all: a Ctrl-C between stacks stops the run (issue #2117
     const before = process.listenerCount('SIGINT');
     await runDestroy(['destroy', '--all', '--yes']);
     expect(process.listenerCount('SIGINT')).toBe(before);
+  });
+
+  it('still stops --all after an EMPTY-STATE stack took a Ctrl-C', async () => {
+    // The property the deleted `result.interrupted ||= emptyInterrupted` was
+    // protecting, proved to survive its deletion. The runner's 0-resource
+    // branch drains on a first signal, deletes the state record and returns
+    // `interrupted: false` — so if the per-stack flag were the only channel to
+    // this loop (which it WAS before issue #2117), `--all` would walk on and
+    // destroy StackB after the user asked to stop.
+    //
+    // It does not, because `runInterrupted()` reads `watchCommandInterrupt`
+    // live and that handler is armed for the whole command.
+    mockRunDestroyForStack.mockImplementationOnce(emptyStateRunTakingASignal);
+
+    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
+    // StackB was never reached, so `stoppedEarly` is the honest verdict here.
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(130);
+  });
+
+  it('exits 0 when the ONLY stack was empty-state and took a Ctrl-C', async () => {
+    // The half the deleted line got WRONG, and the discriminator for the case
+    // above. One stack, whose record the runner deleted; a signal arrives
+    // during that cleanup. Nothing is left to re-run and no state was
+    // preserved, so `Destroy interrupted ... State preserved -- re-run` plus
+    // exit 2 is false in both halves. With the line still present this case
+    // threw.
+    mockSynthesize.mockResolvedValue({ stacks: [makeStackInfo('StackA')] });
+    mockListStacks.mockResolvedValue([{ stackName: 'StackA', region: 'us-east-1' }]);
+    mockRunDestroyForStack.mockImplementationOnce(emptyStateRunTakingASignal);
+
+    // Must NOT throw.
+    await runDestroy(['destroy', 'StackA', '--yes']);
+
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('exits 0 when the signal lands in the TAIL of a run that destroyed everything', async () => {
+    // The regression the live read introduced. The final
+    // `throw new PartialFailureError('Destroy interrupted by Ctrl-C. State
+    // preserved — re-run ...')` used to read `runInterrupted()`, which is true
+    // for a signal delivered anywhere — including AFTER the last stack
+    // returned cleanly, while `eventRecorder.finalize` / the purge run. There
+    // is nothing left to re-run there, so exit 2 plus that message is wrong in
+    // both halves, and CI acts on the code. Before issue #2117 that site read
+    // the sampled `result.interrupted`, which was false here.
+    finalizeHooks.set('StackB', () => {
+      process.emit('SIGINT', 'SIGINT');
+    });
+
+    // Must NOT throw: no `rejects`, so a PartialFailureError fails the test.
+    await runDestroy(['destroy', '--all', '--yes']);
+
+    // The positive marker that the run really completed rather than failing
+    // early for some unrelated reason: EVERY stack was dispatched.
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual([
+      'StackA',
+      'StackB',
+    ]);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('still exits 2 when the tail signal follows a stack that was NOT reached', async () => {
+    // The discriminator for the case above, and the reason the fix is a second
+    // `stoppedEarly` flag rather than "stop reading the watch at the exit
+    // code". Identical shape, except the signal lands after the FIRST of two
+    // stacks — so StackB is left undestroyed and the non-zero exit is exactly
+    // what CI must see.
+    finalizeHooks.set('StackA', () => {
+      process.emit('SIGINT', 'SIGINT');
+    });
+
+    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
+    // Exit 2 is `PartialFailureError`'s own code, i.e. the interrupted-destroy
+    // contract rather than a generic crash (which would be 1).
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('exits 2 when the signal precedes the ONLY stack, which no index test can see', async () => {
+    // The pre-dispatch guard sets `stoppedEarly` UNCONDITIONALLY, and nothing
+    // pinned that: making it `if (stackIndex < stackNames.length - 1)` left all
+    // 132 cases in this file green, because every one of them runs two stacks
+    // and index 0 satisfies the added test anyway.
+    //
+    // The real case it breaks is a signal during the LAST (here, only) stack's
+    // `getState` S3 round-trip: that stack is left undestroyed, so exit 2 is
+    // the contract, and the index form reports 0 instead.
+    mockSynthesize.mockResolvedValue({ stacks: [makeStackInfo('StackA')] });
+    mockListStacks.mockResolvedValue([{ stackName: 'StackA', region: 'us-east-1' }]);
+    mockGetState.mockImplementationOnce(async (stackName: string) => {
+      process.emit('SIGINT', 'SIGINT');
+      return { state: makeStackState(stackName), etag: 'etag' };
+    });
+
+    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    // The guard's POSITION, as in the two-stack twin: above `startRunRecorder`.
+    expect(startedRecorders).toEqual([]);
+  });
+
+  it('exits 0 on a tail signal when a remaining APP stack has no state record', async () => {
+    // Pins that `destroy.ts`'s end-of-loop `stackIndex < stackNames.length - 1`
+    // is SAFE and must not be "fixed" the way `state.ts`'s twin was.
+    // `candidateStacks` is pre-filtered by the set of stack names that have
+    // state, so a synthesized stack with no record never enters `stackNames`
+    // and an index there really does mean a target. StackB is in the app and
+    // absent from state, so the loop has exactly one entry and a tail signal
+    // leaves nothing undone.
+    mockSynthesize.mockResolvedValue({ stacks: STACKS.map((s) => makeStackInfo(s)) });
+    mockListStacks.mockResolvedValue([{ stackName: 'StackA', region: 'us-east-1' }]);
+    finalizeHooks.set('StackA', () => {
+      process.emit('SIGINT', 'SIGINT');
+    });
+
+    // Must NOT throw.
+    await runDestroy(['destroy', '--all', '--yes']);
+
+    // The positive marker that this is the one-target shape rather than an
+    // early return before the loop: StackA really was destroyed.
+    expect(mockRunDestroyForStack.mock.calls.map((c) => c[0] as string)).toEqual(['StackA']);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('disposes the watch when the SIGTERM forwarder throws, so no listener leaks', async () => {
+    // Pins `destroy.ts`'s try/catch around `forwardSigtermToSigint()`. Deleting
+    // the `interruptWatch.dispose()` from it left every suite green while
+    // leaking a permanent SIGINT listener — which silently changes SIGTERM
+    // handling for every later command in the process.
+    const before = process.listenerCount('SIGINT');
+    forwardOverride.fn = () => {
+      throw new Error('SIGTERM forwarder blew up');
+    };
+
+    await expect(runDestroy(['destroy', '--all', '--yes'])).rejects.toThrow();
+
+    // Exit 1, the generic-failure code: the throw propagated out of the command
+    // rather than being swallowed or mapped to the interrupted contract...
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // ...and the listener set is back where it started, which is the guard.
+    expect(process.listenerCount('SIGINT')).toBe(before);
+    // Nothing was destroyed: the throw precedes the loop entirely.
+    expect(mockRunDestroyForStack).not.toHaveBeenCalled();
   });
 });

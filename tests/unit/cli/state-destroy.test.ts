@@ -134,8 +134,16 @@ async function runStateDestroy(args: string[]): Promise<string> {
 
 describe('cdkd state destroy', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
+  // Vitest's stdin is NOT a TTY, and the `--all` batch prompt now refuses a
+  // non-interactive run outright (`NON_INTERACTIVE_CONFIRM`, the same guard
+  // `gc.ts` and four sibling prompts use) rather than hanging on a `question`
+  // that can never settle. The cases below exercise the PROMPT, so they have
+  // to present as interactive. Same stub as `gc.test.ts` / `prefix-migration-check.test.ts`.
+  let originalIsTTY: boolean | undefined;
 
   beforeEach(() => {
+    originalIsTTY = process.stdin.isTTY;
+    process.stdin.isTTY = true;
     mockListStacks.mockReset();
     mockGetState.mockReset();
     mockVerifyBucketExists.mockReset();
@@ -164,6 +172,15 @@ describe('cdkd state destroy', () => {
   });
 
   afterEach(() => {
+    // `defineProperty`, not a plain assignment: `process.stdin.isTTY` is typed
+    // `boolean` while the saved original is `boolean | undefined` (it is absent
+    // when stdin is not a TTY, which is vitest's normal state). The sibling
+    // suite `prefix-migration-check.test.ts` restores it the same way.
+    Object.defineProperty(process.stdin, 'isTTY', {
+      value: originalIsTTY,
+      configurable: true,
+      writable: true,
+    });
     exitSpy.mockRestore();
     vi.clearAllMocks();
   });

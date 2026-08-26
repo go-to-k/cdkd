@@ -225,7 +225,7 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     expect(process.listeners('SIGINT')).toEqual(before);
   });
 
-  it('reports interrupted=true when the Ctrl-C lands DURING the release', async () => {
+  it('reports interrupted=true when the Ctrl-C lands DURING the release of a PRESERVED stack', async () => {
     // THE round-4 regression, in the reviewer's own probe shape.
     //
     // `result.interrupted` is assigned once inside the `try`, after the level
@@ -235,18 +235,25 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
     // too late and the flag stayed false. `destroy.ts` read exactly that flag to
     // decide whether to stop, and registered no SIGINT handler of its own, so
     // `--all` went on to delete the NEXT STACK after the user asked it to stop.
+    // The outer `finally`'s `result.interrupted ||= draining` re-sync is what
+    // covers that window, and it is what this case pins.
     //
-    // The ordering pinned below is still the fix for the STRANDED LOCK, which is
-    // what this file is about. The `--all`-kept-going half was the re-sync's
-    // job and is now the command handler's (issue #2117): `destroy.ts` /
+    // The ordering pinned elsewhere in this file is still the fix for the
+    // STRANDED LOCK, which is what the file is about. The `--all`-kept-going
+    // half is now the command handler's (issue #2117): `destroy.ts` /
     // `state.ts` hold one for their whole run, so the loop no longer depends on
     // a flag the runner may have read too early.
     //
-    // Pre-round-4 the same signal hit the interrupt watch's force-quit and
-    // exited 130: the lock was stranded, but stack B survived. Trading a
-    // 30-minute TTL for a destroyed stack is the worse side of that trade,
-    // which is why the re-sync at the end of the `finally` is not cosmetic.
-    const base = makeCtx(vi.fn().mockResolvedValue(undefined));
+    // The stack here PRESERVES its state (the delete fails), and that premise is
+    // load-bearing rather than incidental. The re-sync is gated on it: a stack
+    // whose state was DELETED completed with nothing left to re-run, so a signal
+    // in this same window must NOT mark it interrupted — the caller ORs that
+    // flag straight into its terminal verdict, and the ungated form exited 2
+    // with "State preserved — re-run 'cdkd destroy' to finish" over a destroy
+    // that had fully completed, with the state file already gone. This case used
+    // to use a CLEAN destroy and therefore pinned exactly that wrong answer; the
+    // deleted-state twin now lives in `destroy-runner-sigint.test.ts`.
+    const base = makeCtx(vi.fn().mockRejectedValue(new Error('delete blew up')));
     const ctx = {
       ...base.ctx,
       lockManager: {
@@ -264,6 +271,9 @@ describe('runDestroyForStack releases the lock BEFORE unregistering its SIGINT h
 
     const result = await runDestroyForStack('TestStack', makeState('Table'), ctx);
 
+    // The premise: state preserved, so there really is work left to re-run.
+    expect(result.errorCount).toBe(1);
+    expect(base.deleteState).not.toHaveBeenCalled();
     expect(result.interrupted).toBe(true);
   });
 

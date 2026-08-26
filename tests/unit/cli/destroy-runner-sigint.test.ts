@@ -290,6 +290,61 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
     expect(capturedSigintHandlers.length).toBe(0);
   });
 
+  it('does NOT report interrupted when the signal lands after the state was DELETED', async () => {
+    // The outer `finally`'s `result.interrupted ||= draining` re-sync used to
+    // run UNGATED, and everything it spans (`renderer.stop()`, the `saveChain`
+    // flush, the real `deleteState` S3 round-trip, `releaseLock`) happens with
+    // `sigintHandler` still armed and AFTER the in-`try` read that decided
+    // `preserveState`. So a signal there flipped the PER-STACK flag true over a
+    // stack whose state file was already gone — and `destroy.ts` / `state.ts`
+    // OR that flag unconditionally into the terminal verdict, so the command
+    // exited 2 with "State preserved — re-run 'cdkd destroy' to finish" over a
+    // destroy that had fully completed. Both halves of that sentence false.
+    //
+    // Firing from inside `deleteState` puts the signal exactly in that window:
+    // past the in-`try` read, before the runner's `removeListener`.
+    const state = makeState({ A: res() });
+    mockProviderDelete.mockResolvedValue(undefined);
+    mockDeleteState.mockImplementation(async () => {
+      capturedSigintHandlers[0]!();
+    });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    // The positive marker that this really is the deleted-state case rather
+    // than an unrelated early exit: the delete ran and the state file is gone.
+    expect(mockProviderDelete).toHaveBeenCalledTimes(1);
+    expect(mockDeleteState).toHaveBeenCalledTimes(1);
+    expect(result.deletedCount).toBe(1);
+    expect(result.errorCount).toBe(0);
+    // The invariant: a stack whose state was deleted never reports interrupted.
+    expect(result.interrupted).toBe(false);
+  });
+
+  it('DOES re-sync a tail signal when the stack left work behind', async () => {
+    // The discriminator for the case above, and the reason the fix is a gate
+    // rather than a deletion of the re-sync. Same window, opposite premise: the
+    // stack PRESERVED its state (a failed delete), so there genuinely is work
+    // to re-run and the late signal must still reach the caller. Deleting the
+    // re-sync line entirely would pass the case above and fail this one.
+    const state = makeState({ A: res(), B: res(['A']) });
+    mockProviderDelete.mockImplementation((logicalId: string) =>
+      logicalId === 'B' ? Promise.reject(new Error('delete blew up')) : Promise.resolve()
+    );
+    // `releaseLock` runs in the inner `finally`, i.e. still before the re-sync
+    // and still with the handler armed.
+    mockReleaseLock.mockImplementation(async () => {
+      capturedSigintHandlers[0]!();
+    });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
+
+    // Positive markers that state really was preserved for a retry.
+    expect(result.errorCount).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(result.interrupted).toBe(true);
+  });
+
   it('removes the SIGINT listener via process.removeListener in the finally', async () => {
     const state = makeState({ A: res() });
     mockProviderDelete.mockResolvedValue(undefined);
