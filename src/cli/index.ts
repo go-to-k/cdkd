@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { buildProgram } from './program.js';
 import { installPipeCloseHandler } from './pipe-close-handler.js';
+import { getCdkdVersion, isVersionOnlyInvocation } from '../version.js';
 
 const SUBCOMMANDS = new Set([
   'bootstrap',
@@ -46,6 +46,22 @@ function reorderArgs(argv: string[]): string[] {
  */
 async function main(): Promise<void> {
   installPipeCloseHandler();
+
+  // `cdkd --version` needs nothing but a string the build already baked in,
+  // yet the command tree it would otherwise import costs ~1s of Node module
+  // resolution before any cdkd code runs (measured 2026-08-25 on Node 24.15:
+  // ~1020ms total, of which ~48ms is Node startup, ~3ms is buildProgram() and
+  // the rest is the loader reading and compiling the externalised @aws-sdk/*
+  // graph that every command module pulls in). Answering before that import
+  // keeps the flag at Node-startup cost. `program.js` is therefore imported
+  // dynamically: a static import is hoisted and would evaluate the same graph
+  // regardless of what this function decides.
+  if (isVersionOnlyInvocation(process.argv.slice(2))) {
+    console.log(getCdkdVersion());
+    return;
+  }
+
+  const { buildProgram } = await import('./program.js');
   const program = buildProgram();
 
   // Reorder args: move options before subcommand to after it

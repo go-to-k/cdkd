@@ -1,7 +1,6 @@
 import { Command } from 'commander';
 
-// Injected at build time by tsdown `define` from package.json.
-declare const __CDKD_VERSION__: string;
+import { getCdkdVersion } from '../version.js';
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
@@ -45,13 +44,14 @@ export function buildProgram(): Command {
   program
     .name('cdkd')
     .description('CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API')
-    // The `typeof` guard is load-bearing HERE in a way it was not in index.ts:
-    // this module is imported directly by unit tests, where tsdown's build-time
+    // `getCdkdVersion()` carries the `typeof` guard the build-time define
+    // needs: this module is imported directly by unit tests, where tsdown's
     // `define` has not run and a bare reference would throw ReferenceError. The
     // built bundle still gets the real version substituted (verified: `cdkd
     // --version` reports package.json's value, and the fallback string does not
-    // appear in dist/).
-    .version(typeof __CDKD_VERSION__ === 'string' ? __CDKD_VERSION__ : '0.0.0-dev');
+    // appear in dist/). `src/cli/index.ts` answers a bare `--version` from the
+    // same helper without importing this module at all.
+    .version(getCdkdVersion());
 
   program.hook('preAction', (_thisCommand, actionCommand) => {
     const { profile } = actionCommand.optsWithGlobals<{ profile?: string }>();

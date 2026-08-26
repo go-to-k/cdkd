@@ -31,6 +31,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { getLogger } from '../utils/logger.js';
+import { getCdkdVersion } from '../version.js';
 import type { S3StateBackend } from './s3-state-backend.js';
 import {
   DEPLOYMENT_EVENTS_INDEX_VERSION,
@@ -51,15 +52,15 @@ const FLUSH_INTERVAL_MS = 2_000;
 /** Flush immediately once this many events are buffered. */
 const FLUSH_EVENT_THRESHOLD = 50;
 
-// Injected at build time by tsdown `define` from package.json (same
-// mechanism as src/cli/index.ts). Undefined under vitest — the typeof
-// guard in getCdkdVersion() falls back to a dev sentinel.
-declare const __CDKD_VERSION__: string;
-
-/** Build-time cdkd version, with a dev fallback for non-built contexts. */
-export function getCdkdVersion(): string {
-  return typeof __CDKD_VERSION__ !== 'undefined' ? __CDKD_VERSION__ : '0.0.0-dev';
-}
+/**
+ * Build-time cdkd version, with a dev fallback for non-built contexts.
+ *
+ * Re-exported rather than re-derived: the `typeof __CDKD_VERSION__` guard used
+ * to be spelled three times (here, `src/cli/program.ts`, and now the
+ * `src/cli/index.ts` fast path), with two different guard forms and two copies
+ * of the fallback literal. `src/version.ts` is the single spelling.
+ */
+export { getCdkdVersion };
 
 /**
  * Generate a time-sortable unique run id, e.g.
