@@ -83,6 +83,45 @@ describe('getAccountInfo partition + caching (issue #1730)', () => {
     expect(info.partition).toBe('aws-us-gov');
   });
 
+  /**
+   * Issue [#1882](https://github.com/go-to-k/cdkd/issues/1882): the ENV arm of
+   * `effectiveAccountInfoRegion`'s fold.
+   *
+   * The fold is written over the whole `overrideRegion || AWS_REGION`
+   * expression, so it has TWO input paths, and every case added with the fix
+   * supplied an `overrideRegion` -- the resolver hands `resolverRegion` in
+   * explicitly, and that is captured in the constructor and is always a
+   * non-empty string, which short-circuits the env read. Two independent
+   * reviewers measured the consequence: mutating the source to
+   * `canonicalizeRegion(overrideRegion) || process.env['AWS_REGION'] || ...`
+   * left 400 tests green, this repo's own recorded "a fixture tripping every
+   * clause of a disjunction fences none" failure.
+   *
+   * The env arm is reachable in production:
+   * `CustomResourceProvider.resolveSyntheticStackId` calls
+   * `getAccountInfo(this.configuredRegion)` with `undefined` for a region-less
+   * client bag, and `cdkd gc` deliberately does not run `foldRegionOption`.
+   *
+   * Calling `getAccountInfo()` with NO argument is what makes this reach the
+   * arm -- a region-less resolver does not, because its constructor
+   * substitutes the env value and then passes it as the override.
+   */
+  it('folds the AWS_REGION arm, not only the explicit override (issue #1882)', async () => {
+    succeed();
+    process.env['AWS_REGION'] = 'US-EAST-1';
+    const info = await getAccountInfo();
+    expect(info.region).toBe('us-east-1');
+  });
+
+  it('folds the explicit override arm too, and leaves a canonical one alone', async () => {
+    succeed();
+    process.env['AWS_REGION'] = 'us-east-1';
+    expect((await getAccountInfo('AP-NORTHEAST-1')).region).toBe('ap-northeast-1');
+    resetAccountInfoCache();
+    succeed();
+    expect((await getAccountInfo('ap-northeast-1')).region).toBe('ap-northeast-1');
+  });
+
   it('still answers aws for a commercial region', async () => {
     succeed();
     const info = await getAccountInfo();

@@ -221,10 +221,10 @@ describe('IntrinsicFunctionResolver - constructed-attribute region fold (issue #
    * and that is only true within the one method — this is the sibling that
    * proves the scoping is real rather than assumed.
    *
-   * Its neighbour `AWS::Region` is deliberately NOT folded (issue #1882): it is
-   * CloudFormation's own passthrough, so changing what a user reads back needs
-   * a live CFn A/B first. Pinned here so the divergence is a recorded decision
-   * rather than an oversight the next reader has to re-derive.
+   * Its neighbour `AWS::Region` now folds too, at its own source
+   * (`effectiveAccountInfoRegion`) rather than in this method — see the case
+   * below for the measurement that settled issue
+   * [#1882](https://github.com/go-to-k/cdkd/issues/1882).
    */
   it('folds the region in the synthetic AWS::StackId', async () => {
     resetAccountInfoCache();
@@ -236,10 +236,66 @@ describe('IntrinsicFunctionResolver - constructed-attribute region fold (issue #
     );
   });
 
-  it('leaves AWS::Region as the raw spelling (issue #1882, deliberate)', async () => {
+  /**
+   * Issue [#1882](https://github.com/go-to-k/cdkd/issues/1882). This case
+   * asserted the OPPOSITE until 2026-08-25: `AWS::Region` was pinned raw
+   * pending a live CloudFormation A/B, because it is CFn's own passthrough and
+   * folding changes a value the template author reads back directly.
+   *
+   * The A/B was run and dissolved the question rather than answering it. SigV4
+   * scopes a credential to the region STRING and the service compares it
+   * case-sensitively, so a non-canonical spelling is refused before any request
+   * is served and therefore never reaches CloudFormation:
+   *
+   * ```text
+   * STSClient({region:'US-EAST-1'}).send(GetCallerIdentity)
+   *   -> SignatureDoesNotMatch: Credential should be scoped to a valid region.
+   * CloudFormationClient({region:'US-EAST-1'}).send(ListStacks)
+   *   -> SignatureDoesNotMatch: Credential should be scoped to a valid region.
+   * ```
+   *
+   * So no reachable deploy can observe a raw `AWS::Region` working, and the
+   * only thing the raw value achieved before the failure was giving a user's
+   * own `Fn::Sub` an ARN no IAM policy matches while every ARN cdkd builds
+   * beside it was canonical (issue #1850).
+   */
+  it('folds AWS::Region at its source (issue #1882, settled by measurement)', async () => {
     resetAccountInfoCache();
     const resolver = new IntrinsicFunctionResolver('US-EAST-1');
     const ctx = mkContext('AWS::SNS::Topic', 'my-topic');
-    expect(await resolver.resolve({ Ref: 'AWS::Region' }, ctx)).toBe('US-EAST-1');
+    expect(await resolver.resolve({ Ref: 'AWS::Region' }, ctx)).toBe('us-east-1');
+  });
+
+  /**
+   * The OTHER polarity, and the one that catches an over-eager fold: an
+   * already-canonical region must come back byte-identical, not merely
+   * case-insensitively equal.
+   */
+  it('leaves an already-canonical AWS::Region byte-identical', async () => {
+    resetAccountInfoCache();
+    const resolver = new IntrinsicFunctionResolver('ap-northeast-1');
+    const ctx = mkContext('AWS::SNS::Topic', 'my-topic');
+    expect(await resolver.resolve({ Ref: 'AWS::Region' }, ctx)).toBe('ap-northeast-1');
+  });
+
+  /**
+   * The consumer this fold exists for. A user template building its own ARN
+   * through `Fn::Sub` is issue #1882's reported symptom, and it is a different
+   * code path from a bare `Ref` — `Fn::Sub` substitutes the pseudo-parameter
+   * into a string rather than returning it — so a fold that covered only the
+   * `Ref` above would leave the reported case broken.
+   */
+  it('folds AWS::Region substituted into a user Fn::Sub ARN', async () => {
+    resetAccountInfoCache();
+    const resolver = new IntrinsicFunctionResolver('US-EAST-1');
+    const ctx = mkContext('AWS::SNS::Topic', 'my-topic');
+    const result = await resolver.resolve(
+      {
+        'Fn::Sub':
+          'arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/my-ap',
+      },
+      ctx
+    );
+    expect(result).toBe('arn:aws:s3:us-east-1:123456789012:accesspoint/my-ap');
   });
 });

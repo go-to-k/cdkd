@@ -1040,9 +1040,66 @@ const cachedEc2InstanceAttributes: Record<string, string> = {};
  *
  * Kept as one helper so the cached and the freshly-resolved paths cannot pick
  * different defaults (issue #1746).
+ *
+ * FOLDED here, at the source, rather than at each consumer (issue
+ * [#1882](https://github.com/go-to-k/cdkd/issues/1882)). This is the value
+ * `AWS::Region` returns, the value every `Fn::Sub` in a USER template
+ * interpolates, and the `region-name` filter `resolveGetAZs` sends to EC2 when
+ * the template names no region — three consumers with three different
+ * case-sensitivities, which is why folding at the read beats folding at each of
+ * them.
+ *
+ * #1882 held this raw pending a live CloudFormation A/B, on the reasoning that
+ * `AWS::Region` is CFn's own passthrough and a user may legitimately read it
+ * back. The A/B was run on 2026-08-25 and removes the premise rather than
+ * answering it: a non-canonical region never reaches CloudFormation at all,
+ * because SigV4's credential scope is compared case-sensitively by the service.
+ * Measured against this repo's vendored SDK, every spelling but the canonical
+ * one is refused before the request is served:
+ *
+ * ```text
+ * STSClient({region:'us-east-1'}).send(GetCallerIdentity) -> OK
+ * STSClient({region:'US-EAST-1'}).send(GetCallerIdentity) -> SignatureDoesNotMatch
+ * STSClient({region:'Us-East-1'}).send(GetCallerIdentity) -> SignatureDoesNotMatch
+ * CloudFormationClient({region:'US-EAST-1'}).send(ListStacks) -> SignatureDoesNotMatch
+ *     "Credential should be scoped to a valid region."
+ * ```
+ *
+ * Two routes a raw region could take are therefore closed BEFORE this function:
+ * `--region` / `AWS_REGION` are folded at the CLI boundary (`foldRegionOption`,
+ * issue #2065), and a CDK app declaring `env: { region: 'US-EAST-1' }` fails at
+ * `app.synth()` — `EnvironmentUtils.parse` is case-sensitive, measured on
+ * aws-cdk-lib 2.244.0.
+ *
+ * What is NOT closed, and is the reason this fold is more than tidiness: a Cloud
+ * Assembly that reaches cdkd with a raw region in its `environment` string.
+ * cdkd's own `parseEnvironment` (`src/types/assembly.ts`) accepts any region
+ * text, so a hand-authored assembly, a non-CDK toolchain, or a `cdk.out` left
+ * behind by a synth that threw AFTER writing the manifest all reach
+ * `stackInfo.region` unfolded, and `deploy.ts` passes it on as the resolver's
+ * region. That deploy SUCCEEDS — `AwsClients`' constructor folds the region its
+ * clients sign with, so SigV4 never sees the raw spelling — and every
+ * `${AWS::Region}` a user's `Fn::Sub` interpolates inherits it, producing
+ * `arn:aws:s3:US-EAST-1:...`, which no IAM policy matches, and persisting it,
+ * while every ARN cdkd itself constructs beside it is canonical (issue #1850).
+ * Folding here removes that self-contradiction.
+ *
+ * UPGRADE CONSEQUENCE, stated because #1850's own entry states it for its fold:
+ * a stack deployed that way keeps the raw spelling in its recorded properties,
+ * so the next diff of a property interpolating `${AWS::Region}` sees a change,
+ * and where the property is create-only that classifies as a REPLACEMENT.
+ * Deliberate — the recorded value is unusable, so converging it is the point.
+ * State KEYS are unaffected: they are built from `stackRegion`, which this does
+ * not touch.
+ *
+ * The consumer-side `canonicalizeRegion` calls this subsumes are deliberately
+ * LEFT in place. Only `s3-endpoints.ts`'s is still reachable from a caller that
+ * does not come through here; the rest are now genuinely redundant and are kept
+ * as defense in depth, since double-folding is a no-op and a future caller may
+ * reach them another way.
  */
 function effectiveAccountInfoRegion(overrideRegion?: string): string {
-  return overrideRegion || process.env['AWS_REGION'] || 'us-east-1';
+  return canonicalizeRegion(overrideRegion || process.env['AWS_REGION']) || 'us-east-1';
 }
 
 /**
@@ -2608,13 +2665,27 @@ export class IntrinsicFunctionResolver {
     const { resourceType, physicalId } = resource;
     // The region is FOLDED once, here, rather than at each of the ~40 ARN / URI
     // constructions below (issue #1850). `accountInfo.region` is whatever
-    // spelling the caller supplied (`--region || AWS_REGION || 'us-east-1'`),
-    // folded nowhere, and `cdkd deploy --region US-EAST-1` is REACHABLE: DNS is
-    // case-insensitive so the SDK endpoint resolves and the deploy SUCCEEDS,
-    // after which every value built here — `arn:aws:sns:US-EAST-1:...`, a
-    // `<acct>.dkr.ecr.US-EAST-1.amazonaws.com/...` registry host — is one no IAM
-    // policy matches (policy matching IS case-sensitive) and every SDK call
-    // taking it rejects. Folding at the DESTRUCTURE rather than per site is what
+    // spelling the caller supplied (`--region || AWS_REGION || 'us-east-1'`);
+    // the SOURCE now folds
+    // (`effectiveAccountInfoRegion`, issue #1882), so this local fold is defense
+    // in depth rather than the only one. Both are kept: double-folding is a
+    // no-op, and an earlier revision of this comment called the region "folded
+    // nowhere", which is exactly the claim that goes stale silently. The
+    // reachability it also claimed -- that `cdkd deploy --region US-EAST-1`
+    // SUCCEEDS because DNS is case-insensitive -- is FALSE and was corrected
+    // with issue #1882's measurement -- but the mechanism is the
+    // opposite of "it fails": `foldRegionOption` folds `--region` and
+    // `AWS_REGION` at every handler's entry (issue #2065) and `AwsClients`
+    // folds again, so the flag is CANONICAL before it can reach anything. It
+    // never dies, because a raw spelling never gets that far. (It would if it
+    // did: SigV4 compares a credential's region scope case-sensitively.) What
+    // IS reachable is a Cloud Assembly carrying a raw region in its
+    // `environment` string, which cdkd accepts and whose clients it folds.
+    // Every value built here -- `arn:aws:sns:US-EAST-1:...`, a
+    // `<acct>.dkr.ecr.US-EAST-1.amazonaws.com/...` registry host -- would
+    // otherwise be one no IAM policy matches (policy matching IS
+    // case-sensitive) and every SDK call taking it rejects. Folding at the
+    // DESTRUCTURE rather than per site is what
     // makes it exhaustive WITHIN THIS METHOD: a constructed attribute added
     // later inherits it instead of having to remember. `partition` needs no
     // fold — `derivePartitionAndUrlSuffix` canonicalizes its own input (issue
@@ -2623,12 +2694,15 @@ export class IntrinsicFunctionResolver {
     // "Exhaustive" is scoped to this METHOD on purpose, because the sibling
     // sites are not covered and pretending otherwise is how the next reader
     // stops looking: `resolvePseudoParameter`'s `AWS::StackId` folds
-    // SEPARATELY (a few hundred lines down), `AWS::Region` deliberately does
-    // NOT (issue #1882 — it is CloudFormation's own passthrough, so changing
-    // what a user reads back needs a live CFn A/B first), and six SDK
-    // providers build ARNs from `client.config.region()` rather than from
-    // `accountInfo.region` and so are unreachable from here at all (issue
-    // #1881).
+    // SEPARATELY (a few hundred lines down), `AWS::Region` now folds at its
+    // SOURCE instead (`effectiveAccountInfoRegion`, issue #1882 — the CFn A/B
+    // that note was waiting on found that a non-canonical region never reaches
+    // CloudFormation at all), and six SDK providers build ARNs from
+    // `client.config.region()` rather than from `accountInfo.region` and so are
+    // unreachable from here at all — that source is folded by `AwsClients`'
+    // constructor for a bag CONFIGURED with a region, not by this destructure
+    // (issue #1881). A region-less bag resolves from the SDK's own chain
+    // instead, which is why the CLI boundary folds the env vars too.
     //
     // The five S3 branches below pass this region OUT to `s3-endpoints.ts`,
     // which folds again on entry — deliberately, not redundantly. That module
@@ -4887,7 +4961,26 @@ export class IntrinsicFunctionResolver {
       !roleArn &&
       context.stackName &&
       context.stackName === stackName &&
-      region === this.resolverRegion
+      // BOTH sides folded AT THE COMPARISON, which is the only place that can
+      // be done without moving a state key.
+      //
+      // `region` enters this method by two paths with different spellings:
+      // folded when the template names a `Region` (`canonicalizeRegion`, issue
+      // #1957), RAW when it does not, since it then defaults to
+      // `this.resolverRegion`. Before issue #1882 folded `AWS::Region` both
+      // sides of this test were the same raw string, so it compared a value to
+      // itself and always fired. Folding only ONE side repairs the first path
+      // and breaks the second — measured on this branch, where a mis-cased
+      // resolver region with no `Region` argument resolved its OWN stack's
+      // output instead of refusing, and `cfnFallback` defaults to true, so the
+      // read can land on a same-named CloudFormation stack.
+      //
+      // Do not fold either operand at its DEFINITION. `region` is passed on to
+      // `getSameAccountStackState` / `getCrossAccountStackState` /
+      // `lookupCfnStackOutputs`, where it is a state-key segment, and
+      // `this.resolverRegion` keys this stack's own `getState` / `saveState`.
+      // Normalizing only for the duration of the comparison leaves both.
+      canonicalizeRegion(region) === canonicalizeRegion(this.resolverRegion)
     ) {
       throw new Error(
         `Fn::GetStackOutput: cannot reference own stack '${stackName}' in the same region '${region}'`
