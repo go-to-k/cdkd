@@ -1663,6 +1663,50 @@ been threaded with state region. When set, a region mismatch throws a
 `ProvisioningError` that surfaces both regions and a hint to rerun with
 the correct `--region`.
 
+**The create side has the same question, and it is NOT the same answer.**
+"Handle when `create` is called on an existing resource" above is the usual
+idempotent short-circuit: an `*AlreadyExists` / `*AlreadyOwned` error is
+swallowed and the create reported as success. Before writing one, ask what
+namespace that error is scoped to and whether it is narrower, equal to, or
+WIDER than the region the client points at. It is sound only when the error
+can mean nothing but "the resource I want, where I want it, already exists".
+
+For nearly every type that is automatic — either the namespace is REGIONAL
+(SNS, CloudWatch Logs, SSM, EC2), so the conflict is by construction in the
+region you called, or the namespace is global AND so is the resource (IAM,
+Route 53, CloudFront), so there is no other region for it to be in.
+`AWS::S3::Bucket` is the one type where the two come apart, a globally unique
+name over a regionally located resource, and it broke exactly there: measured
+on real AWS, a bucket in `us-west-2` answers `BucketAlreadyOwnedByYou` to a
+`CreateBucket` in `eu-west-1` and in `us-east-1` alike, so the short-circuit
+adopted another region's bucket and applied the whole stack's configuration to
+it while reporting success (issue
+[#2227](https://github.com/go-to-k/cdkd/issues/2227)).
+
+`S3BucketProvider.assertExistingBucketRegion` is the create-side twin of
+`assertRegionMatch`. It reads the bucket's region from the
+`x-amz-bucket-region` header on the 409 itself — no extra call, no extra IAM —
+and falls back to `GetBucketLocation`. Note the delete-side helper is a no-op
+without `expectedRegion` while this one always has a region to compare against:
+the create knows where it is deploying.
+
+Deliberately NOT `HeadBucket`, which 301s cross-region and which SDK v3 turns
+into a synthetic `UnknownError` (`src/utils/aws-region-resolver.ts` records the
+mechanism), and deliberately not that module's `resolveBucketRegion`, which
+never throws and returns a fallback region — wiring it here would turn a
+fail-closed guard into a fail-open one. See `.claude/rules/providers.md` for
+the full rule, including the two legacy `GetBucketLocation` spellings the fold
+must absorb and why the refusal is `markNonRetryable`.
+
+That rule is also where the probe-first lesson lives, and it cuts both ways
+here: the mid-delete hazard the issue was FILED for is not reachable, so a
+guard against it could never have fired — while the guard that WAS written
+could not fire either, because its unit tests encoded the AWS CLI's wire shape
+rather than the SDK's. A mutation probe cannot catch that: it perturbs the code
+and reads the test, and both read the same fixture, so a premise shared by code
+and mock is invariant under it. Only a recorded real response or a live arm
+falsifies a fixture.
+
 ### 2b. Reporting a SKIPPED delete (issue #1752)
 
 `delete()` returning normally means **"the resource is gone"** — a delete

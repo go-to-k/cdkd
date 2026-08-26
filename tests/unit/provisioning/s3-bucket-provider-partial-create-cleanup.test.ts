@@ -78,7 +78,24 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
     // (handled inline as idempotent success); a later sub-config failure
     // must NOT delete the bucket, since deleting it would destroy a
     // user resource that lived before this deploy.
+    //
+    // The GetBucketLocation primer is the issue #2227 region readback that now
+    // sits between the two: `BucketAlreadyOwnedByYou` is raised on OWNERSHIP,
+    // which is account-global, so the provider confirms the existing bucket is
+    // in this stack's region before adopting it. This error carries no
+    // `x-amz-bucket-region` header, so the readback takes the
+    // `GetBucketLocation` fallback. An EMPTY `LocationConstraint` is S3's
+    // spelling of us-east-1, which matches this file's mocked client region —
+    // so it doubles as a fence on that fold: were the empty case to fail
+    // closed, this test would go red rather than the branch going unnoticed.
+    //
+    // Without the primer the sub-config rejection below is consumed by the
+    // readback instead, the run dies there, and the `DeleteBucketCommand`
+    // assertion passes because `applyConfiguration` was never reached at all —
+    // a vacuous pass. The `PutBucketVersioningCommand` assertion at the end is
+    // what makes that regression fail loudly instead of going quiet again.
     mockSend.mockRejectedValueOnce(new BucketAlreadyOwnedByYou('you already own it'));
+    mockSend.mockResolvedValueOnce({ LocationConstraint: '' }); // GetBucketLocation readback
     mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
     await expect(
@@ -90,6 +107,9 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
 
     const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
     expect(names).not.toContain('DeleteBucketCommand');
+    // Proves the run actually REACHED configuration, so the assertion above is
+    // about the cleanup gate rather than about an early exit.
+    expect(names).toContain('PutBucketVersioningCommand');
   });
 
   it('does NOT issue DeleteBucketCommand when CreateBucket itself fails with a non-AlreadyOwned error', async () => {

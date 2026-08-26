@@ -3,6 +3,7 @@ import {
   S3Client,
   CreateBucketCommand,
   DeleteBucketCommand,
+  GetBucketLocationCommand,
   HeadBucketCommand,
   PutBucketVersioningCommand,
   PutBucketTaggingCommand,
@@ -66,6 +67,8 @@ import {
   s3BucketRegionalDomainName,
   s3BucketWebsiteUrl,
 } from '../../utils/s3-endpoints.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
@@ -1559,6 +1562,58 @@ function mergeLegacySingular(
  * S3's CreateBucket is synchronous - no polling needed, unlike CC API which
  * requires async polling (1s→1.5s→2.25s...) adding seconds per resource.
  */
+/**
+ * The bucket's real region as reported on an S3 error response, if present.
+ *
+ * S3 puts `x-amz-bucket-region` on the `BucketAlreadyOwnedByYou` 409 itself,
+ * which is what lets the issue #2227 guard answer without a second API call.
+ * Measured 2026-08-26 against a bucket in `us-west-2`: clients pinned to
+ * `us-east-1`, `eu-west-1` and `ap-northeast-1` all received it. Both header
+ * bags are read because only `$response.headers` was populated on those three
+ * -- `$metadata.httpHeaders` was absent -- and the SDK is not consistent about
+ * which one carries headers across error paths.
+ *
+ * The lookup is per-KEY across both bags, not a `??` between the bags
+ * themselves: selecting a bag would pick an EMPTY `$response.headers` over a
+ * populated `$metadata.httpHeaders`, so a future SDK that attaches both would
+ * silently lose the header. Missing it only costs the `GetBucketLocation`
+ * fallback (the guard still fails closed), but the cost is avoidable.
+ */
+function readBucketRegionHeader(error: unknown): string | undefined {
+  const candidate = error as {
+    $response?: { headers?: Record<string, unknown> };
+    $metadata?: { httpHeaders?: Record<string, unknown> };
+  };
+  const value =
+    candidate?.$response?.headers?.['x-amz-bucket-region'] ??
+    candidate?.$metadata?.httpHeaders?.['x-amz-bucket-region'];
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
+}
+
+/**
+ * The region a `GetBucketLocation` answer denotes, canonicalized.
+ *
+ * Two legacy wire shapes, both original to the S3 API and both still returned,
+ * which is why this is a function rather than a field read:
+ *
+ *  - a bucket in `us-east-1` answers with an EMPTY / null `LocationConstraint`.
+ *    Absent therefore means `us-east-1`, NEVER "unknown" -- treating it as
+ *    unknown and failing closed would refuse correct deploys in the commonest
+ *    region. Measured 2026-08-26: `get-bucket-location` on a us-east-1 bucket
+ *    returns `{"LocationConstraint": null}`. `src/utils/aws-region-resolver.ts`
+ *    folds the same quirk the same way.
+ *  - `EU` is a legacy alias for `eu-west-1`, matching the fold that
+ *    `src/cli/commands/state.ts` already applies.
+ */
+function bucketLocationToRegion(constraint: string | null | undefined): string {
+  const value = canonicalizeRegion((constraint ?? '').trim());
+  if (value === '') return 'us-east-1';
+  if (value === 'eu') return 'eu-west-1';
+  return value;
+}
+
 export class S3BucketProvider implements ResourceProvider {
   private s3Client: S3Client;
   private logger = getLogger().child('S3BucketProvider');
@@ -5313,6 +5368,108 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
+   * Refuse to adopt an already-owned bucket that does not live in
+   * `expectedRegion`.
+   *
+   * `CreateBucket` answers `BucketAlreadyOwnedByYou` on OWNERSHIP, which is
+   * account-global, but a bucket is regional. So the error alone cannot
+   * distinguish the case the short-circuit was written for -- a retry of a
+   * create whose first attempt already succeeded, in THIS region -- from a
+   * bucket of ours that lives somewhere else entirely.
+   *
+   * The region is taken from the `x-amz-bucket-region` header on the 409
+   * ITSELF, so the common path costs no extra API call and needs no extra IAM
+   * permission. Measured 2026-08-26 against a bucket in `us-west-2`: clients
+   * pinned to `us-east-1`, `eu-west-1` and `ap-northeast-1` each got
+   * `name: BucketAlreadyOwnedByYou`, HTTP 409, `x-amz-bucket-region:
+   * us-west-2`. The header lives on `$response.headers`; `$metadata.httpHeaders`
+   * was absent on all three, which is why both are read.
+   *
+   * `GetBucketLocation` is the fallback when the header is missing.
+   * Deliberately NOT `HeadBucket`: `src/utils/aws-region-resolver.ts` already
+   * records why, and this guard's first cut re-learned it the expensive way. A
+   * cross-region `HeadBucket` 301s, and SDK v3's region-redirect middleware
+   * mishandles the empty-body HEAD response, yielding a synthetic
+   * `name: 'Unknown', message: 'UnknownError'`. The AWS CLI hides this by
+   * following the redirect; the SDK client does not. Unit tests that mocked the
+   * CLI's shape passed while the guard could not fire, and only a real-AWS integ
+   * arm caught it.
+   *
+   * Deliberately NOT `resolveBucketRegion` from that module either, despite the
+   * overlap: that helper NEVER THROWS and returns `fallbackRegion` on a failed
+   * probe, so wiring it here would turn this fail-CLOSED guard into a
+   * fail-OPEN one -- a probe failure would report the deploy's own region, the
+   * comparison would match, and the foreign bucket would be adopted. Its cache
+   * would also make a second call in one process skip the probe entirely.
+   *
+   * The refusal is `markNonRetryable` because it is deterministic and
+   * user-actionable: without it `withRetry` re-runs the whole create for its
+   * full budget before surfacing the same message, which reads as flaky AWS.
+   * The wording avoids the phrase "does not exist" for the same reason -- it is
+   * a literal member of `OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS`
+   * (`retryable-errors.ts`), so a message containing it is classified transient
+   * even when the throw is not.
+   *
+   * Issue [#2227](https://github.com/go-to-k/cdkd/issues/2227). Note the
+   * mid-delete mechanism that issue was FILED for is not reachable: measured, a
+   * `DeleteBucket` followed immediately by a `CreateBucket` of the same name
+   * SUCCEEDS outright in `us-east-1` and `us-west-2` alike, so there is no
+   * window in which this error can mean "being deleted". The cross-region adopt
+   * is the reachable defect in these lines.
+   */
+  private async assertExistingBucketRegion(
+    logicalId: string,
+    resourceType: string,
+    bucketName: string,
+    expectedRegion: string,
+    createError: Error
+  ): Promise<void> {
+    const wantRegion = canonicalizeRegion(expectedRegion);
+    const actualRegion = await this.resolveOwnedBucketRegion(bucketName, createError);
+
+    if (actualRegion === wantRegion) return;
+
+    throw markNonRetryable(
+      new ProvisioningError(
+        `Refusing to adopt existing S3 bucket ${bucketName} for ${logicalId} ` +
+          `(${resourceType}): it is owned by this account but lives in ${actualRegion}, ` +
+          `while this stack deploys to ${wantRegion}. S3 bucket names are globally ` +
+          `unique, so 'BucketAlreadyOwnedByYou' does not mean the bucket is in this ` +
+          `region. Adopting it would apply this stack's bucket configuration to a ` +
+          `bucket in ${actualRegion}, and would record a physical id that denotes no ` +
+          `bucket in ${wantRegion}. Either give this stack a bucket name unique to ` +
+          `${wantRegion}, or deploy the stack to ${actualRegion}.`,
+        resourceType,
+        logicalId,
+        bucketName,
+        // Thread the 409 rather than dropping it: `isMarkedNonRetryable` walks
+        // the cause chain, the classifier reads it, and the provider-error-cause
+        // critic fences every provider construction that discards its caught
+        // error. The marker above still wins -- it is consulted before any
+        // wording heuristic -- so carrying the AWS error cannot make this
+        // deterministic refusal retryable again.
+        createError
+      )
+    );
+  }
+
+  /**
+   * The region an already-owned bucket actually lives in, canonicalized.
+   *
+   * Header first (free), `GetBucketLocation` second. A `GetBucketLocation`
+   * failure PROPAGATES rather than degrading to a guess: the caller is a
+   * fail-closed guard, and a guessed region is exactly what would make it
+   * adopt the wrong bucket.
+   */
+  private async resolveOwnedBucketRegion(bucketName: string, createError: Error): Promise<string> {
+    const fromHeader = readBucketRegionHeader(createError);
+    if (fromHeader) return canonicalizeRegion(fromHeader);
+
+    const location = await this.s3Client.send(new GetBucketLocationCommand({ Bucket: bucketName }));
+    return bucketLocationToRegion(location.LocationConstraint);
+  }
+
+  /**
    * Create an S3 bucket
    */
   async create(
@@ -5365,12 +5522,30 @@ export class S3BucketProvider implements ResourceProvider {
         createdNewBucket = true;
         this.logger.debug(`Created S3 bucket: ${bucketName}`);
       } catch (createError) {
-        // "BucketAlreadyOwnedByYou" is success (idempotent create)
+        // `BucketAlreadyOwnedByYou` is an idempotent-create success ONLY once
+        // the bucket that already exists is confirmed to live in the region
+        // this deploy targets. The error is raised on OWNERSHIP, which is
+        // account-global, while a bucket is regional — so it fires just as
+        // readily for a bucket of ours in a DIFFERENT region. Measured on real
+        // AWS for issue #2227: a bucket created in `us-west-2` answers
+        // `BucketAlreadyOwnedByYou` to a `CreateBucket` in `eu-west-1` AND in
+        // `us-east-1`, and `GetBucketLocation` still reports `us-west-2`
+        // afterwards — the bucket never moves. Adopting it would point every
+        // `applyConfiguration` / sub-config call below at another region's
+        // resource while reporting success, and would record a physical id
+        // that denotes nothing in this stack's own region.
         if (
           createError instanceof Error &&
           (createError.name === 'BucketAlreadyOwnedByYou' ||
             createError.message.includes('you already own it'))
         ) {
+          await this.assertExistingBucketRegion(
+            logicalId,
+            resourceType,
+            bucketName,
+            region,
+            createError
+          );
           this.logger.debug(`S3 bucket ${bucketName} already exists and is owned by you`);
         } else {
           throw createError;
