@@ -1442,6 +1442,7 @@
     "--delete",
     "--delete-automated-backups",
     "--deletion-protection",
+    "--deployment-configuration",
     "--deployment-group-name",
     "--deployment-strategy-id",
     "--description",

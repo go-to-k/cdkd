@@ -2235,9 +2235,13 @@ Checklist when writing or reviewing an `update()`:
     demonstrably applied, cdkd left `false` / `{COUNT, 7}` intact while
     CloudFormation reset them to `true` / `{BOUNDED_PERCENT, 50}`. So cdkd
     fails to apply a removal CFn applies — too STICKY rather than too
-    permissive. Tracked as issue #1861; the classification ships the
-    pass-through unchanged because the reset is a behavior change that needs
-    its own per-member measurement.
+    permissive. Filed as issue #1861 and FIXED there: those two members — and
+    only those two, and only while BOTH template sides still declare the
+    `DeploymentCircuitBreaker` block — are routed through
+    `clearOnUpdateRemoval` in `ECSProvider.resolveDeploymentConfiguration`, so
+    a declared-then-dropped member is now sent as its AWS default. Everything
+    else in the property still ships as the verbatim pass-through the parity
+    rows measured.
 
   The `LifecycleHooks` ARRAY is replaced WHOLESALE, so a per-element drop is a
   non-issue. Three things generalize:
@@ -2295,6 +2299,18 @@ Checklist when writing or reviewing an `update()`:
   stays absent; mixed kept/removed → kept fields pass through unchanged.
 - A per-key removal test (one key dropped from a still-present map) does NOT
   cover whole-block removal (the map itself dropped) — test both.
+- **Walk the DEPTH-1 members too, not just the top-level properties.** The
+  removal audit above is normally run over a type's top-level properties, and
+  a nested struct forwarded whole (a recursive case-flip, a spread, a raw
+  cast) hides the same bug one level down: the API retains the omitted member
+  while CloudFormation resets it. `ECSProvider.resolveDeploymentConfiguration`
+  (issue #1861) is the worked example — reuse `clearOnUpdateRemoval` with the
+  PREVIOUS side read raw, since only its PRESENCE is inspected. Two traps that
+  both cost a round there: a member the template NEVER declared must stay
+  absent (sending the default clobbers an out-of-band value CFn preserves),
+  and the reset re-runs with the sides SWAPPED during a rollback replay
+  (issue #1609), so key strictly on previous-present / current-absent rather
+  than on "the two sides differ".
 - **Not every removal is a VALUE on the same call.** `clearOnUpdateRemoval`
   fits a property that maps to an input FIELD, so a reset is "send the default
   instead of omitting". A property whose apply is a *separate API call* needs a

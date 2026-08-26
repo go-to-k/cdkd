@@ -38,7 +38,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { CreateServiceCommand, UpdateServiceCommand } from '@aws-sdk/client-ecs';
-import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
+import {
+  ECSProvider,
+  CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT,
+} from '../../../src/provisioning/providers/ecs-provider.js';
 
 const TYPE = 'AWS::ECS::Service';
 const SERVICE_ARN = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
@@ -432,9 +435,18 @@ const HOOK_FULL = {
  * null or empty for any deployment lifecycle hooks`), so cdkd's pass-through
  * fails loudly and is parity with no nested required-ness check involved.
  *
+ * The same sweep found ONE divergent row, `DeploymentCircuitBreaker`'s two
+ * OPTIONAL members, filed as #1861 and FIXED here: there the API RETAINS the
+ * omitted member instead of default-filling it, so CloudFormation's removal
+ * reset has to be applied by cdkd. That is why this file holds two opposite
+ * verdicts about "a member dropped from a still-declared nested struct" — the
+ * deciding fact is whether the API itself default-fills, which had to be
+ * measured per block rather than reasoned about.
+ *
  * Each assertion below is written against the shape the REGRESSION would emit
- * (a previous-side member merged back in), not merely against "something was
- * sent".
+ * — a previous-side member merged back in for the parity rows, and for the
+ * #1861 rows the member simply MISSING from the payload — not merely against
+ * "something was sent".
  */
 describe('ECS Service DeploymentConfiguration optional nested blocks (#1806)', () => {
   let provider: ECSProvider;
@@ -718,49 +730,82 @@ describe('ECS Service DeploymentConfiguration optional nested blocks (#1806)', (
     });
   });
 
-  it('a dropped ResetOnHealthyTask is forwarded verbatim — the known DIVERGENCE row (#1861)', async () => {
+  it('a dropped ResetOnHealthyTask is RESET to the AWS default — the fixed DIVERGENCE row (#1861)', async () => {
     // `ResetOnHealthyTask` is OPTIONAL (`DeploymentCircuitBreaker` requires
     // only [Enable, Rollback]), so dropping it from an otherwise complete block
-    // is a CFn-accepted partial that reaches AWS. Measured: AWS RETAINS the
-    // live value while CloudFormation RESETS it to the default — cdkd fails to
-    // apply a removal CFn applies, the opposite polarity to #1802's permissive
-    // divergence. Tracked as issue #1861.
+    // is a CFn-accepted partial that reaches AWS. Measured: `UpdateService`
+    // RETAINS the live value while CloudFormation RESETS it to the default —
+    // cdkd used to fail to apply a removal CFn applies, the opposite polarity
+    // to #1802's permissive divergence. Issue #1861 fixed that by routing the
+    // member through `clearOnUpdateRemoval`.
     //
-    // What this pins is therefore the CURRENT, deliberately unchanged
-    // behavior, exactly as the #1802 row above pins its own divergence: the
-    // fix is a behavior change needing its own per-member measurement, and
-    // shipping a re-fill here without it would invent a value the template
-    // never declared. Pinning it also protects the eventual fix from being
-    // mistaken for a no-op — and note the required sibling `Rollback` in the
-    // very same block reads as REPLACED, so neither row generalizes to the
-    // other.
+    // The DISCRIMINATOR is the payload `UpdateService` was called with: a
+    // still-broken pass-through emits `{enable, rollback}` with no
+    // `resetOnHealthyTask` at all, so the assertion below is written against
+    // the shape the REGRESSION would emit. Note the required sibling
+    // `Rollback` in the very same block reads as REPLACED, so neither row
+    // generalizes to the other.
     await update(
       {
         ...baseProps(),
+        // The top-level SIBLINGS are declared on purpose. Every removal
+        // fixture used to send `{DeploymentCircuitBreaker: ...}` alone, which
+        // let a rebuild that DROPPED the `...desired` spread pass every unit
+        // test: on a real deploy that silently deletes `MaximumPercent` /
+        // `MinimumHealthyPercent` / `Alarms` / `Strategy` / `LifecycleHooks`
+        // from `UpdateService`, and ECS's server-side merge then keeps the old
+        // values with no error anywhere. Only the integ caught it, so the
+        // regression was CI-invisible and rested on a 14-day-TTL gate.
         DeploymentConfiguration: {
+          MaximumPercent: 175,
+          MinimumHealthyPercent: 25,
           DeploymentCircuitBreaker: { Enable: true, Rollback: false },
         },
       },
       {
         ...baseProps(),
         DeploymentConfiguration: {
+          MaximumPercent: 200,
+          MinimumHealthyPercent: 50,
           DeploymentCircuitBreaker: { Enable: true, Rollback: true, ResetOnHealthyTask: false },
         },
       }
     );
 
-    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
-      deploymentCircuitBreaker: { enable: true, rollback: false },
+    const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+
+    expect(sent).toEqual({
+      maximumPercent: 175,
+      minimumHealthyPercent: 25,
+      deploymentCircuitBreaker: { enable: true, rollback: false, resetOnHealthyTask: true },
     });
+    // The siblings must SURVIVE the rebuild — this is the `...desired` pin.
+    expect(Object.keys(sent)).toEqual([
+      'maximumPercent',
+      'minimumHealthyPercent',
+      'deploymentCircuitBreaker',
+    ]);
+    // This IS the arm that rebuilds the object (previous-present /
+    // current-absent), so pin the KEY SET here: `toEqual` treats an explicit
+    // `undefined` key as absent, and the conditional spreads exist to keep the
+    // built object's keys equal to what was actually resolved. `sibling
+    // untouched` matters too — `thresholdConfiguration` was never declared on
+    // either side and must not appear.
+    expect(Object.keys(sent.deploymentCircuitBreaker)).toEqual([
+      'enable',
+      'rollback',
+      'resetOnHealthyTask',
+    ]);
   });
 
-  it('a WHOLE dropped ThresholdConfiguration is forwarded verbatim — the other half of #1861', async () => {
+  it('a WHOLE dropped ThresholdConfiguration is RESET to the AWS default — the other half of #1861', async () => {
     // The divergence row has two halves and the sibling pin above covers only
     // the scalar one. Dropping the whole `ThresholdConfiguration` BLOCK from a
     // still-declared `DeploymentCircuitBreaker` is the same shape one level
-    // up: cdkd retains the live `{COUNT, 7}`, CloudFormation resets it to
-    // `{BOUNDED_PERCENT, 50}`. Pinning it separately matters because a fix for
-    // #1861 could plausibly handle scalar members and miss a nested BLOCK.
+    // up: `UpdateService` retains the live `{COUNT, 7}`, CloudFormation resets
+    // it to `{BOUNDED_PERCENT, 50}`. Pinning it separately matters because a
+    // fix for #1861 could plausibly handle scalar members and miss a nested
+    // BLOCK — the reset value is an OBJECT here, not a scalar.
     await update(
       {
         ...baseProps(),
@@ -780,8 +825,438 @@ describe('ECS Service DeploymentConfiguration optional nested blocks (#1806)', (
       }
     );
 
+    const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+
+    expect(sent).toEqual({
+      deploymentCircuitBreaker: {
+        enable: true,
+        rollback: false,
+        thresholdConfiguration: { type: 'BOUNDED_PERCENT', value: 50 },
+      },
+    });
+    // Key-set pin on the rebuilding arm (see the sibling above), and the
+    // never-declared `resetOnHealthyTask` must NOT have been synthesized.
+    expect(Object.keys(sent.deploymentCircuitBreaker)).toEqual([
+      'enable',
+      'rollback',
+      'thresholdConfiguration',
+    ]);
+  });
+
+  it('a NEVER-declared optional member is left absent even when the block itself changes (#1861)', async () => {
+    // The arm that stops the removal-keyed fix from degenerating into
+    // "always send the defaults". Measured (us-east-1, 2026-08-13): a template
+    // that never declares `ResetOnHealthyTask` / `ThresholdConfiguration`,
+    // with both set OUT OF BAND, survived a CloudFormation update that flipped
+    // `Rollback` INSIDE the block — the out-of-band `false` / `{COUNT, 9}`
+    // both persisted. That is also the arm that EXCLUDES the competing reading
+    // "CFn re-serializes the struct whenever its declared content changed",
+    // which the declared-then-removed arms fit just as well; hence the flipped
+    // `Rollback` here rather than a no-op update.
+    //
+    // Sending the defaults here would CLOBBER a live value CloudFormation
+    // deliberately preserves — a divergence in the opposite direction from the
+    // one being fixed.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: true },
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: false },
+        },
+      }
+    );
+
+    // NOTE this arm does NOT exercise the resolver's object REBUILD: both
+    // members resolve to `undefined`, so it takes the identity early-return
+    // and the conditional spreads never run. The key-set pin therefore lives
+    // on the two REMOVAL arms above, which are the ones that build the object.
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: { enable: true, rollback: true },
+    });
+  });
+
+  it('the ROLLBACK replay direction re-declares the member instead of resetting it (#1861 / #1609)', async () => {
+    // A removal-arm fix re-runs with the sides SWAPPED during a rollback
+    // replay (#1609): the failed deploy's DESIRED becomes the replay's
+    // PREVIOUS. Swapping the first #1861 case here means the member is
+    // previous-ABSENT / current-PRESENT, which must send the DECLARED value
+    // and never the default — a fix that keyed on "the sides differ" rather
+    // than on previous-present / current-absent would emit `true` here and
+    // silently discard the user's `false` on the way back.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: {
+            Enable: true,
+            Rollback: true,
+            ResetOnHealthyTask: false,
+            ThresholdConfiguration: { Type: 'COUNT', Value: 7 },
+          },
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: false },
+        },
+      }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: {
+        enable: true,
+        rollback: true,
+        resetOnHealthyTask: false,
+        thresholdConfiguration: { type: 'COUNT', value: 7 },
+      },
+    });
+  });
+
+  it('a member declared on BOTH sides is forwarded UNCHANGED — presence alone must not trigger a reset (#1861)', async () => {
+    // The arm that closes a real hole: every other #1861 case is ONE-SIDED
+    // (previous-only, or current-only), so a resolver keyed on
+    // `previousBreaker['ResetOnHealthyTask'] !== undefined ? DEFAULT : desired`
+    // — reading the PREVIOUS side alone and ignoring the desired one — passed
+    // all of them. That mutation sends AWS's `true` on every deploy of a
+    // template that declares `ResetOnHealthyTask: false`, silently discarding
+    // the user's value: precisely the "invent a value the template never
+    // declared" failure #1802 and #1861 both refuse.
+    //
+    // `Rollback` flips so the update is a real change rather than a no-op, and
+    // `ResetOnHealthyTask: false` is held IDENTICAL across both sides — the
+    // combination a one-sided key cannot distinguish from a removal.
+    //
+    // Its `thresholdConfiguration` twin is covered incidentally by the
+    // partial-`ThresholdConfiguration` pin further up (declared on both sides,
+    // must not be merged); the scalar member has no such neighbour, which is
+    // why it needs its own row.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: false, ResetOnHealthyTask: false },
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: true, ResetOnHealthyTask: false },
+        },
+      }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: { enable: true, rollback: false, resetOnHealthyTask: false },
+    });
+  });
+
+  it('a member CHANGED on both sides sends the new value, not the default (#1861)', async () => {
+    // The opposite polarity of the row above, and the reason it is worth its
+    // own arm: there the declared value happened to EQUAL what a broken
+    // resolver would keep, here it is the exact inverse of the AWS default.
+    // A future `!resetOnHealthyTask` slip, or a reset keyed on "the sides
+    // differ", flips this to `true` and silently inverts the user's intent.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: true, ResetOnHealthyTask: false },
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: true, ResetOnHealthyTask: true },
+        },
+      }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: { enable: true, rollback: true, resetOnHealthyTask: false },
+    });
+  });
+
+  it('the reset value is a FRESH object per call, never the shared module constant (#1861)', async () => {
+    // `ECSProvider` is a singleton serving concurrent resources, so a
+    // module-level default handed to the SDK BY REFERENCE would be one shared
+    // mutable object across every in-flight `UpdateService`. Two updates, and
+    // the first payload is mutated in between: if both calls received the same
+    // object, the second one carries `value: 999`.
+    const removalProps = {
+      ...baseProps(),
+      DeploymentConfiguration: { DeploymentCircuitBreaker: { Enable: true, Rollback: false } },
+    };
+    const declaredPrev = {
+      ...baseProps(),
+      DeploymentConfiguration: {
+        DeploymentCircuitBreaker: {
+          Enable: true,
+          Rollback: true,
+          ThresholdConfiguration: { Type: 'COUNT', Value: 7 },
+        },
+      },
+    };
+
+    mockSend.mockResolvedValueOnce(updateResponse);
+    await provider.update('Svc', SERVICE_ARN, TYPE, removalProps, declaredPrev);
+    const first = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+    (first.deploymentCircuitBreaker.thresholdConfiguration as { value: number }).value = 999;
+
+    mockSend.mockReset();
+    mockSend.mockResolvedValueOnce(updateResponse);
+    await provider.update('Svc2', SERVICE_ARN, TYPE, removalProps, declaredPrev);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+
+    const second = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+    expect(second.deploymentCircuitBreaker.thresholdConfiguration).toEqual({
+      type: 'BOUNDED_PERCENT',
+      value: 50,
+    });
+    expect(second.deploymentCircuitBreaker.thresholdConfiguration).not.toBe(
+      first.deploymentCircuitBreaker.thresholdConfiguration
+    );
+    // The COPY and the FREEZE are two independent guards and the assertions
+    // above only cover the copy — dropping `Object.freeze` alone left this
+    // whole file green. What the freeze buys is that a future caller which
+    // somehow DOES reach the shared constant fails loudly rather than
+    // poisoning every later update, so assert the freeze DIRECTLY on the
+    // module constant, which is exported for exactly this reason.
+    expect(Object.isFrozen(CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT)).toBe(true);
+    // And it must still hold the MEASURED default — a freeze on a wrong value
+    // is a well-guarded bug.
+    expect(CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT).toEqual({
+      type: 'BOUNDED_PERCENT',
+      value: 50,
+    });
+  });
+
+  it('a READBACK-shaped previous bag makes the presence test mean "the bag carried it" (#1861)', async () => {
+    // Pins the LIMIT of the presence test rather than a desirable behavior, so
+    // the next member copied onto this pattern does not inherit the premise
+    // unchecked. `clearOnUpdateRemoval` asks whether the PREVIOUS BAG carried
+    // the member, which equals "the previous TEMPLATE declared it" only on the
+    // deploy path. `drift --revert` (`src/cli/commands/drift.ts`, the
+    // `provider.update(...)` that passes `outcome.awsProperties`) hands over an
+    // AWS READBACK instead: AWS reports these members whether or not any
+    // template declared them, so a desired side that omits one reads as a
+    // removal here and the default is sent.
+    //
+    // The exposure is narrow — that path's desired bag is built from
+    // `observedProperties`, which normally carries the member too, and its
+    // `preserveUntemplated` arm recurses through `mergeUntemplatedValue` and
+    // keeps AWS-only members — but it is real when an `observedProperties`
+    // snapshot predates AWS reporting the member. It is NOT specific to this
+    // resolver: it is shared by every `clearOnUpdateRemoval` call site in the
+    // codebase — 78 of them across 14 provider files before this PR, 80 with
+    // this resolver's two (grepped, not estimated; `asg-provider.ts` and
+    // `lambda-function-provider.ts` carry 13 each) — so the fix belongs to
+    // that shared contract. This arm exists so a change in the
+    // behavior is a visible test edit rather than a silent one.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: false },
+        },
+      },
+      {
+        ...baseProps(),
+        // An AWS readback shape: every member populated, including the two the
+        // template never declared.
+        DeploymentConfiguration: {
+          MaximumPercent: 200,
+          MinimumHealthyPercent: 100,
+          DeploymentCircuitBreaker: {
+            Enable: true,
+            Rollback: true,
+            ResetOnHealthyTask: false,
+            ThresholdConfiguration: { Type: 'COUNT', Value: 9 },
+          },
+        },
+      }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: {
+        enable: true,
+        rollback: false,
+        resetOnHealthyTask: true,
+        thresholdConfiguration: { type: 'BOUNDED_PERCENT', value: 50 },
+      },
+    });
+  });
+
+  it('the removal reset applies with the circuit breaker DISABLED too (#1861)', async () => {
+    // Every other fixture in this file — and every phase of the integ — uses
+    // `Enable: true`, so a resolver gated on `desiredBreaker.enable === true`
+    // passed the whole suite AND the live test. `Enable` and the optional
+    // members are independent: CloudFormation applies the removal to the
+    // template's declared block whatever `Enable` says, and a disabled block
+    // is a perfectly ordinary thing to deploy (it is how you turn the circuit
+    // breaker off without deleting its configuration). Gating on it would
+    // reinstate the divergence for exactly those users, silently.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: false, Rollback: false },
+        },
+      },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: {
+            Enable: false,
+            Rollback: true,
+            ResetOnHealthyTask: false,
+            ThresholdConfiguration: { Type: 'COUNT', Value: 7 },
+          },
+        },
+      }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: {
+        enable: false,
+        rollback: false,
+        resetOnHealthyTask: true,
+        thresholdConfiguration: { type: 'BOUNDED_PERCENT', value: 50 },
+      },
+    });
+  });
+
+  it('a MALFORMED DeploymentCircuitBreaker is passed through untouched, never rebuilt (#1861)', async () => {
+    // The guard is "is a plain object", not truthiness, and the difference is
+    // observable. Every value below is TRUTHY, so a `!desiredBreaker` check
+    // would send them all down the rebuild arm: `'oops'` spreads to
+    // `{0:'o',1:'o',2:'p',3:'s'}` and then GAINS both synthesized defaults,
+    // and an array or a number synthesizes the defaults onto an empty object.
+    // No live mutation results either way — the rebuilt block carries no
+    // `enable`/`rollback`, so AWS rejects the whole `UpdateService` exactly as
+    // it did before this fix — but "a malformed shape falls back to the
+    // pre-change pass-through" should be literally true, not nearly true.
+    for (const malformed of ['oops', 42, [], ['a'], true] as unknown[]) {
+      mockSend.mockReset();
+      mockSend.mockResolvedValueOnce(updateResponse);
+      await provider.update(
+        'Svc',
+        SERVICE_ARN,
+        TYPE,
+        {
+          ...baseProps(),
+          DeploymentConfiguration: { DeploymentCircuitBreaker: malformed },
+        },
+        {
+          ...baseProps(),
+          DeploymentConfiguration: {
+            DeploymentCircuitBreaker: {
+              Enable: true,
+              Rollback: true,
+              ResetOnHealthyTask: false,
+              ThresholdConfiguration: { Type: 'COUNT', Value: 7 },
+            },
+          },
+        }
+      );
+
+      const sent = findCommand(UpdateServiceCommand).input.deploymentConfiguration;
+      const got: unknown = sent.deploymentCircuitBreaker;
+      // Exactly what the converter produced, and no synthesized member.
+      expect(got).toEqual(malformed);
+      expect(got).not.toHaveProperty('resetOnHealthyTask');
+      expect(got).not.toHaveProperty('thresholdConfiguration');
+      // The load-bearing one: the rebuild arm SPREADS, which turns a string
+      // into a plain object (`{0:'o',...}`) and an array into `{}` — so the
+      // discriminator is that the value's KIND survives. Asserting "no index
+      // key `0`" would be wrong here, because a string legitimately has one.
+      expect(typeof got).toBe(typeof malformed);
+      expect(Array.isArray(got)).toBe(Array.isArray(malformed));
+    }
+  });
+
+  it('a MALFORMED PREVIOUS DeploymentConfiguration yields the pass-through and does not throw (#1861)', async () => {
+    // HONEST LABEL: this arm is a regression guard, NOT a mutation-pinned one,
+    // and saying so is the point. The previous-side `isPlainCfnObject` guard
+    // is defensive only — relaxing it to a truthiness check leaves this file
+    // 36/36 green. State the reach of that claim precisely, because the
+    // obvious phrasing is FALSE: an ARRAY (or a function, or a Proxy) that
+    // carries a NAMED `ResetOnHealthyTask` property is truthy, is not a plain
+    // object, and DOES answer the member read — measured, the shipped guard
+    // emits `{enable, rollback}` there while the relaxed version emits
+    // `{enable, rollback, resetOnHealthyTask: true}`. So such an input
+    // discriminates the two. What is true is the narrower claim that matters:
+    // no input REACHABLE FROM A JSON- OR SDK-DERIVED PREVIOUS BAG can. A
+    // previous bag is `JSON.parse`d state, resolved template properties, or
+    // an SDK readback, and none of those can produce an array with named
+    // properties. Hence the guard stays unpinned rather than pinned by a
+    // fixture no production path could build. What this DOES pin is the reachable property: a malformed
+    // previous side produces the untouched pass-through rather than a throw
+    // or a spurious reset.
+    await update(
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          DeploymentCircuitBreaker: { Enable: true, Rollback: false },
+        },
+      },
+      { ...baseProps(), DeploymentConfiguration: 'not-an-object' }
+    );
+
     expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
       deploymentCircuitBreaker: { enable: true, rollback: false },
+    });
+  });
+
+  it('a removed member is NOT reset when the whole DeploymentCircuitBreaker block is gone (#1861)', async () => {
+    // The scope boundary the measurement actually supports. Removing the WHOLE
+    // `DeploymentConfiguration` resets nothing under either engine (#1805), and
+    // the parent `DeploymentCircuitBreaker` disappearing while the property
+    // stays declared was never measured — so the fix requires BOTH sides to
+    // declare the block. Without this pin, widening the predicate to "previous
+    // declared the member" alone would start synthesizing a circuit-breaker
+    // block out of a template that no longer asks for one.
+    await update(
+      { ...baseProps(), DeploymentConfiguration: { MaximumPercent: 150 } },
+      {
+        ...baseProps(),
+        DeploymentConfiguration: {
+          MaximumPercent: 200,
+          DeploymentCircuitBreaker: { Enable: true, Rollback: true, ResetOnHealthyTask: false },
+        },
+      }
+    );
+
+    expect(findCommand(UpdateServiceCommand).input.deploymentConfiguration).toEqual({
+      maximumPercent: 150,
+    });
+  });
+
+  it('the CREATE path never synthesizes the circuit-breaker defaults (#1861)', async () => {
+    // The reset is an UPDATE-only removal semantic. `create()` has no previous
+    // side at all, so a fix applied in the shared converter rather than in the
+    // update resolver would start inventing members on first deploy.
+    mockSend.mockResolvedValueOnce({
+      service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
+    });
+
+    await provider.create('Svc', TYPE, {
+      ...baseProps(),
+      ServiceName: 'my-service',
+      DeploymentConfiguration: {
+        DeploymentCircuitBreaker: { Enable: true, Rollback: true },
+      },
+    });
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(findCommand(CreateServiceCommand).input.deploymentConfiguration).toEqual({
+      deploymentCircuitBreaker: { enable: true, rollback: true },
     });
   });
 

@@ -22,9 +22,14 @@ CloudFormation default (live-probed 2026-07-22): `PlatformVersion` -> `LATEST`,
 `HealthCheckGracePeriodSeconds` -> `0`, `PropagateTags` -> `NONE`,
 `EnableECSManagedTags` / `EnableExecuteCommand` -> `false`, and
 `CapacityProviderStrategy` / `PlacementConstraints` / `PlacementStrategies` ->
-empty array. (`DeploymentConfiguration` removal is deferred — its reset is
-entangled with a separate pre-existing CFn-PascalCase -> SDK-camelCase
-nested-object conversion gap.)
+empty array. Removing the WHOLE `DeploymentConfiguration` deliberately resets
+NOTHING — that was live-probed as CloudFormation parity (PR #1805), so a reset
+there would be the divergence. One level DOWN is different: dropping an
+OPTIONAL member of a still-declared `DeploymentCircuitBreaker`
+(`ResetOnHealthyTask`, `ThresholdConfiguration`) IS a removal CloudFormation
+applies, and the provider now resets those two to their AWS defaults
+(`true` / `{BOUNDED_PERCENT, 50}`) — issue #1861, exercised by phases 2 and 2c
+below.
 
 The #609 Service-property backfill emptied the `AWS::ECS::Service`
 silent-drop set (AvailabilityZoneRebalancing / DeploymentController /
@@ -89,7 +94,20 @@ needs expensive/out-of-scope infrastructure this fixture deliberately avoids:
    except the `ForceNewDeployment.ForceNewDeploymentNonce` bump; assert a
    fresh rollout appeared (`deployments[0].id` changed), proving the
    object-to-`forceNewDeployment: true` translation (#609).
-4. **Phase 3 (destroy)**: destroy and assert the state file is gone.
+4. **Phase 2c (never-declared arm, #1861)**: the two optional
+   `DeploymentCircuitBreaker` members have been undeclared since phase 2, so
+   set them OUT OF BAND via `aws ecs update-service`
+   (`resetOnHealthyTask: false`, `thresholdConfiguration: {COUNT, 9}`), assert
+   that write landed, then redeploy with
+   `CDKD_TEST_UPDATE=true,force-nonce,cb-rollback` — identical to phase 2b
+   except `DeploymentCircuitBreaker.Rollback` flips back on, so the ONLY
+   property change is inside the block. Assert the flip applied, then assert
+   the out-of-band values SURVIVED. This is the arm that DISCRIMINATES the
+   previous-present / current-absent removal rule from "re-serialize the
+   struct whenever its declared content changed": both fit phase 2, only the
+   removal rule fits this. Clobbering the members here would be a divergence
+   in the opposite direction, destroying a value CloudFormation preserves.
+5. **Phase 3 (destroy)**: destroy and assert the state file is gone.
 
 ## Run
 
