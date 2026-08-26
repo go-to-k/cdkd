@@ -494,9 +494,15 @@ function buildNeedleRegex(values: Iterable<string>): RegExp | undefined {
  *   below is what makes a producer that stops doing so fall to the value scan
  *   rather than mis-align. An AWS readback may be REORDERED — AWS does not
  *   preserve list order, which is the whole reason
- *   `src/analyzer/drift-normalize.ts` exists — and descending it positionally
- *   would write an expression onto the WRONG element while leaving the real
- *   secret in plaintext.
+ *   `src/analyzer/drift-normalize.ts` exists — and descending it BLINDLY by
+ *   position would write an expression onto the WRONG element while leaving the
+ *   real secret in plaintext. A readback array is not therefore beyond
+ *   position: {@link identityKeyFor} pairs it by an identity FIELD, and
+ *   {@link unkeyedArrayPairsByAnchors} (issue #2012) walks one positionally
+ *   when the positions themselves corroborate the alignment. Both answer the
+ *   ORDER objection on its own terms rather than waiving it — a reorder breaks
+ *   an identity pairing's equality test and an anchor pairing's anchors alike —
+ *   and both refuse where they cannot.
  * - `trustAnyExpression` follows the SOURCE's provenance. A persisted STATE bag
  *   holds no public expressions (a public ssm reference is stored RESOLVED), so
  *   any `{{resolve:...}}` in one is by construction a secret — which is what
@@ -1453,10 +1459,16 @@ function isUniquelyKeyedBy(items: readonly unknown[], key: string): boolean {
  *   the unchanged-resource path the value scan is also a no-op, so such a leaf
  *   keeps its plaintext — narrow (an identity field is a name, not a
  *   credential) but real.
- * - **Arrays of arrays.** `M: [[{Name, Value}]]` pairs nothing, because the
+ * - **Arrays of arrays.** `M: [[{Name, Value}]]` pairs nothing HERE, because the
  *   OUTER elements are arrays rather than plain objects and have no identity
- *   field to key on. Positional descent into the outer list would reintroduce
- *   the order assumption this function exists to avoid.
+ *   field to key on. Blind positional descent into the outer list would
+ *   reintroduce the order assumption this function exists to avoid. On the
+ *   READBACK paths it is no longer a dead end:
+ *   {@link refuseUncertifiedReadbackPositions} (issue #2012) walks the outer
+ *   list positionally when {@link unkeyedArrayPairsByAnchors} says the inner
+ *   elements' own anchors vouch for the alignment, which meets the order
+ *   objection instead of ignoring it. The gate decides; it does not walk. Everywhere else — and whenever
+ *   those anchors do not match — the shape still falls to the value scan.
  */
 function identityKeyFor(bag: readonly unknown[], source: readonly unknown[]): string | undefined {
   for (const key of ARRAY_IDENTITY_KEYS) {
@@ -1632,6 +1644,14 @@ function redactByPath(
     // check and mis-pairs by index, while the pairing that CANNOT mis-align is
     // right here. Preferring the one with no failure mode costs a Map build on
     // a list that would have paired identically anyway.
+    //
+    // "CANNOT mis-align" is a claim about THIS pairing — equality on a field
+    // unique across both sides — and not about position generally. The anchor
+    // pass in `refuseUncertifiedReadbackPositions` pairs by position and CAN
+    // mis-align if its evidence is weak, which is why it carries a uniqueness
+    // rule of its own (`unkeyedArrayPairsByAnchors`) rather than inheriting
+    // this one's guarantee. Reading that guarantee as covering both is exactly
+    // the mistake the #2012 review measured.
     const key = identityKeyFor(bag, source);
     if (key !== undefined) {
       const sourceIndexById = new Map<string, number>();
@@ -1932,6 +1952,340 @@ function mixedLeafMayCarryPublicReference(source: string, secrets: RecordedSecre
 }
 
 /**
+ * Does this value carry an ORDINARY object prototype?
+ *
+ * `isPlainObject` answers `typeof === 'object' && !Array.isArray`, which admits
+ * CLASS INSTANCES, and that is a hole under {@link deepEqualJsonValue}: an AWS
+ * SDK v3 readback reaching `drainObservedCaptures` is PRE-JSON and really does
+ * carry `Date` values (`LastModified`, `CreationDate`). `Object.keys(new
+ * Date())` is `[]`, so without this check a `Date` compared equal to `{}` and
+ * to every other `Date` -- an anchor that corroborates a pairing while proving
+ * nothing. Widening `isPlainObject` itself was rejected: it is read by three
+ * other walks whose behaviour would change with it, and the defect is in what
+ * EQUALITY means here, not in what counts as a container.
+ *
+ * A `Date` anchor now corroborates NOTHING, so an element carrying one refuses
+ * rather than pairs. That is the conservative direction this module always
+ * takes -- the residual stays a refusal -- and it is stated because the
+ * opposite reading (that a `Date` on both sides is evidence) is the one a
+ * future edit will be tempted by.
+ */
+function hasPlainPrototype(value: object): boolean {
+  const proto = Object.getPrototypeOf(value) as unknown;
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Structural equality over the JSON shapes this module walks (issue #2012).
+ *
+ * Own ENUMERABLE keys only, and a key count on both sides, so an inherited
+ * field is not equality and neither is a bag that merely CONTAINS the source's
+ * keys. That agrees with the two walks beside it -- `isUniquelyKeyedBy` and the
+ * object arm of {@link refuseUncertifiedReadbackPositions} both use
+ * `Object.hasOwn` -- and it matters here rather than being hygiene: this
+ * predicate is the evidence an anchor pairing rests on, so a comparison that
+ * reads the prototype chain would let a constructed bag corroborate a pairing
+ * it does not actually match.
+ *
+ * `JSON.stringify` was the obvious alternative and is wrong twice over: it is
+ * key-ORDER sensitive (an AWS readback routinely reorders object keys, which
+ * says nothing about the values) and it silently drops `undefined`, so
+ * `{A: undefined}` and `{}` would compare equal while their key counts differ.
+ */
+function deepEqualJsonValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, i) => deepEqualJsonValue(item, b[i]));
+  }
+  if (isPlainObject(a)) {
+    if (!isPlainObject(b)) return false;
+    // See {@link hasPlainPrototype}: a `Date` has no own keys, so without this
+    // the key-count arm below reports it equal to `{}` and to any other `Date`.
+    if (!hasPlainPrototype(a) || !hasPlainPrototype(b)) return false;
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    return keys.every((k) => Object.hasOwn(b, k) && deepEqualJsonValue(a[k], b[k]));
+  }
+  return false;
+}
+
+/**
+ * Is an equal SOURCE value at an anchor position actually EVIDENCE that the two
+ * containers describe the same element?
+ *
+ * A NON-EMPTY STRING is, and deliberately nothing else is. This is the same bar
+ * {@link isUniquelyKeyedBy} already applies to an identity field, and for the
+ * same reason: `''` is not a distinguishing value (it is also why the value
+ * scan refuses it as a needle), and a non-string carries so few inhabitants
+ * that equality is nearly free -- `{Name: 1, Value: <literal>}` and `{Name: 1,
+ * Value: <expression>}` agree on `Name` whether or not they are the same entry,
+ * so pairing on it would copy a secret reference onto an unrelated literal.
+ * Both shapes are pinned in `secret-redaction-array-identity.test.ts` on the
+ * IDENTITY arm and again in `secret-redaction-anchor-pairing.test.ts` on this
+ * one; an anchor that accepted them would reopen from the positional side
+ * exactly what that arm refuses.
+ *
+ * Containers count when something inside them does, so a nested literal object
+ * can anchor a pairing its own level cannot. That recursion is also why this
+ * predicate ALONE is not enough, and the review that measured it is worth
+ * recording: `AWS::AmazonMQ::Broker.Users` renders `Groups: ['admin']`
+ * identically on every element, which is distinguishing by this test and yet
+ * tells two users APART not at all. Distinguishing is a property of ONE value;
+ * telling elements apart is a property of the WHOLE array, and
+ * {@link unkeyedArrayPairsByAnchors} is where the second one is enforced.
+ *
+ * This is a REFINEMENT of the formulation recorded on issue #2012, which said
+ * only "every position whose SOURCE carries no dynamic reference is deep-equal
+ * on both sides". Taken literally that admits a pairing corroborated ONLY by
+ * `Name: ''` or `Name: 1`, which is measurably wrong: the counterexample the
+ * issue states (`{Name:'', Value:'lit'}` against `{Name:'db', Value:<expr>}`)
+ * has DIFFERING names and refuses on inequality alone, but the fence actually
+ * in the tree carries `Name: ''` on BOTH sides, where equality holds and only
+ * this predicate stands between an unrelated literal and a false redaction.
+ */
+function isDistinguishingAnchor(value: unknown): boolean {
+  if (typeof value === 'string') return value !== '';
+  if (Array.isArray(value)) return value.some(isDistinguishingAnchor);
+  if (isPlainObject(value)) return Object.values(value).some(isDistinguishingAnchor);
+  return false;
+}
+
+/**
+ * Stands in for a reference-bearing leaf inside an {@link anchorSignature}.
+ *
+ * Written UNQUOTED while `JSON.stringify` quotes every real string, so no
+ * literal can spell it and collide with a masked reference.
+ */
+const ANCHOR_REFERENCE_MASK = '<ref>';
+
+/**
+ * The part of a SOURCE element the anchors can actually see: the element with
+ * every reference-bearing leaf masked, serialized canonically.
+ *
+ * Two elements with the same signature are INDISTINGUISHABLE to this pass --
+ * the anchors say the same thing about both -- so a permutation swapping them
+ * preserves every anchor and the alignment is not determined. That is the
+ * property {@link isUniquelyKeyedBy} enforces for an identity FIELD, restated
+ * for a whole projection instead of a single key.
+ *
+ * The signature is ORDER-INSENSITIVE in both directions -- object keys AND list
+ * elements are sorted -- and that is not cosmetic normalisation. Rule 3's
+ * question is "could AWS hand these two elements back SWAPPED without the swap
+ * being visible", so the projection has to quotient by everything AWS may
+ * itself reorder. Outer list order is the gate's own subject; order WITHIN an
+ * anchor's list is this function's, for exactly the reason `descendArrays:
+ * false` exists at all. A first cut sorted only the keys, and the security
+ * review measured the hole on `AWS::AmazonMQ::Broker.Users`: two users whose
+ * `Groups` were `['admin','ops']` and `['ops','admin']` signed DIFFERENTLY, so
+ * rule 3 passed while the anchors still deep-equalled position for position,
+ * and a reordered `DescribeBroker` put the admin's `Username` / `Password`
+ * expressions at the app user's index. Byte-identical anchor content was being
+ * assumed -- the order assumption this module refuses everywhere else.
+ *
+ * Sorting FAILS CLOSED, which is why it is the right shape of fix: it can only
+ * make two signatures COLLIDE that previously differed, never the reverse, so
+ * its only possible effect is an extra refusal. A missed closure, never a leak.
+ *
+ * The asymmetry with {@link deepEqualJsonValue} is deliberate and must survive
+ * a reader who notices it. That predicate stays order-SENSITIVE on lists
+ * because rule 1 asks a different question -- "did AWS return THIS position
+ * unchanged" -- and a reordered list is a changed position. Making rule 1
+ * order-blind too would weaken the corroboration rather than align it; the case
+ * pinning that is `REFUSES an anchor list REORDERED in place` in
+ * `secret-redaction-anchor-pairing.test.ts`.
+ */
+function anchorSignature(source: unknown): string {
+  if (isDynamicReferenceString(source)) return ANCHOR_REFERENCE_MASK;
+  // ORDER-INSENSITIVE, and this sort is load-bearing rather than tidiness --
+  // see the doc above before removing it.
+  if (Array.isArray(source)) return `[${source.map(anchorSignature).sort().join(',')}]`;
+  if (isPlainObject(source)) {
+    return `{${Object.keys(source)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${anchorSignature(source[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(source) ?? 'undefined';
+}
+
+/**
+ * ANCHOR PAIRING (issue #2012): do these two containers corroborate each other
+ * position by position?
+ *
+ * Two conditions, both required:
+ *
+ * 1. the key sets (objects) or index counts (arrays) match, and
+ * 2. every position whose SOURCE carries no dynamic reference is deep-equal on
+ *    both sides -- the *anchors*.
+ *
+ * Anchors are what make the pairing EVIDENCE rather than a guess: a position
+ * AWS did not rewrite proves the two containers describe the same element. It
+ * answers the `descendArrays: false` objection on its own terms the way keying
+ * does -- a REORDERED list normally puts a different element under each index,
+ * so its anchors stop matching and the whole array is refused.
+ *
+ * "Normally" is doing real work in that sentence, and an earlier revision of it
+ * did not have the word. A reorder is INVISIBLE to the anchors when the
+ * elements it swaps look the same to them, which is the whole subject of
+ * {@link unkeyedArrayPairsByAnchors}. This function answers only "does position
+ * i corroborate position i"; whether the array as a whole may be walked at all
+ * is decided there, and nothing here is sufficient on its own.
+ *
+ * What it deliberately CANNOT buy is baseline content. Every substitution the
+ * caller then makes is a STRING leaf at a position the bag already has, so a
+ * corroborated pairing never adds a key, adds an element, or writes a scalar
+ * over a container. The principle this module is built on -- **redaction may
+ * not buy itself a fabricated baseline** -- is preserved structurally rather
+ * than by a special case, which is what the first attempt at these rows (taking
+ * the SOURCE array wholesale) failed to do.
+ *
+ * The cost, stated rather than discovered: one deep compare per candidate
+ * position, and a yield that drops to ZERO as soon as AWS normalises any
+ * sibling field in the same container. That is common, so this closes a SUBSET
+ * of the shapes issue #2012 lists rather than all of them, and the residual
+ * stays a refusal -- which is the correct direction to be wrong in here.
+ */
+function anchorsCorroboratePairing(
+  bag: unknown,
+  source: unknown,
+  anchors: { distinguishing: number }
+): boolean {
+  // An ANCHOR position: the source spells no reference here, so AWS's own value
+  // must match it exactly. Inequality is positive evidence the two containers
+  // are NOT the same element, which is what refuses the counterexamples.
+  if (!subtreeHasDynamicReference(source)) {
+    if (!deepEqualJsonValue(bag, source)) return false;
+    if (isDistinguishingAnchor(source)) anchors.distinguishing += 1;
+    return true;
+  }
+  // A reference-bearing STRING leaf -- the position a corroborated pairing
+  // exists to reach. The bag must still be a string: the caller refuses to
+  // write a scalar over a container, and admitting one here would hand it a
+  // pairing whose only reference-bearing position it must then decline.
+  //
+  // PRE-EXISTING and out of scope, recorded because this arm makes it reachable
+  // somewhere new: `isDynamicReferenceString` is a SUBSTRING test for
+  // `{{resolve:`, so a source LITERAL such as `'not a real {{resolve: token'`
+  // is classed reference-bearing. It is therefore exempt from the deep-equality
+  // an anchor would demand -- lowering the corroboration bar for its whole
+  // container -- and is then written over whatever the readback holds. The
+  // string arm of `refuseUncertifiedReadbackPositions` has always done this;
+  // tightening the predicate moves every caller of it at once and belongs in
+  // its own change rather than riding along here.
+  if (isDynamicReferenceString(source)) return typeof bag === 'string';
+  if (isPlainObject(source)) {
+    if (!isPlainObject(bag)) return false;
+    const sourceKeys = Object.keys(source);
+    if (sourceKeys.length !== Object.keys(bag).length) return false;
+    return sourceKeys.every(
+      (k) => Object.hasOwn(bag, k) && anchorsCorroboratePairing(bag[k], source[k], anchors)
+    );
+  }
+  if (Array.isArray(source)) {
+    if (!Array.isArray(bag) || bag.length !== source.length) return false;
+    return source.every((item, i) => anchorsCorroboratePairing(bag[i], item, anchors));
+  }
+  return false;
+}
+
+/**
+ * May this UNKEYED array be walked positionally? The gate the anchor relaxation
+ * actually rests on (issue #2012 review).
+ *
+ * {@link anchorsCorroboratePairing} answers per POSITION. Asking it once for
+ * the whole array and requiring one distinguishing anchor ANYWHERE in the
+ * result -- which an earlier revision did -- is unsound in two INDEPENDENT
+ * ways, both measured by review against real shapes rather than reasoned about:
+ *
+ * - **Evidence for one element was credited to another.** `[{Name:'db',
+ *   Value:<exprA>}, {Name:'', Value:<exprB>}]` has a distinguishing anchor at
+ *   index 0 and NONE at index 1, and the array-wide counter licensed both -- so
+ *   an unrelated literal at index 1 took `<exprB>`. That is precisely the false
+ *   redaction `isDistinguishingAnchor` exists to prevent, arriving through the
+ *   counter's SCOPE instead of through its definition.
+ * - **Equal anchors cannot detect a reorder.** `['--pw', <exprA>, '--pw',
+ *   <exprB>]` against a readback holding the two values swapped matches every
+ *   anchor at every index, because both anchors are `'--pw'` -- so each
+ *   position was pinned to the OTHER secret's expression.
+ *   `AWS::AmazonMQ::Broker.Users` is the shape that makes this real rather than
+ *   contrived: no `Name`/`Key`, both `Username` and `Password` rendered through
+ *   `secretValueFromJson`, and `Groups: ['admin']` equal on every element, so a
+ *   `DescribeBroker` returning the users in the other order records the ADMIN
+ *   credential's reference at the app user's position -- which `cdkd drift
+ *   --revert` then pushes to the live broker.
+ *
+ * So the gate is:
+ *
+ * 1. **Every position corroborates**, with the counter scoped PER top-level
+ *    element rather than shared across the array.
+ * 2. **Every reference-bearing element carries its own evidence.** A CONTAINER
+ *    must hold a distinguishing anchor INSIDE it: it has an interior where an
+ *    identity could live, so the absence of one is meaningful. A BARE reference
+ *    leaf has no interior, so absence says nothing about it and the only
+ *    evidence available is the FRAME -- the array's non-reference-bearing
+ *    elements, which must then supply a distinguishing anchor between them.
+ *    That distinction is exactly what separates `['--pw', <expr>, '--verbose']`
+ *    (CLOSES: the literal flags pin the one free slot) from `[{V:'us-east-1'},
+ *    {V:<expr>}]` (REFUSES: the second element could hold anything, and
+ *    overwriting it would erase a genuine out-of-band change from the drift
+ *    baseline, so `cdkd drift` reports clean and `--revert` never sees it).
+ * 3. **Reference-bearing elements are pairwise DISTINGUISHABLE**, by
+ *    {@link anchorSignature}. Two elements the anchors describe identically
+ *    admit a permutation that preserves every anchor, so the alignment is not
+ *    determined and no amount of per-position equality makes it so.
+ *
+ * Checking uniqueness on the SOURCE side alone is sufficient, and the argument
+ * is worth stating because the bag side looks like it needs checking too: rule
+ * 1 has already established that the bag matches the source at every anchor
+ * position, so the two projections are equal element-wise. If some permutation
+ * other than the identity also satisfied the anchors, two SOURCE elements would
+ * have to share a signature -- which rule 3 excludes. This is the same
+ * multiset-correctness argument `isUniquelyKeyedBy` makes for a single field.
+ *
+ * NESTED arrays are not re-checked here, and do not need to be: the caller
+ * recurses through {@link refuseUncertifiedReadbackPositions}, which re-enters
+ * its own array arm for every nested list and consults this gate again with
+ * that list's own elements. A nested array whose elements are indistinguishable
+ * is therefore refused on its own terms while its parent may still pair.
+ */
+function unkeyedArrayPairsByAnchors(bag: readonly unknown[], source: readonly unknown[]): boolean {
+  if (bag.length !== source.length) return false;
+
+  const distinguishingPerElement: number[] = [];
+  for (const [i, item] of source.entries()) {
+    const anchors = { distinguishing: 0 };
+    if (!anchorsCorroboratePairing(bag[i], item, anchors)) return false;
+    distinguishingPerElement.push(anchors.distinguishing);
+  }
+
+  // The FRAME: elements the source spells with no reference at all. The loop
+  // above has already proved each one deep-equal to its bag counterpart, so
+  // these are the positions AWS demonstrably did not rewrite.
+  const frameDistinguishing = source.reduce<number>(
+    (total, item, i) =>
+      subtreeHasDynamicReference(item) ? total : total + distinguishingPerElement[i]!,
+    0
+  );
+
+  const signatures = new Set<string>();
+  for (const [i, item] of source.entries()) {
+    if (!subtreeHasDynamicReference(item)) continue;
+
+    const signature = anchorSignature(item);
+    if (signatures.has(signature)) return false;
+    signatures.add(signature);
+
+    if (distinguishingPerElement[i]! > 0) continue;
+    // No evidence of its own. Only a BARE reference leaf may fall back on the
+    // frame; a container with no distinguishing anchor inside it had somewhere
+    // to carry one and did not.
+    if (!isDynamicReferenceString(item) || frameDistinguishing === 0) return false;
+  }
+  return true;
+}
+
+/**
  * Refuse to persist a readback leaf the path pass could not CERTIFY, at any
  * position the STATE source proves is secret-bearing (issue #1926 review).
  *
@@ -1951,8 +2305,9 @@ function mixedLeafMayCarryPublicReference(source: string, secrets: RecordedSecre
  *   -----------------------------------------------  ------------  ---------------
  *   `postgres://u:{{resolve:...}}@h` (MIXED string)   LEAK          take source
  *   ...the same MIXED leaf inside a PAIRED element    LEAK          take source
- *   `['--pw', '{{resolve:...}}']` (no identity key)   LEAK          LEAK (#2012)
- *   `[{Field, Val: '{{resolve:...}}'}]` (no `Name`)   LEAK          LEAK (#2012)
+ *   `['--pw', '{{resolve:...}}']` (no identity key)   LEAK          take source*
+ *   `[{Field, Val: '{{resolve:...}}'}]` (no `Name`)   LEAK          take source*
+ *   ...either of those, but REORDERED / normalised    LEAK          LEAK (#2012)
  *   an UNPAIRED element beside a paired one           LEAK          LEAK (#2012)
  *   an observed KEY the source does not carry         LEAK          LEAK (#2012)
  *   whole `{{resolve:...}}` token                     ok            ok
@@ -1974,7 +2329,27 @@ function mixedLeafMayCarryPublicReference(source: string, secrets: RecordedSecre
  * not a WHOLE token. Everything it takes is the record's own value at the
  * record's own path.
  *
- * The four residual rows are one root cause, not four: no needle and no
+ * The starred rows are the two ANCHOR PAIRING closed for issue #2012, and the
+ * star is load-bearing: they close only when the pairing is CORROBORATED. Four
+ * conditions, all required — the index counts match; every position the source
+ * does not spell as a reference is deep-equal on both sides; every
+ * reference-bearing ELEMENT carries its own distinguishing anchor, or, being a
+ * bare reference leaf with no interior to carry one, leans on the array's
+ * literal FRAME; and no two reference-bearing elements look alike to the
+ * anchors. That is why the row beneath them exists. As soon as AWS reorders the
+ * list or normalises any sibling field, the anchors stop matching and the same
+ * two shapes refuse again, so the closure is a SUBSET of each row rather than
+ * the whole of it.
+ *
+ * An earlier revision of this paragraph stated only the first two conditions
+ * plus "at least one of them distinguishing", which was the gate BEFORE the
+ * #2012 review — under it `['--pw', <exprA>, '--pw', <exprB>]` closes and
+ * misattributes, so the text documented the defect as the design. See
+ * {@link unkeyedArrayPairsByAnchors}, which is where all four live;
+ * {@link anchorsCorroboratePairing} answers only one of them and its own doc
+ * says nothing in it is sufficient alone.
+ *
+ * The residual rows are one root cause, not several: no needle and no
  * position, so nothing distinguishes a resolved secret from an ordinary
  * literal. They are NOT closed by taking the source subtree, which an earlier
  * revision did and the issue #1915 fences correctly rejected — measured, it
@@ -1982,7 +2357,9 @@ function mixedLeafMayCarryPublicReference(source: string, secrets: RecordedSecre
  * turned an AWS-reported `[{Value:'x'}]` into `[{Name:'db', Value:<expr>}]`,
  * fabricating drift-baseline content AWS never reported that `cdkd drift
  * --revert` then pushes to the live resource. Redaction may not buy itself a
- * fabricated baseline.
+ * fabricated baseline — which is also the bar anchor pairing had to clear, and
+ * clears structurally: it only ever licenses a walk of positions the BAG
+ * already has, so it can add no key, no element and no scalar-over-container.
  *
  * The MIXED row is the shape this module itself calls DOMINANT for CDK — an
  * `Fn::Join` around `secret.secretValueFromJson(...)`.
@@ -2071,14 +2448,28 @@ function refuseUncertifiedReadbackPositions(
     // resource. That is the issue #1917 / #1498 class this module already
     // refuses to commit elsewhere.
     //
-    // So an UNPAIRABLE array keeps its plaintext, and that is a genuine
-    // residual rather than an oversight: with an empty secrets map there is no
-    // needle, and with no identity there is no position, so nothing can
-    // distinguish a resolved secret from an ordinary literal. It is the
-    // array-shaped twin of the unpaired-KEY residual below and is tracked with
-    // it in issue [#2012](https://github.com/go-to-k/cdkd/issues/2012).
+    // An unpairable array therefore keeps its plaintext UNLESS the positions
+    // themselves corroborate the alignment — the anchor pass added for issue
+    // [#2012](https://github.com/go-to-k/cdkd/issues/2012), below. Where they
+    // do not, the refusal stands for the original reason: with an empty secrets
+    // map there is no needle, and with no identity there is no position, so
+    // nothing can distinguish a resolved secret from an ordinary literal. That
+    // remains the array-shaped twin of the unpaired-KEY residual below.
     const key = identityKeyFor(bag, source);
-    if (key === undefined) return bag;
+    if (key === undefined) {
+      // ANCHOR PAIRING (issue #2012). No identity field, so the only thing that
+      // can pair these is POSITION — and position alone is exactly what the
+      // paragraph above refuses. What licenses it is corroboration: the index
+      // counts match, every position the source does NOT spell as a reference
+      // is deep-equal on both sides, each reference-bearing element carries its
+      // own evidence, and no two of them look alike to the anchors. AWS's own
+      // unrewritten values then vouch for the alignment, and a reorder they
+      // cannot see is refused rather than guessed at. The last two conditions
+      // are the review's, not the original formulation's, and the shapes that
+      // forced them are named on `unkeyedArrayPairsByAnchors`.
+      if (!unkeyedArrayPairsByAnchors(bag, source)) return bag;
+      return bag.map((item, i) => refuseUncertifiedReadbackPositions(item, source[i], secrets));
+    }
     const sourceByIdentity = new Map<string, unknown>();
     for (const item of source) {
       sourceByIdentity.set((item as Record<string, unknown>)[key] as string, item);

@@ -17,6 +17,33 @@
 # echoes the list back in the template's order — the whole premise of the
 # `descendArrays: false` rule — so a mocked test cannot stand in for this.
 #
+# THE ANCHOR-PAIRING ARM (issue #2012), gated on `CDKD_INTEG_ANCHOR_ARM=1`,
+# which this script exports below for every phase.
+#
+# Everything above rides an array `identityKeyFor` CAN key -- `Environment[]`
+# carries `Name`. `refuseUncertifiedReadbackPositions` consults the anchor gate
+# `unkeyedArrayPairsByAnchors` ONLY when `identityKeyFor` returns `undefined`,
+# so a keyed fixture leaves that gate with no live coverage at all. The
+# `anchorprobe` container reaches it with two UNKEYED arrays -- lists of plain
+# strings, so no element carries `Name` / `Key` and POSITION is the only
+# mechanism left -- picked for OPPOSITE verdicts:
+#
+#   - `Command: ['-c', <expr>, '-v']` must PAIR. The two literal flags are the
+#     anchors AWS echoes back byte-for-byte, and the lone reference leaf --
+#     having no interior of its own -- leans on that literal frame. The
+#     baseline must end up holding the EXPRESSION at index 1.
+#   - `EntryPoint: ['-p', <exprA>, '-p', <exprB>]` must REFUSE: the NEGATIVE
+#     CONTROL. Every anchor still matches, so rules 1 and 2 pass and the
+#     refusal is attributable to rule 3 -- the two reference-bearing elements
+#     share an `anchorSignature`, so a swap between them would be invisible.
+#     Indices 1 and 3 must be left holding exactly what AWS reported.
+#
+# Without that second array, a gate that paired EVERYTHING would satisfy every
+# positive assertion here. Its refused indices therefore keep a resolved
+# plaintext in the observed baseline ON PURPOSE -- that is the documented
+# residual behaviour, and the S3 VERSION sweep at the end is what bounds how
+# long those bytes live in the bucket.
+#
 # Phases:
 #   1. Deploy with --no-capture-observed-state. Assert the reference reached AWS
 #      RESOLVED (the container really holds the password) while state
@@ -28,7 +55,9 @@
 #      fires `readCurrentState` for the record that lacks a baseline. Assert the
 #      captured `observedProperties` holds the EXPRESSION at the array-nested
 #      leaf, that no plaintext appears ANYWHERE in state.json, and that the
-#      non-secret siblings in the same arrays are untouched.
+#      non-secret siblings in the same arrays are untouched. Then the #2012
+#      arm on the same baseline: the corroborated UNKEYED array must hold the
+#      EXPRESSION, and its indistinguishable twin must hold what AWS reported.
 #   3. Destroy + assert the task definition has no ACTIVE revision left, the
 #      secret is deleted/scheduled, and the state file is gone.
 #
@@ -114,6 +143,23 @@ EXPECTED_PASSWORD="cdkd-array-nested-pw-789"
 # lib/secrets-array-nested-stack.ts.
 EXPECTED_TOKEN_SHAPED="{{resolve:secretsmanager:cdkd-decoy-never-created:SecretString:key}}"
 
+# --- issue #2012 anchor-pairing arm ----------------------------------------
+# Opt-in in the CDK app so the OFF polarity synthesizes byte-for-byte what this
+# fixture shipped before the arm existed. Exported HERE, ahead of every phase,
+# because `cdkd deploy` runs the CDK app as a subprocess that inherits this
+# environment.
+export CDKD_INTEG_ANCHOR_ARM=1
+ANCHOR_PW_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:anchorPw}}"
+AMBIG_ALPHA_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:ambigAlpha}}"
+AMBIG_BRAVO_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:ambigBravo}}"
+# The plaintexts the stack seeds for this arm. Deliberately disjoint, as
+# literal strings, from every needle above and from each other: a value that
+# collides with an existing needle produces a FALSE leak report, which is worse
+# than a missing assertion.
+EXPECTED_ANCHOR_PW="cdkd-anchor-corroborated-pw-741"
+EXPECTED_AMBIG_ALPHA="cdkd-anchor-ambiguous-alpha-742"
+EXPECTED_AMBIG_BRAVO="cdkd-anchor-ambiguous-bravo-743"
+
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # assert_read <label> <value> — fail when a read returned nothing.
@@ -149,6 +195,63 @@ mask() {
   local head
   head=$(printf '%s' "${v}" | cut -c1-2)
   echo "${head}***(len=${n})"
+}
+
+# --- issue #2012 anchor-arm read helpers ------------------------------------
+# Every expression below was executed against a real payload shape before it
+# was written down. `jq` / JMESPath is untested code, and this fixture has
+# already been burned once by a query that silently selected nothing.
+#
+# `cd_field_of` reads a CFn-cased bag (state `properties` / `observedProperties`);
+# `live_cd_field` reads the SDK-cased `DescribeTaskDefinition` payload, whose
+# keys are lowerCamel. Both select the container BY NAME rather than by index,
+# for the reason `env_value_of` does, and both wrap the selection in
+# `[ ... ] | .[0]` so a missing container yields `null` rather than an EMPTY
+# string -- `assert_read` rejects both, but only one of them names the read.
+cd_field_of() { # usage: cd_field_of <bag-json> <container> <CfnField>
+  printf '%s' "$1" | jq -c --arg c "$2" --arg f "$3" \
+    '[(.ContainerDefinitions // [])[] | select(.Name==$c) | (.[$f] // null)] | (.[0] // null)'
+}
+live_cd_field() { # usage: live_cd_field <containerDefinitions-json> <container> <sdkField>
+  printf '%s' "$1" | jq -c --arg c "$2" --arg f "$3" \
+    '[(. // [])[] | select(.name==$c) | (.[$f] // null)] | (.[0] // null)'
+}
+# json_index <json-array> <index> -- prints `null`, which `assert_read`
+# rejects, when the index is out of range.
+json_index() {
+  printf '%s' "$1" | jq -r --argjson i "$2" '.[$i]'
+}
+# assert_unkeyed_string_array <label> <json-array> <expected-length>
+#
+# THE PREMISE of the anchor arm, asserted rather than assumed. If any element
+# carried `Name` / `Key`, `identityKeyFor` would key the array, the issue #1915
+# KEYED descent would answer it, and `unkeyedArrayPairsByAnchors` -- the code
+# this arm exists to exercise -- would never be consulted at all. The run would
+# then report a clean result while testing nothing.
+#
+# The identity probe is not vacuous: run against this fixture's `Environment[]`
+# it answers `true`, and against `Command` it answers `false`. It must run
+# BEFORE the all-strings check -- ordered after it, that check rejects any
+# array containing an object first, so the identity branch is unreachable and
+# the claim above would be true of the jq expression but false of the helper
+# (found by the round-3 review of PR go-to-k/cdkd#2295).
+assert_unkeyed_string_array() {
+  local label="$1" arr="$2" want_len="$3" got_len shapes keyed
+  got_len=$(printf '%s' "${arr}" | jq -r 'if type=="array" then length else "not-an-array" end')
+  if [ "${got_len}" != "${want_len}" ]; then
+    echo "FAIL: ${label}: expected an array of ${want_len} elements, got '${got_len}'" >&2
+    exit 1
+  fi
+  keyed=$(printf '%s' "${arr}" | jq -r '[.[] | select(type=="object") | (has("Name") or has("Key"))] | any')
+  if [ "${keyed}" != "false" ]; then
+    echo "FAIL: ${label}: an element carries an ARRAY_IDENTITY_KEYS member, so identityKeyFor would key this array and the anchor gate would never run" >&2
+    exit 1
+  fi
+  shapes=$(printf '%s' "${arr}" | jq -r '[.[] | type] | unique | join(",")')
+  if [ "${shapes}" != "string" ]; then
+    echo "FAIL: ${label}: elements are '${shapes}', not all plain strings" >&2
+    exit 1
+  fi
 }
 
 # Deregister every ACTIVE revision of the family. Best-effort, and written as a
@@ -317,6 +420,67 @@ if [ "${LIVE_TOKEN}" != "${EXPECTED_TOKEN_SHAPED}" ]; then
 fi
 echo "    OK: the token-shaped secret reached AWS as its literal resolved value"
 
+# --- issue #2012: the anchor arm's PREMISE, measured on live AWS ------------
+# One read, then all selection in jq. The `--query` here is a plain projection
+# rather than the `[?name==...][]` filter spelling above, for the reason that
+# note records: a filter projection followed by a second filter projection does
+# not collapse, and this fixture has already paid for that once.
+LIVE_CDS=$(aws ecs describe-task-definition --task-definition "${FAMILY}" --region "${REGION}" \
+  --query 'taskDefinition.containerDefinitions' --output json)
+LIVE_ANCHOR_CMD=$(live_cd_field "${LIVE_CDS}" anchorprobe command)
+assert_read "the live anchorprobe Command" "${LIVE_ANCHOR_CMD}"
+assert_unkeyed_string_array "the live anchorprobe Command" "${LIVE_ANCHOR_CMD}" 3
+LIVE_ANCHOR_CMD_1=$(json_index "${LIVE_ANCHOR_CMD}" 1)
+assert_read "the live anchorprobe Command[1]" "${LIVE_ANCHOR_CMD_1}"
+case "${LIVE_ANCHOR_CMD_1}" in
+  *'{{resolve:'*)
+    echo "FAIL: the anchor-arm Command position is still the LITERAL dynamic reference: $(mask "${LIVE_ANCHOR_CMD_1}")" >&2
+    exit 1
+    ;;
+esac
+if [ "${LIVE_ANCHOR_CMD_1}" != "${EXPECTED_ANCHOR_PW}" ]; then
+  echo "FAIL: the anchor-arm reference did not reach AWS RESOLVED." >&2
+  echo "      got:  $(mask "${LIVE_ANCHOR_CMD_1}")" >&2
+  echo "      want: $(mask "${EXPECTED_ANCHOR_PW}")" >&2
+  echo "      Every #2012 assertion below would then be vacuous: there is no plaintext to redact." >&2
+  exit 1
+fi
+# The ANCHORS themselves. Rule 1 of the gate is "AWS returned THIS position
+# unchanged", so a rewritten flag would make the gate refuse for a reason that
+# has nothing to do with what this arm measures.
+if [ "$(json_index "${LIVE_ANCHOR_CMD}" 0)" != "-c" ] \
+  || [ "$(json_index "${LIVE_ANCHOR_CMD}" 2)" != "-v" ]; then
+  echo "FAIL: AWS did not echo the Command anchors back unchanged, so the pairing has no evidence to rest on" >&2
+  exit 1
+fi
+echo "    OK: the UNKEYED Command array reached AWS resolved, between anchors AWS echoed verbatim"
+
+LIVE_ANCHOR_EP=$(live_cd_field "${LIVE_CDS}" anchorprobe entryPoint)
+assert_read "the live anchorprobe EntryPoint" "${LIVE_ANCHOR_EP}"
+assert_unkeyed_string_array "the live anchorprobe EntryPoint" "${LIVE_ANCHOR_EP}" 4
+LIVE_EP_1=$(json_index "${LIVE_ANCHOR_EP}" 1)
+LIVE_EP_3=$(json_index "${LIVE_ANCHOR_EP}" 3)
+assert_read "the live anchorprobe EntryPoint[1]" "${LIVE_EP_1}"
+assert_read "the live anchorprobe EntryPoint[3]" "${LIVE_EP_3}"
+if [ "${LIVE_EP_1}" != "${EXPECTED_AMBIG_ALPHA}" ] || [ "${LIVE_EP_3}" != "${EXPECTED_AMBIG_BRAVO}" ]; then
+  echo "FAIL: the negative control's two references did not reach AWS resolved to their own values." >&2
+  echo "      got[1]: $(mask "${LIVE_EP_1}")  got[3]: $(mask "${LIVE_EP_3}")" >&2
+  exit 1
+fi
+if [ "${EXPECTED_AMBIG_ALPHA}" = "${EXPECTED_AMBIG_BRAVO}" ]; then
+  echo "FAIL: the negative control's two plaintexts are equal, so a mis-assignment between them would be invisible" >&2
+  exit 1
+fi
+# The property that makes it a CONTROL rather than a second positive case: the
+# two anchors are IDENTICAL, so the two reference-bearing elements are
+# indistinguishable to `anchorSignature` and rule 3 has to refuse.
+if [ "$(json_index "${LIVE_ANCHOR_EP}" 0)" != "-p" ] \
+  || [ "$(json_index "${LIVE_ANCHOR_EP}" 2)" != "-p" ]; then
+  echo "FAIL: the negative control's anchors are not the identical pair that makes it a control" >&2
+  exit 1
+fi
+echo "    OK: the negative control reached AWS resolved, behind two IDENTICAL anchors"
+
 echo "==> Reading cdkd state after phase 1"
 STATE_JSON=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json)
@@ -361,6 +525,33 @@ if [ "${P1_STATE_TOKEN}" != "${TOKEN_EXPR}" ]; then
 fi
 echo "    OK: the token-shaped secret is persisted as its own expression"
 
+# The anchor arm's SOURCE side. `properties` comes from the template, so these
+# expressions are what the phase-2 readback walk projects FROM -- and the
+# arrays must be unkeyed on this side too, since `identityKeyFor` inspects both.
+P1_ANCHOR_CMD=$(cd_field_of "${P1_PROPS}" anchorprobe Command)
+assert_read "state properties ContainerDefinitions[anchorprobe].Command" "${P1_ANCHOR_CMD}"
+assert_unkeyed_string_array "state properties anchorprobe Command" "${P1_ANCHOR_CMD}" 3
+P1_ANCHOR_CMD_1=$(json_index "${P1_ANCHOR_CMD}" 1)
+if [ "${P1_ANCHOR_CMD_1}" != "${ANCHOR_PW_EXPR}" ]; then
+  echo "FAIL: state properties must hold the unresolved expression at the UNKEYED array position." >&2
+  echo "      got:  $(mask "${P1_ANCHOR_CMD_1}")" >&2
+  echo "      want: ${ANCHOR_PW_EXPR}" >&2
+  exit 1
+fi
+P1_ANCHOR_EP=$(cd_field_of "${P1_PROPS}" anchorprobe EntryPoint)
+assert_read "state properties ContainerDefinitions[anchorprobe].EntryPoint" "${P1_ANCHOR_EP}"
+assert_unkeyed_string_array "state properties anchorprobe EntryPoint" "${P1_ANCHOR_EP}" 4
+if [ "$(json_index "${P1_ANCHOR_EP}" 1)" != "${AMBIG_ALPHA_EXPR}" ] \
+  || [ "$(json_index "${P1_ANCHOR_EP}" 3)" != "${AMBIG_BRAVO_EXPR}" ]; then
+  echo "FAIL: state properties must hold the two DISTINCT expressions of the negative control" >&2
+  exit 1
+fi
+if [ "${AMBIG_ALPHA_EXPR}" = "${AMBIG_BRAVO_EXPR}" ]; then
+  echo "FAIL: the negative control's two expressions are equal, so rule 3 would have nothing to tell apart" >&2
+  exit 1
+fi
+echo "    OK: both UNKEYED anchor-arm arrays hold their expressions in state properties"
+
 # The task definition REVISION at the end of phase 1. Phase 2 asserts this is
 # UNCHANGED, which is the only thing that proves the resource took the unchanged
 # path: an ECS task definition update mints a new revision, and an UPDATE would
@@ -400,6 +591,16 @@ if printf '%s' "${TD_RECORD}" | grep -qF "cdkd-decoy-never-created"; then
   echo "FAIL: the token-shaped secret plaintext is present in the task definition record after phase 1 (issue #1917)" >&2
   exit 1
 fi
+# ALL THREE anchor-arm plaintexts, and all three unconditionally: phase 1
+# carries no observed baseline at all, so even the negative control -- whose
+# values legitimately survive in phase 2 -- must be absent here. grep -qF and
+# no echo of the needle, like the two above.
+for anchor_needle in "${EXPECTED_ANCHOR_PW}" "${EXPECTED_AMBIG_ALPHA}" "${EXPECTED_AMBIG_BRAVO}"; do
+  if printf '%s' "${TD_RECORD}" | grep -qF "${anchor_needle}"; then
+    echo "FAIL: an anchor-arm plaintext is present in the task definition record after phase 1 (issue #2012)" >&2
+    exit 1
+  fi
+done
 echo "    OK: no resolved plaintext in the consumer record after phase 1"
 
 # --- Phase 2: REDEPLOY UNCHANGED, with the observed capture on --------------
@@ -499,6 +700,61 @@ if [ "${P2_MODE}" != "production" ] || [ "${P2_ROLE}" != "sidecar" ]; then
 fi
 echo "    OK: non-secret siblings in the same arrays are untouched"
 
+# --- issue #2012: THE ANCHOR-PAIRING ARM ------------------------------------
+# Same configuration as everything above -- unchanged resource, empty secrets
+# map, baseline projected from the record's own `properties` -- but on an array
+# `identityKeyFor` CANNOT key. The only thing that can redact it is
+# `unkeyedArrayPairsByAnchors` agreeing that the positions corroborate the
+# pairing. Nothing earlier in this fixture reaches that gate.
+P2_ANCHOR_CMD=$(cd_field_of "${P2_OBSERVED}" anchorprobe Command)
+assert_read "observedProperties ContainerDefinitions[anchorprobe].Command" "${P2_ANCHOR_CMD}"
+assert_unkeyed_string_array "observedProperties anchorprobe Command" "${P2_ANCHOR_CMD}" 3
+# Rules 1 and 2 first: AWS returned both anchor positions unchanged. Asserted
+# BEFORE the verdict, so a refusal caused by AWS normalising a flag is reported
+# as that rather than as a redaction defect.
+if [ "$(json_index "${P2_ANCHOR_CMD}" 0)" != "-c" ] \
+  || [ "$(json_index "${P2_ANCHOR_CMD}" 2)" != "-v" ]; then
+  echo "FAIL: the readback's Command anchors are not what the source spells, so the gate had no evidence to pair on" >&2
+  exit 1
+fi
+# THE POSITIVE MARKER. "No plaintext in state" is satisfied by any unrelated
+# failure that stopped short; the EXPRESSION at index 1 is the only thing the
+# anchor arm can produce, so it is what gets asserted.
+P2_ANCHOR_CMD_1=$(json_index "${P2_ANCHOR_CMD}" 1)
+assert_read "observedProperties anchorprobe Command[1]" "${P2_ANCHOR_CMD_1}"
+if [ "${P2_ANCHOR_CMD_1}" != "${ANCHOR_PW_EXPR}" ]; then
+  echo "FAIL: observedProperties must hold the expression at the UNKEYED array position (issue #2012)." >&2
+  echo "      got:  $(mask "${P2_ANCHOR_CMD_1}")" >&2
+  echo "      want: ${ANCHOR_PW_EXPR}" >&2
+  exit 1
+fi
+echo "    OK: the anchor gate PAIRED the unkeyed Command array and persisted the expression"
+
+# THE NEGATIVE CONTROL. Same shape, same empty map, same intact anchors -- but
+# the two reference-bearing elements are indistinguishable to `anchorSignature`
+# (both bare references, behind an identical `-p`), so rule 3 must refuse the
+# whole array and leave AWS's own values in place. Without this, a gate that
+# paired EVERYTHING would satisfy every assertion above.
+P2_ANCHOR_EP=$(cd_field_of "${P2_OBSERVED}" anchorprobe EntryPoint)
+assert_read "observedProperties ContainerDefinitions[anchorprobe].EntryPoint" "${P2_ANCHOR_EP}"
+assert_unkeyed_string_array "observedProperties anchorprobe EntryPoint" "${P2_ANCHOR_EP}" 4
+if [ "$(json_index "${P2_ANCHOR_EP}" 0)" != "-p" ] \
+  || [ "$(json_index "${P2_ANCHOR_EP}" 2)" != "-p" ]; then
+  echo "FAIL: the negative control's anchors were rewritten, so its refusal would not be attributable to rule 3" >&2
+  exit 1
+fi
+P2_EP_1=$(json_index "${P2_ANCHOR_EP}" 1)
+P2_EP_3=$(json_index "${P2_ANCHOR_EP}" 3)
+assert_read "observedProperties anchorprobe EntryPoint[1]" "${P2_EP_1}"
+assert_read "observedProperties anchorprobe EntryPoint[3]" "${P2_EP_3}"
+if [ "${P2_EP_1}" != "${EXPECTED_AMBIG_ALPHA}" ] || [ "${P2_EP_3}" != "${EXPECTED_AMBIG_BRAVO}" ]; then
+  echo "FAIL: the anchor gate must REFUSE an array whose reference-bearing elements are indistinguishable (issue #2012, rule 3)." >&2
+  echo "      Each position has to be left exactly as AWS reported it." >&2
+  echo "      got[1]: $(mask "${P2_EP_1}")  got[3]: $(mask "${P2_EP_3}")" >&2
+  exit 1
+fi
+echo "    OK: the anchor gate REFUSED the indistinguishable array and left the readback untouched"
+
 # Scoped to the consumer's record for the reason phase 1 gives.
 if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_PASSWORD}"; then
   echo "FAIL: the resolved secret plaintext is present in the task definition record after the unchanged redeploy (issue #1915)" >&2
@@ -506,6 +762,15 @@ if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_PASSWORD}"; then
 fi
 if printf '%s' "${TD_RECORD}" | grep -qF "cdkd-decoy-never-created"; then
   echo "FAIL: the token-shaped secret plaintext is present in the task definition record after the unchanged redeploy (issue #1917)" >&2
+  exit 1
+fi
+# ONLY the PAIRED arm's plaintext. The negative control's two values are
+# deliberately still in this record -- that IS its assertion, above -- so
+# grepping for them here would contradict it. Read this line as a PAIR with
+# the positive marker above: "no plaintext" on its own is also satisfied by an
+# arm that never ran.
+if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_ANCHOR_PW}"; then
+  echo "FAIL: the anchor-paired plaintext is present in the task definition record after the unchanged redeploy (issue #2012)" >&2
   exit 1
 fi
 echo "    OK: no resolved plaintext in the consumer record after phase 2"
@@ -640,4 +905,4 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "secrets-array-nested state teardown"
 
-echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), non-secret siblings untouched, clean destroy"
+echo "[verify] PASS — an array-nested secret is redacted in observedProperties on the UNCHANGED-resource path (issue #1915), a token-shaped secret plaintext is redacted on both the template-sourced and same-generation rows (issue #1917), an UNKEYED array is redacted by ANCHOR PAIRING while its indistinguishable twin is refused (issue #2012), non-secret siblings untouched, clean destroy"
