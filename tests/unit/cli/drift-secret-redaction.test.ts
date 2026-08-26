@@ -37,6 +37,11 @@ const infoSpy = vi.hoisted(() => vi.fn());
 const debugSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
+  // Issue #2230: `drift.ts` calls this on the `--json` path to claim stdout for
+  // the payload. Absent from the mock it is `undefined`, the call throws before
+  // `writeJsonReport`, and every `--json` case in the file parses an EMPTY
+  // string -- which is how a missing mock export reads as a broken payload.
+  reserveStdoutForPayload: vi.fn(),
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: debugSpy,

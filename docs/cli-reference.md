@@ -2125,8 +2125,11 @@ Flags:
 - `--all` — drift-check every stack in the state bucket.
 - `--stack-region <region>` — region to inspect when a stackName has
   state in multiple regions (mirrors `cdkd state show`).
-- `--json` — emit a structured per-stack report (see below). Detection
-  output only — the resolution paths print a plain-text plan + summary.
+- `--json` — emit a structured per-stack report (see below) on **stdout, and
+  nothing else**. The resolution paths still print their plain-text plan,
+  prompt and summary, but under `--json` those go to **stderr** (issue
+  [#2230](https://github.com/go-to-k/cdkd/issues/2230)) — see "Streams under
+  `--json`" below.
 - `--accept` — write the AWS-current values back into cdkd state (state
   ← AWS) for every drifted property. By default this updates
   `observedProperties` (the deploy-time snapshot used as the drift
@@ -2476,6 +2479,30 @@ Still reporting `drift unknown` (deferred):
 - `AWS::Kinesis::StreamConsumer` falls through to the CC API fallback;
   the SDK provider only handles `AWS::Kinesis::Stream`. A dedicated
   SDK impl would require building out create / update / delete first.
+
+### Streams under `--json`
+
+With `--json`, **stdout carries the payload and nothing else**, so
+`cdkd drift ... --json | jq ...` is safe on every mode including `--accept` /
+`--revert`. Every human-facing line the command would otherwise print on
+stdout — the `--accept` / `--revert` plan, the confirmation prompt, the
+`--dry-run` notice, `No drift detected — nothing to accept.`, the
+`Comparison INCOMPLETE` block, the `✓ State updated` and `Revert summary`
+lines, and `--verbose` debug output — goes to **stderr** instead. Warnings and
+errors were already on stderr and are unaffected.
+
+The lines are **moved, not suppressed**: run the command in a terminal (or with
+`2>&1` into a pager) and you see exactly what you saw before. Redirect the two
+streams separately to keep both:
+
+```bash
+cdkd drift MyStack --json --accept --yes > report.json 2> progress.log
+```
+
+Without `--json` nothing moves — the human modes keep printing to stdout as
+before. Before issue [#2230](https://github.com/go-to-k/cdkd/issues/2230) these
+lines shared stdout with the payload, so a `--json --accept` run produced a
+document a parser rejected while looking correct on screen.
 
 `--json` output shape:
 

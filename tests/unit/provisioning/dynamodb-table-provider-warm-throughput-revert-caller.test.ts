@@ -10,6 +10,14 @@ const { mockSend, infoSpy, warnSpy, errorSpy } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../src/utils/logger.js', () => ({
+  // Issue #2230: DEFENSIVE here, unlike in the four `drift` suites that carry
+  // the same line. This file drives `createDriftCommand` but passes `--json` in
+  // no case, so `drift.ts` never reaches the call and the entry is unused
+  // today. It is kept because the failure it prevents is silent in the wrong
+  // direction: a missing export is `undefined`, the call throws before
+  // `writeJsonReport`, and the first `--json` case added here would parse an
+  // EMPTY stdout -- reading as a broken payload rather than as a broken mock.
+  reserveStdoutForPayload: vi.fn(),
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
