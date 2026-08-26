@@ -984,6 +984,20 @@ spellings the tree does not currently use, and the contexts that defeat your
 exemption logic. So follow the calibration with two probes, both against the
 REAL tree rather than by reasoning:
 
+- **Write the defect in the spelling a PERSON would write, not the one that is
+  easiest to inject.** This is the sub-case that keeps passing, because an
+  artificial probe and a natural one look equally like "I mutated it". Measured
+  2026-08-26 on the issue go-to-k/cdkd#2052 lane: a prefix-sync fence split on
+  `'custom-resource-responses'` *with both quote characters*, and the probe
+  used `` `${'custom-resource-responses'}/` ``, which reds it. The spelling
+  anybody would actually type -- `listRawObjects('custom-resource-responses/')`
+  -- puts the trailing slash before the closing quote and sailed straight
+  through, as did a copy in any file outside the fence's hand-written list. A
+  reviewer found both. Note what that fence was FOR: it is the mechanism this
+  section's own "grep for the SHAPE, not for a NAME" rule prescribes, written by
+  someone who had just read that rule, and it broke it anyway -- so when the
+  probe is of a fence, mutate it the way a future contributor would, and derive
+  the population rather than listing it.
 - **Write the defect in every spelling the language allows** and confirm each is
   flagged. On 2026-08-20 (go-to-k/cdkd#2111) a scanner for
   `options.region || process.env['AWS_REGION']` calibrated perfectly — 19
@@ -1807,6 +1821,24 @@ PR that had edited `deploy-engine.ts` — which that lane also edited — and th
 marker correctly went stale, buying a second real-AWS run at merge time. Push
 first so CI starts, then re-run the integ alongside it; the two are independent
 and serializing them wastes the CI wall-clock.
+
+**A reviewer's suggested FIX can be wrong even when its finding is right —
+re-derive the fix from the source rather than pasting the patch.** The premise
+check below asks whether the finding holds; this asks whether the remedy does,
+and the two fail independently. Measured 2026-08-26 on the issue
+go-to-k/cdkd#2052 lane: a security reviewer proved by probe that an age-only
+sweep would delete live `state.json` under a colliding `--state-prefix`, which
+was correct and a blocker, and offered
+`/^cdkd-\d+-[0-9a-z]+\.json$/` as the key-shape filter. Reading the producer
+showed the suffix is `Math.random().toString(36).substring(7)`, which returns
+the EMPTY string whenever the base-36 rendering is shorter than eight
+characters -- so `cdkd-<epoch>-.json` is a key cdkd really writes and the `+`
+would have skipped exactly those. Adopting it would have traded an
+over-collection bug for an under-collection one that is INVISIBLE, since a
+sweep that collects nothing looks identical to a clean bucket. The tell is
+generic: a reviewer reasons from the diff, so a suggested REGEX, bound, or
+constant is the part it is least able to verify. Derive those from the code
+that produces the value, and probe both directions.
 
 **Check a reviewer's PREMISE before acting on the finding, and say so when you
 decline.** Reviewers are read-only and reason from what they can see, so a

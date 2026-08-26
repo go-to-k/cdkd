@@ -243,6 +243,25 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     export
     ```
 
+    **Only FIVE of those nine carry a `verify.sh`, and from an agent session
+    the other four cannot be run at all.** Step 5's dispatch note explains why
+    (the standard flow needs a direct `cdkd deploy`, which the harness's
+    auto-approval classifier refuses), but it leaves the selection to be
+    discovered one dead-end at a time. Measured 2026-08-26 while gating a
+    `destroy.ts` change: `multi-stack-deps` is the obvious pick for an `--all`
+    loop change and is one of the four without one.
+
+    Runnable from a session: **`lambda`**, `drift-revert`, `drift-revert-vpc`,
+    `remove-protection`, `export`.
+    Human-driven shell only: `bench-cdk-sample`, `microservices`,
+    `multi-stack-deps`, `multi-resource`.
+
+    `lambda` is the cheap default — a ~100 s, 9-resource DAG across SQS / IAM /
+    Lambda / LayerVersion / DynamoDB Table + GlobalTable, which is what makes it
+    broad. Re-derive the split with
+    `ls tests/integration/<name>/verify.sh` rather than trusting this list if a
+    fixture has since gained one.
+
     (Keep this list in sync with `.claude/hooks/integ-broad-gate.sh`'s
     error message and the matching memory rule
     `feedback_cross_cutting_needs_broad_integ.md`. The sync is now
