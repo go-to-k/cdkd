@@ -94,6 +94,11 @@ export interface CfnLocalStateProviderOptions {
   profile?: string;
 }
 
+/**
+ * @no-live-caller cdk-local owns the live copy. `local-state-source.ts` re-exports
+ * `CfnLocalStateProvider` from the `cdk-local` package root, so `--from-cfn-stack` never
+ * reaches this file and nothing in `src/` imports it (issue #2228).
+ */
 export class CfnLocalStateProvider implements LocalStateProvider {
   // erasableSyntaxOnly forbids parameter-property shorthand; declare
   // fields explicitly + assign in the body.
@@ -304,6 +309,10 @@ export class CfnLocalStateProvider implements LocalStateProvider {
  * also left empty since the substituter doesn't read them.
  *
  * Exported for unit testing.
+ *
+ * @no-live-caller cdk-local owns the live copy. `local-state-source.ts` re-exports
+ * `CfnLocalStateProvider` from the `cdk-local` package root, so `--from-cfn-stack` never
+ * reaches this file and nothing in `src/` imports it (issue #2228).
  */
 export function buildResourceStateMap(
   stackResources: Array<{
@@ -338,6 +347,10 @@ export function buildResourceStateMap(
  * always a string), so the cast is safe.
  *
  * Exported for unit testing.
+ *
+ * @no-live-caller cdk-local owns the live copy. `local-state-source.ts` re-exports
+ * `CfnLocalStateProvider` from the `cdk-local` package root, so `--from-cfn-stack` never
+ * reaches this file and nothing in `src/` imports it (issue #2228).
  */
 export function buildOutputsMap(
   outputs: Array<{ OutputKey?: string | undefined; OutputValue?: string | undefined }>
@@ -357,6 +370,10 @@ export function buildOutputsMap(
  * construction time.
  *
  * Exported for unit testing.
+ *
+ * @no-live-caller cdk-local owns the live copy. `local-state-source.ts` re-exports
+ * `CfnLocalStateProvider` from the `cdk-local` package root, so `--from-cfn-stack` never
+ * reaches this file and nothing in `src/` imports it (issue #2228).
  */
 export async function fetchAllExports(client: CloudFormationClient): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -402,6 +419,10 @@ export async function fetchAllExports(client: CloudFormationClient): Promise<Map
  * S3-bucket-specific (it rewrites the synthetic `Unknown`/`UnknownError`
  * with bucket / region context), so the CFn provider extracts the
  * pieces directly here.
+ *
+ * @no-live-caller cdk-local owns the live copy. `local-state-source.ts` re-exports
+ * `CfnLocalStateProvider` from the `cdk-local` package root, so `--from-cfn-stack` never
+ * reaches this file and nothing in `src/` imports it (issue #2228).
  */
 export function formatAwsErrorForWarn(err: unknown): string {
   if (!(err instanceof Error)) return String(err);

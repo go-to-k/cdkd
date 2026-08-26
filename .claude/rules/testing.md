@@ -597,6 +597,52 @@ Enforced by `tests/unit/scripts/integ-fixture-removal-policy.test.ts`
 in [docs/testing.md](../../docs/testing.md). L1 `Cfn*` constructs are out of
 scope (their template default is `Delete`).
 
+### A `local-*` fixture's Lambdas must declare the HOST architecture (mandatory)
+
+cdk-local pins `docker --platform` to each Lambda's declared `Architectures`
+(`pullImage` / `architectureToPlatform`), which is correct — a `provided.*`
+bootstrap compiled for one arch must get the matching base image. But a CDK
+`lambda.Function` that declares no `architecture` defaults to `X86_64`, so on an
+**arm64 host** its container runs `linux/amd64` under CPU emulation, and the Go
+RIE inside `public.ecr.aws/lambda/*` faults there — a different assertion on
+every run. Measured 2026-08-27 on arm64: `local-start-api` RC=1 after 623 s with
+`fatal error: qemu: uncaught target signal 11 (Segmentation fault)`, then
+`RIE invoke failed ... timed out after 60000ms`; `local-invoke` RC=1 at step 6/6
+the same way. Root cause and fix pattern: go-to-k/cdk-local#560 /
+go-to-k/cdk-local#567.
+
+So a fixture under `tests/integration/local-*/` declares:
+
+```ts
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+```
+
+and passes `architecture: HOST_ARCHITECTURE` to every `lambda.Function`.
+
+**Hardcoding either value is wrong in the same way**, which is why the fence
+pins the DERIVATION rather than the outcome: `ARM_64` moves the emulation onto
+an amd64 CI runner, and `X86_64` is the default that caused the fault to begin
+with. The base image is multi-arch, so the host-derived form is native on both.
+Nothing in any `verify.sh` asserts the architecture, so this costs no coverage.
+
+**Why a source-shape test rather than the integ.** The regression is silent in
+exactly the direction that hides it: a handler added without `architecture`
+PASSES on CI, where amd64 already is the host arch, and only fails on an arm64
+dev machine. CI can never catch it by running the fixture. The fence is
+`tests/unit/scripts/integ-fixture-host-architecture.test.ts`; its `FIXTURE_STACKS`
+list is literals on purpose, so it cannot silently widen to fixtures nobody has
+run on arm64, and it REFUSES any Lambda constructor spelling other than
+`new lambda.Function(` rather than skipping it (the wider fixture set contains
+`lambda.CfnFunction`, `lambda.DockerImageFunction` and `cloudfront.Function`,
+and only the last is not a Lambda at all).
+
+Two fixtures are covered today. The remaining 16 are
+[#2287](https://github.com/go-to-k/cdkd/issues/2287) — they join the list one at
+a time, each after a green arm64 run, because `provided.*` fixtures pin the arch
+to a prebuilt BINARY and `DockerImageFunction` takes it from the image that was
+built, so neither is a mechanical edit.
+
 ### A `PendingDeletion` KMS key is NOT an orphan
 
 A customer-managed KMS key cannot be deleted synchronously — 7 days is the

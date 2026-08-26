@@ -146,7 +146,14 @@ export interface VtlUtil {
 // identity across the package boundary.
 export { VtlEvaluationError };
 
-/** Built-in `$util` implementation. */
+/**
+ * Built-in `$util` implementation.
+ *
+ * @no-live-caller cdk-local owns the live VTL evaluator. This module's only `src/` importer
+ * is `rest-v1-integrations.ts`, whose dispatchers are themselves unreachable, so the module
+ * is LOADED at runtime while nothing in it runs: the template `cdkd local start-api`
+ * evaluates is cdk-local's. Issue #2203's fix landed here and shipped as a no-op (#2228).
+ */
 export function buildDefaultUtil(): VtlUtil {
   const coerce = (v: unknown): string => {
     if (v == null) return '';
@@ -282,6 +289,11 @@ export function buildDefaultUtil(): VtlUtil {
  * Empty / undefined templates short-circuit to an empty string, matching
  * AWS API Gateway behavior when `RequestTemplates` / `ResponseTemplates`
  * is absent for the selected content type.
+ *
+ * @no-live-caller cdk-local owns the live VTL evaluator. This module's only `src/` importer
+ * is `rest-v1-integrations.ts`, whose dispatchers are themselves unreachable, so the module
+ * is LOADED at runtime while nothing in it runs: the template `cdkd local start-api`
+ * evaluates is cdk-local's. Issue #2203's fix landed here and shipped as a no-op (#2228).
  */
 export function evaluateVtl(template: string | undefined, ctx: VtlContext): string {
   if (template === undefined || template.length === 0) return '';
@@ -1023,6 +1035,11 @@ function isTruthy(v: unknown): boolean {
  * `$.field.subField`, `$.array[0]`. AWS supports more (filter
  * expressions, recursive descent); cdkd surfaces a clear error on
  * unsupported expressions rather than silently producing wrong output.
+ *
+ * @no-live-caller cdk-local owns the live VTL evaluator. This module's only `src/` importer
+ * is `rest-v1-integrations.ts`, whose dispatchers are themselves unreachable, so the module
+ * is LOADED at runtime while nothing in it runs: the template `cdkd local start-api`
+ * evaluates is cdk-local's. Issue #2203's fix landed here and shipped as a no-op (#2228).
  */
 export function buildVtlInput(
   body: string,
@@ -1121,6 +1138,11 @@ export function buildVtlInput(
  * Minimal JSONPath evaluator. Supports `$`, `$.field`, `$.field.sub`,
  * `$.array[index]`. Unsupported syntax throws so the user sees a clear
  * pointer to the gap.
+ *
+ * @no-live-caller cdk-local owns the live VTL evaluator. This module's only `src/` importer
+ * is `rest-v1-integrations.ts`, whose dispatchers are themselves unreachable, so the module
+ * is LOADED at runtime while nothing in it runs: the template `cdkd local start-api`
+ * evaluates is cdk-local's. Issue #2203's fix landed here and shipped as a no-op (#2228).
  */
 export function applyJsonPath(root: unknown, expr: string): unknown {
   const trimmed = expr.trim();
@@ -1180,6 +1202,11 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
  * Build a `$context` binding from a request snapshot + matched route.
  * The mapping mirrors what AWS API Gateway exposes (see AWS docs:
  * https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-mapping-template-reference.html).
+ *
+ * @no-live-caller cdk-local owns the live VTL evaluator. This module's only `src/` importer
+ * is `rest-v1-integrations.ts`, whose dispatchers are themselves unreachable, so the module
+ * is LOADED at runtime while nothing in it runs: the template `cdkd local start-api`
+ * evaluates is cdk-local's. Issue #2203's fix landed here and shipped as a no-op (#2228).
  */
 export function buildVtlRequestContext(args: {
   requestId: string;

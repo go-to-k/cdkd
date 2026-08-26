@@ -1595,6 +1595,10 @@ function notFoundError(
  * runner can hand the pair to `buildDockerImage` directly. Returns
  * `undefined` when the asset isn't in the manifest — the caller hard-
  * errors with a clear "re-synthesize" pointer.
+ *
+ * @no-live-caller nothing in `src/` calls this. The rest of this module is live; the live
+ * paths take `stack.assetManifestPath` and derive the directory at their own call sites
+ * (issue #2228).
  */
 export function buildCdkOutDir(stack: StackInfo): string | undefined {
   if (!stack.assetManifestPath) return undefined;

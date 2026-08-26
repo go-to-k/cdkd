@@ -169,7 +169,7 @@ launchtemplate-asg-inplace	2026-08-19T23:10:58Z	PASS	87	verify.sh	issue 1997 mas
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-07-26T20:40:20Z	PASS	23	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-invoke	2026-08-24T17:31:38Z	PASS	35	verify.sh	gated the issue 2184 merge (runDetached via partitionSensitiveEnv); 6/6 invokes, docker sweep empty incl. stopped
+local-invoke	2026-08-26T15:43:49Z	PASS	31	verify.sh	final round on go-to-k/cdkd#2278; HOST_ARCHITECTURE fix holds, 6/6 invokes, sweep empty incl. exited
 local-invoke-agentcore	2026-08-24T17:29:58Z	FAIL	10	verify.sh	FIXTURE STALENESS, not a cdkd defect: aws-cdk-lib 2.244.0 dropped the aws-bedrockagentcore L2 constructs the fixture imports (the L1 Cfn* exports remain; the L2s Runtime / AgentCoreRuntime / AgentRuntimeArtifact it imports are gone), so it dies at synth before any assertion. Tracked in issue 2191
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
@@ -191,7 +191,7 @@ local-run-task-multi-container	2026-08-24T16:35:48Z	PASS	11	verify.sh	issue 2183
 local-start-agentcore	2026-07-26T20:40:20Z	PASS	13	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-start-alb	2026-07-26T20:18:09Z	PASS	22	verify.sh	0727b sweep-L2 staleness re-run (rc=0); docker + account clean
 local-start-alb-from-state	2026-07-26T20:18:09Z	PASS	98	verify.sh	re-run after removing stale cdkl-svc network (pool overlap); docker + account clean
-local-start-api	2026-08-26T07:21:27Z	PASS	27	verify.sh	issue #2203 integ-local gate (src/local/** in scope); covers the rie-client RESPONSE_STREAM arm. docker sweep 0 containers incl. exited / 0 task / 0 svc networks
+local-start-api	2026-08-26T15:43:49Z	PASS	16	verify.sh	final round on go-to-k/cdkd#2278; HOST_ARCHITECTURE fix holds, 26 asserts, 0 qemu lines, sweep empty incl. exited
 local-start-api-container	2026-08-13T10:39:38Z	PASS	-	verify.sh	issue 1814 region-case boundary wrapper; rc 0, docker sweep clean
 local-start-api-rest-v1-non-proxy	2026-08-26T07:21:27Z	PASS	14	verify.sh	issue #2203 second local arm, deliberately not narrowed to one run: the only local fixture whose RequestTemplates drive evaluateVtl. docker sweep clean
 local-start-api-websocket	2026-08-01T09:42:37Z	PASS	102	verify.sh	0801 regression sweep; ws stages + sigterm-fast ok, docker clean

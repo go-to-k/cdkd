@@ -178,6 +178,11 @@ export interface MockIntegrationConfig {
  * When no request template is configured AWS defaults to picking the
  * `IntegrationResponses[]` entry with `SelectionPattern === ''` (or the
  * first entry).
+ *
+ * @no-live-caller cdk-local owns the live REST v1 dispatch. `cdkd local start-api` runs
+ * cdk-local's `startApiServer`, which `http-server.ts` re-exports verbatim, and that server
+ * dispatches through cdk-local's own copy of this chain. Nothing in `src/` reaches this one,
+ * so a fix landing here ships as a no-op with every gate green (issues #2228, #2203).
  */
 export function dispatchMockIntegration(
   config: MockIntegrationConfig,
@@ -275,6 +280,11 @@ export interface HttpProxyIntegrationConfig {
  * with `RequestParameters` mappings applied; the response is also
  * forwarded verbatim (AWS does NOT apply ResponseTemplates on HTTP_PROXY,
  * only IntegrationResponses[].SelectionPattern routes the status code).
+ *
+ * @no-live-caller cdk-local owns the live REST v1 dispatch. `cdkd local start-api` runs
+ * cdk-local's `startApiServer`, which `http-server.ts` re-exports verbatim, and that server
+ * dispatches through cdk-local's own copy of this chain. Nothing in `src/` reaches this one,
+ * so a fix landing here ships as a no-op with every gate green (issues #2228, #2203).
  */
 export async function dispatchHttpProxyIntegration(
   config: HttpProxyIntegrationConfig,
@@ -383,6 +393,11 @@ export interface HttpIntegrationConfig {
  * Dispatch an HTTP (non-proxy) integration: HTTP_PROXY + VTL on both
  * directions. Same upstream-call shape; the request body is transformed
  * via VTL, and the response body is transformed via VTL too.
+ *
+ * @no-live-caller cdk-local owns the live REST v1 dispatch. `cdkd local start-api` runs
+ * cdk-local's `startApiServer`, which `http-server.ts` re-exports verbatim, and that server
+ * dispatches through cdk-local's own copy of this chain. Nothing in `src/` reaches this one,
+ * so a fix landing here ships as a no-op with every gate green (issues #2228, #2203).
  */
 export async function dispatchHttpIntegration(
   config: HttpIntegrationConfig,
@@ -534,6 +549,11 @@ export interface AwsLambdaIntegrationConfig {
  * `errorMessage` field (Node Lambda runtime convention), AWS treats it
  * as an error and matches `SelectionPattern` against the
  * `errorMessage`. Otherwise success.
+ *
+ * @no-live-caller cdk-local owns the live REST v1 dispatch. `cdkd local start-api` runs
+ * cdk-local's `startApiServer`, which `http-server.ts` re-exports verbatim, and that server
+ * dispatches through cdk-local's own copy of this chain. Nothing in `src/` reaches this one,
+ * so a fix landing here ships as a no-op with every gate green (issues #2228, #2203).
  */
 export async function dispatchAwsLambdaIntegration(
   config: AwsLambdaIntegrationConfig,
@@ -774,6 +794,11 @@ function defaultResponseEntry(
  * pass-through). Charset parameters are stripped before matching.
  *
  * Exported for unit testing.
+ *
+ * @no-live-caller cdk-local owns the live REST v1 dispatch. `cdkd local start-api` runs
+ * cdk-local's `startApiServer`, which `http-server.ts` re-exports verbatim, and that server
+ * dispatches through cdk-local's own copy of this chain. Nothing in `src/` reaches this one,
+ * so a fix landing here ships as a no-op with every gate green (issues #2228, #2203).
  */
 export function isTextLikeContentType(contentType: string): boolean {
   const primary = contentType.split(';')[0]!.trim().toLowerCase();
@@ -984,6 +1009,11 @@ function resolveRequestParameterValue(
  * of the matching path parameter on the request. Used by HTTP_PROXY /
  * HTTP integrations whose `Integration.Uri` may contain such
  * placeholders (e.g. `https://upstream.example.com/users/{userId}`).
+ *
+ * @no-live-caller cdk-local owns the live REST v1 dispatch. `cdkd local start-api` runs
+ * cdk-local's `startApiServer`, which `http-server.ts` re-exports verbatim, and that server
+ * dispatches through cdk-local's own copy of this chain. Nothing in `src/` reaches this one,
+ * so a fix landing here ships as a no-op with every gate green (issues #2228, #2203).
  */
 export function substituteUriPlaceholders(uri: string, req: RestV1IntegrationRequest): string {
   return uri.replace(/\{([^/{}]+)\}/g, (_, name) => {

@@ -275,6 +275,11 @@ const STREAM_PRELUDE_SEPARATOR = Buffer.from([0, 0, 0, 0, 0, 0, 0, 0]);
  * emit as metadata (typical preludes are <500 bytes) — a runaway here
  * indicates the handler didn't call `HttpResponseStream.from` at all, in
  * which case we want to fail fast rather than buffer the whole body.
+ *
+ * @no-live-caller cdk-local owns the live streaming path. `invokeRie` and `waitForRieReady`
+ * in this same file ARE live, but nothing in `src/` reaches the streaming half: `cdkd local
+ * start-api` streams through cdk-local's own `invokeRieStreaming`. Issue #2203's fix landed
+ * here and shipped as a no-op (issue #2228).
  */
 export const STREAM_PRELUDE_MAX_BYTES = 1024 * 1024;
 
@@ -294,6 +299,11 @@ export const STREAM_PRELUDE_MAX_BYTES = 1024 * 1024;
  *
  * Consistent with {@link STREAM_PRELUDE_MAX_BYTES} (1 MiB cap on the
  * pre-body buffer); this is the post-body counterpart.
+ *
+ * @no-live-caller cdk-local owns the live streaming path. `invokeRie` and `waitForRieReady`
+ * in this same file ARE live, but nothing in `src/` reaches the streaming half: `cdkd local
+ * start-api` streams through cdk-local's own `invokeRieStreaming`. Issue #2203's fix landed
+ * here and shipped as a no-op (issue #2228).
  */
 export const STREAM_BODY_MAX_BYTES = 100 * 1024 * 1024;
 
@@ -333,6 +343,11 @@ export const STREAM_BODY_MAX_BYTES = 100 * 1024 * 1024;
  * The body Readable is additionally guarded by {@link STREAM_BODY_MAX_BYTES}
  * (100 MiB by default) so a runaway handler can't blow host memory; the
  * Readable is destroyed with a clear error when the cap trips.
+ *
+ * @no-live-caller cdk-local owns the live streaming path. `invokeRie` and `waitForRieReady`
+ * in this same file ARE live, but nothing in `src/` reaches the streaming half: `cdkd local
+ * start-api` streams through cdk-local's own `invokeRieStreaming`. Issue #2203's fix landed
+ * here and shipped as a no-op (issue #2228).
  */
 export async function invokeRieStreaming(
   host: string,
@@ -588,6 +603,11 @@ export async function invokeRieStreaming(
  *
  * Exported for unit tests. Throws on invalid JSON or a non-numeric
  * statusCode (cdkd cannot map that to HTTP).
+ *
+ * @no-live-caller cdk-local owns the live streaming path. `invokeRie` and `waitForRieReady`
+ * in this same file ARE live, but nothing in `src/` reaches the streaming half: `cdkd local
+ * start-api` streams through cdk-local's own `invokeRieStreaming`. Issue #2203's fix landed
+ * here and shipped as a no-op (issue #2228).
  */
 export function parseStreamingPrelude(text: string): StreamingPrelude {
   const trimmed = text.trim();
