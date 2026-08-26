@@ -155,6 +155,16 @@ function infoText(): string {
   return loggerMocks.info.mock.calls.map((c) => String(c[0])).join('\n');
 }
 
+/**
+ * The CONSENT surface. `promptGcConfirm` prints the plan through `warn`, not
+ * `info`, and prints it before `--yes` short-circuits the question — so this is
+ * what a user is shown before anything is deleted, in both the interactive and
+ * the `-y` path.
+ */
+function warnText(): string {
+  return loggerMocks.warn.mock.calls.map((c) => String(c[0])).join('\n');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockStsSend.mockResolvedValue({ Account: ACCOUNT });
@@ -251,7 +261,10 @@ describe('cdkd gc: abandoned custom-resource response placeholders (issue #2052)
       });
     }
 
-    expect(deletedResponseKeys()).toEqual([]);
+    // `not.toHaveBeenCalled()`, not `deletedResponseKeys()).toEqual([])` — the
+    // helper flattens, so `toEqual([])` cannot tell "never called" from
+    // `deleteRawObjects([])`, exactly as that helper's own doc says.
+    expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalled();
     expect(infoText()).toContain('gc cancelled');
   });
 
@@ -270,6 +283,34 @@ describe('cdkd gc: abandoned custom-resource response placeholders (issue #2052)
     // ...and it still says WHY no assets are listed, rather than silently
     // printing a plan with none.
     expect(infoText()).toContain('not opted in to cdkd asset storage');
+  });
+
+  it('says it is CONTINUING past the missing marker, in a run that deletes nothing', async () => {
+    // Isolates the marker early-return from the delete arm.
+    //
+    // Every other no-marker case asserts the DELETE, so restoring the pre-fix
+    // `return` reds a strict SUBSET of what simply removing the
+    // `deleteRawObjects` call reds — distinct mutations, but not independently
+    // fenced. This case is `--dry-run`, so the delete arm is not exercised at
+    // all: it reds when the early return comes back and stays green when the
+    // delete call goes away.
+    //
+    // The literal matters too. The no-marker path has TWO messages that both
+    // contain "not opted in to cdkd asset storage" — one ending "nothing to
+    // garbage-collect" and one ending "Continuing with ...". Only the second
+    // says the sweep was reached.
+    stateBackendMocks.getRawObject.mockResolvedValue(null);
+    stateBackendMocks.listRawObjects.mockResolvedValue([
+      { key: ABANDONED_KEY, lastModified: OLD, size: 512 },
+    ]);
+
+    await runGc(['--dry-run']);
+
+    expect(infoText()).toContain(
+      "Continuing with the state bucket's abandoned custom-resource response placeholders."
+    );
+    expect(infoText()).toContain(`s3://${STATE_BUCKET}/${ABANDONED_KEY}`);
+    expect(infoText()).not.toContain('nothing to garbage-collect');
   });
 
   it('still reports "nothing to garbage-collect" with no marker AND no placeholders', async () => {
@@ -301,12 +342,34 @@ describe('cdkd gc: abandoned custom-resource response placeholders (issue #2052)
     // Both asset arms throw CdkdError('GC_DELETE_FAILED'); `deleteRawObjects`
     // raises a bare StateError, and one failure mode with two error identities
     // is one every caller has to special-case.
+    //
+    // TWO candidates against ONE inner failure: that gap is the whole point of
+    // the message assertions below, and a single candidate would make the
+    // attempted and the actual count coincide, so the case could not tell them
+    // apart.
     stateBackendMocks.listRawObjects.mockResolvedValue([
       { key: ABANDONED_KEY, lastModified: OLD, size: 512 },
+      { key: `${CUSTOM_RESOURCE_RESPONSE_PREFIX}/cdkd-1756000000001-d4e5f6.json`, lastModified: OLD, size: 8 },
     ]);
-    stateBackendMocks.deleteRawObjects.mockRejectedValue(new Error('AccessDenied'));
+    stateBackendMocks.deleteRawObjects.mockRejectedValue(
+      new Error('Failed to delete 1 object(s) from state bucket: k (AccessDenied: )')
+    );
 
-    await expect(runGc(['--yes'])).rejects.toMatchObject({ code: 'GC_DELETE_FAILED' });
+    const caught = await runGc(['--yes']).catch((e: unknown) => e);
+    expect(caught).toMatchObject({ code: 'GC_DELETE_FAILED' });
+    // The wrapper carries NO count of its own. It only ever knew the ATTEMPTED
+    // one while the message it wraps reports the ACTUAL failures, so a count
+    // here produced `Failed to delete 2 ... placeholder(s) ...: Failed to
+    // delete 1 object(s) ...` — a partial failure describing itself as total.
+    expect((caught as Error).message).toContain(
+      `Failed to delete abandoned custom-resource response placeholder(s) from ${STATE_BUCKET}:`
+    );
+    expect((caught as Error).message).not.toMatch(
+      /Failed to delete \d+ abandoned custom-resource/
+    );
+    // ...and the inner count still reaches the user, so dropping the outer one
+    // removed a contradiction rather than the information.
+    expect((caught as Error).message).toContain('Failed to delete 1 object(s)');
   });
 
   it('prints no "Deleted 0 ..." line when there is nothing to collect', async () => {
@@ -324,7 +387,16 @@ describe('cdkd gc: abandoned custom-resource response placeholders (issue #2052)
 
     await runGc(['--yes']);
 
-    expect(infoText()).not.toContain('placeholder(s) from');
+    // POSITIVE first: a negative assertion is satisfied by the run failing for
+    // any unrelated reason, so it proves nothing until the run is pinned to
+    // have reached the delete phase this case is about.
+    expect(infoText()).toContain(`✓ Deleted 1 object(s) (10 B) from ${ASSET_BUCKET}`);
+    // Then the negative, anchored on the literal the success line ACTUALLY
+    // renders. An earlier spelling used `'placeholder(s) from'`, which exists
+    // only in the ERROR message — a string `logger.info` can never emit — so it
+    // was vacuously true and removing the very `length > 0` guard it names
+    // passed the whole suite.
+    expect(infoText()).not.toContain('Deleted 0 abandoned custom-resource response');
   });
 
   it('refuses to sweep while a stack lock is held', async () => {
@@ -402,6 +474,78 @@ describe('cdkd gc: only the producer\'s own key shape is swept (issue #2052)', (
     await runGc(['--dry-run']);
 
     expect(infoText()).toContain(`s3://${STATE_BUCKET}/${ABANDONED_KEY}`);
+  });
+});
+
+describe('cdkd gc: the consent surface and the reclaim totals (issue #2052)', () => {
+  /**
+   * An ASSET candidate alongside the placeholder, with deliberately different
+   * byte counts.
+   *
+   * 10 + 512 is what makes the totals discriminating: with only one of the two
+   * arms populated, an arm dropped from the sum would still print the other
+   * arm's number and every assertion would hold.
+   */
+  function withOneAssetAndOnePlaceholder(): void {
+    stateBackendMocks.listRawObjects.mockResolvedValue([
+      { key: ABANDONED_KEY, lastModified: OLD, size: 512 },
+    ]);
+    mockS3Send.mockResolvedValue({
+      Contents: [{ Key: 'garbage-old.zip', Size: 10, LastModified: OLD }],
+      IsTruncated: false,
+    });
+  }
+
+  it('asks for consent over the WIDENED blast radius, not over "assets"', async () => {
+    // The prompt is what a user reads before anything is deleted, and the plan
+    // behind it now includes STATE-bucket objects that are neither assets nor
+    // region-scoped. Nothing greped the prompt, so reverting it to
+    // `unreferenced assets in <region>` — describing strictly less than it is
+    // about to delete — passed the whole suite. Three reviewers flagged the
+    // wording; this is the assertion that keeps it.
+    withOneAssetAndOnePlaceholder();
+
+    await runGc(['--yes']);
+
+    expect(warnText()).toContain(`cdkd gc will delete the following (region: ${REGION}):`);
+    expect(warnText()).not.toContain('unreferenced assets');
+    // ...and the placeholder is actually IN the plan the user consents to, so
+    // the wording above is not merely accurate about an empty list.
+    expect(warnText()).toContain(`s3://${STATE_BUCKET}/${ABANDONED_KEY}`);
+  });
+
+  it('counts placeholder bytes in the plan total the user consents to', async () => {
+    // 10 B of asset + 512 B of placeholder. Dropping `responseBytes` from the
+    // sum leaves a self-consistent-looking `= 10 B reclaimable`, which no other
+    // case could see.
+    withOneAssetAndOnePlaceholder();
+
+    await runGc(['--yes']);
+
+    expect(warnText()).toContain(
+      'Total: 1 S3 object(s) (10 B) + 0 ECR image(s) (0 B) + ' +
+        '1 custom-resource response placeholder(s) (512 B) = 522 B reclaimable'
+    );
+  });
+
+  it('counts placeholder bytes in the --dry-run total as well', async () => {
+    // The dry-run path prints the same total through `info` rather than through
+    // the prompt, so it is a second, independent rendering of the same sum.
+    withOneAssetAndOnePlaceholder();
+
+    await runGc(['--dry-run']);
+
+    expect(infoText()).toContain('(512 B) = 522 B reclaimable');
+  });
+
+  it('counts placeholder bytes in the final reclaimed total', async () => {
+    // The closing line is computed separately from the plan total, so dropping
+    // `responseBytes` from one and not the other is a real (and silent) state.
+    withOneAssetAndOnePlaceholder();
+
+    await runGc(['--yes']);
+
+    expect(infoText()).toContain('✓ gc completed: 522 B reclaimed');
   });
 });
 

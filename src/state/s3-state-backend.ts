@@ -709,6 +709,21 @@ export class S3StateBackend {
       );
       for (const obj of response.Contents ?? []) {
         if (obj.Key === undefined || obj.LastModified === undefined || obj.Size === undefined) {
+          // Logged, not silently skipped. The caller gets a SHORTER list with
+          // no other signal, and its consumer is an age-guarded SWEEP, whose
+          // under-collection is indistinguishable from a clean bucket. This
+          // line is the only place the drop is ever observable.
+          const missing = [
+            obj.Key === undefined ? 'Key' : undefined,
+            obj.LastModified === undefined ? 'LastModified' : undefined,
+            obj.Size === undefined ? 'Size' : undefined,
+          ]
+            .filter((f) => f !== undefined)
+            .join(', ');
+          this.logger.debug(
+            `listRawObjects: dropping an entry under '${keyPrefix}' ` +
+              `(key: ${obj.Key ?? '<none>'}) — ListObjectsV2 returned no ${missing}`
+          );
           continue;
         }
         objects.push({ key: obj.Key, lastModified: obj.LastModified, size: obj.Size });

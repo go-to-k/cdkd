@@ -51,14 +51,23 @@ vi.mock('../../../src/utils/aws-region-resolver.js', async () => {
   };
 });
 
+// The child double is HOISTED and stable rather than a fresh `vi.fn()` per
+// `child()` call, so a debug-only side effect is assertable at all. It has to
+// be: `listRawObjects` DROPS a malformed `Contents` entry, and the returned
+// list is a shorter array with no other signal — the debug line is the only
+// place a caller can ever observe the drop.
+const { childLoggerMock } = vi.hoisted(() => ({
+  childLoggerMock: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
-    child: () => ({
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
+    child: () => childLoggerMock,
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
@@ -724,6 +733,37 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(objects.map((o) => o.key)).toEqual(['custom-resource-responses/ok.json']);
     });
 
+    it('LOGS each dropped entry, naming the field that was missing', async () => {
+      // The drop decision is right, but under-collection is the invisible half
+      // of a sweeper's failure: the caller receives a shorter array and cannot
+      // tell a dropped entry from one S3 never returned. The debug line is the
+      // only observable, so it is pinned rather than left to the comment that
+      // describes it.
+      s3Client.send.mockResolvedValueOnce({
+        Contents: [
+          { Key: 'custom-resource-responses/ok.json', LastModified: D1, Size: 5 },
+          { Key: 'custom-resource-responses/no-date.json', Size: 5 },
+          { Key: 'custom-resource-responses/no-size.json', LastModified: D1 },
+        ],
+        IsTruncated: false,
+      });
+
+      await backend.listRawObjects('custom-resource-responses/');
+
+      const debugText = childLoggerMock.debug.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(debugText).toContain(
+        "dropping an entry under 'custom-resource-responses/' " +
+          '(key: custom-resource-responses/no-date.json) — ListObjectsV2 returned no LastModified'
+      );
+      expect(debugText).toContain(
+        "dropping an entry under 'custom-resource-responses/' " +
+          '(key: custom-resource-responses/no-size.json) — ListObjectsV2 returned no Size'
+      );
+      // ...and the KEPT entry is not reported as a drop, so the assertion above
+      // cannot be satisfied by a line logged for every object.
+      expect(debugText).not.toContain('custom-resource-responses/ok.json');
+    });
+
     it('collects across multiple ListObjectsV2 pages via ContinuationToken', async () => {
       s3Client.send.mockResolvedValueOnce({
         Contents: [{ Key: 'custom-resource-responses/p1.json', LastModified: D1, Size: 1 }],
@@ -752,6 +792,16 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // The owner pin is what makes a foreign state bucket 403 rather than be
       // listed; the asset-bucket arms carry it and this one must too.
       expect((listCalls[0][0] as ListObjectsV2Command).input.ExpectedBucketOwner).toBeDefined();
+      // The one parameter that SCOPES the listing, and the one this case used
+      // to leave unpinned: deleting `Prefix: keyPrefix` passed the whole suite.
+      // Unscoped, the sweep lists the entire state bucket and the leaf-shape
+      // regex becomes the only thing standing between it and live state — the
+      // same class as the `--state-prefix` collision. Asserted on EVERY page,
+      // since a continuation call that dropped it would widen the second page
+      // alone.
+      for (const call of listCalls) {
+        expect((call[0] as ListObjectsV2Command).input.Prefix).toBe('custom-resource-responses/');
+      }
     });
 
     it('returns an empty list when no objects match the prefix', async () => {
