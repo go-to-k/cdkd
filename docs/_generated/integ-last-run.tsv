@@ -177,7 +177,7 @@ local-invoke-container	2026-08-13T14:36:45Z	PASS	-	verify.sh	issue 1792/1793 no-
 local-invoke-dotnet	2026-07-26T20:35:19Z	PASS	58	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-from-cfn-stack	2026-07-26T21:13:17Z	PASS	94	verify.sh	re-run post review fixes; install-guard exercised via fresh node_modules direct run (rc=0); clean
 local-invoke-from-cfn-stack-multi-stack	2026-07-26T21:13:17Z	PASS	113	verify.sh	re-run post review fixes; docker + account + CFn clean
-local-invoke-from-state	2026-08-13T16:02:59Z	PASS	-	verify.sh	issue 1836 post-rebase re-run after the round-4 bucket-region fold; upper-cased --stack-region reads the us-east-1 record; 7 deleted 0 err, 0 orph, docker clean
+local-invoke-from-state	2026-08-26T03:18:49Z	PASS	79	verify.sh	PR #2194 integ-local gate (local-state-loader in scope); Docker + real-AWS from-state, 0 err 0 orphans
 local-invoke-java	2026-07-26T20:29:11Z	PASS	36	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-layers	2026-07-26T20:29:11Z	PASS	17	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
