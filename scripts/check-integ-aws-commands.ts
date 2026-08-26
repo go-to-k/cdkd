@@ -452,7 +452,7 @@ export function readFixtureScripts(integRoot: string): { fixture: string; conten
   // `delete-object` in twelve of them, issue #2096). Scoping this walk to
   // directories would leave the most widely executed aws calls in the tree as
   // the only ones this lint cannot see -- and a removed verb there breaks
-  // twelve fixtures at once rather than one.
+  // sixteen fixtures at once rather than one.
   const shared = entries
     .filter((e) => e.isFile() && e.name.endsWith('.sh'))
     .map((e) => ({

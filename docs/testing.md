@@ -1005,7 +1005,7 @@ or a deliberately seeded pre-GHSA record. Measured 2026-08-20 for issue
 | `cdkd/AppSyncStack/us-east-1/state.json` | 557 | 17 of versions 12..45 (a live `da2-…` AppSync key) |
 | `cdkd/CdkdApigwUsagePlanKeyExample/us-east-1/state.json` | 16 | 2 of them (a live 40-char API Gateway key `Value`) |
 
-Twelve fixtures do this today.
+Sixteen fixtures do this today.
 
 **When measuring a key, sample across the RANGE or grep the whole thing — never
 the newest N.** The last two rows were each cleared as "no key material" by a
@@ -1048,7 +1048,52 @@ all four; a key list covers whichever ones its author thought of.
 
 One blind spot to know: a nested-stack child lives at
 `cdkd/<Parent>~<Child>/<region>/`, a SIBLING prefix rather than a descendant, so
-this does not reach it. No fixture in the swept set has one today.
+one `s3_stack_prefix` call does not reach it. This USED to be recorded as "no
+fixture in the swept set has one today"; that is no longer true.
+`nested-stack-secret` is in the swept set, builds a real `cdk.NestedStack`, and
+handles it the way a fixture must — by deriving a SECOND prefix for the child
+and sweeping and asserting both:
+
+```bash
+CHILD_STACK="${STACK}~Child"
+PARENT_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
+CHILD_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
+```
+
+Copy that if your fixture gains a nested stack.
+
+A second sibling prefix behaves the same way and is easier to miss: the shared
+**exports index** at `cdkd/_index/<region>/exports.json`, which holds RESOLVED
+Output values. No `s3_stack_prefix` reaches it, and it must never be swept with
+a prefix-scoped `all` — it is shared with every other stack in the region, so
+that would delete a concurrent lane's live index. Sweep it KEY-scoped and
+`noncurrent` only, which leaves whatever is CURRENT intact:
+
+```bash
+INDEX_KEY="cdkd/_index/${REGION}/exports.json"
+# In `sweep`/`cleanup` — safe on EVERY path, because `noncurrent` never touches
+# the CURRENT object (which belongs to whichever stack wrote it last):
+s3_purge_key_versions "${STATE_BUCKET}" "${INDEX_KEY}" noncurrent || true
+# ...and on the success path, ASSERT it, exactly like the prefix sweep:
+s3_assert_key_versions_swept "${STATE_BUCKET}" "${INDEX_KEY}" noncurrent \
+  "<fixture> exports-index teardown"
+```
+
+Note the assertion's mode DEFAULTS to `noncurrent`, the opposite of
+`s3_assert_versions_swept`'s: demanding zero versions of a key you share would
+demand a state no correct run can reach. And put the purge in `sweep` /
+`cleanup`, not only after the trap is disarmed — a failed or signalled run
+writes index versions too, and those are the majority of the runs that write
+them.
+
+(`cross-stack-secret-import` does this. Asserting that the CURRENT index object
+carries the `{{resolve:...}}` expression rather than a plaintext says nothing
+about the versions behind it, which is the gap.) One more sidecar, stated so
+nobody re-derives it: `custom-resource-responses/<id>.json` lives under a
+stack's OWN prefix, so the ordinary sweep does reach it.
+
+The wider fixture-tree work is
+tracked in issue [#2107](https://github.com/go-to-k/cdkd/issues/2107).
 
 In `cleanup`, purge NONCURRENT versions only — that function also runs from the
 pre-run sweep and from the failure / INT / TERM traps, where a live `state.json`
@@ -1058,7 +1103,14 @@ may be the only record of resources that are still standing:
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX:-}" noncurrent || true
 ```
 
-On the SUCCESS path, do the full sweep and **assert**:
+On the SUCCESS path, do the full sweep and **assert**. Which template you copy
+depends on whether your `cleanup` ends by calling `exit`:
+
+**Shape A — `cleanup` returns normally.** Call it, disarm the trap so nothing
+can write a new delete marker after the count is taken, then sweep and assert.
+This is what most sweeping fixtures do, and it needs no status capture: the
+destroy it depends on already ran un-piped under `set -e` further up, so this
+line is unreachable if it failed.
 
 ```bash
 cleanup
@@ -1066,6 +1118,71 @@ trap - EXIT INT TERM
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "<fixture> state teardown"
 ```
+
+**Shape B — `cleanup` ends with `exit "${rc}"`.** Then calling it from the
+success path terminates the script, so a sweep placed after that call never
+runs, and the mode choice has to live INSIDE `cleanup`. There, **gate the mode
+on the DESTROY's status and not on the script's** (issue
+[#2225](https://github.com/go-to-k/cdkd/issues/2225)). `rc` is the SCRIPT's
+status on entry to `cleanup`: a run whose assertions ALL PASSED and whose
+destroy then FAILED arrives with `rc` 0 and resources still standing, so gating
+on `rc` alone takes the `all` branch and deletes the very `state.json` a later
+`cdkd state destroy` needs — orphan resources with no way to reach them.
+
+```bash
+cleanup() {
+  rc=$?
+  set +e
+  # PIPED destroy -> ${PIPESTATUS[0]}. NOT `$?`: the pipe to `tail` is exactly
+  # what hides the failure, so `$?` would report tail's status and reproduce
+  # the bug inside its own fix.
+  ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tail -5 || true
+  destroy_rc=${PIPESTATUS[0]}
+  # UNPIPED destroy -> plain `$?` is correct:
+  #   node "${LOCAL_DIST}" destroy "${STACK}" ... >/dev/null 2>&1
+  #   destroy_rc=$?
+  # Either way write it as a PLAIN assignment. `local destroy_rc=$?` captures
+  # `local`'s own exit status (it is itself a command) and so always reads 0 --
+  # the same class of mistake as reading `$?` past a pipe. Declare with a bare
+  # `local destroy_rc` on its own line first if you want it function-scoped.
+  #
+  # The capture must be the next thing that RUNS. Comments and blank lines are
+  # fine; any command in between overwrites PIPESTATUS.
+
+  if [ "${rc}" -eq 0 ] && [ "${destroy_rc}" -eq 0 ]; then
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
+    s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "<fixture> state teardown"
+  else
+    s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" noncurrent || true
+  fi
+  exit "${rc}"
+}
+```
+
+With more than one stack, capture one status per destroy and require all of
+them (`rollback-cross-region-secret` gates on `rc` plus both of its per-region
+destroy statuses).
+
+`tests/unit/scripts/integ-s3-versions-harness.test.ts` enforces Shape B: inside
+a `cleanup` that purges `all`, every cdkd destroy must have its status captured,
+a piped one must use `${PIPESTATUS[0]}`, and the guard must actually read the
+captured variable. Two further rules come with it: two destroys may not
+CLOBBER each other by capturing into the same variable name (the guard then
+reads one status and the other is lost), and an `aws s3 rm --recursive` over
+the stack prefix may not run above the guard, since the delete marker it writes
+demotes the live `state.json` to a noncurrent version the `all` branch then
+deletes. It recognises the invocation spellings the tree uses (`${CDKD}`,
+`${CLI}`, `node "${LOCAL_DIST}"`, `dist/cli.js`) and deliberately does NOT
+count the AWS CDK CLI's own `cdk destroy`, whose status says nothing about
+whether cdkd's state record is still needed.
+
+Five shapes still slip past it, none live in the tree today and all tracked in
+issue [#2304](https://github.com/go-to-k/cdkd/issues/2304): a one-line
+`if …; then …; fi` (the `fi` is matched line-anchored, so it opens no depth), a
+destroy inside a `for` / `while` loop (the clobber expressed by ITERATION
+rather than by a second line), a purge inside a `case` arm, a conditional
+`aws s3 rm` reported with the wrong reason, and a teardown factored out of the
+lexical `cleanup()` body. Check those by hand until that issue lands.
 
 Three traps make a sweep silently PARTIAL while the run still exits 0. Each was
 observed live, and none is visible from reading the script:
@@ -1079,12 +1196,21 @@ observed live, and none is visible from reading the script:
    non-zero on it, and the loop body never runs for it. Verified against real
    S3: on a key holding one version the broken form swept 0 of 1; on a
    347-entry listing it swept 346. Repeated passes take a key to 1 and stop.
-   Use `printf '%s\n'` plus a `|| [ -n "${key}" ]` guard — both.
+   Use `printf '%s\n'` plus a `|| [ -n "${key}" ]` guard — **both**, and that
+   is measured rather than belt-and-braces superstition: the harness's mutation
+   probes show that removing EITHER guard alone still sweeps correctly, so only
+   removing both exposes the trap. A probe that reintroduced just one would
+   report a false all-clear.
 3. **Counting with `length(...)` under `--output text`.** The AWS CLI applies
    `--query` PER PAGE and concatenates, so a listing over 1000 entries prints
-   one number per page — measured `1000\n189`, not `1189` — and `[ "$n" -ne 0 ]`
-   on that is a bash error, not a count. Count ROWS of a `[Key,VersionId]`
-   projection instead; the pages concatenate into one row stream.
+   one number per page — measured `1000\n189`, not `1189`. `[ "$n" -ne 0 ]` on
+   that is not a comparison, and the consequence is **worse than a crash**: the
+   `[` builtin rejects the operand and returns non-zero, so the `if` is FALSE
+   and the assertion falls straight through to announce a clean teardown —
+   `exit 0`, `OK: 0 surviving object versions` — while 1189 versions are still
+   in the bucket. A vacuous green, which is the failure mode this whole
+   convention exists to remove. Count ROWS of a `[Key,VersionId]` projection
+   instead; the pages concatenate into one row stream.
 
 Two more details the helpers encode. The query is
 `([Versions, DeleteMarkers][])[...]` and the **parentheses are load-bearing**:
@@ -1098,10 +1224,13 @@ leaves one marker per key behind forever and the zero-assertion never passes.
 both segments non-empty** — the purge, the count, and the assertion alike. That
 is a safety guard, not style, and it is needed on the READ side for a reason
 that is easy to miss: `cdkd///` names no stack, so S3 lists nothing for it and
-the count is a truthful `0` **about the wrong key space**. Combined with every
-caller wrapping the purge in `|| true`, a mis-derived `STATE_PREFIX` would print
-a refusal to stderr and let the fixture exit 0 with the plaintext intact — the
-same vacuous green the whole convention exists to remove, one level up. On the
+the count is a truthful `0` **about the wrong key space**. And because a purge that refuses cannot
+abort its caller either — most call sites wrap it in `|| true`, and the three
+that do not (`nested-stack-secret` twice, `stack-lock-renewal`) sit inside
+`cleanup` under `set +e`, so the effect is the same — a mis-derived
+`STATE_PREFIX` would print a refusal to stderr and let the fixture exit 0 with
+the plaintext intact: the same vacuous green the whole convention exists to
+remove, one level up. On the
 purge side the guard also stops an unset `STACK` (recall `cleanup` runs under
 `set +eu`) from widening the prefix and deleting another stack's LIVE state.
 
@@ -1109,7 +1238,7 @@ Deletes go through `DeleteObjects` in batches of 1000, the API maximum, so a
 347-version key costs one CLI process rather than 347. A key or version id
 carrying a quote or a backslash falls back to a single-object `delete-object`,
 because the payload is assembled without `jq` — sourcing this file must not add
-a `jq` dependency to twelve fixtures. `Quiet: true` means a fully successful call
+a `jq` dependency to the sixteen fixtures that source it. `Quiet: true` means a fully successful call
 returns `{}`, so any `Errors` in the output is a per-object failure that the
 call reported as overall success; it is surfaced as a WARN and the retry loop
 plus the zero-assertion are the backstop. The call pins `--output json`, which
@@ -1126,23 +1255,103 @@ there turns any benign CLI warning into a phantom surviving version, so an empty
 bucket counts 1 and the assertion fails for no reason — and on the delete side
 that warning text would be handed to `delete-object --key`.
 
-Two lints see the helper. `tests/unit/scripts/integ-verify-bash-compat.test.ts`
-scans the shared helpers in `tests/integration/*.sh` alongside every `verify.sh`
-— a bash-4-ism in a file twelve fixtures source is where it does the most damage
-and is least likely to be noticed. `scripts/check-integ-aws-commands.ts` scans
-them too, since a verb removed from the AWS CLI here breaks twelve fixtures at
-once. Both carry a per-shape floor, so a total swamped by 280 fixtures cannot
-hide the helper going unread. `tests/unit/scripts/integ-s3-versions-helper.test.ts`
-executes the guard directly, asserting a malformed prefix can never produce a
-pass and that no AWS call is even attempted for one.
+Four lints see the helper — two STATIC, two EXECUTABLE, and knowing which owns
+what is how you decide where to add a case.
+
+Static: `tests/unit/scripts/integ-verify-bash-compat.test.ts` scans the shared
+helpers in `tests/integration/*.sh` alongside every `verify.sh` — a bash-4-ism
+in a file sixteen fixtures source is where it does the most damage and is least
+likely to be noticed. `scripts/check-integ-aws-commands.ts` scans them too,
+since a verb removed from the AWS CLI here breaks sixteen fixtures at once. Both
+carry a per-shape floor, so a total swamped by 247 `verify.sh` files (across 287
+fixture directories) cannot hide the helper going unread.
+
+Executable, and the split matters:
+
+- **`tests/unit/scripts/integ-s3-versions-helper.test.ts` owns the PREFIX
+  GUARD.** It needs no AWS stand-in at all, and it pins the stronger property:
+  that the guard fires **before any AWS call is even attempted**, proved with a
+  fake `aws` that records its own invocation. Add a case here when you change
+  `_s3v_check_prefix` or the set of prefixes that must be refused.
+- **`tests/unit/scripts/integ-s3-versions-harness.test.ts` owns END-TO-END
+  BEHAVIOUR.** It sources the real helper under `/bin/bash` against an emulated
+  AWS CLI backed by a local version store, applying `--query` **per page** —
+  which is not a detail, because trap 3 IS that per-page application, and a fake
+  applying the query once would make the trap unreachable. It covers counting
+  and sweeping, the `noncurrent` / `all` split, delete-marker-latest, exact-key
+  scoping, pagination boundaries, listing failures, and the caller contract
+  above; each of the three traps is reintroduced as a mutation probe and watched
+  going red. Add a case here when you change what the helper DOES.
+
+Where the two overlap on prefixes, the first owns "no request was issued" and
+the second owns "and nothing was deleted"; neither is a copy of the other.
+
+The harness is hermetic by construction: its child environment is built from an
+allow-list rather than by inheriting the caller's, pinning `PATH`, `HOME`,
+`TMPDIR`, `BASH_ENV` / `ENV`, `LC_ALL` / `LANG`, `TZ` and cwd, and forwarding no
+`AWS_*` at all. Two axes are deliberately NOT pinned, and knowing why matters
+if you add a case: a **process supervisor** (an agent sandbox, a debugger, a
+profiler) injects variables into every spawned child *after* any env-building
+function has run, so the leak check subtracts a CONTROL spawn rather than
+naming them — an ignore-list would go quiet the moment a different supervisor
+injected a different name. And the **filesystem layout** (`/bin/bash`,
+`/usr/bin`, `/bin`) is assumed rather than pinned, failing loudly at the first
+spawn if it is wrong. If you add a case, do not assert on a shell's DIAGNOSTIC
+WORDING: an assertion on bash's `integer expression expected` passed under bash
+3.2 and 5.x and failed in the full suite, where the resolved interpreter says
+`Invalid integer` instead. Assert the observable — for that case, the vacuous
+green itself. Its scratch root honours `CDKD_TEST_SCRATCH_DIR` (parallel agents
+share `/tmp`) and prints a receipt naming the directory it used.
 
 `tests/unit/scripts/integ-secret-fixture-sweep.test.ts` enforces the convention
-itself: a fixture whose `bin/**` or `lib/**` TypeScript declares secret material
-— `unsafePlainText`, a hand-supplied `secretStringValue` / `secretObjectValue`,
-a templated `masterUserPassword`, `generateSecret: true`, or an
-`iam.AccessKey` — must source the helper AND call `s3_assert_versions_swept`.
-Both predicates read comment-stripped CODE: an early cut matched the explanatory
-comment, so deleting the `source` line still read as compliant.
+itself, and it now has **two** ways to oblige a fixture to sweep.
+
+**1. Declaring secret material.** A fixture whose `bin/**` or `lib/**`
+TypeScript declares it — `unsafePlainText`, a hand-supplied `secretStringValue`
+/ `secretObjectValue`, a templated `masterUserPassword`, `generateSecret: true`,
+or an `iam.AccessKey` — must source the helper AND call
+`s3_assert_versions_swept`. Both predicates read comment-stripped CODE: an early
+cut matched the explanatory comment, so deleting the `source` line still read as
+compliant.
+
+**2. Resolving a secret DYNAMIC REFERENCE — a hard violation, not a soft note.**
+A fixture whose sources carry `secretValueFromJson(...)`,
+`SecretValue.secretsManager(...)`, `unsafeUnwrap()`, or a literal
+`{{resolve:...}}` must sweep as well. That shape makes cdkd issue a real
+`GetSecretValue` on the deploy path. On today's code the plaintext does not
+reach state — the GHSA-p5qg-v9gv-hc7w fix rewrites each resolved value back to
+its `{{resolve:...}}` expression before persisting, and the same redaction
+covers the rollback journal's `attemptedProperties` — and that is a reason to
+sweep rather than to skip: the redaction is a src-side invariant one bug away
+from failing, and **object versions are forever**, so a single run under a
+broken redaction leaves plaintext no later fix removes. Five of the six
+fixtures in this class already swept; `rollback-cross-region-secret` was the
+divergence and now sweeps both of its cross-region prefixes.
+
+**What you have to do differently:** if your fixture reads a secret's VALUE into
+a template property — not just its ARN — source the helper and assert, even
+though nothing you can see puts a plaintext in `lib/*.ts`.
+
+**`generateSecretString` is EXEMPT, and the exemption is fenced.** It looks like
+it belongs beside `generateSecret: true` and does not. Issue
+[#2212](https://github.com/go-to-k/cdkd/issues/2212) proposed adding it on the
+premise that cdkd "persists that value into state.json exactly like a
+hand-written one"; traced through `SecretsManagerSecretProvider`, that premise
+does not hold. The value is minted LOCALLY from a CSPRNG into a local variable,
+handed to `CreateSecret`, and never returned, read back, or written into the
+properties bag: `create` / `update` return `attributes: { Id }` only, the
+provider never issues `GetSecretValue`, and `getDriftUnknownPaths()` lists both
+`SecretString` and `GenerateSecretString`. What state holds is the RECIPE.
+
+So it lives in the lint's `EXEMPT_SHAPES` rather than in `SECRET_MATERIAL`, and
+**each conjunct of that premise is asserted against the provider source**, so
+the exemption fails loudly rather than rotting if any of them stops being true —
+if that test goes red, re-open #2212 instead of relaxing it. The exemption is
+also CONDITIONAL: it self-revokes for any fixture that ALSO consumes the
+secret's value into a template property, which is rule 2 above. The four
+fixtures it currently covers (`composite-stack`, `event-driven`,
+`full-stack-demo`, `secrets-rotation-schedule`) reference their secret by ARN
+alone, which is why three of them legitimately have no `verify.sh` at all.
 
 It exists because a hand audit is not enough, and that is measured rather than
 assumed: the #2096 audit read every fixture's `verify.sh` and still missed

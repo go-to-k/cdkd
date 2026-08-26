@@ -44,6 +44,12 @@
 # Each one produces a SILENT PARTIAL sweep - the run still exits 0, and the
 # script still reads as if it cleaned up. All three were observed live.
 #
+# All three are now EXECUTED against this file by
+# `tests/unit/scripts/integ-s3-versions-harness.test.ts` (issue #2106), which
+# runs it under /bin/bash with a fake `aws` on PATH and reintroduces each trap
+# as a mutation probe. Until that landed the only automated coverage was
+# `bash -n` plus a static bash-4-ism scan, i.e. review.
+#
 #   1. Sweeping only from the EXIT trap. A fixture that ends with
 #      `trap - EXIT INT TERM` disarms the trap on the success path, so a
 #      trap-only sweep runs on the FAILURE path and never on the normal one.
@@ -212,7 +218,7 @@ _s3v_flush_batch() {
 # `printf '%s\n'` and why the `|| [ -n "${key}" ]` guard is here as well.
 #
 # The payload is assembled by hand rather than through `jq`, so that sourcing
-# this file does not add a `jq` dependency to twelve fixtures. That is safe for
+# this file does not add a `jq` dependency to sixteen fixtures. That is safe for
 # cdkd's key space (stack names, regions, ISO timestamps, hashes) but not for
 # arbitrary text, so a key or version id carrying a quote or a backslash is
 # routed to a single-object `delete-object` instead of being interpolated into
@@ -279,10 +285,28 @@ _s3v_delete_rows() {
 #
 # BLIND SPOT, stated because it is invisible from here: a NESTED STACK child
 # lives at `cdkd/<Parent>~<Child>/<region>/`, which is a SIBLING prefix, not a
-# descendant of the parent's. This sweep does not reach it. No fixture in the
-# swept set creates one today (verified), so it is not a live gap - but a
-# fixture that gains a nested stack must sweep the child prefix too. Tracked
-# with the wider fixture-tree work in issue #2107.
+# descendant of the parent's. One call to this function does not reach it, so a
+# fixture with a nested stack must derive a SECOND prefix and sweep both.
+#
+# This comment used to add "no fixture in the swept set creates one today
+# (verified)". That has since stopped being true and the line was not revisited:
+# `nested-stack-secret` is in the swept set, builds a real `cdk.NestedStack`,
+# and does the right thing already -- PARENT_PREFIX plus
+# `s3_stack_prefix "${STACK}~Child"`, both purged and both asserted. Copy that
+# fixture. Tracked with the wider fixture-tree work in issue #2107.
+#
+# SECOND BLIND SPOT, same shape: the shared EXPORTS INDEX at
+# `cdkd/_index/<region>/exports.json` holds RESOLVED Output values and is a
+# sibling prefix no `s3_stack_prefix` reaches. It is SHARED with every other
+# stack in the region, so it must never be swept with a prefix-scoped `all` --
+# that would take a concurrent lane's live index. Use `s3_purge_key_versions`
+# with the exact key and `noncurrent`, which leaves whatever is CURRENT intact
+# while the historical versions go (`cross-stack-secret-import` does this).
+#
+# THIRD, stated so nobody re-derives it: `custom-resource-responses/<id>.json`
+# is a sidecar under a stack's OWN prefix, so the prefix sweep DOES reach it.
+# Only `stack-lock-renewal` in the swept set uses a custom resource, and it
+# carries no secret.
 s3_stack_prefix() {
   printf 'cdkd/%s/%s/\n' "${1:-}" "${2:-}"
 }
@@ -307,6 +331,51 @@ s3_stack_prefix() {
 #               MARKER is the entry carrying IsLatest==true, so a
 #               noncurrent-only sweep would leave one marker per key behind
 #               forever and the zero-assertion would never pass.
+#
+# THE MODE FOLLOWS THE DESTROY, NOT THE SCRIPT'S EXIT STATUS (issue #2225).
+# This is a CALLER contract, and it lives here rather than in any one fixture
+# because getting it wrong is invisible from inside the fixture that has it.
+#
+# The failing shape: a `cleanup` that opens with `rc=$?`, runs the destroy as
+#
+#     ${CDKD} destroy "${STACK}" ... 2>&1 | tail -5 || true
+#
+# and then branches on `rc`. The pipe (and the `|| true`) throw the DESTROY's
+# status away, while `rc` is the SCRIPT's status on entry to `cleanup`. So a
+# run whose assertions ALL PASSED and whose destroy then FAILED arrives here
+# with `rc` 0 and resources still standing, takes the `all` branch, and deletes
+# the current state.json -- the one record a later `cdkd state destroy` would
+# have worked from. The result is orphan AWS resources with no way to reach
+# them, which is precisely the hazard the two modes above exist to avoid.
+#
+# The correct form captures the destroy's OWN status and gates on BOTH:
+#
+#     ${CDKD} destroy "${STACK}" ... 2>&1 | tail -5 || true
+#     destroy_rc=${PIPESTATUS[0]}
+#     ...
+#     if [ "${rc}" -eq 0 ] && [ "${destroy_rc}" -eq 0 ]; then
+#       s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" all || true
+#       s3_assert_versions_swept  "${STATE_BUCKET}" "${PREFIX}" "..."
+#     else
+#       s3_purge_prefix_versions "${STATE_BUCKET}" "${PREFIX}" noncurrent || true
+#     fi
+#
+# `${PIPESTATUS[0]}` rather than `$?`: the pipe to `tail` is what hid the
+# failure in the first place, so reading the wrong status reproduces the bug
+# inside the fix. The capture must sit on the line IMMEDIATELY after the
+# pipeline -- any command in between overwrites PIPESTATUS. (Measured on bash
+# 3.2 and 5.x: a trailing `|| true` does NOT clobber PIPESTATUS, so the house
+# belt-and-braces form is safe to keep.)
+#
+# MOST CALLERS DO NOT NEED THIS, and that is why the rule is stated rather than
+# assumed. Of the sixteen fixtures sourcing this file, fourteen purge `all` on
+# the SUCCESS PATH -- after an UNPIPED, `set -e`-guarded destroy that simply
+# cannot be reached if it failed -- and purge only `noncurrent` from `cleanup`.
+# That shape needs no status capture at all. The rule binds for the two whose
+# `cleanup` ITSELF chooses between the modes (`local-run-task-from-state` and
+# `rollback-cross-region-secret`), because `cleanup` runs under `set +e` on
+# every exit path and therefore knows nothing unless it asks.
+# `tests/unit/scripts/integ-s3-versions-harness.test.ts` enforces this.
 #
 # The retry loop is insurance against any future truncation of the listing:
 # a sweep that is only ever measured by its own listing cannot tell "I am
@@ -352,16 +421,58 @@ s3_purge_key_versions() {
 # The prefix check is NOT only a purge-path concern, even though nothing here
 # deletes. `cdkd///` lists nothing, so without it this returns a truthful 0 for
 # a prefix that names no stack, and `s3_assert_versions_swept` below then
-# announces a clean teardown for a bucket it never really looked at. Every
-# caller wraps the PURGE in `|| true`, so a mis-derived prefix would print the
-# purge's refusal to stderr and still let the run PASS - which is precisely the
-# vacuous green this file exists to remove.
+# announces a clean teardown for a bucket it never really looked at. A refusing
+# purge cannot abort its caller either - MOST wrap it in `|| true`, and the three
+# that do not (nested-stack-secret twice, stack-lock-renewal) sit inside
+# `cleanup` under `set +e`, so the effect is the same - and a mis-derived prefix
+# would print the purge's refusal to stderr and still let the run PASS, which is
+# precisely the vacuous green this file exists to remove.
 s3_count_versions() {
   local bucket="$1" prefix="$2" mode="${3:-all}" rows
   _s3v_check_prefix "${prefix}" || return 1
   rows="$(_s3v_rows "${bucket}" "${prefix}" "$(_s3v_prefix_query "${mode}")")" || return 1
   printf '%s\n' "${rows}" | awk 'NF{n++} END{print n+0}'
   return 0
+}
+
+# s3_count_key_versions <bucket> <key> [noncurrent] - the number of surviving
+# versions + delete markers for ONE key. Same tri-state as s3_count_versions:
+# returns 1 when the key is empty OR the LIST failed, so a caller can tell
+# "zero" from "could not tell". Counts ROWS, never `length()` - trap 3.
+s3_count_key_versions() {
+  local bucket="$1" key="$2" mode="${3:-all}" rows
+  if [ -z "${key}" ]; then
+    echo "FAIL: s3-versions: s3_count_key_versions needs a key" >&2
+    return 1
+  fi
+  rows="$(_s3v_rows "${bucket}" "${key}" "$(_s3v_key_query "${key}" "${mode}")")" || return 1
+  printf '%s\n' "${rows}" | awk 'NF{n++} END{print n+0}'
+  return 0
+}
+
+# s3_assert_key_versions_swept <bucket> <key> [mode] [description]
+#
+# The KEY-scoped twin of s3_assert_versions_swept, for a key this fixture does
+# not exclusively own - the shared exports index being the case that forced it.
+# MODE MATTERS AND DEFAULTS TO noncurrent HERE, the opposite of the prefix
+# assertion's default: a shared key's CURRENT object belongs to whoever wrote it
+# last and must survive, so what this certifies is that no HISTORICAL version
+# this run wrote is left behind. Asserting `all` on a shared key would demand a
+# state no correct run can reach.
+s3_assert_key_versions_swept() {
+  local bucket="$1" key="$2" mode="${3:-noncurrent}" desc="${4:-key teardown}" n
+  if ! n="$(s3_count_key_versions "${bucket}" "${key}" "${mode}")"; then
+    echo "FAIL: ${desc}: could not count ${mode} versions of s3://${bucket}/${key}." >&2
+    echo "      An unverified sweep is not a clean teardown - failing rather than assuming." >&2
+    exit 1
+  fi
+  if [ "${n}" -ne 0 ]; then
+    echo "FAIL: ${desc}: ${n} ${mode} version(s) survive for s3://${bucket}/${key}." >&2
+    echo "      Inspect with:" >&2
+    echo "        aws s3api list-object-versions --bucket ${bucket} --prefix ${key}" >&2
+    exit 1
+  fi
+  echo "    OK: ${desc}: 0 ${mode} versions for s3://${bucket}/${key}"
 }
 
 # s3_assert_versions_swept <bucket> <prefix> [description]

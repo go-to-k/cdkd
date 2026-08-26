@@ -18,8 +18,9 @@ import { tmpdir } from 'node:os';
  *
  * `cdkd///` names no stack, so S3 lists nothing for it and a count of 0 is
  * TRUE — about the wrong key space. The assertion originally trusted that 0 and
- * announced a clean teardown. Combined with every caller wrapping the purge in
- * `|| true`, a mis-derived `STATE_PREFIX` printed a refusal to stderr and the
+ * announced a clean teardown. Combined with a refusing purge being unable to
+ * abort its caller -- most wrap it in `|| true`, and the three that do not run
+ * inside `cleanup` under `set +e` -- a mis-derived `STATE_PREFIX` printed a refusal to stderr and the
  * fixture still exited 0 with the plaintext intact: the exact vacuous green the
  * whole PR exists to remove, reintroduced inside the assertion meant to prevent
  * it. Caught in review, 2026-08-20.

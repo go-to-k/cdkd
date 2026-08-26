@@ -710,8 +710,13 @@ its objects survive as CURRENT ones. A per-key sweep of `state.json` is the
 natural first instinct, it is what a manual remediation actually did, and it
 left the journal behind. `s3_stack_prefix` + `s3_purge_prefix_versions` covers
 all four. (Blind spot: a nested-stack child at `cdkd/<Parent>~<Child>/<region>/`
-is a SIBLING prefix, not a descendant, so it is not reached — no fixture in the
-swept set has one today; tracked with issue
+is a SIBLING prefix, not a descendant, so ONE `s3_stack_prefix` call does not
+reach it. `nested-stack-secret` is in the swept set, builds a real
+`cdk.NestedStack`, and derives a SECOND prefix from `"${STACK}~Child"` —
+sweeping and asserting both. Copy that. The shared exports index
+`cdkd/_index/<region>/exports.json` is a sibling prefix too and holds RESOLVED
+Output values; sweep it KEY-scoped and `noncurrent` only, never `all`, because
+other stacks share it. Tracked with issue
 [#2107](https://github.com/go-to-k/cdkd/issues/2107).)
 
 Use the shared helpers in `tests/integration/s3-versions.sh`; do not
@@ -761,8 +766,9 @@ EVERY entry point — purge, count AND assertion — refuses a prefix that is no
 stops an unset `STACK` (`cleanup` runs under `set +eu`) from widening the prefix
 and deleting another stack's LIVE state. On the READ side it is subtler and was
 missed on the first cut: `cdkd///` lists nothing, so the count is a truthful `0`
-about the WRONG key space, and since every caller wraps the purge in `|| true`,
-a mis-derived prefix printed a refusal to stderr while the fixture still exited
+about the WRONG key space, and since a refusing purge cannot abort its caller
+either (most wrap it in `|| true`; the three that do not run inside `cleanup`
+under `set +e`), a mis-derived prefix printed a refusal to stderr while the fixture still exited
 0 with the plaintext intact. That is the vacuous pass this whole convention
 exists to remove, reintroduced inside the assertion meant to prevent it. Pinned
 by `tests/unit/scripts/integ-s3-versions-helper.test.ts`, which runs the guard
@@ -790,8 +796,8 @@ stream — `2>&1` there makes a benign CLI warning a phantom surviving version
 `delete-object --key`.
 
 Also scanned by `tests/unit/scripts/integ-verify-bash-compat.test.ts` and by
-`scripts/check-integ-aws-commands.ts` (its `aws` verbs run in twelve fixtures at
-once), both with per-shape floors so a total swamped by 280 fixtures cannot hide
+`scripts/check-integ-aws-commands.ts` (its `aws` verbs run in sixteen fixtures at
+once), both with per-shape floors so a total swamped by 247 verify.sh cannot hide
 the helper going unread. Four other integ scanners still cannot see it; the
 per-scanner verdict is recorded in issue
 [#2110](https://github.com/go-to-k/cdkd/issues/2110) rather than fixed by a

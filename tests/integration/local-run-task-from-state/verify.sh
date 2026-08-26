@@ -149,6 +149,15 @@ cleanup() {
   fi
 
   ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force 2>&1 | tail -5 || true
+  # PIPESTATUS[0], NOT `$?` (issue #2225). The pipe to `tail` is what hides the
+  # destroy's failure in the first place, so `$?` here would report tail's
+  # status -- reproducing the bug inside its own fix. Measured on bash 3.2 and
+  # 5.x: the trailing `|| true` does NOT clobber PIPESTATUS, so the house
+  # belt-and-braces form is kept. This capture must stay on the line
+  # IMMEDIATELY after the pipeline; any command in between overwrites
+  # PIPESTATUS. `tests/unit/scripts/integ-s3-versions-harness.test.ts` enforces
+  # both the capture and its adjacency.
+  destroy_rc=${PIPESTATUS[0]}
 
   # State-version sweep (issue #2096), INSIDE cleanup on purpose. `cleanup`
   # ends with `exit "${rc}"`, so calling it from the success path terminates
@@ -157,11 +166,16 @@ cleanup() {
   # run of this arm is what revealed. Here it runs on EVERY exit path, which is
   # also the right scope: a FAILED run seeds state too.
   #
-  # Mode matters. `all` is correct only once the stack is gone for good; on a
-  # failed path the destroy above is best-effort and a live state.json may still
-  # be needed by a later `cdkd state destroy`, so that path purges only
-  # NONCURRENT versions (where a seeded plaintext lives) and does not assert.
-  if [ "${rc}" -eq 0 ]; then
+  # Mode matters, and the MODE FOLLOWS THE DESTROY, not this script's status
+  # (issue #2225). `all` is correct only once the stack is gone for good. A run
+  # whose assertions ALL PASSED and whose destroy then FAILED has `rc` 0 with
+  # resources still standing, so gating on `rc` alone would take the `all`
+  # branch and delete the very state.json a later `cdkd state destroy` needs to
+  # clean them up -- orphan resources with no state record, which is exactly
+  # the hazard the mode comment in ../s3-versions.sh warns about. Both statuses
+  # must be zero; otherwise purge only NONCURRENT versions (where a seeded
+  # plaintext lives) and do not assert.
+  if [ "${rc}" -eq 0 ] && [ "${destroy_rc}" -eq 0 ]; then
     s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
     s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "local-run-task-from-state state teardown"
   else
