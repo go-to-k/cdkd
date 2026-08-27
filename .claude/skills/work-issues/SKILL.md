@@ -691,7 +691,20 @@ there anyway. Per lane:
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 pnpm install                 # worktrees have no node_modules
+vp run build                 # ...and no dist/ — see below
 ```
+
+**Build BEFORE the first test run, and read a fresh worktree's failures with that
+in mind.** A worktree starts with no `dist/`, and any test that spawns the built
+CLI then fails on the missing binary rather than on its subject — with an
+assertion message about the SUBJECT, which is what makes it costly. Measured in
+go-to-k/cdk-real-drift on 2026-08-27: a docs-only lane in a fresh worktree saw 13
+failures in a CLI exit-code suite (`expected 1 to be 2`), reproduced them with its
+own edit stashed, and had begun writing them up as "a peer merge broke main" — the
+same file passed in the main checkout, which HAS a `dist/`, so every comparison
+pointed at main. One `vp run build` in the worktree turned it green with no other
+change. **A fresh worktree failing where the main checkout passes is evidence about
+the WORKTREE first**, and a build costs seconds against a false broken-main report.
 
 **Before fixing, ask whether the defect has SIBLING SITES — and if it does,
 sweep them in THIS lane rather than filing them.** Most defects here are a
@@ -705,6 +718,40 @@ the repo before writing the fix:
 grep -rn "<the mishandled call / property / assumption>" src/ | grep -v test
 grep -rln "implements ResourceProvider" src/provisioning/providers/   # per-implementer audits
 ```
+
+**Query for the PRECONDITION minus the REMEDY, never for the remedy alone.** When the
+defect is a MISSING thing, the obvious grep searches for the thing that is missing —
+and it can only ever return the sites that already HAVE it. The absent sites are
+invisible to it by construction, so the sweep reports itself complete while covering
+only the half that was never broken. Ask instead: what makes a site ELIGIBLE for this
+defect, and which eligible sites lack the fix?
+
+```bash
+# WRONG -- finds only the providers that already validate.
+grep -rln "validateDesiredProperties" src/provisioning/providers/
+# RIGHT -- eligibility minus remedy.
+for f in $(grep -rln "implements ResourceProvider" src/provisioning/providers/); do
+  grep -q "validateDesiredProperties" "$f" || echo "NO VALIDATION: $f"
+done
+```
+
+Measured in go-to-k/cdk-local on 2026-08-27, whose root cause was "a fixture leaks the
+Docker image it builds". The sweep was bounded by a grep for the REMEDY
+(`docker rmi|docker image rm|docker image prune`); it returned five sites, every one of
+them a fixture that already had cleanup, and the lane closed all five and declared the
+class done. Eligibility minus remedy returns six more, plus a seventh that neither query
+finds — so the remedy-shaped query had seen 5 of 12 eligible sites.
+
+This repo is the one most exposed to it, because so many of its defects ARE missing
+entries: an absent `handledProperties` row, a provider with no validation arm, a type
+with no comparator. Every one of those is invisible to a grep for the thing it lacks.
+
+**The same run then repeated the mistake one level up, which is why this is a rule and
+not a footnote.** An agent that had just diagnosed the flaw in the orchestrator's query
+sized the residue from the ONE instance it had tripped over — "one site, ~30 min" —
+rather than asking which query would find the class. It was seven. **A count derived
+from the instance you happened to hit is not a count**, and sizing a deferral is exactly
+where that bites, because `Effort` and `Estimate` are what a future session budgets from.
 
 **This applies to a FIX ROUND at least as much as to the original find, and
 that is where it actually gets skipped.** The rule above reads as advice for
