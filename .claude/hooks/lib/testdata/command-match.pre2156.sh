@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# VENDORED: lib/command-match.sh as of 84480c414b3573ef70e3b01b8afd769bb65f7ddf (the merge base of the
-# go-to-k/cdkd#2156 lane), i.e. the PRE-2156 trigger. Read by
+# VENDORED: lib/command-match.sh as of 84480c414b3573ef70e3b01b8afd769bb65f7ddf,
+# i.e. the PRE-2156 trigger (that sha was the go-to-k/cdkd#2156 lane's merge
+# base when taken; the lane has been rebased since, and the sha stays because
+# what matters is the CONTENT, not the graph position). Read by
 # command-match-differential.test.sh to enforce the SUPERSET invariant.
 # Vendored rather than read with `git show` because CI shallow-clones; pinned
 # to a sha rather than to `origin/main` because origin/main moves and would

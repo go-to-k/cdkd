@@ -772,9 +772,14 @@ fi
 #     BY CELL with its exact input -- never as a category. Round 2 shipped the
 #     category "unbalanced-quote input no shell runs", and SEVEN balanced,
 #     runnable commands were hiding inside it.
-#   * the baseline is PINNED to the lane's merge base, not to `origin/main`.
-#     Once this merges, origin/main contains this change and comparing to it
-#     would report a clean zero forever.
+#   * the baseline is PINNED to a SHA, not to `origin/main`. Once this merges,
+#     origin/main contains this change and comparing to it would report a clean
+#     zero forever. The sha was the lane's merge base when it was taken; the
+#     lane has since been rebased, so do NOT "correct" it to today's merge base
+#     -- what makes it the right baseline is that its matcher is the PRE-2156
+#     trigger, which is a property of the CONTENT, not of the graph position.
+#     Verified 2026-08-28: byte-identical to `origin/main`'s matcher, so the
+#     comparison is still against the pre-2156 behaviour.
 PRE="$HERE/testdata/command-match.pre2156.sh"
 PRE_SHA="84480c414b3573ef70e3b01b8afd769bb65f7ddf"
 PRE_SHA256="5ec28675c150f924f9a63df2fdbda87c652cd395e0a9c65007372f5ea306a220"
