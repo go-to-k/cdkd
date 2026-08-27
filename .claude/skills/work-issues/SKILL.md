@@ -2348,6 +2348,46 @@ Three habits follow, each of which caught something on that lane:
 - **A correction can be a new false claim.** Twice on that lane the replacement
   for a wrong sentence was wrong in the other direction. Re-read a correction
   against the code the same way you read the original.
+- **In a FIX round, the fix is what invalidated your own prose — so every
+  past-tense measurement in the commit is stale until re-derived, not just the
+  sentence you set out to correct.** This is the sharpest form of the rule above
+  and it kept firing after the rule was already written, so state it
+  generatively: a fix commit's prose is the LEAST verified thing in it. Every
+  other artifact has a checker — types, tests, lint, the integ — while the prose
+  is written last, under the momentum of having just fixed the thing, which is
+  exactly when a sentence describing the PRE-fix world gets carried forward as
+  though it still holds. Measured across one run of this skill on 2026-08-27
+  (three lanes, four review rounds each): the rounds found **one** code defect
+  and **ten** false claims, and every blocker but one was prose. The instances,
+  because each is a different shape and no list of them would have predicted the
+  next:
+  - **A claim the same commit falsified.** go-to-k/cdkd#2309's changelog cited a
+    ledger row — `s3-lifecycle`, `18:06:24Z`, 231 s — that the very delta
+    containing the sentence had REPLACED with the `19:01:39Z` run; its "that run
+    predates two later edits" caveat was therefore backwards, not merely stale.
+  - **A fence claimed rather than probed.** The same lane's source said the
+    guard's ordering "is fenced by a unit case anyway"; moving the guard below
+    all three protection blocks left the suite 27/27 GREEN, and the case name it
+    cited did not exist. The fix was to BUILD the fence (inject the missing
+    table entry test-side, plus a guard-the-guard case so the ordering case
+    cannot pass vacuously) rather than to retract the sentence.
+  - **A tally patched instead of re-measured.** Published 20 / 21 / 18 / 2 for
+    four mutations; re-measured on the shipping tree they were 23 / 24 / 22 / 3,
+    the word "Twenty" was unchanged while the list had grown to nineteen rows,
+    and four rows had been dropped from the sentence entirely. "Every case is
+    reddened by at least one mutation" is now COMPUTED as a set difference
+    rather than asserted.
+  - **A blanket direction claim contradicted by its own list.** go-to-k/cdkd#2311's
+    new prose said three bounds "are fail-CLOSED (they can only make the counter
+    fire, never hide a site)" while its own bullet 3, four lines above, said an
+    aliased logger "counts zero" — i.e. hides a site. In the PR whose entire
+    subject is a fence that over-claimed, the remedy over-claimed.
+  So before a fix round is FINAL, re-derive every number, every `file:line`,
+  every ledger citation and every "measured" verb in the diff, and say which
+  tree they were measured on. Two of these go stale on their own: a `file:line`
+  drifts on every rebase (this run: `destroy-runner.ts:1236` -> `:1284`,
+  `drift.ts:2114` -> `:2122`, with the function names still correct), and a
+  probe count grows whenever a later round adds cases.
 
 **A reviewer's suggested FIX can be wrong even when its finding is right —
 re-derive the fix from the source rather than pasting the patch.** The premise
