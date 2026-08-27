@@ -253,6 +253,65 @@ Z2l0IC1jIGFsaWFzLng9InJ1biBjb21taXQgbGF0ZXIiIHN0YXR1cw==
 Z2l0IC1jIGZvbz0ieCBjb21taXQgLW0geSIgc3RhdHVz
 Z2l0IC1DIC90bXAvb1wibmVpbGwvcmVwbyBjb21taXQgLW0geA==
 Z2l0IC1jIGs9YVwiYiBjaGVja291dCAtLSBmLnR4dA==
+Z2l0IC0tZXhlYy1wYXRoIC94IC95IGNvbW1pdCAtbSB4
+Z2l0IC1jIGE9YiBqdW5ranVuayBjb21taXQgLW0geA==
+Z2l0IC1jIGE9YiAtWCBleHRyYTEgZXh0cmEyIHB1c2ggb3JpZ2luIEhFQUQ=
+Z2l0IC1DIC9hL2IgLWMgeD15IHogdyBtZXJnZSBvcmlnaW4vbWFpbg==
+Z2l0IC1jIGE9YiBqdW5rIHN3aXRjaCAtYyBmZWF0L3g=
+Z2l0IC1jIGE9YiBqdW5rIGNoZWNrb3V0IC0tIGYudHh0
+Z2ggLVIgby9yIC0tanNvbmZsYWcgeCB5IHByIG1lcmdlIDQyIC0tc3F1YXNo
+Z2ggLVIgby9yIC0tanNvbmZsYWcgeCB5IHByIGNyZWF0ZSAtLXRpdGxlIHg=
+Z2l0IC1jIHVzZXIubmFtZT0iSmFuZSBEb2UiIGxvZyAtLWdyZXAgY29tbWl0
+Z2l0IC0tbm8tcGFnZXIgLWMgYT1iIGxvZyAtLWdyZXAgcHVzaA==
+Z2ggLVIgJCgKIGVjaG8gby9yCikgcHIgbWVyZ2UgNDIgLS1zcXVhc2g=
+Z2l0IC1jIGE9JCgKIGVjaG8gYgopIGNvbW1pdCAtbSB4
+b3V0PSQoCiBjZCAveAogZ2l0IGNvbW1pdCAtbSB5Cik=
+Z2l0IC1DICQoCiBlY2hvIC9hL2IKKSBwdXNoIG9yaWdpbiBIRUFE
+ZWNobyAiJCgKIGdpdCBjb21taXQgLW0geAopIg==
+Z2l0IGxvZyAtLWdyZXAgY29tbWl0
+Z2l0IHNob3cgLS1zdGF0IGNvbW1pdA==
+Z2l0IGNvbmZpZyBhbGlhcy5jaSBjb21taXQ=
+Z2l0IHN0YXR1cyAtLXBvcmNlbGFpbg==
+Z2l0IHJldi1wYXJzZSAtLXNob3ctdG9wbGV2ZWw=
+Z2l0IHdvcmt0cmVlIGFkZCAuY2xhdWRlL3dvcmt0cmVlcy94IC1iIHggb3JpZ2luL21haW4=
+Z2l0IGJyYW5jaCAtLW1lcmdlZCBvcmlnaW4vbWFpbg==
+Z2ggcHIgbGlzdCAtLXNlYXJjaCBtZXJnZQ==
+Z2ggLVIgby9yIHByIGNyZWF0ZSAtYiAneCBwciBtZXJnZSB5Jw==
+Z2ggLVIgby9yIHByIGNyZWF0ZSAtYiAieCBwciBtZXJnZSB5Ig==
+TVNHPSQoZWNobyBnaXQgY29tbWl0IC1tIHgp
+Z2l0IGRpZmYgbWFpbiAtLSBjb21taXQubWQ=
+Z2l0IC1DIC90bXAvd3QgbG9nIC0tb25lbGluZSAtMw==
+Z2l0IGNvbW1pdCAtbSAicmVwcm86IGdpdCAtQyAkVyBjb21taXQgZmFpbGVkIg==
+Z2ggaXNzdWUgY29tbWVudCAxIC0tYm9keSAid2UgcmFuOgpnaXQgLUMgJFcgY29tbWl0IC1GIGYi
+Y2QgL3RtcC9uZXdkaXIgJiYgZ2l0IGluaXQgJiYgZ2l0IGNvbW1pdCAtbSB4
+Z2ggLVIgZ28tdG8tay9jZGstbG9jYWwgaXNzdWUgY29tbWVudCA0MiAtLWJvZHkgJ3dlIGNhbidcJyd0IHByIG1lcmdlIDk5IHVudGlsIENJIGlzIGdyZWVuJw==
+Z2ggLVIgby9yIGlzc3VlIGNvbW1lbnQgMSAtLWJvZHk9J25leHQ6IHByIG1lcmdlIDUn
+Z2ggLVIgby9yIGlzc3VlIGNvbW1lbnQgMSAtYiduZXh0OiBwciBtZXJnZSA1Jw==
+Z2ggLVIgby9yIGlzc3VlIGNvbW1lbnQgMSAtLWJvZHk9JCduZXh0OiBwciBtZXJnZSA1Jw==
+Z2l0IC1DIC90bXAvbyduZWlsbC9yZXBvIGNvbW1pdCAtbSB4
+Z2l0IC1jIHVzZXIubmFtZT1PJ0JyaWVuIC1DIC93L3QgY29tbWl0IC1tIHg=
+Z2l0IC1jIGE9YiAtQyAvdG1wL28nbmVpbGwvcmVwbyBjb21taXQgLW0geA==
+Z2l0IC1jIGNvcmUucGFnZXI9J2xlc3MgLVMnIGNvbW1pdCAtbSB4
+Z2ggLS10ZW1wbGF0ZSAnYSBiJyBwciBtZXJnZSA0Mg==
+Z2l0IC1DIGAKIGVjaG8gL2EvYgpgIGNvbW1pdCAtbSB4
+Z2ggLVIgYAogZWNobyBvL3IKYCBwciBtZXJnZSA0MiAtLXNxdWFzaA==
+Z2l0IC1DIGBwd2RgIGNvbW1pdCAtbSB4
+Z2l0IC1DIC93dCBjaGVja291dCAtLSBmLnR4dCAjIHVuZG8gcHJvYmUsIHRoZW4gZ2l0IGNoZWNrb3V0IG1haW4=
+Z2l0IC1jIGE9YiAtQyAvd3QgY2hlY2tvdXQgLS0gZi50eHQgIyBzZWUgZ2l0IGNoZWNrb3V0IG1haW4=
+Z2ggLVIgby9yIHByIG1lcmdlIDIxOTUgLS1zcXVhc2ggLS1kZWxldGUtYnJhbmNoICMgdGhlbiBnaCBwciBtZXJnZSA5
+Z2ggLUMgL3JlcG8vcHIgcHIgbWVyZ2UgNDIgLS1zcXVhc2g=
+Z2l0IC1DIC9yZXBvIC1jIGNvcmUucGFnZXI9J2xlc3MgLVMnIGNvbW1pdCAtbSB4
+Z2l0IC1DIC9yZXBvIC1jIGNvcmUucGFnZXI9J2xlc3MgLVMnIGNoZWNrb3V0IC0tIGYudHh0
+Z2l0IC1DIC9yZXBvIC0td29yay10cmVlPS9Vc2Vycy9vJ2JyaWVuL3d0IGNvbW1pdCAtbSB4
+Z2ggLVIgby9yIC0tdGVtcGxhdGUgJ2EgYicgcHIgY3JlYXRlIC0tdGl0bGUgeA==
+Z2ggLVIgby9yIC0tdGVtcGxhdGUgJ2EgYicgcHIgbWVyZ2UgNDI=
+Z2l0IC1DIC9yZXBvIC1jIGE9J2IgYycgcHVzaCBvcmlnaW4gSEVBRA==
+Z2l0IC1DIC9yZXBvIC1jIHg9eSAtLXdvcmstdHJlZT0nL2EgYicgbWVyZ2Ugb3JpZ2luL21haW4=
+Z2l0IC1DIC93dCAtLXdvcmstdHJlZT0veC9vJ2JyaWVuIGNoZWNrb3V0IC0tIGYudHh0
+Z2l0IC1DIC93dCAtLXdvcmstdHJlZT0veC9vJ2JyaWVuIHJlc3RvcmUgZi50eHQ=
+Z2ggLVIgby9yIC0tdGVtcGxhdGU9L2EvbyduZWlsbCBwciBtZXJnZSAyMTk1IC0tc3F1YXNo
+Z2l0IC1DIC93dCAtLXdvcmstdHJlZT0veC9vYnJpZW4gY2hlY2tvdXQgLS0gZi50eHQ=
+Z2ggLVIgby9yIC0tdGVtcGxhdGU9L2Evb25laWxsIHByIG1lcmdlIDIxOTUgLS1zcXVhc2g=
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -327,7 +386,60 @@ else
 fi
 
 # ------------------------------------------------- the enumerated intended set
+# --- go-to-k/cdkd#2156: the TRIGGER inverted from narrow to over-approximate --
+# Two classes, and they are named for the CHANGE that produced them rather than
+# for the verdict, so a cell landing in the wrong one is visible:
+#   WIDE_TRIGGER  a segment whose FLAG PREFIX the old grammar could not parse
+#                 (a flag with two values, a bare token between flags) now
+#                 matches. Every one of these is 0 -> 1: measured against
+#                 origin/main over this same corpus, the change produces 40
+#                 differing cells and NOT ONE of them loses a match, which is
+#                 the superset property the constant's own comment claims.
+#   MLSUBST       a multi-line `$( )` no longer truncates the enclosing command.
+# The false-refusal controls (ids 158-173) deliberately appear in NEITHER: they
+# are inputs that must keep matching nothing, so a row here for one of them
+# means the widening reached prose.
 ALLOWED="$TMPDIR/allowed.tsv"
+# --- go-to-k/cdkd#2156 review round 1: the three blockers --------------------
+#   MLBACKTICK  the multi-line BACKTICK spelling of a substitution, which the
+#               first version left splitting while the docs called the class
+#               closed. Its `$( )` twin is MLSUBST above.
+#   APOSTROPHE  ids 174-181 exist to pin a NON-change: the quote-escape-reopen
+#               idiom and `--body='...'` must reach NOTHING but their own body
+#               carrier, and the three apostrophe PATHS must keep resolving.
+#               Most produce no differing cell at all, which is the point --
+#               they are here so a future widening that reaches into a quoted
+#               body shows up as an undeclared cell rather than as silence.
+# There is deliberately NO class for the leftmost-verb fix. Measured: it
+# produces ZERO differing cells here, because this fence observes match /
+# target / segcount and the defect was in the TAIL the strip helpers return --
+# an observable this fence does not have. Its cases therefore live in
+# command-match.test.sh, asserting the extracted value. Ids 186-189 are still
+# in the corpus so the shapes are exercised; adding `rest` and `selector` as
+# observables would fence them here too, and is the honest follow-up.
+#   ACCEPTED_FR  ids 175-177: the three FALSE REFUSALS admitted in round 3's
+#                security review, deliberately. `--body='next: pr merge 5'` and
+#                its `-b'...'` / `=$'...'` spellings now reach the merge gates.
+#                They are here so the trade stays VISIBLE and floored: forbidding
+#                them cost dirty-path-restore-gate plus both merge gates going
+#                rc=2 -> rc=0 on `--work-tree=/x/o'brien`, and a false refusal is
+#                LOUD while a bypass is SILENT. If a later change makes these
+#                stop matching WITHOUT re-introducing that loss, the floor fails
+#                and that is the right moment to revisit the trade.
+#                Round 5 added ids 166 / 174: restoring the quote-BLIND fallback
+#                for later words (the fix for a token with MORE THAN ONE
+#                apostrophe matching nothing) also lets the contraction idiom
+#                and a spaced single-quoted body reach the merge gates. Third
+#                time this PR took a LOUD refusal over a SILENT loss.
+# --- review round 2: LATER-position quoted flag values (ids 190-196) ---------
+#   LATERQ  the class round 1 lost and round 2 restored. Round 1 dropped the
+#           single-quoted-span alternative for later words, which cost seven
+#           balanced, runnable commands (a lost match is a BYPASS, so it was
+#           strictly worse than the false refusal it fixed). These ids pin the
+#           class in BOTH directions: six now match, and id 192 -- a dash-led
+#           later token with a loose apostrophe -- is the one that still does
+#           not, enumerated cell by cell in the superset section below rather
+#           than described as a category.
 cat > "$ALLOWED" <<'ALLOWED_EOF'
 26	segcount	2	SEGCOUNT	git -C subst-quoted commit
 27	segcount	2	SEGCOUNT	gh -C subst-quoted pr merge
@@ -434,6 +546,119 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 139	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
 140	m:GATE_RE_GIT_COMMIT	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
 140	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
+96	m:GATE_RE_GIT_COMMIT	1	MLSUBST	git -C $(<nl> git rev-parse --show-toplevel <nl>) commit...
+96	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	MLSUBST	git -C $(<nl> git rev-parse --show-toplevel <nl>) commit...
+96	segcount	2	MLSUBST	git -C $(<nl> git rev-parse --show-toplevel <nl>) commit...
+143	m:GATE_RE_GIT_COMMIT	1	WIDE_TRIGGER	git --exec-path /x /y commit -m x
+143	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	WIDE_TRIGGER	git --exec-path /x /y commit -m x
+144	m:GATE_RE_GIT_COMMIT	1	WIDE_TRIGGER	git -c a=b junkjunk commit -m x
+144	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	WIDE_TRIGGER	git -c a=b junkjunk commit -m x
+145	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	WIDE_TRIGGER	git -c a=b -X extra1 extra2 push origin HEAD
+145	m:GATE_RE_GIT_PUSH	1	WIDE_TRIGGER	git -c a=b -X extra1 extra2 push origin HEAD
+146	m:GATE_RE_GIT_MERGE	1	WIDE_TRIGGER	git -C /a/b -c x=y z w merge origin/main
+146	t:GATE_RE_GIT_MERGE	/a/b	WIDE_TRIGGER	git -C /a/b -c x=y z w merge origin/main
+147	m:GATE_RE_GIT_SWITCH	1	WIDE_TRIGGER	git -c a=b junk switch -c feat/x
+148	m:GATE_RE_GIT_CHECKOUT_RESTORE	1	WIDE_TRIGGER	git -c a=b junk checkout -- f.txt
+148	m:GATE_RE_GIT_SWITCH	1	WIDE_TRIGGER	git -c a=b junk checkout -- f.txt
+149	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	WIDE_TRIGGER	gh -R o/r --jsonflag x y pr merge 42 --squash
+149	m:GATE_RE_GH_PR_MERGE	1	WIDE_TRIGGER	gh -R o/r --jsonflag x y pr merge 42 --squash
+149	m:GATE_RE_GH_PR_WRITE	1	WIDE_TRIGGER	gh -R o/r --jsonflag x y pr merge 42 --squash
+150	m:GATE_RE_GH_BODY_CARRIER	1	WIDE_TRIGGER	gh -R o/r --jsonflag x y pr create --title x
+150	m:GATE_RE_GH_LABEL_CARRIER	1	WIDE_TRIGGER	gh -R o/r --jsonflag x y pr create --title x
+150	m:GATE_RE_GH_PR_CREATE	1	WIDE_TRIGGER	gh -R o/r --jsonflag x y pr create --title x
+150	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	WIDE_TRIGGER	gh -R o/r --jsonflag x y pr create --title x
+150	m:GATE_RE_GH_PR_WRITE	1	WIDE_TRIGGER	gh -R o/r --jsonflag x y pr create --title x
+151	m:GATE_RE_GIT_COMMIT	1	WIDE_TRIGGER	git -c user.name="Jane Doe" log --grep commit
+151	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	WIDE_TRIGGER	git -c user.name="Jane Doe" log --grep commit
+152	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	WIDE_TRIGGER	git --no-pager -c a=b log --grep push
+152	m:GATE_RE_GIT_PUSH	1	WIDE_TRIGGER	git --no-pager -c a=b log --grep push
+153	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	MLSUBST	gh -R $(<nl> echo o/r<nl>) pr merge 42 --squash
+153	m:GATE_RE_GH_PR_MERGE	1	MLSUBST	gh -R $(<nl> echo o/r<nl>) pr merge 42 --squash
+153	m:GATE_RE_GH_PR_WRITE	1	MLSUBST	gh -R $(<nl> echo o/r<nl>) pr merge 42 --squash
+153	segcount	2	MLSUBST	gh -R $(<nl> echo o/r<nl>) pr merge 42 --squash
+154	m:GATE_RE_GIT_COMMIT	1	MLSUBST	git -c a=$(<nl> echo b<nl>) commit -m x
+154	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	MLSUBST	git -c a=$(<nl> echo b<nl>) commit -m x
+154	segcount	2	MLSUBST	git -c a=$(<nl> echo b<nl>) commit -m x
+155	segcount	2	MLSUBST	out=$(<nl> cd /x<nl> git commit -m y<nl>)
+156	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	MLSUBST	git -C $(<nl> echo /a/b<nl>) push origin HEAD
+156	m:GATE_RE_GIT_PUSH	1	MLSUBST	git -C $(<nl> echo /a/b<nl>) push origin HEAD
+156	segcount	2	MLSUBST	git -C $(<nl> echo /a/b<nl>) push origin HEAD
+157	segcount	2	MLSUBST	echo "$(<nl> git commit -m x<nl>)"
+166	m:GATE_RE_GH_BODY_CARRIER	1	NOW_MATCH	gh -R o/r pr create -b 'x pr merge y'
+166	m:GATE_RE_GH_LABEL_CARRIER	1	NOW_MATCH	gh -R o/r pr create -b 'x pr merge y'
+166	m:GATE_RE_GH_PR_CREATE	1	NOW_MATCH	gh -R o/r pr create -b 'x pr merge y'
+166	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	NOW_MATCH	gh -R o/r pr create -b 'x pr merge y'
+166	m:GATE_RE_GH_PR_WRITE	1	NOW_MATCH	gh -R o/r pr create -b 'x pr merge y'
+167	m:GATE_RE_GH_BODY_CARRIER	1	NOW_MATCH	gh -R o/r pr create -b "x pr merge y"
+167	m:GATE_RE_GH_LABEL_CARRIER	1	NOW_MATCH	gh -R o/r pr create -b "x pr merge y"
+167	m:GATE_RE_GH_PR_CREATE	1	NOW_MATCH	gh -R o/r pr create -b "x pr merge y"
+167	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	NOW_MATCH	gh -R o/r pr create -b "x pr merge y"
+167	m:GATE_RE_GH_PR_WRITE	1	NOW_MATCH	gh -R o/r pr create -b "x pr merge y"
+168	segcount	1	SEGCOUNT	MSG=$(echo git commit -m x)
+172	m:GATE_RE_GIT_COMMIT	0	NOW_MISS	gh issue comment 1 --body "we ran:<nl>git -C $W commit -...
+172	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	NOW_MISS	gh issue comment 1 --body "we ran:<nl>git -C $W commit -...
+172	segcount	1	SEGCOUNT	gh issue comment 1 --body "we ran:<nl>git -C $W commit -...
+174	m:GATE_RE_GH_BODY_CARRIER	1	NOW_MATCH	gh -R go-to-k/cdk-local issue comment 42 --body 'we can'...
+175	m:GATE_RE_GH_BODY_CARRIER	1	NOW_MATCH	gh -R o/r issue comment 1 --body='next: pr merge 5'
+176	m:GATE_RE_GH_BODY_CARRIER	1	NOW_MATCH	gh -R o/r issue comment 1 -b'next: pr merge 5'
+177	m:GATE_RE_GH_BODY_CARRIER	1	NOW_MATCH	gh -R o/r issue comment 1 --body=$'next: pr merge 5'
+179	t:GATE_RE_GIT_COMMIT	/w/t	TARGET	git -c user.name=O'Brien -C /w/t commit -m x
+179	t:GATE_RE_GIT_COMMIT_OR_PUSH	/w/t	TARGET	git -c user.name=O'Brien -C /w/t commit -m x
+180	t:GATE_RE_GIT_COMMIT	/tmp/o'neill/repo	TARGET	git -c a=b -C /tmp/o'neill/repo commit -m x
+180	t:GATE_RE_GIT_COMMIT_OR_PUSH	/tmp/o'neill/repo	TARGET	git -c a=b -C /tmp/o'neill/repo commit -m x
+182	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	NOW_MATCH	gh --template 'a b' pr merge 42
+182	m:GATE_RE_GH_PR_MERGE	1	NOW_MATCH	gh --template 'a b' pr merge 42
+182	m:GATE_RE_GH_PR_WRITE	1	NOW_MATCH	gh --template 'a b' pr merge 42
+183	m:GATE_RE_GIT_COMMIT	1	MLBACKTICK	git -C `<nl> echo /a/b<nl>` commit -m x
+183	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	MLBACKTICK	git -C `<nl> echo /a/b<nl>` commit -m x
+183	segcount	2	MLBACKTICK	git -C `<nl> echo /a/b<nl>` commit -m x
+184	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	MLBACKTICK	gh -R `<nl> echo o/r<nl>` pr merge 42 --squash
+184	m:GATE_RE_GH_PR_MERGE	1	MLBACKTICK	gh -R `<nl> echo o/r<nl>` pr merge 42 --squash
+184	m:GATE_RE_GH_PR_WRITE	1	MLBACKTICK	gh -R `<nl> echo o/r<nl>` pr merge 42 --squash
+184	segcount	2	MLBACKTICK	gh -R `<nl> echo o/r<nl>` pr merge 42 --squash
+185	m:GATE_RE_GIT_COMMIT	1	NOW_MATCH	git -C `pwd` commit -m x
+185	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	NOW_MATCH	git -C `pwd` commit -m x
+185	segcount	2	SEGCOUNT	git -C `pwd` commit -m x
+187	t:GATE_RE_GIT_CHECKOUT_RESTORE	/wt	TARGET	git -c a=b -C /wt checkout -- f.txt # see git checkout m...
+187	t:GATE_RE_GIT_SWITCH	/wt	TARGET	git -c a=b -C /wt checkout -- f.txt # see git checkout m...
+188	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	NOW_MATCH	gh -R o/r pr merge 2195 --squash --delete-branch # then ...
+188	m:GATE_RE_GH_PR_MERGE	1	NOW_MATCH	gh -R o/r pr merge 2195 --squash --delete-branch # then ...
+188	m:GATE_RE_GH_PR_WRITE	1	NOW_MATCH	gh -R o/r pr merge 2195 --squash --delete-branch # then ...
+192	m:GATE_RE_GIT_COMMIT	0	LATERQ	git -C /repo --work-tree=/Users/o'brien/wt commit -m x
+192	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	LATERQ	git -C /repo --work-tree=/Users/o'brien/wt commit -m x
+192	t:GATE_RE_GIT_COMMIT	/BASE	LATERQ	git -C /repo --work-tree=/Users/o'brien/wt commit -m x
+192	t:GATE_RE_GIT_COMMIT_OR_PUSH	/BASE	LATERQ	git -C /repo --work-tree=/Users/o'brien/wt commit -m x
+193	m:GATE_RE_GH_BODY_CARRIER	1	LATERQ	gh -R o/r --template 'a b' pr create --title x
+193	m:GATE_RE_GH_LABEL_CARRIER	1	LATERQ	gh -R o/r --template 'a b' pr create --title x
+193	m:GATE_RE_GH_PR_CREATE	1	LATERQ	gh -R o/r --template 'a b' pr create --title x
+193	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	LATERQ	gh -R o/r --template 'a b' pr create --title x
+193	m:GATE_RE_GH_PR_WRITE	1	LATERQ	gh -R o/r --template 'a b' pr create --title x
+194	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	LATERQ	gh -R o/r --template 'a b' pr merge 42
+194	m:GATE_RE_GH_PR_MERGE	1	LATERQ	gh -R o/r --template 'a b' pr merge 42
+194	m:GATE_RE_GH_PR_WRITE	1	LATERQ	gh -R o/r --template 'a b' pr merge 42
+195	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	LATERQ	git -C /repo -c a='b c' push origin HEAD
+195	m:GATE_RE_GIT_PUSH	1	LATERQ	git -C /repo -c a='b c' push origin HEAD
+195	t:GATE_RE_GIT_COMMIT_OR_PUSH	/repo	LATERQ	git -C /repo -c a='b c' push origin HEAD
+195	t:GATE_RE_GIT_PUSH	/repo	LATERQ	git -C /repo -c a='b c' push origin HEAD
+175	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	ACCEPTED_FR	gh -R o/r issue comment 1 --body='next: pr merge 5'
+175	m:GATE_RE_GH_PR_MERGE	1	ACCEPTED_FR	gh -R o/r issue comment 1 --body='next: pr merge 5'
+175	m:GATE_RE_GH_PR_WRITE	1	ACCEPTED_FR	gh -R o/r issue comment 1 --body='next: pr merge 5'
+176	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	ACCEPTED_FR	gh -R o/r issue comment 1 -b'next: pr merge 5'
+176	m:GATE_RE_GH_PR_MERGE	1	ACCEPTED_FR	gh -R o/r issue comment 1 -b'next: pr merge 5'
+176	m:GATE_RE_GH_PR_WRITE	1	ACCEPTED_FR	gh -R o/r issue comment 1 -b'next: pr merge 5'
+177	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	ACCEPTED_FR	gh -R o/r issue comment 1 --body=$'next: pr merge 5'
+177	m:GATE_RE_GH_PR_MERGE	1	ACCEPTED_FR	gh -R o/r issue comment 1 --body=$'next: pr merge 5'
+177	m:GATE_RE_GH_PR_WRITE	1	ACCEPTED_FR	gh -R o/r issue comment 1 --body=$'next: pr merge 5'
+199	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	LATERQ	gh -R o/r --template=/a/o'neill pr merge 2195 --squash
+199	m:GATE_RE_GH_PR_MERGE	1	LATERQ	gh -R o/r --template=/a/o'neill pr merge 2195 --squash
+199	m:GATE_RE_GH_PR_WRITE	1	LATERQ	gh -R o/r --template=/a/o'neill pr merge 2195 --squash
+201	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	LATERQ	gh -R o/r --template=/a/oneill pr merge 2195 --squash
+201	m:GATE_RE_GH_PR_MERGE	1	LATERQ	gh -R o/r --template=/a/oneill pr merge 2195 --squash
+201	m:GATE_RE_GH_PR_WRITE	1	LATERQ	gh -R o/r --template=/a/oneill pr merge 2195 --squash
+166	m:GATE_RE_GH_PR_MERGE	1	ACCEPTED_FR	gh -R o/r pr create -b 'x pr merge y'
+174	m:GATE_RE_GH_PR_MERGE	1	ACCEPTED_FR	gh ... issue comment 42 --body 'we can'\''t pr merge 99 ...'
+174	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	ACCEPTED_FR	gh ... issue comment 42 --body 'we can'\''t pr merge 99 ...'
+174	m:GATE_RE_GH_PR_WRITE	1	ACCEPTED_FR	gh ... issue comment 42 --body 'we can'\''t pr merge 99 ...'
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -460,7 +685,19 @@ fi
 
 # Floors PER CLASS. A corpus that stops covering a class would otherwise report
 # "no differences" and read exactly like a clean run.
-for spec in "NOW_MATCH:55" "NOW_MISS:5" "TARGET:8" "SEGCOUNT:12"; do
+# FLOORS ARE SET TO THE OBSERVED COUNT, not below it (go-to-k/cdkd#2156 review
+# round 1). The pre-existing four sat far under: NOW_MATCH had drifted to 81
+# against a floor of 55, and a reviewer probe neutralising five corpus inputs --
+# 25 pinned go-to-k/cdkd#2027 bypass-fix cells -- still reported a clean pass.
+# A floor with slack cannot see a quarter of its own population disappear.
+#
+# That matters more than it looks, because the baseline is pre-go-to-k/cdkd#2027
+# `8e84e4e2` rather than `origin/main`: a change that returns main to
+# pre-go-to-k/cdkd#2027 behaviour produces cells that are ALREADY in the table,
+# so the "undeclared" arm is blind to it and these floors are the only thing
+# that sees it. Raise them with the measurement whenever the corpus grows; do
+# not leave slack "for headroom", which is precisely what defeated them.
+for spec in "NOW_MATCH:93" "NOW_MISS:12" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"
@@ -512,6 +749,197 @@ if [ -z "$zero_seg" ]; then
   ok "invariant: no non-empty command segments to ZERO (every gate would be disarmed at once)"
 else
   ng "invariant: command(s) segment to ZERO -- every gate is disarmed for these:$(printf '%b' "$zero_seg")"
+fi
+
+# =============================================================================
+# THE SUPERSET INVARIANT (go-to-k/cdkd#2156 review round 2)
+# =============================================================================
+#
+# Everything above compares against the PRE-go-to-k/cdkd#2027 blob `8e84e4e2`,
+# and against that baseline a lost match is a legitimate, enumerated outcome --
+# go-to-k/cdkd#2027 deliberately removed matches. So "differs" there does NOT
+# mean "regressed", and the table can and does contain NOW_MISS rows.
+#
+# That is exactly the hole three review rounds fell through. This work claims a
+# STRICTLY STRONGER property -- the new trigger matches everything the PRE-2156
+# trigger matched -- and that claim is mechanically checkable against a
+# DIFFERENT baseline. Rounds 1 and 2 each found a class of lost matches that no
+# hand-built corpus contained, one round at a time; had this assertion existed,
+# both would have surfaced at once.
+#
+# Two properties make it an invariant rather than another case list:
+#   * a lost cell is a FAILURE, not a class. Every exception is enumerated CELL
+#     BY CELL with its exact input -- never as a category. Round 2 shipped the
+#     category "unbalanced-quote input no shell runs", and SEVEN balanced,
+#     runnable commands were hiding inside it.
+#   * the baseline is PINNED to the lane's merge base, not to `origin/main`.
+#     Once this merges, origin/main contains this change and comparing to it
+#     would report a clean zero forever.
+PRE="$HERE/testdata/command-match.pre2156.sh"
+PRE_SHA="84480c414b3573ef70e3b01b8afd769bb65f7ddf"
+PRE_SHA256="5ec28675c150f924f9a63df2fdbda87c652cd395e0a9c65007372f5ea306a220"
+if [ ! -r "$PRE" ] || [ ! -s "$PRE" ]; then
+  ng "superset: cannot read the pre-2156 baseline $PRE -- the invariant did NOT run"
+else
+  pre_mark=$(grep -n 'VENDORED CONTENT BEGINS' "$PRE" | head -1 | cut -d: -f1)
+  pre_got=$(tail -n "+$((pre_mark + 1))" "$PRE" | sha256_of)
+  if [ "$pre_got" = "NO-HASHER" ]; then
+    ng "superset: no sha256 tool, so the pre-2156 baseline could NOT be verified"
+  elif [ "$pre_got" = "$PRE_SHA256" ]; then
+    ok "superset: pre-2156 baseline matches $PRE_SHA byte-for-byte"
+  else
+    ng "superset: pre-2156 baseline is $pre_got, expected $PRE_SHA256 -- it has DRIFTED, so the comparison below is against the wrong thing"
+  fi
+
+  HOME="$FENCE_HOME" LC_ALL=C bash "$TMPDIR/emit.sh" "$PRE" "$CORPUS" > "$TMPDIR/pre.tsv" 2>/dev/null
+  # Cells the PRE-2156 trigger matched and this one does not. Each must be
+  # enumerated below WITH ITS INPUT, or the fence fails.
+  LOST_ALLOWED="$TMPDIR/lost-allowed.tsv"
+  cat > "$LOST_ALLOWED" <<'LOST_EOF'
+LOST_EOF
+  # EMPTY, and that is the round-3 review's outcome rather than an oversight.
+  # It briefly held two cells for a LATER, DASH-LED token with a LOOSE
+  # apostrophe, priced as "two cells on `commit`". A security review measured
+  # the same token shape with `checkout` / `restore` / `pr merge` and found
+  # dirty-path-restore-gate (the go-to-k/cdkd#1700 data-loss gate) and BOTH
+  # merge gates going rc=2 -> rc=0 -- so the price was three gates, not two
+  # cells, and the shape was admitted instead (see _GATE_WORD_LOOSE_FLAG).
+  #
+  # The corpus is why the mispricing was possible: it carried that token shape
+  # only with `commit`, so this table enumerated only the two `commit` cells
+  # while the `checkout` / `restore` / `pr merge` instances went unseen. The
+  # variants are in the corpus now. An enumerated exception is only ever as
+  # honest as the corpus behind it -- so when adding one, add the SAME input
+  # with every verb it can carry, not just the one that surfaced it.
+  lost_unexplained=""
+  lost_n=0
+  while IFS=$'\t' read -r pid pobs pval && IFS=$'\t' read -r nid nobs nval <&3; do
+    [ -n "$pid" ] || continue
+    [ "$pval" = "1" ] || continue
+    [ "$nval" = "0" ] || continue
+    lost_n=$((lost_n + 1))
+    if ! awk -F'\t' -v i="$pid" -v o="$pobs" '$1==i && $2==o {found=1} END{exit(found?0:1)}' "$LOST_ALLOWED"; then
+      lost_unexplained="$lost_unexplained\n  id=$pid  $pobs"
+    fi
+  done < "$TMPDIR/pre.tsv" 3< "$TMPDIR/new.tsv"
+
+  if [ -z "$lost_unexplained" ]; then
+    ok "superset: $lost_n lost cell(s) vs $PRE_SHA, all enumerated with their input"
+  else
+    ng "superset: match(es) LOST vs the pre-2156 trigger and NOT enumerated -- each is a gate that stopped firing:$(printf '%b' "$lost_unexplained")"
+  fi
+
+  # The enumeration must stay HONEST in the other direction too: a row that no
+  # longer corresponds to a real lost cell means the exception was fixed (good)
+  # or the corpus stopped covering it (bad), and both should be noticed.
+  stale_rows=""
+  while IFS=$'\t' read -r aid aobs ainput; do
+    [ -n "$aid" ] || continue
+    if ! paste "$TMPDIR/pre.tsv" "$TMPDIR/new.tsv" \
+         | awk -F'\t' -v i="$aid" -v o="$aobs" '$1==i && $2==o && $3=="1" && $6=="0" {found=1} END{exit(found?0:1)}'; then
+      stale_rows="$stale_rows\n  id=$aid  $aobs"
+    fi
+  done < "$LOST_ALLOWED"
+  if [ -z "$stale_rows" ]; then
+    ok "superset: every enumerated exception still corresponds to a real lost cell"
+  else
+    ng "superset: enumerated exception(s) no longer observed -- either the loss was fixed (drop the row) or the corpus stopped covering it:$(printf '%b' "$stale_rows")"
+  fi
+fi
+
+# =============================================================================
+# THE GENERATED LATER-WORD CORPUS (go-to-k/cdkd#2156 review round 5)
+# =============================================================================
+#
+# WHY THIS EXISTS, and it is the diagnosis of all five review rounds rather than
+# a sixth patch. Every round found the defect in a token position the corpus
+# enumerates BY HAND. The grammar is a hand-written approximation of shell word
+# syntax and the corpus was a hand-written sample of it -- two hand-written
+# things, and a fence only ever sees their INTERSECTION. Round 4's corpus
+# carried the shape with one VERB; round 5's carried it with one APOSTROPHE.
+# Each time the invariant above was honest and blind.
+#
+# So the LATER-word corpus is GENERATED: apostrophe count x dash-led x span
+# position x verb, crossed exhaustively. It is not a sample of remembered
+# shapes, so the next grammar gap does not have to be one anybody thought of.
+#
+# PROVEN NON-VACUOUS against the two trees that actually had the bugs, which is
+# the only evidence worth having for a fence like this:
+#
+#   round-3 tree (span alternative dropped for later words)   102 lost cells
+#   round-4 tree (one loose apostrophe only)                   68 lost cells
+#   this tree                                                   0 lost cells
+#
+# i.e. it would have caught rounds 4 and 5 together, at round 3.
+#
+# The grid is the fence. When a new grammar case appears, add its AXIS here --
+# never a single remembered string, which is how the hand-written corpus kept
+# being one case behind.
+GEN="$TMPDIR/gen.b64"
+GQ=$(printf '\047')
+gen_grid=(
+  "apo0-bare|/opt/git/libexec"
+  "apo0-dash|--exec-path=/opt/git/libexec"
+  "apo1-bare|/opt/o${GQ}neill/wt"
+  "apo1-dash|--work-tree=/x/o${GQ}brien"
+  "apo2-bare|/opt/o${GQ}neill/d${GQ}arcy"
+  "apo2-dash|--work-tree=/x/o${GQ}brien/d${GQ}arcy"
+  "span-end-bare|${GQ}a b${GQ}"
+  "span-end-dash|--exec-path=${GQ}/opt/git${GQ}"
+  "span-tail-bare|${GQ}/opt/git${GQ}/libexec"
+  "span-tail-dash|--exec-path=${GQ}/opt/git${GQ}/libexec"
+  "span-mid-bare|a${GQ}b c${GQ}d"
+  "span-mid-dash|--author=a${GQ}b c${GQ}d"
+  "idiom-bare|${GQ}O${GQ}\\${GQ}${GQ}Brien${GQ}"
+  "idiom-dash|--author=${GQ}O${GQ}\\${GQ}${GQ}Brien${GQ}"
+  "apo5-dash|--author=${GQ}O${GQ}\\${GQ}${GQ}Brien-D${GQ}\\${GQ}${GQ}Arcy${GQ}"
+  "dq-dash|--author=\"Jane Doe\""
+  "dq-bare|\"Jane Doe\""
+)
+# Every shape with EVERY verb it can carry -- the round-4 lesson, mechanised.
+gen_verbs=( "commit -m x" "push origin HEAD" "checkout -- f.txt" "restore f.txt" "merge origin/main" "switch -c feat/x" )
+gen_gh_verbs=( "pr merge 42 --squash" "pr create --title x" )
+: > "$GEN"
+for g in "${gen_grid[@]}"; do
+  gtok="${g#*|}"
+  for v in "${gen_verbs[@]}"; do
+    { printf 'git -C /wt %s %s' "$gtok" "$v" | base64 | tr -d '\n'; echo; } >> "$GEN"
+  done
+  for v in "${gen_gh_verbs[@]}"; do
+    { printf 'gh -R o/r %s %s' "$gtok" "$v" | base64 | tr -d '\n'; echo; } >> "$GEN"
+  done
+done
+gen_n=$(grep -c . "$GEN" | tr -d ' ')
+if [ "$gen_n" -ge 100 ]; then
+  ok "generated corpus: $gen_n inputs (${#gen_grid[@]} token shapes x $(( ${#gen_verbs[@]} + ${#gen_gh_verbs[@]} )) verbs)"
+else
+  ng "generated corpus: only $gen_n inputs -- the grid collapsed, so the assertions below are vacuous"
+fi
+
+if [ -r "$PRE" ] && [ -s "$PRE" ] && [ "$gen_n" -ge 100 ]; then
+  HOME="$FENCE_HOME" LC_ALL=C bash "$TMPDIR/emit.sh" "$PRE" "$GEN" > "$TMPDIR/gen-pre.tsv" 2>/dev/null
+  HOME="$FENCE_HOME" LC_ALL=C bash "$TMPDIR/emit.sh" "$NEW_LIB" "$GEN" > "$TMPDIR/gen-new.tsv" 2>/dev/null
+  gen_rows=$(wc -l < "$TMPDIR/gen-new.tsv" | tr -d ' ')
+  # Only the MATCH observables: a target string legitimately differs here (the
+  # generated inputs carry no resolvable `-C` beyond /wt), and a lost MATCH is
+  # the property this section exists for.
+  gen_lost=$(paste "$TMPDIR/gen-pre.tsv" "$TMPDIR/gen-new.tsv" \
+    | awk -F'\t' '$2 ~ /^m:/ && $3=="1" && $6=="0" {print $1"\t"$2}' | tee "$TMPDIR/gen-lost.tsv" | awk 'END{print NR}')
+  gen_gained=$(paste "$TMPDIR/gen-pre.tsv" "$TMPDIR/gen-new.tsv" \
+    | awk -F'\t' '$2 ~ /^m:/ && $3=="0" && $6=="1"' | awk 'END{print NR}')
+
+  if [ "$gen_rows" -gt 2000 ]; then
+    ok "generated corpus: $gen_rows observable rows per side, $gen_gained gained (a wider trigger; loud)"
+  else
+    ng "generated corpus: only $gen_rows rows per side -- too small to be evidence"
+  fi
+
+  if [ "$gen_lost" -eq 0 ]; then
+    ok "generated corpus: 0 lost cells vs the pre-2156 trigger across the whole grid"
+  else
+    ng "generated corpus: $gen_lost LOST cell(s) -- a gate stopped firing on a command the pre-2156 trigger caught:
+$(while IFS=$'\t' read -r gi go; do printf '      %s  %s\n' "$go" "$(sed -n "${gi}p" "$GEN" | base64 -d 2>/dev/null | cut -c1-70)"; done < "$TMPDIR/gen-lost.tsv" | head -12)"
+  fi
 fi
 
 echo

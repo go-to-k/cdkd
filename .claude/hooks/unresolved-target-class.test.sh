@@ -65,18 +65,86 @@ ok() { pass=$((pass + 1)); printf 'OK   %s\n' "$1"; }
 ng() { fail=$((fail + 1)); fail_log+="FAIL $1\n"; printf 'FAIL %s\n' "$1"; }
 
 # --- the population -----------------------------------------------------------
+#
+# DERIVED FROM REGISTRATION, not from the directory listing (go-to-k/cdkd#2156).
+# "Every file under .claude/hooks" iterates the real population only by
+# COINCIDENCE: it is right today because every hook happens to live there and
+# nothing else does, and the first hook registered from anywhere else -- a
+# plugin, a `lib/` helper promoted to a hook, a vendored copy -- drops out of
+# the population silently, which is this file's own failure mode turned on
+# itself. `.claude/settings.json` is the only authoritative statement of what IS
+# a hook, which is the same reasoning markgate-gate-name-class.test.sh already
+# applies to its candidate list.
+#
+# Both directions are checked, because either one alone is a hole: a registered
+# hook whose FILE is missing would silently shrink the population, and a hook
+# file nobody registered is dead code that must not be mistaken for coverage.
 HOOKS=()
+REGISTERED=$(python3 - "$HOOKS_DIR/../settings.json" <<'PY' 2>/dev/null
+import json,sys,re
+d=json.load(open(sys.argv[1]))
+seen=[]
+for entries in d.get('hooks',{}).values():
+    for e in entries:
+        for h in e.get('hooks',[]):
+            c=(h.get('command') or '').strip()
+            m=re.match(r'^(\.claude/hooks/[A-Za-z0-9._-]+\.sh)\b',c)
+            if m and m.group(1) not in seen: seen.append(m.group(1))
+print("\n".join(seen))
+PY
+)
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  HOOKS+=("$HOOKS_DIR/../../${rel}")
+done <<REG_EOF
+$REGISTERED
+REG_EOF
+
+# Bail BEFORE touching `${#HOOKS[@]}`. Under `set -u` bash 3.2 -- which
+# run-tests.sh runs every suite under -- expanding an EMPTY array is an
+# "unbound variable" abort, so an unreadable settings.json (or a missing
+# python3) would end the suite with an error about array syntax instead of the
+# ng below, and `run-tests.sh` only greps for a `fail: N` tally.
+if [ -z "$REGISTERED" ]; then
+  ng "population: no hooks could be read from .claude/settings.json -- every case below would be vacuous"
+  printf '%b' "$fail_log"
+  exit 1
+fi
+
+if [ "${#HOOKS[@]}" -ge 30 ]; then
+  ok "population: ${#HOOKS[@]} hooks enumerated from .claude/settings.json (floor 30)"
+else
+  ng "population: only ${#HOOKS[@]} hooks enumerated from .claude/settings.json, expected >= 30 -- the enumeration is broken, every case below is vacuous"
+fi
+
+missing_file=""
+for h in "${HOOKS[@]}"; do
+  [ -f "$h" ] || missing_file="$missing_file $(basename "$h")"
+done
+if [ -z "$missing_file" ]; then
+  ok "population: every registered hook file exists"
+else
+  ng "population: registered hook(s) with no file -- the population silently shrank:$missing_file"
+fi
+
+unregistered=""
 for f in "$HOOKS_DIR"/*.sh; do
   case "$f" in
     *.test.sh|*/run-tests.sh) continue ;;
   esac
-  HOOKS+=("$f")
+  case "
+$REGISTERED
+" in
+    *"
+.claude/hooks/$(basename "$f")
+"*) ;;
+    *) unregistered="$unregistered $(basename "$f")" ;;
+  esac
 done
-
-if [ "${#HOOKS[@]}" -ge 25 ]; then
-  ok "population: ${#HOOKS[@]} hooks enumerated (floor 25)"
+if [ -z "$unregistered" ]; then
+  ok "population: every hook file under .claude/hooks is registered"
 else
-  ng "population: only ${#HOOKS[@]} hooks enumerated, expected >= 25 -- the enumeration is broken, every case below is vacuous"
+  ng "population: hook file(s) present but NOT registered in .claude/settings.json -- they run never, so their coverage here would be fiction:$unregistered"
 fi
 
 # =============================================================================
@@ -167,24 +235,79 @@ mk_repo() { # <dir>
   echo "// base" > "$d/src/deployment/intrinsic-function-resolver.ts"
   echo "// base" > "$d/src/types/state.ts"
   echo one > "$d/f.txt"
+  : > "$d/README.md"
   touch "$d/.markgate.yml"
   "$REAL_GIT" -C "$d" add -A >/dev/null 2>&1
   "$REAL_GIT" -C "$d" -c user.email=t@t -c user.name=t commit -q -m base
+}
+
+# An `origin/main` ref, so a gate that asks what a BRANCH ships
+# (`git diff origin/main...HEAD`) gets an answer instead of bailing. Applied
+# ONLY to the no-src fixture, and that restriction is a MEASUREMENT, not
+# tidiness: adding the ref to the primary fixture made `integ-destroy-gate` stop
+# blocking every one of its literal controls (measured, rc=2 -> rc=0), because
+# with HEAD == origin/main the branch ships nothing and the gate is correctly
+# out of scope. A fixture change that silently empties the population is exactly
+# what fence 3 exists to catch, and here it caught one in its own fixture.
+# The ref alone is not enough: pr-title-prefix-scope-gate asks what the BRANCH
+# ships (`git diff origin/main...HEAD`) and passes when that is EMPTY, so with
+# `origin/main == HEAD` the control was vacuous (measured rc=0). One commit
+# ahead of the ref, touching no `src/**` file, is what makes a `feat:` title
+# actually refusable.
+add_origin_ref() {
+  "$REAL_GIT" -C "$1" update-ref refs/remotes/origin/main HEAD
+  echo note > "$1/notes.md"
+  "$REAL_GIT" -C "$1" add -A >/dev/null 2>&1
+  "$REAL_GIT" -C "$1" -c user.email=t@t -c user.name=t commit -q -m "chore: ahead of main"
 }
 stage_violations() { # <dir>
   local d="$1"
   echo two > "$d/f.txt"
   echo "registry.register('AWS::Foo::Bar', new FooProvider());" >> "$d/src/provisioning/register-providers.ts"
   echo "  'AWS::Foo::Bar'," >> "$d/src/deployment/intrinsic-function-resolver.ts"
-  echo "export class FooProvider {}" > "$d/src/provisioning/providers/foo-provider.ts"
+  # `readCurrentState` is load-bearing, not decoration: roundtrip-test-gate skips
+  # any provider that does not capture an AWS-current snapshot, so without this
+  # token the file staged a provider the gate had no opinion about and the gate
+  # blocked nothing -- which is why it had no literal control (go-to-k/cdkd#2156).
+  printf 'export class FooProvider { async readCurrentState() { return {}; } }\n' \
+    > "$d/src/provisioning/providers/foo-provider.ts"
   echo "export function register(cmd) { cmd.parse(process.argv); }" > "$d/src/cli/commands/foo.ts"
   printf '#!/usr/bin/env bash\ncdkd state destroy --force\n' > "$d/tests/integration/foo/run.sh"
+  # Three more staged violations, each unlocking a gate that had NO literal
+  # control before and therefore sat outside fence 3 entirely
+  # (go-to-k/cdkd#2156). They ride the same commit as the ones above because
+  # each gate reads only its own file shape.
+  #   cmd-parse-stub-gate     -- cmd.parse(...) in a test with no .action stub
+  #   internal-pr-labels-gate -- a `(PR 8b)` label in user-facing prose
+  #   bughunt-clean-gate      -- the LEGACY FLAT sentinel, which blocks a commit
+  #                              for every caller regardless of owner, and lives
+  #                              in the TARGET repo so a gate can only see it by
+  #                              looking where the command actually points
+  printf "cmd.parse(['node', 'x']);\n" > "$d/tests/unit/provisioning/foo.test.ts"
+  printf 'See the note (PR 8b) for details.\n' > "$d/README.md"
+  : > "$d/.markgate-bughunt-pending"
+  echo "FooStack" > "$d/.markgate-bughunt-pending"
+  "$REAL_GIT" -C "$d" add -A >/dev/null 2>&1
+}
+
+# A SECOND violating fixture that stages NO `src/**` file. Needed because
+# commit-prefix-scope-gate blocks a `feat:` / `fix:` message exactly when no
+# src file is staged, which is the direct COMPLEMENT of what the fixture above
+# stages -- one tree cannot satisfy both, which is why that gate had no literal
+# control and sat outside fence 3 (go-to-k/cdkd#2156).
+stage_nosrc_violation() { # <dir>
+  local d="$1"
+  echo two > "$d/f.txt"
   "$REAL_GIT" -C "$d" add -A >/dev/null 2>&1
 }
 
 viol="$TMPDIR/viol"; clean="$TMPDIR/clean"; viol_spaced="$TMPDIR/viol dir"
+nosrc="$TMPDIR/nosrc"; nosrc_spaced="$TMPDIR/nosrc dir"
 mk_repo "$viol"; mk_repo "$clean"; mk_repo "$viol_spaced"
+mk_repo "$nosrc"; mk_repo "$nosrc_spaced"
 stage_violations "$viol"; stage_violations "$viol_spaced"
+add_origin_ref "$nosrc"; add_origin_ref "$nosrc_spaced"
+stage_nosrc_violation "$nosrc"; stage_nosrc_violation "$nosrc_spaced"
 "$REAL_GIT" -C "$clean" checkout -q -b feature/clean
 
 SHIM="$TMPDIR/bin"; mkdir -p "$SHIM"
@@ -324,6 +447,22 @@ CMD_TEMPLATES=(
   'gh -C @T@ pr merge 42 --auto'
   'gh -C @T@ pr create --title chore: x'
   'gh -C @T@ pr edit 42 --body x'
+  # go-to-k/cdkd#2156: two more literal controls, each the only shape that makes
+  # its gate block at all.
+  'gh -C @T@ issue create --title x --label nope-not-a-real-label'
+)
+
+# Templates that only DISCRIMINATE against the no-src fixture: a `feat:` /
+# `fix:` message with no `src/**` staged is exactly what commit-prefix-scope-gate
+# refuses, and it is the complement of what the primary fixture stages.
+# The message / title is QUOTED here, and that is a measurement rather than
+# style: with a bare `-m feat: x` the value is the single token `feat:` and both
+# prefix-scope gates read no subject at all, so they exited 0 and the control
+# was vacuous. Measured: quoted blocks (rc=2), unquoted passes (rc=0).
+NOSRC_TEMPLATES=(
+  'git -C @T@ commit -m "feat: add x"'
+  'git -C @T@ commit -m "fix: add x"'
+  'gh -C @T@ pr create --title "feat: add x"'
 )
 
 run_hook() { # <hook> <cwd> <cmd> -> exit code
@@ -334,25 +473,34 @@ run_hook() { # <hook> <cwd> <cmd> -> exit code
 exercised_list=""
 leaks=""
 space_leaks=""
-for h in "${HOOKS[@]}"; do
-  hb="$(basename "$h" .sh)"
-  for tpl in "${CMD_TEMPLATES[@]}"; do
-    lit="${tpl//@T@/$viol}"
-    run_hook "$h" "$clean" "$lit"; [ $? -eq 2 ] || continue
-    case " $exercised_list " in *" $hb "*) ;; *) exercised_list="$exercised_list $hb" ;; esac
-    for poison in "${POISON[@]}"; do
-      atk="${tpl//@T@/$poison}"
-      run_hook "$h" "$clean" "$atk"
-      [ $? -eq 0 ] && leaks="$leaks\n  $hb: blocks the literal target but PASSES  ${tpl//@T@/$poison}"
+# <target> <spaced twin> <template...>. Two fixtures, because one tree cannot
+# satisfy every gate at once: the second stages NO src file, which is the exact
+# complement the prefix-scope gate needs (go-to-k/cdkd#2156).
+sweep_pairs() {
+  local tgt="$1" tgt_spaced="$2"; shift 2
+  local h hb tpl lit poison atk spaced
+  for h in "${HOOKS[@]}"; do
+    hb="$(basename "$h" .sh)"
+    for tpl in "$@"; do
+      lit="${tpl//@T@/$tgt}"
+      run_hook "$h" "$clean" "$lit"; [ $? -eq 2 ] || continue
+      case " $exercised_list " in *" $hb "*) ;; *) exercised_list="$exercised_list $hb" ;; esac
+      for poison in "${POISON[@]}"; do
+        atk="${tpl//@T@/$poison}"
+        run_hook "$h" "$clean" "$atk"
+        [ $? -eq 0 ] && leaks="$leaks\n  $hb: blocks the literal target but PASSES  ${tpl//@T@/$poison}"
+      done
+      # A quoted path containing a space is LITERAL and DETERMINATE. It must
+      # still block -- this is the review's blocker 1, where a hand-copied verb
+      # regex with no quoted alternative made every gate miss it.
+      spaced="${tpl//@T@/\"$tgt_spaced\"}"
+      run_hook "$h" "$clean" "$spaced"
+      [ $? -eq 2 ] || space_leaks="$space_leaks\n  $hb: blocks '$lit' but NOT the same target quoted with a space"
     done
-    # A quoted path containing a space is LITERAL and DETERMINATE. It must still
-    # block -- this is the review's blocker 1, where a hand-copied verb regex
-    # with no quoted alternative made every gate miss it.
-    spaced="${tpl//@T@/\"$viol_spaced\"}"
-    run_hook "$h" "$clean" "$spaced"
-    [ $? -eq 2 ] || space_leaks="$space_leaks\n  $hb: blocks '$lit' but NOT the same target quoted with a space"
   done
-done
+}
+sweep_pairs "$viol" "$viol_spaced" "${CMD_TEMPLATES[@]}"
+sweep_pairs "$nosrc" "$nosrc_spaced" "${NOSRC_TEMPLATES[@]}"
 
 exercised_count=$(printf '%s' "$exercised_list" | wc -w | tr -d ' ')
 
@@ -361,15 +509,64 @@ exercised_count=$(printf '%s' "$exercised_list" | wc -w | tr -d ' ')
 # current value tolerates exactly the drop it exists to reveal: the previous
 # `>= 6` against an actual 9 stayed green with check-gate AND branch-gate
 # reduced to `exit 0`.
-EXPECTED_EXERCISED="branch-gate check-gate ci-green-gate dirty-path-restore-gate gh-pr-edit-deprecation-gate integ-broad-gate integ-destroy-gate integ-local-gate integ-schema-migration-gate main-tree-branch-gate post-merge-orphan-push-gate pr-review-gate provider-docs-gate provider-integ-gate ref-segment-audit-gate state-destroy-force-gate verify-pr-gate"
+EXPECTED_EXERCISED="branch-gate bughunt-clean-gate check-gate ci-green-gate cmd-parse-stub-gate commit-prefix-scope-gate dirty-path-restore-gate gh-label-validity-gate gh-pr-edit-deprecation-gate integ-broad-gate integ-destroy-gate integ-local-gate integ-schema-migration-gate internal-pr-labels-gate issue-dup-check-gate main-tree-branch-gate post-merge-orphan-push-gate pr-review-gate pr-title-prefix-scope-gate provider-docs-gate provider-integ-gate ref-segment-audit-gate roundtrip-test-gate state-destroy-force-gate verify-pr-gate"
 missing=""
 for want in $EXPECTED_EXERCISED; do
   case " $exercised_list " in *" $want "*) ;; *) missing="$missing $want" ;; esac
 done
 if [ -z "$missing" ]; then
-  ok "fence 3: all 17 baseline hooks still block their literal control ($exercised_count exercised)"
+  ok "fence 3: all baseline hooks still block their literal control ($exercised_count exercised:$exercised_list)"
 else
   ng "fence 3: these gates no longer block ANY literal control -- they have gone quiet:$missing"
+fi
+
+# --- the OTHER direction: every registered hook is exercised OR declared -----
+#
+# go-to-k/cdkd#2156. The baseline above only says "these 25 must not go quiet".
+# On its own that lets a hook sit outside the fence forever, which is exactly
+# where ten of them sat: the go-to-k/cdkd#2027 lane raised this population from
+# 7 to 16, NAMED the remaining ten, and left them uncovered because no literal
+# control could be constructed. Seven of those ten now have one -- the fixture
+# above gained the staged shapes and the second no-src tree they each needed --
+# and the three that remain are declared here WITH THE REASON, so the exclusion
+# is a statement someone can disagree with rather than an absence nobody sees.
+#
+# The check is a partition: registered == exercised + declared. A new hook
+# lands in NEITHER list and fails, which is the case a floor cannot catch.
+DECLARED_UNEXERCISED="
+closes-paren-form-gate            verdict is the PR BODY, not the target tree
+commit-msg-heredoc-gate           verdict is the command SHAPE, target-independent
+gated-command-preamble-gate       verdict is the command SHAPE, target-independent
+gh-body-english-gate              verdict is the published BODY, not the target tree
+integ-coverage-matrix-gate        needs the real repo toolchain (node + the regen script) in the target
+issue-classification-label-gate   verdict is the published BODY, not the target tree
+main-tree-dirty-detector          PostToolUse, non-blocking by design
+main-tree-edit-gate               fires on a WRITE-shaped command, not a git/gh verb
+main-tree-git-cwd-detector        PostToolUse, non-blocking by design
+non-english-text-gate             verdict is the PR DIFF text, not the target tree
+post-merge-sync-reminder          PostToolUse, non-blocking by design
+pr-body-item-number-gate          verdict is the published BODY, not the target tree
+restore-backup                    non-blocking by design (it snapshots, never refuses)
+stop-unmerged-lane-warn           Stop hook, no command to gate
+stop-warn                         Stop hook, no command to gate
+vp-run-test-path-gate             gates a `vp` verb, not a git/gh one
+worktree-owner-gate               Edit|Write|NotebookEdit matcher, no Bash command
+"
+unpartitioned=""
+for h in "${HOOKS[@]}"; do
+  hb="$(basename "$h" .sh)"
+  case " $exercised_list " in *" $hb "*) continue ;; esac
+  case "
+$DECLARED_UNEXERCISED" in
+    *"
+$hb "*) continue ;;
+  esac
+  unpartitioned="$unpartitioned $hb"
+done
+if [ -z "$unpartitioned" ]; then
+  ok "fence 3: every registered hook is either exercised by a literal control or declared unexercisable with a reason"
+else
+  ng "fence 3: registered hook(s) in NEITHER list -- they are outside the fence and nothing says why:$unpartitioned"
 fi
 
 if [ -z "$leaks" ]; then

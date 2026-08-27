@@ -283,7 +283,25 @@ want_match 0 "flag after a valueless flag"            'git -C /tmp -q commit -m 
 # quoted flag VALUE, and an argument. An absorber that swallows the closing
 # quote reaches them.
 want_match 1 "verb inside a spaced flag value"        'git -c alias.x="run commit later" status' "$C"
-want_match 1 "verb as an argument after a spaced value" 'git -c user.name="Jane Doe" log --grep commit' "$C"
+# FLIPPED by go-to-k/cdkd#2156, deliberately, and it is the one case in this
+# file whose expectation the trigger inversion changed. Once the prefix stops
+# enumerating flag spellings, "a bare token here is a flag VALUE" and "a bare
+# token here is the subcommand" become indistinguishable after the first flag --
+# and the whole point is that the AMBIGUOUS reading must WIDEN, because a
+# narrowing miss exits 0 silently while a widening reaches the strict resolver
+# and refuses out loud. Note origin/main already matched the same shape without
+# the `-c` (`git --no-pager log --grep commit`), so this is one spelling joining
+# a class that already existed, not a new class.
+#
+# What still keeps ordinary read commands out is the case BELOW it -- a bare
+# token in FIRST position is the subcommand by git's own syntax, so
+# `git log --grep commit` settles with no list of subcommand names to go stale.
+# That pair is the real control; do not "fix" this line back without checking
+# what the one below then still discriminates.
+want_match 0 "verb after a spaced value is CONSIDERED (over-approximate trigger)" \
+  'git -c user.name="Jane Doe" log --grep commit' "$C"
+want_match 1 "bare first token settles the subcommand: git log is not a commit" \
+  'git log --grep commit' "$C"
 want_match 1 "gh verb inside a spaced repo value"     'gh --repo "a pr merge b" issue list' "$M"
 
 # --- the spellings that used to bypass ---------------------------------------
@@ -763,6 +781,426 @@ want_dir "/fallback" "-C inside a quoted flag value is not a target" \
   'git -c core.pager="less -C /evil" commit -m y' /fallback "$C"
 want_dir "/w/t" "a real -C after -c k=v still resolves" \
   'git -c k=v -C /w/t commit -m x' /fallback "$C"
+
+# =============================================================================
+# go-to-k/cdkd#2156 -- every KNOWN bypass spelling, pinned, and every known
+# FALSE-REFUSAL shape as a negative control
+# =============================================================================
+#
+# The issue's own table lists the spellings four review rounds each found one at
+# a time. They are pinned here as cases so a future narrowing of GATE_FLAGS
+# fails LOUDLY rather than reopening one of them silently. Each name says which
+# round found it; `strict-resolver` on a name means the segment MATCHES here and
+# the refusal is `gate_target_dir_strict`'s job, which is the split this issue
+# asked for -- over-approximate the trigger, stay strict on resolution.
+
+# round 1 -- an unexpanded variable in -C. MATCHES; the resolver refuses it.
+want_match 0 "bypass r1: git -C \$W (strict-resolver refuses)"        'git -C "$W" commit -m x' "$C"
+want_match 0 "bypass r1: git -C \$W unquoted"                         'git -C $W commit -m x' "$C"
+# round 2 -- a quoted path containing a space; determinate, must BLOCK outright.
+want_match 0 "bypass r2: quoted -C path with a space"                 'git -C "/a b/wt" commit -m x' "$C"
+want_match 0 "bypass r2: \$( ) in -C (strict-resolver refuses)"       'git -C "$(git rev-parse --show-toplevel)" commit -m x' "$C"
+want_match 0 "bypass r2: backtick in -C (strict-resolver refuses)"    'git -C `pwd` commit -m x' "$C"
+# round 3 -- a gh GLOBAL flag ahead of the verb.
+want_match 0 "bypass r3: gh -R owner/repo pr merge"                   'gh -R go-to-k/cdkd pr merge 42 --squash' "$M"
+want_match 0 "bypass r3: gh --repo=owner/repo pr merge"               'gh --repo=go-to-k/cdkd pr merge 42 --squash' "$M"
+# round 3 -- a MULTI-LINE $( ). Fixed here (subst_open joins the lines); on
+# origin/main this segmented to `git -C` + `) commit -m x` and matched nothing.
+want_match 0 "bypass r3: multi-line \$( ) in -C"                      'git -C $(
+  git rev-parse --show-toplevel
+) commit -m x' "$C"
+want_match 0 "bypass r3: multi-line \$( ) in a gh flag"               'gh -R $(
+  echo go-to-k/cdkd
+) pr merge 42 --squash' "$M"
+# #2156 -- the shapes the FLAG GRAMMAR could not parse, which is the class the
+# inverted trigger exists to end. None of these matched on origin/main.
+want_match 0 "wide trigger: a flag taking TWO values"                 'git --exec-path /x /y commit -m x' "$C"
+want_match 0 "wide trigger: a bare token between flags"               'git -c a=b junkjunk commit -m x' "$C"
+want_match 0 "wide trigger: gh flag with two values"                  'gh -R o/r --jsonflag x y pr merge 42' "$M"
+
+# --- FALSE-REFUSAL negative controls -----------------------------------------
+# All four shipped as real false refusals during the go-to-k/cdkd#2027 lane. The
+# `gate_leading_c_value` anchoring that fixed the first three is preserved by
+# this work; these pin that, and pin that the wider trigger did not undo it.
+want_match 1 "no-refuse: a commit message QUOTING git -C \$W"         'git commit -m "repro: git -C $W commit failed" && true' "$M"
+want_dir "/fallback" "no-refuse: the quoted -C in the message is not the target" \
+  'git commit -m "repro: git -C $W commit failed"' /fallback "$C"
+want_match 1 "no-refuse: a --body carrying a newline and a command"   'gh issue comment 1 --body "we ran:
+git -C $W commit -F f"' "$C"
+want_match 1 "no-refuse: MSG=\$(echo git commit -m x)"                'MSG=$(echo git commit -m x)' "$C"
+# `cd <newdir> && git init && git commit` -- the newdir does not exist yet, so a
+# gate that treats an unstat-able target as unreadable refuses a legitimate
+# bootstrap. The MATCH is correct here (it really is a commit); what must hold
+# is that the target resolves to the named directory rather than to nothing.
+want_dir "/tmp/newdir" "no-refuse: cd <newdir> && git init && git commit" \
+  'cd /tmp/newdir && git init && git commit -m x' /fallback "$C"
+
+# Ordinary read commands must stay OUT of every gate: a bare token in first
+# position IS the subcommand, so these settle without any list of names.
+want_match 1 "no-refuse: git show --stat commit"      'git show --stat commit' "$C"
+want_match 1 "no-refuse: git config alias.ci commit"  'git config alias.ci commit' "$C"
+want_match 1 "no-refuse: git diff -- commit.md"       'git diff main -- commit.md' "$C"
+want_match 1 "no-refuse: git worktree add ... origin/main" \
+  'git worktree add .claude/worktrees/x -b x origin/main' "$GATE_RE_GIT_MERGE"
+want_match 1 "no-refuse: git branch --merged"         'git branch --merged origin/main' "$GATE_RE_GIT_MERGE"
+want_match 1 "no-refuse: gh pr list --search merge"   'gh pr list --search merge' "$M"
+# The single-quoted body that the first draft of the wide prefix DID refuse:
+# blind tokens tiled `pr` and `merge` out of the quoted value. Both quotings.
+want_match 0 "accepted FR: pr create whose body says pr merge (single quotes)" \
+  "gh -R o/r pr create -b 'x pr merge y'" "$M"
+want_match 1 "no-refuse: pr create whose body says pr merge (double quotes)" \
+  'gh -R o/r pr create -b "x pr merge y"' "$M"
+
+# --- GATE_RE_GH_PROSE_CARRIER (the verb gh-body-english-gate matches) --------
+#
+# That hook used to hand-roll its own absorber -- three flag names and one
+# UNQUOTED value shape -- so any other gh global flag ahead of the verb left the
+# gate unarmed and non-English prose reached GitHub. It now takes the shared
+# constant, and these cases live HERE rather than in that hook's own suite ON
+# PURPOSE: an end-to-end case needs a non-English BODY, and non-english-text-gate
+# scans the whole content of every file a PR touches with no allow-list, so
+# adding one there makes the PR carrying the fix unopenable. The hole was in the
+# TRIGGER, and the trigger IS this constant, so ASCII fences it precisely.
+#
+# Driven through `check` (i.e. `cmd_matches_verb`, which anchors at a segment
+# START) rather than `want_match`, because that is how the hook consumes it. The
+# constant is deliberately UNANCHORED -- the hook also feeds it to
+# `cmd_last_cd_target` -- so a raw `gate_matches` finds it inside a quoted
+# mention and the polarity control below could never fail.
+PROSE="$GATE_RE_GH_PROSE_CARRIER"
+check "prose carrier: plain issue create"          0 "$PROSE" 'gh issue create --title x --body y'
+check "prose carrier: -R before the verb"          0 "$PROSE" 'gh -R go-to-k/cdkd issue comment 5 --body y'
+check "prose carrier: an UNLISTED global flag"     0 "$PROSE" 'gh --template "{{.body}}" issue create --title x --body y'
+check "prose carrier: unlisted flag, spaced value" 0 "$PROSE" 'gh -R "go-to-k/cdkd" --template "a b" pr comment 5 --body y'
+check "prose carrier: release create"              0 "$PROSE" 'gh release create v1 --notes y'
+check "prose carrier: gh api"                      0 "$PROSE" 'gh api repos/o/r/issues -f body=y'
+check "prose carrier: after a chain operator"      0 "$PROSE" 'git push && gh --template "a b" issue create --body y'
+# Polarity: it must NOT fire on a gh verb that publishes nothing, nor on prose
+# quoting one -- otherwise the cases above pass by matching everything.
+check "prose carrier: gh pr list is not a publish"    1 "$PROSE" 'gh pr list --search merge'
+check "prose carrier: gh issue view is not a publish" 1 "$PROSE" 'gh issue view 5 --json body'
+check "prose carrier: a quoted MENTION does not fire" 1 "$PROSE" 'echo "then run gh issue create --body x"'
+check "prose carrier: a commit message quoting it"    1 "$PROSE" 'git commit -m "next: gh issue create --body x"'
+
+# =============================================================================
+# go-to-k/cdkd#2156 review round 1 -- the three BLOCKERS
+# =============================================================================
+
+# --- BLOCKER 1: the strip helpers must cut at the LEFTMOST verb --------------
+#
+# POSIX `=~` is leftmost-LONGEST, so the widened prefix gained a legal parse
+# that swallows the real verb and anchors on a LATER one in the same segment.
+# The booleans stayed right; the three LENGTH-strip helpers read the wrong
+# arguments, and NO strict resolver catches that -- resolution succeeds, on the
+# wrong tail. A case per helper, asserting the EXTRACTED VALUE rather than the
+# boolean, because the boolean is exactly what stayed green through the defect.
+want_rest() { # <expected> <label> <command> <regex>
+  local want="$1" label="$2" cmd="$3" re="$4" got
+  got=$(gate_verb_rest "$cmd" "$re")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n' "$label"
+    fail_log+="FAIL $label\n  want rest: [$want]\n  got  rest: [$got]\n"
+  fi
+}
+want_rest_each() { # <expected-newline-joined> <label> <command> <regex>
+  local want="$1" label="$2" cmd="$3" re="$4" got
+  got=$(gate_verb_rest_each "$cmd" "$re")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n' "$label"
+    fail_log+="FAIL $label\n  want: [$want]\n  got:  [$got]\n"
+  fi
+}
+# gate_verb_rest -- the go-to-k/cdkd#1700 data-loss shape. Before the fix the
+# tail came back as `main`, the `--` vanished, dirty-path-restore-gate read a
+# branch switch and PASSED (measured rc=2 -> rc=0 through the shipped hook).
+want_rest '-- f.txt # undo probe, then git checkout main' \
+  "leftmost verb: a trailing MENTION does not move the anchor" \
+  'git -C /wt checkout -- f.txt # undo probe, then git checkout main' "$GATE_RE_GIT_CHECKOUT"
+want_rest '-- f.txt # see git checkout main' \
+  "leftmost verb: same, with a flag before -C" \
+  'git -c a=b -C /wt checkout -- f.txt # see git checkout main' "$GATE_RE_GIT_CHECKOUT"
+want_rest '-- f.txt' \
+  "leftmost verb: the plain shape is unchanged" \
+  'git -C /wt checkout -- f.txt' "$GATE_RE_GIT_CHECKOUT"
+# A path COMPONENT named like the verb must not become the cut point -- this is
+# why the fix asks the regex for its shortest match instead of cutting at the
+# first `pr` / `checkout` token.
+want_rest '-- f.txt' \
+  "leftmost verb: a path component named checkout is not the verb" \
+  'git -C /repo/checkout checkout -- f.txt' "$GATE_RE_GIT_CHECKOUT"
+want_rest_each 'main
+-- f.txt' "leftmost verb: rest_each still reports BOTH segments" \
+  'git checkout main && git checkout -- f.txt' "$GATE_RE_GIT_CHECKOUT"
+# gate_pr_selector -- before the fix this returned 9, so ci-green-gate /
+# pr-review-gate / closes-paren-form-gate judged PR 9 while merging 2195.
+want_sel 2195 "leftmost verb: a trailing mention does not steal the selector" \
+  'gh -R o/r pr merge 2195 --squash --delete-branch # then gh pr merge 9'
+want_sel 42 "leftmost verb: a path component named pr is not the verb" \
+  'gh -C /repo/pr pr merge 42 --squash'
+want_sel 42 "leftmost verb: a gh flag taking two values" \
+  'gh -R o/r --jsonflag x y pr merge 42'
+
+# --- BLOCKER 2: multi-line BACKTICK substitution ------------------------------
+#
+# `subst_open` counted only `$(`, so the backtick spelling of the same shape
+# stayed a full bypass while the docs called the class closed. Measured with the
+# repo on `main`: branch-gate rc=0 for the backtick, rc=2 for the `$( )` twin.
+want_match 0 "bypass: multi-line backtick in -C" 'git -C `
+  echo /a/b
+` commit -m x' "$C"
+want_match 0 "bypass: multi-line backtick in a gh flag" 'gh -R `
+  echo o/r
+` pr merge 42' "$M"
+# PARITY, not depth: backticks do not nest, so an ordinary balanced pair must
+# NOT hold the line open. If it did, every `git -C \`pwd\` commit` would join
+# with the next line and the segment would be wrong.
+want_match 0 "backtick parity: a balanced pair on one line still matches" \
+  'git -C `pwd` commit -m x' "$C"
+want_match 0 "backtick parity: a balanced pair inside a quoted span" \
+  'echo "a `b` c" && git commit -m x' "$C"
+
+# --- BLOCKER 3: the apostrophe idiom must NOT be a false refusal --------------
+#
+# The quote-close-escape-reopen idiom is THE shell way to put an apostrophe
+# inside a single-quoted string, so every English body with a contraction takes
+# that shape. All four were rc=0 on origin/main and began matching once the
+# prefix widened.
+want_match 0 "accepted FR: the quote-escape-reopen apostrophe idiom in a body" \
+  "gh -R go-to-k/cdk-local issue comment 42 --body 'we can'\''t pr merge 99 until CI is green'" "$M"
+# FLIPPED by the round-3 security review, deliberately. Round 2 asserted these
+# three must NOT match; forbidding the token shape that makes them match also
+# forbade `--work-tree=/x/o'brien`, which took the go-to-k/cdkd#1700 data-loss
+# gate and both merge gates from rc=2 to rc=0. A false refusal on a `gh issue
+# comment` is LOUD -- visible, diagnosable, one rephrase away; a
+# dirty-path-restore-gate returning 0 destroys uncommitted work in silence. So
+# these are now the ACCEPTED cost, pinned as cases so the trade cannot be
+# quietly reversed. The everyday contraction idiom is still NOT refused, which
+# is asserted separately below.
+want_match 0 "accepted FR: --body='<single-quoted>' with a verb inside" \
+  "gh -R o/r issue comment 1 --body='next: pr merge 5'" "$M"
+want_match 0 "accepted FR: -b'<single-quoted>' with a verb inside" \
+  "gh -R o/r issue comment 1 -b'next: pr merge 5'" "$M"
+want_match 0 "accepted FR: --body=\$'<ansi-c>' with a verb inside" \
+  "gh -R o/r issue comment 1 --body=\$'next: pr merge 5'" "$M"
+# The counterweight: the apostrophe-PATH cases go-to-k/cdkd#2199 added, which is
+# why apostrophes cannot simply be banned from a blind token. The third is the
+# one that ruled out the reviewer-suggested "first interior word only" fix.
+want_match 0 "keep: an unbalanced apostrophe in the -C path" \
+  "git -C /tmp/o'neill/repo commit -m x" "$C"
+want_match 0 "keep: an unbalanced apostrophe in an earlier flag VALUE" \
+  "git -c user.name=O'Brien -C /w/t commit -m x" "$C"
+want_match 0 "keep: an apostrophe path in a LATER word, not the first" \
+  "git -c a=b -C /tmp/o'neill/repo commit -m x" "$C"
+# Single-quoted flag VALUES containing a space must still tile as one word.
+want_match 0 "keep: a spaced single-quoted flag value" \
+  "git -c core.pager='less -S' commit -m x" "$C"
+want_match 0 "keep: a spaced single-quoted gh flag value" \
+  "gh --template 'a b' pr merge 42" "$M"
+
+# --- GATE_RE_GH_PROSE_CARRIER: the `cmd_last_cd_target` half ------------------
+#
+# The hook feeds this SAME constant to `cmd_last_cd_target`, whose job is to
+# stop following `cd`s AT THE VERB -- a trailing `cd` must not hijack the
+# directory a relative `--body-file` resolves against. That half had no case:
+# the constant's terminator is spelled `([[:space:]]|$|[|;&`)])` rather than
+# `\b` precisely because this consumer is AWK (where `\b` is a BACKSPACE), and
+# nothing fenced the spelling. Planting `\b` there makes the case below resolve
+# `/b` instead of `/a`, which is the whole point of having it.
+want_cd() { # <expected> <label> <command> <base> <verb-ere>
+  local want="$1" label="$2" cmd="$3" base="$4" re="$5" got
+  got=$(cmd_last_cd_target "$cmd" "$base" "$re")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n' "$label"
+    fail_log+="FAIL $label\n  want: [$want]\n  got:  [$got]\n"
+  fi
+}
+want_cd "/a" "prose carrier: a cd AFTER the verb does not move the body-file base" \
+  'cd /a && gh issue create --title x --body y && cd /b' /fallback "$PROSE"
+want_cd "/a" "prose carrier: same with a global flag before the verb" \
+  'cd /a && gh --template "a b" issue create --body y && cd /b' /fallback "$PROSE"
+want_cd "" "prose carrier: no cd before the verb resolves to nothing" \
+  'gh issue create --title x --body y && cd /b' /fallback "$PROSE"
+
+# --- the FAIL-CLOSED arm that guards this constant ---------------------------
+#
+# `gh-body-english-gate.sh` refuses to run when the library it loaded does not
+# define GATE_RE_GH_PROSE_CARRIER, because an unset constant leaves its VERB_ERE
+# empty and an empty ERE matches EVERY segment -- the gate would fire on
+# everything, and the natural "fix" is to delete it. Two reviewers verified the
+# arm works by deleting the constant; NOTHING fenced that it keeps working (the
+# hook suite was still 80/80 with the arm removed).
+#
+# The case lives HERE rather than in that hook's own suite for the reason
+# already documented above: that file carries non-English fixtures, and
+# `non-english-text-gate` scans the full content of every file a PR touches with
+# no allow-list, so adding a case there makes the PR carrying the fix unopenable.
+# This one needs no non-English text at all -- it asserts an exit code.
+_gate_hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "$_gate_hook_dir/gh-body-english-gate.sh" ]; then
+  _fc_tmp="$(mktemp -d)"
+  mkdir -p "$_fc_tmp/lib"
+  cp "$_gate_hook_dir/gh-body-english-gate.sh" "$_fc_tmp/"
+  # A library that is otherwise COMPLETE and merely predates the constant. A
+  # truncated one would trip the `declare -F` guard instead, and the case would
+  # pass for the wrong reason.
+  grep -v '^GATE_RE_GH_PROSE_CARRIER=' "$_gate_hook_dir/lib/command-match.sh" \
+    > "$_fc_tmp/lib/command-match.sh"
+  _fc_payload='{"cwd":"/tmp","tool_name":"Bash","session_id":"fc","tool_input":{"command":"gh issue create --title x --body y"}}'
+  printf '%s' "$_fc_payload" | bash "$_fc_tmp/gh-body-english-gate.sh" >/dev/null 2>&1
+  _fc_rc=$?
+  if [ "$_fc_rc" -eq 2 ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: a library without GATE_RE_GH_PROSE_CARRIER refuses"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n' "fail-closed: a library without GATE_RE_GH_PROSE_CARRIER refuses"
+    fail_log+="FAIL fail-closed arm: expected rc=2, got rc=$_fc_rc\n"
+  fi
+  # Polarity: the SAME fixture with the constant present must pass the command
+  # through (rc=0), or the case above would pass on any breakage at all.
+  cp "$_gate_hook_dir/lib/command-match.sh" "$_fc_tmp/lib/command-match.sh"
+  printf '%s' "$_fc_payload" | bash "$_fc_tmp/gh-body-english-gate.sh" >/dev/null 2>&1
+  _fc_rc=$?
+  if [ "$_fc_rc" -eq 0 ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "fail-closed: the same fixture WITH the constant passes an english body"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n' "fail-closed: the same fixture WITH the constant passes an english body"
+    fail_log+="FAIL fail-closed polarity: expected rc=0, got rc=$_fc_rc\n"
+  fi
+  rm -rf "$_fc_tmp"
+fi
+
+# =============================================================================
+# go-to-k/cdkd#2156 review round 2 -- LATER-position quoted flag values
+# =============================================================================
+#
+# Round 1 split the prefix into a FIRST interior word and LATER ones and dropped
+# the single-quoted-span alternative for the later ones. That fixed the
+# apostrophe idiom and LOST seven balanced, runnable commands -- a lost match is
+# a BYPASS, so it was strictly worse than the false refusal it fixed.
+#
+# The battery that cleared round 1 pinned `-c core.pager='less -S'` and
+# `gh --template 'a b'` in FIRST position only, with no later-position twin, so
+# the whole class was invisible to it. These are the twins. Where a case above
+# has a first-position form, the one here is the same shape moved later.
+want_match 0 "later sq value: -c core.pager after -C (commit)" \
+  "git -C /repo -c core.pager='less -S' commit -m x" "$C"
+want_match 0 "later sq value: -c core.pager after -C (checkout)" \
+  "git -C /repo -c core.pager='less -S' checkout -- f.txt" "$GATE_RE_GIT_CHECKOUT"
+want_match 0 "later sq value: gh --template after -R (create)" \
+  "gh -R o/r --template 'a b' pr create --title x" "$GATE_RE_GH_PR_CREATE"
+want_match 0 "later sq value: gh --template after -R (merge)" \
+  "gh -R o/r --template 'a b' pr merge 42" "$M"
+want_match 0 "later sq value: -c a='b c' (push)" \
+  "git -C /repo -c a='b c' push origin HEAD" "$P"
+want_match 0 "later sq value: --work-tree='/a b' (merge)" \
+  "git -C /repo -c x=y --work-tree='/a b' merge origin/main" "$GATE_RE_GIT_MERGE"
+# The span must be a SUFFIX of its token. That is what separates the cases above
+# from the apostrophe idiom, whose span sits MID-token -- so this pair has to
+# keep BOTH verdicts, and a fix that restores the span alternative wholesale
+# (measured: 2 wrong) flips the second one.
+# ROUND 5 FLIPPED THESE THREE, and it is the third time this PR has made the
+# same trade in the same direction. Restoring the quote-BLIND fallback for later
+# words is what stops a token carrying MORE THAN ONE apostrophe from matching
+# nothing -- measured, `git -C <wt> --exec-path='/opt/git'/libexec commit` took
+# branch-gate rc=2 -> rc=0, and its `checkout` twin took the go-to-k/cdkd#1700
+# data-loss gate with it. These three now reach the merge gates as LOUD
+# refusals (verified rc=2 with a message through verify-pr-gate).
+#
+# The rule that decided rounds 3, 4 and 5 identically, stated once: when a
+# grammar choice trades a SILENT loss against a LOUD refusal, take the refusal,
+# and stop trying to separate the two populations by POSITION. Every attempt was
+# locally correct and moved the failure one grammar case sideways.
+want_match 0 "accepted FR: a MID-token span now reaches the merge gates too" \
+  "gh -R go-to-k/cdk-local issue comment 42 --body 'we can'\''t pr merge 99 until CI is green'" "$M"
+
+# The round-3 security review's blocker, in every verb it reaches. A LATER,
+# DASH-LED token carrying a LOOSE apostrophe was briefly forbidden and priced as
+# "two cells on `commit`" -- the real price was dirty-path-restore-gate (the
+# go-to-k/cdkd#1700 data-loss gate) and BOTH merge gates going rc=2 -> rc=0.
+# THE VERB IS THE POINT of these five: the corpus that mispriced it carried the
+# shape only with `commit`, so the `checkout` / `restore` / `pr merge`
+# instances were invisible. Whenever a token shape is pinned, pin it with every
+# verb it can carry.
+want_match 0 "loose apo, dash-led: commit" \
+  "git -C /repo --work-tree=/Users/o'brien/wt commit -m x" "$C"
+want_match 0 "loose apo, dash-led: checkout (the data-loss gate)" \
+  "git -C /wt --work-tree=/x/o'brien checkout -- f.txt" "$GATE_RE_GIT_CHECKOUT"
+want_match 0 "loose apo, dash-led: restore" \
+  "git -C /wt --work-tree=/x/o'brien restore f.txt" "$GATE_RE_GIT_RESTORE"
+want_match 0 "loose apo, dash-led: pr merge" \
+  "gh -R o/r --template=/a/o'neill pr merge 2195 --squash" "$M"
+want_match 0 "not lost: BARE-led later token with a loose apostrophe" \
+  "git -c a=b -C /tmp/o'neill/repo commit -m x" "$C"
+# The apostrophe-free twins, so the four above cannot pass by the gate simply
+# matching everything -- on the forbidding shape these stayed rc=2 while their
+# apostrophe versions went rc=0, which is what made the apostrophe the culprit.
+want_match 0 "control: same shape with no apostrophe (checkout)" \
+  "git -C /wt --work-tree=/x/obrien checkout -- f.txt" "$GATE_RE_GIT_CHECKOUT"
+want_match 0 "control: same shape with no apostrophe (pr merge)" \
+  "gh -R o/r --template=/a/oneill pr merge 2195 --squash" "$M"
+# ACCEPTED FALSE REFUSALS, and they are cases so the trade cannot be forgotten:
+# admitting the shape above lets a single-quoted `--body` carrying a gated verb
+# reach the merge gates. Loud and recoverable, versus a silent bypass of the
+# data-loss gate -- measured at 3 wrong here against 4 either way round.
+want_match 0 "accepted FR: --body='<verb inside>' reaches the merge gates" \
+  "gh -R o/r issue comment 1 --body='next: pr merge 5'" "$M"
+# But the everyday contraction is NOT refused -- that is the whole reason the
+# span-suffix rule exists rather than dropping the split entirely.
+want_match 0 "accepted FR: the quote-escape-reopen contraction idiom" \
+  "gh -R go-to-k/cdk-local issue comment 42 --body 'we can'\''t pr merge 99 until CI is green'" "$M"
+
+# The walk is BOUNDED. Past the cap gate_verb_span falls back to the greedy end
+# rather than walking, because an unbounded walk outlives the `timeout: 10` that
+# four gates carry and a timed-out PreToolUse hook does not block at all. This
+# asserts the bound HOLDS, not the fallback's value: the point is that it
+# returns promptly and the ordinary shapes above are unaffected.
+_cap_cmd="gh -R o/r"
+_cap_i=0
+while [ "$_cap_i" -lt 200 ]; do _cap_cmd="$_cap_cmd -c k$_cap_i=v$_cap_i"; _cap_i=$((_cap_i + 1)); done
+_cap_cmd="$_cap_cmd pr merge 42 pr merge"
+_cap_start=$(date +%s)
+gate_pr_selector "$_cap_cmd" "$GATE_RE_GH_PR_MERGE" >/dev/null
+gate_verb_rest "$_cap_cmd" "$GATE_RE_GH_PR_MERGE" >/dev/null
+_cap_elapsed=$(( $(date +%s) - _cap_start ))
+if [ "$_cap_elapsed" -le 5 ]; then
+  pass=$((pass + 1)); printf 'OK   %s\n' "bounded walk: 200 flags + a repeated verb stays under the hook timeout (${_cap_elapsed}s)"
+else
+  fail=$((fail + 1)); printf 'FAIL %s\n' "bounded walk: 200 flags + a repeated verb took ${_cap_elapsed}s, near the timeout: 10 four gates carry"
+  fail_log+="FAIL bounded walk: ${_cap_elapsed}s\n"
+fi
+
+# --- round 5: a LATER token with MORE THAN ONE apostrophe --------------------
+#
+# The blind fallback's subject. Every other alternative rules these out (NOSQ
+# has no apostrophe, SPANSUF takes one span that must END the token,
+# BLIND_BARE cannot start with `-`, LOOSE_FLAG takes exactly ONE), so without
+# it they matched NOTHING. Pinned with several verbs, per the round-4 lesson.
+want_match 0 "multi-apo later: span-then-tail (commit)" \
+  "git -C /wt --exec-path='/opt/git'/libexec commit -m x" "$C"
+want_match 0 "multi-apo later: span-then-tail (checkout, the data-loss gate)" \
+  "git -C /wt --exec-path='/opt/git'/libexec checkout -- f.txt" "$GATE_RE_GIT_CHECKOUT"
+want_match 0 "multi-apo later: two loose apostrophes (commit)" \
+  "git -C /wt --work-tree=/x/o'brien/d'arcy commit -m x" "$C"
+want_match 0 "multi-apo later: two loose apostrophes (pr merge)" \
+  "gh -R o/r --work-tree=/x/o'brien/d'arcy pr merge 42 --squash" "$M"
+want_match 0 "multi-apo later: space-separated flag value (commit)" \
+  "git -C /repo --author 'O'\\''Brien' commit -m x" "$C"
+want_match 0 "multi-apo later: five apostrophes in a gh flag (pr merge)" \
+  "gh -R go-to-k/cdkd --jq='.a'\\''b' pr merge 2330 --squash" "$M"
+
+# Round 5 flagged this one to FILE as pre-existing. It is not deferred -- the
+# blind fallback FIXES it, so it is pinned here instead. Measured: NOMATCH on
+# the vendored merge base, MATCH now, i.e. this lane is strictly ahead of the
+# base on the shape rather than merely restoring it.
+want_match 0 "beyond the base: -c <key> <spaced idiom value> (commit)" \
+  "git -C /repo -c user.name 'O'\\''Brien' commit" "$C"
+want_match 0 "beyond the base: -c <key> <spaced idiom value> (checkout)" \
+  "git -C /repo -c user.name 'O'\\''Brien' checkout -- f.txt" "$GATE_RE_GIT_CHECKOUT"
 
 echo
 echo "Pass: $pass  Fail: $fail"

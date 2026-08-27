@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# VENDORED: lib/command-match.sh as of 84480c414b3573ef70e3b01b8afd769bb65f7ddf (the merge base of the
+# go-to-k/cdkd#2156 lane), i.e. the PRE-2156 trigger. Read by
+# command-match-differential.test.sh to enforce the SUPERSET invariant.
+# Vendored rather than read with `git show` because CI shallow-clones; pinned
+# to a sha rather than to `origin/main` because origin/main moves and would
+# eventually contain this very change, making the comparison vacuous.
+# VENDORED CONTENT BEGINS
+#!/usr/bin/env bash
 # Shared command-matching helpers for the PreToolUse gate hooks.
 #
 # WHY THIS EXISTS (issue #1455). Every gate used to decide "is this the
@@ -269,52 +277,6 @@ gate_segments_raw() {
       }
       return "\"" out "\""
     }
-    # Does a substitution stay OPEN at end of line? Net unclosed `$(` depth,
-    # counted the naive way close_paren counts (quotes ignored, `\x` skipped),
-    # OR an odd number of unescaped backticks. Either means the substitution
-    # CONTINUES on the next line.
-    #
-    # WHY (go-to-k/cdkd#2156). close_paren scans within ONE line, so a
-    # substitution written across lines returned 0 and flush_line fell to its
-    # `res = res "\n"` arm, which SPLITS. Measured on origin/main,
-    # `git -C $(<nl>  echo /a/b<nl>) commit -m x` segmented to `git -C`,
-    # `echo /a/b` and `) commit -m x`: no segment matched any verb, so
-    # branch-gate and check-gate both exited 0 on a determinate commit. That is
-    # the round-1 truncation surviving for the multi-line spelling, and it is
-    # the last known bypass recorded by go-to-k/cdkd#2027.
-    #
-    # Joined with `;` rather than a space, and that choice is load-bearing: a
-    # NEWLINE separates commands inside a substitution body, so a space would
-    # fuse `$(<nl>cd /x<nl>git commit<nl>)` into one segment `cd /x git commit`
-    # and the commit would stop matching. `;` is the same separator in a form
-    # that survives being put on one line, and the enclosing command is
-    # unaffected because neutralise() turns it into a placeholder there anyway.
-    function subst_open(line,   i, n, c, depth, bt) {
-      depth = 0; bt = 0; n = length(line)
-      for (i = 1; i <= n; i++) {
-        c = substr(line, i, 1)
-        if (c == "\\") { i++; continue }
-        # BACKTICK PARITY, tracked SEPARATELY from the paren depth
-        # (go-to-k/cdkd#2156 review round 1). The first version of this function
-        # counted only `$(`, so the backtick spelling of the same multi-line
-        # substitution still fell to the splitting arm and stayed a full bypass:
-        # measured with the repo on `main`, `git -C `<nl> echo <wt> <nl>` commit`
-        # gave branch-gate rc=0 while its `$( )` twin gave rc=2 -- and both the
-        # PR body and .claude/rules/hooks-class-fences.md called the class
-        # CLOSED, which is worse than not claiming it.
-        #
-        # PARITY, NOT DEPTH, and that is forced rather than stylistic: backticks
-        # do not nest, so an inner one CLOSES rather than descends. Feeding them
-        # to `depth` would make the second backtick of an ordinary
-        # `git -C `pwd` commit` read as another opener and hold the line open
-        # forever.
-        if (c == "`") { bt = 1 - bt; continue }
-        if (c == "$" && substr(line, i + 1, 1) == "(") { depth++; i++; continue }
-        if (c == "(" && depth > 0) { depth++; continue }
-        if (c == ")" && depth > 0) { depth--; continue }
-      }
-      return (depth > 0 || bt)
-    }
     function terminated(t, from,   j, u) {
       for (j = from; j <= total; j++) {
         u = lines[j]
@@ -403,8 +365,8 @@ gate_segments_raw() {
       return res
     }
     # One full pass. Runs twice at most: see the END rule.
-    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub) {
-      q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""
+    function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg) {
+      q = ""; tag = ""; pending = ""; acc = ""; extra = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
         if (tag != "") {                  # inside a heredoc body: data, not commands
@@ -420,10 +382,6 @@ gate_segments_raw() {
           pending = line
           continue
         }
-        # A `$(` still open at end of line CONTINUES on the next one; join so
-        # close_paren can see the closer. See subst_open above.
-        if (psub != "") { line = psub ";" line; psub = "" }
-        if (subst_open(line)) { psub = line; continue }
         # A line that ends INSIDE a quoted span is not a segment boundary: the
         # span continues. Emitting "\n" here promoted every line of a quoted
         # `--body "…"` to a segment START, so prose in a PR body or an issue
@@ -435,14 +393,6 @@ gate_segments_raw() {
         if (q != "") acc = acc __seg " "
         else acc = acc __seg "\n"
         if (pending_tag != "" && terminated(pending_tag, i + 1) > 0) tag = pending_tag
-      }
-      # An unterminated `$(` at end of INPUT: flush what was held rather than
-      # dropping it. Dropping is the fail-open direction -- the held text is the
-      # command.
-      if (psub != "") {
-        if (pending != "") { psub = psub ";" pending; pending = "" }
-        acc = acc flush_line(psub) "\n"
-        psub = ""
       }
       if (pending != "") acc = acc flush_line(pending) "\n"
       # If the input ended INSIDE a quoted span, the join above left `acc`
@@ -656,11 +606,8 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 #
 # A flag TOKEN and a flag VALUE both embed quoted spans now, so
 # `--author="Jane Doe"` and `-c user.name="Jane Doe"` are each a single token.
-# This paragraph used to add "a value still may not BEGIN with `-`, or
-# `git -C /tmp -q commit` reads `-q` as `-C`'s value". That rule is GONE with
-# the enumerating prefix (go-to-k/cdkd#2156): it only means anything while the
-# pattern is trying to decide WHICH token is a value, and the over-approximating
-# prefix deliberately does not decide -- it walks past both readings to the verb.
+# A value still may not BEGIN with `-`: without that restriction
+# `git -C /tmp -q commit` reads `-q` as `-C`'s value.
 # One shell word that may EMBED quoted spans: `user.name="Jane Doe"` is one
 # token, `"Jane Doe"` is one token, and a bare space still ends it.
 # `\"` is an escaped quote wherever it appears -- INSIDE a double-quoted span it
@@ -678,11 +625,9 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # Single quotes take no escapes in shell, so only the double-quoted span needs
 # one.
 _GATE_WORD_CHAR='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|\\.|[^[:space:]"'"'"'])'
-# There used to be a NODASH twin of each of these -- "the first character may
-# not be `-`, so a following flag is never swallowed as the previous flag's
-# value". Both are gone with the enumerating prefix (go-to-k/cdkd#2156): the
-# rule they enforced only makes sense when the pattern is trying to decide WHICH
-# token is a value, and the over-approximating prefix deliberately does not.
+# The same, but the FIRST character may not be `-`, so a following flag is never
+# swallowed as the previous flag's value.
+_GATE_WORD_CHAR_NODASH='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|\\.|[^[:space:]"'"'"'-])'
 # Each half keeps the OLD quote-blind alternative as a fallback, and it is
 # load-bearing rather than belt-and-braces: the embedding form treats a bare
 # `'"'"'` as opening a quoted span, so a path with an UNBALANCED apostrophe
@@ -711,167 +656,8 @@ _GATE_WORD_CHAR='("([^"\\]|\\.)*"|'"'"'[^'"'"']*'"'"'|\\.|[^[:space:]"'"'"'])'
 # reason this alternative exists is an UNBALANCED one (`/tmp/o'neill/repo`);
 # double quotes have the strict form to fall back on.
 _GATE_WORD_BLIND='[^[:space:]"]*'
-#
-# THE TRIGGER IS NOW OVER-APPROXIMATED, AND THE RESOLVER IS STILL STRICT
-# (go-to-k/cdkd#2156). Everything above describes four rounds of WIDENING this
-# pattern one flag spelling at a time -- a quoted value, a value containing a
-# space, an escaped quote, `gh -R`. Each fix was right for the spelling it
-# addressed and none of them BOUNDED the problem, because shell grammar is not
-# regular: the set of spellings an enumerating pattern misses is unbounded, and
-# every miss exits 0, which is indistinguishable from a pass on the merits.
-#
-# So the enumeration is gone. The prefix between the command word and the verb
-# is now: EITHER the verb sits immediately after the command word, OR the
-# command word is followed by at least one FLAG (a token beginning with `-`),
-# after which ANY tokens may follow up to the verb. Nothing about a flag's VALUE
-# has to parse -- how many values it takes, whether they are quoted, whether the
-# quoting is balanced -- so the next unlisted spelling widens the match rather
-# than losing it.
-#
-# WHAT STOPS THE SCAN is a bare token in FIRST position. `git log --grep commit`
-# must not arm the commit gates, and `git` syntax says the first token that is
-# not a flag IS the subcommand, so a bare first token settles it with no list of
-# subcommand names to go stale. A bare token AFTER a flag is deliberately NOT a
-# stopper -- it may be that flag's value -- which is what keeps
-# `git -C log commit` (a worktree directory named `log`) matching.
-#
-# Do NOT read that as "a bare first token is the ONLY thing that stops it"; an
-# earlier version of this paragraph said so and it is false. QUOTING the verb or
-# the flag stops it too, measured on this branch AND on origin/main, so these
-# are pre-existing rather than introduced -- and each really is the subcommand
-# and each reaches git ungated:
-#
-#   git "commit" -m x      git 'commit' -m x      git c"o"mmit -m x
-#   git \commit -m x       git "-C" /tmp commit   gh "pr" merge 1
-#
-# The same holds one level up: this pattern still enumerates exactly ONE flag
-# spelling, the literal `-` that must open the first prefix token, so
-# `git \-C /tmp commit -m x` and `gh "-R" o/r pr merge 42` also match nothing.
-# That is the last enumeration in the trigger and it is recorded as a gap in
-# .claude/rules/hooks-class-fences.md rather than claimed closed.
-#
-# STRICT SUPERSET, and it is checkable rather than asserted. The old pattern
-# required every prefix token to begin with `-` and allowed each at most one
-# value; the new one drops both constraints and adds no new requirement, so any
-# segment the old pattern matched the new one matches. The differential fence
-# (lib/command-match-differential.test.sh) therefore treats any lost match as an
-# undeclared regression: the cells THIS work adds to its table are all
-# `WIDE_TRIGGER` / `MLSUBST` / `MLBACKTICK` / `LATERQ` and every one is 0 -> 1
-# (bar the single enumerated loss), so a cell going the other
-# way is unenumerated and fails. (The table's two `NOW_MISS` rows predate this
-# and belong to go-to-k/cdkd#2027, measured against the vendored baseline rather
-# than against origin/main.)
-#
-# The cost is a wider FALSE-REFUSAL surface, which is the cheap direction (a
-# gate refuses with an actionable message) but is still a cost, so it was
-# MEASURED rather than reasoned about -- see the corpus measurement recorded in
-# .claude/rules/hooks.md. Do NOT narrow this back to "flags only" to shave that
-# number: narrowing the trigger is the failure mode this whole comment exists
-# for, and it fails silently.
-#
-# The INTERIOR tokens are split into the FIRST one (a flag's value) and the
-# LATER ones, and each gets a different apostrophe rule. All of it came from
-# measurement; the reasoning that produced the first version was WRONG and is
-# recorded here so it is not re-derived.
-#
-# `_GATE_WORD_BLIND` already excludes `"` everywhere for the documented reason:
-# POSIX leftmost-longest PREFERS a blind reading that parses half of a quoted
-# token whenever that yields a longer match. Dropping the "flags only"
-# constraint gave the same preference a way in through the SINGLE quote, so
-# `gh -R o/r pr create -b '"'"'x pr merge y'"'"'` began matching GATE_RE_GH_PR_MERGE.
-#
-# The first fix restricted only the FIRST CHARACTER of a blind token, justified
-# by "a quoted span can only be split if some token starts at its opening
-# quote". THAT SENTENCE IS FALSE, and review round 1 measured two counter-
-# examples that split a span whose opening quote is INTERIOR to a token:
-#
-#   gh ... issue comment 42 --body '"'"'we can'"'"'\'"'"''"'"'t pr merge 99 until CI is green'"'"'
-#   gh ... issue comment 1  --body='"'"'next: pr merge 5'"'"'      (also -b'"'"'...'"'"' and =$'"'"'...'"'"')
-#
-# The first tiles through `_GATE_WORD_CHAR`'s single-quoted-span alternative
-# (`'"'"'we can'"'"'` is a legal span, `\'"'"'` a legal escape), the second through the
-# blind TAIL. `'"'"'...'"'"'\'"'"''"'"'...'"'"'` is THE shell idiom for an apostrophe inside a
-# single-quoted string -- this repo's own CLAUDE.md uses it -- so every English
-# body with a contraction takes that shape, and on the first version a plain
-# `gh issue comment` drew integ-broad-gate rc=2 and pr-review-gate rc=2 (the
-# latter off querying PR #99). Both are rc=0 on origin/main: a NEW false refusal.
-#
-# What actually separates the two populations is measured, not assumed:
-#   * the LOST-match case that forced apostrophes to stay legal at all is an
-#     unbalanced one in a PATH (`/tmp/o'"'"'neill/repo`, go-to-k/cdkd#2199), and a
-#     path never starts with `-`;
-#   * every false refusal above needs a token that DOES start with `-`
-#     (`--body='"'"'next:`, `-b'"'"'next:`) or that starts at a span's opening quote.
-# So a LATER word may carry an apostrophe only when it is bare-led, a dash-led
-# one may not, and the single-quoted-span alternative is dropped for later words
-# (it is what tiles the first counterexample). The FIRST interior word keeps the
-# fully permissive form, so `-c core.pager='"'"'less -S'"'"'` and `gh --template '"'"'a b'"'"'`
-# are unaffected.
-#
-# Four candidates were probed against an 18-case battery before this one; three
-# are recorded because each looks right:
-#   B  forbid `'"'"'` in the blind tail everywhere -- breaks all three apostrophe-
-#      path cases AND does not fix the `'"'"'...'"'"'\'"'"''"'"'...'"'"'` idiom (4 wrong).
-#   A1 apostrophes only in the FIRST interior word -- leaves the idiom matching
-#      and loses `git -c a=b -C /tmp/o'"'"'neill/repo commit` (2 wrong).
-#   A2 A1 plus dropping the span alternative later -- still loses that same
-#      LATER-word path (1 wrong).
-# Only the split below is 0 wrong, and it loses no cell of the differential
-# corpus against origin/main.
-_GATE_WORD_BLIND_NOQUOTE='[^[:space:]"'"'"'][^[:space:]"]*'
-_GATE_WORD_CHAR_NOSQ='("([^"\\]|\\.)*"|\\.|[^[:space:]"'"'"'])'
-# A single-quoted span is legal as a token SUFFIX: `core.pager='"'"'less -S'"'"'` and a
-# bare `'"'"'a b'"'"'` end at their span, while the quote-close-escape-reopen idiom
-# (`'"'"'we can'"'"'\'"'"''"'"'t pr merge 99'"'"'`) has its span MID-token, so no tiling of it can
-# leave ` pr merge` outside a span.
-_GATE_WORD_SPANSUF='[^[:space:]"'"'"']*('"'"'[^'"'"']*'"'"')?'
-_GATE_WORD_BLIND_BARE='[^[:space:]"'"'"'-][^[:space:]"]*'
-# A DASH-LED token may carry a LOOSE apostrophe too. Round 3 forbade this and
-# priced it as "two cells on `commit`". The price was wrong: measured through
-# the shipped hooks, the same token shape with `checkout` / `restore` /
-# `pr merge` took dirty-path-restore-gate (the go-to-k/cdkd#1700 data-loss gate)
-# and BOTH merge gates from rc=2 to rc=0, on `--work-tree=/x/o'"'"'brien` and
-# `--template=/a/o'"'"'neill`. The apostrophe alone flipped them; the
-# apostrophe-free twins stayed rc=2.
-#
-# Admitting it costs three FALSE REFUSALS (`--body='"'"'next: pr merge 5'"'"'` and its
-# `-b'"'"'...'"'"'` / `=$'"'"'...'"'"'` spellings) and that is the better trade, because a false
-# refusal is LOUD -- visible, diagnosable, one rephrase away -- while a bypass is
-# SILENT and destroys uncommitted work saying nothing. Measured on a 30-case
-# battery: this shape 3 wrong, all false refusals; forbidding it 4 wrong, all
-# bypasses; dropping the split entirely 4 wrong, all false refusals.
-_GATE_WORD_LOOSE_FLAG='-[^[:space:]"'"'"']*'"'"'[^[:space:]"'"'"']*'
-_GATE_WORD_FIRST="(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND_NOQUOTE})"
-# And finally the ORIGINAL quote-blind fallback, restored for later words.
-# Rounds 2, 3 and 4 each removed a little more of it to keep one false refusal
-# out, and round 5 measured what that cost: a LATER token that is not
-# double-quote-parseable AND carries MORE THAN ONE apostrophe matched NOTHING.
-# Every alternative above rules it out -- NOSQ has no `'"'"'` at all, SPANSUF takes
-# one span that must END the token, BLIND_BARE cannot start with `-` or `'"'"'`,
-# LOOSE_FLAG takes exactly ONE apostrophe. `'"'"'O'"'"''"'"''"'"'Brien'"'"'` has five.
-#
-# Measured against the merge base, same hook binary and payload:
-#
-#   git -C <wt> --exec-path='"'"'/opt/git'"'"'/libexec commit -m x
-#      branch-gate              rc=2 -> rc=0
-#   git -C <wt> --exec-path='"'"'/opt/git'"'"'/libexec checkout -- f.txt
-#      dirty-path-restore-gate  rc=2 -> rc=0   (the go-to-k/cdkd#1700 data-loss gate)
-#   gh -R go-to-k/cdkd --jq='"'"'.a'"'"''"'"''"'"'b'"'"' pr merge 2330 --squash
-#      pr-review-gate           rc=2 -> rc=0
-#
-# `--exec-path` / `--work-tree` / `--namespace` / `--config-env` are ordinary
-# git global flags and all regressed. What made it REACHABLE is the
-# `git -C <worktree>` form this repo mandates: `-C` consumes the FLAG and FIRST
-# slots, so every later flag lands in the restricted position.
-#
-# Do NOT answer this by widening LOOSE_FLAG to two apostrophes. That is the
-# fifth fix in one direction and the sixth case is
-# `--author='"'"'O'"'"''"'"''"'"'Brien-D'"'"''"'"''"'"'Arcy'"'"'`. The blind form is quote-BLIND by
-# construction, so no apostrophe count can outrun it. Its cost is a wider false
-# refusal surface, which is the LOUD direction, and the differential prices it
-# exactly: three cells on corpus id 174 become a fourth ACCEPTED_FR row.
-_GATE_WORD="(${_GATE_WORD_CHAR_NOSQ}+|${_GATE_WORD_SPANSUF}|${_GATE_WORD_BLIND_BARE}|${_GATE_WORD_LOOSE_FLAG}|${_GATE_WORD_BLIND})"
-GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND})([[:space:]]+${_GATE_WORD_FIRST})?([[:space:]]+${_GATE_WORD})*)?"
+_GATE_WORD_BLIND_NODASH='[^[:space:]"-][^[:space:]"]*'
+GATE_FLAGS="([[:space:]]+-(${_GATE_WORD_CHAR}+|${_GATE_WORD_BLIND})([[:space:]]+(${_GATE_WORD_CHAR_NODASH}${_GATE_WORD_CHAR}*|${_GATE_WORD_BLIND_NODASH}))?)*"
 # Every gh GLOBAL FLAG before the subcommand, not just `-C`. The `-C`-only form
 # meant a repo flag ahead of the verb made the verb unreachable, so
 # `gh -R owner/repo pr merge 1 --squash` matched NOTHING and walked past every
@@ -927,19 +713,6 @@ GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space
 # "over-approximate the TRIGGER, be strict on RESOLUTION" rule in
 # .claude/rules/hooks.md.
 GATE_RE_GH_API_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$).*repos/[^[:space:]/]+/[^[:space:]/]+/issues([[:space:]]|$|\")"
-# gh-body-english-gate: every gh verb that PUBLISHES prose. UNANCHORED, because
-# that hook feeds the same ERE to `cmd_matches_verb` (which wraps it in `^(...)`)
-# and to `cmd_last_cd_target` (which needs the bare verb). The terminator is
-# spelled out rather than `\b`: cmd_last_cd_target feeds this to AWK, where
-# `\b` is a BACKSPACE, so the "stop following cds at the verb" guard would
-# silently never match and a trailing `cd` would hijack the target dir.
-#
-# SHARED rather than hand-rolled (go-to-k/cdkd#2156). The local copy enumerated
-# `(-C|-R|--repo)([[:space:]]+|=)[^[:space:]]+` -- three flag names and one
-# unquoted value shape -- so `gh --template "a b" issue create --body <text>`
-# reached gh with the gate never armed. That is the under-approximated TRIGGER
-# this issue is about, in the one hook that still had its own.
-GATE_RE_GH_PROSE_CARRIER="gh${GATE_GH_C}[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)([[:space:]]|\$|[|;&\`)])"
 GATE_RE_VP_RUN_TEST='^vp[[:space:]]+run[[:space:]]+test([[:space:]]|$)'
 # Deploy/destroy-shaped verbs (integ + bug-hunt cleanup gates).
 GATE_RE_CDK_DEPLOY="^(npx[[:space:]]+)?cdk${GATE_FLAGS}[[:space:]]+deploy([[:space:]]|$)"
@@ -971,140 +744,14 @@ GATE_RE_DELSTACK='^delstack([[:space:]]|$)'
 # The regexes are anchored at `^`, so the match always starts at offset 0 and
 # its LENGTH is a safe strip — `${segment#${BASH_REMATCH[0]}}` is not, because
 # the matched text is then treated as a glob pattern.
-# gate_verb_span <segment> <extended-regex>
-#
-# The LENGTH of the SHORTEST `^`-anchored match, i.e. the span ending at the
-# LEFTMOST occurrence of the verb. Exit 1 (and no output) when the segment does
-# not match at all.
-#
-# WHY THIS EXISTS (go-to-k/cdkd#2156 review round 1). POSIX `=~` is leftmost-
-# LONGEST, and once GATE_FLAGS stopped enumerating flag spellings ("one flag,
-# then ANY tokens") the engine gained a legal parse that swallows the REAL verb
-# into the PREFIX and anchors on a LATER one in the same segment. The boolean
-# readers do not care -- the answer is still "yes, this is a checkout". The
-# three LENGTH-strip helpers below care completely, because they re-apply the
-# matched span to the segment and read what follows.
-#
-# Measured on the first attempt at this widening, through the shipped hooks
-# against a repo with a dirty `f.txt`:
-#
-#   git -C <wt> checkout -- f.txt # undo probe, then git checkout main
-#      gate_verb_rest -> `main`  (origin/main: `-- f.txt # undo probe, ...`)
-#      dirty-path-restore-gate   rc=2 on origin/main -> rc=0 here
-#   gh -R o/r pr merge 2195 --squash --delete-branch # then gh pr merge 9
-#      gate_pr_selector -> 9     (origin/main: 2195)
-#
-# The `--` vanished from the tail, so the go-to-k/cdkd#1700 data-loss gate read
-# a branch switch and PASSED, on the `git -C <worktree>` spelling this repo
-# MANDATES; and three merge gates judged the wrong PR. THE STRICT RESOLVER DOES
-# NOT CATCH EITHER: resolution succeeds, on the wrong arguments.
-#
-# The fix is here rather than in the pattern, and the alternatives were probed:
-# re-narrowing GATE_FLAGS reopens the whole bypass class this work exists to
-# close; bash has no lazy quantifier (POSIX ERE); and cutting at the first `pr`
-# / `checkout` TOKEN mis-cuts `git -C /repo/pr pr merge 42`, whose first `pr` is
-# a path component. Asking the REGEX for its shortest match keeps the verb
-# grammar in one place and cannot mis-cut on a PATH COMPONENT, because a prefix
-# only matches when the whole anchored pattern does -- `git -C /repo/pr pr merge`
-# cuts correctly.
-#
-# It CAN still mis-cut when a flag VALUE is the bare verb word itself, and the
-# earlier "cannot mis-cut" here was too strong. Measured:
-# `git -C commit commit -m x` cuts at the `-C` value, so the tail comes back as
-# `commit -m x` rather than `-m x`. Shortest-match cannot tell that reading from
-# the right one -- both are legal parses, and the wrong one is genuinely
-# shorter. Filed rather than fixed: a worktree directory named exactly `commit`
-# is the only way to reach it, and the tail is WIDER than the truth, so a gate
-# that scans it for danger sees more rather than less.
-#
-# Candidate ends are token boundaries only: every anchored match ends either on
-# the whitespace its `([[:space:]]|$)` tail consumed, or at end of segment. So
-# this costs one regex test per whitespace run BEFORE the leftmost verb, not one
-# per character, and it stops at the first hit. The greedy match length bounds
-# the walk, so a segment that does not match costs nothing extra.
-gate_verb_span() {
-  local seg="$1" re="$2" greedy i probe
-  [[ "$seg" =~ $re ]] || return 1
-  greedy=${#BASH_REMATCH[0]}
-  # FAST PATH, and it is what keeps this from being quadratic. Drop the greedy
-  # span's trailing whitespace and then its LAST CHARACTER, and re-test.
-  #
-  # THE LAST CHARACTER, not the last token -- an earlier version of this comment
-  # said "token" and the code never did that: `${probe%[! <tab>]*}` removes the
-  # SHORTEST suffix matching the pattern, which is one character
-  # (`git -C /tmp commit ` -> `git -C /tmp commi`). Left uncorrected, the next
-  # person to "fix" the code to match the comment would change the algorithm
-  # blind.
-  #
-  # Why one character is sound: the verb patterns are anchored at `^` but NOT at
-  # `$`, so truncating the tail can only destroy matches that END at the removed
-  # character. If a shorter match exists it survives the truncation and the test
-  # still passes, sending us to the walk. So a pass means "there may be an
-  # earlier verb, go look" and a FAILURE means "the greedy end was the only
-  # match", which is the shape of every ordinary command, at the cost of one
-  # extra regex test.
-  #
-  # Measured, `git` + N `-c k=v` flags + `commit -m x`, match + rest + selector:
-  #
-  #        N      origin/main     walk only     walk + this pre-test
-  #       160          25 ms        310 ms                    26 ms
-  #       640          72 ms       4293 ms                    74 ms
-  #
-  # Without it the walk re-scans a growing prefix once per token, which a long
-  # flag list turns into seconds inside a PreToolUse hook that runs on EVERY
-  # Bash call. Realistic shapes were never the problem (a 400-word `--body`
-  # measured +6 ms), but "realistic" is not a bound.
-  probe="${seg:0:greedy}"
-  probe="${probe%"${probe##*[! 	]}"}"    # drop trailing whitespace
-  probe="${probe%[! 	]*}"                 # then ONE character (see above)
-  if ! [[ "$probe" =~ $re ]]; then
-    printf '%s' "$greedy"
-    return 0
-  fi
-  # BOUNDED, because an unbounded walk is a FAIL-OPEN surface rather than a slow
-  # one. The fast path above is defeated by a single repeated verb, and the walk
-  # is then O(boundaries x span). Measured end-to-end through pr-review-gate.sh
-  # on `gh -R o/r <N x -c k=v> pr merge 42 pr merge`: N=640 2565 ms, N=1280
-  # 9518 ms, N=1600 14888 ms -- against the `timeout: 10` that pr-review-gate,
-  # ci-green-gate, closes-paren-form-gate and non-english-text-gate carry. A
-  # PreToolUse hook that TIMES OUT does not block, so the slow path hands an
-  # attacker the whole gate rather than a wrong argument.
-  #
-  # The cap trades that for the pre-fix behaviour on adversarial input only:
-  # past the cap we fall back to `greedy`, which is what shipped before
-  # go-to-k/cdkd#2156 and which mis-reads the ARGUMENTS (a bad tail) rather than
-  # dropping the gate entirely. A wrong tail is bounded and loud; a timed-out
-  # hook is silent and total.
-  #
-  # 96 is chosen against the real distribution, not for roundness: the verb sits
-  # within the first handful of tokens in every ordinary command, and the widest
-  # shape this repo's own corpus produces is a `git -c k=v` chain of single
-  # digits. A command needing more than 96 whitespace boundaries BEFORE its verb
-  # and carrying a second occurrence of that verb is constructed, not typed.
-  local cap=96
-  for (( i=1; i < greedy && cap > 0; i++ )); do
-    case "${seg:i-1:1}" in
-      ' '|$'\t'|$'\n') ;;
-      *) continue ;;
-    esac
-    cap=$((cap - 1))
-    if [[ "${seg:0:i}" =~ $re ]]; then
-      printf '%s' "$i"
-      return 0
-    fi
-  done
-  printf '%s' "$greedy"
-  return 0
-}
-
 # gate_verb_rest <command> <verb-ere>
 # Everything AFTER the matched verb, for callers that run their own token walk.
 # Same rationale and the same anchored-match strip as gate_pr_selector.
 gate_verb_rest() {
-  local cmd="$1" re="$2" segment _gate_span
+  local cmd="$1" re="$2" segment
   while IFS= read -r segment; do
-    _gate_span=$(gate_verb_span "$segment" "$re") || continue
-    printf '%s' "${segment:$_gate_span}"
+    [[ "$segment" =~ $re ]] || continue
+    printf '%s' "${segment:${#BASH_REMATCH[0]}}"
     return 0
   done < <(gate_segments "$cmd")
   return 0
@@ -1130,10 +777,10 @@ gate_verb_rest() {
 # every segment; `gate_verb_rest` is only safe when the first match settles the
 # answer (resolving one PR number, say).
 gate_verb_rest_each() {
-  local cmd="$1" re="$2" segment _gate_span
+  local cmd="$1" re="$2" segment
   while IFS= read -r segment; do
-    _gate_span=$(gate_verb_span "$segment" "$re") || continue
-    printf '%s\n' "${segment:$_gate_span}"
+    [[ "$segment" =~ $re ]] || continue
+    printf '%s\n' "${segment:${#BASH_REMATCH[0]}}"
   done < <(gate_segments "$cmd")
   return 0
 }
@@ -1167,10 +814,10 @@ gate_pr_selector_ate_number() {
 }
 
 gate_pr_selector() {
-  local cmd="$1" re="$2" segment rest tok _gate_span
+  local cmd="$1" re="$2" segment rest tok
   while IFS= read -r segment; do
-    _gate_span=$(gate_verb_span "$segment" "$re") || continue
-    rest="${segment:$_gate_span}"
+    [[ "$segment" =~ $re ]] || continue
+    rest="${segment:${#BASH_REMATCH[0]}}"
     # Globbing OFF around the split: an unquoted `*` in the tail would
     # otherwise expand against the hook's cwd and a stray filename could become
     # the selector (measured: with files `77` and `aaa` present,

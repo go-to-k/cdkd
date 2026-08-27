@@ -78,9 +78,12 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 # shellcheck source=lib/command-match.sh
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
-  || ! declare -F cmd_last_cd_target >/dev/null; then
+  || ! declare -F cmd_last_cd_target >/dev/null \
+  || [ -z "${GATE_RE_GH_PROSE_CARRIER:-}" ]; then
   # FAIL CLOSED: without the helper the verb guard below would see exit
   # 127, take the `!` branch and exit 0 -- silently disabling the gate.
+  # The constant is checked for the same reason: a library that predates
+  # it leaves VERB_ERE empty, and an empty ERE matches EVERY segment.
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
   echo "so gh-body-english-gate cannot evaluate the command. Restore the file;" >&2
   echo "do not work around the gate." >&2
@@ -102,12 +105,14 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 # where `\b` is a BACKSPACE, so the "stop following `cd`s at the verb"
 # guard silently never matched and a trailing `cd` hijacked the target
 # dir. Every other caller of the helper spells it this way.
-# `-R` / `--repo` must be tolerated between `gh` and the verb, not just
-# `-C`: `gh -R go-to-k/<target> issue create ...` is THE shape section
-# 10-c's cross-repo mirror flow uses, which is the very flow whose
-# cdk-local incident this hook was written for. Allowing only `-C` let
-# that case through silently.
-VERB_ERE='gh([[:space:]]+(-C|-R|--repo)([[:space:]]+|=)[^[:space:]]+)*[[:space:]]+(pr[[:space:]]+(create|edit|comment|review)|issue[[:space:]]+(create|comment|edit)|release[[:space:]]+(create|edit)|api)([[:space:]]|$|[|;&`)])'
+# The flag absorber is the SHARED one (go-to-k/cdkd#2156). The local copy
+# enumerated `-C` / `-R` / `--repo` and one unquoted value shape, so any other
+# gh global flag ahead of the verb -- `gh --template "a b" issue create ...` --
+# left the gate unarmed. `-R` / `--repo` still pass, absorbed by GATE_GH_C
+# along with every other flag: that is THE shape section 10-c's cross-repo
+# mirror flow uses, which is the flow whose cdk-local incident this hook was
+# written for.
+VERB_ERE="$GATE_RE_GH_PROSE_CARRIER"
 if ! cmd_matches_verb "$cmd" "$VERB_ERE"; then
   exit 0
 fi
