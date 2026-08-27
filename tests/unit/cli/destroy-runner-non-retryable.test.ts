@@ -56,7 +56,11 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 }));
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
-import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+} from '../../../src/deployment/retryable-errors.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 const REGION = 'us-east-1';
 /** Carries the phrase the second, marker-blind arm matches on. */
@@ -120,6 +124,129 @@ describe('runDestroyForStack honors the non-retryable marker (issue #1778)', () 
 
     // No retry, so no backoff sleep is ever scheduled — the test needs no
     // timer control at all, which is itself the observation being made.
+    expect(mockProviderDelete).toHaveBeenCalledTimes(1);
+    expect(result.errorCount).toBe(1);
+  });
+
+  /**
+   * Issue #2302. This loop calls `provider.delete` DIRECTLY (not through
+   * `withRetry`), so it is a SECOND message classifier and the `retry.ts` fix
+   * does not reach it. A provider that redacts its thrown message empties
+   * exactly what both arms here match on.
+   *
+   * `OperationAborted` is the sharp case: HTTP 409 with a non-throttle name, so
+   * `isThrottlingError` and `isTransientServerError` both miss it and the
+   * substring `conflicting conditional operation` was the ONLY arm keeping it
+   * retryable. The sibling suite proves the mechanism by calling
+   * `retryClassificationText` itself; that cannot catch this, because this call
+   * site is what has to invoke it.
+   */
+  function redactedS3Wrap(
+    awsName: string,
+    awsText: string,
+    /**
+     * The cause's `$metadata`, or `undefined` for none.
+     *
+     * EXPLICIT because a defaulted one made the `Too Many Requests` case below
+     * vacuous on its first draft: a `429` here satisfies `isThrottlingError`,
+     * which walks the chain independently, so the case went GREEN under a
+     * mutation that reverted the fix it exists to pin. Each case now supplies a
+     * shape in which the withheld MESSAGE is the only surviving signal.
+     */
+    metadata?: { httpStatusCode: number }
+  ): Error {
+    const cause = Object.assign(new Error(awsText), {
+      name: awsName,
+      ...(metadata === undefined ? {} : { $metadata: metadata }),
+    });
+    return markRedactedCause(
+      new ProvisioningError(
+        // What `S3BucketProvider.wrapOperationError` now throws: the CLASS,
+        // never AWS's wording.
+        `Failed to delete S3 bucket Table: ${awsName}. Re-run with --verbose for AWS's own message.`,
+        'AWS::S3::Bucket',
+        'Table',
+        'phys-id',
+        cause
+      )
+    );
+  }
+
+  it('retries a REDACTED wrap whose withheld text is the only retryable signal', async () => {
+    const mockProviderDelete = vi
+      .fn()
+      .mockRejectedValue(
+        redactedS3Wrap(
+          'OperationAborted',
+          'A conflicting conditional operation is currently in progress against this resource.',
+          // 409 is NOT in RETRYABLE_HTTP_STATUS_CODES and `OperationAborted` is
+          // not a throttle NAME, so neither chain-walking predicate fires and
+          // the withheld substring is the only arm left.
+          { httpStatusCode: 409 }
+        )
+      );
+    vi.useFakeTimers();
+
+    const pending = runDestroyForStack('TestStack', makeState(), makeCtx(mockProviderDelete));
+    for (const delay of [5_000, 10_000, 20_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    const result = await pending;
+
+    // 1 initial attempt + 3 retries. ONE call means the redaction disarmed this
+    // loop -- the regression this case exists for.
+    expect(mockProviderDelete).toHaveBeenCalledTimes(4);
+    expect(result.errorCount).toBe(1);
+  });
+
+  it("retries a REDACTED wrap whose withheld text is the 'Too Many Requests' arm", async () => {
+    // The second arm, pinned separately. Its own comment calls it load-bearing
+    // for the case where the original 429 `$metadata` is LOST across the wrap,
+    // so the message is its only carrier -- exactly what redaction empties.
+    // The `$metadata` here is deliberately on the CAUSE only.
+    const mockProviderDelete = vi
+      .fn()
+      // No `$metadata` and a non-throttle NAME: the documented premise of this
+      // arm is that the original 429 is LOST across the wrap, so a fixture that
+      // keeps it tests `isThrottlingError` instead of this arm.
+      .mockRejectedValue(redactedS3Wrap('Error', 'Too Many Requests'));
+    vi.useFakeTimers();
+
+    const pending = runDestroyForStack('TestStack', makeState(), makeCtx(mockProviderDelete));
+    for (const delay of [5_000, 10_000, 20_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    const result = await pending;
+
+    expect(mockProviderDelete).toHaveBeenCalledTimes(4);
+    expect(result.errorCount).toBe(1);
+  });
+
+  it('NEGATIVE CONTROL — an UNSTAMPED wrap hiding a retryable cause stays terminal', async () => {
+    // The join is OPT-IN, and this is the case that proves it. Same chain shape
+    // as the two above -- a wrapper whose own message carries no retryable
+    // substring, over a cause whose message does -- but with no
+    // `markRedactedCause` stamp, which is every wrapper on `main` outside
+    // #2302's redacting sites. Reading the chain unconditionally would flip
+    // this to 4 attempts, which is the widening this design refuses.
+    const cause = Object.assign(
+      new Error('A conflicting conditional operation is currently in progress against this resource.'),
+      { name: 'OperationAborted', $metadata: { httpStatusCode: 409 } }
+    );
+    const mockProviderDelete = vi
+      .fn()
+      .mockRejectedValue(
+        new ProvisioningError(
+          'Failed to delete resource Table',
+          'AWS::S3::Bucket',
+          'Table',
+          'phys-id',
+          cause
+        )
+      );
+
+    const result = await runDestroyForStack('TestStack', makeState(), makeCtx(mockProviderDelete));
+
     expect(mockProviderDelete).toHaveBeenCalledTimes(1);
     expect(result.errorCount).toBe(1);
   });

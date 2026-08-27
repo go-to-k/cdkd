@@ -534,6 +534,87 @@ export const THROTTLING_ERROR_NAMES: ReadonlySet<string> = new Set([
 const NON_RETRYABLE_MARKER = Symbol.for('cdkd.nonRetryable');
 
 /**
+ * How far every `.cause` walk in this module reads.
+ *
+ * ONE constant rather than five literals, because the walks are only sound
+ * together: {@link isMarkedNonRetryable} is what stops a deliberate refusal
+ * being read as transient, so any walk that reads text FURTHER than the marker
+ * walk creates a band where a refusal is legible but its marker is not.
+ * {@link retryClassificationText} shipped at 10 against the marker's 5 for
+ * exactly that reason, and the chain shape that makes the band reachable is
+ * the one the code already cites -- a nested-stack failure grows one
+ * `ProvisioningError` per level.
+ */
+const MAX_CAUSE_CHAIN_DEPTH = 5;
+
+/**
+ * Stamped on an error whose own message deliberately WITHHOLDS text its
+ * `cause` carries (issue [#2302](https://github.com/go-to-k/cdkd/issues/2302)).
+ *
+ * Distinct from {@link NON_RETRYABLE_MARKER} and orthogonal to it: this one
+ * says nothing about whether the error should be retried, only that the
+ * message a classifier would normally read is INCOMPLETE.
+ */
+const REDACTED_CAUSE_MARKER = Symbol.for('cdkd.redactedCause');
+
+/**
+ * Declare that this error's message withholds text its `cause` carries, so the
+ * message-based retry classifiers must read the CHAIN instead
+ * (issue [#2302](https://github.com/go-to-k/cdkd/issues/2302)).
+ *
+ * cdkd's retry classifiers match by SUBSTRING over a message. That is sound
+ * only while a wrapper copies its cause's text, which every wrapper did until
+ * #2302 started reducing an AWS failure to its error CLASS -- S3 words its
+ * `AccessDenied` as `User: arn:aws:sts::<account>:assumed-role/<role>/<session>
+ * is not authorized to perform: ...`, and a THROWN message is captured into the
+ * persisted `deployments/{runId}.jsonl` store. Redacting it also removed the
+ * substrings the pattern table matches on: measured on `S3BucketProvider`,
+ * `not authorized to perform` (retryable, on the DENSE IAM-propagation cadence)
+ * and S3's `conflicting conditional operation` both went NON-retryable.
+ *
+ * Call it at every site that redacts, and only there. It is deliberately an
+ * opt-in stamp rather than an unconditional chain read -- see
+ * {@link retryClassificationText} for the measurement that forced that choice.
+ *
+ * Same non-extensible tolerance as {@link markNonRetryable}, for the same
+ * reason: callers use it inline around the error they are about to throw, so a
+ * `TypeError` here would replace the refusal with an unrelated crash. Losing
+ * the stamp degrades to reading the top-level message, i.e. the pre-#2302
+ * classification of a message that is now shorter -- worse, but not a crash.
+ */
+export function markRedactedCause<E extends Error>(error: E): E {
+  if (!Object.isExtensible(error)) return error;
+  Object.defineProperty(error, REDACTED_CAUSE_MARKER, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return error;
+}
+
+/**
+ * True when the error, or anything in its bounded `.cause` chain, was stamped
+ * by {@link markRedactedCause}.
+ *
+ * Walked rather than read off the top link, because the redacting error is
+ * itself wrapped further out: `deploy-engine.ts` re-wraps every provider
+ * failure, so by the time a classifier sees it the stamp is one or more links
+ * deep. Same {@link MAX_CAUSE_CHAIN_DEPTH} as the marker walk, which is what
+ * lets {@link retryClassificationText} claim the two agree.
+ */
+export function hasRedactedCause(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
+    if (typeof current === 'object' || typeof current === 'function') {
+      if ((current as Record<symbol, unknown>)[REDACTED_CAUSE_MARKER] === true) return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
  * Mark a cdkd-authored refusal as terminal and return it, for
  * `throw markNonRetryable(new ProvisioningError(...))`.
  *
@@ -611,7 +692,7 @@ export function markNonRetryable<E extends Error>(error: E): E {
  */
 export function isMarkedNonRetryable(error: unknown): boolean {
   let current: unknown = error;
-  for (let depth = 0; depth < 5 && current != null; depth++) {
+  for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
     if (typeof current === 'object' || typeof current === 'function') {
       if ((current as Record<symbol, unknown>)[NON_RETRYABLE_MARKER] === true) return true;
     }
@@ -636,7 +717,7 @@ export function isMarkedNonRetryable(error: unknown): boolean {
  */
 export function isThrottlingError(error: unknown): boolean {
   let current: unknown = error;
-  for (let depth = 0; depth < 5 && current != null; depth++) {
+  for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
     const name = (current as { name?: unknown }).name;
     if (typeof name === 'string' && THROTTLING_ERROR_NAMES.has(name)) return true;
 
@@ -740,7 +821,7 @@ export const TRANSIENT_SERVER_ERROR_STATUS_CODES: ReadonlySet<number> = new Set(
  */
 export function isTransientServerError(error: unknown): boolean {
   let current: unknown = error;
-  for (let depth = 0; depth < 5 && current != null; depth++) {
+  for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
     const status = (current as { $metadata?: { httpStatusCode?: number } }).$metadata
       ?.httpStatusCode;
     if (status !== undefined && TRANSIENT_SERVER_ERROR_STATUS_CODES.has(status)) return true;
@@ -840,7 +921,7 @@ export function describeRetryClassificationSignals(error: unknown): RetryClassif
   let metadataName: string | undefined;
   let metadataRequestId: string | undefined;
 
-  for (let depth = 0; depth < 5 && current != null; depth++) {
+  for (let depth = 0; depth < MAX_CAUSE_CHAIN_DEPTH && current != null; depth++) {
     const name = (current as { name?: unknown }).name;
     // Depth 0 is the provider's wrapper -- see the note above on why its name
     // is excluded from the no-$metadata fallback. It is still eligible via the
@@ -963,6 +1044,120 @@ export function isRetryableTransientError(error: unknown, message: string): bool
   if (isTransientServerError(error)) return true;
 
   return RETRYABLE_ERROR_MESSAGE_PATTERNS.some((p) => message.includes(p));
+}
+
+/**
+ * The text every MESSAGE-based retry classifier should read: this error's own
+ * message plus every message down its `cause` chain.
+ *
+ * Every classifier in this module that reads a message reads the TOP-LEVEL one,
+ * and that was sound only while cdkd's wrappers copied their cause's text
+ * verbatim -- which they did, everywhere, until issue
+ * [#2302](https://github.com/go-to-k/cdkd/issues/2302). A wrapper on a THROWN
+ * path may now deliberately WITHHOLD AWS's wording, because a thrown message is
+ * captured into the persisted `deployments/{runId}.jsonl` store and S3's
+ * `AccessDenied` names the caller's account, role and session. Measured on
+ * `S3BucketProvider.create` before this function existed: the wrap turned
+ * `not authorized to perform` (retryable, and on the DENSE IAM-propagation
+ * cadence) and `conflicting conditional operation` (retryable) into
+ * NON-retryable, i.e. the redaction silently removed a retry the deploy
+ * depended on.
+ *
+ * This is the missing THIRD walk rather than a new idea: {@link
+ * isMarkedNonRetryable} and {@link isThrottlingError} already walk the same
+ * chain, for the same stated reason (cdkd wraps SDK errors routinely).
+ *
+ * It cannot resurrect a cdkd refusal: every consumer checks
+ * {@link isMarkedNonRetryable} FIRST, that marker is itself chain-walked, and
+ * both walks are bounded by the SAME {@link MAX_CAUSE_CHAIN_DEPTH}.
+ *
+ * It is a NO-OP for every error that has not opted in via
+ * {@link markRedactedCause} -- which is every wrapper on `main` outside
+ * #2302's redacting sites. An earlier revision justified itself with a wider
+ * claim, that every wrapper on `main` COPIES its cause's message; that claim is
+ * false (`custom-resource-provider.ts`'s `describeWaiterFailure` already
+ * withholds the raw waiter payload, and it is not the only wrapper that does),
+ * and it does not need to be true. The opt-in stamp makes the no-op a property
+ * of the mechanism rather than of a survey.
+ *
+ * NEVER use the result as a LOG line or a thrown message: it is the union of
+ * exactly the text the redaction exists to withhold. `retry.ts` keeps the
+ * top-level message for its `warn` / `debug` output and uses this only to
+ * classify.
+ */
+export function retryClassificationText(error: unknown): string {
+  const top = error instanceof Error ? error.message : String(error);
+  // OPT-IN, and that is the whole safety argument. Reading the chain
+  // unconditionally would re-classify every wrapper whose message does not
+  // already carry its cause's text, and that population is neither empty nor
+  // uniformly deliberate. The decisive member is `deploy-engine.ts`'s outer
+  // per-resource wrap, whose whole message is `Failed to <op> resource <id>`:
+  // it is UNMARKED and sits on every resource failure in the tree, so an
+  // unconditional join flips it from terminal to retryable whenever the cause
+  // happens to carry a retryable substring -- measured on that wrap, a
+  // `DependencyViolation` cause and a `does not exist` cause both flip
+  // `false -> true`. That is a large behavior change with nothing to do with
+  // #2302's redaction.
+  //
+  // The audited list of non-carrying sites lives in the PR body rather than
+  // here, deliberately: a count in a comment goes stale silently, and two
+  // independently written counting rules agreed on the SITES while disagreeing
+  // on how many constructions to divide them by.
+  //
+  // So the join fires only for a chain that says it withheld something.
+  // `markNonRetryable` is checked FIRST by every consumer and is walked to
+  // the SAME depth as this, so a marked refusal still cannot be resurrected
+  // by the widened text -- the two walks agree by construction rather than
+  // by assertion (an earlier revision walked 10 here against the marker's 5,
+  // which left a refusal marked at depth 6-10 readable but unmarkable).
+  if (!hasRedactedCause(error)) return top;
+
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  // A `visited` set as well as the depth bound, because a nested-stack chain
+  // grows one `ProvisioningError` per level and a self-referencing `cause` is
+  // cheap to construct.
+  for (
+    let depth = 0;
+    depth < MAX_CAUSE_CHAIN_DEPTH && current != null && !seen.has(current);
+    depth++
+  ) {
+    seen.add(current);
+    if (current instanceof Error) {
+      if (current.message) parts.push(current.message);
+    } else {
+      // A non-`Error` link, at ANY depth. `new Error(m, { cause: 'a string' })`
+      // is legal and a provider can rethrow a non-`Error` value, so a link
+      // gated on `depth === 0` both dropped the text AND dead-ended the walk
+      // one link early. Stringify it and keep going: `cause` is readable off a
+      // non-object too (it is simply `undefined`), so the loop terminates.
+      //
+      // `String()` can THROW, and where this runs makes that fatal rather than
+      // untidy: `Object.create(null)` has no `Symbol.toPrimitive`, no
+      // `toString` and no `valueOf`, so stringifying it raises
+      // `TypeError: Cannot convert object to primitive value`. Both callers
+      // invoke this INSIDE a catch block (`destroy-runner.ts`'s delete loop and
+      // `retry.ts`'s attempt loop), so an exception here would REPLACE the real
+      // failure with an unrelated `TypeError` and lose the error the caller was
+      // about to classify and rethrow. Same reasoning as `markNonRetryable`'s
+      // `isExtensible` guard: a helper on a failure path must not out-throw the
+      // failure it is describing. The `depth === 0` gate bounded this by
+      // accident; widening the walk removed that bound, so the guard is now
+      // explicit. A link that cannot be stringified contributes NO text and the
+      // walk continues, which is the same outcome as an `Error` with an empty
+      // message.
+      try {
+        parts.push(String(current));
+      } catch {
+        // Deliberately silent: there is no text to add, and this function has
+        // no logger by design (its whole output is classification-only text
+        // that must never be logged).
+      }
+    }
+    current = (current as { cause?: unknown } | undefined)?.cause;
+  }
+  return parts.join('\n');
 }
 
 /**

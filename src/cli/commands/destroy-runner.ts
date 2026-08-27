@@ -38,6 +38,7 @@ import { withResourceDeadline } from '../../deployment/resource-deadline.js';
 import {
   isMarkedNonRetryable,
   isRetryableTransientError,
+  retryClassificationText,
 } from '../../deployment/retryable-errors.js';
 import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
@@ -1348,7 +1349,6 @@ export async function runDestroyForStack(
                   break;
                 } catch (retryError) {
                   lastDeleteError = retryError;
-                  const msg = retryError instanceof Error ? retryError.message : String(retryError);
                   // Delegate transient-error classification to the shared
                   // classifier so this destroy path (`cdkd destroy` /
                   // `cdkd state destroy`) honors the same retryable patterns
@@ -1368,10 +1368,33 @@ export async function runDestroyForStack(
                   // deliberate cdkd refusal is terminal even if its message
                   // happens to carry a throttle phrase, and a genuine throttle
                   // (never marked) still retries exactly as before.
+                  // Issue #2302: BOTH arms classify on the chain text, not on
+                  // `msg`. This loop calls `provider.delete` directly rather
+                  // than through `withRetry`, so it is a SECOND message
+                  // classifier and `retry.ts`'s fix does not reach it. A
+                  // provider that redacts its thrown message (the S3 bucket
+                  // wraps do) empties exactly what both arms match on:
+                  // measured, `conflicting conditional operation` -- S3's
+                  // `OperationAborted`, HTTP 409 with a non-throttle name, so
+                  // neither `isThrottlingError` nor `isTransientServerError`
+                  // sees it and the substring was the ONLY arm -- went from
+                  // retryable to terminal. The `Too Many Requests` arm is worse
+                  // still: it exists (see above) precisely for the case where
+                  // the original 429 `$metadata` is LOST across the wrap, so
+                  // the message is the only carrier it has.
+                  //
+                  // This string is the union of what the redaction withholds
+                  // and must never be printed. Nothing here logs it: the
+                  // per-attempt line names only the resource and the backoff,
+                  // and the error itself is rethrown for the caller to report --
+                  // which is why the `msg` binding this replaced is GONE rather
+                  // than kept, unlike `retry.ts`'s, whose `message` still feeds
+                  // a `warn` and a `debug`.
+                  const classify = retryClassificationText(retryError);
                   const isRetryable =
                     !isMarkedNonRetryable(retryError) &&
-                    (isRetryableTransientError(retryError, msg) ||
-                      msg.includes('Too Many Requests'));
+                    (isRetryableTransientError(retryError, classify) ||
+                      classify.includes('Too Many Requests'));
                   if (!isRetryable || attempt >= maxAttempts) break;
                   const delay = 5000 * Math.pow(2, attempt);
                   logger.debug(

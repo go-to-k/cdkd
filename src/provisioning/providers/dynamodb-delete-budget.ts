@@ -691,6 +691,17 @@ export class ProtectionFlipRegistry {
 export function isTerminalDeleteFailure(error: unknown): boolean {
   if (isInterruptedWaitError(error)) return true;
   if (isMarkedNonRetryable(error)) return true;
+  // Deliberately reads the TOP-LEVEL message, unlike `destroy-runner.ts`'s and
+  // `retry.ts`'s twins of this same two-arm shape, which issue #2302 moved onto
+  // `retryClassificationText`. The difference is the population, not the
+  // pattern: those two classify errors from ANY provider, so a provider that
+  // redacts its thrown message (only `S3BucketProvider` does today) empties
+  // what they match on. This one runs solely on the DynamoDB delete path and
+  // classifies only `DynamoDBTableProvider`'s own throws, which carry their
+  // cause's text verbatim -- so the chain read would be a no-op here, and
+  // `retryClassificationText` is opt-in anyway (nothing on this path stamps
+  // itself with `markRedactedCause`). Move it onto the chain text the moment a
+  // DynamoDB throw starts redacting; the shape is otherwise identical.
   const message = error instanceof Error ? error.message : String(error);
   return !(isRetryableTransientError(error, message) || message.includes('Too Many Requests'));
 }
