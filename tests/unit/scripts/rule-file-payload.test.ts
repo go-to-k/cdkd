@@ -494,6 +494,81 @@ describe('.claude/rules payload fence', () => {
     ).toBeLessThanOrEqual(CORPUS_BYTES_MAX);
   });
 
+  // The ceiling above measures the WORKING TREE. That is the merge result only
+  // when this branch is rebased onto current `origin/main` -- and a cumulative
+  // budget is spent by every lane at once, so two branches can each be green in
+  // isolation and land over the cap together. Neither branch's CI can see it,
+  // and whichever merges SECOND is blamed for a budget the first one spent.
+  //
+  // Measured 2026-08-27, two lanes of one `/work-issues` run: go-to-k/cdkd#2291
+  // at 899,843 B and go-to-k/cdkd#2330 at 899,902 B, both green, merging to
+  // 900,025 B -- 25 B over. It was caught by hand, which is not a mechanism.
+  //
+  // So project the merge instead of assuming the rebase: `origin/main`'s corpus
+  // plus THIS branch's delta against its own merge base. On a rebased branch
+  // that equals the working tree and this assertion is a no-op; on a stale one
+  // it is the only thing that sees the collision.
+  it('the corpus still fits once this branch is merged into origin/main', () => {
+    const corpusAt = (rev: string): number | undefined => {
+      let names: string[];
+      try {
+        names = execFileSync('git', ['ls-tree', '-r', '--name-only', rev, '.claude/rules'], {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+        })
+          .split('\n')
+          .filter((n) => n.endsWith('.md'));
+      } catch {
+        return undefined; // rev unresolvable (shallow clone, never fetched)
+      }
+      let total = 0;
+      for (const name of names) {
+        total += execFileSync('git', ['show', `${rev}:${name}`, '--'], {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024 * 1024,
+        }).length;
+      }
+      return total;
+    };
+
+    let mergeBase: string | undefined;
+    try {
+      mergeBase = execFileSync('git', ['merge-base', 'origin/main', 'HEAD'], {
+        cwd: repoRoot,
+        encoding: 'utf-8',
+      }).trim();
+    } catch {
+      mergeBase = undefined;
+    }
+
+    const mainTotal = corpusAt('origin/main');
+    const baseTotal = mergeBase === undefined ? undefined : corpusAt(mergeBase);
+
+    // No `origin/main` to project against -- a shallow clone, or a fresh clone
+    // that has never fetched. Skipping is right: this assertion is ABOUT the
+    // relationship to that ref, so without it there is nothing to be wrong.
+    // The working-tree ceiling above still applies either way.
+    if (mainTotal === undefined || baseTotal === undefined) return;
+
+    const worktreeTotal = ruleFiles.reduce((n, r) => n + r.bytes, 0);
+    const delta = worktreeTotal - baseTotal;
+    const projected = mainTotal + delta;
+
+    expect(
+      projected,
+      `This branch adds ${delta} B to the rules corpus. Against origin/main's ` +
+        `current ${mainTotal} B that projects to ${projected} B, over the ` +
+        `${CORPUS_BYTES_MAX} B ceiling -- even though the working tree is ` +
+        `${worktreeTotal} B and passes on its own.\n\n` +
+        'A parallel lane has spent part of the same budget. Rebase onto ' +
+        'origin/main and re-measure: the number this fails on is the one the ' +
+        'merge produces. Then fund your addition by cutting what your own ' +
+        'change made stale -- never by trimming another lane\'s entry, which ' +
+        'is not yours to spend. ' +
+        SPLIT_ADVICE,
+    ).toBeLessThanOrEqual(CORPUS_BYTES_MAX);
+  });
+
   it.each(ruleFiles.map((r) => [r.name] as const))(
     '%s stays under the per-file byte cap',
     (name) => {
