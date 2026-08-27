@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // Issue #2250: the custom-resource S3 poll used to debug-log
 // `body.substring(0, 200)` of the RESPONSE DOCUMENT. `Data` is the documented
@@ -38,6 +40,37 @@ import {
  */
 const GENERATED_SECRET = 'pw-9f3a-DO-NOT-LOG-8b21';
 
+// Issue #2312: the poll gates its work on `while (Date.now() - startTime <
+// timeoutMs)`, so the arms below need TWO things at once — at least one
+// iteration (the log fires inside the loop BODY) and then an expiry (they
+// assert the timeout rejection). No wall-clock budget can promise both: too
+// small and a loaded machine crosses the deadline before the first mocked
+// `GetObject` resolves, so the body never runs and the line is `undefined`;
+// too large and the arm either hangs or stops timing out. Three arms used a
+// 1 ms budget and flaked exactly that way — five observed reds, in CI and
+// locally, on branches that never touched this file.
+//
+// So the deadline is not raced, it is DRIVEN: `Date.now` is frozen at a fixed
+// instant and the only thing that advances it is the poll's own `sleep`, which
+// runs once per iteration AFTER the body. The first loop check therefore always
+// passes, the body always emits its line, and the second check always fails.
+// One iteration, one expiry, on any machine at any load.
+//
+// A sequence-based `Date.now` stub was the other option and is rejected: it
+// binds the arm to the loop's CALL COUNT (today 4 for a one-iteration timeout —
+// `startTime`, the passing check, the failing check, and `elapsedMin`; the only
+// in-body read is behind `if (useBackoff)`), and miscounting it would be its own
+// flake. A frozen clock plus a sleep-driven step is insensitive to that count.
+//
+// `vi.useFakeTimers()` is rejected for a different reason: this file already
+// replaces `customResourceRetryDelays.sleep`, so the poll's waits never reach a
+// timer at all — faking timers would control nothing here while adding a second
+// clock to reason about.
+/** Every poll's budget. Never expires by real time; see the note above. */
+const POLL_TIMEOUT_MS = 60_000;
+/** What one `sleep` adds to the fake clock — enough to expire that budget. */
+const CLOCK_STEP_MS = 5 * POLL_TIMEOUT_MS;
+
 /** Private-method seam: the poll is internal, and it is what carries the log. */
 interface PollSeam {
   pollS3Response(
@@ -51,8 +84,13 @@ interface PollSeam {
 
 const debugLines: string[] = [];
 let debugSpy: ReturnType<typeof vi.spyOn>;
+let nowSpy: ReturnType<typeof vi.spyOn>;
 const realSleep = customResourceRetryDelays.sleep;
 const realLogger = getLogger();
+
+/** The fake clock the poll reads, and the iteration count that drives it. */
+let clockMs = 0;
+let sleepCalls = 0;
 
 /** Wire the S3 poll to hand back exactly `body` on every GetObject. */
 function respondWith(body: string): void {
@@ -95,14 +133,75 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
     // its level from the GLOBAL logger, so a locally built one would sit at
     // `info` and emit nothing.
     setLogger(new ConsoleLogger('debug', false));
-    // The non-terminal arms poll until the timeout; keep the waits free.
-    customResourceRetryDelays.sleep = () => Promise.resolve();
+    // The clock the poll's deadline is measured against (issue #2312). Frozen:
+    // real time passing moves nothing. `ConsoleLogger`'s own timestamp comes
+    // from `new Date()`, which this does not touch, so the rendered lines still
+    // carry a real one.
+    clockMs = 1_700_000_000_000;
+    sleepCalls = 0;
+    nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clockMs);
+    // The non-terminal arms poll until the timeout; keep the waits free — and
+    // make this the ONE thing that advances the clock, so an iteration always
+    // completes before the deadline moves.
+    customResourceRetryDelays.sleep = () => {
+      sleepCalls += 1;
+      clockMs += CLOCK_STEP_MS;
+      // A zero-delay TIMER, not `Promise.resolve()`. The waits are still free,
+      // but a resolved promise is a microtask: a poll loop whose deadline stops
+      // advancing would then spin without ever yielding, so vitest's own test
+      // timeout could never fire and the worker died of heap exhaustion with no
+      // test named (measured — a 14 s run ending in `Worker exited
+      // unexpectedly`). Yielding to the macrotask queue turns that same
+      // breakage into a named, bounded timeout failure.
+      return new Promise((resolve) => setTimeout(resolve, 0));
+    };
   });
 
   afterEach(() => {
     debugSpy.mockRestore();
+    nowSpy.mockRestore();
     customResourceRetryDelays.sleep = realSleep;
     setLogger(realLogger);
+  });
+
+  // The two arms below fence issue #2312's fix. They are not about the log
+  // line at all — they are what stops a later edit from quietly handing the
+  // poll's deadline back to the wall clock, which is how three of the arms
+  // below became a merge-blocking coin flip.
+  //
+  // They run FIRST on purpose. Un-freezing the clock does not make the poll
+  // arms fail an assertion — it makes the loop spin until the worker dies of
+  // heap exhaustion (measured: a 14 s run ending in `Worker exited
+  // unexpectedly`, no test names, no assertion). Declared first, the fence
+  // NAMES what broke before anything can hang.
+
+  it('FENCE: every poll here takes its budget from the controlled clock', () => {
+    // A literal budget is the regression: small enough to expire and the body
+    // never runs, large enough to run and the arm stops expiring. Neither is
+    // visible in a green run, so it is checked structurally.
+    const source = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const budgets = [...source.matchAll(/\.pollS3Response\(([^)]*)\)/g)].map((m) =>
+      m[1].split(',').pop()!.trim()
+    );
+    // A scanner that matched nothing would pass vacuously: one floor per arm
+    // that exists today, so a regex that stops seeing the call shape fails
+    // loudly instead of reporting a clean tree.
+    expect(budgets.length).toBeGreaterThanOrEqual(7);
+    for (const budget of budgets) {
+      expect(budget).toBe('POLL_TIMEOUT_MS');
+    }
+  });
+
+  it('FENCE: the clock advances only when a poll sleeps', async () => {
+    // The structural arm above cannot see the clock being unfrozen — the call
+    // sites would still read `POLL_TIMEOUT_MS` while the deadline went back to
+    // real time. This one fails if either half of the mechanism is removed.
+    const before = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(Date.now()).toBe(before); // 25 ms of real time moved the poll's clock by 0
+
+    await customResourceRetryDelays.sleep(1);
+    expect(Date.now()).toBeGreaterThan(before + POLL_TIMEOUT_MS); // one iteration expires any budget
   });
 
   it('logs Status / PhysicalResourceId / Data KEYS, never a Data value', async () => {
@@ -114,7 +213,12 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
       })
     );
 
-    await newProvider().pollS3Response('cdkd/cr-response/req.json', 'MyCustomRes', 'Create', 5000);
+    await newProvider().pollS3Response(
+      'cdkd/cr-response/req.json',
+      'MyCustomRes',
+      'Create',
+      POLL_TIMEOUT_MS
+    );
 
     const line = responseLine();
     expect(line).toBeDefined();
@@ -145,7 +249,12 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
       })
     );
 
-    await newProvider().pollS3Response('cdkd/cr-response/req.json', 'MyCustomRes', 'Create', 5000);
+    await newProvider().pollS3Response(
+      'cdkd/cr-response/req.json',
+      'MyCustomRes',
+      'Create',
+      POLL_TIMEOUT_MS
+    );
 
     const line = responseLine();
     expect(line).toBeDefined();
@@ -171,7 +280,12 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
       })
     );
 
-    await newProvider().pollS3Response('cdkd/cr-response/req.json', 'MyCustomRes', 'Create', 5000);
+    await newProvider().pollS3Response(
+      'cdkd/cr-response/req.json',
+      'MyCustomRes',
+      'Create',
+      POLL_TIMEOUT_MS
+    );
 
     const line = responseLine();
     expect(line).toBeDefined();
@@ -202,7 +316,12 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
       })
     );
 
-    await newProvider().pollS3Response('cdkd/cr-response/req.json', 'MyCustomRes', 'Create', 5000);
+    await newProvider().pollS3Response(
+      'cdkd/cr-response/req.json',
+      'MyCustomRes',
+      'Create',
+      POLL_TIMEOUT_MS
+    );
 
     const line = responseLine();
     expect(line).toBeDefined();
@@ -220,9 +339,17 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
     respondWith(truncated);
 
     await expect(
-      newProvider().pollS3Response('cdkd/cr-response/req.json', 'MyCustomRes', 'Create', 1)
+      newProvider().pollS3Response(
+        'cdkd/cr-response/req.json',
+        'MyCustomRes',
+        'Create',
+        POLL_TIMEOUT_MS
+      )
     ).rejects.toThrow(/Timeout waiting for custom resource response/);
 
+    // The iteration is a PRECONDITION, not a race: exactly one poll ran, and
+    // the expiry came from the clock that poll's own sleep advanced.
+    expect(sleepCalls).toBe(1);
     const line = responseLine();
     expect(line).toBeDefined();
     expect(line).not.toContain(GENERATED_SECRET);
@@ -239,9 +366,15 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
     respondWith(JSON.stringify(GENERATED_SECRET));
 
     await expect(
-      newProvider().pollS3Response('cdkd/cr-response/req.json', 'MyCustomRes', 'Create', 1)
+      newProvider().pollS3Response(
+        'cdkd/cr-response/req.json',
+        'MyCustomRes',
+        'Create',
+        POLL_TIMEOUT_MS
+      )
     ).rejects.toThrow(/Timeout waiting for custom resource response/);
 
+    expect(sleepCalls).toBe(1);
     const line = responseLine();
     expect(line).toBeDefined();
     expect(line).not.toContain(GENERATED_SECRET);
@@ -256,9 +389,15 @@ describe('CustomResourceProvider poll response-body logging (issue #2250)', () =
     respondWith(JSON.stringify({ Data: GENERATED_SECRET }));
 
     await expect(
-      newProvider().pollS3Response('cdkd/cr-response/req.json', 'MyCustomRes', 'Create', 1)
+      newProvider().pollS3Response(
+        'cdkd/cr-response/req.json',
+        'MyCustomRes',
+        'Create',
+        POLL_TIMEOUT_MS
+      )
     ).rejects.toThrow(/Timeout waiting for custom resource response/);
 
+    expect(sleepCalls).toBe(1);
     const line = responseLine();
     expect(line).toBeDefined();
     expect(rendered()).not.toContain(GENERATED_SECRET);
