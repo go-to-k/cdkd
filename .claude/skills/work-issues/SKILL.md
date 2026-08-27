@@ -309,6 +309,18 @@ parallelized — bundle them into ONE lane (one worktree, one PR) or defer one.
   SURROUNDING code get no compiler and no test, so they are the ones to check by
   hand. Say what you found in the PR body: the next reader needs to know the issue
   and the tree disagreed, and which one won.
+
+  **Read `origin/main`, never whatever directory the shell is sitting in.** Every
+  grep above is a claim about what is SHIPPED, and the shared main worktree is
+  routinely behind — it is not the tree any lane branches from. `git show
+  origin/main:<path>` and `git -C <worktree>` answer correctly; a bare `ls` or
+  `grep` does not, and its false NEGATIVE is the dangerous direction, because "the
+  thing the issue names does not exist" reads as a finding rather than as a stale
+  read. Measured 2026-08-27: a run posted a public correction on
+  go-to-k/cdkd#2282 saying the test file that issue named did not exist. It did —
+  added by PR go-to-k/cdkd#2290 inside the seven commits the main worktree was
+  behind — and retracting it cost a second comment on the same issue. Fetch first,
+  then read a ref rather than a directory.
 - **A partly-worked issue's residue may be owned by an issue it SPAWNED — read its
   thread to the end, then check the CLAIM STATE of every issue that thread names.**
   A lane that works an issue and cannot close it files the remainder as a child
@@ -1600,6 +1612,19 @@ From inside the worktree, run the local quality checks and record the markers:
 /check          # typecheck, lint, build, tests → sets the `check` marker
 /check-docs      # only if the lane touched README.md / CLAUDE.md / docs/ / .claude/rules/**
 ```
+
+**Run the SKILL; do not hand-roll its command list and set the marker yourself.**
+The `check` marker attests that `/check` ran, so setting it after a private
+sequence of `typecheck` / `lint` / `build` / `test` records something that did not
+happen — and the gap is silent, because the commands you did run all pass. What
+`/check` step 1 adds over that list is `vp check --fix` plus `vp run check`, which
+is where Prettier lives. Measured 2026-08-27: a lane hand-rolled the list for
+THREE consecutive rounds and `vp run format:check` was failing the whole time on a
+line a constant rename had pushed past the width; it surfaced only when a reviewer
+ran the CI command directly. The temptation is real and comes from this very
+section — the cwd rule below makes invoking a skill feel less controllable than
+typing the commands — so the resolution is to invoke the skill AND control the cwd,
+never to substitute one for the other.
 
 **Start every marker and gate command with an explicit `cd <worktree> &&`.** Both
 skills say to run from "the repo root", which in this mandated worktree flow means
@@ -3230,7 +3255,23 @@ the run evidence behind it — or "no skill change" plus what held.
   lands in a lane you are STILL holding a worktree for is almost always `now`
   (the worktree, the deps and the markers are already paid for, and removing it
   and re-creating it later is most of the cost), while a residual in a lane you
-  just merged and cleaned up has lost exactly those things and is `next`. Close
+  just merged and cleaned up has lost exactly those things and is `next`.
+
+  **The trap is that the filing happens mid-lane, and the wrong question is the
+  loud one there.** Mid-review the question in your head is "can this ride THIS
+  PR?" — a reviewability question, whose answer is usually no — while the one the
+  rule asks is "is that lane's worktree still open?", which is quiet and usually
+  yes. Measured 2026-08-27: a three-lane run filed go-to-k/cdkd#2321 and
+  go-to-k/cdkd#2322 as `next` while the lanes owning `import.ts` and
+  `s3-bucket-provider.ts` were both still open; §10-0's promotion check then hit on
+  both at wrap, by which point the worktrees were gone, the markers were spent, and
+  `next` had become the correct answer to a question that had a different answer an
+  hour earlier. Both are ~30-60 min items that would have ridden an integ their
+  lane was running anyway, at a marginal cost of zero. So ask the worktree question
+  explicitly at FILING time, not the PR-size one: a separate PR from the same open
+  worktree is cheap, and is not what `next` is for.
+
+  Close
   the run with the **not-this-session line** — the decision first, then the
   literal command (`Not this session — start a fresh session with: /work-issues`)
   — and say which `next` items are file-disjoint enough for one fresh run to
