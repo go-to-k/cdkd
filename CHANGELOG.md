@@ -1,3 +1,10 @@
+## [0.284.73](https://github.com/go-to-k/cdkd/compare/v0.284.72...v0.284.73) (2026-08-27)
+
+
+### Bug Fixes
+
+* **provisioning:** confirm the bucket before a Cloud-Control-routed S3 delete ([#2309](https://github.com/go-to-k/cdkd/issues/2309)) ([b95857d](https://github.com/go-to-k/cdkd/commit/b95857d3d4e78e676c43ef40bd0cbaae96db0ce6))
+
 ## [0.284.72](https://github.com/go-to-k/cdkd/compare/v0.284.71...v0.284.72) (2026-08-27)
 
 
