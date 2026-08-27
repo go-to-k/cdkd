@@ -16,6 +16,7 @@ import {
 } from '@aws-sdk/client-ecr';
 import { getLogger } from '../utils/logger.js';
 import { CdkdError, normalizeAwsError } from '../utils/error-handler.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
 import { buildDenyExternalAccessPolicy } from '../utils/deny-external-access-policy.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
@@ -193,11 +194,50 @@ export async function assertAssetBucketRegion(
         // Thread the ORIGINATING error as the cause: it is the one that says why
         // we are here at all. The probe failure goes in the message instead, so
         // neither is lost.
+        //
+        // Split BEFORE the throw (issue #2302). This message is not a terminal
+        // line: it flows through `extractDeploymentEventError` into the
+        // persisted `deployments/{runId}.jsonl` store, which outlives the run.
+        // The headline population for a failing probe is a principal without
+        // `s3:GetBucketLocation` or a bucket policy that `Deny`s it, and S3
+        // words that `AccessDenied` as `User:
+        // arn:aws:sts::<account>:assumed-role/<role>/<session> is not
+        // authorized to perform: ...` -- so interpolating it wrote the caller's
+        // account id, role name and session name into that durable store.
+        //
+        // The debug line is NOT optional decoration: AWS's text is what
+        // separates a missing IAM grant from a bucket-policy `Deny`, and that
+        // distinction is the operator's next action. `cause` cannot carry it
+        // here -- it is deliberately the ORIGINATING error, not the probe's.
+        const failure = describeAwsFailure(probeError);
+        // Gated on `redacted`, matching `S3BucketProvider.wrapOperationError`
+        // and the field's own doc: when nothing was withheld, `detail` IS the
+        // text already in the throw, so the line would only repeat it.
+        if (failure.redacted) {
+          getLogger().debug(
+            `GetBucketLocation failed for asset bucket '${bucketName}' while confirming it ` +
+              `belongs to ${want}: ${failure.detail}`
+          );
+        }
+        // Deliberately NOT stamped with `markRedactedCause`, unlike
+        // `S3BucketProvider.wrapOperationError` (issue #2302). The stamp tells
+        // a retry classifier to read the `.cause` chain INSTEAD of this
+        // message, which is only useful when the chain actually carries what
+        // the message withheld -- and here it cannot: `cause` is deliberately
+        // the ORIGINATING error, and `probeError`, whose text `failure.detail`
+        // holds, is not in the chain at all. Stamping anyway would not recover
+        // one withheld word; it would only feed the ORIGINATING error's message
+        // to classification, which is precisely the un-audited widening the
+        // opt-in design exists to refuse (see `retryClassificationText`).
+        //
+        // Nothing is lost by omitting it. No caller of `ensureAssetStorage`
+        // runs inside any of the three message classifiers, and AWS's own text
+        // is already reachable at `debug` above.
         throw new CdkdError(
           `Asset bucket '${bucketName}' is claimed by an existing bucket, but cdkd ` +
             `could not determine which region that bucket is in, so it cannot confirm ` +
             `it belongs to ${want}. Refusing to adopt it. ` +
-            `(region probe failed: ${probeError instanceof Error ? probeError.message : String(probeError)}) ` +
+            `(region probe failed: ${failure.summary}) ` +
             `${remedy}`,
           'ASSET_STORAGE_FOREIGN_REGION_BUCKET',
           cause

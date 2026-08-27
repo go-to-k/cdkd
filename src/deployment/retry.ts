@@ -15,6 +15,7 @@ import {
   isTransientServerError,
   isMarkedNonRetryable,
   isRetryableTransientError,
+  retryClassificationText,
 } from './retryable-errors.js';
 
 export interface RetryLogger {
@@ -203,8 +204,24 @@ export interface WithRetryOptions {
    * need to retry an error shape the shared transient table deliberately
    * excludes (e.g. the --replace delete-first fallback retrying
    * "already exists" while an async delete releases the name).
+   *
+   * `classificationText` is NOT `error.message`, and the difference is
+   * load-bearing (issue [#2302](https://github.com/go-to-k/cdkd/issues/2302)).
+   * For an error that declared its message incomplete via `markRedactedCause`,
+   * it is {@link retryClassificationText}'s join of the whole `.cause` chain,
+   * so a wrapper that withheld AWS's wording can still be classified on it.
+   *
+   * **Never LOG, THROW or persist this string.** It is the union of exactly
+   * the text the redaction exists to withhold — for the S3 wraps that is an
+   * `AccessDenied` naming the caller's account, role and session — and it can
+   * also contain text `maskErrorMessage` deliberately kept OUT of the
+   * top-level message, since `elbv2-provider.ts` and
+   * `servicediscovery-provider.ts` mask their message while threading the raw
+   * error as `cause` (the issue #2038 masking surface). Classify on it; print
+   * `error.message`, which is what this function's own `warn` / `debug` lines
+   * use.
    */
-  isRetryable?: (message: string, error: unknown) => boolean;
+  isRetryable?: (classificationText: string, error: unknown) => boolean;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -318,6 +335,18 @@ export async function withRetry<T>(
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
+      // What the MESSAGE-based classifiers below read, and deliberately not
+      // `message` (issue #2302). A wrapper on a thrown path may now WITHHOLD
+      // AWS's wording -- it lands in the persisted `deployments/{runId}.jsonl`
+      // store and S3's `AccessDenied` names the caller's account, role and
+      // session -- so the retry signal has to be read off the `cause` chain the
+      // wrapper still carries. Measured: without this, redacting
+      // `S3BucketProvider.create`'s wrap turned `not authorized to perform`
+      // (retryable, DENSE cadence) and `conflicting conditional operation`
+      // (retryable) into non-retryable. `message` stays the LOG text below --
+      // this string is the union of what the redaction exists to withhold and
+      // must never be printed or thrown.
+      const classifyText = retryClassificationText(error);
 
       // Issue #1778: a cdkd-authored refusal is terminal by DECLARATION, and
       // that has to be decided HERE rather than inside the default classifier.
@@ -334,9 +363,9 @@ export async function withRetry<T>(
       }
 
       const retryable = opts.isRetryable
-        ? opts.isRetryable(message, error)
-        : isRetryableTransientError(error, message);
-      const propagation = defaultSchedule && isIamPropagationError(message);
+        ? opts.isRetryable(classifyText, error)
+        : isRetryableTransientError(error, classifyText);
+      const propagation = defaultSchedule && isIamPropagationError(classifyText);
       if (propagation) {
         sawPropagation = true;
       }
@@ -347,7 +376,7 @@ export async function withRetry<T>(
       // ternary below on the (currently impossible) overlap: the two pattern
       // lists share no substring, and if one is ever added the denser grid is
       // the safer of the two to apply.
-      const nameCooldown = defaultSchedule && !propagation && isNameCooldownError(message);
+      const nameCooldown = defaultSchedule && !propagation && isNameCooldownError(classifyText);
       const attemptLimit = sawPropagation ? IAM_PROPAGATION_MAX_RETRIES : maxRetries;
       if (!retryable || attempt >= attemptLimit) {
         // Issue #2018: a propagation sequence that gives up must SAY so, at

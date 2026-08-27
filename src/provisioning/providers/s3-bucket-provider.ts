@@ -68,8 +68,9 @@ import {
   s3BucketWebsiteUrl,
 } from '../../utils/s3-endpoints.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { S3_AUTO_DELETE_OBJECTS_TAG, hasCdkAutoDeleteTag } from '../data-delete-intent.js';
 import {
@@ -6375,14 +6376,7 @@ export class S3BucketProvider implements ResourceProvider {
         ...(effectiveProperties ? { effectiveProperties } : {}),
       };
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create S3 bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        bucketName,
-        cause
-      );
+      throw this.wrapOperationError('create', logicalId, resourceType, bucketName, error);
     }
   }
 
@@ -6496,14 +6490,7 @@ export class S3BucketProvider implements ResourceProvider {
         ...(effectiveProperties ? { effectiveProperties } : {}),
       };
     } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update S3 bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
-      );
+      throw this.wrapOperationError('update', logicalId, resourceType, physicalId, error);
     }
   }
 
@@ -6576,15 +6563,74 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Bucket ${physicalId} does not exist, skipping deletion`);
         return;
       }
-      const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete S3 bucket ${logicalId}: ${error instanceof Error ? error.message : String(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapOperationError('delete', logicalId, resourceType, physicalId, error);
+    }
+  }
+
+  /**
+   * Wrap whatever `create` / `update` / `delete` caught into the
+   * `ProvisioningError` they throw, with the identity split done BEFORE the
+   * throw (issue [#2302](https://github.com/go-to-k/cdkd/issues/2302)).
+   *
+   * All three sites used to interpolate `error.message` straight into the
+   * thrown text. A thrown message is NOT the terminal-only surface the
+   * identity warnings elsewhere in this file are: `extractDeploymentEventError`
+   * captures it into `deployments/{runId}.jsonl`, which outlives the run and is
+   * explicitly restricted to error plus metadata. So an `AccessDenied` on
+   * `CreateBucket` / `PutBucket*` / `DeleteBucket` -- S3 words it `User:
+   * arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized to
+   * perform: ...` -- wrote the caller's account id, role name and session name
+   * into that durable store. Splitting at a log call cannot help here; the
+   * split has to happen before the `throw`.
+   *
+   * Both halves are emitted, for the reason PR
+   * [#2290](https://github.com/go-to-k/cdkd/pull/2290) learned the expensive
+   * way: AWS's text is what separates a missing IAM grant from a bucket-policy
+   * `Deny`, and that distinction is the operator's next action. The class goes
+   * in the thrown message and AWS's own wording goes to `logger.debug`.
+   *
+   * The redaction is NARROW on purpose, and these three sites are why. They are
+   * BROAD catch blocks that capture cdkd's OWN refusals as readily as an SDK
+   * failure: this file raises six cdkd-authored plain `Error`s inside them --
+   * the `BucketEncryption` / `OwnershipControls` array refusals, the
+   * EventBridge and inventory `Enabled` refusals, the destination-shape
+   * refusal, and `deleteBucketWithEmptyRetry`'s non-empty-bucket refusal, whose
+   * message IS the CloudFormation-parity remediation. `describeAwsFailure`
+   * keys on the smithy marker fields rather than on "cdkd did not author it",
+   * so every one of those passes through verbatim; the `redacted` gate then
+   * suppresses a debug line that would only repeat the throw.
+   *
+   * `cause` still carries the raw error, deliberately: the persisted event
+   * reads only the TOP-level `message` off it (plus `awsErrorCode` /
+   * `requestId` from the chain), so keeping it costs nothing in that store
+   * while retaining the retry classifiers' and `formatError`'s access to it.
+   */
+  private wrapOperationError(
+    operation: 'create' | 'update' | 'delete',
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    error: unknown
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (failure.redacted) {
+      this.logger.debug(
+        `Failed to ${operation} S3 bucket ${logicalId} (${physicalId}): ${failure.detail}`
       );
     }
+    const wrapped = new ProvisioningError(
+      `Failed to ${operation} S3 bucket ${logicalId}: ${failure.summary}`,
+      resourceType,
+      logicalId,
+      physicalId,
+      error instanceof Error ? error : undefined
+    );
+    // Tell the retry classifiers this message is INCOMPLETE, so they read the
+    // `cause` chain instead of the redacted text (issue #2302). Only when
+    // something was actually withheld: an unredacted wrap carries its cause's
+    // message verbatim, and stamping it would widen classification for a
+    // wrapper that needs nothing.
+    return failure.redacted ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**

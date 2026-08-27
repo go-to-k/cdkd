@@ -1340,7 +1340,13 @@ async function createWithRollbackRetry(
   isInterrupted: (() => boolean) | undefined,
   secrets: RecordedSecretValues,
   outer: {
-    isRetryable: (message: string) => boolean;
+    /**
+     * See `RetryOptions.isRetryable` in `./retry.ts`: the argument is the
+     * CLASSIFICATION text, which for an error stamped `markRedactedCause` is
+     * the joined `.cause` chain rather than `error.message` (issue #2302).
+     * Classify on it; never log or throw it.
+     */
+    isRetryable: (classificationText: string) => boolean;
     interruptedMessage: string;
   }
 ): Promise<ResourceCreateResult> {

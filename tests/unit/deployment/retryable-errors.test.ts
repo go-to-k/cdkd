@@ -10,6 +10,8 @@ import {
   isRecreateRetryableError,
   isRetryableTransientError,
   markNonRetryable,
+  markRedactedCause,
+  retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
 import {
   CdkdError,
@@ -1191,5 +1193,115 @@ describe('ResourceUpdateNotSupportedError is terminal by construction (issue #18
         new IntrinsicResolutionRefusalError('refusal'),
       ].map(isMarkedNonRetryable)
     ).toEqual([false, false, false, false]);
+  });
+});
+
+/**
+ * Issue #2302: `retryClassificationText` reads the `.cause` chain so a wrapper
+ * that WITHHELD AWS's wording can still be classified on it.
+ */
+describe('retryClassificationText (issue #2302)', () => {
+  /** A chain `depth` links deep, with the retryable text only at the BOTTOM. */
+  function chain(depth: number, opts: { stampAt?: number; markAt?: number } = {}): Error {
+    let current: Error = Object.assign(
+      new Error('A conflicting conditional operation is currently in progress against this resource.'),
+      { name: 'OperationAborted', $metadata: { httpStatusCode: 409 } }
+    );
+    for (let i = depth - 1; i >= 0; i--) {
+      let wrap: Error = Object.assign(new Error(`wrapper level ${i}`), { cause: current });
+      if (opts.stampAt === i) wrap = markRedactedCause(wrap);
+      if (opts.markAt === i) wrap = markNonRetryable(wrap);
+      current = wrap;
+    }
+    return current;
+  }
+
+  it('is a NO-OP without the stamp, and reads the chain with it', () => {
+    // The opt-in gate, stated as the two halves of one comparison. An
+    // unconditional join would make the first of these equal the second.
+    const plain = chain(1);
+    expect(retryClassificationText(plain)).toBe(plain.message);
+
+    const stamped = chain(1, { stampAt: 0 });
+    expect(retryClassificationText(stamped)).toContain('conflicting conditional operation');
+  });
+
+  it('reads no FURTHER than isMarkedNonRetryable can see', () => {
+    // The two walks must agree, or there is a band where a refusal is legible
+    // but its marker is not -- which is what a depth of 10 here against the
+    // marker's 5 created. Probed as a PAIR at the same depth rather than
+    // asserting the constant, so the fence survives the number changing.
+    for (const depth of [4, 5, 6, 8]) {
+      const deep = chain(depth, { stampAt: 0, markAt: depth - 1 });
+      const sawText = retryClassificationText(deep).includes('conflicting conditional operation');
+      const sawMarker = isMarkedNonRetryable(deep);
+      expect(
+        sawText && !sawMarker,
+        `at depth ${depth} the classifier read the bottom link's text but could not see a marker on it`
+      ).toBe(false);
+    }
+  });
+
+  it('a marked refusal is NOT resurrected by the widened text', () => {
+    const marked = chain(1, { stampAt: 0, markAt: 0 });
+    expect(retryClassificationText(marked)).toContain('conflicting conditional operation');
+    expect(isRetryableTransientError(marked, retryClassificationText(marked))).toBe(false);
+  });
+
+  it('keeps walking past a NON-Error link instead of dead-ending on it', () => {
+    // `new Error(m, { cause: 'a string' })` is legal, and a link gated on
+    // `depth === 0` both dropped that text AND stopped the walk one link early,
+    // hiding everything below it.
+    const bottom = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+    const top = Object.assign(new Error('outer'), {
+      cause: Object.assign(new Error('inner'), { cause: bottom }),
+    });
+
+    const text = retryClassificationText(markRedactedCause(top));
+    expect(text).toContain('outer');
+    expect(text).toContain('inner');
+    expect(text).toContain('Rate exceeded');
+
+    const withStringLink = markRedactedCause(
+      Object.assign(new Error('outer2'), { cause: 'a bare string cause' })
+    );
+    expect(retryClassificationText(withStringLink)).toContain('a bare string cause');
+  });
+
+  it('does not out-throw the failure it is describing on an unstringifiable link', () => {
+    // `Object.create(null)` has no `Symbol.toPrimitive`, no `toString` and no
+    // `valueOf`, so `String()` on it raises `TypeError: Cannot convert object
+    // to primitive value`. BOTH callers run this inside a catch block, so an
+    // exception here would replace the real failure with an unrelated TypeError
+    // and lose the error the caller was about to classify and rethrow.
+    const unstringifiable = Object.create(null) as object;
+    expect(() => String(unstringifiable)).toThrow(TypeError); // the premise
+
+    const top = markRedactedCause(
+      Object.assign(new Error('outer'), { cause: unstringifiable })
+    );
+
+    expect(() => retryClassificationText(top)).not.toThrow();
+    expect(retryClassificationText(top)).toBe('outer');
+  });
+
+  it('keeps walking PAST an unstringifiable link', () => {
+    // The link contributes no text, but it must not swallow what is below it --
+    // a `catch` that also `break`s would hide the retryable signal underneath.
+    const unstringifiable = Object.create(null) as { cause?: unknown };
+    unstringifiable.cause = Object.assign(new Error('Rate exceeded'), {
+      name: 'ThrottlingException',
+    });
+    const top = markRedactedCause(
+      Object.assign(new Error('outer'), { cause: unstringifiable })
+    );
+
+    expect(retryClassificationText(top)).toContain('Rate exceeded');
+  });
+
+  it('tolerates a self-referencing cause', () => {
+    const loop = markRedactedCause(new Error('loops'));
+    Object.assign(loop, { cause: loop });
+    expect(retryClassificationText(loop)).toBe('loops');
   });
 });
