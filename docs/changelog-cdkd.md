@@ -189,6 +189,122 @@ The CLAUDE.md `## Known Limitations` section retains the load-bearing summary
   `local start-api` flag tables.
 
 ---
+- ✅ **The secret-mask critic's masker recognition was receiver-blind, file-wide
+  scoped, and blind to a bare logger call (issue
+  [#2269](https://github.com/go-to-k/cdkd/issues/2269))** —
+  `scripts/check-provider-secret-mask.ts`, `.claude/rules/layout-scripts.md`.
+  Three findings and five nits from the review rounds on PR #2265 (issue #2178),
+  all on one predicate: what the critic accepts as "the value reached the
+  project's masker". No shipped exposure — the real tree classified 83 files /
+  41 sites / 37 masked / 4 exempt / 108 derived masker names before and after,
+  bit for bit. (1) RECEIVER-BLIND. Every masker position accepted any property
+  access whose FINAL name landed in the derived set, so with ~108 derived names
+  tree-wide `const junk = { maskLeaf: (t) => t }` bought both
+  `maskDeep(p, junk.maskLeaf)` and `junk.maskLeaf(p)` a `masked` verdict; the
+  fence really read "the value reached something whose last identifier collides
+  with a masker name", which is not what KNOWN BOUND (4) claimed. Now
+  receiver-checked — the CONTRACT's own `maskSecrets` on any receiver (that IS
+  the bound, and stays self-probed), a DERIVED name only off `this` or a chain
+  rooted at it — and the bound is restated in both artifacts. Free on the real
+  tree, whose only property-access maskers are `this.maskErrorMessage` (18) and
+  `this.maskedRetryLogger` (5). (2) FILE-WIDE IDENTITIES. `identities` was one
+  name pool, so a class whose `create()` binds
+  `const mask = maskerOrIdentity(context?.maskSecrets)` and whose `delete()`
+  binds `const mask = maskerOrIdentity(undefined)` had BOTH arms read `raw` —
+  a false POSITIVE on the correct sibling, dodged in #2265 only by spelling the
+  delete arm `DELETE_PATH_UNMASKED`. Refusals are now recorded with the function
+  that owns them; a module-scope one still reds everything. Scoping ALONE would
+  have traded that for a false NEGATIVE, since `names` stays a file-wide pool,
+  so `maskersAt` subtracts the refusals in scope at a site from the names in
+  scope at it and rule 1 records a wrapper at its own lexical scope — both
+  directions carry a probe. (3) A bare `logger.warn(JSON.stringify(x))` reaches
+  the same sink as a site and was neither classified NOR counted, because the
+  concat counter fences only `+` operands. It now gets bound (1)'s treatment as
+  KNOWN BOUND (5) (`MAX_BARE_SINK_SITES`). A LEVEL call is matched
+  RECEIVER-first with its own refuse twin; a FACTORY call is matched by NAME
+  (`wrapError` / `wrapUpdateError` / `handleError`), which is a REVIEW-ROUND
+  correction of exactly the over-claim this critic exists to prevent: the first
+  cut required `new`, so the 33 messages this corpus throws through
+  `this.wrapError(...)` (24) and `this.wrapUpdateError(...)` (9) sat outside the
+  count while the prose called the zero measured, and
+  `throw this.wrapError(JSON.stringify(properties))` ran at exit 0. Two
+  receivers were missed the same way — `options.warn(...)` and
+  `getLogger().child('SNSTopicProvider').warn(...)`, the latter putting a
+  CallExpression in the receiver position — so the receiver reader now WALKS the
+  chain. The zero is now measured against the WHOLE population: **331**
+  `JSON.stringify` calls in the corpus = 41 interpolated sites + 0 concat
+  operands + 0 bare message sinks + 290 residue, and the residue is entirely
+  non-message (228 deep-equality comparisons, 41 `?:` value arms, 10 `return`s,
+  6 arrow bodies, one `??`, one `=`, one `Message: JSON.stringify(request)` on
+  an SNS `PublishCommand` at `custom-resource-provider.ts:2182`, one
+  `createHash('sha256').update(...)` at
+  `cloudwatch-anomaly-detector-provider.ts:421` and one `Buffer.from(...)`).
+  **The widening's COUNTER-DIRECTION was then measured and closed**, because a
+  guard that reds correct code is worse than the miss it replaced:
+  `throw this.wrapError(JSON.stringify(maskDeep(v, m)))` had the value already
+  through the project's masker and failed CI, so a MASKED bare sink is no longer
+  counted — decided by `isMasked`, the same predicate the interpolated-site path
+  uses, so the two populations cannot drift. The failure now LOCATES each site
+  and names which FORM matched (`<file>:<line> (logger call | error factory |
+  error constructor)`), the same argument that added `truncatedFiles`. Two more
+  escapes were closed — a cast argument
+  (`logger.warn(JSON.stringify(v) as string)`) counted zero because the parent
+  walk stripped parentheses only while `unwrap` strips casts everywhere else,
+  and `wrapDeleteError` escaped the NAME list, now matched by a
+  `^wrap[A-Za-z]*Error$` pattern whose durable half is an ENUMERATING test over
+  every `throw <call>(...)` callee in the corpus that fails on a name neither
+  the predicate nor an audited not-a-factory list knows. Three remaining
+  loosenesses are STATED rather than left to be found, all fail-closed with zero
+  live hits: the receiver reader matches any name in a chain, the factory arm
+  ignores the receiver, and an aliased logger
+  (`const sink = this.logger; sink.warn(...)`) escapes. The nits: `maskDeep(v, m, 1)`
+  classified raw because EVERY argument past 0 had to be a masker (index 1 still
+  must be, indexes past it may be a CONSTANT option, so `maskDeep(v, undefined)`
+  stays refused); `maskDeep(v, flag ? a : b)` classified raw for want of a
+  `ConditionalExpression` arm (both arms required, unlike `??`, whose left-arm
+  rule exists for the contract's own fallback); the fixpoint cap truncated
+  SILENTLY and now fails the run; `file.startsWith(REPO_ROOT)` matched a sibling
+  by prefix and now matches on a path segment, which matters because that branch
+  mints the string `EXEMPT` is keyed on; and the dead `report?.filesScanned` is
+  gone with the scan-failure path returning through one shared reporter. A
+  FOURTH route to a masker that masks nothing surfaced from the differential
+  rather than the finding list and is closed here too: `const mask =
+  maskerOrIdentity(undefined); const maskLeaf = (v) => maskDeep(v, mask)` made
+  `maskLeaf` a masker on BOTH sides of the change, because `wrapsFirstParameter`
+  read only the callee. **Verified by a DIFFERENTIAL fence**, because probes are
+  cases chosen by whoever chose the rule — which is how the receiver-blindness
+  shipped past 50 of them. `tests/unit/scripts/provider-secret-mask-recognition-2269.test.ts`
+  runs the frozen `origin/main` classifier
+  (`tests/unit/scripts/fixtures/secret-mask-baseline-2269.ts`, verbatim, never
+  re-synced) beside the live one over the 83-file real corpus plus a
+  CROSS-PRODUCT pool, and requires every disagreeing cell to land in an
+  enumerated class whose declared transition it actually shows. Both directions
+  are watched — a cell a class CLAIMS and that no longer moves fails too — and
+  each class carries a FLOOR, with the coverage guards written as EXACT products
+  rather than floors (a floor let a dropped generator arm slide while the class
+  floors still passed). Measured: 98 cells, 39 differing (receiver-narrowed 15,
+  identity-scoped 8, wrapper-launders-identity 6, option-argument 6,
+  conditional-masker 4), ZERO differences over the real corpus. 36 new
+  self-probes (50 -> 86) and 30 new unit tests plus 4 new spawn probes on the
+  existing suite, each fix mutation-proven ONE AT A TIME — 31 probes: one per
+  fix, a partial-revert twin for four, and nineteen more across three review
+  rounds. Bound (5)'s own looseness is stated with the DIRECTION of each item
+  (one fail-CLOSED, three fail-OPEN with zero live hits) rather than as a
+  blanket fail-closed claim, which would have been this critic's own defect
+  committed inside its remedy; and the two spellings of the transparent-wrapper
+  question — `unwrap`'s strip and the parent-chain test — are bound together by
+  a test that parses the `ts.isX(` guards out of both bodies and requires the
+  sets to be equal, since their DIVERGENCE was the cast escape this round
+  closed. The twins are what found the sink RECEIVER check unfenced (the
+  `Buffer.from` refuse case rejects on the METHOD name and never reaches it) and
+  the
+  `wrapsFirstParameter` copy of the trailing-option guard unfenced (relaxing it
+  left all 92 tests green while making
+  `const maskLeaf = (v) => maskDeep(v, undefined)` a masker — a wrapper
+  laundering a no-op). `--json` stdout is now pure data: the human summary moves
+  to stderr under that flag, matching the sibling critic
+  `check-local-reachability.ts`, so `--json | jq` no longer fails on trailing
+  prose.
 
 **Recently Implemented** (2026-08-26):
 - **The custom-resource poll no longer debug-logs the first 200 bytes of the response body, so a generated secret in `Data` never reaches `--verbose` output (issue [#2250](https://github.com/go-to-k/cdkd/issues/2250))** -- `src/provisioning/providers/custom-resource-provider.ts`, plus `tests/unit/provisioning/custom-resource-provider-response-body-log.test.ts`. Each poll of the pre-signed S3 response key used to log `body.substring(0, 200)` of the CloudFormation custom-resource response document. `Data` is the documented place a handler returns a GENERATED VALUE -- including a generated secret -- so behind a short `PhysicalResourceId` those values landed inside the 200-character window and reached the terminal and, in CI, the retained build log. It fired for EVERY custom-resource response, gated only by `--verbose`. The line now renders the non-sensitive ENVELOPE instead: `Status`, `PhysicalResourceId` (already persisted to `state.json`, so not a new channel) and `Object.keys(Data)` -- never a `Data` value, and never `Reason`, which is free-form handler text that can quote them. Every one of those fields is HANDLER-CONTROLLED, so each goes through `displaySafe` (issue [#2170](https://github.com/go-to-k/cdkd/issues/2170)) and a 200-character cap before it is rendered -- both regressions this change introduced and a review caught. The line it replaced printed raw WIRE json, where the encoder had already escaped control characters and where `substring(0, 200)` bounded the output by construction; parsing first UNDOES the escaping, so an ESC and a newline reach the terminal as real bytes and anyone holding the pre-signed response URL could clear the screen and print a forged `ERROR [cdkd]` line into a CI transcript. Dropping the substring removed the bound as well: a 5000-character id with 300 `Data` keys rendered a 19,714-character line, re-emitted on EVERY poll of a resource that can run for an hour. The body stays UNTRUSTED input: the parse is hoisted above the log so one result feeds both the summary and the terminal-status check, but the log still fires for a body that does not parse -- reporting the body's LENGTH only -- because a malformed response is exactly when the diagnostic is worth most; a body that parses to a JSON scalar / array / `null` gets its own summary rather than an envelope-shaped read of it. An earlier write-to-every-reader trace concluded this log line was the ONLY reader emitting the payload and that the body is never written to `state.json`; the second half is FALSE and was relayed here without being re-derived. `cfnResponse.Data` becomes `attributes` (`custom-resource-provider.ts:1128` / `:1208`) and is persisted into `ResourceState.attributes`, so a generated secret ALSO sits in plaintext in the state record -- a durable channel strictly worse than this transient one, filed as [#2274](https://github.com/go-to-k/cdkd/issues/2274). What this entry closes is the `--verbose` channel, not the exposure as a whole. gc's placeholder sweep really is metadata-only. The four new cases assert the RENDERED line (captured at the `console.debug` boundary of a REAL `ConsoleLogger` at debug level, not a `vi.fn()` that would record any argument handed to it), covering the envelope, an unparseable body, a non-object JSON body and an object missing the protocol fields.
@@ -1071,3 +1187,4 @@ Three more review findings hardened the failure paths. The create-side registrat
   reverting the ACM producer to warn-only fails 2, always-partial fails 1,
   disabling the in-use classifier fails 1, counting a partial as clean fails 1,
   dropping the survivor event fails 1, dropping the status line fails 1.
+
