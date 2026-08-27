@@ -1,3 +1,10 @@
+## [0.284.76](https://github.com/go-to-k/cdkd/compare/v0.284.75...v0.284.76) (2026-08-27)
+
+
+### Bug Fixes
+
+* **s3:** compare AND send the canonical region in CreateBucket ([#2323](https://github.com/go-to-k/cdkd/issues/2323)) ([cee400d](https://github.com/go-to-k/cdkd/commit/cee400dd49f320aca871e882041e527aa6e026ad))
+
 ## [0.284.75](https://github.com/go-to-k/cdkd/compare/v0.284.74...v0.284.75) (2026-08-27)
 
 
