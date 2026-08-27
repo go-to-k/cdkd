@@ -1,3 +1,10 @@
+## [0.284.72](https://github.com/go-to-k/cdkd/compare/v0.284.71...v0.284.72) (2026-08-27)
+
+
+### Bug Fixes
+
+* **s3:** confirm the bucket before deleting, reconfiguring or adopting it ([#2290](https://github.com/go-to-k/cdkd/issues/2290)) ([d869ede](https://github.com/go-to-k/cdkd/commit/d869edefed57cc5322f13cc760c4f2630f92af70)), closes [go-to-k/cdkd#2241](https://github.com/go-to-k/cdkd/issues/2241) [go-to-k/cdkd#2245](https://github.com/go-to-k/cdkd/issues/2245) [go-to-k/cdkd#2245](https://github.com/go-to-k/cdkd/issues/2245)
+
 ## [0.284.71](https://github.com/go-to-k/cdkd/compare/v0.284.70...v0.284.71) (2026-08-26)
 
 
