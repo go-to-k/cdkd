@@ -1,3 +1,10 @@
+## [0.284.77](https://github.com/go-to-k/cdkd/compare/v0.284.76...v0.284.77) (2026-08-27)
+
+
+### Bug Fixes
+
+* **assets,s3,deployment:** keep AWS caller identity out of thrown, persisted errors ([#2326](https://github.com/go-to-k/cdkd/issues/2326)) ([bb13f89](https://github.com/go-to-k/cdkd/commit/bb13f894256be0dee899e8c922a3c86dc9967193))
+
 ## [0.284.76](https://github.com/go-to-k/cdkd/compare/v0.284.75...v0.284.76) (2026-08-27)
 
 
