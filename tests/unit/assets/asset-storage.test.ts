@@ -511,6 +511,37 @@ describe('ensureAssetStorage', () => {
     });
   });
 
+  // Issue [#2322](https://github.com/go-to-k/cdkd/issues/2322).
+  //
+  // The row above pins `ap-northeast-1`, which IS a member of the SDK's
+  // `BucketLocationConstraint` enum -- so it stays GREEN under the one
+  // regression this cast invites, and the site LOOKS covered while being
+  // inert. `src/assets/asset-storage.ts:778` casts with
+  // `as BucketLocationConstraint` exactly as the S3 provider does; a future
+  // "soundness fix" filtering the region to enum members would omit
+  // `CreateBucketConfiguration` here, and on a REGIONAL endpoint an omitted
+  // constraint answers `IllegalLocationConstraintException` -- the deploy
+  // fails. (Not, as an earlier revision of the sibling suite claimed, a quiet
+  // bucket in us-east-1: that default belongs to the GLOBAL endpoint, which
+  // this path does not use.) `ca-west-1` is absent from the 33-member enum,
+  // so this row reds where `ap-northeast-1` cannot.
+  it('passes LocationConstraint for a region ABSENT from the SDK enum (issue #2322)', async () => {
+    mockS3Send.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'HeadBucket' ? Promise.reject(awsError('NotFound', 404)) : Promise.resolve({})
+    );
+    mockEcrSend.mockImplementation((cmd: { _type: string }) =>
+      cmd._type === 'DescribeRepositories'
+        ? Promise.reject(awsError('RepositoryNotFoundException'))
+        : Promise.resolve({})
+    );
+    const { options } = makeOptions({ region: 'ca-west-1' });
+    await ensureAssetStorage(options);
+    const createCall = mockS3Send.mock.calls.find((c) => c[0]._type === 'CreateBucket')![0];
+    expect(createCall.CreateBucketConfiguration).toEqual({
+      LocationConstraint: 'ca-west-1',
+    });
+  });
+
   it('is idempotent: existing bucket + repo are left untouched (no --force), marker still written', async () => {
     // HeadBucket 200 + DescribeRepositories 200 (defaults).
     const { putRawObject, options } = makeOptions();

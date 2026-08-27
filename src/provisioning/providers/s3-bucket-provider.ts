@@ -1899,7 +1899,26 @@ export class S3BucketProvider implements ResourceProvider {
   }
 
   /**
-   * Get the region from the S3 client config
+   * Get the region from the S3 client config.
+   *
+   * The `|| 'us-east-1'` fallback is MEASURED DEAD today, and is left in place
+   * deliberately rather than changed here (a provider behaviour change wants
+   * its own PR). It is dead because `config.region()` REJECTS rather than
+   * resolving a falsy value when nothing on the chain supplies a region: with
+   * `AWS_REGION` / `AWS_DEFAULT_REGION` / `AWS_PROFILE` unset and both config
+   * files pointed at `/dev/null`, `new S3Client({}).config.region()` gives
+   * `Error: Region is missing`. The `await` in the body therefore throws and
+   * this line is never reached. Which SDK layer raises it is deliberately NOT
+   * asserted here: the message above was executed, an attribution would not
+   * have been.
+   *
+   * Why it is worth a comment rather than silence: if a refactor ever CAUGHT
+   * that rejection and let a falsy region through, this line would place the
+   * bucket in `us-east-1` silently -- which is precisely the outcome the gate
+   * below is fenced against. Two cases in
+   * `s3-bucket-provider-location-constraint-case.test.ts` pin the contract (a
+   * falsy resolution means us-east-1, never the empty string) by mocking
+   * `config.region()`, which is the only way the fallback is expressible.
    */
   private async getRegion(): Promise<string> {
     const region = await this.s3Client.config.region();
@@ -6083,7 +6102,7 @@ export class S3BucketProvider implements ResourceProvider {
       // in the same line, because one sentence describes both -- compare and
       // send the CANONICAL region, never the raw one.
       //
-      // WHERE THE RAW SPELLING COMES FROM, measured rather than assumed -- it is
+      // WHERE THE RAW SPELLING COMES FROM, measured rather than assumed.
       // This comment states MEASURED facts and does NOT claim to enumerate every
       // reachable door -- two earlier revisions each named one and were each
       // wrong, so the correct shape here is an invariant plus evidence, not a
@@ -6108,12 +6127,95 @@ export class S3BucketProvider implements ResourceProvider {
       //    with no region at all. `import.ts` also builds a region-less bag; it
       //    was not traced to a `CreateBucket` either way.
       //
-      // The `as BucketLocationConstraint` cast is a PRE-EXISTING stale-enum
-      // workaround and this change does not address it. Canonicalizing does not
-      // make it sound: the enum has 33 members, excludes `us-east-1` by design,
-      // and also excludes the real regions `ca-west-1`, `mx-central-1`,
-      // `ap-east-2` and `eusc-de-east-1`, which this cast still sends today and
-      // S3 still accepts. The cast asserts a membership the value need not have.
+      // The `as BucketLocationConstraint` cast STAYS, and issue
+      // [#2322](https://github.com/go-to-k/cdkd/issues/2322) settled that
+      // deliberately rather than leaving it unexamined. It is a widening of a
+      // STALE SDK enum, not a claim of membership: `canonicalizeRegion` only
+      // lower-cases (`src/utils/aws-partition.ts:105`), so nothing on this path
+      // checks membership -- and nothing should: a membership FILTER is exactly
+      // the regression this note ends by naming.
+      //
+      // THE GAP IS BIGGER THAN AN EARLIER REVISION OF THIS COMMENT SAID. That
+      // revision named FOUR absent regions, which was a spot-check presented as
+      // an enumeration. Cross-checking the WHOLE region list against the enum
+      // gives THIRTEEN, plus `us-east-1` which is absent by design. Re-derive
+      // it rather than trusting this list -- both tables move:
+      //
+      //   node --input-type=module -e "
+      //   import { BucketLocationConstraint } from '@aws-sdk/client-s3';
+      //   import { RegionInfo } from 'aws-cdk-lib/region-info';
+      //   const m = new Set(Object.values(BucketLocationConstraint));
+      //   console.log(RegionInfo.regions.map(r => r.name).filter(r => !m.has(r)).sort().join('\n'));"
+      //
+      // Measured 2026-08-27 against this repo's `@aws-sdk/client-s3` 3.1018.0
+      // (33 enum members) and `aws-cdk-lib` 2.244.0 (46 regions). Five are
+      // COMMERCIAL (`RegionInfo.get(r).partition === 'aws'`): `ap-east-2`,
+      // `ap-southeast-6`, `ap-southeast-7`, `ca-west-1`, `mx-central-1`. The
+      // other eight are NON-commercial -- `eusc-de-east-1` is `aws-eusc`, and
+      // the seven `aws-iso*` regions (which share four partitions between
+      // them, not one each) are
+      // `eu-isoe-west-1`, `us-iso-east-1`, `us-iso-west-1`, `us-isob-east-1`,
+      // `us-isob-west-1`, `us-isof-east-1`, `us-isof-south-1`.
+      //
+      // What is MEASURED is the type claim, and the scope is worth stating
+      // because an earlier revision of this note overstated it: all thirteen
+      // are absent from the enum, and this cast sends whichever of them
+      // `getRegion()` reports. Whether S3 ACCEPTS each one was not probed
+      // region by region -- no deploy was made to any of them -- so nothing
+      // here asserts that. The code cannot tell them apart in any case: the
+      // gate below is a single `!== 'us-east-1'` with NO partition branch, so
+      // all thirteen traverse byte-identical lines.
+      //
+      // WHY THE CAST IS NOT DROPPED -- both alternatives measured, not assumed:
+      //  - the SDK has NOT widened the field. `CreateBucketConfiguration`
+      //    (`@aws-sdk/client-s3` `dist-types/models/models_0.d.ts:1581`) still
+      //    declares `LocationConstraint?: BucketLocationConstraint | undefined`.
+      //  - declaring this bag's `LocationConstraint` as `string` and deleting
+      //    the `as` does NOT compile. `tsc` then fails at the
+      //    `new CreateBucketCommand(createParams)` call below with TS2769,
+      //    "Type 'string' is not assignable to type 'BucketLocationConstraint |
+      //    undefined'". The assertion does not disappear; it MOVES to the send
+      //    site and widens from this one FIELD to the whole parameter bag,
+      //    which is strictly worse.
+      //
+      // So the assertion is kept where it is narrowest, and its risk is fenced
+      // by TESTS rather than by more prose. The direction that needs fencing is
+      // not deletion of the cast -- that fails to compile, as above. It is a
+      // future "soundness fix" that filters the region to enum members: that
+      // COMPILES, leaves every `us-east-1` / `eu-west-1` case green, and
+      // silently omits `CreateBucketConfiguration` for the thirteen -- which
+      // BREAKS THE DEPLOY in each of them, loudly.
+      //
+      // `this.s3Client` is REGION-BOUND (`constructor`: `awsClients.s3`; and
+      // `getRegion()` reads `this.s3Client.config.region()`), so a `ca-west-1`
+      // create is issued against the `ca-west-1` REGIONAL endpoint, where an
+      // omitted `LocationConstraint` answers `IllegalLocationConstraintException`
+      // rather than succeeding. `src/assets/asset-storage.ts:775` already
+      // states the same rule for the sibling call site ("For regions other than
+      // us-east-1, LocationConstraint is required"), and
+      // `.claude/rules/asset-bucket-region.md` names the exception.
+      //
+      // THE RESIDENCY READING IS FALSE, and it is recorded here because it is
+      // the natural guess and an earlier revision of this note asserted it. It
+      // said an omitted constraint would quietly place the bucket in
+      // `us-east-1`. That default belongs to the GLOBAL `s3.amazonaws.com`
+      // endpoint -- the SDK documents it on `CreateBucketCommand` itself ("If
+      // you send your CreateBucket request to the s3.amazonaws.com global
+      // endpoint, the request goes to the us-east-1 Region") -- and this path
+      // never uses that endpoint. Measured: a genuinely region-less client
+      // THROWS rather than resolving empty (`new S3Client({}).config.region()`
+      // with `AWS_REGION` / `AWS_DEFAULT_REGION` / `AWS_PROFILE` unset and both
+      // config files pointed at `/dev/null` gives `Error: Region is missing`),
+      // so there is no route by which this client silently becomes global. A
+      // wrong-region bucket is not the outcome; a failed deploy is.
+      //
+      // `tests/unit/provisioning/s3-bucket-provider-location-constraint-case.test.ts`
+      // pins enum-ABSENT regions on the wire verbatim for exactly that reason,
+      // and the three SIBLING cast sites are pinned the same way in their own
+      // suites (`tests/unit/assets/asset-storage.test.ts`,
+      // `tests/unit/cli/bootstrap.test.ts`, `tests/unit/cli/state-migrate.test.ts`)
+      // so that a contributor grepping `as BucketLocationConstraint` finds all
+      // four fenced rather than one.
       //
       // `region` itself is deliberately left RAW rather than reassigned. The
       // pre-flight gate below folds it at its own site, and that fold is what
