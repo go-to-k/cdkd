@@ -32,6 +32,17 @@
 #      negative control (nothing collides there) -- Phase 0b is. The name is
 #      unique per run because a name that has existed in one region cannot be
 #      re-created in another for >10 minutes.
+#   0c. Issue #2283 Cloud-Control-routed delete identity: plant TWO hand-written
+#      single-resource state records whose one resource is an
+#      `AWS::S3::Bucket` marked `provisionedBy: cc-api` -- the routing that
+#      sends a delete to `CloudControlProvider` instead of `S3BucketProvider`,
+#      so none of the phase-0 guards apply. Arm OK names a bucket really in
+#      THIS region and must still delete (the negative control, and the proof
+#      the hand-written state shape routes and works at all); arm XR names a
+#      per-run unique bucket in ANOTHER region and must be REFUSED, with the
+#      bucket still standing afterwards. Both arms are state-only: the CDK app
+#      is untouched, so every other phase synthesizes exactly what it always
+#      did.
 #   1. Deploy; assert all three rules reached AWS, none carries a top-level Prefix
 #      (all normalized to V2 Filter form), and the archive rule's expiration=730.
 #      Also assert the legacy singular lifecycle keys (issue #1388 / #1424) and
@@ -166,6 +177,14 @@ if [ "${REGION}" = "${XR_REGION}" ]; then
   XR_REGION="us-east-2"
 fi
 
+# Issue #2283: the two synthetic single-resource stacks the phase-0c arms plant
+# directly into the state bucket. Fixed names (unlike the BUCKETS those records
+# point at, which must be per-run unique) because a state KEY carries no S3
+# namespace cooldown -- overwriting one is free, and a fixed name is what lets
+# `cleanup` sweep a record an interrupted run left behind.
+CC_ARM_STACK_XR="CdkdS3LifecycleCcArmXr"
+CC_ARM_STACK_OK="CdkdS3LifecycleCcArmOk"
+
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
@@ -195,9 +214,31 @@ cleanup() {
   if [ -n "${SR_ARM_BUCKET:-}" ]; then
     aws s3api delete-bucket --bucket "${SR_ARM_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  # Issue #2283 arms. Same reasoning as the two lines above: per-run unique
+  # names, one of them in ANOTHER region, so the fixed-name "${REGION}" sweep
+  # cannot reach either. Folded into THIS handler rather than given their own
+  # `trap ... EXIT`, which would silently replace every line above.
+  if [ -n "${CC_ARM_XR_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${CC_ARM_XR_BUCKET}" --region "${XR_REGION:-}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${CC_ARM_OK_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${CC_ARM_OK_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    # Issue #2283: the two hand-written state records the phase-0c arms plant.
+    # Unconditional (not gated on a run-scoped variable) so a record left by an
+    # INTERRUPTED earlier run is also swept -- the pre-run `cleanup` call is the
+    # only chance to clear one, and by then no phase-0c variable is set yet.
+    for cc_arm_stack in "${CC_ARM_STACK_XR}" "${CC_ARM_STACK_OK}"; do
+      # Recursive over the whole per-stack prefix, not the two known keys: a
+      # `state destroy` also writes `deployments/` event objects there, and
+      # /run-integ's orphan scan reads `s3://<state bucket>/cdkd/` as a whole,
+      # so a stray event object reports as a leak. The prefix is unique to
+      # these arms, so the recursion cannot reach anything else.
+      aws s3 rm --recursive "s3://${STATE_BUCKET}/cdkd/${cc_arm_stack}/" >/dev/null 2>&1 || true
+    done
   fi
   set -eu
 }
@@ -350,6 +391,157 @@ cleanup
 # delete would leak SILENTLY while the run still reports 0 orphans.
 assert_gone_eventually "phase 0 teardown: ${XR_ARM_BUCKET} survived cleanup in ${XR_REGION}" \
   aws s3api head-bucket --bucket "${XR_ARM_BUCKET}" --region "${XR_REGION}"
+
+# --- Phase 0c: Cloud-Control-routed delete, bucket identity (issue #2283) ---
+# The issue #2227 / #2245 guards live in `S3BucketProvider`, on the SDK route.
+# An `AWS::S3::Bucket` recorded as `provisionedBy: 'cc-api'` never reaches that
+# provider at all: `ProviderRegistry.getProviderFor` step 2 (the sticky rule)
+# hands it to `CloudControlProvider` BEFORE the SDK provider is consulted, and
+# that provider's only region check fires on the `NotFound` branch -- which,
+# per the mechanism issues #2245 / #2283 record, S3 does not produce here,
+# because it follows the region redirect for a body-bearing operation. The
+# destroy would then DELETE a live bucket in another region and report success.
+# This phase is what holds that mechanism to account on the Cloud Control
+# route: it has not been established there by measurement anywhere else.
+#
+# Both arms plant a single-resource state record BY HAND rather than deploying
+# one. That is the defect's actual premise: a record written by a cdkd build
+# from before the guards existed, whose `physicalId` names a bucket that is ours
+# but lives elsewhere (a cdkd-GENERATED name carries no region or account --
+# `src/provisioning/resource-name.ts:240` builds `{stackName}-{name}`, and the
+# prefix is dropped only when BOTH halves of `:239` hold, a user-supplied name
+# AND an active `getCurrentSkipPrefix()` -- so the same stack deployed to two
+# regions produces the same bucket name). It also leaves the CDK app completely untouched, so every
+# other phase synthesizes exactly the stack it always did.
+#
+# Arm OK is the negative control and it is load-bearing: it proves this
+# hand-written state shape really does route through Cloud Control and really
+# does delete. Without it, arm XR would "pass" on any malformed-state failure --
+# a destroy that died for an unrelated reason also leaves the bucket standing.
+#
+# Both bucket names are PER-RUN UNIQUE. Measured 2026-08-26 on this fixture:
+# once a name has existed in one region, re-creating it in ANOTHER answers
+# `OperationAborted` for well over ten minutes, so planting a cross-region arm
+# on a name the fixture reuses poisons it for the rest of the run and the next.
+CC_ARM_STAMP="$(date -u +%s)"
+CC_ARM_OK_BUCKET="cdkd-lifecycle-ccok-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+CC_ARM_XR_BUCKET="cdkd-lifecycle-ccxr-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+
+# Plant a v9 state record whose single resource is a cc-api-routed S3 bucket.
+# `provisionedBy: cc-api` is what makes the destroy take the Cloud Control
+# route; `region` is what the runner threads as `expectedRegion`.
+write_cc_arm_state() { # usage: write_cc_arm_state <stackName> <bucketName>
+  local stack_name="$1" bucket_name="$2"
+  printf '%s' "{
+  \"version\": 9,
+  \"stackName\": \"${stack_name}\",
+  \"region\": \"${REGION}\",
+  \"resources\": {
+    \"CcArmBucket\": {
+      \"physicalId\": \"${bucket_name}\",
+      \"resourceType\": \"AWS::S3::Bucket\",
+      \"properties\": { \"BucketName\": \"${bucket_name}\" },
+      \"dependencies\": [],
+      \"provisionedBy\": \"cc-api\"
+    }
+  },
+  \"outputs\": {},
+  \"lastModified\": $(( CC_ARM_STAMP * 1000 ))
+}" | aws s3 cp - "s3://${STATE_BUCKET}/cdkd/${stack_name}/${REGION}/state.json"
+}
+
+echo "==> Phase 0c-OK (control): a cc-api-routed bucket IN ${REGION} must still delete"
+plant_bucket "${CC_ARM_OK_BUCKET}" "${REGION}"
+write_cc_arm_state "${CC_ARM_STACK_OK}" "${CC_ARM_OK_BUCKET}"
+
+set +e
+CC_OK_OUT="$(node "${LOCAL_DIST}" state destroy "${CC_ARM_STACK_OK}" \
+  --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes 2>&1)"
+CC_OK_RC=$?
+set -e
+printf '%s\n' "${CC_OK_OUT}"
+if [ "${CC_OK_RC}" -ne 0 ]; then
+  echo "FAIL phase 0c-OK: the identity guard refused (or the destroy broke) on a bucket that IS in ${REGION} (rc=${CC_OK_RC})" >&2
+  exit 1
+fi
+assert_gone_eventually "phase 0c-OK: ${CC_ARM_OK_BUCKET} survived a destroy that reported success" \
+  aws s3api head-bucket --bucket "${CC_ARM_OK_BUCKET}" --region "${REGION}"
+echo "    OK: control arm deleted through the Cloud Control route"
+
+echo "==> Phase 0c-XR: cdkd must REFUSE to delete ${CC_ARM_XR_BUCKET}, which lives in ${XR_REGION}"
+plant_bucket "${CC_ARM_XR_BUCKET}" "${XR_REGION}"
+
+# Prove the PREMISE before asserting anything that depends on it: if the bucket
+# did not land in the foreign region there is nothing for the guard to catch,
+# and the arm would "pass" on any unrelated failure.
+# `set +e` around the read: bare under `set -e` a transient probe failure
+# aborts the script with a raw AWS error, and the FAIL line below -- the one
+# that names the phase and what it expected -- never prints.
+#
+# stderr is deliberately NOT folded in, unlike the two `state destroy` captures
+# in this phase: those are grepped for needles, this one is compared for
+# EQUALITY, so any AWS CLI warning on stderr would land inside the value and
+# fail a premise that actually held. The rc capture is what reports a failed
+# probe; stderr goes to the run log where it is readable. Matches the Phase 0
+# sibling read, which is bare for the same reason.
+set +e
+CC_XR_LOC="$(aws s3api get-bucket-location --bucket "${CC_ARM_XR_BUCKET}" \
+  --query 'LocationConstraint' --output text)"
+CC_XR_LOC_RC=$?
+set -e
+if [ "${CC_XR_LOC_RC}" -ne 0 ] || [ "${CC_XR_LOC}" != "${XR_REGION}" ]; then
+  echo "FAIL phase 0c-XR premise: arm bucket should be in ${XR_REGION}, got '${CC_XR_LOC}' (rc=${CC_XR_LOC_RC})" >&2
+  exit 1
+fi
+
+# The state says ${REGION} while the bucket is in ${XR_REGION} -- the poisoned
+# record the issue describes.
+write_cc_arm_state "${CC_ARM_STACK_XR}" "${CC_ARM_XR_BUCKET}"
+
+set +e
+CC_XR_OUT="$(node "${LOCAL_DIST}" state destroy "${CC_ARM_STACK_XR}" \
+  --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes 2>&1)"
+CC_XR_RC=$?
+set -e
+printf '%s\n' "${CC_XR_OUT}"
+
+if [ "${CC_XR_RC}" -eq 0 ]; then
+  echo "FAIL phase 0c-XR: destroy SUCCEEDED while ${CC_ARM_XR_BUCKET} lives in ${XR_REGION} -- cdkd deleted a foreign-region bucket" >&2
+  exit 1
+fi
+# Short needles against a FLATTENED copy, never one long phrase against the raw
+# output: grep is line-based, so a needle straddling a logger line-wrap scores 0
+# on a perfectly correct message -- a false FAIL that reads like a regression.
+# Asserting the POSITIVE marker only the fixed path emits, not merely "the
+# destroy failed", which any unrelated breakage would also satisfy.
+CC_XR_FLAT="$(printf '%s' "${CC_XR_OUT}" | tr '\n' ' ' | tr -s ' ')"
+for needle in 'Refusing to delete S3 bucket' "lives in ${XR_REGION}" "destroy targets ${REGION}"; do
+  if ! printf '%s' "${CC_XR_FLAT}" | grep -qF -- "${needle}"; then
+    echo "FAIL phase 0c-XR: refusal output lacks message fragment: ${needle}" >&2
+    exit 1
+  fi
+done
+
+# The assertion that actually distinguishes fixed from broken. The refusal
+# message above proves the guard SPOKE; this proves the bucket is still there.
+# Pre-fix this bucket is gone, unrecoverably.
+set +e
+CC_XR_HEAD_OUT="$(aws s3api head-bucket --bucket "${CC_ARM_XR_BUCKET}" --region "${XR_REGION}" 2>&1)"
+CC_XR_HEAD_RC=$?
+set -e
+if [ "${CC_XR_HEAD_RC}" -ne 0 ]; then
+  echo "FAIL phase 0c-XR: ${CC_ARM_XR_BUCKET} is GONE from ${XR_REGION} after a destroy that was supposed to refuse it: ${CC_XR_HEAD_OUT}" >&2
+  exit 1
+fi
+echo "    OK: refused (rc=${CC_XR_RC}) and ${CC_ARM_XR_BUCKET} survives in ${XR_REGION}"
+
+echo "==> Phase 0c teardown"
+cleanup
+# Load-bearing: this bucket lives in XR_REGION, outside both the fixture's
+# REGION-scoped sweeps and /run-integ's post-run orphan scan, so a failed delete
+# would leak SILENTLY while the run still reports 0 orphans.
+assert_gone_eventually "phase 0c teardown: ${CC_ARM_XR_BUCKET} survived cleanup in ${XR_REGION}" \
+  aws s3api head-bucket --bucket "${CC_ARM_XR_BUCKET}" --region "${XR_REGION}"
 
 # --- Phase 1: deploy baseline (prefix rule + abort-only rule) ----------
 echo "==> Phase 1: deploy bucket with a V1 prefix rule + a scope-less abort rule"

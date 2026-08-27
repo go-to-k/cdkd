@@ -51,6 +51,34 @@ failed against real S3).
    never cleared it) while `HeadBucket` already reports 404. Planting the
    collision on a name the fixture reuses poisons that name for the rest of the
    run and for the next one.
+0c. **Cloud-Control-routed delete identity** (issue
+   [#2283](https://github.com/go-to-k/cdkd/issues/2283)) — the Phase 0 guard
+   lives in `S3BucketProvider`, on the **SDK** route. A bucket whose state
+   record says `provisionedBy: cc-api` never reaches that provider:
+   `ProviderRegistry.getProviderFor` step 2 (the sticky rule) hands it to
+   `CloudControlProvider` **before** the SDK provider is consulted, and that
+   provider's only region check fires on the `NotFound` branch — which, per the
+   mechanism issues [#2245](https://github.com/go-to-k/cdkd/issues/2245) /
+   #2283 record, S3 does not produce here, because it follows the region
+   redirect for a body-bearing operation. The destroy would then delete a live
+   bucket in another region and report success. This phase is what holds that
+   mechanism to account on the Cloud Control route.
+
+   Both arms plant a **hand-written** single-resource state record rather than
+   deploying one, because that **is** the defect's premise: a record written by
+   a cdkd build from before the guards existed, whose `physicalId` names a
+   bucket that is ours but lives elsewhere. It also leaves the CDK app entirely
+   untouched, so every other phase synthesizes exactly the stack it always did.
+
+   - **Arm OK** (the negative control, and load-bearing): a bucket really in
+     this region must still delete through the Cloud Control route. Without it,
+     Arm XR would "pass" on any malformed-state failure — a destroy that died
+     for an unrelated reason also leaves a bucket standing.
+   - **Arm XR**: a **per-run unique** bucket planted in another region, named by
+     a state record that claims this one. cdkd must refuse — asserted on the
+     refusal text naming both regions **and** on the bucket still being there
+     afterwards, which is the half that distinguishes fixed from broken.
+
 1. **Deploy** the bucket with a V1 prefix rule (`archive`, `logs/`) + a scope-less
    abort rule (`abort-mpu`). Assert both rules reached AWS, **none** carries a
    top-level `Prefix` (all normalized to V2 `Filter` form), and the `archive`
