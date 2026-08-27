@@ -35,6 +35,9 @@ import {
   maskSecretsInText,
   maskSecretsInError,
   createSecretMasker,
+  recordNestedStackParameterExpressions,
+  inheritNestedStackParameterAssociations,
+  inheritedParameterExpression,
   TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -1031,6 +1034,27 @@ export class DeployEngine {
     },
     stackName: string
   ): import('./intrinsic-function-resolver.js').ResolverContext {
+    // FRESH per-context map — see the field note at the bottom of the returned
+    // object. Named here rather than inlined so the nested-stack parameter
+    // associations can be copied onto it (issue #2291).
+    const recordedSecretValues = new Map<string, string>();
+    // Issue #2291: the parent recorded, per child PARAMETER NAME, which
+    // `{{resolve:...}}` expression that parameter was resolved from. Copy those
+    // onto this resource's bag as `{Ref: <ParamName>}` position associations,
+    // so a child leaf spelling the parameter persists ITS OWN expression rather
+    // than whichever one the plaintext-keyed inherited map kept.
+    //
+    // NOT the issue #2087 pre-seed this file's note below warns about, and the
+    // difference is which store decides SCOPE. That defect pre-loaded the
+    // PLAINTEXT map, which is what `redactSecretsForState` substring-matches
+    // with — so every resource's literals became rewritable. These associations
+    // can only change an answer for a leaf whose value is already a plaintext in
+    // THIS bag, i.e. only for a resource whose own resolution consumed the
+    // parameter. They decide WHICH expression such a leaf takes, never WHETHER
+    // a leaf is rewritten.
+    if (this.options.inheritedSecrets && this.options.inheritedSecrets.size > 0) {
+      inheritNestedStackParameterAssociations(recordedSecretValues, this.options.inheritedSecrets);
+    }
     return {
       template: base.template,
       resources: base.resources,
@@ -1082,7 +1106,7 @@ export class DeployEngine {
       // `outputSecrets` for the outputs pass) so each bag is redacted only with
       // the secrets substituted during ITS OWN resolution — see the
       // `perResourceSecrets` field doc for why per-resource, not session-wide.
-      recordedSecretValues: new Map<string, string>(),
+      recordedSecretValues,
     };
   }
 
@@ -1112,7 +1136,22 @@ export class DeployEngine {
   ): Record<string, unknown> {
     const inherited = this.options.inheritedSecrets;
     if (!inherited || inherited.size === 0) return parameterValues;
-    return redactSecretsForState(parameterValues, inherited);
+    const out: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(parameterValues)) {
+      // Issue #2291: the PER-PARAMETER answer first, because `inherited` is
+      // keyed by PLAINTEXT and two parameters resolving to one value have
+      // already collapsed there. The persist side positions each child leaf
+      // onto its OWN expression; without the same answer here the losing
+      // parameter's desired side would carry the SURVIVOR's expression forever
+      // and its resource would report a spurious UPDATE on every deploy.
+      // `undefined` whenever the parent could not certify one, which falls back
+      // to the value scan below — the pre-#2291 behaviour, expression-collapsed
+      // but consistent with what a pre-#2291 persist side wrote.
+      out[name] =
+        inheritedParameterExpression(inherited, name, value) ??
+        redactSecretsForState(value, inherited);
+    }
+    return out;
   }
 
   /**
@@ -3746,6 +3785,21 @@ export class DeployEngine {
         // but a masker bound to a real map is what keeps the provider call
         // shape identical on both paths.
         const createSecrets = context.recordedSecretValues ?? new Map<string, string>();
+        // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
+        // `{{resolve:...}}` expression each `Parameters` entry was resolved
+        // FROM, keyed by the child's parameter NAME. The bag above is keyed by
+        // PLAINTEXT, so two parameters resolving to one value have already
+        // collapsed there — the parent's own template is the only uncollapsed
+        // source left, and this is the last point at which both it and the
+        // resolved values are in hand. `withCurrentResourceSecrets` binds THIS
+        // bag around the provider call below, so the child engine reads the
+        // associations off the same object. No-op for every other type.
+        recordNestedStackParameterExpressions(
+          createSecrets,
+          resourceType,
+          resolvedProps,
+          desiredProps
+        );
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 
@@ -3867,6 +3921,21 @@ export class DeployEngine {
         >;
         // Same position source on the UPDATE path (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
+        // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
+        // `{{resolve:...}}` expression each `Parameters` entry was resolved
+        // FROM, keyed by the child's parameter NAME. The bag above is keyed by
+        // PLAINTEXT, so two parameters resolving to one value have already
+        // collapsed there — the parent's own template is the only uncollapsed
+        // source left, and this is the last point at which both it and the
+        // resolved values are in hand. `withCurrentResourceSecrets` binds THIS
+        // bag around the provider call below, so the child engine reads the
+        // associations off the same object. No-op for every other type.
+        recordNestedStackParameterExpressions(
+          updateSecrets,
+          resourceType,
+          resolvedProps,
+          desiredProps
+        );
 
         this.auditResolvedAssetReferences(logicalId, resourceType, resolvedProps);
 

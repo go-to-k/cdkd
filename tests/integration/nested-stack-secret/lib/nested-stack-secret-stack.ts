@@ -11,8 +11,10 @@ import { Construct } from 'constructs';
  * Issues [#1903](https://github.com/go-to-k/cdkd/issues/1903) (parameters IN),
  * [#2055](https://github.com/go-to-k/cdkd/issues/2055) (outputs OUT),
  * [#2086](https://github.com/go-to-k/cdkd/issues/2086) (the rollback executor
- * binds the same seed) and [#2087](https://github.com/go-to-k/cdkd/issues/2087)
- * (the seed is scoped to the resources that actually consumed the parameter).
+ * binds the same seed), [#2087](https://github.com/go-to-k/cdkd/issues/2087)
+ * (the seed is scoped to the resources that actually consumed the parameter)
+ * and [#2291](https://github.com/go-to-k/cdkd/issues/2291) (two parameters
+ * resolving to ONE plaintext keep DISTINCT expressions across the handoff).
  *
  * Nothing here creates the secret or the SecureString parameter: `verify.sh`
  * puts both in place out of band and deletes them again. CloudFormation cannot
@@ -28,7 +30,7 @@ import { Construct } from 'constructs';
  * receives PLAINTEXT and the child's own template spells the consumption as
  * `{Ref: <ParamName>}` — an intrinsic OBJECT, never a `{{resolve:` string.
  *
- * THE SIX RESOURCES, and what each one discriminates:
+ * THE EIGHT RESOURCES, and what each one discriminates:
  *
  *  - `StageParam` (child) — consumes the secretsmanager-backed parameter. Its
  *    persisted `Value` must be the EXPRESSION while the live SSM parameter
@@ -44,6 +46,22 @@ import { Construct } from 'constructs';
  *    with the expression spliced in — which the desired side never mirrors,
  *    giving a perpetual UPDATE. A literal that did NOT overlap could not see
  *    the defect at all.
+ *  - `HandoffPair` (child) — THE #2291 ARM. ONE child resource whose `Value`
+ *    and `Description` come from TWO different inherited `Parameters` that
+ *    resolve to ONE plaintext. The parent's `inheritedSecrets` bag is keyed by
+ *    plaintext, so it collapses the pair BEFORE the child engine exists, and
+ *    the child's `{Ref: <Param>}` source leaves carry no expression for the
+ *    position pass to certify against — two independent causes, both of which
+ *    had to be fixed. Each leaf must persist ITS OWN expression, or
+ *    `resolveReplayProps` re-resolves the sibling's version stage and
+ *    `cdkd drift --revert` / rollback pushes it to the live resource.
+ *  - `HandoffSub` (child) — THE #2291 ROUND-2 ARM. The same inherited pair, but
+ *    consumed by an `Fn::Sub` that EMBEDS the losing parameter in a connection
+ *    string — the shape `crossStackSourceKey` refuses, so only the
+ *    plaintext-keyed value scan can redact it. Round 1 made the DIFF side answer
+ *    per parameter and left this side on the survivor, so the two halves
+ *    disagreed forever: a perpetual UPDATE, caught here by the
+ *    `cdkd diff --recursive --fail` exit code as well as by its persisted value.
  *  - `ParentConsumer` (parent) — reads the child's OUTPUT through
  *    `Fn::GetAtt: [Child, 'Outputs.ChildSecretOutput']`. Since PR #1899 the
  *    child persists that output REDACTED, so before #2055 the parent shipped
@@ -81,7 +99,10 @@ class SecretBearingChild extends cdk.NestedStack {
       stageParamName: string;
       secureParamName: string;
       unrelatedParamName: string;
+      handoffParamName: string;
+      handoffSubParamName: string;
       unrelatedLiteral: string;
+      handoffAllowedPattern?: string;
       plainOutputValue: string;
       sharedReferenceA: string;
       sharedReferenceB: string;
@@ -104,6 +125,15 @@ class SecretBearingChild extends cdk.NestedStack {
     stage.overrideLogicalId('SecretStage');
     const securePassword = new cdk.CfnParameter(this, 'SecurePassword', { type: 'String' });
     securePassword.overrideLogicalId('SecurePassword');
+
+    // THE #2291 ARM's two inputs. Two references to ONE secret whose
+    // EXPRESSIONS differ while their resolved plaintext does not, handed down
+    // as PARAMETERS -- the shape `ChildSharedOutputA` below deliberately does
+    // NOT cover, and the one that was broken in two independent places.
+    const handoffA = new cdk.CfnParameter(this, 'HandoffSecretA', { type: 'String' });
+    handoffA.overrideLogicalId('HandoffSecretA');
+    const handoffB = new cdk.CfnParameter(this, 'HandoffSecretB', { type: 'String' });
+    handoffB.overrideLogicalId('HandoffSecretB');
 
     const stageParam = new ssm.StringParameter(this, 'StageParam', {
       parameterName: names.stageParamName,
@@ -142,6 +172,89 @@ class SecretBearingChild extends cdk.NestedStack {
     // default logical id carries a hash that moves with the construct path.
     ((unrelatedParam.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('UnrelatedParam');
 
+    // THE #2291 ARM. ONE resource, TWO leaves, each fed by a DIFFERENT inherited
+    // parameter whose resolved plaintext is the SAME.
+    //
+    // BOTH LEAVES SIT IN ONE RESOURCE, for the reason `SubSecretPair` states in
+    // the parent: `perResourceSecrets` is keyed by logical id, so two separate
+    // resources get two separate bags -- each holding a single pair -- and each
+    // would redact correctly with or without the fix, making the arm prove
+    // nothing. One resource means one bag holding one COLLAPSED entry, which is
+    // the only shape where positioning decides the answer.
+    //
+    // ROUTED THROUGH `Parameters`, which is what makes this arm distinct from
+    // `SubSecretPair`. That one's pair is resolved by the CHILD and read by the
+    // PARENT, so each source leaf is its own whole token. Here the PARENT
+    // resolves both, its `inheritedSecrets` bag collapses them (it is keyed by
+    // plaintext), and the child's source leaves are `{Ref: HandoffSecretA}` /
+    // `{Ref: HandoffSecretB}` -- intrinsic objects carrying no expression at
+    // all. Positioning them needs the per-parameter association the parent
+    // records; without it BOTH leaves persist the survivor's expression and
+    // `cdkd drift --revert` / rollback pushes the WRONG version stage.
+    const handoffPair = new ssm.StringParameter(this, 'HandoffPair', {
+      parameterName: names.handoffParamName,
+      stringValue: handoffA.valueAsString,
+      // The SECOND leaf of the SAME resource. A description rather than another
+      // parameter precisely so both land in one bag.
+      description: handoffB.valueAsString,
+      // VARIES BY `CDKD_TEST_UPDATE`, and it is what makes the phase-2c arm
+      // non-vacuous. Phase 2c drives the parent's `Child` row through
+      // `NestedStackProvider.update`, i.e. the deploy engine's UPDATE call
+      // site -- the SECOND place the parent records the per-parameter
+      // expressions this child needs. Without a change on THIS resource the
+      // child would treat it as UNCHANGED, never re-resolve its two leaves, and
+      // an unrecorded UPDATE site would leave the already-correct state.json
+      // untouched: a vacuous pass. A THIRD property rather than one of the two
+      // leaves, because both leaves are what every assertion reads.
+      ...(names.handoffAllowedPattern !== undefined && {
+        allowedPattern: names.handoffAllowedPattern,
+      }),
+    });
+    ((handoffPair.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffPair');
+
+    // THE #2291 ROUND-2 ARM: the EMBEDDING shape, over the LOSING parameter.
+    //
+    // `HandoffPair` above spells both leaves as bare `{Ref: <Param>}`, which the
+    // persist path positions through the parent's per-parameter association.
+    // This leaf is an `Fn::Sub`, so `crossStackSourceKey` refuses it (its
+    // `Fn::Sub` arm requires a DOTTED nested-stack-output placeholder) and
+    // `intrinsicSkeletonPattern` cannot describe it either -- the ONLY thing
+    // that can redact it is the plaintext-keyed VALUE SCAN, which reads the
+    // child resource's own bag. The first cut of this fix made
+    // `redactParametersForDiff` answer per parameter while that bag still held
+    // the collapsed SURVIVOR, so the persisted side said `:AWSCURRENT:` and the
+    // desired side said `::` and the two never matched again: a perpetual
+    // UPDATE, which this fixture's `cdkd diff --recursive --fail` phase catches
+    // by EXIT CODE.
+    //
+    // ITS OWN RESOURCE, NOT A THIRD LEAF ON `HandoffPair`, and that is
+    // correctness rather than tidiness. The destination bag is keyed by
+    // plaintext, so a resource consuming BOTH colliding parameters keeps only
+    // whichever `Ref` resolved LAST. Putting this leaf beside the pair would
+    // make its expected value depend on property iteration order. One parameter
+    // in, one pair recorded, one deterministic answer.
+    //
+    // SO NOTHING LIVE COVERS THE MIXED SHAPE, and that is worth stating rather
+    // than leaving as an inference from the paragraph above. A resource holding
+    // ONE embedded leaf and ONE whole-value leaf over the two colliding
+    // parameters is a case where the persist and diff halves genuinely DISAGREE
+    // on this branch (measured; `main` agreed, on the wrong expression), so it
+    // is a REGRESSION rather than an unfixed gap -- deferred with its
+    // measurement to issue
+    // [#2320](https://github.com/go-to-k/cdkd/issues/2320), which also carries
+    // the fixture arm it needs. Adding that arm HERE would have made this one
+    // order-dependent, which is the trade this split makes deliberately.
+    //
+    // OVER `HandoffSecretA` -- the LOSER, whose expression is not the survivor.
+    // Pointing it at `HandoffSecretB` would pass with the collapse fully intact.
+    const handoffSub = new ssm.StringParameter(this, 'HandoffSub', {
+      parameterName: names.handoffSubParamName,
+      stringValue: cdk.Fn.sub('postgres://u:${HandoffSecretA}@host'),
+      description:
+        'cdkd nested-stack-secret integ - #2291 round 2: an EMBEDDING leaf over the losing parameter',
+    });
+    ((handoffSub.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffSub');
+
     const output = new cdk.CfnOutput(this, 'ChildSecretOutput', {
       value: stage.valueAsString,
       description: 'cdkd nested-stack-secret integ - secret-derived child output (issue #2055)',
@@ -172,15 +285,21 @@ class SecretBearingChild extends cdk.NestedStack {
     // DETERMINISTIC -- no rotation window to race.
     //
     // THEY ARE LITERAL TOKENS RESOLVED BY THE CHILD, deliberately, NOT values
-    // handed down through the child's `Parameters`. A parameter-borne pair
-    // cannot work here: the parent's `inheritedSecrets` bag is
-    // `Map<plaintext, expression>`, so two expressions with one plaintext
-    // COLLAPSE to a single entry in the parent before the child is ever
-    // invoked, and the child's `{Ref: Param}` source leaves carry no expression
-    // for the position pass to certify against. Resolved in the child, each
+    // handed down through the child's `Parameters`. Resolved in the child, each
     // output's source leaf IS its own whole token, which the position pass
     // certifies per leaf -- so the child's two outputs persist DISTINCT
     // expressions, which is what the parent's arm then needs.
+    //
+    // A parameter-borne pair is a DIFFERENT arm rather than an impossible one,
+    // and this note used to say the latter (issue
+    // [#2291](https://github.com/go-to-k/cdkd/issues/2291)). The parent's
+    // `inheritedSecrets` bag really is `Map<plaintext, expression>` and really
+    // does collapse such a pair before the child is invoked, and the child's
+    // `{Ref: Param}` source leaves really do carry no expression -- both true,
+    // and together they were the DEFECT. The parent now records, per child
+    // parameter NAME, which expression that parameter was resolved from, and
+    // the child positions `{Ref: <Param>}` against it. `HandoffPair` above is
+    // that arm.
     //
     // They also use a DIFFERENT JSON key (and so a different plaintext) from
     // `SecretStage`. Sharing that one would drag `StageParam` into the same
@@ -224,6 +343,10 @@ export class NestedStackSecretStack extends cdk.Stack {
     // what every redaction assertion is written against, and `UnrelatedParam`'s
     // literal in particular has to stay byte-identical for the #2087 arm.
     const updateMode = process.env['CDKD_TEST_UPDATE'] ?? '';
+    // The #2291 arm's own phase-2c change, on the SAME token as the description
+    // swap below: `HandoffPair` must genuinely become an UPDATE in that phase,
+    // or the assertions there pass over a state.json nothing rewrote.
+    const handoffAllowedPattern = updateMode.includes('child-property') ? '^.*$' : undefined;
     const stageParamDescription = updateMode.includes('child-property')
       ? 'cdkd nested-stack-secret integ - child consumer of the secretsmanager parameter (updated)'
       : 'cdkd nested-stack-secret integ - child consumer of the secretsmanager parameter';
@@ -248,6 +371,13 @@ export class NestedStackSecretStack extends cdk.Stack {
     // `ChildSharedOutputA` for why a parameter-borne pair cannot work.
     const sharedReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:shared::}}`;
     const sharedReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:shared:AWSCURRENT:}}`;
+    // THE #2291 PAIR. Same two-spellings-one-value trick, on a THIRD JSON key
+    // so its plaintext is its own: sharing `stage` or `shared` would drag
+    // `StageParam` / `SubSecretPair` into this collapse, which is exactly how
+    // the first cut of the #2270 arm broke the #1903 assertion. These two are
+    // handed to the child as PARAMETERS.
+    const handoffReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:handoff::}}`;
+    const handoffReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:handoff:AWSCURRENT:}}`;
     const secureReference = `{{resolve:ssm:${secureParamName}}}`;
 
     const child = new SecretBearingChild(
@@ -257,6 +387,9 @@ export class NestedStackSecretStack extends cdk.Stack {
         stageParamName: `cdkd-nested-child-stage-${account}`,
         secureParamName: `cdkd-nested-child-secure-${account}`,
         unrelatedParamName: `cdkd-nested-child-unrelated-${account}`,
+        handoffParamName: `cdkd-nested-child-handoff-${account}`,
+        handoffSubParamName: `cdkd-nested-child-handoffsub-${account}`,
+        ...(handoffAllowedPattern !== undefined && { handoffAllowedPattern }),
         // Contains the secret's resolved plaintext (`prodstage2087`) as a
         // substring. Kept in sync with verify.sh's SECRET_STAGE_VALUE — and
         // verify.sh now ASSERTS the overlap rather than trusting this comment,
@@ -273,6 +406,9 @@ export class NestedStackSecretStack extends cdk.Stack {
         parameters: {
           SecretStage: stageReference,
           SecurePassword: secureReference,
+          // The #2291 pair. TWO parameters, ONE resolved plaintext.
+          HandoffSecretA: handoffReferenceA,
+          HandoffSecretB: handoffReferenceB,
         },
       }
     );

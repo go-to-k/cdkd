@@ -204,6 +204,14 @@ export function clearRecordedSecretExpressions(): void {
  * a readback bag holds a different resource's secret while the source leaf
  * still spells this import.
  *
+ * ONE class of row is NOT written by the resolver: the `Ref` rows a nested-stack
+ * CHILD inherits from its parent through
+ * {@link inheritNestedStackParameterAssociations} (issue #2291). Those describe
+ * a leaf whose producer is the PARENT ENGINE rather than a producer stack read
+ * during this pass, so the writer is the engine and the association is copied in
+ * at context-construction time. The reader below is unchanged for them — the
+ * three conditions mean exactly what they mean for the resolver-written rows.
+ *
  * A key recorded against a DIFFERENT (expression, plaintext) pair is POISONED
  * to {@link CONFLICTING_CROSS_STACK} rather than overwritten, and the reader
  * then refuses. Either half differing is enough: two expressions under one key
@@ -316,9 +324,13 @@ export function splitGetAttStringForm(
  * (`(producer X / Y)`), so it is neither derivable from the source leaf nor
  * stable.
  *
- * THREE arms answer: `Fn::ImportValue`, `Fn::GetStackOutput`, and the
- * `Fn::GetAtt` on a nested-stack OUTPUT that issue #2055's read site
- * re-resolves. Every other leaf refuses.
+ * FIVE arms answer, and the enumeration is kept current because a stale one
+ * reads as exhaustive: `Fn::ImportValue`, `Fn::GetStackOutput`, the `Fn::GetAtt`
+ * on a nested-stack OUTPUT that issue #2055's read site re-resolves, the
+ * single-placeholder `Fn::Sub` that normalizes ONTO that `Fn::GetAtt` key
+ * (issue #2270 round 3 -- this list said THREE until issue #2291 noticed it had
+ * been four since then), and the `Ref` to a nested-stack CHILD's own PARAMETER
+ * (issue #2291). Every other leaf refuses.
  *
  * `Region` and `RoleArn` are OPTIONAL slots, and an ABSENT one keys as empty
  * while a PRESENT-but-non-literal one refuses. Absent has to be its own key
@@ -541,6 +553,61 @@ export function crossStackSourceKey(source: Record<string, unknown>): string | u
     return ['Fn::GetAtt', split.logicalId, split.attributeName].join(CROSS_STACK_KEY_SEPARATOR);
   }
 
+  // A `Ref` to a NESTED-STACK CHILD's own template PARAMETER (issue
+  // [#2291](https://github.com/go-to-k/cdkd/issues/2291)).
+  //
+  // This is the DOWNWARD twin of the three arms above, and it is a cross-stack
+  // leaf for exactly their reason: the value the leaf reads was produced by
+  // ANOTHER stack's resolution. The parent resolves the child's `Parameters`
+  // block and hands the child PLAINTEXT, so the child's source leaf is
+  // `{Ref: <ParamName>}` -- an intrinsic OBJECT that carries no text about the
+  // producer's `{{resolve:...}}` string at all. `intrinsicSkeletonPattern`
+  // therefore cannot describe it (it has no literal segments to match a
+  // candidate against), so before this arm the leaf fell to the plaintext-keyed
+  // value scan. Two parameters resolving to ONE plaintext -- the same secret
+  // and JSON key at two version-stage spellings, where `...:stage::` and
+  // `...:stage:AWSCURRENT:` resolve identically -- therefore collapsed onto
+  // whichever expression the parent recorded last, and `resolveReplayProps`
+  // re-resolves the survivor, so `cdkd drift --revert` / rollback pushes the
+  // WRONG secret VERSION to the live resource.
+  //
+  // BOTH SIDES COMPUTE FROM THE PARAMETER NAME. The writer is
+  // {@link recordNestedStackParameterExpressions}, which keys the parent's
+  // `Properties.Parameters` entries by NAME and reaches this function through
+  // `crossStackSourceKey({ Ref: name })`; the persist path hands over the
+  // child's template source leaf. Both are the same string by construction,
+  // which is the property the `Fn::ImportValue` arm's note above is about.
+  //
+  // A `Ref` to a RESOURCE keys here too, and the reason that is safe is NOT the
+  // one an earlier revision of this comment gave. It claimed CloudFormation
+  // requires `Parameters` and `Resources` logical ids to be unique across one
+  // template, so the two populations could not overlap. cdkd never submits a
+  // template to CloudFormation, so it inherits no such validation, and
+  // `IntrinsicFunctionResolver.resolveRef` gives a RESOURCE precedence over a
+  // same-named PARAMETER -- so a colliding template resolves the RESOURCE while
+  // this key still spells the parameter name, and the association IS reached
+  // (measured in review).
+  //
+  // What actually fences it is {@link positionByCrossStackSource}'s conditions
+  // 1 and 2: the leaf's resolved value must be a plaintext in THIS resource's
+  // bag AND must equal the plaintext the association was recorded against. For
+  // a `Ref` to a resource that value is the resource's PHYSICAL ID, so the
+  // collision only certifies anything if a physical id is byte-identical to the
+  // inherited secret -- at which point every plaintext-keyed path in this module
+  // already rewrites it, and the answer taken is the expression that value was
+  // genuinely resolved from. The guard is the VALUE test, not a namespace claim.
+  //
+  // A pseudo parameter (`{Ref: 'AWS::Region'}`) is likewise keyed and, unlike
+  // the resource case, is verified inert: no writer ever records a pseudo name,
+  // so the lookup always misses. It is deliberately NOT special-cased -- a name
+  // test here would be a second spelling of "what the writer records", and the
+  // writer is the authority.
+  if (key === 'Ref') {
+    const parameterName = literalStringOrUndefined(source[key]);
+    if (parameterName === undefined) return undefined;
+    return ['Ref', parameterName].join(CROSS_STACK_KEY_SEPARATOR);
+  }
+
   return undefined;
 }
 
@@ -583,18 +650,344 @@ export function recordCrossStackExpression(
     associations = new Map();
     crossStackAssociations.set(secrets, associations);
   }
+  storeAssociation(associations, key, expression, plaintext);
+}
 
+/**
+ * The store's WRITE rule, shared by {@link recordCrossStackExpression} and
+ * {@link recordNestedStackParameterExpressions} so the two tables cannot drift
+ * apart on what a second sighting means.
+ *
+ * A key recorded against a DIFFERENT (expression, plaintext) pair is POISONED
+ * to {@link CONFLICTING_CROSS_STACK} rather than overwritten; an already
+ * poisoned key stays poisoned, because a third sighting cannot un-contradict
+ * the first two. Every reader refuses a poisoned key, which degrades to the
+ * value scan — today's behaviour — rather than guessing between the two.
+ *
+ * WHAT IS AND IS NOT FENCED, stated because a reader would otherwise assume the
+ * whole thing is (review of issue #2291). The POISON-vs-OVERWRITE decision IS
+ * fenced: a second sighting under a THIRD expression makes the two outcomes
+ * differ (poison refuses and falls back; overwriting would certify the third),
+ * and a case asserts it. Nothing fences the branch from
+ * {@link recordNestedStackParameterExpressions}'s side in PRODUCTION, because
+ * that writer runs once per resource bag and `Object.entries` cannot yield one
+ * name twice — the poison is reachable only through this module's API. It is
+ * kept as an INVARIANT, not claimed as covered behaviour.
+ *
+ * The `isSingleDynamicReferenceToken` shape invariant is deliberately NOT here:
+ * it belongs to each writer, which is where the parameters are named and where
+ * a swap could be introduced.
+ */
+function storeAssociation(
+  associations: CrossStackAssociations,
+  key: string,
+  expression: string,
+  plaintext: string
+): void {
   const seen = associations.get(key);
   if (seen === undefined) {
     associations.set(key, { expression, plaintext });
     return;
   }
-  // Already poisoned stays poisoned — a third sighting cannot un-contradict the
-  // first two.
   if (typeof seen === 'symbol') return;
   if (seen.expression !== expression || seen.plaintext !== plaintext) {
     associations.set(key, CONFLICTING_CROSS_STACK);
   }
+}
+
+/**
+ * The `AWS::CloudFormation::Stack` type string, named once because the recorder
+ * below gates on it and the tests assert against the same population.
+ *
+ * DUPLICATED, deliberately: `intrinsic-function-resolver.ts` declares the same
+ * literal under the same name (for the `Outputs.<Name>` re-resolution of issue
+ * #2055). This module is a LEAF by design -- see the file header, it imports
+ * nothing, because both the resolver and the deploy engine consume it -- so
+ * importing that spelling would close a cycle, and exporting this one for the
+ * resolver to import would make the leaf a source of values rather than of
+ * pure functions. The two cannot drift into DISAGREEMENT in any way that
+ * matters: an AWS resource type string is fixed by AWS, and a typo in either
+ * copy makes that copy's gate simply never fire (no-op), never fire wrongly.
+ */
+const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
+
+/**
+ * What a PARENT stack's resolution proved about each `Parameters` entry of an
+ * `AWS::CloudFormation::Stack` row it is about to provision, keyed by the
+ * child's PARAMETER NAME (issue
+ * [#2291](https://github.com/go-to-k/cdkd/issues/2291)).
+ *
+ * WHY A THIRD STORE, when {@link crossStackAssociations} already holds
+ * per-leaf associations. This one is OUTBOUND: it is written against the
+ * PARENT's bag and describes leaves of the CHILD's template, so it has to be
+ * transported across the engine boundary before any reader can use it. The
+ * child's per-resource bag then receives those entries as ORDINARY
+ * {@link crossStackAssociations} rows (see
+ * {@link inheritNestedStackParameterAssociations}), which is what lets the
+ * existing three-condition reader answer for them with no new arm.
+ *
+ * KEEPING THE TWO TABLES SEPARATE IS LOAD-BEARING, not tidiness. A child engine
+ * that itself owns a grandchild `AWS::CloudFormation::Stack` row records the
+ * GRANDCHILD's parameter names against the CHILD's bag — the same bag that
+ * already carries the child's own INBOUND `Ref` associations. Writing both into
+ * one table means a grandchild parameter sharing a NAME with a child parameter
+ * poisons the child's entry (two expressions under one key), so a leaf that was
+ * being certified correctly falls back to the value scan the moment a
+ * same-named parameter appears one level down. Two tables make the collision
+ * impossible rather than unlikely.
+ *
+ * A `WeakMap` keyed by the parent pass's own bag, for the reason
+ * {@link crossStackAssociations} gives: the entries hold PLAINTEXT, and they
+ * must not outlive the pass that fetched them.
+ */
+const nestedStackParameterExpressions = new WeakMap<RecordedSecretValues, CrossStackAssociations>();
+
+/**
+ * Record, for the pass that owns `secrets`, which `{{resolve:...}}` expression
+ * each `Parameters` entry of a nested-stack row was resolved FROM (issue
+ * #2291). No-op for every other resource type.
+ *
+ * THE EXPRESSIONS COME FROM THE POSITION PASS, not from `secrets`, and that is
+ * the whole reason this works at all. `RecordedSecretValues` is keyed by
+ * PLAINTEXT, so two parameters resolving to one value have already collapsed to
+ * a single entry there by the time this runs — asking the map which expression
+ * a given parameter came from returns the SURVIVOR for both. What has not
+ * collapsed is the parent's own template: `Properties.Parameters.<Name>` still
+ * holds each entry's own source leaf. So this walks the parent's resolved
+ * parameter bag against that source with {@link redactSecretsForState}, which
+ * is exactly the machinery the parent's persist path already uses and which
+ * certifies PER LEAF (measured on this issue: the parent's own two properties
+ * come out correct while the child's collapse onto one). Deriving the answer
+ * from the positioner rather than restating its rules is what keeps this from
+ * drifting away from the persist path.
+ *
+ * THE `rules` PARAMETER IS THE CALLER'S GENERATION CLAIM, not a knob. The
+ * DEPLOY path passes {@link TEMPLATE_DERIVED_RULES} (the default): its source is
+ * the parent's TEMPLATE, which can carry a PUBLIC `ssm:` reference that must
+ * stay resolved (issue #1901) and which cannot certify the generation of
+ * anything. The rollback REPLAY passes {@link STATE_DERIVED_RULES}, because its
+ * source is the JOURNAL record — a persisted bag holding no public expressions,
+ * and the same generation the bag was resolved from one statement earlier. That
+ * is the identical pairing `redactRollbackRecord` already makes for the record
+ * it positions, so the two replay walks now agree about what their source is.
+ *
+ * "No public expressions" carries the carve-out {@link PathSourceRules} states
+ * and this note must not restate without it: `cdkd import` warns and persists
+ * the RAW template intrinsic, so a public `ssm:` token CAN sit in a record. The
+ * replay then CERTIFIES one the deploy default would refuse, at a cost bounded
+ * to the issue #1901 class — a spurious UPDATE over a value state should hold
+ * resolved, never a disclosure, since an expression is what gets persisted
+ * either way. See the replay call sites for why gating on
+ * {@link isKnownSecretExpression} is the wrong way to close it.
+ *
+ * FOUR REFUSALS, each degrading to today's behaviour (the child leaf falls to
+ * the plaintext-keyed value scan):
+ *
+ * 1. REFUSAL — the resolved parameter value is not a WHOLE recorded plaintext.
+ *    A parameter the parent built with an `Fn::Sub` merely EMBEDS the secret,
+ *    so there is no single expression the child's leaf could be persisted as.
+ *    It also bounds what this store HOLDS: an entry carries a plaintext, and
+ *    remembering one this pass never resolved has no purpose.
+ * 2. REFUSAL — the expression is not a single complete `{{resolve:...}}` token.
+ *    The same test {@link recordCrossStackExpression} applies at its own
+ *    boundary, spelled here because this writer populates a DIFFERENT table.
+ *    This is what rejects an embedded case that survived refusal 1 (a value
+ *    scan produced `postgres://u:{{resolve:...}}@host`, which is not a token).
+ * 3. REFUSAL — the expression may never EQUAL the plaintext it is recorded
+ *    against. The reader returns the expression to be PERSISTED, so an entry
+ *    whose two halves coincide hands a SECRET back as though it were a
+ *    reference.
+ *
+ *    THIS IS REACHABLE, and an earlier revision of this note called it an
+ *    unreachable invariant and told the next reader not to try to fence it.
+ *    That was wrong twice over: wrong on the fact, and wrong to assert it,
+ *    because {@link plaintextIndexOf}'s own note records the rule that
+ *    "asserting something cannot be fenced suppresses the attempt, so it needs
+ *    the same evidence a fence does" -- and no such evidence existed. The
+ *    reaching shape is the issue
+ *    [#1917](https://github.com/go-to-k/cdkd/issues/1917) family: a
+ *    SELF-REFERENTIAL secret, whose stored VALUE is byte-identical to its own
+ *    `{{resolve:...}}` text, so the pass records `SELF -> SELF`. The route is
+ *    NOT the value scan the old note named. It is {@link redactByPath}'s
+ *    `!sourceIsSameGeneration && isSingleDynamicReferenceToken(bag)` arm, which
+ *    returns `secrets.get(bag) ?? bag` -- and for a self-referential secret
+ *    that IS the bag. Under {@link STATE_DERIVED_RULES} the same input arrives
+ *    by the other door (`sourceIsSameGeneration` is true, so the arm takes
+ *    `return source`, which is the same string again), so both callers reach it.
+ *    Fenced by the self-referential case in
+ *    `secret-redaction-nested-parameter-source.test.ts`.
+ */
+export function recordNestedStackParameterExpressions(
+  secrets: RecordedSecretValues,
+  resourceType: string,
+  resolvedProperties: unknown,
+  sourceProperties: unknown,
+  rules: PathSourceRules = TEMPLATE_DERIVED_RULES
+): void {
+  if (resourceType !== NESTED_STACK_RESOURCE_TYPE) return;
+  if (secrets.size === 0) return;
+  if (!isPlainObject(resolvedProperties) || !isPlainObject(sourceProperties)) return;
+  // `Object.hasOwn` for the reason the walks in this module use it: without it
+  // the prototype chain can answer for a key a caller-constructed bag lacks.
+  if (!Object.hasOwn(resolvedProperties, 'Parameters')) return;
+  if (!Object.hasOwn(sourceProperties, 'Parameters')) return;
+  const resolvedParameters = resolvedProperties['Parameters'];
+  const sourceParameters = sourceProperties['Parameters'];
+  if (!isPlainObject(resolvedParameters) || !isPlainObject(sourceParameters)) return;
+
+  const positioned = redactSecretsForState(
+    resolvedParameters,
+    secrets,
+    sourceParameters,
+    rules
+  ) as Record<string, unknown>;
+
+  let table = nestedStackParameterExpressions.get(secrets);
+  for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
+    // Refusal 1.
+    if (typeof resolvedValue !== 'string' || !secrets.has(resolvedValue)) continue;
+    const expression = positioned[name];
+    if (typeof expression !== 'string') continue;
+    // Refusal 2.
+    if (!isSingleDynamicReferenceToken(expression)) continue;
+    // Refusal 2b — the position pass has to have CERTIFIED this leaf, not
+    // merely fallen through to the value scan.
+    //
+    // `redactSecretsForState` returns a value either way, and for a leaf it
+    // REFUSES it returns `secrets.get(resolvedValue)` — the collapsed map's
+    // SURVIVOR. Recording that would store the survivor under the LOSING
+    // parameter's name and label it certified, which is the collapse this whole
+    // store exists to remove, arriving through the store itself.
+    //
+    // For a whole-token STRING source, "certified" has an exact spelling:
+    // `redactByPath`'s source arm returns the SOURCE LEAF verbatim, so a
+    // MISMATCH proves it did not fire. Not an iff, and the earlier wording said
+    // so wrongly: the value scan COINCIDES with the source for the WINNING
+    // parameter, whose survivor expression IS its own source leaf. The test is
+    // therefore sound in the direction it is used -- it only ever REFUSES -- and
+    // an entry it lets through on that coincidence is the survivor, which every
+    // reader produces on a refusal anyway. Found by the `rules` probe: an `ssm`
+    // reference whose `SecureString` verdict this process has not pinned fails
+    // `isKnownSecretExpression` under {@link TEMPLATE_DERIVED_RULES}, takes the
+    // public-reference branch, and value-scanned its way to the sibling's
+    // expression — so the losing parameter of an unpinned ssm pair was recorded
+    // against the WRONG reference.
+    //
+    // An INTRINSIC source has no such identity to test (both positioners return
+    // a candidate on success and `undefined` on refusal, and the caller cannot
+    // see which), so it is left as it is: there the fallback yields the survivor
+    // too, which is exactly what every reader produces on a refusal anyway, so
+    // the entry cannot change an answer.
+    const sourceLeaf = sourceParameters[name];
+    if (typeof sourceLeaf === 'string' && expression !== sourceLeaf) continue;
+    // Refusal 3 — reachable via a self-referential secret; see the doc above.
+    if (expression === resolvedValue) continue;
+    if (table === undefined) {
+      table = new Map();
+      nestedStackParameterExpressions.set(secrets, table);
+    }
+    storeAssociation(table, name, expression, resolvedValue);
+  }
+}
+
+/**
+ * Copy a parent pass's per-PARAMETER associations onto a nested-stack CHILD
+ * resource's own bag, as ordinary {@link crossStackAssociations} rows keyed by
+ * `{Ref: <ParamName>}` (issue #2291).
+ *
+ * Called by the child {@link DeployEngine} once per resolver context, so each
+ * child resource's fresh bag carries them. Pre-seeding every resource this way
+ * does NOT reintroduce issue #2087's over-redaction: an association can only
+ * change an answer through {@link positionByCrossStackSource}'s condition 1,
+ * which requires the bag leaf to be a plaintext THIS resource's bag holds — and
+ * since #2087 that is true only of resources whose own resolution consumed the
+ * parameter. The scoping still comes from the plaintext bag; this table only
+ * decides WHICH expression such a leaf takes.
+ *
+ * Nothing is copied when the parent recorded nothing, which is every non-nested
+ * caller and every nested one whose parameters carry no secret.
+ */
+export function inheritNestedStackParameterAssociations(
+  childSecrets: RecordedSecretValues,
+  parentSecrets: RecordedSecretValues
+): void {
+  const table = nestedStackParameterExpressions.get(parentSecrets);
+  if (table === undefined || table.size === 0) return;
+  let associations = crossStackAssociations.get(childSecrets);
+  for (const [name, association] of table) {
+    const key = crossStackSourceKey({ Ref: name });
+    if (key === undefined) continue;
+    if (associations === undefined) {
+      associations = new Map();
+      crossStackAssociations.set(childSecrets, associations);
+    }
+    // A poisoned parent entry is copied AS the poison, so the child refuses for
+    // the same reason the parent could not answer.
+    //
+    // NO PRODUCTION PATH DISCRIMINATES THIS, which is a narrower claim than the
+    // one an earlier revision made ("no test can") — and that one was FALSE,
+    // disproved in review by constructing the case through this module's own
+    // API. Copying the poison and dropping the entry differ as soon as anything
+    // writes the SAME key on the child bag afterwards: with the copy the key
+    // stays poisoned and the reader refuses, without it the later write lands on
+    // an empty slot and CERTIFIES. `recordCrossStackExpression` is exactly such
+    // a writer, so a test reaches it (and now does).
+    //
+    // Production cannot, because the resolver only ever builds a `sourceKey`
+    // from `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::GetAtt` and never
+    // from a `Ref`, so no production writer can collide with an inherited
+    // parameter key. That is the same standard the sibling note on
+    // {@link storeAssociation} uses — "reachable only through this module's
+    // API" — and it is the accurate one here.
+    if (typeof association === 'symbol') {
+      associations.set(key, association);
+      continue;
+    }
+    storeAssociation(associations, key, association.expression, association.plaintext);
+  }
+}
+
+/**
+ * The expression a nested-stack child's PARAMETER was resolved from, or
+ * `undefined` when this pass cannot certify one (issue #2291).
+ *
+ * The DIFF-side twin of {@link positionByCrossStackSource}, and it must exist
+ * or the fix trades one bug for another. The child's persisted state now holds
+ * each parameter-fed leaf's OWN expression, so the desired side of the next
+ * diff has to hold it too; the engine's `redactParametersForDiff` rewrites the
+ * parameter bag through the plaintext-keyed map alone, which hands BOTH members
+ * of a coinciding pair the survivor's expression. The two sides would then
+ * never match for the losing parameter: a perpetual UPDATE on every deploy of
+ * such a child, which is issue #2087's user-visible symptom arriving through a
+ * different door.
+ *
+ * `parentSecrets` is the INHERITED bag — the parent's own per-resource map, the
+ * object this table is keyed by — not the child resource's bag.
+ *
+ * The same THREE conditions {@link positionByCrossStackSource} applies, for the
+ * same reasons; see that function's own notes for why condition 3 is not
+ * subsumed by condition 2.
+ */
+export function inheritedParameterExpression(
+  parentSecrets: RecordedSecretValues,
+  parameterName: string,
+  resolvedValue: unknown
+): string | undefined {
+  // Condition 1.
+  if (typeof resolvedValue !== 'string' || resolvedValue === '') return undefined;
+  if (!parentSecrets.has(resolvedValue)) return undefined;
+
+  const association = nestedStackParameterExpressions.get(parentSecrets)?.get(parameterName);
+  if (association === undefined || typeof association === 'symbol') return undefined;
+
+  // Condition 2.
+  if (association.plaintext !== resolvedValue) return undefined;
+
+  // Condition 3.
+  const recordedPlaintext = plaintextIndexOf(parentSecrets).get(association.expression);
+  if (recordedPlaintext !== undefined && recordedPlaintext !== resolvedValue) return undefined;
+
+  return association.expression;
 }
 
 /**
@@ -1757,10 +2150,11 @@ function redactByPath(
     // see `positionByIntrinsicSkeleton`'s own doc, which explains why it holds
     // NO `isKnownSecretExpression` check.
     //
-    // The CROSS-STACK arm runs FIRST (issue #2059). It answers for the two
+    // The CROSS-STACK arm runs FIRST (issue #2059). It answers for the
     // spellings the skeleton pass structurally cannot describe
     // (`Fn::ImportValue` / `Fn::GetStackOutput` carry no text about their
-    // expression), so the two are disjoint rather than competing today; the
+    // expression, and a nested-stack child's `{Ref: <Param>}` carries none
+    // either — issue #2291), so the two are disjoint rather than competing today; the
     // order is what keeps them disjoint if the skeleton ever gains a
     // wildcard-only arm, since a lookup against a recorded leaf identity is
     // strictly better evidence than a pattern that matched everything.
