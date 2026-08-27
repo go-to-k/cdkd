@@ -545,20 +545,33 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
     });
 
     it('recognises us-east-1 through a raw `--region US-EAST-1` spelling', async () => {
-      // `--region US-EAST-1` reaches `getRegion()` unfolded -- the same raw
+      // A raw `US-EAST-1` reaches `getRegion()` unfolded -- the same raw
       // spelling the issue #2227 guard folds on the deploy side. A `===`
       // comparison in the probe gate would skip the pre-flight for the one
       // region it exists for, and nothing else in this file would notice.
       //
-      // HALF-REAL, and worth saying so rather than letting the green tick imply
-      // more than it proves: against real S3 this deploy does not get as far as
-      // the steps below. `getRegion()` returns the raw spelling to the
-      // PRE-EXISTING `LocationConstraint` gate as well, which tests it with a
-      // bare `!==` and so sends `CreateBucketConfiguration: { LocationConstraint:
-      // 'US-EAST-1' }`, and S3 rejects that. That gate is a separate,
-      // pre-existing defect left alone here (widening it changes what cdkd
-      // sends to `CreateBucket`). What this case legitimately fences is one
-      // thing only: that the PROBE gate canonicalizes before comparing.
+      // The case NAME says `--region` and that is legacy shorthand for the
+      // SPELLING, not a claim about the door: measured for issue #2282, the
+      // flag is folded by `foldRegionOption` before the client bag is built and
+      // again by `AwsClients`' constructor, so it cannot arrive here unfolded.
+      // What can is a mis-cased `region =` in the profile, on a command that
+      // names no region -- the bag is then region-less, the SDK's own chain
+      // answers, and nothing on that chain folds. The name is left alone
+      // because the issue and the changelog both cite it.
+      //
+      // It WAS half-real when this case was written, and is no longer: the
+      // `LocationConstraint` gate one line above the probe gate compared the
+      // RAW spelling, so against real S3 this deploy died at `CreateBucket`
+      // with `CreateBucketConfiguration: { LocationConstraint: 'US-EAST-1' }`
+      // before reaching any of the steps below. Issue #2282 fixed that gate;
+      // `s3-bucket-provider-location-constraint-case.test.ts` fences it, and
+      // the first assertion here -- no `CreateBucketConfiguration` on the
+      // `CreateBucketCommand` -- pins the premise this case now depends on.
+      //
+      // What this case fences remains one thing only, and it is INDEPENDENT of
+      // that fix: `region` is still the raw spelling where the probe gate reads
+      // it, so the PROBE gate's own `canonicalizeRegion` is what makes the
+      // pre-flight fire for the one region it exists for.
       clientRegion.value = 'US-EAST-1';
       mockSend.mockResolvedValueOnce({}); // pre-flight: the bucket is already there
       mockSend.mockResolvedValueOnce({}); // legacy 200
@@ -570,6 +583,15 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
 
       expect(sentCommands()[0]).toBe('GetBucketLocationCommand');
       expect(sentCommands()).not.toContain('DeleteBucketCommand');
+
+      // The premise the paragraph above claims, pinned rather than asserted in
+      // prose: with the raw spelling reaching `CreateBucket` unfolded, this
+      // deploy would be rejected by S3 and none of the steps this case
+      // exercises would run against real AWS.
+      const created = mockSend.mock.calls.find(
+        (c) => c[0].constructor.name === 'CreateBucketCommand'
+      );
+      expect(created?.[0].input).not.toHaveProperty('CreateBucketConfiguration');
     });
   });
 });

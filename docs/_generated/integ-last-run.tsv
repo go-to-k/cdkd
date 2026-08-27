@@ -247,7 +247,7 @@ s3-cloudfront	2026-08-20T11:58:20Z	PASS	226	verify.sh	#2079 lane: real Distribut
 s3-directory-bucket	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 s3-event-notification	2026-08-10T04:16:05Z	PASS	73	verify.sh	0810 staleness sweep b1; #1437 EventBridgeEnabled/NESTED_KEY_TARGETS live-verified, 14 del 0 err, 0 orph
 s3-lifecycle	2026-08-27T05:08:35Z	PASS	208	verify.sh	issue 2283 lane, 3rd run, gating the final tree after the round-4 claim corrections (comment-only in cloud-control-provider.ts, which is enough to stale integ-destroy under hash:diff). Same verdicts: XR arm REFUSED rc=2 with the us-west-2 bucket surviving, OK control arm deleted through the Cloud Control route. 7 deleted 0 errors; account-wide state.json count 0, no leftover buckets in either region.
-s3-object-lock	2026-08-10T04:16:05Z	PASS	44	verify.sh	0810 staleness sweep b1; s3-bucket-provider re-verify, 0 err, 0 orph
+s3-object-lock	2026-08-27T08:20:27Z	PASS	228	verify.sh	issue 2282 lane, 3rd run: comment-only edits stale the hash-diff gate; rc 0, orphans clean
 s3-replication-and-filter	2026-08-11T15:11:16Z	PASS	110	verify.sh	issue #1605 versioning+logging replay downgrade; 7 del/0 err, 0 orph
 s3-subconfig-removal	2026-08-12T17:31:00Z	PASS		verify.sh	rc 0, 1 deleted 0 errors, re-run on the rebased tree, orphan sweep clean
 s3-tables	2026-08-22T19:12:07Z	PASS	46	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean

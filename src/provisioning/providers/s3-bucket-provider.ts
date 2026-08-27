@@ -6068,11 +6068,62 @@ export class S3BucketProvider implements ResourceProvider {
         Bucket: bucketName,
       };
 
-      // Add LocationConstraint for non-us-east-1 regions
+      // Add LocationConstraint for non-us-east-1 regions.
+      //
+      // BOTH sides are canonicalized, and each closes its own half of issue
+      // [#2282](https://github.com/go-to-k/cdkd/issues/2282). With a bare `!==`
+      // over the value `getRegion()` returns, a mis-cased region took this
+      // branch and sent `LocationConstraint: 'US-EAST-1'` for the one region
+      // where the field must be OMITTED, and sent `LocationConstraint:
+      // 'EU-WEST-1'` for every other region. Neither is a valid region NAME, so
+      // S3 rejects the `CreateBucket` outright and the deploy dies here, before
+      // anything else on this path runs. The issue framed only the us-east-1
+      // GATE; the SEND side carried the same defect everywhere else and is fixed
+      // in the same line, because one sentence describes both -- compare and
+      // send the CANONICAL region, never the raw one.
+      //
+      // WHERE THE RAW SPELLING COMES FROM, measured rather than assumed -- it is
+      // This comment states MEASURED facts and does NOT claim to enumerate every
+      // reachable door -- two earlier revisions each named one and were each
+      // wrong, so the correct shape here is an invariant plus evidence, not a
+      // population. The invariant the code relies on: `getRegion()` returns
+      // whatever `s3Client.config.region()` holds, that value is NOT guaranteed
+      // canonical, and this gate must therefore not depend on its spelling.
+      //
+      // Measured:
+      //  - the SDK does hand back a raw spelling for a region-LESS bag: a
+      //    profile holding `region = US-EAST-1` gives
+      //    `config.region() === 'US-EAST-1'`.
+      //  - `AWS_DEFAULT_REGION` is not a door at all -- the JS SDK v3 region
+      //    chain does not read it, and neither does `namedCliRegion`.
+      //  - the two CLI paths traced to `create()` are CLOSED, contrary to an
+      //    earlier revision of this comment: `deploy.ts` replaces the initial
+      //    bag with `new AwsClients({ region: stackRegion })` before
+      //    `registerAllProviders` runs, and `stackRegion` resolves through
+      //    `namedCliRegion(...) ?? 'us-east-1'`, so `region` is always DEFINED
+      //    and `AwsClients`' conditional fold always fires. `rollback.ts` has
+      //    the same shape.
+      //  - the door verified OPEN is a LIBRARY caller constructing `AwsClients`
+      //    with no region at all. `import.ts` also builds a region-less bag; it
+      //    was not traced to a `CreateBucket` either way.
+      //
+      // The `as BucketLocationConstraint` cast is a PRE-EXISTING stale-enum
+      // workaround and this change does not address it. Canonicalizing does not
+      // make it sound: the enum has 33 members, excludes `us-east-1` by design,
+      // and also excludes the real regions `ca-west-1`, `mx-central-1`,
+      // `ap-east-2` and `eusc-de-east-1`, which this cast still sends today and
+      // S3 still accepts. The cast asserts a membership the value need not have.
+      //
+      // `region` itself is deliberately left RAW rather than reassigned. The
+      // pre-flight gate below folds it at its own site, and that fold is what
+      // `s3-bucket-provider-us-east-1-preflight.test.ts`'s raw-spelling case
+      // watches; canonicalizing the shared binding would leave that fold -- and
+      // the case fencing it -- unable to fail.
       const region = await this.getRegion();
-      if (region !== 'us-east-1') {
+      const canonicalRegion = canonicalizeRegion(region);
+      if (canonicalRegion !== 'us-east-1') {
         createParams.CreateBucketConfiguration = {
-          LocationConstraint: region as BucketLocationConstraint,
+          LocationConstraint: canonicalRegion as BucketLocationConstraint,
         };
       }
 
@@ -6107,14 +6158,17 @@ export class S3BucketProvider implements ResourceProvider {
       // `BucketAlreadyExists`), while `GetBucketLocation` can succeed against a
       // foreign-owned bucket whose policy happens to allow it — so skipping the
       // create on a positive probe would trade this bug for a worse one.
-      // Canonicalized, unlike the `LocationConstraint` gate above it: a
-      // `--region US-EAST-1` reaches `getRegion()` unfolded (the same raw
-      // spelling `assertExistingBucketRegion` folds on the deploy side), and a
-      // raw `===` here would silently skip the probe for the one region it
-      // exists for. The `LocationConstraint` gate is left exactly as it was —
-      // its behavior on an unfolded spelling is a separate, pre-existing
-      // question, and widening it here would change what cdkd sends to
-      // `CreateBucket`.
+      // Canonicalized, like the `LocationConstraint` gate above it: a mis-cased
+      // region reaches `getRegion()` unfolded whenever the client bag carries no
+      // region and the SDK's own chain answers from the profile (the mechanism
+      // and its measurement are on the gate above -- NOT `--region`, which is
+      // folded twice before it could get here), and a raw `===` would silently
+      // skip the probe for the one region it exists for. This fold is
+      // INDEPENDENT of the gate's — `region` is still the raw spelling at this
+      // point, so removing `canonicalizeRegion` here still breaks the probe on
+      // an unfolded spelling even though the gate above now folds too (issue
+      // #2282, which fixed the gate; this line shipped with issue #2241's
+      // pre-flight and is unchanged by it).
       const preflight: BucketRegionProbe =
         canonicalizeRegion(region) === 'us-east-1'
           ? await this.probeBucketRegion(bucketName)
