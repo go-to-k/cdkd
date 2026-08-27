@@ -2738,6 +2738,8 @@ itself be refused by a gate whose scope the incoming range touches. Then say the
 resulting HEADROOM out loud in the report, because it is what tells the next lane
 whether its own addition will red the same fence.
 
+**For the `.claude/rules` corpus specifically this is now MECHANICAL, and the reason it had to become mechanical is worth carrying: the paragraph above already said all of this and a run still hit the collision by hand.** On 2026-08-27 two lanes of ONE `/work-issues` run measured 899,843 B and 899,902 B against a 900,000 B cap, both green, merging to 900,025 B. Neither branch's CI could see it, and the second to merge would have been blamed for a budget the first one spent. `tests/unit/scripts/rule-file-payload.test.ts` now projects the merge — `origin/main`'s corpus plus THIS branch's delta against its own merge base — and fails on the projected number rather than the working-tree one. On a rebased branch the two are equal and the assertion is a no-op; on a stale one it is the only thing that sees the collision. **A cumulative budget in any OTHER file still needs the hand measurement above** — the fence knows about that one corpus, not about the shape.
+
 **And when you hand the trim to someone else, check the target is REACHABLE from
 that lane's own bytes before naming it.** The lane can only spend what it added;
 everything else in the file belongs to other lanes and is not its to cut. So the
