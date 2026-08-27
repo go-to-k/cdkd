@@ -48,6 +48,7 @@ import {
   recordCrossStackExpression,
   isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
+  inheritedParameterExpression,
   MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -2581,16 +2582,93 @@ export class IntrinsicFunctionResolver {
    * `Fn::Select` / `Fn::FindInMap` all re-enter `resolveValue` and reach the
    * parameter through this same `Ref` branch.
    *
+   * WHICH EXPRESSION the pair is recorded against is the issue
+   * [#2291](https://github.com/go-to-k/cdkd/issues/2291) round-2 fix, and
+   * skipping it made the persist and diff halves DISAGREE.
+   *
+   * `inherited` is keyed by PLAINTEXT, so two parent parameters resolving to
+   * ONE value collapse to a single entry there and this method used to copy
+   * whichever expression SURVIVED. That is invisible for a leaf spelled exactly
+   * `{Ref: P}` — the persist path positions such a leaf through the parent's
+   * per-parameter association and never consults this bag's value — but every
+   * EMBEDDING shape (`Fn::Sub`, `Fn::Join`, and `{'Fn::Sub': '${P}'}`, which
+   * `crossStackSourceKey` refuses because its `Fn::Sub` arm requires a dotted
+   * attribute) falls to the plaintext-keyed VALUE SCAN, which reads exactly this
+   * bag. Meanwhile `DeployEngine.redactParametersForDiff` answers PER PARAMETER.
+   * So `Fn::Sub "postgres://u:${LoserParam}@host"` — the dominant CDK
+   * connection-string shape — persisted the SURVIVOR's expression while the
+   * desired side computed the LOSER's, and the two never matched again: a
+   * perpetual UPDATE, or a perpetual REPLACEMENT on a create-only property.
+   * That is issue [#2087](https://github.com/go-to-k/cdkd/issues/2087)'s symptom
+   * arriving through a different door, prevented for the bare-`Ref` leaf and
+   * created for the embedded one.
+   *
+   * Recording THIS parameter's own expression makes the value scan agree with
+   * the diff side, so both halves move together.
+   *
+   * THE RESIDUAL, and the earlier version of this note UNDERSTATED IT. It said
+   * the leftover case was "no worse than the behaviour before this fix". That
+   * is true only of the shape it was measured on. MEASURED 2026-08-27 against
+   * `main` (f56c2cf9) and against this branch, one child resource, parameters
+   * `A` and `B` resolving to one plaintext:
+   *
+   * | shape                                    | main    | here    |
+   * | ---------------------------------------- | ------- | ------- |
+   * | `{Ref: A}` and `{Ref: B}`                | agree   | agree   |
+   * | `Fn::Sub '${A}'` only                    | agree   | agree   |
+   * | `Fn::Sub 'x${A}'` **and** `{Ref: B}`     | agree   | DISAGREE|
+   *
+   * The third row is a NEW disagreement this PR introduces, not a pre-existing
+   * one it fails to fix: `main` had both halves take the collapsed survivor, so
+   * they matched (on the WRONG expression, which is issue #2291, but they
+   * matched). Here the DIFF side is per-parameter while an EMBEDDED leaf can
+   * only be redacted by the plaintext-keyed value scan, and this bag holds ONE
+   * entry — whichever `Ref` resolved LAST. So the embedded leaf takes `B`'s
+   * expression while the desired side computes `A`'s, and the resource reports
+   * an UPDATE on every deploy (a REPLACEMENT, on a create-only property).
+   *
+   * It is ORDER-DEPENDENT, which is why it is narrow: reversing the two
+   * properties makes the embedded parameter the last one resolved and the two
+   * halves agree again (measured). It also needs BOTH leaves in ONE resource —
+   * `perResourceSecrets` is keyed by logical id, so two resources get two bags
+   * and each is right. A resource that consumes and embeds BOTH parameters is
+   * unfixable here for the same reason and is genuinely inherent.
+   *
+   * CLOSING IT NEEDS A PLACEHOLDER-SPAN POSITION ARM — aligning an `Fn::Sub` /
+   * `Fn::Join` source against the resolved string to locate each placeholder's
+   * span and rewrite it from the association. That is a new positioning
+   * CONCEPT rather than an arm beside the existing ones: the persist path would
+   * have to reproduce the resolver's substitution semantics from a module that
+   * holds neither a resolver nor a parameter bag, and any divergence between
+   * the two reproductions is this same perpetual-UPDATE bug. Deferred to issue
+   * [#2320](https://github.com/go-to-k/cdkd/issues/2320) with the measurement.
+   * It shares only the word "span" with issue #2102, which registers live
+   * values for `{{resolve:...}}` TOKEN spans on the drift paths.
+   *
    * Substituting is deliberately NOT done here — the resolved value is what
    * reaches AWS, and an `Fn::Equals` over a parameter must compare the real
    * value or the condition flips.
    */
-  private recordInheritedParameterSecrets(value: unknown, context: ResolverContext): void {
+  private recordInheritedParameterSecrets(
+    parameterName: string,
+    value: unknown,
+    context: ResolverContext
+  ): void {
     const inherited = context.inheritedSecrets;
     const recorded = context.recordedSecretValues;
     if (!inherited || inherited.size === 0 || !recorded) return;
+    // Issue #2291 round 2. THIS parameter's own expression, when the parent
+    // certified one, rather than the collapsed map's survivor. See the
+    // "WHICH EXPRESSION" section of the doc above for why the survivor is the
+    // wrong answer for an EMBEDDING leaf and what residual is left.
+    const own = inheritedParameterExpression(inherited, parameterName, value);
     for (const [plaintext, expression] of inheritedSecretsCarriedBy(value, inherited)) {
-      recorded.set(plaintext, expression);
+      // The override applies ONLY to the pair whose plaintext IS this
+      // parameter's whole value. `inheritedSecretsCarriedBy` also returns pairs
+      // for OTHER inherited plaintexts this value merely contains, and those
+      // belong to their own parameters -- handing them this one's expression
+      // would be the collapse, one step over.
+      recorded.set(plaintext, own !== undefined && plaintext === value ? own : expression);
     }
   }
 
@@ -2722,7 +2800,9 @@ export class IntrinsicFunctionResolver {
       // Issue #1903 / #2087: a nested-stack child records the parent's
       // already-resolved secret HERE, at the point a resource actually
       // consumes the parameter, so the pair lands in that resource's own bag.
-      this.recordInheritedParameterSecrets(value, context);
+      // The NAME goes with it since issue #2291 round 2 -- it is what selects
+      // this parameter's own expression over the collapsed map's survivor.
+      this.recordInheritedParameterSecrets(logicalId, value, context);
       return value;
     }
 

@@ -23,7 +23,12 @@ import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
-import { MIN_NEEDLE_LENGTH, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
+import {
+  MIN_NEEDLE_LENGTH,
+  SECRET_MASK,
+  recordNestedStackParameterExpressions,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -97,6 +102,101 @@ describe('IntrinsicFunctionResolver — inherited nested-stack parameter secrets
 
     await expect(resolver.resolve({ Ref: PARAM }, ctx)).resolves.toBe(embedded);
     expect(ctx.recordedSecretValues.get(SECRET)).toBe(EXPR);
+  });
+
+  /**
+   * TWO parent parameters resolving to ONE plaintext (issue
+   * [#2291](https://github.com/go-to-k/cdkd/issues/2291) round 2).
+   *
+   * `inheritedSecrets` is keyed by PLAINTEXT, so the pair has ALREADY collapsed
+   * to a single entry by the time the child engine exists and this method used
+   * to copy the SURVIVOR's expression into the consuming resource's bag. For a
+   * leaf spelled exactly `{Ref: P}` that is invisible — the persist path
+   * positions it through the parent's per-parameter association and never reads
+   * this bag's VALUE — but every EMBEDDING shape falls to the plaintext-keyed
+   * value scan, which reads exactly this bag, while
+   * `DeployEngine.redactParametersForDiff` answers PER PARAMETER. The two
+   * halves then disagree forever: a perpetual UPDATE.
+   *
+   * The DISCRIMINATOR is therefore the LOSING parameter — `PAIR_A`, whose
+   * expression is NOT the survivor. Asking about `PAIR_B` would pass either way.
+   */
+  const PAIR_EXPR_A = '{{resolve:secretsmanager:prod/db/cred:SecretString:handoff::}}';
+  const PAIR_EXPR_B = '{{resolve:secretsmanager:prod/db/cred:SecretString:handoff:AWSCURRENT:}}';
+  const PAIR_SHARED = 'sh4red-h4ndoff-pl4intext-2291';
+  const PAIR_A = 'HandoffSecretA';
+  const PAIR_B = 'HandoffSecretB';
+
+  /** The parent bag exactly as a parent pass produces it: collapsed, plus the table. */
+  function collidingParentBag(): RecordedSecretValues {
+    const parent: RecordedSecretValues = new Map([[PAIR_SHARED, PAIR_EXPR_B]]);
+    recordNestedStackParameterExpressions(
+      parent,
+      'AWS::CloudFormation::Stack',
+      { Parameters: { [PAIR_A]: PAIR_SHARED, [PAIR_B]: PAIR_SHARED } },
+      { Parameters: { [PAIR_A]: PAIR_EXPR_A, [PAIR_B]: PAIR_EXPR_B } }
+    );
+    return parent;
+  }
+
+  it('records the LOSING parameter under ITS OWN expression, not the collapsed survivor (#2291)', async () => {
+    const parent = collidingParentBag();
+    // The measured pre-condition, asserted rather than assumed.
+    expect(parent.size).toBe(1);
+    expect(parent.get(PAIR_SHARED)).toBe(PAIR_EXPR_B);
+
+    const ctx = makeContext({ [PAIR_A]: PAIR_SHARED, [PAIR_B]: PAIR_SHARED }, parent);
+    await expect(resolver.resolve({ Ref: PAIR_A }, ctx)).resolves.toBe(PAIR_SHARED);
+    expect(ctx.recordedSecretValues.get(PAIR_SHARED)).toBe(PAIR_EXPR_A);
+  });
+
+  it('makes the VALUE SCAN agree with the diff side for an Fn::Sub leaf over the losing parameter (#2291)', async () => {
+    // THE REGRESSION THIS FIX EXISTS FOR. `Fn::Sub` is the dominant CDK
+    // connection-string shape, `crossStackSourceKey`'s `Fn::Sub` arm refuses a
+    // non-dotted placeholder, so this leaf can ONLY be redacted by the value
+    // scan — which reads the bag this method fills.
+    const parent = collidingParentBag();
+    const ctx = makeContext({ [PAIR_A]: PAIR_SHARED, [PAIR_B]: PAIR_SHARED }, parent);
+
+    const resolved = await resolver.resolve(
+      { 'Fn::Sub': `postgres://u:\${${PAIR_A}}@host` },
+      ctx
+    );
+    // AWS still gets the real value.
+    expect(resolved).toBe(`postgres://u:${PAIR_SHARED}@host`);
+    // ...and the needle the value scan will substitute is THIS parameter's own
+    // expression, which is what `redactParametersForDiff` computes on the other
+    // side. Under the collapse it was `PAIR_EXPR_B` and the two never matched.
+    expect(ctx.recordedSecretValues.get(PAIR_SHARED)).toBe(PAIR_EXPR_A);
+  });
+
+  it('applies the override ONLY to the pair whose plaintext IS the whole value (#2291)', async () => {
+    // THE DISCRIMINATOR for the `plaintext === value` guard on the override.
+    // `inheritedSecretsCarriedBy` returns a pair for EVERY inherited plaintext
+    // the value carries — the whole-value match AND any substring match at or
+    // above `MIN_NEEDLE_LENGTH`. Only the first belongs to THIS parameter; the
+    // rest are other parameters' secrets that this value happens to contain.
+    // Dropping the guard (`own ?? expression`) hands them all this parameter's
+    // expression, which is the collapse this fix exists to remove, one step over.
+    //
+    // The probe input has to make the two sets DIFFER, so `INNER` is a genuine
+    // SUBSTRING of the shared plaintext. A non-overlapping second secret cannot
+    // see the defect at all: it never appears in the carried list.
+    const INNER = 'h4ndoff-pl4intext';
+    const INNER_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:inner::}}';
+    expect(PAIR_SHARED).toContain(INNER);
+    expect(INNER.length).toBeGreaterThanOrEqual(MIN_NEEDLE_LENGTH);
+
+    const parent = collidingParentBag();
+    parent.set(INNER, INNER_EXPR);
+
+    const ctx = makeContext({ [PAIR_A]: PAIR_SHARED }, parent);
+    await resolver.resolve({ Ref: PAIR_A }, ctx);
+
+    // This parameter's own value takes this parameter's own expression...
+    expect(ctx.recordedSecretValues.get(PAIR_SHARED)).toBe(PAIR_EXPR_A);
+    // ...and the secret it merely CONTAINS keeps its own.
+    expect(ctx.recordedSecretValues.get(INNER)).toBe(INNER_EXPR);
   });
 
   it('records nothing for a parameter whose value does not carry the plaintext at all', async () => {

@@ -79,6 +79,7 @@ import {
   createSecretMasker,
   dynamicReferenceTokens,
   maskSecretsInText,
+  recordNestedStackParameterExpressions,
   STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -1742,6 +1743,72 @@ async function replaySingle(
         // rebuilt state record below AND to mask every log site downstream.
         const resolvedPrevProps =
           (await resolveReplayProps(prev.properties, resolver, secrets, ctx, op.logicalId)) ?? {};
+        // Issue #2291: a nested-stack row replayed here hands the CHILD engine
+        // this same `secrets` bag (`withCurrentResourceSecrets` binds it around
+        // the provider call below, and `NestedStackProvider` seeds the child
+        // from it). The bag is keyed by PLAINTEXT, so two child `Parameters`
+        // resolving to one value have already collapsed in it -- and without
+        // the per-parameter table the child re-persists the SURVIVOR for both
+        // leaves, silently rewriting correct state back into the #2291 shape.
+        // A `cdkd drift --revert` inside that window then pushes the WRONG
+        // secret version to the live child resource (the
+        // GHSA-p5qg-v9gv-hc7w replay class). Waiting for the next deploy to
+        // heal it is not an answer: `--revert` is used precisely then.
+        //
+        // WHICH RECORD DRIFTS, precisely, because a review round proposed
+        // softening this on the grounds that `NestedStackProvider` declares no
+        // `readCurrentState`. That is true of the `AWS::CloudFormation::Stack`
+        // ROW only -- that row never drifts. The CHILD's own records do:
+        // `S3StateBackend.listStacks` has no filter excluding a
+        // `{parent}~{Child}` key (it is exactly `NEW_KEY_DEPTH`), so the child
+        // state is enumerated as an ordinary stack and `drift.ts` re-resolves
+        // its persisted expressions like any other. The claim stands as
+        // written.
+        //
+        // THE SOURCE IS THE JOURNAL, not the child's template. The journaled
+        // record is the UNCOLLAPSED one -- since issue #1904 each of its leaves
+        // holds its OWN `{{resolve:...}}` token -- which is exactly what the
+        // position pass needs, and it is also the bag `resolveReplayProps` just
+        // produced this resolved side FROM.
+        //
+        // `STATE_DERIVED_RULES`, not the recorder's `TEMPLATE_DERIVED_RULES`
+        // default: the source is a persisted record, so it holds no PUBLIC
+        // `ssm:` reference (a `String` parameter is stored resolved), and it IS
+        // the same generation the bag was resolved from one statement earlier.
+        // That is the identical pairing `redactRollbackRecord` makes for the
+        // record it positions.
+        //
+        // THE FIRST HALF OF THAT PREMISE HAS A DOCUMENTED CARVE-OUT, and saying
+        // it unqualified -- as this note first did -- restates something
+        // `PathSourceRules`' own doc contradicts: `cdkd import` WARNS and
+        // persists the RAW template intrinsic, so a public `ssm:` expression CAN
+        // sit in a record's `properties`. Measured in review: such a token is
+        // CERTIFIED here and REFUSED under `TEMPLATE_DERIVED_RULES`. The cost is
+        // bounded to the issue #1901 class -- a spurious UPDATE, because the
+        // child persists an expression for a value state should hold RESOLVED --
+        // and never a disclosure, since what is persisted is a reference either
+        // way. Accepted for the same reason `trustAnyExpression`'s whole-token
+        // arm accepts it: the alternative is refusing every replay of an
+        // imported stack's nested parameters.
+        //
+        // The WRONG fix, ruled out explicitly: do NOT gate this on
+        // `isKnownSecretExpression`. That reopens refusal 2b's hole, where an
+        // `ssm` reference whose verdict is unpinned falls to the value scan and
+        // the losing parameter is recorded against the SIBLING's expression.
+        //
+        // ONLY THE DESIRED SIDE. The other bag each arm resolves (`currentProps`
+        // / `attemptedProps`) is a DIFFERENT generation, and
+        // `NestedStackProvider` forwards only `properties` -- the desired side --
+        // as the child's `Parameters`. Recording both would POISON every
+        // parameter name whose expression changed between the two generations,
+        // which refuses the very population this exists to serve.
+        recordNestedStackParameterExpressions(
+          secrets,
+          op.resourceType,
+          resolvedPrevProps,
+          prev.properties,
+          STATE_DERIVED_RULES
+        );
         logger.info(
           `  Rollback: Reversing replacement of ${op.logicalId} (${op.resourceType}) — ` +
             `re-creating the old resource and deleting the new one`
@@ -2105,6 +2172,72 @@ async function replaySingle(
           ctx,
           op.logicalId
         );
+        // Issue #2291: a nested-stack row replayed here hands the CHILD engine
+        // this same `secrets` bag (`withCurrentResourceSecrets` binds it around
+        // the provider call below, and `NestedStackProvider` seeds the child
+        // from it). The bag is keyed by PLAINTEXT, so two child `Parameters`
+        // resolving to one value have already collapsed in it -- and without
+        // the per-parameter table the child re-persists the SURVIVOR for both
+        // leaves, silently rewriting correct state back into the #2291 shape.
+        // A `cdkd drift --revert` inside that window then pushes the WRONG
+        // secret version to the live child resource (the
+        // GHSA-p5qg-v9gv-hc7w replay class). Waiting for the next deploy to
+        // heal it is not an answer: `--revert` is used precisely then.
+        //
+        // WHICH RECORD DRIFTS, precisely, because a review round proposed
+        // softening this on the grounds that `NestedStackProvider` declares no
+        // `readCurrentState`. That is true of the `AWS::CloudFormation::Stack`
+        // ROW only -- that row never drifts. The CHILD's own records do:
+        // `S3StateBackend.listStacks` has no filter excluding a
+        // `{parent}~{Child}` key (it is exactly `NEW_KEY_DEPTH`), so the child
+        // state is enumerated as an ordinary stack and `drift.ts` re-resolves
+        // its persisted expressions like any other. The claim stands as
+        // written.
+        //
+        // THE SOURCE IS THE JOURNAL, not the child's template. The journaled
+        // record is the UNCOLLAPSED one -- since issue #1904 each of its leaves
+        // holds its OWN `{{resolve:...}}` token -- which is exactly what the
+        // position pass needs, and it is also the bag `resolveReplayProps` just
+        // produced this resolved side FROM.
+        //
+        // `STATE_DERIVED_RULES`, not the recorder's `TEMPLATE_DERIVED_RULES`
+        // default: the source is a persisted record, so it holds no PUBLIC
+        // `ssm:` reference (a `String` parameter is stored resolved), and it IS
+        // the same generation the bag was resolved from one statement earlier.
+        // That is the identical pairing `redactRollbackRecord` makes for the
+        // record it positions.
+        //
+        // THE FIRST HALF OF THAT PREMISE HAS A DOCUMENTED CARVE-OUT, and saying
+        // it unqualified -- as this note first did -- restates something
+        // `PathSourceRules`' own doc contradicts: `cdkd import` WARNS and
+        // persists the RAW template intrinsic, so a public `ssm:` expression CAN
+        // sit in a record's `properties`. Measured in review: such a token is
+        // CERTIFIED here and REFUSED under `TEMPLATE_DERIVED_RULES`. The cost is
+        // bounded to the issue #1901 class -- a spurious UPDATE, because the
+        // child persists an expression for a value state should hold RESOLVED --
+        // and never a disclosure, since what is persisted is a reference either
+        // way. Accepted for the same reason `trustAnyExpression`'s whole-token
+        // arm accepts it: the alternative is refusing every replay of an
+        // imported stack's nested parameters.
+        //
+        // The WRONG fix, ruled out explicitly: do NOT gate this on
+        // `isKnownSecretExpression`. That reopens refusal 2b's hole, where an
+        // `ssm` reference whose verdict is unpinned falls to the value scan and
+        // the losing parameter is recorded against the SIBLING's expression.
+        //
+        // ONLY THE DESIRED SIDE. The other bag each arm resolves (`currentProps`
+        // / `attemptedProps`) is a DIFFERENT generation, and
+        // `NestedStackProvider` forwards only `properties` -- the desired side --
+        // as the child's `Parameters`. Recording both would POISON every
+        // parameter name whose expression changed between the two generations,
+        // which refuses the very population this exists to serve.
+        recordNestedStackParameterExpressions(
+          secrets,
+          op.resourceType,
+          desiredProps,
+          previousState.properties,
+          STATE_DERIVED_RULES
+        );
         // See {@link updateWithRollbackRetry} for why this is not a bare
         // `provider.update()` and not a bare `withRetry` either.
         const revertResult = await updateWithRollbackRetry(
@@ -2458,6 +2591,17 @@ export async function replayFailedOperations(
             secrets,
             ctx,
             op.logicalId
+          );
+          // Issue #2291, the `--revert-failed` twin of the two arms in
+          // `replaySingle` — see the long note on the `revert` arm for why the
+          // journal is the source, why `STATE_DERIVED_RULES`, and why only the
+          // desired side is recorded.
+          recordNestedStackParameterExpressions(
+            secrets,
+            op.resourceType,
+            desiredProps,
+            prev.properties,
+            STATE_DERIVED_RULES
           );
           const revertFailedResult = await updateWithRollbackRetry(
             provider,

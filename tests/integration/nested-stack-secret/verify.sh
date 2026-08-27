@@ -35,6 +35,16 @@
 #           `perResourceSecrets` is keyed by logical id, so two resources get
 #           two bags and would pass either way. The pair uses its own JSON key,
 #           so `StageParam` stays the only leaf carrying ITS plaintext.
+#   #2291 - the PARAMETER-BORNE twin of the round-3 collapse above, and the one
+#           `SubSecretPair` cannot see. Two references to ONE secret handed to
+#           the CHILD as `Parameters`: the parent's `inheritedSecrets` bag is
+#           `Map<plaintext, expression>`, so it collapses them BEFORE the child
+#           engine exists, and the child's `{Ref: <Param>}` source leaves carry
+#           no expression for the position pass to certify against. TWO
+#           independent causes, both of which had to be fixed. `HandoffPair`
+#           holds both leaves in ONE child resource (its Value and its
+#           Description) and each must persist ITS OWN expression -- the pair
+#           has its own JSON key so no other arm's plaintext is dragged in.
 #   #2086 - the rollback executor binds the same seed. Not directly provoked
 #           here (that needs a mid-deploy failure); its unit coverage is
 #           `tests/unit/deployment/rollback-executor-nested-stack-secret-scope.test.ts`.
@@ -155,6 +165,8 @@ SECURE_PARAM_NAME="cdkd-nested-secure-${ACCOUNT_ID}"
 CHILD_STAGE_PARAM="cdkd-nested-child-stage-${ACCOUNT_ID}"
 CHILD_SECURE_PARAM="cdkd-nested-child-secure-${ACCOUNT_ID}"
 CHILD_UNRELATED_PARAM="cdkd-nested-child-unrelated-${ACCOUNT_ID}"
+CHILD_HANDOFF_PARAM="cdkd-nested-child-handoff-${ACCOUNT_ID}"
+CHILD_HANDOFF_SUB_PARAM="cdkd-nested-child-handoffsub-${ACCOUNT_ID}"
 PARENT_CONSUMER_PARAM="cdkd-nested-parent-consumer-${ACCOUNT_ID}"
 PARENT_SUB_PARAM="cdkd-nested-parent-sub-${ACCOUNT_ID}"
 PARENT_SUBPAIR_PARAM="cdkd-nested-parent-subpair-${ACCOUNT_ID}"
@@ -179,6 +191,20 @@ STAGE_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:stage::}}"
 SHARED_PW_VALUE="sharedpw2270"
 SHARED_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:shared::}}"
 SHARED_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:shared:AWSCURRENT:}}"
+# The #2291 PARAMETER-BORNE pair. A THIRD JSON key, so its plaintext is its own:
+# sharing `stage` would break the #1903 assertion and sharing `shared` would
+# break the #2270 round-3 one, both for the reason recorded above. Two spellings
+# that resolve IDENTICALLY, neither a substring of the other (one ends
+# `handoff::}}`, the other `handoff:AWSCURRENT:}}`).
+HANDOFF_PW_VALUE="handoffpw2291"
+HANDOFF_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:handoff::}}"
+HANDOFF_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:handoff:AWSCURRENT:}}"
+# The #2291 ROUND-2 arm's EMBEDDING leaf, over the LOSING parameter. Its
+# persisted form must splice HANDOFF_EXPR_A -- not the survivor -- into the
+# connection string, or the desired side (which answers per parameter) never
+# matches it again and every deploy reports a change.
+HANDOFF_SUB_STATE_EXPECTED="postgres://u:${HANDOFF_EXPR_A}@host"
+HANDOFF_SUB_LIVE_EXPECTED="postgres://u:${HANDOFF_PW_VALUE}@host"
 SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
 # The #2087 discriminator's literal, kept in sync with the fixture stack. It
 # CONTAINS `SECRET_STAGE_VALUE`, which is the whole point: a non-overlapping
@@ -232,7 +258,7 @@ esac
 # The pre-existing three are inner-only -- `UNRELATED_LITERAL` legitimately
 # CONTAINS `SECRET_STAGE_VALUE`, which the #2087 assertion above requires, so
 # they must never be compared against each other.
-CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE"
+CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE"
 CDKD_ALL_LITERALS="SECRET_STAGE_VALUE SECURE_PW_VALUE UNRELATED_LITERAL ${CDKD_2270_LITERALS}"
 for mine_name in ${CDKD_2270_LITERALS}; do
   mine="${!mine_name}"
@@ -265,10 +291,14 @@ mask() {
 # prints the secret at the exact moment redaction failed.
 diag_output() {
   local text="$1"
-  # BOTH plaintexts. Withholding only SECURE_PW_VALUE echoed SECRET_STAGE_VALUE
-  # to stderr on the diff-failure path -- the exact disclosure this function
-  # exists to prevent, in the one place it is most likely to have happened.
-  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}"; then
+  # EVERY plaintext this fixture puts into AWS, not a subset. Withholding only
+  # SECURE_PW_VALUE echoed SECRET_STAGE_VALUE to stderr on the diff-failure path
+  # -- the exact disclosure this function exists to prevent, in the one place it
+  # is most likely to have happened. The #2270 round-3 pair and the #2291
+  # handoff pair join it here for the same reason: a diff failure on either arm
+  # is the failure mode in which their plaintext is MOST likely to be in the
+  # captured text.
+  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
     echo "      output: <WITHHELD - it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
@@ -309,6 +339,13 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
     echo "FAIL: ${label}: the child's state.json carries the resolved shared plaintext" >&2
     exit 1
   fi
+  # The #2291 pair is resolved by the PARENT and handed down, so its plaintext
+  # must be absent from the CHILD's record -- the arm this fixture exists to
+  # fence is precisely a child leaf holding something it should not.
+  if printf '%s' "${scan}" | grep -qF "${HANDOFF_PW_VALUE}"; then
+    echo "FAIL: ${label}: the child's state.json carries the resolved handoff plaintext" >&2
+    exit 1
+  fi
   echo "    OK: ${label}: no resolved plaintext anywhere else in the child's state.json"
 }
 
@@ -329,7 +366,7 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
     echo "      the log format drifted, so the plaintext scan below proves nothing" >&2
     exit 1
   fi
-  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}"; then
+  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
     echo "FAIL: ${label}: --verbose printed a resolved secret plaintext" >&2
     exit 1
   fi
@@ -355,6 +392,7 @@ cleanup() {
     # out-of-band resources are cdkd's responsibility NOWHERE, so this sweep is
     # the only thing that keeps them from being orphans.
     for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
+             "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" \
              "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" \
              "${PARENT_SUBPAIR_PARAM}" "${SECURE_PARAM_NAME}"; do
       aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
@@ -407,7 +445,7 @@ cleanup
 # --- Out-of-band secret + SecureString parameter ---------------------------
 echo "==> Creating the secretsmanager secret and the SecureString SSM parameter out of band"
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\"}" \
+  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\"}" \
   --region "${REGION}" >/dev/null
 aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
   --value "${SECURE_PW_VALUE}" --overwrite --region "${REGION}" >/dev/null
@@ -548,14 +586,14 @@ assert_eq "the LIVE Fn::Sub Description holds the SAME resolved shared secret" \
 # collapse both carry the SURVIVOR's, so whichever lost reads as the other.
 SUBPAIR_VALUE_STATE="$(jq_state "${PARENT_STATE}" '.resources.SubSecretPair.properties.Value')"
 SUBPAIR_DESC_STATE="$(jq_state "${PARENT_STATE}" '.resources.SubSecretPair.properties.Description')"
-assert_eq "SubSecretPair.Value persists the DEFAULT-stage expression" \
-  "${SUBPAIR_VALUE_STATE}" "${SHARED_EXPR_A}"
-assert_eq "SubSecretPair.Description persists the AWSCURRENT-spelled expression" \
-  "${SUBPAIR_DESC_STATE}" "${SHARED_EXPR_B}"
 if [ "${SUBPAIR_VALUE_STATE}" = "${SUBPAIR_DESC_STATE}" ]; then
   echo "FAIL: both Fn::Sub secret leaves persisted the SAME expression (collapse, issue #2270)" >&2
   exit 1
 fi
+assert_eq "SubSecretPair.Value persists the DEFAULT-stage expression" \
+  "${SUBPAIR_VALUE_STATE}" "${SHARED_EXPR_A}"
+assert_eq "SubSecretPair.Description persists the AWSCURRENT-spelled expression" \
+  "${SUBPAIR_DESC_STATE}" "${SHARED_EXPR_B}"
 
 # READ THE TWO COUNTS AS A PAIR. "no plaintext" alone is satisfied by an arm
 # that did nothing at all -- if the resource were missing, or its leaves empty,
@@ -584,7 +622,105 @@ assert_eq "the child's shared output A is its own expression" \
 assert_eq "the child's shared output B is its own expression" \
   "$(jq_state "${CHILD_STATE}" '.outputs.ChildSharedOutputB')" "${SHARED_EXPR_B}"
 
-if printf '%s' "${PARENT_STATE}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}"; then
+# --- #2291: two child PARAMETERS resolving to ONE plaintext ------------------
+# The PARAMETER-BORNE twin of the round-3 arm above, and the one it cannot see.
+# There the pair is resolved by the CHILD, so each source leaf IS its own whole
+# token and the child's own position pass certifies it. Here the PARENT resolves
+# both before the child engine exists, its `inheritedSecrets` bag is keyed by
+# PLAINTEXT so the two collapse to one entry, and the child's source leaves are
+# `{Ref: HandoffSecretA}` / `{Ref: HandoffSecretB}` -- intrinsic objects
+# carrying no expression at all. Two independent causes, both of which had to be
+# fixed; with either one unfixed BOTH child leaves persist the survivor's
+# expression and `cdkd drift --revert` / rollback pushes the WRONG version stage
+# to the live resource.
+#
+# BOTH LEAVES ARE ONE CHILD RESOURCE'S, for the reason `SubSecretPair` states:
+# `perResourceSecrets` is keyed by logical id, so two resources get two bags,
+# each holding a single pair, and each would redact correctly with or without
+# the fix.
+echo "==> #2291: two inherited Parameters resolving to ONE plaintext keep their OWN expressions"
+
+# THE PARENT SIDE FIRST, as the premise: its own two leaves are whole tokens, so
+# they were ALREADY correct before this fix. Asserting them here is what pins
+# the defect to the HANDOFF rather than to the parent's positioning.
+assert_eq "the parent's nested-stack row keeps HandoffSecretA as its OWN expression" \
+  "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.HandoffSecretA')" \
+  "${HANDOFF_EXPR_A}"
+assert_eq "the parent's nested-stack row keeps HandoffSecretB as its OWN expression" \
+  "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.HandoffSecretB')" \
+  "${HANDOFF_EXPR_B}"
+
+# The collapse PREMISE, asserted rather than assumed: both LIVE leaves must hold
+# the SAME plaintext. If they differed, the plaintext-keyed value scan could
+# tell them apart and the whole arm would pass vacuously.
+LIVE_HANDOFF_VALUE=$(aws ssm get-parameter --name "${CHILD_HANDOFF_PARAM}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+LIVE_HANDOFF_DESC=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${CHILD_HANDOFF_PARAM}" \
+  --query 'Parameters[0].Description' --output text)
+assert_eq "the LIVE handoff Value holds the resolved handoff secret" \
+  "${LIVE_HANDOFF_VALUE}" "${HANDOFF_PW_VALUE}"
+assert_eq "the LIVE handoff Description holds the SAME resolved handoff secret" \
+  "${LIVE_HANDOFF_DESC}" "${HANDOFF_PW_VALUE}"
+
+# THE DISCRIMINATOR: each persisted CHILD leaf back on ITS OWN expression. Under
+# the collapse both carry the survivor's, so whichever lost reads as the other.
+HANDOFF_VALUE_STATE="$(jq_state "${CHILD_STATE}" '.resources.HandoffPair.properties.Value')"
+HANDOFF_DESC_STATE="$(jq_state "${CHILD_STATE}" '.resources.HandoffPair.properties.Description')"
+if [ "${HANDOFF_VALUE_STATE}" = "${HANDOFF_DESC_STATE}" ]; then
+  echo "FAIL: both inherited-parameter leaves persisted the SAME expression (collapse, issue #2291)" >&2
+  exit 1
+fi
+assert_eq "HandoffPair.Value persists the DEFAULT-stage expression" \
+  "${HANDOFF_VALUE_STATE}" "${HANDOFF_EXPR_A}"
+assert_eq "HandoffPair.Description persists the AWSCURRENT-spelled expression" \
+  "${HANDOFF_DESC_STATE}" "${HANDOFF_EXPR_B}"
+
+# READ THE TWO COUNTS AS A PAIR, for the reason the round-3 arm states: "no
+# plaintext" alone is satisfied by an arm that did nothing at all.
+HANDOFF_PLAINTEXT_HITS=$(printf '%s' "${HANDOFF_VALUE_STATE}${HANDOFF_DESC_STATE}" \
+  | grep -c "${HANDOFF_PW_VALUE}" || true)
+HANDOFF_EXPR_HITS=0
+case "${HANDOFF_VALUE_STATE}" in *"{{resolve:secretsmanager:"*) HANDOFF_EXPR_HITS=$(( HANDOFF_EXPR_HITS + 1 ));; esac
+case "${HANDOFF_DESC_STATE}" in *"{{resolve:secretsmanager:"*) HANDOFF_EXPR_HITS=$(( HANDOFF_EXPR_HITS + 1 ));; esac
+if [ "${HANDOFF_PLAINTEXT_HITS}" -ne 0 ] || [ "${HANDOFF_EXPR_HITS}" -ne 2 ]; then
+  echo "FAIL: expected 0 plaintext hits AND 2 expression hits across HandoffPair's two leaves" >&2
+  echo "      plaintext hits: ${HANDOFF_PLAINTEXT_HITS}, expression hits: ${HANDOFF_EXPR_HITS}" >&2
+  exit 1
+fi
+echo "    OK: 0 plaintext / 2 expressions, each inherited-parameter leaf on its own"
+
+# --- #2291 round 2: the EMBEDDING leaf and the DIFF side must AGREE ----------
+# `HandoffPair` above is positioned through the parent's per-parameter
+# association. This leaf is an `Fn::Sub`, which `crossStackSourceKey` refuses,
+# so the ONLY thing that can redact it is the plaintext-keyed value scan reading
+# the child resource's own bag. Round 1 of this fix made the DIFF side answer per
+# parameter and left that bag holding the collapsed SURVIVOR, so the two halves
+# disagreed and every deploy reported a change forever (on a create-only
+# property, a perpetual REPLACEMENT of a live resource). Its own resource, not a
+# third leaf on `HandoffPair`: the destination bag is keyed by plaintext, so a
+# resource consuming both colliding parameters keeps only whichever `Ref`
+# resolved last.
+echo "==> #2291 round 2: an EMBEDDING leaf over the losing parameter agrees with the diff side"
+LIVE_HANDOFF_SUB=$(aws ssm get-parameter --name "${CHILD_HANDOFF_SUB_PARAM}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+assert_eq "the LIVE embedding leaf holds the RESOLVED connection string" \
+  "${LIVE_HANDOFF_SUB}" "${HANDOFF_SUB_LIVE_EXPECTED}"
+HANDOFF_SUB_STATE="$(jq_state "${CHILD_STATE}" '.resources.HandoffSub.properties.Value')"
+# THE NAMED DEFECT RUNS FIRST, and the order is the whole reason it exists --
+# the same lesson the #2270 arm above records. `assert_eq` EXITS on a mismatch
+# and MASKS both values, so placing this after it would make this branch DEAD
+# CODE, reachable only when the two values already match, and the one wrong
+# value a pre-fix binary produces would never be legible in the log.
+if [ "${HANDOFF_SUB_STATE}" = "postgres://u:${HANDOFF_EXPR_B}@host" ]; then
+  echo "FAIL: the embedding leaf persisted the SURVIVOR's expression (issue #2291 round 2)" >&2
+  echo "      it must splice the LOSING parameter's own expression instead" >&2
+  exit 1
+fi
+assert_eq "HandoffSub persists the LOSING parameter's OWN expression, spliced in" \
+  "${HANDOFF_SUB_STATE}" "${HANDOFF_SUB_STATE_EXPECTED}"
+
+if printf '%s' "${PARENT_STATE}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
   exit 1
 fi
@@ -606,7 +742,7 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd diff --recursive --fail exited 0"
-if printf '%s' "${DIFF_OUT}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}"; then
+if printf '%s' "${DIFF_OUT}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
   echo "FAIL: the diff output printed a resolved secret plaintext" >&2
   exit 1
 fi
@@ -699,7 +835,37 @@ assert_eq "child SecureParam is the EXPRESSION after an UPDATE-driven redeploy" 
 assert_eq "child UnrelatedParam is STILL verbatim after an UPDATE-driven redeploy" \
   "$(jq_state "${CHILD_STATE3}" '.resources.UnrelatedParam.properties.Value')" "${UNRELATED_LITERAL}"
 assert_child_state_carries_no_plaintext "after the UPDATE-driven redeploy" "${CHILD_STATE3}"
-if printf '%s' "${PARENT_STATE3}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}"; then
+
+# --- #2291 through the UPDATE call site -------------------------------------
+# The parent records the per-parameter expressions at TWO sites -- the deploy
+# engine's CREATE arm (phase 1) and its UPDATE arm (here). `HandoffPair` gains
+# an `AllowedPattern` under `CDKD_TEST_UPDATE=child-property`, so the child
+# genuinely RE-RESOLVES both of its leaves in this phase; without that change it
+# would be UNCHANGED, nothing would be rewritten, and these assertions would
+# pass over a state.json this deploy never touched.
+echo "==> #2291: the UPDATE call site records the same per-parameter expressions"
+LIVE_HANDOFF_PATTERN=$(aws ssm describe-parameters --region "${REGION}" \
+  --parameter-filters "Key=Name,Values=${CHILD_HANDOFF_PARAM}" \
+  --query 'Parameters[0].AllowedPattern' --output text)
+assert_eq "the child's HandoffPair was UPDATED (so the update arm re-resolved it)" \
+  "${LIVE_HANDOFF_PATTERN}" '^.*$'
+HANDOFF_VALUE_STATE3="$(jq_state "${CHILD_STATE3}" '.resources.HandoffPair.properties.Value')"
+HANDOFF_DESC_STATE3="$(jq_state "${CHILD_STATE3}" '.resources.HandoffPair.properties.Description')"
+if [ "${HANDOFF_VALUE_STATE3}" = "${HANDOFF_DESC_STATE3}" ]; then
+  echo "FAIL: the UPDATE arm collapsed both inherited-parameter leaves (issue #2291)" >&2
+  exit 1
+fi
+assert_eq "HandoffPair.Value is STILL its own expression after the UPDATE" \
+  "${HANDOFF_VALUE_STATE3}" "${HANDOFF_EXPR_A}"
+assert_eq "HandoffPair.Description is STILL its own expression after the UPDATE" \
+  "${HANDOFF_DESC_STATE3}" "${HANDOFF_EXPR_B}"
+# The embedding leaf too: it is UNCHANGED in this phase, so what this asserts is
+# that the redeploy did not REWRITE a correct value -- the direction a bag
+# re-seeded from the UPDATE arm could get wrong.
+assert_eq "HandoffSub is STILL the losing parameter's own expression after the UPDATE" \
+  "$(jq_state "${CHILD_STATE3}" '.resources.HandoffSub.properties.Value')" \
+  "${HANDOFF_SUB_STATE_EXPECTED}"
+if printf '%s' "${PARENT_STATE3}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext after the update" >&2
   exit 1
 fi
