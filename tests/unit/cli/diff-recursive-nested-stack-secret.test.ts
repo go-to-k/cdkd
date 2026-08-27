@@ -463,6 +463,131 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
     expect(warned).not.toContain(SECRET_PLAINTEXT);
   });
 
+  it('binds a CommaDelimitedList child parameter as the token SPLIT BY TYPE, matching the ARRAY state holds (#2327)', async () => {
+    // The twin of the `Type: Number` case above, and its OPPOSITE verdict.
+    // There the coercion produces `NaN`, which matches neither side, so the raw
+    // token is kept. Here the deploy's own `coerceParameterValue` split the
+    // RESOLVED value on `,` before redaction, so the child's state holds an
+    // ARRAY of expressions -- and keeping the raw token compared a STRING
+    // against that list and reported a phantom change on every single run.
+    //
+    // The comment this replaces justified the blanket raw-token rule as
+    // "exactly what the child's state holds for such a parameter". That is true
+    // only for a SCALAR one, which is what made it durable: an over-stated
+    // invariant stops the next reader looking.
+    //
+    // Splitting the TOKEN reproduces the array because a `{{resolve:...}}`
+    // expression carries no comma. A comma-BEARING secret never reaches a
+    // deployed state to disagree with: `refuseCoercedInheritedSecret` refuses
+    // the deploy outright.
+    const LIST_PARAM = 'referencetoParentList';
+    const childPath = join(dir, 'child.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Parameters: { [LIST_PARAM]: { Type: 'CommaDelimitedList' } },
+        Resources: {
+          ChildRule: {
+            Type: 'AWS::Events::Rule',
+            Properties: { EventPattern: { detail: { listA: { Ref: LIST_PARAM } } } },
+          },
+        },
+      })
+    );
+
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Child: {
+            Type: NESTED,
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: { Parameters: { [LIST_PARAM]: SECRET_EXPR } },
+          },
+        },
+      },
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: fakeBackend({
+        Parent: st('Parent', { Child: res(NESTED, { Parameters: { [LIST_PARAM]: SECRET_EXPR } }) }),
+        'Parent~Child': st('Parent~Child', {
+          // What the deploy path persists for this leaf: a ONE-element ARRAY.
+          ChildRule: res('AWS::Events::Rule', {
+            EventPattern: { detail: { listA: [SECRET_EXPR] } },
+          }),
+        }),
+      }),
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const child = root.children[0]!;
+    expect(child.changes.get('ChildRule')!.changeType).toBe('NO_CHANGE');
+    expect(secretSend).not.toHaveBeenCalled();
+  });
+
+  it('keeps a List<Number>-typed child parameter as the token, not an array of NaN (#2327)', async () => {
+    // THE FLOOR under the case above, and it was UNFENCED: deleting
+    // `tokenValueForComparison`'s "every element is a string" guard left all
+    // 181 tests in this repo green, because no test declared a `List<Number>`
+    // parameter at all. Its coercion produces an ARRAY -- so the `Number` case
+    // above, which refuses on `!Array.isArray`, cannot reach this guard -- and
+    // the elements are `NaN`, which matches neither side.
+    //
+    // PLAN-SIDE ONLY, exactly like the `Type: Number` case: the deploy path
+    // refuses such a parameter outright (`refuseCoercedInheritedSecret`), so the
+    // seeded state below is not a shape a deploy can produce. What is under test
+    // is that the diff stays best-effort and produces no `NaN`.
+    const NUMLIST_PARAM = 'referencetoParentPorts';
+    const childPath = join(dir, 'child.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Parameters: { [NUMLIST_PARAM]: { Type: 'List<Number>' } },
+        Resources: {
+          ChildRes: {
+            Type: 'AWS::SSM::Parameter',
+            Properties: { Type: 'String', Value: { Ref: NUMLIST_PARAM } },
+          },
+        },
+      })
+    );
+
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Child: {
+            Type: NESTED,
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: { Parameters: { [NUMLIST_PARAM]: SECRET_EXPR } },
+          },
+        },
+      },
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: fakeBackend({
+        Parent: st('Parent', {
+          Child: res(NESTED, { Parameters: { [NUMLIST_PARAM]: SECRET_EXPR } }),
+        }),
+        'Parent~Child': st('Parent~Child', {
+          ChildRes: res('AWS::SSM::Parameter', { Type: 'String', Value: SECRET_EXPR }),
+        }),
+      }),
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const child = root.children[0]!;
+    expect(child.changes.get('ChildRes')!.changeType).toBe('NO_CHANGE');
+    // Stated directly too: a coerced `List<Number>` serialises its `NaN`
+    // elements as `null`, so this would surface here if the guard were gone.
+    expect(JSON.stringify(child)).not.toContain('null');
+    expect(secretSend).not.toHaveBeenCalled();
+  });
+
   it('still resolves a NON-secret down-passed parameter (scope control)', async () => {
     // The flag must not stop ordinary literal / intrinsic parameters from
     // resolving, or every nested child would report spurious drift instead.

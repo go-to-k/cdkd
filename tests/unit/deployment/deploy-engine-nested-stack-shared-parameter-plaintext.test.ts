@@ -125,7 +125,6 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
     // reason: a mock that kept copying the SURVIVOR would fail the way
     // production no longer does, and the engine-level assertions below would
     // then be about the mock rather than about the wiring.
-    const own = inheritedParameterExpression(inherited, name, value);
     for (const [plaintext, expression] of inherited) {
       const hit = candidates.some(
         (candidate) =>
@@ -133,7 +132,12 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async () => {
           (plaintext.length >= MIN_NEEDLE_LENGTH && candidate.includes(plaintext))
       );
       if (hit) {
-        recorded.set(plaintext, own !== undefined && plaintext === value ? own : expression);
+        // Asked PER PLAINTEXT since issue #2327, mirroring production: the
+        // earlier spelling asked about the whole `value` and gated on
+        // `plaintext === value`, which cannot hold once `coerceParameterValue`
+        // has turned a `CommaDelimitedList` parameter into an ARRAY.
+        const own = inheritedParameterExpression(inherited, name, plaintext);
+        recorded.set(plaintext, typeof own === 'string' ? own : expression);
       }
     }
   };

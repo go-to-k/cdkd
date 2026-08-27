@@ -526,7 +526,7 @@ describe('recordNestedStackParameterExpressions — the `rules` argument (#2291)
   it('the two constants AGREE on a secretsmanager reference, which is why the ssm form is the probe', () => {
     // Scope control: without this, the two cases above could be read as a
     // blanket difference rather than the narrow one they are.
-    const bySpelling = (rules?: PathSourceRules): string | undefined => {
+    const bySpelling = (rules?: PathSourceRules): string | unknown[] | undefined => {
       const parent: RecordedSecretValues = new Map([[SHARED, EXPR_B]]);
       recordNestedStackParameterExpressions(
         parent,

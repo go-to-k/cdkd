@@ -1934,11 +1934,30 @@ would apply, comparing the synth template against cdkd's S3 state.
   consequences follow from a redacted token not being a usable VALUE, and both
   are deliberate:
 
-  - The token is left **uncoerced** rather than being cast by the child
-    parameter's declared `Type` (a `Type: Number` parameter would otherwise
-    become `NaN` and diff forever). `cdkd diff` additionally WARNS for such a
-    parameter, because `cdkd deploy` refuses it outright — see "Secret
-    parameters must be `Type: String`" below.
+  - The token is cast by the child parameter's declared `Type` **only where
+    every part of it stays a string**, so the comparison matches what the
+    child's state actually holds. A `CommaDelimitedList` parameter IS split on
+    `,`: its state leaf is an ARRAY of expressions, because the deploy split
+    the resolved value the same way before redacting it, and the reference
+    survives as ONE element as long as it carries no comma of its own. That is
+    true of the secret id, the parameter name and the version stage, and NOT of
+    the JSON-KEY slot — `{{resolve:secretsmanager:sec:SecretString:a,b::}}`
+    splits into two. A parameter fed such a reference reports a phantom change
+    on every `cdkd diff --recursive`; nothing is written and no plaintext is
+    exposed by it.
+    A `Type: Number` / `List<Number>` parameter keeps the **uncoerced** token,
+    because casting it yields `NaN` — an ARRAY of them for `List<Number>` —
+    which matches neither side and would diff forever. So does every other
+    declared `Type`, `List<String>` included, which reads as though it belongs
+    beside `CommaDelimitedList` and is not cast at all: cdkd splits only
+    `CommaDelimitedList` and `List<Number>`, and only the first of those keeps
+    every part a string.
+    The split falls exactly there because cdkd's secret redaction is
+    string-keyed end to end — a shape whose parts are all strings stays inside
+    that model, and a number does not. `cdkd diff` additionally WARNS for any
+    parameter whose declared `Type` COULD lose the plaintext under coercion,
+    because `cdkd deploy` refuses that parameter when the coercion actually
+    destroys it — see "Secret parameters must be `Type: String`" below.
   - A child stack is **not condition-pruned** on that run **when one of its
     `Conditions` transitively references a token-valued parameter** — `cdkd
     deploy` evaluates its conditions against the real values, so a verdict
@@ -1954,9 +1973,9 @@ would apply, comparing the synth template against cdkd's S3 state.
   #### Secret parameters must be `Type: String`
 
   A nested-stack input parameter fed a SECRET dynamic reference must be
-  declared `Type: String` (or `CommaDelimitedList`). `cdkd deploy` **refuses**
-  a `Type: Number` / `Type: List<Number>` parameter in that position, naming
-  the parameter:
+  declared `Type: String` (or `CommaDelimitedList`, with the caveat below).
+  `cdkd deploy` **refuses** a `Type: Number` / `Type: List<Number>` parameter
+  in that position, naming the parameter:
 
   ```text
   Nested-stack parameter 'DbPort' is declared 'Type: Number', but the parent
@@ -1971,6 +1990,14 @@ would apply, comparing the synth template against cdkd's S3 state.
   closes. Refusing names the problem; silently persisting the plaintext does
   not. CDK synthesizes every nested-stack cross-reference parameter as
   `Type: String`, so a CDK app never hits this.
+
+  `CommaDelimitedList` is allowed only while the secret itself carries **no
+  comma**, and the refusal is decided by MEASURING the actual value rather
+  than by the declared type alone. Splitting on `,` shreds a comma-bearing
+  secret into fragments that no longer match the plaintext, so the same
+  refusal fires and names `Type: CommaDelimitedList`. That is the dominant
+  Secrets Manager shape — a JSON blob is nothing but commas — so a list-typed
+  secret parameter is usable only for a bare token value.
 - `--fail` — exit `1` when any change is detected (parity with `cdk diff
   --fail`). With `--recursive`, considers the whole nested-stack tree, so
   CI can gate on tree-wide drift with a single `cdkd diff <parent>

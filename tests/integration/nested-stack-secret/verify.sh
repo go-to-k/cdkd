@@ -167,6 +167,7 @@ CHILD_SECURE_PARAM="cdkd-nested-child-secure-${ACCOUNT_ID}"
 CHILD_UNRELATED_PARAM="cdkd-nested-child-unrelated-${ACCOUNT_ID}"
 CHILD_HANDOFF_PARAM="cdkd-nested-child-handoff-${ACCOUNT_ID}"
 CHILD_HANDOFF_SUB_PARAM="cdkd-nested-child-handoffsub-${ACCOUNT_ID}"
+CHILD_LIST_RULE="cdkd-nested-child-listpair-${ACCOUNT_ID}"
 PARENT_CONSUMER_PARAM="cdkd-nested-parent-consumer-${ACCOUNT_ID}"
 PARENT_SUB_PARAM="cdkd-nested-parent-sub-${ACCOUNT_ID}"
 PARENT_SUBPAIR_PARAM="cdkd-nested-parent-subpair-${ACCOUNT_ID}"
@@ -199,6 +200,25 @@ SHARED_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:shared:AWSCU
 HANDOFF_PW_VALUE="handoffpw2291"
 HANDOFF_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:handoff::}}"
 HANDOFF_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:handoff:AWSCURRENT:}}"
+# The #2327 LIST-typed pair. A FOURTH JSON key, so its plaintext is its own for
+# the reason every arm above states. Two spellings that resolve IDENTICALLY,
+# neither a substring of the other (one ends `list::}}`, the other
+# `list:AWSCURRENT:}}`).
+#
+# A BARE TOKEN with NO COMMA, and that is load-bearing rather than cosmetic:
+# `refuseCoercedInheritedSecret` measures the ACTUAL value and REFUSES the
+# deploy when the `,`-split shreds the plaintext, so a JSON-blob secret in a
+# `CommaDelimitedList` parameter never reaches the redactor at all. A
+# comma-bearing value here would turn this arm into an assertion about that
+# refusal instead.
+LIST_PW_VALUE="listpw2327"
+LIST_EXPR_A="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:list::}}"
+LIST_EXPR_B="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:list:AWSCURRENT:}}"
+# The #2327 NEGATIVE CONTROL's value: a PUBLIC list-typed parameter, same
+# declared type and same `{Ref: <Param>}` source as the pair above. It must
+# survive VERBATIM in state -- a rule that certified every element of every list
+# leaf would rewrite it, which is the issue #2087 / #1915 over-redaction class.
+LIST_PUBLIC_VALUE="listpublic2327"
 # The #2291 ROUND-2 arm's EMBEDDING leaf, over the LOSING parameter. Its
 # persisted form must splice HANDOFF_EXPR_A -- not the survivor -- into the
 # connection string, or the desired side (which answers per parameter) never
@@ -258,7 +278,7 @@ esac
 # The pre-existing three are inner-only -- `UNRELATED_LITERAL` legitimately
 # CONTAINS `SECRET_STAGE_VALUE`, which the #2087 assertion above requires, so
 # they must never be compared against each other.
-CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE"
+CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE"
 CDKD_ALL_LITERALS="SECRET_STAGE_VALUE SECURE_PW_VALUE UNRELATED_LITERAL ${CDKD_2270_LITERALS}"
 for mine_name in ${CDKD_2270_LITERALS}; do
   mine="${!mine_name}"
@@ -298,7 +318,7 @@ diag_output() {
   # handoff pair join it here for the same reason: a diff failure on either arm
   # is the failure mode in which their plaintext is MOST likely to be in the
   # captured text.
-  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
+  if printf '%s' "${text}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}"; then
     echo "      output: <WITHHELD - it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
@@ -344,6 +364,13 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
   # fence is precisely a child leaf holding something it should not.
   if printf '%s' "${scan}" | grep -qF "${HANDOFF_PW_VALUE}"; then
     echo "FAIL: ${label}: the child's state.json carries the resolved handoff plaintext" >&2
+    exit 1
+  fi
+  # The #2327 pair is handed down the same way, and its leaves are ARRAYS -- a
+  # shape no arm positioned before this fix, so a regression here shows up as
+  # the plaintext sitting inside a list rather than at a scalar leaf.
+  if printf '%s' "${scan}" | grep -qF "${LIST_PW_VALUE}"; then
+    echo "FAIL: ${label}: the child's state.json carries the resolved list plaintext" >&2
     exit 1
   fi
   echo "    OK: ${label}: no resolved plaintext anywhere else in the child's state.json"
@@ -397,6 +424,9 @@ cleanup() {
              "${PARENT_SUBPAIR_PARAM}" "${SECURE_PARAM_NAME}"; do
       aws ssm delete-parameter --name "${p}" --region "${REGION}" >/dev/null 2>&1
     done
+    # The #2327 arm's rule. No targets, so a plain delete suffices; `--force` is
+    # only for rules a managed service owns.
+    aws events delete-rule --name "${CHILD_LIST_RULE}" --region "${REGION}" >/dev/null 2>&1
     aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
       --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
     if [ -n "${STATE_BUCKET:-}" ]; then
@@ -445,7 +475,7 @@ cleanup
 # --- Out-of-band secret + SecureString parameter ---------------------------
 echo "==> Creating the secretsmanager secret and the SecureString SSM parameter out of band"
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\"}" \
+  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\"}" \
   --region "${REGION}" >/dev/null
 aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
   --value "${SECURE_PW_VALUE}" --overwrite --region "${REGION}" >/dev/null
@@ -720,7 +750,90 @@ fi
 assert_eq "HandoffSub persists the LOSING parameter's OWN expression, spliced in" \
   "${HANDOFF_SUB_STATE}" "${HANDOFF_SUB_STATE_EXPECTED}"
 
-if printf '%s' "${PARENT_STATE}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}"; then
+# --- #2327: two LIST-TYPED child Parameters resolving to ONE plaintext -------
+# The `CommaDelimitedList` twin of the #2291 arm above, and the one it cannot
+# see. There the child's leaf is a STRING and `redactByPath`'s intrinsic arm
+# positions it. Here `coerceParameterValue` split the parent's string on `,`
+# before any redaction ran, so the leaf is an ARRAY beside an intrinsic OBJECT
+# -- a shape NO arm matched, which dropped it to the plaintext-keyed value scan
+# and handed BOTH leaves the survivor's expression. `docs/cli-reference.md`
+# names `CommaDelimitedList` as an ALLOWED spelling for a secret-bearing
+# nested-stack parameter, so this is reachable rather than theoretical.
+#
+# BOTH LEAVES ARE ONE CHILD RESOURCE'S, and for this arm that is sharper than it
+# is for #2291. `perResourceSecrets` is keyed by logical id, so two resources
+# would give two bags -- which TODAY would still discriminate, but only by
+# accident: the #2291 override in `recordInheritedParameterSecrets` gated on
+# `plaintext === value`, never true for an array, so it could not fire and both
+# bags kept the survivor. That override is fixed in the SAME change as this arm,
+# at which point a two-resource shape goes VACUOUS. One resource, one bag
+# holding ONE collapsed entry, is the shape where the position arm alone decides
+# the answer, before and after.
+echo "==> #2327: two LIST-typed inherited Parameters keep their OWN expressions"
+
+# THE PARENT SIDE FIRST, as the premise: its own two leaves are whole tokens, so
+# they were ALREADY correct before this fix. Asserting them here pins the defect
+# to the HANDOFF rather than to the parent's positioning.
+assert_eq "the parent's nested-stack row keeps ListSecretA as its OWN expression" \
+  "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.ListSecretA')" \
+  "${LIST_EXPR_A}"
+assert_eq "the parent's nested-stack row keeps ListSecretB as its OWN expression" \
+  "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.ListSecretB')" \
+  "${LIST_EXPR_B}"
+
+# The collapse PREMISE, asserted rather than assumed: both LIVE matchers must
+# hold the SAME plaintext. If they differed, the plaintext-keyed value scan
+# could tell them apart and the whole arm would pass vacuously.
+LIVE_LIST_PATTERN=$(aws events describe-rule --name "${CHILD_LIST_RULE}" \
+  --region "${REGION}" --query 'EventPattern' --output text)
+assert_eq "the LIVE rule's listA matcher holds the resolved list secret" \
+  "$(printf '%s' "${LIVE_LIST_PATTERN}" | jq -r '.detail.listA | join(",")')" "${LIST_PW_VALUE}"
+assert_eq "the LIVE rule's listB matcher holds the SAME resolved list secret" \
+  "$(printf '%s' "${LIVE_LIST_PATTERN}" | jq -r '.detail.listB | join(",")')" "${LIST_PW_VALUE}"
+
+# THE SHAPE, before the values: the persisted leaves must still be ARRAYS of one
+# element. A fix that answered with a SCALAR would satisfy every value assertion
+# below while making the desired side of the next diff compare a string against
+# a list forever -- and `resolveReplayProps` would hand a provider a string
+# where AWS holds a list.
+assert_eq "the persisted listA leaf is still an ARRAY" \
+  "$(jq_state "${CHILD_STATE}" '.resources.ListPair.properties.EventPattern.detail.listA | type')" \
+  "array"
+assert_eq "the persisted listA leaf still has exactly one element" \
+  "$(jq_state "${CHILD_STATE}" '.resources.ListPair.properties.EventPattern.detail.listA | length')" \
+  "1"
+
+# THE DISCRIMINATOR: each persisted CHILD leaf back on ITS OWN expression. Under
+# the collapse both carry the survivor's, so whichever lost reads as the other.
+LIST_A_STATE="$(jq_state "${CHILD_STATE}" '.resources.ListPair.properties.EventPattern.detail.listA | join(",")')"
+LIST_B_STATE="$(jq_state "${CHILD_STATE}" '.resources.ListPair.properties.EventPattern.detail.listB | join(",")')"
+if [ "${LIST_A_STATE}" = "${LIST_B_STATE}" ]; then
+  echo "FAIL: both LIST-typed inherited-parameter leaves persisted the SAME expression (issue #2327)" >&2
+  exit 1
+fi
+assert_eq "ListPair listA persists the DEFAULT-stage expression" "${LIST_A_STATE}" "${LIST_EXPR_A}"
+assert_eq "ListPair listB persists the AWSCURRENT-spelled expression" "${LIST_B_STATE}" "${LIST_EXPR_B}"
+
+# THE NEGATIVE CONTROL: same declared type, same `{Ref: <Param>}` source, same
+# resource, same walk -- and a PUBLIC value. It is refused ONE STEP EARLIER than
+# the element rule: `recordNestedStackParameterExpressions` records an
+# association only for a parameter whose resolved value IS a recorded plaintext,
+# so no association exists for this one at all and `associationForSource`
+# refuses before any element is examined. (An earlier revision of this comment
+# credited "condition 1"; the control works either way, but the stated reason
+# was wrong -- the same durable-false-rationale shape this arm exists to fix.)
+# A rule that certified every element of every list leaf would rewrite this one
+# too (the issue #2087 / #1915 over-redaction class), so this is what makes the
+# assertions above mean "certified" rather than merely "rewritten".
+assert_eq "the PUBLIC list-typed leaf survives VERBATIM" \
+  "$(jq_state "${CHILD_STATE}" '.resources.ListPair.properties.EventPattern.detail.listPublic | join(",")')" \
+  "${LIST_PUBLIC_VALUE}"
+# ...and so does the literal list beside it, which no parameter feeds at all.
+assert_eq "the literal source matcher survives VERBATIM" \
+  "$(jq_state "${CHILD_STATE}" '.resources.ListPair.properties.EventPattern.source | join(",")')" \
+  "cdkd.integ.nested-stack-secret"
+
+if printf '%s' "${PARENT_STATE}" | grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${LIST_PW_VALUE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
   exit 1
 fi
@@ -862,6 +975,27 @@ assert_eq "HandoffPair.Description is STILL its own expression after the UPDATE"
 # The embedding leaf too: it is UNCHANGED in this phase, so what this asserts is
 # that the redeploy did not REWRITE a correct value -- the direction a bag
 # re-seeded from the UPDATE arm could get wrong.
+# The #2327 arm through the same call site. `ListPair` gains a changed
+# `Description` under `CDKD_TEST_UPDATE=child-property`, so the child genuinely
+# RE-RESOLVES both list leaves in this phase.
+LIVE_LIST_DESC=$(aws events describe-rule --name "${CHILD_LIST_RULE}" \
+  --region "${REGION}" --query 'Description' --output text)
+assert_eq "the child's ListPair was UPDATED (so the update arm re-resolved it)" \
+  "${LIVE_LIST_DESC}" \
+  "cdkd nested-stack-secret integ - #2327 list-typed inherited parameter pair (updated)"
+LIST_A_STATE3="$(jq_state "${CHILD_STATE3}" '.resources.ListPair.properties.EventPattern.detail.listA | join(",")')"
+LIST_B_STATE3="$(jq_state "${CHILD_STATE3}" '.resources.ListPair.properties.EventPattern.detail.listB | join(",")')"
+if [ "${LIST_A_STATE3}" = "${LIST_B_STATE3}" ]; then
+  echo "FAIL: the UPDATE arm collapsed both LIST-typed inherited-parameter leaves (issue #2327)" >&2
+  exit 1
+fi
+assert_eq "ListPair listA is STILL its own expression after the UPDATE" \
+  "${LIST_A_STATE3}" "${LIST_EXPR_A}"
+assert_eq "ListPair listB is STILL its own expression after the UPDATE" \
+  "${LIST_B_STATE3}" "${LIST_EXPR_B}"
+assert_eq "the PUBLIC list-typed leaf is STILL verbatim after the UPDATE" \
+  "$(jq_state "${CHILD_STATE3}" '.resources.ListPair.properties.EventPattern.detail.listPublic | join(",")')" \
+  "${LIST_PUBLIC_VALUE}"
 assert_eq "HandoffSub is STILL the losing parameter's own expression after the UPDATE" \
   "$(jq_state "${CHILD_STATE3}" '.resources.HandoffSub.properties.Value')" \
   "${HANDOFF_SUB_STATE_EXPECTED}"
@@ -894,12 +1028,23 @@ echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
+# EVERY stack-owned SSM parameter, which the two #2291 rows were missing: the
+# loop said "all six" while the stack owned eight, so a destroy that stranded
+# `HandoffPair` / `HandoffSub` passed this check. Counted from the fixture on
+# 2026-08-28 while adding the #2327 arm.
 for p in "${CHILD_STAGE_PARAM}" "${CHILD_SECURE_PARAM}" "${CHILD_UNRELATED_PARAM}" \
+         "${CHILD_HANDOFF_PARAM}" "${CHILD_HANDOFF_SUB_PARAM}" \
          "${PARENT_CONSUMER_PARAM}" "${PARENT_SUB_PARAM}" "${PARENT_SUBPAIR_PARAM}"; do
   assert_gone "SSM parameter '${p}' still exists after destroy" \
     aws ssm get-parameter --name "${p}" --region "${REGION}"
 done
-echo "    OK: all six stack-owned SSM parameters are gone"
+echo "    OK: all eight stack-owned SSM parameters are gone"
+
+# The #2327 arm's rule is the one non-SSM resource this stack owns, so its
+# destroy is asserted on its own terms rather than inferred from the loop above.
+assert_gone "EventBridge rule '${CHILD_LIST_RULE}' still exists after destroy" \
+  aws events describe-rule --name "${CHILD_LIST_RULE}" --region "${REGION}"
+echo "    OK: the stack-owned EventBridge rule is gone"
 
 # The out-of-band pair is NOT in the stack, so destroy must have left it alone
 # -- deleting a resource cdkd does not manage would be the real failure. Then

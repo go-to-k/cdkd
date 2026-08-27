@@ -3298,6 +3298,7 @@
         "eventbridge-api-destination",
         "eventbridge-input-transformer",
         "iam-propagation-stress",
+        "nested-stack-secret",
         "rename-refactor",
         "replacement-immutable-name",
         "scheduled-task"
@@ -3320,6 +3321,10 @@
         ],
         "iam-propagation-stress": [
           "l2"
+        ],
+        "nested-stack-secret": [
+          "l1",
+          "literal"
         ],
         "rename-refactor": [
           "l2",

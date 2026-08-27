@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as events from 'aws-cdk-lib/aws-events';
 import { Construct } from 'constructs';
 
 /**
@@ -7,6 +8,7 @@ import { Construct } from 'constructs';
  *
  * covers: AWS::CloudFormation::Stack
  * covers: AWS::SSM::Parameter
+ * covers: AWS::Events::Rule
  *
  * Issues [#1903](https://github.com/go-to-k/cdkd/issues/1903) (parameters IN),
  * [#2055](https://github.com/go-to-k/cdkd/issues/2055) (outputs OUT),
@@ -14,7 +16,9 @@ import { Construct } from 'constructs';
  * binds the same seed), [#2087](https://github.com/go-to-k/cdkd/issues/2087)
  * (the seed is scoped to the resources that actually consumed the parameter)
  * and [#2291](https://github.com/go-to-k/cdkd/issues/2291) (two parameters
- * resolving to ONE plaintext keep DISTINCT expressions across the handoff).
+ * resolving to ONE plaintext keep DISTINCT expressions across the handoff) and
+ * [#2327](https://github.com/go-to-k/cdkd/issues/2327) (the same, for
+ * LIST-typed parameters, whose values are ARRAYS by the time redaction runs).
  *
  * Nothing here creates the secret or the SecureString parameter: `verify.sh`
  * puts both in place out of band and deletes them again. CloudFormation cannot
@@ -101,8 +105,10 @@ class SecretBearingChild extends cdk.NestedStack {
       unrelatedParamName: string;
       handoffParamName: string;
       handoffSubParamName: string;
+      listRuleName: string;
       unrelatedLiteral: string;
       handoffAllowedPattern?: string;
+      listRuleDescription: string;
       plainOutputValue: string;
       sharedReferenceA: string;
       sharedReferenceB: string;
@@ -134,6 +140,35 @@ class SecretBearingChild extends cdk.NestedStack {
     handoffA.overrideLogicalId('HandoffSecretA');
     const handoffB = new cdk.CfnParameter(this, 'HandoffSecretB', { type: 'String' });
     handoffB.overrideLogicalId('HandoffSecretB');
+
+    // THE #2327 ARM's two inputs. The SAME two-references-one-plaintext shape as
+    // the pair above, declared `CommaDelimitedList` -- which
+    // `docs/cli-reference.md` names as an ALLOWED spelling for a secret-bearing
+    // nested-stack parameter, alongside `String`. `coerceParameterValue` splits
+    // the parent's string on `,` before any redaction runs, so the child's leaf
+    // is an ARRAY and the string-only halves of the #2291 mechanism could not
+    // answer for it at all.
+    //
+    // A COMMA-FREE plaintext, which is what makes this shape deployable rather
+    // than refused: `refuseCoercedInheritedSecret` measures the ACTUAL value and
+    // throws when the `,`-split shreds it (the dominant Secrets Manager JSON
+    // blob). `verify.sh`'s `list` key holds a bare token for exactly that reason.
+    const listA = new cdk.CfnParameter(this, 'ListSecretA', { type: 'CommaDelimitedList' });
+    listA.overrideLogicalId('ListSecretA');
+    const listB = new cdk.CfnParameter(this, 'ListSecretB', { type: 'CommaDelimitedList' });
+    listB.overrideLogicalId('ListSecretB');
+
+    // THE #2327 ARM's NEGATIVE CONTROL. Same declared type, same `{Ref: <Param>}`
+    // source spelling, same resource, same walk -- and a PUBLIC value, so it is
+    // refused ONE STEP EARLIER than the element rule: the parent records an
+    // association only for a parameter whose resolved value IS a recorded
+    // plaintext, so this one has none and `associationForSource` refuses before
+    // any element is examined. A rule that certified every element of every list
+    // leaf would rewrite this one too, which is the issue #2087 / #1915
+    // over-redaction class, so this is what makes the three positive assertions
+    // mean "certified" rather than "rewritten".
+    const listPublic = new cdk.CfnParameter(this, 'ListPublic', { type: 'CommaDelimitedList' });
+    listPublic.overrideLogicalId('ListPublic');
 
     const stageParam = new ssm.StringParameter(this, 'StageParam', {
       parameterName: names.stageParamName,
@@ -255,6 +290,51 @@ class SecretBearingChild extends cdk.NestedStack {
     });
     ((handoffSub.node.defaultChild as ssm.CfnParameter)).overrideLogicalId('HandoffSub');
 
+    // THE #2327 ARM. ONE resource, TWO LIST-typed leaves, for the reason
+    // `HandoffPair` states and one this arm makes sharper still.
+    //
+    // `perResourceSecrets` is keyed by logical id, so two resources would give
+    // two bags. Today that would STILL discriminate, by accident rather than by
+    // design: the #2291 override in `recordInheritedParameterSecrets` could not
+    // fire for an array (it gated on `plaintext === value`, never true for one),
+    // so both bags kept the collapsed survivor. #2327 fixes that override in the
+    // SAME change, at which point a two-resource arm would go vacuous -- each
+    // bag would hold its own parameter's expression and redact correctly with or
+    // without the position arm. One resource, one bag holding ONE collapsed
+    // entry, is the shape where the position arm alone decides the answer, and
+    // it stays that shape after the override is fixed.
+    //
+    // AN `AWS::Events::Rule` rather than another SSM parameter because the leaf
+    // has to be a genuine LIST that AWS accepts: an `EventPattern`'s `detail`
+    // matcher takes a list of arbitrary exact-match strings, needs no other
+    // resource, and the provider round-trips the pattern as an object. No SSM
+    // parameter property is list-valued at all.
+    const listPair = new events.CfnRule(this, 'ListPair', {
+      name: names.listRuleName,
+      // VARIES BY `CDKD_TEST_UPDATE`, for the reason `HandoffPair`'s
+      // `allowedPattern` does: phase 2c must drive the parent's `Child` row
+      // through `NestedStackProvider.update` AND make this resource itself a
+      // real UPDATE, or the child treats it as unchanged, never re-resolves its
+      // two leaves, and the phase asserts over a state.json nothing rewrote. A
+      // THIRD property, because both leaves are what every assertion reads.
+      description: names.listRuleDescription,
+      eventPattern: {
+        source: ['cdkd.integ.nested-stack-secret'],
+        detail: {
+          // Two leaves of ONE resource, each an ARRAY once the child has coerced
+          // its parameter. Under the collapse BOTH persist the survivor's
+          // expression and `cdkd drift --revert` / rollback pushes the WRONG
+          // version stage to the live rule.
+          listA: listA.valueAsList,
+          listB: listB.valueAsList,
+          // The negative control, beside them in ONE bag so it goes through
+          // the same arm on the same walk.
+          listPublic: listPublic.valueAsList,
+        },
+      },
+    });
+    listPair.overrideLogicalId('ListPair');
+
     const output = new cdk.CfnOutput(this, 'ChildSecretOutput', {
       value: stage.valueAsString,
       description: 'cdkd nested-stack-secret integ - secret-derived child output (issue #2055)',
@@ -347,6 +427,12 @@ export class NestedStackSecretStack extends cdk.Stack {
     // swap below: `HandoffPair` must genuinely become an UPDATE in that phase,
     // or the assertions there pass over a state.json nothing rewrote.
     const handoffAllowedPattern = updateMode.includes('child-property') ? '^.*$' : undefined;
+    // The #2327 arm's own phase-2c change, on the same token, for the same
+    // reason: `ListPair` must genuinely become an UPDATE in that phase or its
+    // assertions pass over a state.json nothing rewrote.
+    const listRuleDescription = updateMode.includes('child-property')
+      ? 'cdkd nested-stack-secret integ - #2327 list-typed inherited parameter pair (updated)'
+      : 'cdkd nested-stack-secret integ - #2327 list-typed inherited parameter pair';
     const stageParamDescription = updateMode.includes('child-property')
       ? 'cdkd nested-stack-secret integ - child consumer of the secretsmanager parameter (updated)'
       : 'cdkd nested-stack-secret integ - child consumer of the secretsmanager parameter';
@@ -378,6 +464,12 @@ export class NestedStackSecretStack extends cdk.Stack {
     // handed to the child as PARAMETERS.
     const handoffReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:handoff::}}`;
     const handoffReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:handoff:AWSCURRENT:}}`;
+    // THE #2327 PAIR. Same two-spellings-one-value trick, on a FOURTH JSON key
+    // so its plaintext is its own -- sharing any of `stage` / `shared` /
+    // `handoff` would drag that arm's only-leaf premise into this collapse.
+    // Handed to the child as LIST-typed `Parameters`.
+    const listReferenceA = `{{resolve:secretsmanager:${secretName}:SecretString:list::}}`;
+    const listReferenceB = `{{resolve:secretsmanager:${secretName}:SecretString:list:AWSCURRENT:}}`;
     const secureReference = `{{resolve:ssm:${secureParamName}}}`;
 
     const child = new SecretBearingChild(
@@ -389,6 +481,8 @@ export class NestedStackSecretStack extends cdk.Stack {
         unrelatedParamName: `cdkd-nested-child-unrelated-${account}`,
         handoffParamName: `cdkd-nested-child-handoff-${account}`,
         handoffSubParamName: `cdkd-nested-child-handoffsub-${account}`,
+        listRuleName: `cdkd-nested-child-listpair-${account}`,
+        listRuleDescription,
         ...(handoffAllowedPattern !== undefined && { handoffAllowedPattern }),
         // Contains the secret's resolved plaintext (`prodstage2087`) as a
         // substring. Kept in sync with verify.sh's SECRET_STAGE_VALUE — and
@@ -409,6 +503,11 @@ export class NestedStackSecretStack extends cdk.Stack {
           // The #2291 pair. TWO parameters, ONE resolved plaintext.
           HandoffSecretA: handoffReferenceA,
           HandoffSecretB: handoffReferenceB,
+          // The #2327 pair. TWO LIST-typed parameters, ONE resolved plaintext.
+          ListSecretA: listReferenceA,
+          ListSecretB: listReferenceB,
+          // Kept in sync with verify.sh's LIST_PUBLIC_VALUE.
+          ListPublic: 'listpublic2327',
         },
       }
     );

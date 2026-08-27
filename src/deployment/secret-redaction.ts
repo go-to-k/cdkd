@@ -845,6 +845,20 @@ export function recordNestedStackParameterExpressions(
   let table = nestedStackParameterExpressions.get(secrets);
   for (const [name, resolvedValue] of Object.entries(resolvedParameters)) {
     // Refusal 1.
+    //
+    // ITS STRING-ONLY HALF IS NOT A GAP, and this note exists so the next lane
+    // does not "fix" it into certifying a shape production cannot deliver.
+    // Issue [#2327](https://github.com/go-to-k/cdkd/issues/2327) was FILED
+    // naming this test as the second broken half of the list-typed collapse,
+    // beside the diff side. Measured against `NestedStackProvider` while fixing
+    // that issue: `extractParameters` (`src/provisioning/providers/nested-stack-provider.ts`)
+    // REFUSES a non-scalar parent-side parameter value outright -- "Parameters
+    // must be scalars (string / number / boolean)" -- and it runs immediately
+    // after this recorder, so an array `resolvedValue` here can never reach a
+    // child engine at all. The parent therefore always hands the child a
+    // STRING, and the ARRAY the issue is about is produced INSIDE the child by
+    // its own `Type` coercion. That is why #2327 changed the two READ sides and
+    // left this WRITE side exactly as it was.
     if (typeof resolvedValue !== 'string' || !secrets.has(resolvedValue)) continue;
     const expression = positioned[name];
     if (typeof expression !== 'string') continue;
@@ -882,6 +896,44 @@ export function recordNestedStackParameterExpressions(
     if (typeof sourceLeaf === 'string' && expression !== sourceLeaf) continue;
     // Refusal 3 — reachable via a self-referential secret; see the doc above.
     if (expression === resolvedValue) continue;
+    // Refusal 4 — this pass SAW this expression resolve to something ELSE
+    // (issue [#2327](https://github.com/go-to-k/cdkd/issues/2327) review).
+    //
+    // This is {@link certifiedExpressionForLeaf}'s condition 3, moved to WRITE
+    // time, and the move is the whole point rather than an optimisation. That
+    // condition reads the bag's VALUES through {@link plaintextIndexOf}, and
+    // the two readers of this table hold DIFFERENT bags: the DIFF side gets the
+    // parent's own map, the PERSIST side the issue #2087-scoped per-resource
+    // child bag, whose values are each parameter's OWN expression. So the same
+    // association could pass condition 3 on one side and fail it on the other
+    // -- and it did. MEASURED over a sweep of bag configurations: with
+    // `EXPR_A` also recorded against a DIFFERENT plaintext (the issue #1933
+    // two-regions shape), the persist side certified `EXPR_A` while the diff
+    // side refused and fell back to the survivor, on 4 of 16 configurations.
+    //
+    // The consequence is the one this whole store exists to prevent, one shape
+    // over: the child persists the ONE expression this pass has direct evidence
+    // resolves to a different plaintext, and `resolveReplayProps` re-resolves
+    // it, so a rollback or `cdkd drift --revert` applies the WRONG secret.
+    //
+    // REFUSING IS CORRECT HERE, not a capitulation to the asymmetry. The
+    // question "did this pass watch this expression resolve to something else"
+    // is about the RESOLUTION, which happened in the PARENT -- so the parent's
+    // map is the bag that can answer it, and the child's cannot: it holds only
+    // what the parent handed down. Deciding once, here, is what makes the two
+    // readers see the same table by construction rather than by two evaluations
+    // agreeing. Both sides then degrade to the plaintext-keyed value scan
+    // together, which is the pre-#2291 behaviour and the same answer they gave
+    // before this arm existed.
+    //
+    // The read-time condition 3 STAYS. It still serves
+    // {@link crossStackAssociations}'s other writers, which have no second
+    // reader and no write-time twin, and for THIS family it is now belt and
+    // braces -- on the diff side it is vacuous (same bag, same verdict), and on
+    // the persist side it can only refuse, which the sweep below finds no
+    // surviving association to do.
+    const seenResolvingTo = plaintextIndexOf(secrets).get(expression);
+    if (seenResolvingTo !== undefined && seenResolvingTo !== resolvedValue) continue;
     if (table === undefined) {
       table = new Map();
       nestedStackParameterExpressions.set(secrets, table);
@@ -964,30 +1016,52 @@ export function inheritNestedStackParameterAssociations(
  * `parentSecrets` is the INHERITED bag — the parent's own per-resource map, the
  * object this table is keyed by — not the child resource's bag.
  *
- * The same THREE conditions {@link positionByCrossStackSource} applies, for the
- * same reasons; see that function's own notes for why condition 3 is not
- * subsumed by condition 2.
+ * The same THREE conditions the persist side applies, because it is literally
+ * the same code: {@link certifiedExpressionForLeaf} OWNS the question and both
+ * halves call it. See that function for why condition 3 is not subsumed by
+ * condition 2.
+ *
+ * RETURNS AN ARRAY for a LIST-typed parameter (issue
+ * [#2327](https://github.com/go-to-k/cdkd/issues/2327)), through the same
+ * {@link certifiedListForLeaf} the persist side reaches from
+ * {@link positionListByCrossStackSource}. `coerceParameterTypedValue` splits a
+ * `CommaDelimitedList` parameter's STRING into an array before either side sees
+ * it, so a scalar answer here would be compared against an array in state and
+ * report a change forever — this function's own failure mode, one shape over.
+ *
+ * TWO CALLERS, and the widened return type is why the second one asks a
+ * different question. `redactParametersForDiff` assigns the result into a
+ * `Record<string, unknown>` and needs the whole parameter's answer, array
+ * included. `IntrinsicFunctionResolver.recordInheritedParameterSecrets` writes
+ * into a `Map<string, string>` keyed by PLAINTEXT, so it asks this per
+ * PLAINTEXT — passing the carried plaintext rather than the parameter's value —
+ * and keeps only a `string` answer. That is not a workaround for the type: a
+ * plaintext-keyed bag has one slot per plaintext, and the question it needs
+ * answered is "does THIS parameter certify THIS plaintext", which is the same
+ * question for a scalar and for an element of a list.
  */
 export function inheritedParameterExpression(
   parentSecrets: RecordedSecretValues,
   parameterName: string,
   resolvedValue: unknown
-): string | undefined {
-  // Condition 1.
-  if (typeof resolvedValue !== 'string' || resolvedValue === '') return undefined;
-  if (!parentSecrets.has(resolvedValue)) return undefined;
-
+): string | unknown[] | undefined {
   const association = nestedStackParameterExpressions.get(parentSecrets)?.get(parameterName);
   if (association === undefined || typeof association === 'symbol') return undefined;
 
-  // Condition 2.
-  if (association.plaintext !== resolvedValue) return undefined;
+  // A LIST-typed parameter (issue #2327). `coerceParameterTypedValue` split the
+  // parent's STRING into an array before this side ever saw it, so the answer
+  // has to be an array too — a string here would make the desired side a scalar
+  // against an array in state and report a change forever, which is the very
+  // failure this function exists to prevent, one shape over.
+  //
+  // THE SAME {@link certifiedListForLeaf} THE PERSIST SIDE CALLS, not a second
+  // spelling of it. The two halves have to agree element for element; sharing
+  // the rule is what makes that a property of the code.
+  if (Array.isArray(resolvedValue)) {
+    return certifiedListForLeaf(parentSecrets, association, resolvedValue);
+  }
 
-  // Condition 3.
-  const recordedPlaintext = plaintextIndexOf(parentSecrets).get(association.expression);
-  if (recordedPlaintext !== undefined && recordedPlaintext !== resolvedValue) return undefined;
-
-  return association.expression;
+  return certifiedExpressionForLeaf(parentSecrets, association, resolvedValue);
 }
 
 /**
@@ -1720,6 +1794,131 @@ function plaintextIndexOf(secrets: RecordedSecretValues): Map<string, string | s
 }
 
 /**
+ * THE THREE CONDITIONS, in ONE place, over one bag and one already-resolved
+ * association (issue [#2327](https://github.com/go-to-k/cdkd/issues/2327)).
+ *
+ * Three call sites ask this same question and every one of them must answer it
+ * identically or the PERSIST side and the DIFF side disagree — which is not a
+ * hypothetical: the two halves must produce the same expression for the same
+ * leaf, or the desired side of the next diff never matches what was persisted
+ * and the resource reports a change on every deploy (issue #2087's symptom,
+ * arriving through a second spelling of one predicate). The sites are
+ * {@link positionByCrossStackSource} (persist, string leaf),
+ * {@link certifiedListForLeaf} (persist and diff, list leaf) and
+ * {@link inheritedParameterExpression} (diff, whole parameter). THIS FUNCTION
+ * OWNS THE QUESTION; none of them re-spells it.
+ *
+ * 1. The leaf's WHOLE value is a recorded secret plaintext. A leaf that merely
+ *    EMBEDS a secret is not this shape and must keep going to the value scan,
+ *    which rewrites just the substring. This is also what keeps a PUBLIC
+ *    reference out (issue #1901): the resolver records a plaintext only on a
+ *    proven-secret verdict, so a public parameter's value is not a key here.
+ *    The empty string is excluded for the reason the value pass excludes it: it
+ *    is not a distinguishing value.
+ * 2. The association is ABOUT THIS LEAF — the plaintext the WRITER recorded
+ *    beside the expression equals the leaf. Within one pass this is the only
+ *    guard against a bag/source MISALIGNMENT: a readback bag can hold a
+ *    DIFFERENT resource's secret while the source leaf still spells this
+ *    import, and condition 3 cannot refuse that (it must ACCEPT an expression
+ *    absent from the pass's map, since the collapsed loser is absent too).
+ * 3. The match is not DEMONSTRABLY another value's expression, over the
+ *    {@link plaintextIndexOf} index. NOT subsumed by condition 2: that one
+ *    compares what the WRITER recorded, this one what THIS pass's own map
+ *    holds, and they can disagree when one reference answers differently in two
+ *    regions (issue #1933). The collapsed LOSER is absent from the index, so it
+ *    passes — which is the case this whole mechanism exists to serve.
+ */
+function certifiedExpressionForLeaf(
+  secrets: RecordedSecretValues,
+  association: CrossStackAssociation,
+  leaf: unknown
+): string | undefined {
+  // Condition 1.
+  if (typeof leaf !== 'string' || leaf === '') return undefined;
+  if (!secrets.has(leaf)) return undefined;
+  // Condition 2.
+  if (association.plaintext !== leaf) return undefined;
+  // Condition 3.
+  const recordedPlaintext = plaintextIndexOf(secrets).get(association.expression);
+  if (recordedPlaintext !== undefined && recordedPlaintext !== leaf) return undefined;
+  return association.expression;
+}
+
+/**
+ * Apply {@link certifiedExpressionForLeaf} to every ELEMENT of a list leaf
+ * (issue [#2327](https://github.com/go-to-k/cdkd/issues/2327)).
+ *
+ * WHAT "POSITION" MEANS FOR A LIST ELEMENT, which is the question that killed
+ * the earlier attempt in issue #2012 and has to be answered before any array
+ * may be certified: **it is not the index.** There is no source ARRAY to align
+ * against — a list leaf's source is ONE intrinsic standing for the whole list —
+ * so an index-based pairing would have nothing on the other side to pair WITH,
+ * and inventing one is exactly the fabrication issue #2012 refused. What
+ * certifies an element is its OWN VALUE, through condition 1 and condition 2
+ * above. Order is therefore irrelevant: a reordered array certifies
+ * identically, and an element the conditions do not reach is left exactly where
+ * the value scan would have left it.
+ *
+ * NOTHING IS FABRICATED. The output array has the SAME length and the SAME
+ * element ORDER as the input; every element is either an expression certified
+ * from that element's own recorded plaintext, or the value-scan answer this
+ * module already produces for it. No element is added, dropped, reordered, or
+ * copied from the source — so there is no baseline content here that
+ * `cdkd drift --revert` could push to AWS but AWS never reported. That is the
+ * constraint the issue #2012 review imposed, satisfied structurally rather than
+ * argued around.
+ *
+ * SHARED BY BOTH HALVES, and that sharing is load-bearing rather than tidy: the
+ * persist side reaches it through {@link positionListByCrossStackSource} and
+ * the diff side through {@link inheritedParameterExpression}, with the same
+ * association content on either side ({@link inheritNestedStackParameterAssociations}
+ * copies the parent's rows onto the child bag). Two spellings that agreed on
+ * every case but one would reintroduce the perpetual UPDATE at that one case.
+ *
+ * Returns `undefined` when NO element was certified, so every caller falls
+ * through to the value scan and keeps its identity-return: with an empty
+ * secrets map (the issue #1900 unchanged-resource path) condition 1 refuses
+ * every element, so this costs one walk and changes nothing.
+ */
+function certifiedListForLeaf(
+  secrets: RecordedSecretValues,
+  association: CrossStackAssociation,
+  bag: readonly unknown[]
+): unknown[] | undefined {
+  // CERTIFY FIRST, and only then build the output. The refusal path is the
+  // COMMON one -- every leaf whose source keys to an association but whose
+  // elements are public, and every array on a pass with an empty bag -- and
+  // `redactSecretsForState` rebuilds a needle regex per call, so mapping the
+  // whole array before discovering nothing was certified cost N regex builds
+  // that {@link redactByPath} then paid again on its own fallback scan.
+  const certified = bag.map((element) => certifiedExpressionForLeaf(secrets, association, element));
+  if (certified.every((expression) => expression === undefined)) return undefined;
+  return bag.map((element, i) => certified[i] ?? redactSecretsForState(element, secrets));
+}
+
+/**
+ * The association {@link crossStackAssociations} holds for a SOURCE leaf, or
+ * `undefined` when this pass has none (or a poisoned one) for it.
+ */
+function associationForSource(
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): CrossStackAssociation | undefined {
+  const key = crossStackSourceKey(source);
+  if (key === undefined) return undefined;
+  // THIS PASS's associations and no others. A pass that recorded nothing —
+  // `cdkd state refresh-observed`, whose bag is empty by construction — finds
+  // no bucket and falls through, which is the same answer it gets today.
+  const associations = crossStackAssociations.get(secrets);
+  if (associations === undefined) return undefined;
+  // A poisoned key reads back as the symbol, so this refuses an absent
+  // association and a conflicting one in one move.
+  const association = associations.get(key);
+  if (association === undefined || typeof association === 'symbol') return undefined;
+  return association;
+}
+
+/**
  * Position a leaf whose SOURCE is a CROSS-STACK intrinsic object
  * (`Fn::ImportValue` / `Fn::GetStackOutput`), by looking its identity up in the
  * association the RESOLVER recorded while it read the producer (issue
@@ -1738,27 +1937,14 @@ function plaintextIndexOf(secrets: RecordedSecretValues): Map<string, string | s
  * has to come from the one place that holds both halves at once, which is
  * {@link crossStackAssociations}.
  *
- * Three conditions, mirroring the ones next door, and each removing a different
- * way of being wrong:
- *
- * 1. The bag leaf's WHOLE value is a recorded secret plaintext — verbatim
- *    condition 1 of {@link positionByIntrinsicSkeleton}. A leaf that merely
- *    EMBEDS a secret is not this shape and must keep going to the value scan,
- *    which rewrites just the substring. This is also what keeps a PUBLIC
- *    reference out (issue #1901): the resolver records a plaintext only on a
- *    proven-secret verdict, so a public parameter's value is not a key here.
- * 2. The association is ABOUT THIS BAG — the plaintext the WRITER recorded
- *    beside the expression equals the bag leaf. Against another pass this is
- *    belt-and-braces, since {@link crossStackAssociations} is scoped to the
- *    pass and a foreign entry cannot be reached; within one pass it is the only
- *    guard against a bag/source MISALIGNMENT.
- * 3. The match is not DEMONSTRABLY another value's expression — verbatim
- *    condition 3 next door, over the same {@link plaintextIndexOf} index. It is
- *    what fences a bag/source MISALIGNMENT: on a readback walk the bag leaf can
- *    hold a different resource's secret while the source leaf still spells this
- *    import, and an association recorded against a plaintext that is not this
- *    bag is refused outright. The collapsed LOSER is absent from that index, so
- *    it passes — which is the case this whole function exists to serve.
+ * THE THREE CONDITIONS ARE {@link certifiedExpressionForLeaf}'s and are stated
+ * ONLY there. They were re-enumerated here until issue #2327 extracted the
+ * owner, and the copy had already drifted from it three ways within the same
+ * change -- it dropped the empty-string clause, it explained condition 2 by a
+ * scoping story ({@link crossStackAssociations} being per-pass) that is not the
+ * owner's OTHER caller's, and it said "three intrinsic spellings" when
+ * {@link crossStackSourceKey} answers for five. A rationale that drifts inside
+ * one PR is the argument against duplicating it.
  *
  * There is deliberately NO "exactly one candidate" test (the neighbour's
  * condition 2): this is a LOOKUP rather than a search, so the ambiguity that
@@ -1771,7 +1957,8 @@ function plaintextIndexOf(secrets: RecordedSecretValues): Map<string, string | s
  * bag could not be vouched for, because it rewrote a `{Name: '', Value:
  * 'an-unrelated-literal'}` pair. Nothing here can do that: the answer is never
  * the source subtree, it is an expression a WRITER recorded against this exact
- * leaf identity; the arm fires for exactly three intrinsic spellings; and
+ * leaf identity; the arm fires only for the spellings
+ * {@link crossStackSourceKey} can key; and
  * condition 1 still demands that the bag leaf be a plaintext this pass
  * resolved. Every rejection degrades to {@link positionByIntrinsicSkeleton} and
  * then to the value scan, i.e. to today's behavior.
@@ -1781,47 +1968,13 @@ function positionByCrossStackSource(
   source: Record<string, unknown>,
   secrets: RecordedSecretValues
 ): string | undefined {
-  // Condition 1, byte-for-byte the neighbour's.
-  if (bag === '' || !secrets.has(bag)) return undefined;
-
-  const key = crossStackSourceKey(source);
-  if (key === undefined) return undefined;
-
-  // THIS PASS's associations and no others. A pass that recorded nothing —
-  // `cdkd state refresh-observed`, whose bag is empty by construction — finds
-  // no bucket and falls through, which is the same answer it gets today.
-  const associations = crossStackAssociations.get(secrets);
-  if (associations === undefined) return undefined;
-
-  // A poisoned key reads back as the symbol, so this refuses an absent
-  // association and a conflicting one in one move.
-  const association = associations.get(key);
-  if (association === undefined || typeof association === 'symbol') return undefined;
-
-  // Condition 2. The association has to be ABOUT THIS BAG.
-  //
-  // Against a FOREIGN pass this is now belt-and-braces — the lookup above
-  // cannot reach one at all — and it is kept deliberately rather than deleted
-  // because a second guard covering a case is not a reason to drop the first.
-  // Inside ONE pass it is still load-bearing and nothing else covers it: a
-  // readback bag can hold a DIFFERENT resource's secret while the source leaf
-  // still spells this import, and condition 3 below cannot refuse that, since
-  // it must ACCEPT an expression absent from the pass's map (the collapsed
-  // loser is absent too). The colliding pair this function exists for is
-  // untouched either way: both leaves recorded the SAME plaintext, which is
-  // what "their values coincide" means.
-  if (association.plaintext !== bag) return undefined;
-
-  // Condition 3 (the neighbour's condition 3), and NOT subsumed by condition 2:
-  // it refuses an association whose expression THIS PASS saw resolve to
-  // something else, which is one reference answering differently in two regions
-  // (issue #1933) rather than a foreign leaf. Condition 2 compares what the
-  // WRITER recorded, condition 3 what this pass's own map holds, and they can
-  // disagree.
-  const recordedPlaintext = plaintextIndexOf(secrets).get(association.expression);
-  if (recordedPlaintext !== undefined && recordedPlaintext !== bag) return undefined;
-
-  return association.expression;
+  const association = associationForSource(source, secrets);
+  if (association === undefined) return undefined;
+  // The three conditions live in ONE place (issue #2327). An earlier revision
+  // spelled them here and again on the diff side; keeping one owner is what
+  // makes "the two halves agree" a property of the code rather than of a
+  // reviewer noticing.
+  return certifiedExpressionForLeaf(secrets, association, bag);
 }
 
 /**
@@ -2025,6 +2178,54 @@ function identityKeyFor(bag: readonly unknown[], source: readonly unknown[]): st
 }
 
 /**
+ * Position the ELEMENTS of an array leaf whose SOURCE is an intrinsic OBJECT,
+ * by the same leaf-identity lookup {@link positionByCrossStackSource} performs
+ * for a string leaf (issue
+ * [#2327](https://github.com/go-to-k/cdkd/issues/2327)).
+ *
+ * A child parameter declared `CommaDelimitedList` is coerced by
+ * `coerceParameterTypedValue` into an ARRAY before any of this runs, so a
+ * leaf the child template spells `{Ref: <Param>}` arrives beside an intrinsic
+ * OBJECT as an array — a shape NO arm matched, which dropped it to the
+ * plaintext-keyed value scan and handed BOTH members of a coinciding pair the
+ * survivor's expression. `docs/cli-reference.md` names `CommaDelimitedList` as
+ * an ALLOWED spelling for a secret-bearing nested-stack parameter, so it is
+ * reachable rather than theoretical.
+ *
+ * The element rule, what it refuses and why nothing is fabricated all live on
+ * {@link certifiedListForLeaf}, which the DIFF side calls too. TWO further
+ * refusals belong to THIS site rather than to the shared rule:
+ *
+ * 1. REFUSAL — a source leaf {@link crossStackSourceKey} cannot key, or one
+ *    this pass recorded no association for. Both fall to the value scan, i.e.
+ *    to today's behaviour.
+ * 2. REFUSAL — {@link positionByIntrinsicSkeleton} is deliberately NOT tried
+ *    element-wise, and the asymmetry with the string arm is structural rather
+ *    than caution. {@link intrinsicSkeletonPattern} accepts exactly `Fn::Join`
+ *    and `Fn::Sub`, both of which produce a STRING; an array bag beside one of
+ *    them is a SHAPE DIVERGENCE, not a position. Matching a per-element pattern
+ *    built from text that describes the whole joined string would be a guess of
+ *    precisely the kind condition 2 of that function exists to refuse.
+ *
+ * NOT GATED ON `rules`, for the reason the string arm next door is not: the
+ * certification rests on the element being a plaintext THIS pass recorded,
+ * which a previous generation's persisted expression can never be, and it never
+ * depends on the two sides being positionally aligned. In practice only the
+ * TEMPLATE-sourced walks can reach it at all — every STATE-sourced source leaf
+ * is a persisted value, not an intrinsic object — but the safety does not rest
+ * on that.
+ */
+function positionListByCrossStackSource(
+  bag: readonly unknown[],
+  source: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): unknown[] | undefined {
+  const association = associationForSource(source, secrets);
+  if (association === undefined) return undefined;
+  return certifiedListForLeaf(secrets, association, bag);
+}
+
+/**
  * PATH-based redaction: walk `bag` alongside a SOURCE bag that still carries the
  * unresolved `{{resolve:...}}` expressions, and wherever the source leaf is such
  * a string, persist THAT string verbatim.
@@ -2055,6 +2256,14 @@ function identityKeyFor(bag: readonly unknown[], source: readonly unknown[]): st
  *   `Fn::Sub`: when the intrinsic's literal parts describe exactly one of the
  *   recorded secret expressions, THAT is persisted. This is the dominant CDK
  *   shape — an L2 secret token renders the ARN as a `Ref`, hence a join.
+ *
+ * An ARRAY leaf beside such an intrinsic OBJECT — the shape a
+ * `CommaDelimitedList` nested-stack parameter produces once the child has
+ * coerced it — is positioned ELEMENT-WISE by
+ * {@link positionListByCrossStackSource} (issue #2327). What certifies an
+ * element there is its own recorded plaintext rather than its index, so nothing
+ * is aligned against a source array that does not exist; see that function for
+ * the two shapes it refuses.
  *
  * The value scan is still applied wherever none can answer: a leaf that merely
  * EMBEDS a secret inside surrounding text, an intrinsic whose skeleton matches
@@ -2162,6 +2371,25 @@ function redactByPath(
     if (certified !== undefined) return certified;
     const positioned = positionByIntrinsicSkeleton(bag, source, secrets, secretExpressions);
     if (positioned !== undefined) return positioned;
+    // Fall through to the value scan below on any refusal.
+  }
+  if (Array.isArray(bag) && isPlainObject(source)) {
+    // The LIST-VALUED twin of the arm above (issue #2327). A child parameter
+    // declared `CommaDelimitedList` is coerced by `coerceParameterTypedValue`
+    // into an ARRAY before any of this runs, so a
+    // leaf the child template spells `{Ref: <Param>}` arrives here as an array
+    // beside an intrinsic OBJECT — a shape NO arm matched, which dropped it to
+    // the plaintext-keyed value scan and handed BOTH members of a coinciding
+    // pair the survivor's expression. That is issue #2291's collapse arriving
+    // through the one door its string-only arms left open, and
+    // `docs/cli-reference.md` names `CommaDelimitedList` as an ALLOWED spelling
+    // for a secret-bearing nested-stack parameter, so it is reachable rather
+    // than theoretical.
+    //
+    // See {@link positionListByCrossStackSource} for what POSITION means for an
+    // element and for the two shapes this deliberately REFUSES.
+    const positionedList = positionListByCrossStackSource(bag, source, secrets);
+    if (positionedList !== undefined) return positionedList;
     // Fall through to the value scan below on any refusal.
   }
   if (Array.isArray(bag) && Array.isArray(source)) {

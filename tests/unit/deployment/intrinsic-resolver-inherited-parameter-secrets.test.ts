@@ -199,6 +199,54 @@ describe('IntrinsicFunctionResolver — inherited nested-stack parameter secrets
     expect(ctx.recordedSecretValues.get(INNER)).toBe(INNER_EXPR);
   });
 
+  /**
+   * The SAME collapse over a LIST-typed parameter (issue
+   * [#2327](https://github.com/go-to-k/cdkd/issues/2327)).
+   *
+   * `coerceParameterValue` turns a `Type: CommaDelimitedList` parameter into an
+   * ARRAY before this method ever sees it, and the #2291 override was asked
+   * about the whole `value` and gated on `plaintext === value` -- a test that
+   * can never hold for an array. So the override typechecked and could not
+   * FIRE, and a list-typed parameter kept the collapsed survivor here. The
+   * question is now asked PER CARRIED PLAINTEXT, which is what this bag is
+   * keyed by and is the same question for a scalar and for a list element.
+   *
+   * The DISCRIMINATOR is again the LOSING parameter, `PAIR_A`.
+   */
+  it('records the LOSING LIST-typed parameter under ITS OWN expression (#2327)', async () => {
+    const parent = collidingParentBag();
+    expect(parent.get(PAIR_SHARED)).toBe(PAIR_EXPR_B);
+
+    // Exactly what `resolveParameters` binds for a `CommaDelimitedList` fed the
+    // parent's comma-free plaintext: a ONE-element array. A comma-bearing
+    // secret never reaches here -- `refuseCoercedInheritedSecret` throws first.
+    const ctx = makeContext({ [PAIR_A]: [PAIR_SHARED], [PAIR_B]: [PAIR_SHARED] }, parent);
+
+    // AWS still gets the real list.
+    await expect(resolver.resolve({ Ref: PAIR_A }, ctx)).resolves.toEqual([PAIR_SHARED]);
+    expect(ctx.recordedSecretValues.get(PAIR_SHARED)).toBe(PAIR_EXPR_A);
+  });
+
+  it('keeps a LIST element\'s merely-CONTAINED secret on its own expression (#2327)', async () => {
+    // The negative control for removing the `plaintext === value` gate. With
+    // the question asked per plaintext, `INNER` must still fail condition 2 --
+    // the association for `PAIR_A` names `PAIR_SHARED`, not `INNER` -- and keep
+    // the expression that belongs to it.
+    const INNER = 'h4ndoff-pl4intext';
+    const INNER_EXPR = '{{resolve:secretsmanager:prod/db/cred:SecretString:inner::}}';
+    expect(PAIR_SHARED).toContain(INNER);
+    expect(INNER.length).toBeGreaterThanOrEqual(MIN_NEEDLE_LENGTH);
+
+    const parent = collidingParentBag();
+    parent.set(INNER, INNER_EXPR);
+
+    const ctx = makeContext({ [PAIR_A]: [PAIR_SHARED] }, parent);
+    await resolver.resolve({ Ref: PAIR_A }, ctx);
+
+    expect(ctx.recordedSecretValues.get(PAIR_SHARED)).toBe(PAIR_EXPR_A);
+    expect(ctx.recordedSecretValues.get(INNER)).toBe(INNER_EXPR);
+  });
+
   it('records nothing for a parameter whose value does not carry the plaintext at all', async () => {
     const ctx = makeContext(
       { [PARAM]: SECRET, OtherParam: 'ordinary-public-config' },

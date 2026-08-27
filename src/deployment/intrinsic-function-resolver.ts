@@ -2711,14 +2711,32 @@ export class IntrinsicFunctionResolver {
     // certified one, rather than the collapsed map's survivor. See the
     // "WHICH EXPRESSION" section of the doc above for why the survivor is the
     // wrong answer for an EMBEDDING leaf and what residual is left.
-    const own = inheritedParameterExpression(inherited, parameterName, value);
     for (const [plaintext, expression] of inheritedSecretsCarriedBy(value, inherited)) {
-      // The override applies ONLY to the pair whose plaintext IS this
-      // parameter's whole value. `inheritedSecretsCarriedBy` also returns pairs
-      // for OTHER inherited plaintexts this value merely contains, and those
-      // belong to their own parameters -- handing them this one's expression
+      // ASKED PER PLAINTEXT, not per VALUE (issue #2327). This bag is keyed by
+      // PLAINTEXT, so the question it needs answered is "does THIS parameter
+      // certify THIS plaintext" -- which `inheritedParameterExpression` answers
+      // through the same predicate the persist side uses, for a scalar value
+      // and for an ELEMENT of a coerced `CommaDelimitedList` alike. The earlier
+      // spelling asked about the whole `value` and gated on `plaintext ===
+      // value`, which can never hold once `coerceParameterValue` has turned the
+      // parent's string into an ARRAY: the override typechecked but could not
+      // fire, so a list-typed parameter kept the collapsed survivor here.
+      //
+      // The scalar answer is UNCHANGED by the move, because the recorder's
+      // condition 2 already subsumes the old gate: the association's recorded
+      // plaintext IS this parameter's whole resolved value, so it can only
+      // equal a carried plaintext that the old `plaintext === value` also
+      // accepted. `inheritedSecretsCarriedBy` still returns pairs for OTHER
+      // inherited plaintexts this value merely CONTAINS, and those still fall
+      // through to their own parameter's expression -- handing them this one's
       // would be the collapse, one step over.
-      recorded.set(plaintext, own !== undefined && plaintext === value ? own : expression);
+      //
+      // `typeof own === 'string'` rather than `!== undefined`: the function
+      // answers with an ARRAY for a list-typed parameter's whole value, and
+      // this bag holds strings. Nothing here asks for that shape, but the guard
+      // is what says so rather than leaving it to the argument passed above.
+      const own = inheritedParameterExpression(inherited, parameterName, plaintext);
+      recorded.set(plaintext, typeof own === 'string' ? own : expression);
     }
   }
 
