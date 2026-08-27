@@ -2446,6 +2446,41 @@ Three habits follow, each of which caught something on that lane:
   `drift.ts:2114` -> `:2122`, with the function names still correct), and a
   probe count grows whenever a later round adds cases.
 
+  **The remedy is to DELETE the unproved clause, not to rewrite it — and the
+  recurring shape is a CONSEQUENCE bolted onto a verified claim.** The bullet
+  above says to re-derive; this says what to do when re-deriving keeps producing
+  the next round's blocker. Re-measured 2026-08-27 across a later run: two of
+  three lanes shipped a false claim inside a REPAIRED rationale paragraph, and
+  in both the reviewers found zero code defects. The go-to-k/cdkd#2321 lane was
+  wrong in that one paragraph in THREE consecutive rounds, each time in the same
+  form — "X is present-tense load-bearing: deleting it would hard-fail" — where X
+  was probed and the consequence never was. A reviewer settled the last one in a
+  single probe: bypassing the clause leaves `saveState` still called, because a
+  per-resource catch swallows the refusal and persists the raw intrinsic rather
+  than aborting. (A count is deliberately not quoted here — the first draft of
+  this very bullet relayed "reds exactly one case" from that reviewer's report
+  without re-deriving it, and a review of THIS paragraph measured 2 on the
+  narrowest reading and 10 on the literal one. The bullet above already says a
+  count needs its tree; the fix was to drop the number, not to name it.)
+  What converged both lanes was cutting the unproved clauses rather than
+  replacing them with better ones: **deleting a whole CLAIM cannot introduce a
+  new false one, which is what makes such a round cheap to trust.** That does
+  NOT extend to deleting a clause from inside a sentence — removing a qualifier
+  can falsify the survivor — so after any deletion, re-read the sentence that
+  remains. Say what was measured and stop there; where the observable
+  consequence matters, it belongs in a test rather than in a sentence.
+
+  This is narrower than "rewrite the fence out of existence": when the false
+  claim was that something IS fenced, the repair is to BUILD the fence (see the
+  bullet above), not to retract the sentence. Delete the CLAIM when nothing
+  supports it; build the thing when the claim is one you want to be true.
+
+  **Write the rationale FIRST in a fix round, not last.** The bullet above
+  diagnoses WHY the prose is worst — it is written under the momentum of having
+  just fixed the thing — and the ordering is the one lever that changes it. Same
+  run: the go-to-k/cdkd#2321 lane was asked to do its final round rationale-first
+  and it was the only round of the four that introduced no new prose defect.
+
 **A reviewer's suggested FIX can be wrong even when its finding is right —
 re-derive the fix from the source rather than pasting the patch.** The premise
 check below asks whether the finding holds; this asks whether the remedy does,
@@ -2502,6 +2537,19 @@ brief would have been VACUOUS for a reason the agent had to find and report
 back. Grep the claim before you put it in an instruction, and when an agent
 corrects your brief, say so in the report rather than absorbing it silently.
 
+**A REVIEWER brief is the same published claim, and it fails worse.** The rule
+above is written for a brief handed to a lane agent, where a false premise
+produces a wrong edit you will see in the diff. A reviewer given a false premise
+aims its WHOLE ROUND at the wrong subject and returns a report that reads as
+authoritative, so nothing downstream flags it. Measured 2026-08-27: the
+orchestrator relayed a lane's "a membership filter makes S3 create the bucket in
+`us-east-1`" into THREE reviewer briefs without checking it. It was false — the
+provider's constructor takes an already-region-bound client, so the request
+never reaches the global endpoint that default belongs to — and the security reviewer's entire framing
+(data residency) rested on it until it was corrected mid-flight. Grep every
+mechanism claim before it goes into a brief, and when you find one already sent,
+correct it in-flight rather than waiting for the report.
+
 **When two reviewers CONTRADICT each other, settle it in the code yourself
 before forwarding either.** On 2026-08-20 the spec reviewer explicitly CLEARED
 the evidence-persistence issue the security reviewer called a blocker, both
@@ -2511,6 +2559,23 @@ implementing agent would have handed it a contradiction to adjudicate with less
 context than you have — and forwarding only the reassuring one is how a blocker
 ships. Say in the fix message which reviewer was right and why, so the agent
 does not re-derive it.
+
+**That rule holds for a claim about THIS REPO. For a claim about what an
+EXTERNAL system does, neither reviewer can settle it and neither can you —
+the tie-break is a MEASUREMENT.** The two cases look identical in the reports
+and come apart only in what would resolve them, which is why this is stated
+rather than left to judgement. Measured 2026-08-27 on the go-to-k/cdkd#2274
+lane: the spec reviewer wrote that CloudFormation masks a `NoEcho` custom
+resource's `Data` on the wire, the code reviewer called that unmeasured
+folklore, and both had read the same source. No amount of code reading could
+decide it. A live CFn A/B — one stack, `us-east-1`, that date's CloudFormation —
+returned the plaintext to a dependent SSM parameter AND to a stack Output, with
+the handler's own log proving `NoEcho: true` really reached the service. The
+answer overturned the lane's entire design, which was discarded rather than
+merged. `CLAUDE.md`'s "never file divergence on folklore" already requires the
+A/B; this is the pointer from the place the contradiction actually surfaces.
+The tell is grammatical: if the disputed sentence names a service rather than a
+file, stop reading code and go measure.
 
 **Fresh deploys: UNIQUE stack names only** (e.g. `Cdkd<Issue>Verify`), never a
 shared fixed name and never a real prod stack — the account may hold the
@@ -2548,6 +2613,14 @@ green already CONFLICTING again. One PR took FOUR rebase cycles that way.
 **PUSH FIRST, then run the post-rebase suite while the queue drains**; the two
 are independent, and the suite still gates the merge. Then poll tightly and
 merge the moment it goes green.
+
+**That applies to a re-push on an ALREADY-OPEN PR. For a PR that does not exist
+yet, pushing the branch drains nothing** — measured 2026-08-27, `.github/workflows/ci.yml`
+is `on: push: branches: [main]` / `pull_request: branches: [main]`, so a feature
+branch push fires no workflow at all and the queue starts at `gh pr create`. A
+run that pushes early expecting to overlap the wait simply waits later instead.
+The order that helps for a NEW PR is to finish the gates, create the PR, and
+only then do other work while CI runs.
 
 Two traps in the polling itself, both hit on that run. **"No pending checks" is
 not "checks passed"** — a PR with ZERO checks satisfies it, which is exactly the
