@@ -1836,6 +1836,38 @@ Two things follow, and the second is the one that is easy to get backwards:
   a command entrypoint at round five is how round six happens. Take the narrow fix,
   file the structural one, and reference it from the narrow fix so the next reader
   sees the choice was made rather than missed.
+- **But filing the structural fix does not STOP the cascade, and the bullet above
+  used to imply it would.** Measured in go-to-k/cdk-local#596 on 2026-08-27: the
+  structural issue was filed at round five and the rounds ran to TWELVE, producing
+  eleven instances of one defect class in one PR, five of them introduced by the
+  fix for the previous one. What ended it was not a better check — it was making
+  the artifact **CLAIM LESS**.
+
+  The tell is that each round's fix is more SOPHISTICATED than the last. There a
+  `/run-integ` orphan sweep went name scan -> scoped filter -> guarded filter ->
+  stderr classification -> status filter, while the plain rc-only sweeps three
+  lines away were correct the whole time, under the exact conditions that defeated
+  the clever ones: `grep -q 'does not exist'` also matches botocore's
+  `The source_profile ... does not exist`, raised before any network call, so a
+  broken profile reported CLEAN having queried nothing. The sophistication WAS the
+  defect. The sweep now prints raw command output and names both outcomes instead
+  of emitting a verdict — a command that claims nothing cannot claim something
+  false. Expect it to feel like a retreat; it is one, and it is what converges.
+
+  Two corollaries, both paid for there:
+
+  - **Fence the REMEDIATION, not just the detection.** Five of eleven instances
+    arrived through a fix, and the last was in the remediation: `cdk destroy` on
+    names built without the required suffix exits 0 SILENTLY, so the operator read
+    success with the resources still deployed. Every fence to that point pinned
+    the DETECTION, so restoring that line left the suite green. If a procedure
+    both detects and repairs, the repair is where the next instance goes.
+  - **Do not pre-commit to a remedy for a finding you have not seen.** Twice the
+    stated plan was "if instance nine appears, delete the whole thing", announced
+    before instance nine existed; when it arrived, deleting would have left the
+    flow with NO check at all — instance one made permanent. A rule announced in
+    advance is a way of not having to exercise judgement. Say what the next
+    finding would have to SHOW, not what you will do about it.
 - **Ask whether the thing you keep patching is a CLASSIFIER, and if it is, stop
   and build the differential fence in §5 before the next fix.** That section
   already says hand-picked cases cannot fence a classifier — the failure is not
