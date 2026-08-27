@@ -149,6 +149,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). |
 | `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkd-local-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkd local invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. Same-account / same-region pulls do not need this flag; cross-account without the flag falls back to the caller's credentials (succeeds when an IAM resource policy on the ECR repo grants the caller directly, else AWS surfaces `AccessDenied`). No-op when `--no-pull` is set. |
+| `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers` (issue [#448](https://github.com/go-to-k/cdkd/issues/448)). Use only when the developer's own credentials cannot read the layer — typically a cross-account layer. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. No-op for stacks whose layers are all same-stack `AWS::Lambda::LayerVersion` references. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from cdkd state (requires `--from-state`); (3) `--no-assume-role` explicitly opts out (forces dev creds even with `--from-state`). Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
@@ -378,12 +379,52 @@ Same-stack `AWS::Lambda::LayerVersion` references in
    `/opt/nodejs/...`, `/opt/lib/...`, etc.) is the user's
    responsibility — cdkd does NOT inspect the contents.
 
+**Literal-ARN layer entries** (issue
+[#448](https://github.com/go-to-k/cdkd/issues/448)): a `Layers` entry
+that is the string
+`arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>` is
+resolved by downloading that layer version's ZIP and unzipping it into a
+host tmpdir, which then joins the same `/opt` merge as same-stack layers
+— so "last layer wins" holds across both kinds. This covers
+AWS-published public layers (Lambda Powertools, the Datadog extension)
+and cross-account / cross-region shared layers. Pass
+`--layer-role-arn <arn>` to `sts:AssumeRole` before
+`lambda:GetLayerVersion` when the developer's own credentials cannot
+read the layer — typically a cross-account one; AWS-published public
+layers are readable from every account and need no role.
+
+The ARN's **partition is derived from its region** rather than matched
+against a hardcoded list, so the ARN in any of the eight partitions —
+commercial, `aws-cn`, `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`,
+`aws-iso-f`, `aws-eusc` — now PARSES; before issue
+[#2143](https://github.com/go-to-k/cdkd/issues/2143) only three did, and
+the other five were refused outright at resolution. The two segments must
+also AGREE: `arn:aws-cn:lambda:us-east-1:...` is refused, naming the
+disagreement, because `us-east-1` does not belong to `aws-cn`. A region
+cdkd's partition table does not recognise resolves to the commercial
+partition, so a brand-new commercial region keeps working with `arn:aws:`.
+
+> **Parsing is not the whole path, and the rest is still commercial-only.**
+> The download itself runs through cdk-local, which rebuilds the ARN with a
+> hardcoded `aws` partition before calling `lambda:GetLayerVersion`
+> (`node_modules/cdk-local/dist/local-studio-BBtUAVNy.js:15214` —
+> `` `arn:aws:lambda:${layer.region}:${layer.accountId}:layer:${layer.name}` ``).
+> So a layer ARN in any of the seven non-commercial partitions gets past
+> cdkd's parse and then fails at the AWS call instead. `aws-cn` and
+> `aws-us-gov` already parsed before this change and gain nothing from it;
+> for the five that did not (`aws-iso`, `aws-iso-b`, `aws-iso-e`,
+> `aws-iso-f`, `aws-eusc`) what changed is WHICH failure you get — an
+> AWS-side error naming the real blocker, rather than cdkd refusing to read
+> the ARN at all. End-to-end support for those partitions needs the fix
+> tracked in
+> [go-to-k/cdk-local#575](https://github.com/go-to-k/cdk-local/issues/575).
+
 **Out of scope (v1)** — hard-errors with a clear pointer at the
 offending entry:
 
-- Literal-ARN layer entries (`arn:aws:lambda:...`) — these are external
-  / pre-existing layers including cross-account / cross-region. No
-  asset on disk to mount; deferred to a follow-up PR.
+- Layer entries that are neither a same-stack reference nor a
+  well-formed layer-version ARN (a malformed ARN, a function ARN, an
+  unversioned layer ARN, or a partition that disagrees with the region).
 - Same-stack refs that don't point at an `AWS::Lambda::LayerVersion`
   (typo'd logical ID).
 - Same-stack refs to a `LayerVersion` whose `Metadata['aws:asset:path']`
@@ -474,7 +515,7 @@ to `cdkd local start-service` / `cdkd local start-alb`.
 | Out of scope | Deferred to |
 | --- | --- |
 | Java / Go / Ruby / .NET runtimes | Future PRs |
-| Cross-account / cross-region / pre-existing-ARN Lambda Layers | Future PR (same-stack `AWS::Lambda::LayerVersion` refs are supported in v1; literal ARNs hard-error — see "Lambda Layers" section above) |
+| Cross-account / cross-region / pre-existing-ARN Lambda Layers | Shipped — same-stack `AWS::Lambda::LayerVersion` refs and literal layer-version ARNs are both resolved, the latter by downloading the layer version; see the "Lambda Layers" section above |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
 | `Fn::Select` / `Fn::Split` / `Fn::If` etc. in `--from-state` | Future PR (warn + drop today) |
 | SQS / S3 event source emulation | Future PR |
@@ -655,6 +696,7 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkd local invoke` — the function-specific key may also be a **CDK display path** (`MyStack/MyHandler`). |
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > (`--assume-role-auto` OR global default) > unset (developer creds passed through). |
 | `--assume-role-auto` | off | Auto-resolve EACH routed Lambda's OWN execution role per-Lambda instead of a single global default: tries the synthesized template's literal-ARN `Properties.Role`, then a deployed-state lookup (pair with `--from-state` / `--from-cfn-stack`), then warns-and-passes-through dev creds on a miss. Slower boot (one STS call per Lambda) but the right shape when each Lambda's deployed role differs. **Mutually exclusive** with the global-default `--assume-role <arn>` form (errors at boot); **compatible** with per-Lambda `--assume-role <LogicalId>=<arn>` overrides (the map wins for named Lambdas, auto-resolve handles the rest). |
+| `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers` (issue [#448](https://github.com/go-to-k/cdkd/issues/448)). Use only when the developer's own credentials cannot read the layer — typically a cross-account layer. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. No-op for stacks whose layers are all same-stack `AWS::Lambda::LayerVersion` references. |
 | `--watch` | off | Hot reload: watch the CDK app **source tree** (the synth working directory, where `cdk.json` lives) and re-synth + re-discover routes on a source edit, mirroring `cdk watch`. `cdk.out` / `node_modules` / `.git` are excluded and `cdk.json`'s `watch.include` / `watch.exclude` are honored. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
 | `--from-state` | off | Read cdkd S3 state for every routed stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in Lambda env vars with the deployed physical IDs / attributes. Off by default — keeps the pre-PR literal-only / warn-and-drop behavior. Mirrors `cdkd local invoke --from-state` and `cdkd local run-task --from-state`. Re-runs against fresh state on every hot-reload firing (`--watch`). State load failures degrade per-stack to warn-and-fall-back so a missing or unreadable state file never aborts the server. |

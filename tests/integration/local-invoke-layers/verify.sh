@@ -38,7 +38,7 @@ ${CDKD} synth >/dev/null
 # Test 1 — multi-layer mounting works: handler can require() modules
 # from BOTH the greetings layers AND the counters layer at the same
 # /opt mount point.
-echo "==> [1/3] Invoking EchoHandler (default empty event)"
+echo "==> [1/4] Invoking EchoHandler (default empty event)"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"name":"alice","n":7}' > "${EVENT_FILE}"
@@ -73,7 +73,7 @@ echo "${RESULT_1}" | grep -q '"greeting":"from-layer-B:hello-alice"' || {
 
 # Test 2 — different event payload exercises the same warm code path
 # end-to-end (sanity check that nothing was cached as constants).
-echo "==> [2/3] Invoking with a different event payload"
+echo "==> [2/4] Invoking with a different event payload"
 EVENT2=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${EVENT2}"' EXIT
 echo '{"name":"bob","n":42}' > "${EVENT2}"
@@ -92,7 +92,7 @@ echo "${RESULT_2}" | grep -q '"counter":"count=42"' || {
 # stdout + stderr (cdkd's `logger.info` writes to stdout via
 # `console.info`; we just want to verify the layer-count line appears
 # somewhere in the cdkd output) so users know the layer wiring fired.
-echo "==> [3/3] Verifying cdkd logs the layer count"
+echo "==> [3/4] Verifying cdkd logs the layer count"
 LOG_OUTPUT=$(${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1)
 echo "${LOG_OUTPUT}" | grep -q 'Mounting 3 Lambda layers at /opt' || {
   echo "FAIL: expected 'Mounting 3 Lambda layers' message in cdkd output, got:"
@@ -100,5 +100,49 @@ echo "${LOG_OUTPUT}" | grep -q 'Mounting 3 Lambda layers at /opt' || {
   exit 1
 }
 
+# Test 4 (issue #2143) — the layer-version ARN parse derives the partition
+# from the region rather than matching a hand-written alternation, so a
+# literal-ARN layer whose partition and region DISAGREE is refused at
+# resolution time. `MismatchedArnLayerHandler` carries
+# `arn:aws-cn:lambda:us-east-1:...`; pre-#2143 that ARN parsed and cdkd went
+# on to attempt a `lambda:GetLayerVersion` download, so this assertion is
+# discriminating rather than decorative.
+#
+# It is the half of #2143 an integ CAN exercise: the five partitions the old
+# alternation omitted (`aws-iso*`, `aws-eusc`) have no endpoint reachable from
+# a normal dev account, whereas a mismatch is decided locally with no network
+# call at all. What it adds over the unit matrix is that this runs the SHIPPED
+# `dist/` bundle, which is where a broken `src/local` -> `src/utils` import
+# would show up.
+echo "==> [4/4] Verifying a partition/region-mismatched layer ARN is refused"
+set +e
+MISMATCH_OUTPUT=$(${CDKD} local invoke CdkdLocalInvokeLayersFixture/MismatchedArnLayerHandler --event "${EVENT_FILE}" --no-pull 2>&1)
+MISMATCH_RC=$?
+set -e
+if [[ ${MISMATCH_RC} -eq 0 ]]; then
+  echo "FAIL: expected a non-zero exit for the mismatched layer ARN, got 0. Output:"
+  echo "${MISMATCH_OUTPUT}"
+  exit 1
+fi
+echo "${MISMATCH_OUTPUT}" | grep -q 'cdkd cannot resolve locally' || {
+  echo "FAIL: expected the layer-resolution refusal for the mismatched ARN, got:"
+  echo "${MISMATCH_OUTPUT}"
+  exit 1
+}
+echo "${MISMATCH_OUTPUT}" | grep -q 'arn:aws-cn:lambda:us-east-1:111122223333:layer:Mismatched:1' || {
+  echo "FAIL: expected the refusal to name the offending ARN, got:"
+  echo "${MISMATCH_OUTPUT}"
+  exit 1
+}
+# The refusal must name the DERIVATION, not merely refuse: a bundle whose
+# layer parse broke wholesale would also refuse, and would satisfy the two
+# greps above. This sentence only exists on the partition-mismatch arm.
+echo "${MISMATCH_OUTPUT}" | grep -qF "The partition 'aws-cn' does not match region 'us-east-1': no partition prefix matches that region, so cdkd resolves it to the commercial partition 'aws'." || {
+  echo "FAIL: expected the refusal to name the partition/region disagreement, got:"
+  echo "${MISMATCH_OUTPUT}"
+  exit 1
+}
+echo "    refused as expected (exit ${MISMATCH_RC})"
+
 echo ""
-echo "==> All 3 local-invoke-layers tests passed"
+echo "==> All 4 local-invoke-layers tests passed"

@@ -60,5 +60,36 @@ export class LocalInvokeLayersStack extends cdk.Stack {
       layers: [greetingsA, greetingsB, counters],
       timeout: cdk.Duration.seconds(10),
     });
+
+    // Issue #2143 — a LITERAL-ARN layer whose partition and region DISAGREE.
+    //
+    // `resolveLambdaLayers` derives the partition from the region
+    // (`derivePartitionAndUrlSuffix`) instead of matching it against a
+    // hand-written alternation, so `aws-cn` paired with a commercial region is
+    // refused before anything touches the network. That refusal is what
+    // verify.sh's test 4 asserts, and it is the one half of #2143 an integ can
+    // exercise at all: the five previously-unsupported partitions have no
+    // reachable endpoints from a normal dev account, while a MISMATCH is a
+    // pure local verdict.
+    //
+    // What it buys over the unit matrix: the unit tests import the resolver
+    // from source, so they cannot see whether the shipped `dist/` bundle still
+    // wires the new `src/local` -> `src/utils/aws-partition` import. Pre-#2143
+    // this ARN PARSED, and `cdkd local invoke` went on to attempt a
+    // `lambda:GetLayerVersion` download; post-#2143 it must stop at
+    // resolution.
+    new lambda.Function(this, 'MismatchedArnLayerHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+      layers: [
+        lambda.LayerVersion.fromLayerVersionArn(
+          this,
+          'MismatchedArnLayer',
+          'arn:aws-cn:lambda:us-east-1:111122223333:layer:Mismatched:1'
+        ),
+      ],
+      timeout: cdk.Duration.seconds(10),
+    });
   }
 }

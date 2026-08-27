@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 import {
   LocalInvokeResolutionError,
-  parseLayerVersionArn,
+  classifyLayerVersionArn,
   parseTarget,
   resolveLambdaTarget,
 } from '../../../src/local/lambda-resolver.js';
@@ -1299,6 +1299,21 @@ describe('resolveLambdaTarget', () => {
     expect(result.ephemeralStorageMb).toBeUndefined();
   });
 });
+
+/**
+ * The `T | undefined` shape these cases were written against. It used to be a
+ * `parseLayerVersionArn` export, which issue #2143 removed: once the resolver
+ * moved to `classifyLayerVersionArn`, that wrapper had no `src/` caller left
+ * and `scripts/check-local-reachability.ts` reported it as an orphaned export.
+ * Keeping the adapter HERE — three lines over the real classifier — preserves
+ * every assertion below without a production symbol that only tests reach.
+ */
+function parseLayerVersionArn(
+  input: string
+): { arn: string; region: string; accountId: string; name: string; version: string } | undefined {
+  const result = classifyLayerVersionArn(input);
+  return result.ok ? result.value : undefined;
+}
 
 describe('parseLayerVersionArn (issue #448)', () => {
   it('parses a canonical commercial-partition layer ARN', () => {
