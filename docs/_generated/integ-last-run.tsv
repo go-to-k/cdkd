@@ -77,7 +77,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-07-27T09:43:47Z	PASS	140	verify.sh	1160 removal phase 2b final-tree run, destroy 3/0, 0 orphans
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-08-14T00:41:19Z	PASS	73	verify.sh	PR 1890 review (image-function readback skip); deploy+ECR push+invoke+destroy 2 del 0 err, 0 orph; live probe: both ZIP-only Lambda getters reject with InvalidParameterValueException on a PackageType=Image function
-drift-revert	2026-08-22T15:42:44Z	PASS	194	verify.sh	#2170/#2171 lane, confirmation re-run (forceReleaseLock unconditional + altered-value suppression); 13 deleted / 0 errors / 0 orphans
+drift-revert	2026-08-27T08:20:55Z	PASS	159	verify.sh	issue 2291 lane: broad-set run gating deploy-engine / intrinsic-function-resolver / rollback-executor. Chosen because --revert re-resolves persisted expressions, the path this change alters. 13 deleted / 0 errors / 0 orphans.
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
 drift-revert-vpc	2026-08-26T03:47:55Z	PASS	313	verify.sh	issue #2116 broad arm, second fixture (VPC/ENI/EFS/TG breadth deliberately not narrowed to the cheapest run). 21 deleted / 0 errors / 0 orphans
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
@@ -150,6 +150,7 @@ kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
 lambda	2026-08-27T09:22:24Z	PASS	198	verify.sh	issue 2302 lane, re-run after rebase past issue 2282 (shared s3-bucket-provider.ts staled integ-destroy); rc 0, orphans clean
+lambda	2026-08-27T08:20:55Z	PASS	85	verify.sh	issue 2291 lane: second broad-set run for a different resource-class DAG (SQS / IAM / Lambda / LayerVersion / DynamoDB). 9 deleted / 0 errors / 0 orphans.
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
@@ -214,7 +215,7 @@ multi-stack-deps	2026-08-20T13:25:47Z	PASS	66	standard	#2053 on the lane-A+B+pee
 nested-stack	2026-08-21T11:10:06Z	PASS	51	verify.sh	#2141 live arm (Phase A2): parent holds one readable SSM param + one AWS::CloudFormation::Stack that short-circuits to unsupported with no AWS read, so it discriminates the count arithmetic. Real AWS printed '1 resource checked, 1 unsupported'. MUTATION-PROBED against real AWS: restoring the inspectedCount increment made AWS print '2 resources checked, 1 unsupported' and the arm went RED. This row is the RE-RUN after the final rebase onto 0.284.34 (PRs #2152/#2153 merged in between). 2 stacks destroyed, 0 errors, 0 orphans
 nested-stack-3level	2026-08-10T04:45:42Z	PASS	78	verify.sh	0810 sweep b3; nested-stack-provider re-verify, 0 err, 0 orph
 nested-stack-deep	2026-07-26T18:10:48Z	PASS	65	verify.sh	0727b sweep-b2 staleness re-run (rc=0); account clean
-nested-stack-secret	2026-08-26T16:03:34Z	PASS	148	verify.sh	issue 2270 lane, 2nd run after decoupling the fixture arm (the 1st FAIL was the arm poisoning a pre-existing leaf's plaintext, not the fix). Live: the Fn::Sub over a child output RESOLVES instead of shipping the placeholder, and two same-plaintext Fn::Sub leaves of ONE resource each persist their OWN expression. 7 deleted / 0 errors / 0 orphans / 0 surviving state versions.
+nested-stack-secret	2026-08-27T08:14:46Z	PASS	158	verify.sh	issue 2291 lane: new HandoffPair (two Parameters, one plaintext, two version-stage spellings) and HandoffSub (Fn::Sub over the LOSING parameter) arms. 11 new assertions incl. the same-plaintext premise, on both CREATE and UPDATE. 9 deleted / 0 errors / 0 orphans / 0 surviving state versions.
 nlb-source-nat	2026-08-12T08:50:17Z	PASS	364	verify.sh	#1619 re-run after review fixes: prefix retention + phase-3 no-op added; 24 deleted, 0 err, 0 orph
 nodejs-function	2026-08-10T05:29:23Z	PASS	50	verify.sh	0810 P2 sweep b8; rc ok, 0 orph
 opensearch-domain-getatt	2026-08-10T08:05:51Z	PASS	1798	verify.sh	0810 P2 sweep b13; 60m CC delete floor ok, 0 err 0 orph
