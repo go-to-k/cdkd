@@ -3339,6 +3339,57 @@ describe('cdkd import', () => {
       });
     });
 
+    it('names the UNBINDABLE PARAMETER in the warn, and persists the raw Fn::Sub rather than the literal (issue #2285)', async () => {
+      // The end-to-end shape of issue #2285. `resolveParameters` throws on
+      // `Stage` (declared, no `Default`), `resolveImportedProperties` catches
+      // it and continues with an EMPTY bag on a context that is NOT
+      // `bestEffort`, so the `Fn::Sub` reaches the resolver unbindable.
+      //
+      // THE DISCRIMINATOR is what lands in state. Before the fix the resolver
+      // kept the placeholder and `topic-${Stage}` was persisted as a literal
+      // STRING -- which then becomes the desired bag of the next `cdkd deploy`
+      // and the bag `cdkd destroy` hands a provider. It must now be the raw
+      // intrinsic OBJECT instead.
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: { Stage: { Type: 'String' } },
+        Resources: {
+          MyTopic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: { TopicName: { 'Fn::Sub': 'topic-${Stage}' } },
+            Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      const topicName = state.resources['MyTopic']?.properties['TopicName'];
+      expect(topicName).toEqual({ 'Fn::Sub': 'topic-${Stage}' });
+      expect(topicName).not.toBe('topic-${Stage}');
+
+      const warned = warnSpy.mock.calls.flat().join('\n');
+      // The parameter is NAMED, so the operator knows which one to give a
+      // `Default`; `cdkd import` has no flag that could bind it.
+      expect(warned).toContain(
+        "declares parameter(s) with no 'Default' that an import cannot bind (Stage)"
+      );
+      // The pre-existing sibling-shaped guidance is NOT replaced -- both
+      // causes reach this catch.
+      expect(warned).toContain("remove this resource via 'cdkd state orphan'");
+    });
+
     it('warns and leaves raw intrinsic in place when reference cannot be resolved', async () => {
       // Permission references a Lambda that wasn't in the importable
       // set (e.g. a sibling resource type without an `import()` impl,
@@ -3369,6 +3420,13 @@ describe('cdkd import', () => {
       expect(mockSaveState).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringMatching(/Failed to resolve intrinsics in Properties for imported resource 'MyPerm'/)
+      );
+      // NEGATIVE CONTROL for the parameter-shaped arm added with issue #2285:
+      // this template declares NO parameters, so the failure is purely
+      // sibling-shaped and the parameter clause must not appear. Without this
+      // assertion a clause appended unconditionally would pass every case.
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain(
+        "declares parameter(s) with no 'Default'"
       );
       const [, , state] = mockSaveState.mock.calls[0] as unknown as [
         string,

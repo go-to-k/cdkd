@@ -25,7 +25,10 @@ import { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
-import { IntrinsicFunctionResolver } from '../../deployment/intrinsic-function-resolver.js';
+import {
+  IntrinsicFunctionResolver,
+  isUnboundTemplateParameter,
+} from '../../deployment/intrinsic-function-resolver.js';
 import { redactSecretsForState } from '../../deployment/secret-redaction.js';
 import {
   resolveApp,
@@ -1458,6 +1461,15 @@ async function resolveImportedProperties(
     );
   }
 
+  // The parameters this import could NOT bind, decided by the SAME predicate
+  // the resolver refuses on (issue #2285) rather than by re-reading the error
+  // text below. `cdkd import` accepts no parameter values at all, so when this
+  // list is non-empty the sibling-shaped remedies in the per-resource warning
+  // cannot apply to the failure and the message has to say so.
+  const unboundParameterNames = Object.keys(
+    (template.Parameters ?? {}) as Record<string, unknown>
+  ).filter((name) => isUnboundTemplateParameter(name, template, parameters));
+
   const baseContext = {
     template,
     resources: stackState.resources,
@@ -1493,9 +1505,18 @@ async function resolveImportedProperties(
       // resource is already imported on the AWS side, and the user
       // can either re-import the missing sibling or surgically fix
       // state via `cdkd state orphan` + redeploy.
+      //
+      // BOTH causes reach this catch, and the remedies differ. The
+      // sibling-shaped ones stay as written; the parameter-shaped clause is
+      // appended only when this template actually has an unbindable parameter
+      // (issue #2285 routed that failure here), because re-importing a sibling
+      // cannot fix it and `cdkd import` has no flag to bind one with.
       logger.warn(
         `Failed to resolve intrinsics in Properties for imported resource '${logicalId}' (${resource.resourceType}): ${err instanceof Error ? err.message : String(err)}. ` +
-          `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.`
+          `State will be written with the raw intrinsic shape, which may cause 'cdkd destroy' to fail on this resource — re-import once every referenced sibling is in state, or remove this resource via 'cdkd state orphan'.` +
+          (unboundParameterNames.length > 0
+            ? ` This template also declares parameter(s) with no 'Default' that an import cannot bind (${unboundParameterNames.join(', ')}), and 'cdkd import' accepts no parameter values — if this property was built from one of those, re-importing a sibling will not change it: give the parameter a 'Default' in the template and re-import, or correct the recorded properties before the next 'cdkd deploy'.`
+            : '')
       );
     }
   }
