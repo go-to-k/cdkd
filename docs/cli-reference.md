@@ -1785,10 +1785,13 @@ happy paths delete it again; three shapes leave it behind, and until issue
 - an interrupted deploy (Ctrl-C / SIGTERM / a cancelled CI job) between the PUT
   and any cleanup;
 - any throw on a path that does not reach a cleanup call;
-- a LATE handler PUT, landing after cdkd stopped polling. This is the only one
-  with CONTENT — an empty body is just a storage leak, but a real CloudFormation
-  `Data` payload sitting at a key nothing collects is a data-retention question
-  too.
+- a LATE handler PUT, landing after cdkd stopped polling. Of THESE THREE
+  stranded shapes it is the only one with CONTENT — an empty body is just a
+  storage leak, while a real CloudFormation `Data` payload sitting at a key
+  nothing collects is a data-retention question too. Read that scope literally:
+  on the HAPPY path the handler's real body is at the key as well, and cdkd
+  deletes it there. The sentence is about which of the three LEAKS carries
+  content, not about where content occurs.
 
 Every `cdkd gc` run now lists that prefix and collects what is older than
 `--older-than`. Two independent things keep an IN-FLIGHT run's key safe: the
@@ -1796,6 +1799,29 @@ Every `cdkd gc` run now lists that prefix and collects what is older than
 every deploy that can write one of these keys holds one for its duration; and
 the age guard is applied to the object's own `LastModified`, which for a
 placeholder is the moment of the PUT that opened the invocation.
+
+Collection is not the whole answer on a VERSIONED bucket, which the state
+bucket is (`cdkd bootstrap` turns versioning on). A plain `DeleteObject` there
+writes a DELETE MARKER and leaves the body readable through `GetObject` with a
+`VersionId`, so until issue
+[#2340](https://github.com/go-to-k/cdkd/issues/2340) a collected placeholder
+was not gone — for the late-PUT shape above, the handler's full `Data` payload
+stayed retrievable by anyone who could read the state bucket. `cdkd gc` now
+purges each collected key's noncurrent versions after deleting it, and the
+provider's own cleanup does the same for the keys it deletes on the happy path.
+
+That purge needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion` on the
+state bucket, which the least-privilege policy in
+[state-management.md](state-management.md#security-and-best-practices) did not
+grant before #2340. It fails soft: without those actions the collection still
+succeeds and `cdkd gc` still reports the reclaimed bytes, but a warning counts
+and names the affected keys, names the two grants, and the bodies stay
+retrievable by `VersionId`. Note the two fail differently — a missing
+`s3:ListBucketVersions` denies the listing outright, while a missing
+`s3:DeleteObjectVersion` comes back as per-key entries in `DeleteObjects`'
+`Errors` array with the call itself reporting success, which cdkd reads rather
+than treating as a clean run. The purge also runs when the collection PARTIALLY
+failed, so keys that were deleted before the failure do not keep their history.
 
 Placeholders appear in the reclaim plan and the byte totals alongside assets,
 marked `[abandoned custom-resource response]`, and are covered by `--dry-run`

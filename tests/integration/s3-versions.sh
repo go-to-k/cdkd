@@ -303,10 +303,50 @@ _s3v_delete_rows() {
 # with the exact key and `noncurrent`, which leaves whatever is CURRENT intact
 # while the historical versions go (`cross-stack-secret-import` does this).
 #
-# THIRD, stated so nobody re-derives it: `custom-resource-responses/<id>.json`
-# is a sidecar under a stack's OWN prefix, so the prefix sweep DOES reach it.
-# Only `stack-lock-renewal` in the swept set uses a custom resource, and it
-# carries no secret.
+# THIRD BLIND SPOT, same shape, and this comment used to assert the OPPOSITE as
+# settled fact (issue #2340). `custom-resource-responses/<requestId>.json` is
+# NOT a sidecar under a stack's own prefix: `CUSTOM_RESOURCE_RESPONSE_PREFIX` in
+# `src/state/state-prefix.ts` is a TOP-LEVEL prefix, a SIBLING of `cdkd/`, into
+# which every stack deploying anywhere in the region writes. No
+# `s3_stack_prefix` reaches it, and `s3_purge_prefix_versions` cannot be pointed
+# at it either -- `_s3v_check_prefix` refuses anything not shaped
+# `cdkd/<stack>/<region>/`. What lands at that key is not a placeholder: the
+# handler replies through the pre-signed ResponseURL and PUTs its FULL
+# cfn-response body, `Data` included, so a handler-minted secret lives there.
+#
+# cdkd now purges those noncurrent versions itself, on BOTH paths that delete
+# one of these objects (issue #2340): `CustomResourceProvider`'s own
+# `cleanupResponseObject`, and `cdkd gc`'s sweep of the ABANDONED placeholders,
+# which previously only delete-markered them. Both call one shared
+# implementation, `purgeNoncurrentKeyVersions` in
+# `src/state/s3-noncurrent-version-purge.ts`, fenced against a future copy by
+# `tests/unit/state/custom-resource-response-version-purge-sharing.test.ts`.
+# So a fixture normally has nothing to do here.
+#
+# BUT THAT PURGE IS CONDITIONAL ON TWO GRANTS, and this is the half a fixture
+# author has to check before trusting it. It needs `s3:ListBucketVersions` on
+# the state bucket and `s3:DeleteObjectVersion` on the key. Neither was in the
+# least-privilege policy `docs/state-management.md` recommends until issue
+# #2340 added them, so a role created from the older four-action policy still
+# lacks both. The purge FAILS SOFT by design -- it warns and never aborts the
+# operation -- so on such a role the run goes green and the noncurrent versions
+# survive exactly as before. Any fixture that ASSERTS the purge (rather than
+# relying on it) must therefore either confirm the CI role carries both actions
+# or sweep the key itself; otherwise the assertion is vacuous and green means
+# nothing.
+#
+# When one does need to sweep, the remedy is the exports index's:
+# `s3_purge_key_versions` with the EXACT key and `noncurrent`, never a
+# prefix-scoped `all`, because the prefix is shared with concurrent lanes. Note
+# the `<requestId>` is minted per invocation (`cdkd-<epochMs>-<random>`), so a
+# fixture cannot spell the key ahead of time -- it has to capture it from the
+# run.
+#
+# What this comment does NOT claim, because the previous version's overstated
+# half is what stopped the next reader looking: nothing here has audited which
+# fixtures in the swept set invoke a custom resource, nor whether their handlers
+# return secrets. Audit it if you need that answer; do not read its absence as a
+# clean bill.
 s3_stack_prefix() {
   printf 'cdkd/%s/%s/\n' "${1:-}" "${2:-}"
 }

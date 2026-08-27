@@ -32,6 +32,7 @@ import {
 } from '../../deployment/retry.js';
 import { startInterruptWatch, type InterruptWatch } from '../interrupt-watch.js';
 import { CUSTOM_RESOURCE_RESPONSE_PREFIX } from '../../state/state-prefix.js';
+import { purgeNoncurrentKeyVersions } from '../../state/s3-noncurrent-version-purge.js';
 import {
   isIamPropagationError,
   isMarkedNonRetryable,
@@ -2596,21 +2597,58 @@ export class CustomResourceProvider implements ResourceProvider {
   }
 
   /**
-   * Cleanup response object from S3
+   * Cleanup response object from S3.
+   *
+   * TWO steps, and the second one is not housekeeping (issue
+   * [#2340](https://github.com/go-to-k/cdkd/issues/2340)). `cdkd bootstrap`
+   * turns VERSIONING ON for the state bucket, so a bare `DeleteObject` writes
+   * a DELETE MARKER and leaves every prior version readable through
+   * `GetObject` with a `VersionId`. The object at this key is not a
+   * placeholder by then: the handler replied through the pre-signed
+   * ResponseURL and PUT its FULL cfn-response body there, `Data` included —
+   * which is exactly where a handler-minted secret (a generated password, an
+   * issued API key) lives. Delete-only cleanup therefore reports success while
+   * the secret stays retrievable by anyone holding `s3:GetObjectVersion` on
+   * the state bucket.
+   *
+   * The purge itself lives in `purgeNoncurrentKeyVersions`, SHARED with `cdkd
+   * gc`'s sweep of the abandoned objects at this same prefix — see that
+   * module for why it is scoped to the exact key and to what is not
+   * `IsLatest`, and why it never throws.
    */
   private async cleanupResponseObject(responseKey: string): Promise<void> {
     if (!this.responseBucket) return;
+    const bucket = this.responseBucket;
 
+    // This arm swallows its error because cleanup runs from `finally` blocks
+    // and from the timeout arm, and must never abort its caller. Swallowed is
+    // NOT the same as succeeded, so it says on the way out what it leaves
+    // behind — the response object stays CURRENT — which is not inferable
+    // from this method's `void` return. The purge arm below has the same
+    // property, enforced inside the shared helper rather than here.
     try {
       await this.s3Client.send(
         new DeleteObjectCommand({
-          Bucket: this.responseBucket,
+          Bucket: bucket,
           Key: responseKey,
         })
       );
-    } catch {
-      // Ignore cleanup errors
+    } catch (error) {
+      this.logger.debug(
+        `Failed to delete custom-resource response object s3://${bucket}/${responseKey}; ` +
+          `it remains as a current object. Underlying error: ` +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
     }
+
+    // Delegated to the SHARED implementation rather than open-coded here:
+    // `cdkd gc` sweeps the ABANDONED objects at this same prefix and needs the
+    // identical purge, and two copies is how one of them keeps the defect
+    // after the other is fixed. The helper never throws and owns the warning,
+    // so the cleanup path's must-not-abort property holds by construction.
+    await purgeNoncurrentKeyVersions(this.s3Client, bucket, [responseKey], {
+      logger: this.logger,
+    });
   }
 
   /**
