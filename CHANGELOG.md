@@ -1,3 +1,10 @@
+## [0.284.78](https://github.com/go-to-k/cdkd/compare/v0.284.77...v0.284.78) (2026-08-27)
+
+
+### Bug Fixes
+
+* **secret-redaction:** key the nested-stack inherited secrets per PARAMETER so two Parameters sharing one plaintext keep their own expressions ([#2328](https://github.com/go-to-k/cdkd/issues/2328)) ([f1939f7](https://github.com/go-to-k/cdkd/commit/f1939f7e998fddf6f3f199615106d21c32693ea3))
+
 ## [0.284.77](https://github.com/go-to-k/cdkd/compare/v0.284.76...v0.284.77) (2026-08-27)
 
 
