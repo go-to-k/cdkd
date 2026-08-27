@@ -1,3 +1,10 @@
+## [0.284.74](https://github.com/go-to-k/cdkd/compare/v0.284.73...v0.284.74) (2026-08-27)
+
+
+### Bug Fixes
+
+* **local:** derive the layer-ARN partition from its region instead of listing three of eight ([#2305](https://github.com/go-to-k/cdkd/issues/2305)) ([214ec3a](https://github.com/go-to-k/cdkd/commit/214ec3a7ef7a5b9002fa37af51c72d20bc5721f1))
+
 ## [0.284.73](https://github.com/go-to-k/cdkd/compare/v0.284.72...v0.284.73) (2026-08-27)
 
 
