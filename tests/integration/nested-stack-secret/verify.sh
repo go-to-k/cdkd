@@ -586,14 +586,14 @@ assert_eq "the LIVE Fn::Sub Description holds the SAME resolved shared secret" \
 # collapse both carry the SURVIVOR's, so whichever lost reads as the other.
 SUBPAIR_VALUE_STATE="$(jq_state "${PARENT_STATE}" '.resources.SubSecretPair.properties.Value')"
 SUBPAIR_DESC_STATE="$(jq_state "${PARENT_STATE}" '.resources.SubSecretPair.properties.Description')"
-assert_eq "SubSecretPair.Value persists the DEFAULT-stage expression" \
-  "${SUBPAIR_VALUE_STATE}" "${SHARED_EXPR_A}"
-assert_eq "SubSecretPair.Description persists the AWSCURRENT-spelled expression" \
-  "${SUBPAIR_DESC_STATE}" "${SHARED_EXPR_B}"
 if [ "${SUBPAIR_VALUE_STATE}" = "${SUBPAIR_DESC_STATE}" ]; then
   echo "FAIL: both Fn::Sub secret leaves persisted the SAME expression (collapse, issue #2270)" >&2
   exit 1
 fi
+assert_eq "SubSecretPair.Value persists the DEFAULT-stage expression" \
+  "${SUBPAIR_VALUE_STATE}" "${SHARED_EXPR_A}"
+assert_eq "SubSecretPair.Description persists the AWSCURRENT-spelled expression" \
+  "${SUBPAIR_DESC_STATE}" "${SHARED_EXPR_B}"
 
 # READ THE TWO COUNTS AS A PAIR. "no plaintext" alone is satisfied by an arm
 # that did nothing at all -- if the resource were missing, or its leaves empty,
@@ -667,14 +667,14 @@ assert_eq "the LIVE handoff Description holds the SAME resolved handoff secret" 
 # the collapse both carry the survivor's, so whichever lost reads as the other.
 HANDOFF_VALUE_STATE="$(jq_state "${CHILD_STATE}" '.resources.HandoffPair.properties.Value')"
 HANDOFF_DESC_STATE="$(jq_state "${CHILD_STATE}" '.resources.HandoffPair.properties.Description')"
-assert_eq "HandoffPair.Value persists the DEFAULT-stage expression" \
-  "${HANDOFF_VALUE_STATE}" "${HANDOFF_EXPR_A}"
-assert_eq "HandoffPair.Description persists the AWSCURRENT-spelled expression" \
-  "${HANDOFF_DESC_STATE}" "${HANDOFF_EXPR_B}"
 if [ "${HANDOFF_VALUE_STATE}" = "${HANDOFF_DESC_STATE}" ]; then
   echo "FAIL: both inherited-parameter leaves persisted the SAME expression (collapse, issue #2291)" >&2
   exit 1
 fi
+assert_eq "HandoffPair.Value persists the DEFAULT-stage expression" \
+  "${HANDOFF_VALUE_STATE}" "${HANDOFF_EXPR_A}"
+assert_eq "HandoffPair.Description persists the AWSCURRENT-spelled expression" \
+  "${HANDOFF_DESC_STATE}" "${HANDOFF_EXPR_B}"
 
 # READ THE TWO COUNTS AS A PAIR, for the reason the round-3 arm states: "no
 # plaintext" alone is satisfied by an arm that did nothing at all.
@@ -851,14 +851,14 @@ assert_eq "the child's HandoffPair was UPDATED (so the update arm re-resolved it
   "${LIVE_HANDOFF_PATTERN}" '^.*$'
 HANDOFF_VALUE_STATE3="$(jq_state "${CHILD_STATE3}" '.resources.HandoffPair.properties.Value')"
 HANDOFF_DESC_STATE3="$(jq_state "${CHILD_STATE3}" '.resources.HandoffPair.properties.Description')"
-assert_eq "HandoffPair.Value is STILL its own expression after the UPDATE" \
-  "${HANDOFF_VALUE_STATE3}" "${HANDOFF_EXPR_A}"
-assert_eq "HandoffPair.Description is STILL its own expression after the UPDATE" \
-  "${HANDOFF_DESC_STATE3}" "${HANDOFF_EXPR_B}"
 if [ "${HANDOFF_VALUE_STATE3}" = "${HANDOFF_DESC_STATE3}" ]; then
   echo "FAIL: the UPDATE arm collapsed both inherited-parameter leaves (issue #2291)" >&2
   exit 1
 fi
+assert_eq "HandoffPair.Value is STILL its own expression after the UPDATE" \
+  "${HANDOFF_VALUE_STATE3}" "${HANDOFF_EXPR_A}"
+assert_eq "HandoffPair.Description is STILL its own expression after the UPDATE" \
+  "${HANDOFF_DESC_STATE3}" "${HANDOFF_EXPR_B}"
 # The embedding leaf too: it is UNCHANGED in this phase, so what this asserts is
 # that the redeploy did not REWRITE a correct value -- the direction a bag
 # re-seeded from the UPDATE arm could get wrong.
