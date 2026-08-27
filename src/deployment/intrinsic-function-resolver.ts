@@ -1516,6 +1516,61 @@ export interface ParameterDefinition {
 }
 
 /**
+ * Is `name` a template Parameter this caller has left UNBOUND — declared, with
+ * no `Default`, and with no value supplied?
+ * (issue [#2285](https://github.com/go-to-k/cdkd/issues/2285))
+ *
+ * ONE predicate, consulted VERBATIM by the two sites that ask this same
+ * question, rather than two spellings that agree until they do not:
+ *
+ *  - {@link IntrinsicFunctionResolver.resolveParameters} raises
+ *    `Parameter <name> is required ...` for exactly this population. It is the
+ *    UPFRONT validation, and it runs on every path that binds parameters at
+ *    all (`deploy-engine`'s step 2.5, `diff-recursive`, `scrub`, `import`), so
+ *    a plain `cdkd deploy` never reaches the resolver with this population at
+ *    all -- it has already failed.
+ *  - {@link IntrinsicFunctionResolver.subPlaceholderNamesADeclaredTemplateEntity}
+ *    answers for the callers that CATCH that error and resolve anyway.
+ *    `cdkd import --migrate-from-cloudformation` is the live one: it logs the
+ *    parameter-resolution failure and continues with an EMPTY bag, on a context
+ *    that is NOT `bestEffort`, so `${Stage}` used to be written verbatim into
+ *    the imported resource's persisted properties -- and from there into the
+ *    next deploy's desired bag, which is how the literal reaches AWS.
+ *
+ * A key PRESENT with an `undefined` value is not a binding: `resolveParameters`
+ * falls through such a key to the `Default` check, so the predicate must too.
+ * That single edge is the reason this is shared code and not a paraphrase.
+ *
+ * A `Default`-carrying parameter the caller never merged is DELIBERATELY not
+ * in this population. `resolveParameters` merges every `Default` it sees, so
+ * the only way to reach the resolver with one unbound is to have discarded the
+ * whole bag -- and refusing there would newly hard-fail input cdkd accepts
+ * today, for a parameter whose value the template itself declares.
+ */
+export function isUnboundTemplateParameter(
+  name: string,
+  template: CloudFormationTemplate | undefined,
+  boundParameters: Record<string, unknown> | undefined
+): boolean {
+  const declaredParameters = template?.Parameters;
+  if (
+    declaredParameters === undefined ||
+    declaredParameters === null ||
+    typeof declaredParameters !== 'object'
+  ) {
+    return false;
+  }
+  if (!Object.hasOwn(declaredParameters, name)) return false;
+  const definition = declaredParameters[name] as ParameterDefinition | undefined;
+  if (definition === undefined || definition === null || typeof definition !== 'object') {
+    return false;
+  }
+  if ('Default' in definition) return false;
+  if (boundParameters === undefined) return true;
+  return !(name in boundParameters) || boundParameters[name] === undefined;
+}
+
+/**
  * Does coercing to `type` risk destroying the plaintext cdkd redacts against?
  *
  * DERIVED from {@link coerceParameterTypedValue}, never enumerated beside it.
@@ -2161,6 +2216,18 @@ export class IntrinsicFunctionResolver {
     for (const [name, definition] of Object.entries(templateParameters)) {
       const paramDef = definition as ParameterDefinition;
 
+      // No value provided and no default - this is an error. Decided by the
+      // SHARED {@link isUnboundTemplateParameter} rather than by the shape of
+      // the branches below, because `resolveSub`'s structural refusal asks the
+      // very same question (issue #2285) and the two must not drift. Hoisted
+      // above the branches so both sites read one definition of the population
+      // instead of one site defining it and the other reconstructing it.
+      if (isUnboundTemplateParameter(name, template, userParameters)) {
+        throw new Error(
+          `Parameter ${name} is required but no value was provided and no default exists`
+        );
+      }
+
       // User-provided value takes precedence
       if (userParameters && name in userParameters) {
         const userValue = userParameters[name];
@@ -2215,11 +2282,6 @@ export class IntrinsicFunctionResolver {
         );
         continue;
       }
-
-      // No value provided and no default - this is an error
-      throw new Error(
-        `Parameter ${name} is required but no value was provided and no default exists`
-      );
     }
 
     return parameters;
@@ -4021,8 +4083,10 @@ export class IntrinsicFunctionResolver {
   }
 
   /**
-   * Does this `Fn::Sub` placeholder NAME a resource of this template
-   * (issue [#2270](https://github.com/go-to-k/cdkd/issues/2270))?
+   * Does this `Fn::Sub` placeholder NAME an entity of this template -- a
+   * resource (issue [#2270](https://github.com/go-to-k/cdkd/issues/2270)) or
+   * an unbound parameter (issue
+   * [#2285](https://github.com/go-to-k/cdkd/issues/2285))?
    *
    * The discriminator `resolveSub`'s catch was missing. Two very different
    * things reach that catch and it collapsed both into "keep the placeholder":
@@ -4062,38 +4126,52 @@ export class IntrinsicFunctionResolver {
    * intrinsic-sub-nested-stack-outputs.test.ts` drives each one in isolation
    * (an empty `Resources` with a populated `resources`, and the reverse).
    *
-   * PARAMETERS are deliberately NOT included, and the reason is NOT that
-   * parameters are somehow safer. `resolvePseudoParameter` and `resolveRef`
-   * already answer for every parameter that HAS a value, so the only thing a
-   * `template.Parameters` arm would newly refuse is a placeholder naming a
-   * DECLARED parameter with no bound value — and that includes a parameter
-   * carrying a `Default` which the caller never merged into
-   * `context.parameters`. Those deploys succeed today, and refusing them would
-   * be a hard-failure regression on working templates, so the arm stays out.
-   * The residual is real and is tracked separately: such a placeholder still
-   * ships `${Stage}` as literal text.
+   * PARAMETERS are included too, but only for the UNBOUND population
+   * {@link isUnboundTemplateParameter} defines -- declared, no `Default`, no
+   * bound value (issue
+   * [#2285](https://github.com/go-to-k/cdkd/issues/2285)). `resolveRef` and
+   * `resolvePseudoParameter` already answer for every parameter that HAS a
+   * value, so that population is the whole of what this arm newly refuses,
+   * and it is the one whose placeholder used to be persisted verbatim.
    *
-   * An earlier revision justified the exclusion by "the routine `cdkd scrub`
-   * case (it takes no `--parameters`)". That reason was FALSE and is recorded
-   * here so it is not reintroduced: `scrub.ts`'s `resolverContext` factory sets
+   * The predicate is SHARED with `resolveParameters`, which raises
+   * `Parameter <name> is required ...` for exactly the same population up
+   * front -- so on a plain `cdkd deploy` this arm is unreachable by
+   * construction, and what it actually covers is the caller that CATCHES that
+   * error and resolves anyway (`cdkd import --migrate-from-cloudformation`,
+   * on a context that is not `bestEffort`).
+   *
+   * A parameter carrying a `Default` the caller never merged stays OUT, for
+   * the reason recorded on the shared predicate: refusing it would newly
+   * hard-fail input cdkd accepts today.
+   *
+   * An earlier revision excluded parameters WHOLESALE and justified that by
+   * "the routine `cdkd scrub` case (it takes no `--parameters`)". That reason
+   * was FALSE and is recorded here so it is not reintroduced: `scrub.ts`'s `resolverContext` factory sets
    * `bestEffort: true` in the same object literal that binds `template` and
    * `resources`, so scrub short-circuits in `rethrowStructuralSubFailure`
    * before this predicate is consulted at all — it can neither benefit from
    * nor be harmed by what this function includes.
    */
-  private subPlaceholderNamesADeclaredResource(varName: string, context: ResolverContext): boolean {
+  private subPlaceholderNamesADeclaredTemplateEntity(
+    varName: string,
+    context: ResolverContext
+  ): boolean {
     const firstDot = varName.indexOf('.');
     const head = firstDot >= 0 ? varName.slice(0, firstDot) : varName;
     if (head === '') return false;
     if (Object.hasOwn(context.resources, head)) return true;
     const declared = context.template?.Resources;
-    if (declared === undefined || declared === null || typeof declared !== 'object') return false;
-    return Object.hasOwn(declared, head);
+    if (declared !== undefined && declared !== null && typeof declared === 'object') {
+      if (Object.hasOwn(declared, head)) return true;
+    }
+    return isUnboundTemplateParameter(head, context.template, context.parameters);
   }
 
   /**
    * Refuse to launder a STRUCTURAL `Fn::Sub` failure into a literal
-   * (issue [#2270](https://github.com/go-to-k/cdkd/issues/2270)).
+   * (issues [#2270](https://github.com/go-to-k/cdkd/issues/2270) and
+   * [#2285](https://github.com/go-to-k/cdkd/issues/2285)).
    *
    * Called from both arms of `resolveSub`'s catch — the dotted (GetAtt) one
    * and the bare (Ref) one — after the
@@ -4125,7 +4203,7 @@ export class IntrinsicFunctionResolver {
     context: ResolverContext
   ): void {
     if (context.bestEffort) return;
-    if (!this.subPlaceholderNamesADeclaredResource(varName, context)) return;
+    if (!this.subPlaceholderNamesADeclaredTemplateEntity(varName, context)) return;
     throw error;
   }
 
@@ -4212,7 +4290,9 @@ export class IntrinsicFunctionResolver {
                 if (getAttError instanceof IntrinsicResolutionRefusalError) throw getAttError;
                 // Issue #2270: a plain `Error` from a placeholder that NAMES a
                 // resource of this template is structural too, and keeping it
-                // ships `${Child.Outputs.Foo}` into a live property.
+                // ships `${Child.Outputs.Foo}` into a live property. Issue
+                // #2285 adds the head segments that name an UNBOUND template
+                // parameter on the same terms.
                 this.rethrowStructuralSubFailure(varNameStr, getAttError, context);
                 this.logger.warn(this.subPlaceholderWarning(varNameStr, getAttError));
                 replacement = match[0]; // Keep original placeholder
@@ -4230,6 +4310,9 @@ export class IntrinsicFunctionResolver {
               // above: `${MyBucket}` naming a resource this template declares
               // is an implicit `Ref`, never ordinary text, so a `Ref MyBucket
               // not found` here is structural and must not become a literal.
+              // This is also the arm issue #2285 lives on: `${Stage}` naming a
+              // parameter the template DECLARES with no `Default` and no bound
+              // value is an implicit `Ref` for the same reason.
               this.rethrowStructuralSubFailure(varNameStr, refError, context);
               this.logger.warn(this.subPlaceholderWarning(varNameStr, refError));
               replacement = match[0]; // Keep original placeholder
