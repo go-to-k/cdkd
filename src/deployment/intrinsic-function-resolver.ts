@@ -1532,21 +1532,71 @@ export interface ParameterDefinition {
  *    all -- it has already failed.
  *  - {@link IntrinsicFunctionResolver.subPlaceholderNamesADeclaredTemplateEntity}
  *    answers for the callers that CATCH that error and resolve anyway.
- *    `cdkd import --migrate-from-cloudformation` is the live one: it logs the
- *    parameter-resolution failure and continues with an EMPTY bag, on a context
- *    that is NOT `bestEffort`, so `${Stage}` used to be written verbatim into
- *    the imported resource's persisted properties -- and from there into the
+ *    `cdkd import` is the live one -- EVERY mode of it, not only
+ *    `--migrate-from-cloudformation`: `resolveImportedProperties` sits on
+ *    `importCommand`'s unconditional flow, so auto / selective / hybrid all
+ *    reach it. It logs the parameter-resolution failure, RETRIES over the
+ *    template's `Default`-carrying parameters alone (issue
+ *    [#2321](https://github.com/go-to-k/cdkd/issues/2321)), and resolves
+ *    against that partial bag on a context that is NOT `bestEffort`. The
+ *    retry binds every parameter it can, and a parameter with no `Default` is
+ *    exactly what it cannot bind -- so this population still arrives here,
+ *    and a `${Tier}` over such a parameter used to be written verbatim into
+ *    the imported resource's persisted properties, and from there into the
  *    next deploy's desired bag, which is how the literal reaches AWS.
+ *    (The fixtures spell that parameter `Stage`; this doc says `Tier` because
+ *    `import.ts`'s own #2321 comments use `Stage` for the opposite role -- the
+ *    parameter that DOES carry a `Default` -- and one name for both roles in
+ *    one change is how a reader mis-reads which population is which.)
+ *    Before #2321 that caller continued with an EMPTY bag instead; the note
+ *    below turns on the difference, and on what survives it.
  *
  * A key PRESENT with an `undefined` value is not a binding: `resolveParameters`
  * falls through such a key to the `Default` check, so the predicate must too.
  * That single edge is the reason this is shared code and not a paraphrase.
  *
  * A `Default`-carrying parameter the caller never merged is DELIBERATELY not
- * in this population. `resolveParameters` merges every `Default` it sees, so
- * the only way to reach the resolver with one unbound is to have discarded the
- * whole bag -- and refusing there would newly hard-fail input cdkd accepts
- * today, for a parameter whose value the template itself declares.
+ * in this population, and issue
+ * [#2321](https://github.com/go-to-k/cdkd/issues/2321) NARROWED the population
+ * that reaches here without emptying it. Both halves matter, and an earlier
+ * revision of this paragraph shipped only the first, claiming the exclusion
+ * "describes a population that no live path produces". That was FALSE, and the
+ * counter-example is in the very change that prompted the rewrite.
+ *
+ * What #2321 fixed is `import`'s retry SUCCESS path. `resolveParameters`
+ * merges every `Default` it sees on the path that succeeds; `import` is the
+ * one caller that catches its throw on a non-`bestEffort` context, and it now
+ * retries over exactly the `Default`-carrying parameters instead of continuing
+ * with an empty bag, so a `Default`-carrying parameter reaching the refusing
+ * site from THAT path arrives BOUND. (`diff-recursive` and `scrub` also catch,
+ * but both set `bestEffort: true` and `rethrowStructuralSubFailure` returns on
+ * that flag BEFORE consulting this predicate, so neither reaches the refusing
+ * site at all; `deploy-engine` does not catch.)
+ *
+ * What SURVIVES is `import`'s retry FAILURE path, and it is a live producer,
+ * not a hypothetical one. When the `Default`-only retry itself throws -- an
+ * SSM-typed default whose `GetParameter` is rejected is the reachable case --
+ * `resolveImportedProperties` falls back to an empty bag rather than aborting
+ * an import that already succeeded against AWS, and `import.ts` omits the
+ * `parameters` key entirely when the bag is empty, so the context arrives with
+ * `parameters: undefined`. A `Default`-carrying parameter is then unbound at
+ * the refusing site, and this exclusion is the ONLY thing standing between it
+ * and a refusal.
+ *
+ * So the clause below is PRESENT-TENSE LOAD-BEARING, not a courtesy kept for
+ * some future caller: that fallback path exists right now, and the clause is
+ * what keeps a `Default`-carrying parameter off the refusing site on it.
+ * What removing the clause would DO downstream is deliberately not asserted
+ * here -- it was not probed, and the residual note below is what carries the
+ * observable consequence. It is also what
+ * {@link IntrinsicFunctionResolver.subPlaceholderNamesADeclaredTemplateEntity}
+ * cross-references.
+ *
+ * The cost of that fallback is that the #2321 defect persists on it -- the
+ * placeholder is kept and written verbatim -- which is a KNOWN residual rather
+ * than an oversight; `import.ts` records it at the fallback, and
+ * `tests/unit/cli/import.test.ts` pins it so the residual cannot widen
+ * silently.
  */
 export function isUnboundTemplateParameter(
   name: string,
@@ -4218,12 +4268,11 @@ export class IntrinsicFunctionResolver {
    * `Parameter <name> is required ...` for exactly the same population up
    * front -- so on a plain `cdkd deploy` this arm is unreachable by
    * construction, and what it actually covers is the caller that CATCHES that
-   * error and resolves anyway (`cdkd import --migrate-from-cloudformation`,
-   * on a context that is not `bestEffort`).
+   * error and resolves anyway (`cdkd import`, in every mode, on a context that
+   * is not `bestEffort`).
    *
    * A parameter carrying a `Default` the caller never merged stays OUT, for
-   * the reason recorded on the shared predicate: refusing it would newly
-   * hard-fail input cdkd accepts today.
+   * the reason recorded on the shared predicate.
    *
    * An earlier revision excluded parameters WHOLESALE and justified that by
    * "the routine `cdkd scrub` case (it takes no `--parameters`)". That reason

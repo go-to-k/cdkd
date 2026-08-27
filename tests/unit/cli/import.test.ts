@@ -65,6 +65,16 @@ const stsSend = vi.hoisted(() =>
 // `{{resolve:secretsmanager:...}}` in an imported resource's Properties fetches
 // through here. Defaults to a benign value; the redaction test overrides it.
 const smSend = vi.hoisted(() => vi.fn(async () => ({ SecretString: 'unused-default' })));
+// SSM send for `resolveParameters`' `AWS::SSM::Parameter::Value<...>` default
+// lookup (issue #2321's retry re-enters that method, so the SSM arm is live on
+// the import path). `clientsForRegion` returns this ambient double unchanged —
+// it has no `withRegion`, which that method's first reuse arm handles — so an
+// absent `ssm` key would surface as a TypeError rather than as the
+// `GetParameter` rejection production actually raises. Defaults to resolving;
+// the fallback-arm case overrides it to reject.
+const ssmSend = vi.hoisted(() =>
+  vi.fn(async () => ({ Parameter: { Value: 'ssm-resolved-value' } }))
+);
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {
@@ -82,6 +92,7 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
   getAwsClients: vi.fn(() => ({
     sts: { send: stsSend },
     secretsManager: { send: smSend },
+    ssm: { send: ssmSend },
   })),
 }));
 
@@ -289,6 +300,12 @@ describe('cdkd import', () => {
     infoSpy.mockReset();
     warnSpy.mockReset();
     stsSend.mockClear();
+    // Restored EXPLICITLY rather than left to `mockClear`: the fallback-arm
+    // case replaces the implementation with a rejection, and `mockClear` keeps
+    // implementations (only `mockReset` drops them, which would leave a bare
+    // `vi.fn()` returning `undefined` and break the readback below).
+    ssmSend.mockReset();
+    ssmSend.mockImplementation(async () => ({ Parameter: { Value: 'ssm-resolved-value' } }));
     // Reset the IntrinsicFunctionResolver's cached account info so each
     // test starts from a clean slate (otherwise the cache survives
     // across tests and a later test's region override wouldn't reset).
@@ -2915,6 +2932,84 @@ describe('cdkd import', () => {
         }
       });
 
+      it("applies the Default-only retry to the NESTED CHILD's own parameters too (issue #2321)", async () => {
+        // COVERAGE for the SECOND call site of `resolveImportedProperties`
+        // (the recursive child walk). Every other #2321 case drives only the
+        // ROOT site, so a fix applied at one and not the other would pass
+        // them all -- the helper is shared today, and this case is what keeps
+        // the two from diverging.
+        //
+        // The CHILD template carries the mixed parameter shape: `VpcId`
+        // required (so the child's own `resolveParameters` throws) plus
+        // `Stage` defaulted. A nested child is exactly where this bites in
+        // practice, since CDK threads parent values down as child Parameters.
+        //
+        // THE DISCRIMINATOR is the value in the CHILD's state record:
+        // `child-dev-bucket` versus the verbatim `child-${Stage}-bucket`.
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-2321-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Parameters: {
+                VpcId: { Type: 'String' },
+                Stage: { Type: 'String', Default: 'dev' },
+              },
+              Resources: {
+                ChildBucket: {
+                  Type: 'AWS::S3::Bucket',
+                  Properties: { BucketName: { 'Fn::Sub': 'child-${Stage}-bucket' } },
+                },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({
+            import: vi.fn(async () => ({ physicalId: 'child-bucket-real', attributes: {} })),
+          });
+          const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['ChildBucket', 'child-bucket-real']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          const childSave = mockSaveState.mock.calls.find(
+            (c) => (c as unknown[])[0] === 'P~Child'
+          ) as unknown as [
+            string,
+            string,
+            { resources: Record<string, { properties: Record<string, unknown> }> },
+          ];
+          expect(childSave).toBeDefined();
+          expect(childSave[2].resources['ChildBucket']?.properties['BucketName']).toBe(
+            'child-dev-bucket'
+          );
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+
       it('errors with clear message when STS GetCallerIdentity returns no Account', async () => {
         // The recursive nested-stack flow needs the caller's AWS account ID
         // to synthesize the cdkd-local ARN it writes into the parent's
@@ -3341,9 +3436,13 @@ describe('cdkd import', () => {
 
     it('names the UNBINDABLE PARAMETER in the warn, and persists the raw Fn::Sub rather than the literal (issue #2285)', async () => {
       // The end-to-end shape of issue #2285. `resolveParameters` throws on
-      // `Stage` (declared, no `Default`), `resolveImportedProperties` catches
-      // it and continues with an EMPTY bag on a context that is NOT
-      // `bestEffort`, so the `Fn::Sub` reaches the resolver unbindable.
+      // `Stage` (declared, no `Default`), and `resolveImportedProperties`
+      // catches it and resolves anyway on a context that is NOT `bestEffort`,
+      // so the `Fn::Sub` reaches the resolver unbindable. This template
+      // declares NOTHING but that one parameter, so issue #2321's
+      // `Default`-only retry has nothing to bind and the bag stays EMPTY --
+      // which is what keeps this arm a test of the refusal rather than of the
+      // bag.
       //
       // THE DISCRIMINATOR is what lands in state. Before the fix the resolver
       // kept the placeholder and `topic-${Stage}` was persisted as a literal
@@ -3388,6 +3487,349 @@ describe('cdkd import', () => {
       // The pre-existing sibling-shaped guidance is NOT replaced -- both
       // causes reach this catch.
       expect(warned).toContain("remove this resource via 'cdkd state orphan'");
+    });
+
+    it("binds a sibling parameter's own Default when another parameter is unbindable, so its Fn::Sub is RESOLVED not persisted verbatim (issue #2321)", async () => {
+      // Issue #2321. `resolveParameters` is all-or-nothing: it throws on
+      // `VpcId` (declared, no `Default`), and `resolveImportedProperties` used
+      // to continue with an EMPTY bag -- discarding `Stage`'s `Default` along
+      // with it. Issue #2285's refusal cannot close that hole, because `Stage`
+      // HAS a `Default` and is therefore correctly OUT of the unbound
+      // population, so the placeholder was kept and laundered.
+      //
+      // THE DISCRIMINATOR is the recorded value of a property built from the
+      // DEFAULTED parameter. Pre-fix it is the literal STRING
+      // `app-${Stage}-topic` (the placeholder verbatim, which then becomes the
+      // desired bag of the next `cdkd deploy` and the bag `cdkd destroy` hands
+      // a provider); post-fix it is `app-dev-topic`, the template's own
+      // declared default. A test asserting only that the import SUCCEEDS would
+      // pass in both worlds.
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: {
+          VpcId: { Type: 'String' },
+          Stage: { Type: 'String', Default: 'dev' },
+        },
+        Resources: {
+          MyTopic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: { TopicName: { 'Fn::Sub': 'app-${Stage}-topic' } },
+            Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyTopic']?.properties['TopicName']).toBe('app-dev-topic');
+      // Nothing failed for this resource, so no per-resource warning at all --
+      // the pre-fix world reached the SAME `saveState` with a laundered value
+      // and no warning either, which is why the assertion above is on the
+      // recorded VALUE and not on the absence of a warn.
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain(
+        "Failed to resolve intrinsics in Properties for imported resource 'MyTopic'"
+      );
+    });
+
+    it('still refuses the UNBINDABLE parameter and names only it, while its Default-carrying sibling resolves (issues #2285 + #2321)', async () => {
+      // The two behaviours have to hold in the SAME template, because the
+      // #2321 remedy is a partially-bound bag and the obvious wrong version of
+      // it -- binding every declared parameter to something -- would move
+      // `VpcId` out of `isUnboundTemplateParameter`'s population and silently
+      // undo #2285.
+      //
+      // DISCRIMINATORS, one per resource:
+      //   - MyTopic: `app-dev-topic` vs the pre-#2321 literal `app-${Stage}-topic`.
+      //   - MyQueue: the raw `Fn::Sub` OBJECT plus a warn clause naming
+      //     `(VpcId)` and NOT `Stage` -- a bag that over-bound would drop the
+      //     clause entirely and record a bound-to-junk `app-<x>-queue` string.
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: {
+          VpcId: { Type: 'String' },
+          Stage: { Type: 'String', Default: 'dev' },
+        },
+        Resources: {
+          MyTopic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: { TopicName: { 'Fn::Sub': 'app-${Stage}-topic' } },
+            Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+          },
+          MyQueue: {
+            Type: 'AWS::SQS::Queue',
+            Properties: { QueueName: { 'Fn::Sub': 'app-${VpcId}-queue' } },
+            Metadata: { 'aws:cdk:path': 'S/MyQueue' },
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockImplementation((t: string) => {
+        if (t === 'AWS::SNS::Topic') {
+          return { import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })) };
+        }
+        return { import: vi.fn(async () => ({ physicalId: 'queue-url', attributes: {} })) };
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      // The defaulted parameter binds.
+      expect(state.resources['MyTopic']?.properties['TopicName']).toBe('app-dev-topic');
+      // NEGATIVE CONTROL: the unbindable one is still REFUSED, so the raw
+      // intrinsic object is what reaches state -- issue #2285 is not weakened.
+      expect(state.resources['MyQueue']?.properties['QueueName']).toEqual({
+        'Fn::Sub': 'app-${VpcId}-queue',
+      });
+
+      const warned = warnSpy.mock.calls.flat().join('\n');
+      expect(warned).toContain(
+        "Failed to resolve intrinsics in Properties for imported resource 'MyQueue'"
+      );
+      // The warn arm still enumerates EXACTLY the genuinely unbound
+      // parameters. Asserted on the parsed clause rather than by substring, so
+      // a list that grew to `VpcId, Stage` cannot pass on the `VpcId` match.
+      const clause = /declares parameter\(s\) with no 'Default' that an import cannot bind \(([^)]*)\)/.exec(
+        warned
+      );
+      expect(clause?.[1]).toBe('VpcId');
+    });
+
+    it("binds a FALSY Default -- the `'Default' in definition` presence test, not truthiness (issue #2321)", async () => {
+      // FENCE for the spelling `defaultOnlyParameterTemplate` uses. The filter
+      // asks `'Default' in definition`; the two natural rewrites are
+      // `Boolean(d.Default)` and `d.Default !== undefined`, and BOTH pass every
+      // other case in this file, so without this pair the spelling is free to
+      // drift into a bug.
+      //
+      // `Default: ''` is the standard CFn idiom for an optional String (as are
+      // `Default: 0` and `Default: false`), and `resolveParameters` binds it
+      // faithfully. Under `Boolean(d.Default)` the parameter is filtered OUT of
+      // the retry template, so it is unbound at the resolver, carries a
+      // `Default` (hence is NOT in issue #2285's refusable population), and its
+      // placeholder is kept -- issue #2321's exact defect, re-opened.
+      //
+      // THE DISCRIMINATOR is `app--topic` (the empty default actually
+      // substituted) versus the verbatim `app-${Suffix}-topic`.
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: {
+          VpcId: { Type: 'String' },
+          Suffix: { Type: 'String', Default: '' },
+        },
+        Resources: {
+          MyTopic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: { TopicName: { 'Fn::Sub': 'app-${Suffix}-topic' } },
+            Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyTopic']?.properties['TopicName']).toBe('app--topic');
+    });
+
+    it("treats a PRESENT `Default: undefined` key as a binding, matching resolveParameters (issue #2321)", async () => {
+      // The other half of the fence above, aimed at `d.Default !== undefined`.
+      // A key PRESENT with an `undefined` value is a BINDING for both
+      // `resolveParameters` (it falls through to the `Default` branch and
+      // assigns `undefined`) and `isUnboundTemplateParameter` (`'Default' in
+      // definition` short-circuits), which is exactly what the helper's JSDoc
+      // claims -- so the claim needs a case.
+      //
+      // THE DISCRIMINATOR is `app-undefined-topic`. That string is
+      // `resolveRef`'s own long-standing contract for a key bound to
+      // `undefined` (documented as deliberately unchanged by issue #2285), and
+      // it is reachable ONLY when the retry template kept the parameter. Under
+      // `d.Default !== undefined` the parameter is dropped from the retry, so
+      // nothing binds it and the placeholder survives as the verbatim
+      // `app-${Ghost}-topic` instead.
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: {
+          VpcId: { Type: 'String' },
+          Ghost: { Type: 'String', Default: undefined },
+        },
+        Resources: {
+          MyTopic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: { TopicName: { 'Fn::Sub': 'app-${Ghost}-topic' } },
+            Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyTopic']?.properties['TopicName']).toBe('app-undefined-topic');
+      expect(state.resources['MyTopic']?.properties['TopicName']).not.toBe('app-${Ghost}-topic');
+    });
+
+    it('resolves an SSM-typed Default through the retry, which is why the retry re-enters resolveParameters (issue #2321)', async () => {
+      // FENCE for the `{ ...template, Parameters: defaulted }` SPREAD, and for
+      // the design claim that re-entering `resolveParameters` (rather than
+      // hand-binding each `Default`) keeps the SSM arm identical to the happy
+      // path. Both were unexercised: dropping the spread to
+      // `{ Parameters: defaulted }` passed every other case in this file.
+      //
+      // The spread is load-bearing because `resolveParameters` decides whether
+      // an `AWS::SSM::Parameter::Value<...>` default is worth a `GetParameter`
+      // by walking the template's RESOURCES for references to it. Without the
+      // spread the retry template has no `Resources`, so the parameter looks
+      // unreferenced, the lookup is SKIPPED, and it never enters the bag.
+      //
+      // THE DISCRIMINATOR is two-part: the recorded `app-ami-0abc-topic` (the
+      // SSM VALUE substituted, not the path), and `ssmSend` having actually
+      // been called. A hand-binding implementation would have recorded the raw
+      // path `app-/my/image/id-topic`, and the no-spread mutation records the
+      // verbatim `app-${ImageId}-topic`.
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: {
+          VpcId: { Type: 'String' },
+          ImageId: {
+            Type: 'AWS::SSM::Parameter::Value<String>',
+            Default: '/my/image/id',
+          },
+        },
+        Resources: {
+          MyTopic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: { TopicName: { 'Fn::Sub': 'app-${ImageId}-topic' } },
+            Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      ssmSend.mockImplementation(async () => ({ Parameter: { Value: 'ami-0abc' } }));
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      expect(state.resources['MyTopic']?.properties['TopicName']).toBe('app-ami-0abc-topic');
+      // Direct evidence the SSM arm ran, rather than inferring it from the
+      // value: a hand-binding implementation would record the PATH and this
+      // assertion is what separates the two.
+      expect(ssmSend).toHaveBeenCalled();
+    });
+
+    it('falls back to an empty bag when the Default-only retry ITSELF throws, and still writes state (issue #2321)', async () => {
+      // FENCE for the inner catch. Replacing `parameters = {}` with
+      // `throw defaultsErr` passed every other case in this file, so the
+      // promise that a failed retry does not abort an import that already
+      // succeeded against AWS was unverified -- and the work it would lose is
+      // real AWS-side adoption that cannot be undone.
+      //
+      // The reachable trigger is an SSM-typed default whose `GetParameter` is
+      // rejected. The rejection is shaped like the real one (a named
+      // `ParameterNotFound`), not a bare `Error`, because the arm is reached
+      // by whatever `resolveParameters` propagates.
+      //
+      // THE DISCRIMINATOR is that `saveState` is still called once. Under the
+      // `throw` mutation the import aborts and state is never written.
+      //
+      // This case ALSO pins the KNOWN RESIDUAL that `import.ts` records at
+      // that fallback and that `isUnboundTemplateParameter`'s JSDoc cites as
+      // its live producer: on this arm the bag is empty, so `import.ts` omits
+      // the `parameters` key, the context carries `parameters: undefined`, and
+      // a `Default`-carrying parameter is NOT in issue #2285's refusable
+      // population -- so `${Stage}` is written verbatim, exactly the #2321
+      // defect, surviving on this one path. It is asserted rather than merely
+      // described so the residual cannot widen unnoticed and the resolver's
+      // claim about this arm cannot go stale.
+      const tmpl: CloudFormationTemplate = {
+        AWSTemplateFormatVersion: '2010-09-09',
+        Parameters: {
+          VpcId: { Type: 'String' },
+          ImageId: {
+            Type: 'AWS::SSM::Parameter::Value<String>',
+            Default: '/missing/image/id',
+          },
+          Stage: { Type: 'String', Default: 'dev' },
+        },
+        Resources: {
+          MyTopic: {
+            Type: 'AWS::SNS::Topic',
+            Properties: {
+              TopicName: { 'Fn::Sub': 'app-${Stage}-topic' },
+              DisplayName: { 'Fn::Sub': 'img-${ImageId}' },
+            },
+            Metadata: { 'aws:cdk:path': 'S/MyTopic' },
+          },
+        },
+      } as unknown as CloudFormationTemplate;
+      const notFound = Object.assign(
+        new Error('Parameter /missing/image/id not found.'),
+        { name: 'ParameterNotFound' }
+      );
+      ssmSend.mockImplementation(async () => {
+        throw notFound;
+      });
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+      });
+
+      await runImport(['import', '--app', 'x', '--yes']);
+
+      // The import is NOT aborted: the resource is already adopted on the AWS
+      // side, so the state write must still happen.
+      expect(mockSaveState).toHaveBeenCalledTimes(1);
+      const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+        string,
+        string,
+        { resources: Record<string, { properties: Record<string, unknown> }> },
+      ];
+      // The pinned residual, and the live counter-example the resolver's
+      // exclusion rests on.
+      expect(state.resources['MyTopic']?.properties['TopicName']).toBe('app-${Stage}-topic');
     });
 
     it('warns and leaves raw intrinsic in place when reference cannot be resolved', async () => {

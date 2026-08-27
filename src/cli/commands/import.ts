@@ -1382,6 +1382,36 @@ function buildStackState(
 }
 
 /**
+ * The same template with its `Parameters` section narrowed to the entries that
+ * carry a `Default`, for the `resolveParameters` retry in
+ * {@link resolveImportedProperties} (issue
+ * [#2321](https://github.com/go-to-k/cdkd/issues/2321)).
+ *
+ * Presence is tested with `'Default' in definition`, NOT `Default !== undefined`,
+ * because that is the test both `resolveParameters` and
+ * `isUnboundTemplateParameter` use: a key present with an `undefined` value is
+ * a binding to `undefined` for them, and a filter that disagreed would hand the
+ * retry a parameter it would then throw on.
+ *
+ * Everything OUTSIDE `Parameters` is carried through untouched — `Resources` in
+ * particular, because `resolveParameters` walks it to decide which SSM-typed
+ * defaults are actually referenced and worth a `GetParameter` call.
+ */
+function defaultOnlyParameterTemplate(template: CloudFormationTemplate): CloudFormationTemplate {
+  const declared = template.Parameters;
+  if (declared === undefined || declared === null || typeof declared !== 'object') {
+    return template;
+  }
+  const defaulted = Object.fromEntries(
+    Object.entries(declared).filter(
+      ([, definition]) =>
+        definition !== null && typeof definition === 'object' && 'Default' in definition
+    )
+  );
+  return { ...template, Parameters: defaulted };
+}
+
+/**
  * Walk every resource in `stackState.resources` and overwrite its
  * `properties` with the result of running the synth template's raw
  * Properties through `IntrinsicFunctionResolver` against the assembled
@@ -1405,9 +1435,12 @@ function buildStackState(
  * Edge cases:
  *   - Parameters / Conditions are resolved from the template up front
  *     (same shape the deploy engine builds for its CREATE / UPDATE
- *     intrinsic context). Resolution failures here log + leave the
- *     template's defaults untouched — the resolver itself tolerates
- *     missing parameter / condition entries.
+ *     intrinsic context). A parameter-resolution failure means the
+ *     template declares a parameter with no `Default`, which an import
+ *     cannot bind; it logs and RETRIES over the `Default`-carrying
+ *     parameters alone (issue #2321) so one unbindable parameter does
+ *     not discard the defaults its siblings declare. The resolver
+ *     itself tolerates missing parameter / condition entries.
  *   - Per-resource try/catch: if a Properties tree references a
  *     resource not in the importable set (custom resource that wasn't
  *     adopted, out-of-scope sibling in selective mode), the resolver
@@ -1445,9 +1478,64 @@ async function resolveImportedProperties(
   try {
     parameters = await resolver.resolveParameters(template);
   } catch (err) {
+    // `resolveParameters` is ALL-OR-NOTHING: it throws on the FIRST parameter
+    // that is declared with no `Default` and no supplied value (`cdkd import`
+    // supplies none, and has no flag that could), so a single required
+    // parameter used to discard the bag WHOLESALE — including the `Default`
+    // values the template itself declares for its OTHER parameters. A
+    // `Fn::Sub` built from one of those was then persisted verbatim into the
+    // imported resource's properties, which issue #2285's refusal cannot
+    // close: a `Default`-carrying parameter is correctly OUT of the unbound
+    // population, so the placeholder is kept rather than refused (issue
+    // [#2321](https://github.com/go-to-k/cdkd/issues/2321)).
+    //
+    // Those defaults are information this caller already holds, and they are
+    // independent of the parameters it could not bind — so retry over a
+    // `Default`-only VIEW of the Parameters section. The retry cannot hit the
+    // same throw by construction (`isUnboundTemplateParameter` is false for
+    // every parameter carrying a `Default`, which is exactly the population
+    // that survives the filter), and re-entering the SAME method rather than
+    // hand-binding each `Default` keeps the SSM-typed
+    // (`AWS::SSM::Parameter::Value<...>`) lookup and its
+    // unreferenced-parameter skip identical to the happy path instead of a
+    // paraphrase that can drift from it.
+    //
+    // Issue #2285's refusal is UNAFFECTED in both directions:
+    // `isUnboundTemplateParameter` answers `false` for a `Default`-carrying
+    // parameter BEFORE it consults the bound bag, so binding those defaults
+    // cannot move a parameter into or out of the unbound population. A
+    // `${VpcId}` is still refused and still named by `unboundParameterNames`
+    // below; a `${Stage}` now resolves to its declared default.
     logger.debug(
-      `Template parameter resolution failed during import-time property resolution: ${err instanceof Error ? err.message : String(err)} — continuing without parameters; resources referencing them will be skipped per-resource.`
+      `Template parameter resolution failed during import-time property resolution: ${err instanceof Error ? err.message : String(err)} — retrying with the template's 'Default'-carrying parameters only; resources referencing an unbindable parameter will still be skipped per-resource.`
     );
+    try {
+      parameters = await resolver.resolveParameters(defaultOnlyParameterTemplate(template));
+    } catch (defaultsErr) {
+      // A `Default`-only retry can still fail on its own terms — an SSM-typed
+      // default whose `GetParameter` is rejected is the reachable case. Fall
+      // back to the pre-#2321 empty bag rather than aborting an import that
+      // already succeeded against AWS; the resources are on the AWS side
+      // whatever happens here, so a throw would lose the state write for work
+      // that cannot be undone.
+      //
+      // KNOWN RESIDUAL, deliberately not fixed here: this fallback is COARSER
+      // than it needs to be. One unresolvable SSM-typed default discards the
+      // PLAIN `Default` values too, so #2321's defect returns for that
+      // template — `${Stage}` is written verbatim again. A third pass over the
+      // non-SSM defaults would close it. It is left because this arm is the
+      // one place the resolver's `isUnboundTemplateParameter` exclusion is
+      // still load-bearing (see the note on that predicate, which cites this
+      // arm as its live producer), so the two must be changed together and
+      // reasoned about as one. `tests/unit/cli/import.test.ts` PINS the
+      // residual — the case asserting a verbatim `app-${Stage}-topic` after a
+      // rejected `GetParameter` — so it cannot widen silently, and so the
+      // resolver's claim about this arm cannot go stale unnoticed.
+      parameters = {};
+      logger.debug(
+        `'Default'-only template parameter resolution also failed during import-time property resolution: ${defaultsErr instanceof Error ? defaultsErr.message : String(defaultsErr)} — continuing without parameters; resources referencing them will be skipped per-resource.`
+      );
+    }
   }
   try {
     conditions = await resolver.evaluateConditions({
