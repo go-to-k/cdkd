@@ -23,6 +23,7 @@ import {
 import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
 import { DescribeDomainCommand, OpenSearchClient } from '@aws-sdk/client-opensearch';
+import { GetBucketLocationCommand } from '@aws-sdk/client-s3';
 import { getAccountInfo, type AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { getAwsClients } from '../utils/aws-clients.js';
@@ -33,6 +34,7 @@ import {
 } from './ec2-termination-protection.js';
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
+import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { assertRegionMatch, type DeleteContext } from './region-check.js';
@@ -227,6 +229,114 @@ function describeJsonKeys(document: string): string {
   const suffix =
     pattern.lastIndex < document.length && keys.length >= MAX_LOGGED_MODEL_KEYS ? ', ...' : '';
   return `keys: ${keys.join(', ')}${suffix}`;
+}
+
+/**
+ * Resource types whose Cloud-Control-routed DELETE gets a pre-flight
+ * IDENTITY confirmation -- proof that the physical id the state record names
+ * denotes a resource in the region this destroy is targeting -- before
+ * `DeleteResource` is issued (issue #2283).
+ *
+ * WHY THIS IS A HOOK HERE AND NOT A ROUTING CHANGE
+ * ------------------------------------------------
+ * The issue offered two shapes and called the routing change "much smaller":
+ * stop letting `AWS::S3::Bucket` reach Cloud Control at all, now that
+ * `S3BucketProvider` carries its own region guard (issues #2227 / #2245).
+ * Reading `provider-registry.ts` settles it the other way, for two reasons:
+ *
+ *  1. There is no per-type "CC auto-route list" to remove the type FROM. The
+ *     route at `provider-registry.ts` step 3-5 is the generic issue #614
+ *     silent-drop rule: a type WITH an SDK provider goes to Cloud Control
+ *     exactly when its template uses a property that provider would silently
+ *     DROP. Suppressing it for buckets means `disableCcApiFallback` on
+ *     `S3BucketProvider`, which converts those deploys from "provisioned
+ *     correctly via CC" into a hard `buildUnroutableSilentDropMessage` throw.
+ *     That is a strictly larger behaviour change than this guard, and it
+ *     regresses the bug #614 was filed for.
+ *
+ *  2. It would not even close the hazard. Step 2 of `getProviderFor` is the
+ *     STICKY rule: a resource whose state says `provisionedBy: 'cc-api'`
+ *     routes to this provider BEFORE the SDK provider is ever consulted, and
+ *     `disableCcApiFallback` is not read on that path. The poisoned pre-guard
+ *     state record the issue is about is precisely a record that already says
+ *     `cc-api`, so it would still arrive here. Only adding the type to
+ *     `STICKY_CC_MIGRATION_EXEMPT` would divert it -- and that set is reserved
+ *     for types whose CC routing is BROKEN, which would then send the
+ *     silent-drop property back down the dropping path on the next deploy.
+ *
+ * So the confirmation belongs where the delete is actually issued. The set is
+ * a set rather than an `if` because the hazard is not S3-specific in kind: any
+ * type whose physical id is globally unique but whose RESOURCE is regional can
+ * be named by a state record that denotes something in another region.
+ * `AWS::S3::Bucket` is the only instance recorded so far (issue #2283).
+ */
+const CC_DELETE_IDENTITY_CHECKED_TYPES: ReadonlySet<string> = new Set(['AWS::S3::Bucket']);
+
+/**
+ * Whether a Cloud-Control-routed DELETE of `resourceType` is preceded by the
+ * pre-flight identity confirmation described on
+ * {@link CC_DELETE_IDENTITY_CHECKED_TYPES}.
+ *
+ * Exported so the routing decision is assertable in BOTH polarities: the
+ * guarded type, and a control type that must keep issuing its `DeleteResource`
+ * with no extra probe and no new IAM dependency.
+ */
+export function requiresCcDeleteIdentityCheck(resourceType: string): boolean {
+  return CC_DELETE_IDENTITY_CHECKED_TYPES.has(resourceType);
+}
+
+/**
+ * The region a `GetBucketLocation` answer denotes, canonicalized.
+ *
+ * Two legacy wire shapes, both still returned, which is why this is a function
+ * rather than a field read: a bucket in `us-east-1` answers with an EMPTY /
+ * null `LocationConstraint` (absent therefore means `us-east-1`, never
+ * "unknown" -- folding it to unknown would make the commonest region
+ * permanently indeterminate), and `EU` is a legacy alias for `eu-west-1`.
+ *
+ * THREE copies of this fold exist and neither of the other two is reusable
+ * here:
+ *
+ *  - `providers/s3-bucket-provider.ts`'s private twin is the SDK route's
+ *    guard, reached by a different routing decision, and it additionally
+ *    reads `x-amz-bucket-region` off a `CreateBucket` 409 -- a signal that
+ *    does not exist on this path, where the probe is a PRE-flight with no
+ *    prior error to read. Folding them together would export a create-shaped
+ *    API into a delete-only call site.
+ *  - `utils/aws-region-resolver.ts:147` holds only the us-east-1 HALF of the
+ *    fold, inline (`response.LocationConstraint || 'us-east-1'`, with no `EU`
+ *    case at all), and is wrong here twice
+ *    over: it is fail-OPEN by contract (it never throws and returns
+ *    `fallbackRegion` on a failed probe, which would report this deploy's own
+ *    region and let the foreign bucket through), and it passes
+ *    `ExpectedBucketOwner`, which is the opposite of what this probe needs --
+ *    see {@link CloudControlProvider.confirmDeleteTargetIdentity}. It also
+ *    caches, so a second call in one process would skip the probe entirely.
+ *
+ * Each copy is pinned by unit tests on its own side, for exactly the fold it
+ * carries: `s3-bucket-provider-already-owned-region.test.ts:223-224` for the
+ * SDK twin's `''` / `null` spellings, `aws-region-resolver.test.ts:66` / `:74`
+ * for the resolver's us-east-1 half, and this module's own suite for all three
+ * us-east-1 spellings plus both polarities of the `EU` alias.
+ */
+function bucketLocationToRegion(constraint: string | null | undefined): string {
+  const value = canonicalizeRegion((constraint ?? '').trim());
+  if (value === '') return 'us-east-1';
+  if (value === 'eu') return 'eu-west-1';
+  return value;
+}
+
+/**
+ * Whether an S3 error means the NAMED BUCKET IS ABSENT, as opposed to the
+ * probe being unable to answer.
+ *
+ * The wire CODE alone, never a message match. Collapsing "absent" into "could
+ * not answer" (or the reverse) is the failure mode the issue #2245 review
+ * named: a bare 404 from a proxy, `AWS_ENDPOINT_URL`, or an S3-compatible
+ * gateway must not be read as a positive statement about a bucket's region.
+ */
+function isNoSuchBucketError(error: unknown): boolean {
+  return (error as { name?: string } | undefined)?.name === 'NoSuchBucket';
 }
 
 export class CloudControlProvider implements ResourceProvider {
@@ -625,6 +735,45 @@ export class CloudControlProvider implements ResourceProvider {
       );
     }
 
+    // NOT applied to `update()`, and the reason is narrower than it looks. An
+    // earlier revision of this note claimed `ResourceProvider.update` "carries
+    // no context"; that is FALSE -- `src/types/resource.ts:793-800` gives it a
+    // sixth `context?: UpdateContext` parameter (this provider's own `update`
+    // simply does not declare it). What is actually missing is the FIELD:
+    // `UpdateContext` (`resource.ts:502`, which also extends
+    // `SecretMaskingContext`) carries no region field at all, while
+    // `expectedRegion` is declared on `DeleteContext` alone
+    // (`region-check.ts:27`). So the remedy is one optional field plus
+    // threading it from callers that already hold `state.region` -- a separate
+    // change with its own review, filed as issue #2301 (which also covers the
+    // non-S3 CC delete types). The delete path is taken first because its
+    // consequence is unrecoverable where a misapplied configuration is not.
+    //
+    // Pre-flight identity confirmation (issue #2283). Deliberately placed
+    // ahead of EVERY mutating step below -- the `--remove-protection` flips,
+    // the SDK delegations, and the `DeleteResource` itself -- because a
+    // protection flip or an ASG force-delete against the wrong resource is
+    // already damage, not merely a wasted call.
+    //
+    // With the PRODUCTION tables that ordering is unobservable: the only
+    // guarded type is `AWS::S3::Bucket`, which has no entry in
+    // `cc-protection-properties.ts` and is neither delegating type, so today
+    // no mutating step actually precedes the probe for any member of the set.
+    // Measured: moving this call below all three `--remove-protection` blocks
+    // left the unit suite fully green UNTIL the injected case described below
+    // was added, so "zero Cloud Control traffic on a refusal" fences a
+    // mutation that SKIPS the guard but not one that MOVES it. That half is
+    // now fenced by
+    // `cloud-control-s3-delete-identity-2283.test.ts`, which injects a
+    // `ccProtectionProperty` entry for the bucket type so the delete has a
+    // real `UpdateResourceCommand` to issue first -- a test-side injection,
+    // with no production routing changed. The two SDK delegations above
+    // (`AWS::AutoScaling::AutoScalingGroup`, `AWS::EC2::Instance`) remain
+    // UNFENCED, and deliberately so: fencing them would mean putting a
+    // delegating type into `CC_DELETE_IDENTITY_CHECKED_TYPES`, which is a
+    // routing change rather than a test.
+    await this.confirmDeleteTargetIdentity(logicalId, resourceType, physicalId, context);
+
     // `--remove-protection` for an `AWS::AutoScaling::AutoScalingGroup` routed
     // through Cloud Control (its template set a silent-drop property such as
     // `AvailabilityZoneIds`, so the #614 routing rule sent the whole resource
@@ -791,6 +940,195 @@ export class CloudControlProvider implements ResourceProvider {
         this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
       }
     }
+  }
+
+  /**
+   * Confirm that the resource `physicalId` names actually lives in the region
+   * this destroy is targeting, for the types in
+   * {@link CC_DELETE_IDENTITY_CHECKED_TYPES}. No-op for every other type.
+   *
+   * WHAT THIS GUARDS THAT `assertRegionMatch` DOES NOT
+   * ---------------------------------------------------
+   * The existing `assertRegionMatch` in the catch block below compares the
+   * CLIENT's region against the state's region, and only on the `NotFound`
+   * branch. Both halves miss this hazard. An `AWS::S3::Bucket` physical id is
+   * a GLOBALLY unique name, so a state record written before the issue #2227 /
+   * #2245 guards existed can name a bucket that is ours but lives elsewhere --
+   * a cdkd-GENERATED bucket name carries no region or account: for a name cdkd
+   * derives itself, `resource-name.ts:240` builds
+   * `` `${currentStackName}-${name}` `` whenever `resource-name.ts:239`'s
+   * `shouldPrefix` holds, so the same stack deployed to two regions produces
+   * the same bucket name by construction. (That guard has a second, unrelated
+   * path -- it also drops the prefix when there is no ambient stack name at
+   * all -- so it is quoted here rather than enumerated.) And a delete of such a bucket is NOT expected to come back
+   * `NotFound`: the mechanism issues #2245 / #2283 record is that S3 follows
+   * the region redirect for a body-bearing operation, so the delete lands on
+   * the live bucket in the other region and this catch block is never entered.
+   * Nothing downstream can undo that, which is why the confirmation is
+   * pre-flight rather than a wider net around the existing handler. The live
+   * arm in `tests/integration/s3-lifecycle` (phase 0c) is what holds that
+   * mechanism to account on THIS route.
+   *
+   * THE PROBE HAS THREE OUTCOMES AND ALL THREE ARE DISTINCT
+   * -------------------------------------------------------
+   *  - ANSWERED, region matches -> proceed silently. The hot path costs one
+   *    `GetBucketLocation`.
+   *  - ANSWERED, region differs -> REFUSE, non-retryable. Both retry loops
+   *    that wrap a `delete()` honour the marker and would otherwise re-run the
+   *    whole delete for their full budget before surfacing the same
+   *    deterministic message, which reads as flaky AWS: the destroy path's own
+   *    loop (`destroy-runner.ts:1328`, which runs FOUR attempts -- `attempt`
+   *    goes 0..`maxAttempts` and `maxAttempts` is 3 at `:1326` -- with
+   *    `isMarkedNonRetryable` gating both of its retryable arms at `:1372`)
+   *    and the deploy engine's `withRetry` (`retry.ts:332`) on the
+   *    replacement-delete path.
+   *  - COULD NOT ANSWER -> proceed, but WARN at default verbosity. Refusing
+   *    would strand destroys for least-privilege roles that never granted
+   *    `s3:GetBucketLocation`, with no escape hatch. But proceeding SILENTLY
+   *    is what the issue #2245 review rejected: a bucket policy denying
+   *    `s3:GetBucketLocation` -- settable by anyone holding
+   *    `s3:PutBucketPolicy` on the target -- would disable this guard while
+   *    the operator's output stayed identical to a normal destroy. Failing
+   *    closed on 403 alone is not the answer either, because a missing IAM
+   *    grant and a hostile `Deny` are the same wire response.
+   *
+   * A bucket that is ABSENT is a fourth thing and is NOT the warning case: the
+   * name denotes nothing, so there is nothing to delete in the wrong region,
+   * and the `DeleteResource` below reaches its existing `NotFound` /
+   * `assertRegionMatch` handling. Warning there would fire on every ordinary
+   * re-run of an already-completed destroy.
+   *
+   * `GetBucketLocation` and not `HeadBucket`: a cross-region `HeadBucket` 301s
+   * and SDK v3's region-redirect middleware mishandles the empty-body HEAD
+   * response, yielding a synthetic `name: 'Unknown'`. That would land every
+   * foreign-region bucket -- the exact case this exists to catch -- in the
+   * indeterminate arm, which PROCEEDS. `src/utils/aws-region-resolver.ts`
+   * records the same finding, and the SDK-side guard re-learned it the
+   * expensive way.
+   */
+  private async confirmDeleteTargetIdentity(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    context?: DeleteContext
+  ): Promise<void> {
+    if (!requiresCcDeleteIdentityCheck(resourceType)) return;
+
+    // `expectedRegion` is the state's recorded region and is the right
+    // comparand when it is there. The client region is the fallback rather
+    // than a skip: it is where `DeleteResource` will actually run, so a
+    // mismatch against it is the same wrong-target delete.
+    //
+    // Its population, MEASURED rather than assumed (an earlier revision of
+    // this comment claimed the "type-only `getProvider` call sites (destroy /
+    // drift / state-refresh)", which is wrong on both halves: destroy, drift
+    // and state-refresh all use `getProviderFor` WITH `provisionedBy`
+    // -- `destroy-runner.ts:1284`, `drift.ts:2122` / `:3930`,
+    // `state.ts:2340` / `:2394` -- and drift / state-refresh never call
+    // `delete()` at all; the real `getProvider(` sites are `import.ts`,
+    // `deploy-engine.ts` and `canonicalize-properties.ts`):
+    //
+    //  - `destroy-runner.ts:1336` spreads `expectedRegion` only when
+    //    `state.region !== undefined`, so a PRE-v2 state record (where
+    //    `region` was not yet part of the key layout) arrives with no region.
+    //  - any caller threading an EMPTY region string. `deploy-engine.ts`
+    //    types its `stackRegion` as `string`, so `''` reaches here as a
+    //    DEFINED value.
+    //
+    // That second case is why this is not a bare `??`: `''` is not `null` or
+    // `undefined`, so `??` would accept it, skip the client fallback, and
+    // land in the warn below whose text ("neither ... reports a region")
+    // would then be false, because the client was never asked.
+    const recordedRegion = context?.expectedRegion?.trim();
+    let expectedRegion: string | undefined =
+      recordedRegion === undefined || recordedRegion === '' ? undefined : recordedRegion;
+    if (expectedRegion === undefined) {
+      try {
+        const clientRegion = (await this.cloudControlClient.config.region())?.trim();
+        expectedRegion =
+          clientRegion === undefined || clientRegion === '' ? undefined : clientRegion;
+      } catch (error) {
+        // Same policy as a probe that cannot answer: report and PROCEED. An
+        // unresolvable SDK region chain must not abort a delete that would
+        // otherwise have run -- that would make this guard fail closed on one
+        // input while failing open on every other undeterminable one. The
+        // warn immediately below is the visible outcome.
+        this.logger.debug(
+          `Could not resolve the Cloud Control client region while confirming ${physicalId}: ` +
+            `${error instanceof Error ? error.message : String(error)}`
+        );
+        expectedRegion = undefined;
+      }
+    }
+    if (expectedRegion === undefined) {
+      this.logger.warn(
+        `Could not confirm that ${resourceType} ${physicalId} (${logicalId}) is the resource ` +
+          `this destroy targets: neither the stack state nor the AWS client reports a region. ` +
+          `Proceeding with the delete.`
+      );
+      return;
+    }
+    const wantRegion = canonicalizeRegion(expectedRegion);
+
+    let actualRegion: string;
+    try {
+      // Deliberately NO `ExpectedBucketOwner`, unlike `state.ts:1738` and
+      // `utils/aws-region-resolver.ts`, which both pass it. Those two are
+      // asking "is this MY bucket, and where is it", and a foreign-owned
+      // bucket 403ing is the answer they want. This probe asks the opposite
+      // question: the whole hazard is a name that resolves to a bucket cdkd
+      // must NOT delete, and the guard has to hear the foreign answer to
+      // refuse. Adding the parameter back to match the convention would turn
+      // every cross-account collision from a REFUSAL into a 403 -> the
+      // indeterminate arm -> warn-and-proceed. Leaking the region of a bucket
+      // whose NAME is already in this account's state file is not a
+      // disclosure; deleting it is the harm.
+      const location = await getAwsClients().s3.send(
+        new GetBucketLocationCommand({ Bucket: physicalId })
+      );
+      actualRegion = bucketLocationToRegion(location.LocationConstraint);
+    } catch (error) {
+      if (isNoSuchBucketError(error)) {
+        this.logger.debug(
+          `Bucket ${physicalId} (${logicalId}) is already absent; leaving the delete to the ` +
+            `Cloud Control idempotency path`
+        );
+        return;
+      }
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Could not confirm which region S3 bucket ${physicalId} (${logicalId}) lives in before ` +
+          `deleting it: ${reason}. S3 bucket names are globally unique, so cdkd cannot rule out ` +
+          `that this name denotes a bucket in another region. Grant s3:GetBucketLocation on the ` +
+          `bucket to enable the check. Proceeding with the delete.`
+      );
+      return;
+    }
+
+    if (actualRegion === wantRegion) {
+      this.logger.debug(
+        `Confirmed S3 bucket ${physicalId} (${logicalId}) lives in ${wantRegion} before deleting it`
+      );
+      return;
+    }
+
+    throw markNonRetryable(
+      new ProvisioningError(
+        `Refusing to delete S3 bucket ${physicalId} for ${logicalId} (${resourceType}): the ` +
+          `bucket carrying that name lives in ${actualRegion}, while this destroy targets ` +
+          `${wantRegion}. S3 bucket names are globally unique, so a physical id recorded in ` +
+          `cdkd state can denote a bucket in a different region. S3 follows the region ` +
+          `redirect for a body-bearing operation, so issuing this delete risks destroying the ` +
+          `live bucket in ${actualRegion} instead, unrecoverably, rather than reporting the ` +
+          `bucket absent. Confirm the physical id recorded in cdkd state ` +
+          `(cdkd state show) and correct the record: --region does not change this comparison, ` +
+          `which reads the region stored in the state file, so re-running the destroy with a ` +
+          `different flag value will not resolve it.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
   }
 
   /**
