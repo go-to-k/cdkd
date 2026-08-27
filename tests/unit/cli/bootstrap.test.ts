@@ -419,6 +419,32 @@ describe('cdkd bootstrap', () => {
     expect(createBucket!.input).not.toHaveProperty('CreateBucketConfiguration');
   });
 
+  // Issue [#2322](https://github.com/go-to-k/cdkd/issues/2322).
+  //
+  // Both rows above assert the field is ABSENT, so between them they cannot
+  // fail on a change that stops sending it -- and `src/cli/commands/
+  // bootstrap.ts:274` casts with `as BucketLocationConstraint` just like the S3
+  // provider. This is the POSITIVE polarity, and it deliberately uses a region
+  // the 33-member enum omits: a future "soundness fix" filtering the region to
+  // enum members would omit `CreateBucketConfiguration` here, and on a REGIONAL
+  // endpoint that answers `IllegalLocationConstraintException` -- a failed
+  // bootstrap, not a bucket quietly placed in us-east-1 (that default belongs
+  // to the GLOBAL endpoint, which this path does not use). A member region such
+  // as `eu-west-1` would stay green through exactly that change.
+  it('sends the LocationConstraint for a region ABSENT from the SDK enum (issue #2322)', async () => {
+    scriptStateBucket(false);
+
+    await runBootstrap(['--region', 'ca-west-1']);
+
+    const createBucket = mockS3Send.mock.calls
+      .map((c) => c[0] as { constructor: { name: string }; input: Record<string, unknown> })
+      .find((c) => c.constructor.name === 'CreateBucketCommand');
+    expect(createBucket, 'no CreateBucket issued - anchor drifted?').toBeDefined();
+    expect(createBucket!.input['CreateBucketConfiguration']).toEqual({
+      LocationConstraint: 'ca-west-1',
+    });
+  });
+
   it('rejects --asset-bucket / --container-repo with --no-assets before any AWS call', async () => {
     await expect(
       runBootstrap(['--region', 'us-east-1', '--no-assets', '--asset-bucket', 'my-bucket'])

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { NoSuchBucket } from '@aws-sdk/client-s3';
+import { BucketLocationConstraint, NoSuchBucket } from '@aws-sdk/client-s3';
+import { RegionInfo } from 'aws-cdk-lib/region-info';
 
 const { mockSend, clientRegion } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -56,9 +57,11 @@ const CREATE_PROPS = { BucketName: BUCKET };
  * alone; the send side is the same root cause one expression over and is fixed
  * by the same line. (Validity is about the NAME, not about
  * `BucketLocationConstraint` membership: that enum has 33 members, excludes
- * `us-east-1` by design, and also excludes real regions such as `ca-west-1` and
- * `mx-central-1` that the provider's `as` cast still sends and S3 still accepts.
- * The cast is a pre-existing stale-enum workaround this change does not touch.)
+ * `us-east-1` by design, and also excludes THIRTEEN further real regions that
+ * the provider's `as` cast still sends and S3 still accepts. The cast is a
+ * DELIBERATE widening of a stale enum, settled in issue
+ * [#2322](https://github.com/go-to-k/cdkd/issues/2322) and fenced by the last
+ * describe block in this file rather than only described in prose.)
  *
  * WHERE THE RAW SPELLING COMES FROM -- measured, and it is NOT `--region`. That
  * flag is folded by `foldRegionOption` before the client bag is built and again
@@ -187,5 +190,143 @@ describe('S3BucketProvider create() CreateBucketConfiguration region case (issue
     await provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS);
 
     expect(createBucketInput()).not.toHaveProperty('CreateBucketConfiguration');
+  });
+
+  /**
+   * Issue [#2322](https://github.com/go-to-k/cdkd/issues/2322) -- the regions
+   * the SDK's own enum does NOT contain.
+   *
+   * `create()` sends `canonicalRegion as BucketLocationConstraint`, and the
+   * `as` asserts a membership the value need not have. That is settled as
+   * DELIBERATE rather than fixed, for two measured reasons recorded beside the
+   * cast: the SDK has not widened `CreateBucketConfiguration.LocationConstraint`
+   * (still `BucketLocationConstraint | undefined`), and typing the local bag's
+   * field as `string` does not compile -- it moves the same assertion to
+   * `new CreateBucketCommand(...)` and widens it from one field to the whole
+   * bag.
+   *
+   * What is fenced here is the REGRESSION the cast invites, which is not its
+   * removal (that fails to compile) but a future "soundness fix" that filters
+   * the region to enum members. That compiles, leaves every `us-east-1` /
+   * `eu-west-1` row above green, and silently omits `CreateBucketConfiguration`
+   * for every region below -- which BREAKS THE DEPLOY in each of them.
+   *
+   * THE FAILURE IS LOUD, NOT SILENT, AND AN EARLIER REVISION OF THIS FILE SAID
+   * OTHERWISE. It claimed the bucket would quietly be created in `us-east-1`.
+   * It would not. The provider's client is REGION-BOUND (`this.s3Client =
+   * awsClients.s3`, and `getRegion()` reads `this.s3Client.config.region()`),
+   * so the create goes to that region's REGIONAL endpoint, where an omitted
+   * `LocationConstraint` answers `IllegalLocationConstraintException` --
+   * `src/assets/asset-storage.ts:775` states the same rule for the sibling
+   * call site. The `us-east-1` default is a property of the GLOBAL
+   * `s3.amazonaws.com` endpoint, which this path never uses, and a genuinely
+   * region-less client THROWS (`Error: Region is missing`) rather than
+   * resolving empty -- so there is no route to the global story at all. The
+   * correction is recorded rather than quietly applied because the residency
+   * reading is the natural guess, and re-deriving it costs the next reader the
+   * same measurement it cost this one.
+   *
+   * The list is DERIVED, not spot-checked -- and an earlier revision of this
+   * file, of the provider comment, and of issue #2282's changelog entry each
+   * named FOUR regions, which was a spot-check written as an enumeration. The
+   * full cross-check gives thirteen. Re-derive with:
+   *
+   *   node --input-type=module -e "
+   *   import { BucketLocationConstraint } from '@aws-sdk/client-s3';
+   *   import { RegionInfo } from 'aws-cdk-lib/region-info';
+   *   const m = new Set(Object.values(BucketLocationConstraint));
+   *   console.log(RegionInfo.regions.map(r => r.name).filter(r => !m.has(r)).sort().join('\n'));"
+   *
+   * Measured 2026-08-27 against `@aws-sdk/client-s3` 3.1018.0 (33 members) and
+   * `aws-cdk-lib` 2.244.0 (46 regions).
+   *
+   * ALL THIRTEEN ARE SWEPT, with no commercial / non-commercial split. An
+   * earlier revision swept six it called "commercial" and excluded seven
+   * `aws-iso*` ones as "not reachable from a commercial deploy". Both halves
+   * were wrong: `eusc-de-east-1` is NOT commercial (`RegionInfo.get(...)
+   * .partition === 'aws-eusc'`, its own partition, which `PARTITION_TABLE` in
+   * `src/utils/aws-partition.ts` lists beside the iso prefixes), so only FIVE
+   * of the six were; and cdkd has explicit `aws-iso*` support, so the
+   * exclusion was overstated too. The honest reason to sweep them all is that
+   * the production gate is a single `canonicalRegion !== 'us-east-1'` with NO
+   * partition branch -- every one of the thirteen traverses byte-identical
+   * lines -- so a partition split would have been a classification to maintain
+   * that bought no coverage. Sweeping all thirteen deletes the question.
+   */
+  describe('regions ABSENT from the SDK enum (issue #2322)', () => {
+    const ENUM_ABSENT_REGIONS: string[] = [
+      'ap-east-2',
+      'ap-southeast-6',
+      'ap-southeast-7',
+      'ca-west-1',
+      'eu-isoe-west-1',
+      'eusc-de-east-1',
+      'mx-central-1',
+      'us-iso-east-1',
+      'us-iso-west-1',
+      'us-isob-east-1',
+      'us-isob-west-1',
+      'us-isof-east-1',
+      'us-isof-south-1',
+    ];
+
+    it('pins only REAL regions -- every name is in the region table', () => {
+      // Without this the list is a hand-written literal with nothing checking
+      // it. Measured: substituting `'totally-not-a-region'` for `'ap-east-2'`
+      // left all rows GREEN, because a bogus name still round-trips through
+      // the provider and is still absent from the enum -- so a typo would
+      // silently drop a real region's coverage while both its row and the
+      // floor below kept passing. This is the same derivation the comment
+      // above documents, asserted rather than described.
+      const real = new Set(RegionInfo.regions.map((r) => r.name));
+      expect(real.has('eu-west-1'), 'guard-the-guard: the table must be non-empty').toBe(true);
+      expect(ENUM_ABSENT_REGIONS.filter((r) => !real.has(r))).toEqual([]);
+    });
+
+    it('still has a gap to fence -- the shipped enum omits these regions', () => {
+      const members = new Set<string>(Object.values(BucketLocationConstraint));
+
+      // Guard-the-guard. An always-empty `members` would make the absence
+      // assertion below pass for the wrong reason, so pin BOTH polarities of
+      // the membership test first: the enum does contain `eu-west-1`, and does
+      // not contain `us-east-1` (which it omits by design, not by staleness).
+      expect(members.has('eu-west-1')).toBe(true);
+      expect(members.has('us-east-1')).toBe(false);
+
+      // A FLOOR rather than an exact match, on purpose. The SDK catching up on
+      // one region must not red this file -- the rows below keep asserting the
+      // sent value either way, and a region that JOINS the enum simply stops
+      // being an interesting case. It reds only when the enum has caught up on
+      // ALL of them, which is the moment the cast, this block and the provider
+      // comment should all be re-derived rather than trusted.
+      const absent = ENUM_ABSENT_REGIONS.filter((r) => !members.has(r));
+      expect(absent.length).toBeGreaterThan(0);
+    });
+
+    it.each(ENUM_ABSENT_REGIONS)(
+      'sends LocationConstraint %s verbatim even though the enum omits it',
+      async (region) => {
+        clientRegion.value = region;
+
+        await provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS);
+
+        expect(createBucketInput()['CreateBucketConfiguration']).toEqual({
+          LocationConstraint: region,
+        });
+      }
+    );
+
+    it('folds a mis-cased enum-absent region rather than dropping the field', async () => {
+      // The two issues meet here: #2282's fold has to survive on a region
+      // #2322 says is not in the enum. `CA-West-1` must reach the wire as
+      // `ca-west-1` -- not raw (S3 rejects it as a NAME) and not omitted.
+      clientRegion.value = 'CA-West-1';
+
+      await provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS);
+
+      expect(createBucketInput()['CreateBucketConfiguration']).toEqual({
+        LocationConstraint: 'ca-west-1',
+      });
+    });
   });
 });

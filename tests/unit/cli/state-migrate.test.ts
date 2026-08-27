@@ -424,4 +424,88 @@ describe('cdkd state migrate', () => {
       ]);
     }
   );
+
+  // Issue [#2322](https://github.com/go-to-k/cdkd/issues/2322).
+  //
+  // `src/cli/commands/state-migrate.ts:311` casts with
+  // `as BucketLocationConstraint` exactly as the S3 provider and the two other
+  // sibling sites do, and NOTHING in this suite asserted the value that cast
+  // produces -- every existing row stubs `CreateBucketCommand` and looks only
+  // at what came after it. So a future "soundness fix" filtering the region to
+  // enum members would omit `CreateBucketConfiguration` here with the whole
+  // file still green, and on a REGIONAL endpoint an omitted constraint answers
+  // `IllegalLocationConstraintException`: the migrate fails outright. (It does
+  // NOT quietly create the bucket in us-east-1 -- that default is a property of
+  // the GLOBAL `s3.amazonaws.com` endpoint, which this path never uses.)
+  // `ca-west-1` is absent from the 33-member enum, so the row discriminates
+  // where a member region such as `eu-west-1` would not.
+  it('sends the destination LocationConstraint for a region ABSENT from the SDK enum (issue #2322)', async () => {
+    const region = 'ca-west-1';
+    mockResolveBucketRegion.mockResolvedValue(region);
+    planS3({
+      HeadBucketCommand: [
+        () => ({}), // source probe
+        () => {
+          // destination probe -- does not exist yet, so it is created
+          const e = new Error('NotFound') as Error & { name: string };
+          e.name = 'NotFound';
+          return e;
+        },
+      ],
+      ListObjectsV2Command: [
+        () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }), // lock check
+        () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }), // source listing
+        () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }), // post-copy verify
+      ],
+      CreateBucketCommand: [() => ({})],
+      PutBucketVersioningCommand: [() => ({})],
+      PutBucketEncryptionCommand: [() => ({})],
+      PutBucketPolicyCommand: [() => ({})],
+      CopyObjectCommand: [() => ({})],
+    });
+
+    await runMigrate(['migrate', '--region', region, '--yes']);
+
+    const createCall = s3SendImpl.mock.calls.find(
+      (c) => c[0].constructor.name === 'CreateBucketCommand'
+    )![0] as { input: { CreateBucketConfiguration?: { LocationConstraint: string } } };
+    expect(createCall.input.CreateBucketConfiguration).toEqual({
+      LocationConstraint: region,
+    });
+  });
+
+  // The negative control for the row above: us-east-1 is the one region where
+  // S3 REQUIRES the field to be omitted, so a fix that always sends it must red
+  // here. Without this pair, "always send the constraint" would pass.
+  it('sends NO destination CreateBucketConfiguration for us-east-1', async () => {
+    const region = 'us-east-1';
+    mockResolveBucketRegion.mockResolvedValue(region);
+    planS3({
+      HeadBucketCommand: [
+        () => ({}),
+        () => {
+          const e = new Error('NotFound') as Error & { name: string };
+          e.name = 'NotFound';
+          return e;
+        },
+      ],
+      ListObjectsV2Command: [
+        () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }),
+        () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }),
+        () => ({ Contents: [{ Key: `cdkd/X/${region}/state.json` }] }),
+      ],
+      CreateBucketCommand: [() => ({})],
+      PutBucketVersioningCommand: [() => ({})],
+      PutBucketEncryptionCommand: [() => ({})],
+      PutBucketPolicyCommand: [() => ({})],
+      CopyObjectCommand: [() => ({})],
+    });
+
+    await runMigrate(['migrate', '--region', region, '--yes']);
+
+    const createCall = s3SendImpl.mock.calls.find(
+      (c) => c[0].constructor.name === 'CreateBucketCommand'
+    )![0] as { input: Record<string, unknown> };
+    expect(createCall.input).not.toHaveProperty('CreateBucketConfiguration');
+  });
 });
