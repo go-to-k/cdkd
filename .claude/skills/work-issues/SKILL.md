@@ -706,6 +706,39 @@ grep -rn "<the mishandled call / property / assumption>" src/ | grep -v test
 grep -rln "implements ResourceProvider" src/provisioning/providers/   # per-implementer audits
 ```
 
+**This applies to a FIX ROUND at least as much as to the original find, and
+that is where it actually gets skipped.** The rule above reads as advice for
+discovering a defect; the recurring failure is the fix landing on ONE call site
+while a sibling keeps the defect, usually shipping a comment that asserts
+completeness. Measured across one run on 2026-08-27, FIVE times on two lanes,
+and the last two were in edits made while fixing the previous instance:
+
+| Fix | Sibling that kept the defect |
+| --- | --- |
+| the 2-arg `Fn::Sub` binding check | the bare-string arm, one line over |
+| adding a region-header read | never bounded WHICH errors carry the region |
+| redacting the update/delete warn | the create path, and its own `catch`'s sibling arm |
+| adding a site to one enumeration | the second enumeration in the same file |
+| completing that second enumeration | a third list on the same LINE |
+
+Every one was found by ENUMERATING readers or call sites with grep. None was
+found by re-reading the diff, and three had review rounds that read the diff
+first and missed it. So after writing a fix, before believing it:
+
+```bash
+# Derive the population from the CODE, not from the files your diff touched.
+grep -rn "<the field / helper / message you just changed>" src/ | grep -v test
+```
+
+and check the count against what you changed. If your fix touched two of three
+readers, you have not fixed it -- and if you then write "all N sites now do X",
+you have made it durable, because an overstated invariant is what stops the next
+reader looking. Three of the five above shipped exactly that sentence.
+
+The cheap tell: a fix whose diff touches ONE site while its message says
+"every", "all", "never" or "only". Either derive the population or drop the
+quantifier.
+
 **Grep for the SHAPE, not for a NAME — a name finds only the copies you already
 knew about.** This is the sweep's own version of the defect it exists to
 prevent, and it is easy to miss because the grep looks thorough and returns

@@ -118,6 +118,28 @@ gates:
       # catches it; what this restores is the LOCAL signal, before the commit
       # rather than minutes later (issue #2041).
       - ".claude/skills/work-issues/**"
+      # `.claude/rules/**` is the #1592 pattern a third time: a checker's INPUT
+      # sitting outside the gate that guards it. TEN tests under
+      # tests/unit/scripts/ read that directory, and
+      # rule-file-payload.test.ts enforces FOUR budgets over it (per-file bytes,
+      # per-line bytes, a repo-wide ratchet on lines over the line cap, and a
+      # CUMULATIVE corpus total). Without this entry a rules edit can flip that
+      # suite red -- or green -- while `check` still verifies fresh, because the
+      # digest never saw the file.
+      #
+      # Measured 2026-08-27, which is why this is here rather than in a comment
+      # somewhere: a lane's `.claude/rules` addition pushed the corpus to
+      # 901,762 B over a 900,000 B ceiling and turned the full suite red, and
+      # `markgate status` reported `check  match` throughout -- both on the
+      # failing tree and after the fix. A marker that can attest to a red tree
+      # is worse than no marker, since the whole point is that the commit gate
+      # trusts it.
+      #
+      # The cost is the same one `work-issues/**` accepted: a rules-only edit
+      # now needs a full `/check`. That is the correct trade -- these files are
+      # edited by nearly every retrospective, which is exactly when the budgets
+      # move.
+      - ".claude/rules/**"
       # CLAUDE.md is a pattern-scanned target of the same checker, so
       # reintroducing banned wording there must stale `check` as well.
       - "CLAUDE.md"
