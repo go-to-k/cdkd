@@ -22,6 +22,174 @@ The CLAUDE.md `## Known Limitations` section retains the load-bearing summary
   **The probe has three outcomes and all three are distinct.** Answered-and-matching proceeds silently; answered-and-differing refuses non-retryably -- the marker is honoured by BOTH loops that wrap a `delete()`, the destroy path's own loop at `destroy-runner.ts:1328` (FOUR attempts -- `attempt` runs 0..`maxAttempts` and `maxAttempts` is 3 at `:1326` -- with the marker gating both retryable arms at `:1372`) and the deploy engine's `withRetry` (`retry.ts:332`) on the replacement-delete path; a probe that CANNOT answer proceeds but warns at default verbosity, because refusing would strand destroys for least-privilege roles while proceeding silently would let a bucket policy denying `s3:GetBucketLocation` -- settable by anyone holding `s3:PutBucketPolicy` on the target -- disable the guard with output identical to a normal destroy. An unresolvable SDK region chain gets that same treatment (the resolution is inside the `try`), so the guard cannot fail CLOSED on one undeterminable input while failing open on every other. An ABSENT bucket is a fourth case and is deliberately not the warning one: it falls through to the existing `NotFound` / `assertRegionMatch` handling, so an ordinary re-run of a finished destroy stays quiet. Absence is read from the wire CODE alone, never a message, so a bare 404 from a proxy or an S3-compatible gateway cannot be mistaken for a positive statement about a bucket's region. The probe deliberately omits `ExpectedBucketOwner`, unlike `state.ts` and `utils/aws-region-resolver.ts` which both pass it: those ask "is this MY bucket", while this one has to HEAR the foreign answer to refuse, so restoring the convention would turn every cross-account collision from a refusal into a 403 and thence into warn-and-proceed. The refusal's remedy names correcting the state record rather than re-running with `--region`, because the comparand is the region stored in state and the flag does not change it.
   31 unit cases. Both polarities of the routing decision are asserted, and the split is exact rather than uniform: `AWS::S3::Bucket` plus TWO control types (`AWS::SQS::Queue`, `AWS::DynamoDB::Table`) are driven through `delete()` end to end and must issue `DeleteResource` with no probe and no new IAM dependency, while FIVE further control types (`AWS::Lambda::Function`, `AWS::EC2::Instance`, `AWS::AutoScaling::AutoScalingGroup`, `AWS::S3::BucketPolicy`, `AWS::S3Express::DirectoryBucket`) are asserted against the exported predicate only. The us-east-1 fold is pinned across all THREE wire spellings -- an ABSENT field, `''`, and `null` -- because AWS's own API documentation calls a us-east-1 bucket's constraint `null` (verbatim in `@aws-sdk/client-s3`'s `models_0.d.ts:6806`, and what the CLI renders) -- but that sentence is the doc comment ON the field, and the DECLARED type four lines BELOW it, at `models_0.d.ts:6810`, is `GetBucketLocationOutput.LocationConstraint?: BucketLocationConstraint | undefined`. `null` is not in that union, so a v3 client can present the same fact as an absent field. (An earlier revision of this entry cited `:1581`, which is `CreateBucketConfiguration` -- the CreateBucket INPUT -- and placed it "above" rather than below.) A fixture that can only express `null` shares its premise with the production code, which is the one thing a mutation probe cannot falsify. Every fold gets both polarities, so an OVERfold is caught as well as an underfold (`eu-central-1` must not read as the legacy `EU` alias). **Twenty-three** mutations, applied one at a time and restored between, and the counts below were re-measured in one batch on the exact tree this entry ships with -- the two files as committed here, `shasum` (SHA-1) `c3f449d5b323...` for `cloud-control-provider.ts` and `ef6f2822692d...` for the test -- rather than patched from an earlier round -- every count in an earlier revision of this sentence had drifted low, because four cases were added after it was written. Every mutation reds at least one case, none is a no-op, and all 31 cases are reddened by at least one mutation (computed as a set difference over the run logs, not by inspection). Emptying the type set reds 24, removing the guard call 23, inverting the comparison 22, moving the guard AFTER the delete is issued 8, dropping the us-east-1 fold 6, preferring the client region over the state's 5, widening the type set to two control types 3, gating the guard on `removeProtection !== true` 3, downgrading the indeterminate warn to `debug` 2, treating a `null` constraint as the only absent spelling 2, and 1 each for: moving the guard BELOW all three `--remove-protection` blocks, making the injected protection entry inert, dropping `markNonRetryable`, collapsing absent into indeterminate, matching absence by message instead of wire code, dropping the `EU` fold, overfolding `eu` by prefix, dropping the region canonicalization, dropping the empty-region normalization, hoisting the client-region `await` out of its `try`, dropping either `.trim()` (one each), and reverting the remedy wording. **One ordering claim was asserted, probed, and found FALSE before shipping.** An earlier revision said the guard's placement ahead of the `--remove-protection` flips was "fenced by a unit case"; moving the call below all three protection blocks left the suite fully green -- as it still does on any tree without the injected case described next. With the production tables the order is unobservable -- `AWS::S3::Bucket` has no `cc-protection-properties.ts` entry and is neither SDK-delegating type, so nothing mutating precedes the probe and "zero Cloud Control traffic on a refusal" fences only a mutation that SKIPS the guard. The test now injects a `ccProtectionProperty` entry for the bucket type (test-side only, no production routing changed) so the delete has a real `UpdateResourceCommand` to issue first, plus a guard-the-guard case proving the injection reaches the provider; the ordering mutation now reds. The two SDK delegations remain unfenced, deliberately -- fencing them would mean putting a delegating type into the checked set, which is a routing change rather than a test. **Live arm:** `tests/integration/s3-lifecycle` phase 0c plants two hand-written single-resource state records -- the defect's actual premise, a record written before the guards existed -- one naming a bucket really in this region (the negative control, which must still delete through the Cloud Control route, and without which the other arm would pass on any malformed-state failure) and one naming a per-run unique bucket in another region, asserted on the refusal text AND on the bucket still standing afterwards. Both bucket names are per-run unique because a name that has existed in one region answers `OperationAborted` for well over ten minutes if re-created in another. **The arm has RUN against real AWS** and its result is on record in `docs/_generated/integ-last-run.tsv` (`s3-lifecycle`, 2026-08-26T19:01:39Z, PASS, 226s), the run taken AFTER the phase-0c-XR premise read gained its rc capture and dropped its `2>&1` fold: the XR arm refused with rc=2 naming both regions and the us-west-2 bucket survived, while the OK control arm still deleted through the Cloud Control route, so the guard is not a blanket refusal -- 7 deleted, 0 errors, an account-wide `state.json` count of 0 and no leftover buckets in either region. **Accepted residual, with its mechanism CORRECTED:** `CloudControlProvider.update()` is NOT guarded. An earlier revision of this entry said `ResourceProvider.update` "carries no `DeleteContext`, so the state's region is not available there at all" -- the conclusion holds but the reason was false, and it overstated the cost of ever fixing it. `src/types/resource.ts:793-800` DOES give `update()` a sixth `context?: UpdateContext` parameter (this provider's own `update` merely does not declare it); what is missing is the FIELD, since `UpdateContext` (`resource.ts:502`, which also extends `SecretMaskingContext`) carries no region field at all while `expectedRegion` is declared on `DeleteContext` alone (`region-check.ts:27`). The remedy is therefore one optional field plus threading it from callers that already hold `state.region`, not a signature change across every provider -- a separate change with its own review, filed as issue [#2301](https://github.com/go-to-k/cdkd/issues/2301) together with the non-S3 CC delete types. The delete path is taken first because its consequence is unrecoverable where a misapplied configuration is not.
 
+- **A literal layer-version ARN now PARSES in all eight partitions instead of three, and its partition must agree with its region (issue [#2143](https://github.com/go-to-k/cdkd/issues/2143))** --
+  `src/local/lambda-resolver.ts`, `tests/unit/local/lambda-layer-arn-partitions.test.ts` (new),
+  `tests/integration/local-invoke-layers/{lib/local-invoke-layers-stack.ts,verify.sh}`,
+  `docs/local-emulation.md`.
+  `parseLayerVersionArn` matched
+  `/^arn:(aws|aws-cn|aws-us-gov):lambda:([a-z]{2}-(?:[a-z]+-){1,2}\d+):(\d{12}):layer:([A-Za-z0-9_-]+):(\d+)$/`,
+  which carried TWO independent defects. (1) The partition alternation listed
+  three of eight, so a layer ARN in `aws-iso`, `aws-iso-b`, `aws-iso-e`,
+  `aws-iso-f` or `aws-eusc` did not parse -- and the caller HARD-THROWS on an
+  unparsed ARN, so `cdkd local invoke` / `local start-api` on any function
+  with a literal-ARN layer failed AT RESOLUTION in five partitions. (2) The
+  region group required a first token of exactly two letters, the same
+  `^[a-z]{2}` shape issue [#2001](https://github.com/go-to-k/cdkd/issues/2001)
+  fixed in `state-file-keys.ts`, which rejects the European Sovereign Cloud
+  partition's four-letter `eusc-de-east-1`; it also capped the interior
+  `<word>-` chunks at two, an independent bound. Neither defect subsumes the
+  other: fixing the partition list alone still rejects `eusc-de-east-1`, and
+  fixing the region shape alone still rejects
+  `arn:aws-iso:lambda:us-iso-east-1:...`.
+  **The partition is now DERIVED from the region** through
+  `derivePartitionAndUrlSuffix` (`src/utils/aws-partition.ts`) rather than
+  hand-listed a fourth time, so the list cannot go stale here independently --
+  and that also makes the pair SELF-CONSISTENT, which no alternation can:
+  `arn:aws-cn:lambda:us-east-1:...` used to parse, pairing China's partition
+  with a commercial region. The region group stays SHAPE-based
+  (`[a-z]{2,}(?:-[a-z]+)+-\d+`) rather than becoming a charset, because
+  `derivePartitionAndUrlSuffix` answers `aws` for a region it does not
+  recognise: a charset would make `arn:aws:lambda:notaregion:...` parse. It is
+  still much wider than the set of real regions -- `garbage-junk-1` matches
+  where the old pattern refused it (measured) -- and that is deliberate, since
+  the segment's POSITION inside an `arn:` string already establishes it is the
+  region field, so unlike a state-key segment there is no second
+  interpretation for a loose match to steal. The commercial fallback is
+  otherwise the direction that must keep working -- a brand-new COMMERCIAL
+  region still resolves before the table hears about it, while a region in a
+  future partition is refused rather than mis-attributed to commercial, the
+  same trade every other consumer of that table makes. Deliberately NOT
+  `isClientSafeRegion` from `src/deployment/intrinsic-function-resolver.ts`:
+  that predicate is charset-based because its job is keeping a value inside a
+  hostname label, and the note it carries already says so.
+  **SCOPE: this fixes the PARSE, and the download behind it is still
+  commercial-only -- so "eight partitions" is a claim about resolution, not
+  about end-to-end support.** `materializeLayerFromArn`
+  (`src/local/layer-arn-materializer.ts`) is a one-line shim re-exporting
+  cdk-local's implementation, and that implementation rebuilds the ARN with a
+  hardcoded `aws` before the SDK call --
+  `node_modules/cdk-local/dist/local-studio-BBtUAVNy.js:15214`,
+  `` const command = await buildGetLayerVersionCommand(`arn:aws:lambda:${layer.region}:${layer.accountId}:layer:${layer.name}`, Number(layer.version)) ``.
+  So a layer in ANY of the seven non-commercial partitions still fails at
+  `lambda:GetLayerVersion` -- `aws-cn` and `aws-us-gov` included, and those two
+  are no better off than before, since they already parsed under the old
+  alternation. What this change moves is confined to the FIVE that previously
+  did not parse (`aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc`):
+  for them the failure shifts from cdkd refusing to read a perfectly valid ARN
+  to an AWS-side error naming the real blocker. Nothing in this repo can close
+  the rest: it is filed as
+  [go-to-k/cdk-local#575](https://github.com/go-to-k/cdk-local/issues/575),
+  which also records that cdk-local's own `derivePartitionAndUrlSuffix` knows
+  only four of the eight prefixes.
+  **UPGRADE NOTE -- one shape that used to work now hard-throws.** A literal
+  layer ARN whose partition disagrees with its region --
+  `arn:aws-cn:lambda:us-east-1:...`, `arn:aws:lambda:cn-north-1:...`,
+  `arn:aws-us-gov:lambda:us-east-1:...` -- parsed before and is now refused
+  with `cdkd cannot resolve locally`. This is deliberate and was asked for by
+  the issue's own direction ("which also makes the pair self-consistent"). It
+  costs nothing real: because of the commercial-ARN rebuild above, such a
+  layer could never have been fetched from the partition its ARN named, so the
+  refusal only moves an inevitable failure earlier and gives it a message that
+  says what is wrong. A correctly-paired ARN in any partition is unaffected.
+  The refusal message gained one sentence for exactly this class, and only for
+  it -- every other rejection is visible in the ARN a user is looking at
+  (a missing version, a 13-digit account, `function` where `layer` belongs)
+  whereas a mismatch looks ordinary. The sentence has TWO arms, because
+  `derivePartitionAndUrlSuffix` answers `aws` both for a genuinely commercial
+  region and for one no `PARTITION_TABLE` prefix matches: on a table HIT it
+  states membership as fact (`...which is in partition 'aws-eusc'.`), and on a
+  MISS it states the RESOLUTION instead (`...no partition prefix matches that
+  region, so cdkd resolves it to the commercial partition 'aws'.`). A single
+  assertive arm would tell a user that
+  `arn:aws-iso-g:lambda:us-isog-east-1:...` "is in partition 'aws'", which is
+  a guess asserted as fact. **Which arm is which is easy to get backwards, and
+  the first cut of this split did**: `PARTITION_TABLE` holds seven rows and
+  none of them is `aws` -- the commercial partition is the fallback `return`,
+  not a row -- so the MISS arm is the arm every genuinely commercial region
+  takes, and the HIT arm can never render `aws` at all. Its first wording,
+  "no partition prefix **cdkd knows** matches that region", was true of the
+  mechanism and read as cdkd failing to recognise `us-east-1`, which is both
+  the commonest AWS region and the canonical example this entry, the docs and
+  the integ fixture all use. Review caught it; the wording now leads with the
+  prefix test and ends on the resolution, and a unit negative pins the old
+  phrasing out.
+  **Tests treat this as the CLASSIFIER it is.** Hand-picked cases cannot fence
+  an accept/reject function -- a pattern widened until it accepts everything
+  satisfies every positive assertion ever written -- so the new suite runs a
+  DIFFERENTIAL fence: the pre-fix regex, transcribed from `origin/main` rather
+  than from memory, is run against the shipped code over 352 generated inputs
+  (10 partition strings x 28 region shapes, plus 72 structural malformations of
+  four self-consistent bases), and every difference must fall in an enumerated
+  intended class. Cells are classified by the value the NEW code returns, not
+  by the input's shape, so a total regression lands wholly in one bucket and
+  fails that bucket's predicate instead of being sorted into "expected" ones;
+  the predicate itself is an INDEPENDENT oracle built from `split(':')` /
+  `split('-')` plus a hand-written prefix table (pinned against
+  `PARTITION_TABLE`), so it cannot agree with the implementation by
+  construction. Each class carries a floor -- all five previously-missing
+  partitions present among the newly accepted, at least one `eusc-` region, at
+  least one region past the old `{1,2}` cap, at least 10 newly-rejected
+  mismatches (measured: 11 newly accepted, 40 newly rejected, 0 parsed-field
+  drift, 13 unchanged accepts, 288 unchanged rejects) -- so a pool that stops
+  covering a class cannot pass as "no regressions". On top of it: one case per
+  partition plus `eusc-de-east-1`, all driven through the REAL CALLER
+  (`resolveLambdaLayers`) so what is asserted is the hard-throw, and 16
+  negative controls that must still be REJECTED. Mutation-probed in three
+  directions, each half separately, because a single all-or-nothing revert
+  cannot show the two are independently fenced: reverting the PARTITION half
+  alone reds 10 (the five per-partition cases, the eusc pair, all three
+  mismatch controls, and the fence's newly-accepted predicate); reverting the
+  REGION half alone reds 4 (the eusc pair, the three-hyphen-group case, and the
+  fence's partition floor); widening the region to `[^:]+` with no derivation
+  check -- the "accepts everything" direction -- reds 10, nine of them negative
+  controls. Three more probe the message: collapsing the two arms into the
+  assertive one reds 2, emitting a hint for a shape rejection reds 1, and
+  unwiring the hint reds 3.
+  Structurally, ONE exported `classifyLayerVersionArn` now returns either the
+  segments or a TYPED rejection, and both the resolved layer's fields and the
+  error message read that one verdict -- so the message cannot describe a
+  different verdict than the parse reached. The first cut had the message
+  re-run the pattern in a separate helper, which left an arm -- "the partitions
+  agree" -- that the sole call site could never reach, since it only asked
+  after the parse had already refused; one classifier removes the arm rather
+  than justifying it, and runs the regex once. The old `parseLayerVersionArn`
+  export is GONE rather than kept as a wrapper, and the reason is worth
+  recording because the repo's own critic found it: once the resolver moved to
+  the classifier that wrapper had no `src/` caller left, and
+  `scripts/check-local-reachability.ts` (shipped days earlier by
+  [#2293](https://github.com/go-to-k/cdkd/pull/2293)) reported it as an
+  orphaned export -- 7 of its 39 cases red. Its opt-out tag would have been a
+  FALSE statement here, since it asserts cdk-local owns the live
+  implementation and cdkd owns this one, so the wrapper was deleted and the
+  `T | undefined` shape its cases were written against became a three-line
+  adapter inside `tests/unit/local/lambda-resolver.test.ts`. Naming that tag in
+  a JSDoc comment while explaining the decision then reported a STALE
+  annotation on a live symbol, which is the same critic working correctly from
+  the other side; the comment now describes the tag instead of spelling it.
+  The `local-invoke-layers` integ fixture gains a `MismatchedArnLayerHandler`
+  carrying `arn:aws-cn:lambda:us-east-1:...` and a fourth `verify.sh` test
+  asserting cdkd refuses it. That is the half of #2143 an integ CAN exercise --
+  the five previously-unsupported partitions have no endpoint reachable from a
+  normal dev account, whereas a mismatch is a purely local verdict with no
+  network call -- and what it adds over the unit matrix is that it runs the
+  SHIPPED `dist/` bundle, where a broken `src/local` -> `src/utils` import
+  would show up. It is discriminating rather than decorative: pre-#2143 that
+  ARN parsed and cdkd went on to attempt a `lambda:GetLayerVersion` download,
+  and the test asserts the refusal names the DERIVATION rather than merely
+  refusing -- a bundle whose layer parse broke wholesale would also refuse.
+  **`docs/local-emulation.md` is corrected as part of this, and the correction
+  predates this issue**: its "Lambda Layers" section still listed literal-ARN
+  entries under "Out of scope (v1) -- hard-errors", and its v1-scope table
+  still deferred them to a "Future PR", both of which stopped being true when
+  issue [#448](https://github.com/go-to-k/cdkd/issues/448) shipped literal-ARN
+  resolution. They now describe what ships -- the download-and-merge flow, the
+  partition rules with the commercial-only download limitation called out
+  beside them, and `--layer-role-arn`, which existed as a flag but appeared in
+  no documentation at all and is now in both the `local invoke` and the
+  `local start-api` flag tables.
+
+---
+
 **Recently Implemented** (2026-08-26):
 - **The custom-resource poll no longer debug-logs the first 200 bytes of the response body, so a generated secret in `Data` never reaches `--verbose` output (issue [#2250](https://github.com/go-to-k/cdkd/issues/2250))** -- `src/provisioning/providers/custom-resource-provider.ts`, plus `tests/unit/provisioning/custom-resource-provider-response-body-log.test.ts`. Each poll of the pre-signed S3 response key used to log `body.substring(0, 200)` of the CloudFormation custom-resource response document. `Data` is the documented place a handler returns a GENERATED VALUE -- including a generated secret -- so behind a short `PhysicalResourceId` those values landed inside the 200-character window and reached the terminal and, in CI, the retained build log. It fired for EVERY custom-resource response, gated only by `--verbose`. The line now renders the non-sensitive ENVELOPE instead: `Status`, `PhysicalResourceId` (already persisted to `state.json`, so not a new channel) and `Object.keys(Data)` -- never a `Data` value, and never `Reason`, which is free-form handler text that can quote them. Every one of those fields is HANDLER-CONTROLLED, so each goes through `displaySafe` (issue [#2170](https://github.com/go-to-k/cdkd/issues/2170)) and a 200-character cap before it is rendered -- both regressions this change introduced and a review caught. The line it replaced printed raw WIRE json, where the encoder had already escaped control characters and where `substring(0, 200)` bounded the output by construction; parsing first UNDOES the escaping, so an ESC and a newline reach the terminal as real bytes and anyone holding the pre-signed response URL could clear the screen and print a forged `ERROR [cdkd]` line into a CI transcript. Dropping the substring removed the bound as well: a 5000-character id with 300 `Data` keys rendered a 19,714-character line, re-emitted on EVERY poll of a resource that can run for an hour. The body stays UNTRUSTED input: the parse is hoisted above the log so one result feeds both the summary and the terminal-status check, but the log still fires for a body that does not parse -- reporting the body's LENGTH only -- because a malformed response is exactly when the diagnostic is worth most; a body that parses to a JSON scalar / array / `null` gets its own summary rather than an envelope-shaped read of it. An earlier write-to-every-reader trace concluded this log line was the ONLY reader emitting the payload and that the body is never written to `state.json`; the second half is FALSE and was relayed here without being re-derived. `cfnResponse.Data` becomes `attributes` (`custom-resource-provider.ts:1128` / `:1208`) and is persisted into `ResourceState.attributes`, so a generated secret ALSO sits in plaintext in the state record -- a durable channel strictly worse than this transient one, filed as [#2274](https://github.com/go-to-k/cdkd/issues/2274). What this entry closes is the `--verbose` channel, not the exposure as a whole. gc's placeholder sweep really is metadata-only. The four new cases assert the RENDERED line (captured at the `console.debug` boundary of a REAL `ConsoleLogger` at debug level, not a `vi.fn()` that would record any argument handed to it), covering the envelope, an unparseable body, a non-object JSON body and an object missing the protocol fields.
 - **`cdkd drift --json` now puts the payload and nothing else on stdout, so `--accept` / `--revert` output parses (issue [#2230](https://github.com/go-to-k/cdkd/issues/2230))** -- `src/utils/logger.ts`, `src/cli/commands/drift.ts`, `docs/cli-reference.md`, plus `tests/unit/cli/drift-json-stream.test.ts` and `tests/unit/utils/logger-stdout-reservation.test.ts`. `logger.info` / `logger.debug` resolve to `console.info` / `console.debug`, which write to STDOUT -- the stream `writeJsonReport` prints the payload on -- so every human-facing line of the remediation path interleaved with the document. Measured against the real binary before the fix: `cdkd drift <stack> --json --accept` over a stack with one unreadable resource emitted 692 bytes on stdout and `JSON.parse` rejected it with `Unexpected non-whitespace character after JSON at position 331`; after, stdout is 331 bytes and parses, with the prose on stderr. The failure is silent in the worst direction, because the terminal shows exactly the same text either way. **Two mechanisms, because ONE could not cover both populations.** `reserveStdoutForPayload()` (new, opt-in, module-level in `logger.ts`) routes `info` / `debug` to `console.error` for the rest of the process; `drift.ts` calls it once when `options.json`, BEFORE `applyRoleArnIfSet`. It is module-level rather than an instance field because `child()` hands out fresh `ChildLogger` instances, and the lines a per-call-site fix in `drift.ts` structurally CANNOT reach live in exactly those: `applyRoleArnIfSet`'s `Assumed role ...` (`src/utils/role-arn.ts:286`, unconditional on any `--role-arn` run) and `S3StateBackend.saveState`'s legacy-migration notice (`src/state/s3-state-backend.ts:448`, reachable on `--accept` over a pre-v2 record). The plan printers and the confirmation prompt call `process.stdout.write` / `readline` directly, which no logger flag reaches, so they take a per-call-site `HumanTextSink` instead -- 13 `process.stdout.write` calls in `printAcceptPlan` / `printRevertPlan` plus `confirmPrompt`'s readline `output`. The lines are MOVED, never suppressed: an operator still sees the plan, the prompt, the `--dry-run` notice, `No drift detected -- nothing to accept.`, the `Comparison INCOMPLETE` block (issue [#2208](https://github.com/go-to-k/cdkd/issues/2208)), `State updated` and `Revert summary`, and `--verbose` debug output. Dropping them would satisfy a "stdout parses" assertion while losing what the confirmation is asking about, so every case asserts the line ARRIVED on stderr rather than merely left stdout. The reservation is OPT-IN and only `drift` opts in, so no other command's output contract moves -- `cdkd diff` already solved its own instance differently (`diff.ts:89-101` demotes the logger to `warn` under `--json`, which SUPPRESSES rather than moves). The new `drift` suite deliberately does NOT mock the logger, unlike the four sibling `drift` suites: a `vi.fn()` standing in for `getLogger()` answers the stream question by construction, which is why `drift.test.ts`'s two existing `--json` cases pass over the defect. Vitest also intercepts `console`, so its output reaches neither `process.stdout.write` nor `process.stderr.write` (probed); the suite therefore spies the console methods and funnels them into an ordered fd-1 / fd-2 transcript. Mutation-probed in both halves separately: disabling the logger route reddens 8 of 10 drift cases (the headline one with the issue's own `SyntaxError`) while both no-`--json` controls stay green, and forcing the sink to stdout reddens the 5 plan-bearing cases while the 3 logger-only ones stay green. **An audit of the other `--json` commands found the same mixing on six more subcommands, left unfixed here** as a cross-command output-contract change, and filed as issue [go-to-k/cdkd#2280](https://github.com/go-to-k/cdkd/issues/2280): `cdkd state list` / `state resources` / `state show` / `state info` (`--verbose` un-gates helper debug onto stdout, and `role-arn.ts:286` fires unconditionally), `cdkd list` (worst -- `src/synthesis/app-executor.ts:165` re-emits the CDK app's stderr at info level on a DEFAULT run), and `cdkd events` (`--json -v` only). `cdkd diff` is clean.

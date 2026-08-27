@@ -179,7 +179,7 @@ local-invoke-from-cfn-stack	2026-07-26T21:13:17Z	PASS	94	verify.sh	re-run post r
 local-invoke-from-cfn-stack-multi-stack	2026-07-26T21:13:17Z	PASS	113	verify.sh	re-run post review fixes; docker + account + CFn clean
 local-invoke-from-state	2026-08-26T03:18:49Z	PASS	79	verify.sh	PR #2194 integ-local gate (local-state-loader in scope); Docker + real-AWS from-state, 0 err 0 orphans
 local-invoke-java	2026-07-26T20:29:11Z	PASS	36	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
-local-invoke-layers	2026-07-26T20:29:11Z	PASS	17	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
+local-invoke-layers	2026-08-27T05:00:40Z	PASS	18	verify.sh	issue 2143 lane, 4th run. Re-run not because this lane changed: origin PR 2296 edited tests/integration/local-run-task-from-state/verify.sh, which is inside integ-local's include, and that gate is hash:files so a peer's already-gated change invalidates it. This lane's three in-scope files are byte-identical across the round. 4/4; docker sweep (ps -a + both network filters) empty.
 local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-python	2026-07-26T20:22:00Z	PASS	23	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-invoke-ruby	2026-07-26T20:22:00Z	PASS	33	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean

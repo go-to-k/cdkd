@@ -6,6 +6,7 @@ import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.j
 import { matchStacks } from '../cli/stack-matcher.js';
 import { derivePseudoParametersFromRegion, tryResolveImageFnJoin } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 
 /**
  * Result of resolving a `cdkd local invoke <target>` argument back to a
@@ -813,16 +814,17 @@ export function resolveLambdaLayers(
     // (Lambda Powertools etc.) or cross-account / cross-region shared
     // layers bypass the same-stack resource scan.
     if (typeof entry === 'string') {
-      const parsed = parseLayerVersionArn(entry);
-      if (!parsed) {
+      const parsed = classifyLayerVersionArn(entry);
+      if (!parsed.ok) {
         throw new LocalInvokeResolutionError(
           `Lambda '${logicalId}' has a Layers entry [${i}] cdkd cannot resolve locally: literal string '${entry}'. ` +
             'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
             'OR a literal layer-version ARN of the form ' +
-            'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
+            'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.' +
+            describeLayerArnRejection(parsed.rejection)
         );
       }
-      out.push({ kind: 'arn', logicalId: parsed.arn, ...parsed });
+      out.push({ kind: 'arn', logicalId: parsed.value.arn, ...parsed.value });
       continue;
     }
 
@@ -857,35 +859,224 @@ export function resolveLambdaLayers(
 }
 
 /**
- * Parse a Lambda layer-version ARN string into its segments.
+ * The region segment of a layer-version ARN.
  *
- * Returns `undefined` for anything that does not match the strict
- * `arn:aws:lambda:<region>:<account>:layer:<name>:<version>` shape so
- * the caller can produce a clearer error than a silent
- * misinterpretation of hand-edited templates. The partition segment
- * accepts `aws` / `aws-cn` / `aws-us-gov` so GovCloud / China-region
- * ARNs work without code changes.
+ * Position, not shape, is what makes a segment a region here: it sits between
+ * the literal `lambda` and a 12-digit account id inside an `arn:` string, so —
+ * unlike `state-file-keys.ts`'s `REGION_SEGMENT`, which has to tell a region
+ * apart from a STACK NAME occupying the same key position — this pattern has
+ * nothing to disambiguate against and can take the region loosely. Both
+ * bounds the pre-#2143 spelling carried are therefore gone:
  *
- * Exported for unit testing.
+ * - the `^[a-z]{2}` first token, which rejected the European Sovereign Cloud
+ *   partition's four-letter `eusc-de-east-1` (the same defect issue #2001
+ *   fixed in `state-file-keys.ts`); and
+ * - the `{1,2}` cap on interior `<word>-` chunks, an independent bound that
+ *   happens to fit today's regions and would silently reject a longer one.
+ *
+ * **What it admits is therefore much wider than the set of real regions, and
+ * that is deliberate rather than an oversight.** The first token is any run of
+ * two or more lower-case letters and the interior chunks are unbounded, so
+ * `garbage-junk-1` matches where the pre-#2143 pattern rejected it (measured).
+ * Widening in that direction costs nothing HERE: the segment's position
+ * already establishes it is the region field, so unlike a state-key segment
+ * there is no second interpretation for a loose match to steal. What the shape
+ * still buys, and why it is not simply `[a-z0-9-]+`, is a floor under what
+ * reaches {@link derivePartitionAndUrlSuffix} — that helper answers `aws` for
+ * anything it does not recognise, so a pure charset would let
+ * `arn:aws:lambda:notaregion:...` through as a commercial layer ARN. Requiring
+ * `<letters>(-<letters>)+-<digits>` keeps single-token and digit-free junk out
+ * without pretending to enumerate AWS's region list.
+ *
+ * Lower-case only, matching the pre-#2143 spelling: AWS emits region ids
+ * lower-case inside ARNs, and this parses an ARN AWS produced, not a
+ * `--region` flag a human typed.
  */
-export function parseLayerVersionArn(
-  input: string
-): { arn: string; region: string; accountId: string; name: string; version: string } | undefined {
-  // Region segment accepts up to two interior `<word>-` chunks before
-  // the numeric suffix so GovCloud (`us-gov-west-1`) / China
-  // (`cn-north-1`) / standard (`us-east-1`) regions all match.
-  const m =
-    /^arn:(aws|aws-cn|aws-us-gov):lambda:([a-z]{2}-(?:[a-z]+-){1,2}\d+):(\d{12}):layer:([A-Za-z0-9_-]+):(\d+)$/.exec(
-      input
-    );
-  if (!m) return undefined;
+const LAYER_ARN_REGION = '[a-z]{2,}(?:-[a-z]+)+-\\d+';
+
+/**
+ * `arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>`.
+ *
+ * The PARTITION group is deliberately loose. It is not validated by the
+ * pattern at all — {@link classifyLayerVersionArn} checks it against the one
+ * the REGION derives, which is a stronger check than any alternation.
+ */
+const LAYER_ARN_PATTERN = new RegExp(
+  `^arn:([a-z][a-z0-9-]*):lambda:(${LAYER_ARN_REGION}):(\\d{12}):layer:([A-Za-z0-9_-]+):(\\d+)$`
+);
+
+/** The segments a well-formed layer-version ARN yields. */
+export interface ParsedLayerVersionArn {
+  arn: string;
+  region: string;
+  accountId: string;
+  name: string;
+  version: string;
+}
+
+/**
+ * Why an ARN was refused — the input to the error message, so the message
+ * cannot describe a different verdict than the one the parse reached.
+ *
+ * `'shape'` needs no words: a missing version, a 13-digit account or
+ * `function` where `layer` belongs is visible in the string the user is
+ * already looking at. `'partition'` is the opposite — the ARN looks perfectly
+ * ordinary — so it carries what the message needs.
+ *
+ * `derivedFromTable` is the distinction that keeps the message HONEST.
+ * {@link derivePartitionAndUrlSuffix} answers `aws` in two very different
+ * situations: the region genuinely is commercial, or `PARTITION_TABLE` simply
+ * has no prefix rule matching it. Both come back `aws`, and only the first
+ * licenses saying "which is in partition 'aws'" — for
+ * `arn:aws-iso-g:lambda:us-isog-east-1:...` that sentence would be a guess
+ * asserted as fact.
+ */
+export type LayerArnRejection =
+  | { kind: 'shape' }
+  | {
+      kind: 'partition';
+      partition: string;
+      region: string;
+      derived: string;
+      derivedFromTable: boolean;
+    };
+
+export type LayerArnClassification =
+  | { ok: true; value: ParsedLayerVersionArn }
+  | { ok: false; rejection: LayerArnRejection };
+
+/**
+ * Classify a Lambda layer-version ARN: its segments, or why it was refused.
+ *
+ * The single decision point behind both the resolved layer's fields and the
+ * caller's error message, so the message cannot describe a different verdict
+ * than the parse reached. An earlier revision had the message re-run the
+ * pattern in a separate helper, which left an arm — "the partitions agree" —
+ * that the sole call site could never reach, because it only asked after the
+ * parse had already refused. One classifier with one return value removes the
+ * arm rather than justifying it, and runs the regex once.
+ *
+ * **The partition is DERIVED from the region, not enumerated** (issue #2143).
+ * The pre-#2143 spelling hard-listed `aws` / `aws-cn` / `aws-us-gov` and so
+ * failed to parse a layer ARN in any of the other five partitions
+ * (`aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc`) — and the
+ * caller HARD-THROWS on an unparsed ARN, so `cdkd local invoke` on a function
+ * with a literal-ARN layer failed at RESOLUTION in each of them. Running the
+ * region through `derivePartitionAndUrlSuffix` (`src/utils/aws-partition.ts`)
+ * is what the repo already does everywhere else it needs a partition, so the
+ * list is not spelled a fourth time and cannot go stale here independently.
+ *
+ * **This fixes the PARSE only, and the download behind it is still commercial-
+ * only.** `materializeLayerFromArn` (`src/local/layer-arn-materializer.ts`) is
+ * a one-line shim over cdk-local, whose implementation rebuilds the ARN with a
+ * hardcoded `aws`:
+ *
+ * ```js
+ * // node_modules/cdk-local/dist/local-studio-BBtUAVNy.js:15214
+ * const command = await buildGetLayerVersionCommand(
+ *   `arn:aws:lambda:${layer.region}:${layer.accountId}:layer:${layer.name}`, Number(layer.version));
+ * ```
+ *
+ * So a layer in ANY of the seven non-commercial partitions still fails at
+ * `lambda:GetLayerVersion`. That includes `aws-cn` and `aws-us-gov`, which the
+ * old alternation ALREADY parsed and which therefore gain nothing here. What
+ * this change moves is confined to the five that previously did not parse
+ * (`aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc`): for them the
+ * failure shifts from "cdkd cannot resolve locally" to an AWS-side error, so
+ * the parse stops being the blocker and the message names the true one. That
+ * is a real improvement and it is NOT end-to-end support; nothing in this repo
+ * can make it so, and the remaining half is filed as go-to-k/cdk-local#575.
+ *
+ * Deriving also makes the pair SELF-CONSISTENT, which the alternation could
+ * not: `arn:aws-cn:lambda:us-east-1:...` used to parse, pairing China's
+ * partition with a commercial region. It is now REFUSED — a deliberate
+ * behaviour break, asked for by issue #2143's own direction. Nothing is lost
+ * by refusing early, since the commercial-ARN rebuild above means such a layer
+ * could never have been fetched from the partition its ARN named.
+ *
+ * The fallback direction is worth stating, since `derivePartitionAndUrlSuffix`
+ * answers `aws` for a region it does not recognise. A brand-new COMMERCIAL
+ * region therefore still parses with `arn:aws:` — the direction that must keep
+ * working before the table hears about it — while a brand-new region in a
+ * future partition is rejected rather than mis-attributed to commercial, which
+ * is the same trade every other consumer of that table makes.
+ *
+ * Deliberately NOT `isClientSafeRegion` (`intrinsic-function-resolver.ts`):
+ * that predicate is charset-based because its job is to keep a value inside a
+ * hostname label, so it accepts anything lower-case alphanumeric — including
+ * strings no region grammar would admit. See the note it carries.
+ *
+ * THIS is the exported symbol, and a `parseLayerVersionArn` wrapper returning
+ * `T | undefined` is deliberately not kept beside it. Once the caller moved to
+ * the classifier, that wrapper had no `src/` reference left and existed only
+ * for the tests — which `scripts/check-local-reachability.ts` reports as an
+ * orphaned export, correctly. That critic's opt-out tag would have been a
+ * false statement here — it means "cdk-local owns the live implementation",
+ * and cdkd owns this one — so the wrapper is gone rather than tagged. Tests
+ * drive this classifier or the real caller instead. (The tag is deliberately
+ * not spelled out in this comment: the critic reads tags from JSDoc, so
+ * naming it here registers an annotation on a LIVE symbol and is reported as
+ * stale. Measured.)
+ */
+export function classifyLayerVersionArn(input: string): LayerArnClassification {
+  const m = LAYER_ARN_PATTERN.exec(input);
+  if (!m) return { ok: false, rejection: { kind: 'shape' } };
+  const partition = m[1]!;
+  const region = m[2]!;
+  const derived = derivePartitionAndUrlSuffix(region).partition;
+  if (derived !== partition) {
+    return {
+      ok: false,
+      rejection: {
+        kind: 'partition',
+        partition,
+        region,
+        derived,
+        derivedFromTable: derived !== 'aws',
+      },
+    };
+  }
   return {
-    arn: input,
-    region: m[2]!,
-    accountId: m[3]!,
-    name: m[4]!,
-    version: m[5]!,
+    ok: true,
+    value: { arn: input, region, accountId: m[3]!, name: m[4]!, version: m[5]! },
   };
+}
+
+/**
+ * The one sentence a reader cannot derive from the ARN in front of them.
+ *
+ * A `'shape'` rejection gets nothing appended, so the message is
+ * byte-identical to what it has always been for every pre-#2143 refusal. A
+ * `'partition'` rejection is the class this change newly refuses AND the one
+ * that looks perfectly well formed, so it says what disagrees.
+ *
+ * The two `'partition'` arms differ in what cdkd actually KNOWS. On a
+ * `PARTITION_TABLE` hit the derived partition is a fact and is stated as one.
+ * On a miss it is a FALLBACK, so the sentence states the RESOLUTION instead of
+ * asserting membership: `us-east-1` and a hypothetical `us-isog-east-1` both
+ * derive `aws`, but only the first is really commercial, and a message that
+ * cannot tell them apart teaches the reader something false about the second.
+ *
+ * **The miss arm is the COMMERCIAL arm, and that is not obvious from its
+ * name.** `PARTITION_TABLE` (`src/utils/aws-partition.ts`) holds seven rows
+ * and none of them is `aws` — the commercial partition is the fallback
+ * `return` at the bottom of `derivePartitionAndUrlSuffix`, not a row. So
+ * `derivedFromTable` is FALSE for every genuinely commercial region, the fact
+ * arm can never render `derived === 'aws'`, and the miss arm always does. Its
+ * wording therefore has to read correctly for `us-east-1` — the commonest
+ * region there is, and the one the docs, the integ fixture and the changelog
+ * all use as the canonical example. An earlier revision said "no partition
+ * prefix **cdkd knows** matches that region", which is true of the mechanism
+ * and reads as cdkd failing to recognise `us-east-1`; it now leads with the
+ * prefix test and ends on the resolution, which is the fact the reader needs.
+ */
+function describeLayerArnRejection(rejection: LayerArnRejection): string {
+  if (rejection.kind === 'shape') return '';
+  const { partition, region, derived, derivedFromTable } = rejection;
+  const head = ` The partition '${partition}' does not match region '${region}'`;
+  return derivedFromTable
+    ? `${head}, which is in partition '${derived}'.`
+    : `${head}: no partition prefix matches that region, so cdkd resolves it to the commercial partition '${derived}'.`;
 }
 
 /**
