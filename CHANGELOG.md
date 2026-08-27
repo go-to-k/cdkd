@@ -1,3 +1,10 @@
+## [0.284.79](https://github.com/go-to-k/cdkd/compare/v0.284.78...v0.284.79) (2026-08-27)
+
+
+### Bug Fixes
+
+* **import:** retry parameter resolution with a Default-only bag so one required parameter stops discarding its siblings' defaults ([#2342](https://github.com/go-to-k/cdkd/issues/2342)) ([aa2df54](https://github.com/go-to-k/cdkd/commit/aa2df54c9ad6a9ad8cb79d7be8ba8fe0c67452a4))
+
 ## [0.284.78](https://github.com/go-to-k/cdkd/compare/v0.284.77...v0.284.78) (2026-08-27)
 
 
