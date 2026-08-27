@@ -1634,6 +1634,222 @@ function bucketLocationToRegion(constraint: string | null | undefined): string {
   return value;
 }
 
+/**
+ * Whether an error from `GetBucketLocation` means "no bucket of that name".
+ *
+ * The test is the wire error CODE, which the SDK lifts onto `name`.
+ *
+ * An earlier revision of this comment said `GetBucketLocation` does NOT
+ * deserialize its 404 into the modeled `NoSuchBucket` class "the way
+ * `DeleteBucket`'s is", inferring that from `GetBucketLocationCommand.d.ts`
+ * declaring only `@throws {@link S3ServiceException}`. That inference is
+ * FALSE and was measured false on 2026-08-26 by feeding canned 404 XML through
+ * the real client: both operations yield `ctor=NoSuchBucket`,
+ * `name=NoSuchBucket`, `instanceof NoSuchBucket === true`, `status=404`.
+ * `DeleteBucketCommand.d.ts` declares the same lone `S3ServiceException`, and
+ * the deserializer resolves errors through a per-NAMESPACE schema registry
+ * (`client-s3/dist-cjs/schemas/schemas_0.js`), not a per-operation one — so
+ * the command's declared throw list never decided this. The PREDICATE was
+ * right for the wrong reason; the reason is corrected rather than quietly
+ * dropped, because the wrong one would have justified the wrong fixture in the
+ * next provider that copied it.
+ *
+ * There is deliberately no `instanceof NoSuchBucket` arm. The generated class
+ * assigns `name = 'NoSuchBucket'` on the instance
+ * (`@aws-sdk/client-s3/dist-es/models/errors.js`), so every instance already
+ * satisfies the check below: it would be an arm no case could ever make
+ * decide, and a branch nothing can make decide is a branch nothing protects.
+ *
+ * A BARE HTTP 404 is deliberately NOT accepted, and this is the one place the
+ * predicate is narrower than "the resource is missing". On the create path
+ * `absent` is the answer that ENABLES the partial-create cleanup's
+ * `DeleteBucket`, so anything that can 404 without S3 having said
+ * `NoSuchBucket` — a corporate proxy, an `AWS_ENDPOINT_URL` override, an
+ * S3-compatible gateway — would otherwise license a delete on the strength of
+ * a response S3 never sent. Narrowing costs only that such a 404 becomes
+ * `indeterminate`, and every caller's `indeterminate` branch is the
+ * non-destructive one.
+ *
+ * Everything else — 403 from a bucket owned by another account, a throttle, a
+ * network fault — is likewise NOT absence. Folding those into "absent"
+ * is what would let a probe failure re-authorize the destructive branch each
+ * caller below is guarding.
+ */
+function isNoSuchBucketError(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === 'NoSuchBucket';
+}
+
+/**
+ * The bucket's region as reported on an error's own `x-amz-bucket-region`
+ * header, canonicalized — the free answer, requiring no second round trip.
+ *
+ * Shared by {@link S3BucketProvider.resolveOwnedBucketRegion} (reading the
+ * `BucketAlreadyOwnedByYou` 409) and {@link S3BucketProvider.probeBucketRegion}
+ * (reading a FAILED probe), so the header-then-canonicalize pair has one
+ * spelling rather than two that can drift apart.
+ */
+function regionFromErrorHeader(error: unknown): string | undefined {
+  const fromHeader = readBucketRegionHeader(error);
+  // `canonicalizeRegion` is defensive rather than load-bearing, and that is
+  // worth stating so nobody spends a probe on it: it is only `toLowerCase`, S3
+  // emits `x-amz-bucket-region` lowercase, and the `EU` legacy fold lives in
+  // `bucketLocationToRegion` (which IS fenced). Removing it reddens nothing
+  // because no producible header reaches it in another case -- kept for the
+  // same reason the deploy-side comparison folds, since the cost is one call
+  // and the failure it would prevent is a silent region mismatch.
+  return fromHeader ? canonicalizeRegion(fromHeader) : undefined;
+}
+
+/**
+ * Whether this error's `x-amz-bucket-region` describes the BUCKET rather than
+ * the endpoint that answered.
+ *
+ * The distinction is the whole value of the header, and reading it off any
+ * failure throws it away. Only two failure shapes are S3 telling you where the
+ * BUCKET is: the 301 cross-region redirect (`PermanentRedirect`) and
+ * `AuthorizationHeaderMalformed`, which is the SigV4 region mismatch reporting
+ * the region you should have signed for. Every other failure -- a 403 for a
+ * bucket the caller cannot see, a throttle, a 404 -- is answered by the
+ * endpoint that was ASKED, so its header names the region the QUESTION went to.
+ * That is the same property that already orders the absence check first in
+ * {@link S3BucketProvider.probeBucketRegion}; this gate applies it to the rest
+ * of the failure space instead of to `NoSuchBucket` alone.
+ *
+ * Accepting an endpoint-region header as the bucket's answer inverted both
+ * guards built on top of it: on delete a 403 whose header echoed the deploy's
+ * own region compared EQUAL and returned silently, which is exactly the hostile
+ * bucket-policy `Deny` population {@link
+ * S3BucketProvider.announceUnverifiedBucketIdentity} exists for; on create it
+ * promoted an unanswerable probe to "the bucket is already there", producing a
+ * false ADOPTED-and-ACLs-reset warning over a genuinely new bucket and
+ * suppressing the orphan cleanup with no warning at all.
+ *
+ * Matched on the wire error CODE alone, never on an HTTP STATUS. An earlier
+ * revision also accepted a bare `httpStatusCode === 301`, which is the same
+ * defect {@link isNoSuchBucketError} was narrowed to close: a status S3 never
+ * NAMED is not S3 speaking. A proxy, an `AWS_ENDPOINT_URL` override or an
+ * S3-compatible gateway answering 301 with an `x-amz-bucket-region` of the
+ * deploy's own region would have made `probe.region` compare EQUAL, and the
+ * delete guard would have returned silently -- the same silent pass the 403
+ * arm above was removed for, arriving through the status instead of the header.
+ * Unreachable against real S3, since the redirect always carries the code, so
+ * dropping the arm costs nothing and the shape stops being expressible.
+ *
+ * The `BucketAlreadyOwnedByYou` 409 is a THIRD region-bearing shape (measured
+ * for issue #2227) and is deliberately absent here: `GetBucketLocation` cannot
+ * return it, and the create path reads it through
+ * {@link S3BucketProvider.resolveOwnedBucketRegion}'s explicit error argument,
+ * which never routes through this gate.
+ */
+function carriesBucketRegionHeader(error: unknown): boolean {
+  const candidate = error as { name?: unknown } | null;
+  if (candidate?.name === 'PermanentRedirect') return true;
+  return candidate?.name === 'AuthorizationHeaderMalformed';
+}
+
+/**
+ * What a pre-flight region probe of a bucket NAME can conclude.
+ *
+ * Three outcomes rather than a region-or-undefined, because the two failure
+ * shapes license opposite things and collapsing them is the bug this type
+ * exists to prevent: `absent` is a POSITIVE answer from S3 (the name is free),
+ * while `indeterminate` means the probe could not answer at all. A caller that
+ * treated the second as the first would re-authorize exactly the destructive
+ * branch it was probing to avoid.
+ */
+type BucketRegionProbe =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'region'; readonly region: string }
+  | {
+      readonly kind: 'indeterminate';
+      /**
+       * AWS's own message. Debug-level ONLY.
+       *
+       * The invariant holds across EVERY reader, not just the one that
+       * motivated it, and it has already been broken once by fixing a single
+       * consumer: there are two -- {@link S3BucketProvider.assertStateBucketRegion}
+       * (update / delete) and the `us-east-1` create path's partial-cleanup
+       * arm -- and the first fix left the second printing the identical string
+       * to the identical sink. If a third appears, `grep -rn '\.reason\b'`
+       * over this file is the check; reading the diff is not.
+       */
+      readonly reason: string;
+      /**
+       * The error CLASS, which is the half that is safe to print at default
+       * verbosity.
+       */
+      readonly errorName: string;
+    };
+
+/**
+ * Why the cross-region identity guard did not run, and what the operator can
+ * do about THAT cause specifically.
+ *
+ * Two causes, not one, and they need different remedies: a probe that could not
+ * answer (fix the permission, or retry) and a state record that never carried a
+ * region to check against (re-deploy so the record gains one). Telling a user
+ * with a pre-v2 record to grant `s3:GetBucketLocation` sends them to fix
+ * something that is not wrong.
+ */
+interface UnverifiedIdentityCause {
+  /** Completes "Could not confirm which bucket X is before delete: ...". */
+  readonly why: string;
+  /** A full sentence naming the action that would make the guard run. */
+  readonly remedy: string;
+}
+
+/** The probe was issued and could not answer. */
+function probeFailedCause(errorName: string): UnverifiedIdentityCause {
+  return {
+    // The error CLASS, never AWS's message. On the headline population for this
+    // whole warning -- a bucket policy denying `s3:GetBucketLocation` -- S3's
+    // text reads `User: arn:aws:sts::<account>:assumed-role/<role>/<session> is
+    // not authorized to perform: s3:GetBucketLocation on resource: ...`, so
+    // interpolating it printed an account id, a role name and a session name to
+    // the terminal and to CI logs for exactly the cohort the warning was added
+    // to serve. Making the guard visible must not make the caller visible.
+    //
+    // Terminal-only (this line is never thrown and never persisted, so the
+    // issue #2179 redaction surface is not in play) -- but there is no reason
+    // to print it, and `dynamodb-index-busy-delete.ts` already answered this
+    // class the same way: class at default verbosity, AWS's own text at debug.
+    why: `the GetBucketLocation identity check failed (${errorName})`,
+    remedy:
+      `Re-run with --verbose for AWS's own message. Re-run the destroy once the check can ` +
+      `succeed, or grant s3:GetBucketLocation on the bucket (a bucket policy can Deny it), to ` +
+      `have the guard verify the target first.`,
+  };
+}
+
+/**
+ * No probe was issued, because the state record names no region to check
+ * against.
+ *
+ * `DeleteContext.expectedRegion` is absent exactly for a record written before
+ * the region-keyed state layout, and `destroy-runner` omits the field rather
+ * than inventing one. That cohort is the one MOST likely to predate the issue
+ * #2227 create-path guard, so it is the likeliest carrier of a foreign-region
+ * physical id -- and until this cause existed it was the one population that
+ * got no probe, no warning and no debug line, i.e. the highest-risk shape with
+ * the quietest output.
+ *
+ * Warn only. Refusing here would strand every legacy destroy with no IAM
+ * remedy at all -- strictly worse than the stranding the guard already declines
+ * to impose -- and defaulting `expectedRegion` to the client region in
+ * `destroy-runner` would fabricate an expectation the record never made AND
+ * change `assertRegionMatch` on the `NoSuchBucket` path, a far wider blast
+ * radius than this.
+ */
+function noRecordedRegionCause(): UnverifiedIdentityCause {
+  return {
+    why: `this state record carries no region, so there was nothing to check the bucket's location against`,
+    remedy:
+      `This record predates cdkd's region-keyed state layout. Re-deploy the stack to write a ` +
+      `record that carries its region, or confirm the bucket's location yourself, to have the ` +
+      `guard run on the next destroy.`,
+  };
+}
+
 export class S3BucketProvider implements ResourceProvider {
   private s3Client: S3Client;
   private logger = getLogger().child('S3BucketProvider');
@@ -5498,12 +5714,44 @@ export class S3BucketProvider implements ResourceProvider {
 
     if (actualRegion === wantRegion) return;
 
+    this.refuseForeignRegionAdopt(
+      logicalId,
+      resourceType,
+      bucketName,
+      wantRegion,
+      actualRegion,
+      createError
+    );
+  }
+
+  /**
+   * The refusal {@link assertExistingBucketRegion} raises, as its own method so
+   * the `us-east-1` pre-flight can raise the IDENTICAL one.
+   *
+   * Two callers reach the same conclusion by different evidence -- a 409's
+   * `x-amz-bucket-region` on one side, a pre-flight `GetBucketLocation` on the
+   * other -- and the user-facing consequence is the same in both, so the
+   * wording, the `markNonRetryable` marker and the deliberate avoidance of the
+   * literal `does not exist` are stated once rather than paraphrased.
+   *
+   * `never`-returning so a caller can `this.refuseForeignRegionAdopt(...)` as a
+   * statement without the compiler losing that control flow ends there.
+   */
+  private refuseForeignRegionAdopt(
+    logicalId: string,
+    resourceType: string,
+    bucketName: string,
+    wantRegion: string,
+    actualRegion: string,
+    cause?: Error
+  ): never {
     throw markNonRetryable(
       new ProvisioningError(
         `Refusing to adopt existing S3 bucket ${bucketName} for ${logicalId} ` +
           `(${resourceType}): it is owned by this account but lives in ${actualRegion}, ` +
           `while this stack deploys to ${wantRegion}. S3 bucket names are globally ` +
-          `unique, so 'BucketAlreadyOwnedByYou' does not mean the bucket is in this ` +
+          `unique, so owning the name (which is what 'BucketAlreadyOwnedByYou' and a ` +
+          `successful location lookup each report) never means the bucket is in this ` +
           `region. Adopting it would apply this stack's bucket configuration to a ` +
           `bucket in ${actualRegion}, and would record a physical id that denotes no ` +
           `bucket in ${wantRegion}. Either give this stack a bucket name unique to ` +
@@ -5511,13 +5759,15 @@ export class S3BucketProvider implements ResourceProvider {
         resourceType,
         logicalId,
         bucketName,
-        // Thread the 409 rather than dropping it: `isMarkedNonRetryable` walks
-        // the cause chain, the classifier reads it, and the provider-error-cause
-        // critic fences every provider construction that discards its caught
-        // error. The marker above still wins -- it is consulted before any
-        // wording heuristic -- so carrying the AWS error cannot make this
-        // deterministic refusal retryable again.
-        createError
+        // Thread the AWS error rather than dropping it: `isMarkedNonRetryable`
+        // walks the cause chain, the classifier reads it, and the
+        // provider-error-cause critic fences every provider construction that
+        // discards its caught error. The marker above still wins -- it is
+        // consulted before any wording heuristic -- so carrying the AWS error
+        // cannot make this deterministic refusal retryable again. Absent on the
+        // pre-flight caller, which has no AWS error: the create had not been
+        // attempted yet.
+        cause
       )
     );
   }
@@ -5529,13 +5779,264 @@ export class S3BucketProvider implements ResourceProvider {
    * failure PROPAGATES rather than degrading to a guess: the caller is a
    * fail-closed guard, and a guessed region is exactly what would make it
    * adopt the wrong bucket.
+   *
+   * The header read here is deliberately NOT behind
+   * {@link carriesBucketRegionHeader}, and that is licensed by the CALL SITE
+   * rather than by the header being safer: the only error ever passed in is the
+   * `BucketAlreadyOwnedByYou` 409 from `CreateBucket`, which is itself a
+   * region-bearing shape (measured for issue #2227 -- a us-west-2 bucket
+   * answered it with `x-amz-bucket-region: us-west-2` to clients in three
+   * regions). The gate exists for {@link probeBucketRegion}, which catches the
+   * WHOLE failure space of `GetBucketLocation` and so must sort the two kinds
+   * apart. If this method ever takes an error from a second call site, it needs
+   * the gate too.
+   *
+   * `awsError` is optional because the two PRE-FLIGHT callers (issues #2241 /
+   * #2245) have no AWS error in hand — they ask the question BEFORE issuing
+   * the call that would produce one, so only the `GetBucketLocation` half
+   * applies. This is deliberately the same function rather than a second one
+   * that "also reads GetBucketLocation": the `EU` and empty-`LocationConstraint`
+   * folds and the `x-amz-bucket-region` header precedence are one predicate,
+   * and a paraphrase of them is a divergence waiting to happen.
    */
-  private async resolveOwnedBucketRegion(bucketName: string, createError: Error): Promise<string> {
-    const fromHeader = readBucketRegionHeader(createError);
-    if (fromHeader) return canonicalizeRegion(fromHeader);
+  private async resolveOwnedBucketRegion(bucketName: string, awsError?: Error): Promise<string> {
+    const fromHeader = awsError ? regionFromErrorHeader(awsError) : undefined;
+    if (fromHeader) return fromHeader;
 
     const location = await this.s3Client.send(new GetBucketLocationCommand({ Bucket: bucketName }));
     return bucketLocationToRegion(location.LocationConstraint);
+  }
+
+  /**
+   * Ask S3 where a bucket NAME lives, before doing anything to it.
+   *
+   * The non-throwing pre-flight form of {@link resolveOwnedBucketRegion},
+   * used by the three sites that must confirm a bucket is the one they mean
+   * before acting on it: the `us-east-1` create (issue
+   * [#2241](https://github.com/go-to-k/cdkd/issues/2241)) and the update /
+   * delete paths (issue [#2245](https://github.com/go-to-k/cdkd/issues/2245)).
+   *
+   * Why `GetBucketLocation` and not `HeadBucket`: recorded at length on
+   * {@link S3BucketProvider.assertExistingBucketRegion} and in
+   * `src/utils/aws-region-resolver.ts`. A cross-region `HeadBucket` 301s and
+   * SDK v3's region-redirect middleware mishandles the empty-body HEAD into a
+   * synthetic `name: 'Unknown'`, so it cannot answer this question at all;
+   * `GetBucketLocation` is a GET with an XML body and is answered by ANY
+   * regional endpoint in the same partition for a bucket in any region of
+   * that partition (measured 2026-08-13, see that module).
+   *
+   * Deliberately NOT `resolveBucketRegion` from that module: it never throws
+   * and returns the caller's own `fallbackRegion` on a failed probe, which
+   * would report "same region" for every failure and silently authorize each
+   * branch below. Distinguishing `absent` from `indeterminate` is precisely
+   * what this wrapper adds over it.
+   */
+  private async probeBucketRegion(bucketName: string): Promise<BucketRegionProbe> {
+    try {
+      return { kind: 'region', region: await this.resolveOwnedBucketRegion(bucketName) };
+    } catch (probeError) {
+      if (isNoSuchBucketError(probeError)) return { kind: 'absent' };
+      // A FAILED probe can still carry the answer -- but only from the two
+      // shapes where the header describes the BUCKET, which
+      // `carriesBucketRegionHeader` is the whole statement of. Reading it off
+      // any failure defeats both guards downstream (see that function).
+      //
+      // Gated AFTER the absence check for the same reason the gate exists at
+      // all: a 404 is answered by the endpoint that was ASKED, so "the name is
+      // free" must win over a header describing where the question went.
+      if (carriesBucketRegionHeader(probeError)) {
+        const fromHeader = regionFromErrorHeader(probeError);
+        if (fromHeader) return { kind: 'region', region: fromHeader };
+      }
+      return {
+        kind: 'indeterminate',
+        reason: probeError instanceof Error ? probeError.message : String(probeError),
+        errorName: probeError instanceof Error ? probeError.name : typeof probeError,
+      };
+    }
+  }
+
+  /**
+   * Refuse to act on a bucket a STATE RECORD names that does not live in
+   * `expectedRegion` (issue [#2245](https://github.com/go-to-k/cdkd/issues/2245)).
+   *
+   * {@link assertExistingBucketRegion} is on the CREATE path only, so it stops
+   * NEW poisoning and does nothing about a record already written by a build
+   * that predates it. Two paths then act on such a record, and neither noticed:
+   * `update()` had no region check at all, and `delete()`'s
+   * {@link assertRegionMatch} fires only from the `NoSuchBucket` branch — which
+   * a cross-region `DeleteBucket` never reaches, because SDK v3's
+   * region-redirect middleware FOLLOWS the 301 for body-bearing operations and
+   * the delete simply succeeds against the other region's bucket.
+   *
+   * ## Why this probes instead of reading state
+   *
+   * The cheap check would be state-vs-client region, and it cannot answer this
+   * question: in the poisoned record the region field is the STACK's region and
+   * MATCHES, while the physical id denotes a bucket somewhere else. The bucket's
+   * own location is knowable only from S3, so one `GetBucketLocation` per
+   * bucket update / delete is the floor. It is a rounding error next to what
+   * those paths already spend — an S3 update issues a dozen or more Put/Get
+   * round trips, and a delete may enumerate and remove every object version.
+   *
+   * ## Refuse rather than heal
+   *
+   * On update, healing would mean rewriting the recorded physical id, i.e. a
+   * state mutation whose blast radius (every `Fn::GetAtt` consumer, the next
+   * diff, the next destroy) is larger than the misconfiguration it repairs.
+   * On delete, refusing strands the destroy and needs a human — a foot-gun, and
+   * a smaller one than deleting a live bucket in another region, which nothing
+   * can undo. Both refusals are `markNonRetryable` for the same reason the
+   * create-side one is: they are deterministic, so letting `withRetry` re-run
+   * the operation for its full budget only delays the same message.
+   *
+   * ## What an unanswered probe does, and the IAM dependency that creates
+   *
+   * `absent` and `indeterminate` both PROCEED, a deliberate asymmetry with the
+   * create-side guard. `absent` is the ordinary already-gone destroy, which the
+   * existing `NoSuchBucket` path handles idempotently one call later.
+   * `indeterminate` is the load-bearing one, and the honest description of it
+   * is NOT that the affected population is unrelated to the defect — an
+   * earlier revision of this comment said exactly that and it is false. It is
+   * the SAME population, merely unprobeable: a principal without
+   * `s3:GetBucketLocation` can hold a poisoned record just as easily as any
+   * other, and for that principal this guard is INERT on every call,
+   * permanently. So this change introduces a new IAM dependency — the guard is
+   * only as good as `s3:GetBucketLocation` on the target bucket, which a bucket
+   * POLICY can also `Deny`.
+   *
+   * Proceeding anyway is still the right trade, for a reason about escape
+   * hatches rather than about who is affected. Failing closed would strand
+   * every update and destroy for a least-privilege role with no way out except
+   * widening IAM — cdkd offers no per-resource override to force one through —
+   * while the reachable hazard needs a bucket that EXISTS and is owned by this
+   * account, for which `GetBucketLocation` answers from any endpoint in the
+   * partition (see {@link probeBucketRegion}). Three fixes that look better and
+   * are worse, recorded so they are not retried: refusing on `indeterminate` is
+   * the stranding above; refusing only on 403 cannot work, because a missing
+   * IAM grant and a hostile `Deny` are the same wire response; and folding 403
+   * into `absent` is the precise collapse {@link BucketRegionProbe}'s third
+   * state exists to prevent.
+   *
+   * What proceeding obliges instead is that it is never SILENT on the
+   * irreversible path — see {@link announceUnverifiedBucketIdentity}.
+   */
+  private async assertStateBucketRegion(
+    operation: 'update' | 'delete',
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    expectedRegion: string
+  ): Promise<void> {
+    const wantRegion = canonicalizeRegion(expectedRegion);
+    const probe = await this.probeBucketRegion(physicalId);
+
+    if (probe.kind === 'absent') return;
+    if (probe.kind === 'indeterminate') {
+      // AWS's raw text goes to debug and nowhere else; the warn gets the class.
+      this.logger.debug(
+        `GetBucketLocation failed for S3 bucket ${physicalId} (${logicalId}) before ` +
+          `${operation}: ${probe.reason}`
+      );
+      this.announceUnverifiedBucketIdentity(
+        operation,
+        logicalId,
+        physicalId,
+        probeFailedCause(probe.errorName)
+      );
+      return;
+    }
+    if (probe.region === wantRegion) return;
+
+    // The consequence AND the remedy are per-operation. An earlier revision
+    // shared the remedy, and the shared wording was wrong for `delete` in the
+    // way that matters most: cdkd's state is region-KEYED
+    // (`cdkd/{stack}/{region}/state.json`), so "rerun this stack against
+    // <the bucket's region>" sends the operator to a region holding no record
+    // of this stack -- and if one did exist there, the advice would be to go
+    // and destroy the very bucket this guard just refused to touch.
+    const consequence =
+      operation === 'update'
+        ? `Applying this stack's bucket configuration would reconfigure a bucket in ` +
+          `${probe.region} that this stack does not own the definition of.`
+        : `Deleting it would destroy a bucket in ${probe.region} that this stack's ` +
+          `region does not contain, and that deletion cannot be undone.`;
+    const remedy =
+      operation === 'update'
+        ? `Confirm which bucket you mean, then either rerun this stack against ` +
+          `${probe.region}, or — if the recorded id is stale — drop cdkd's record with ` +
+          `'cdkd state orphan <stack>', which removes the record without touching any AWS ` +
+          `resource, and deploy again.`
+        : `Confirm which bucket you mean. If ${physicalId} is genuinely yours to delete, ` +
+          `delete it deliberately in ${probe.region}; if this record is simply stale, drop it ` +
+          `with 'cdkd state orphan <stack>', which removes cdkd's record without touching any ` +
+          `AWS resource, and the destroy will then have nothing to do for this resource.`;
+
+    throw markNonRetryable(
+      new ProvisioningError(
+        `Refusing to ${operation} S3 bucket ${physicalId} for ${logicalId} (${resourceType}): ` +
+          `the bucket lives in ${probe.region}, while this stack's state is for ${wantRegion}. ` +
+          `S3 bucket names are globally unique, so a state record can name a bucket in another ` +
+          `region — records written before the create-path region guard can carry one. ` +
+          `${consequence} ${remedy}`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
+   * Say out loud that the identity guard did not run.
+   *
+   * `delete` gets a WARN and `update` a debug, and the asymmetry is the whole
+   * point rather than a stylistic choice. Both proceed, but only one of them
+   * proceeds into something irreversible, and cdkd's default log level is
+   * `info` -- so a debug line here meant that on the one path where the guard
+   * failing open destroys data, the operator's output was byte-identical to a
+   * normal destroy.
+   *
+   * That is not merely a misconfiguration story. `GetBucketLocation` is
+   * DENIABLE on the target bucket by anyone holding `s3:PutBucketPolicy` on it,
+   * and a `Deny` there is indistinguishable on the wire from a missing IAM
+   * grant. A 403 leaves the probe `indeterminate` -- deliberately, since a 403
+   * is answered by the endpoint that was asked and
+   * {@link carriesBucketRegionHeader} therefore refuses to read its header as
+   * the bucket's region -- so a poisoned record naming a bucket in another
+   * region PROCEEDS: the auto-empty and `DeleteBucket` follow the SDK's 301 and
+   * the bucket is gone. A throttled probe during a wide destroy reaches the
+   * same place by accident, and a state record with no region at all never gets
+   * a probe to begin with. None of the three can be refused -- see the caller's
+   * note on why failing closed is the wrong trade -- so the remaining
+   * obligation is that it never happens QUIETLY.
+   *
+   * Deliberately NOT retried on `isThrottlingError`. It would not touch the
+   * hostile-`Deny` path at all (a 403 carries neither a throttling name nor a
+   * retryable status), the provider has no injected sleep seam here so a
+   * bounded retry either adds real wall-clock to every throttled destroy or
+   * needs a new timer seam plus fixtures to control it, and with this warning
+   * in place a throttled probe is now visible and re-runnable -- which was the
+   * actual defect.
+   */
+  private announceUnverifiedBucketIdentity(
+    operation: 'update' | 'delete',
+    logicalId: string,
+    physicalId: string,
+    cause: UnverifiedIdentityCause
+  ): void {
+    const message =
+      `Could not confirm which bucket ${physicalId} for ${logicalId} is before ${operation}: ` +
+      `${cause.why}, so the cross-region guard did NOT run and cdkd is proceeding on the ` +
+      `recorded physical id alone.`;
+
+    if (operation === 'delete') {
+      this.logger.warn(
+        `${message} If this state record names a bucket in another region, this destroy will ` +
+          `delete THAT bucket. ${cause.remedy}`
+      );
+      return;
+    }
+    this.logger.debug(`${message} Proceeding.`);
   }
 
   /**
@@ -5580,17 +6081,115 @@ export class S3BucketProvider implements ResourceProvider {
         createParams.ObjectLockEnabledForBucket = true;
       }
 
+      // In `us-east-1` a 200 from `CreateBucket` does NOT mean this call
+      // created the bucket, so ask S3 whether the name is already taken
+      // BEFORE taking it (issue #2241).
+      //
+      // Everywhere else the 200 is proof: `CreateBucket` answers a re-create
+      // of a bucket you already own with `BucketAlreadyOwnedByYou`, which the
+      // catch below handles. `us-east-1` is the documented exception —
+      // `@aws-sdk/client-s3` `dist-types/models/errors.d.ts` on
+      // `BucketAlreadyOwnedByYou`: "Amazon S3 returns this error in all Amazon
+      // Web Services Regions except in the North Virginia Region. For legacy
+      // compatibility, if you re-create an existing bucket that you already own
+      // in the North Virginia Region, Amazon S3 returns 200 OK and resets the
+      // bucket access control lists (ACLs)." Without this probe the adopt never
+      // enters the catch, `createdNewBucket` is set for a bucket the deploy did
+      // not create, and the partial-create cleanup below fires `DeleteBucket`
+      // at a PRE-EXISTING user bucket — the exact outcome issue #376's gate
+      // exists to prevent. The default bucket name is `{stackName}-{logicalId}`
+      // (`generateResourceName`) with no region or account in it, so the name
+      // collision that reaches this is not exotic.
+      //
+      // The probe informs the cleanup gate ONLY; it never replaces the
+      // `CreateBucket` call. `CreateBucket` is the authoritative OWNERSHIP
+      // oracle (a bucket held by another account fails it with
+      // `BucketAlreadyExists`), while `GetBucketLocation` can succeed against a
+      // foreign-owned bucket whose policy happens to allow it — so skipping the
+      // create on a positive probe would trade this bug for a worse one.
+      // Canonicalized, unlike the `LocationConstraint` gate above it: a
+      // `--region US-EAST-1` reaches `getRegion()` unfolded (the same raw
+      // spelling `assertExistingBucketRegion` folds on the deploy side), and a
+      // raw `===` here would silently skip the probe for the one region it
+      // exists for. The `LocationConstraint` gate is left exactly as it was —
+      // its behavior on an unfolded spelling is a separate, pre-existing
+      // question, and widening it here would change what cdkd sends to
+      // `CreateBucket`.
+      const preflight: BucketRegionProbe =
+        canonicalizeRegion(region) === 'us-east-1'
+          ? await this.probeBucketRegion(bucketName)
+          : // Outside us-east-1 the 200 itself proves this call created the
+            // bucket, so no probe is issued and no round trip is spent.
+            { kind: 'absent' };
+
       // Track whether THIS call actually created the bucket (vs hit the
-      // idempotent `BucketAlreadyOwnedByYou` fallback). Only the truly-
+      // idempotent `BucketAlreadyOwnedByYou` fallback, or the `us-east-1`
+      // legacy 200 over a bucket that was already there). Only the truly-
       // created case is eligible for partial-failure cleanup — deleting a
       // pre-existing bucket would destroy a user resource that lived
       // before this deploy ran.
       let createdNewBucket = false;
       try {
         await this.s3Client.send(new CreateBucketCommand(createParams));
-        createdNewBucket = true;
+        createdNewBucket = preflight.kind === 'absent';
+        if (preflight.kind === 'region' && preflight.region !== 'us-east-1') {
+          // A 200 over a bucket the pre-flight placed in ANOTHER region.
+          // Refuse with the same message the 409 path raises, rather than warn
+          // and configure it: warning here would be self-contradicting (its
+          // text explains a us-east-1 behaviour while naming a region that is
+          // not us-east-1) and would apply this stack's whole configuration to
+          // a foreign bucket -- the exact issue #2227 outcome, arriving by the
+          // one door that guard does not watch.
+          //
+          // Not reachable by AWS's own documentation: the legacy 200 is scoped
+          // to re-creating a bucket you own IN N. Virginia, and the catch below
+          // records the measurement that a cross-region owned bucket answers
+          // 409 instead. So this is a fail-CLOSED floor under a documented
+          // impossibility, not a case with a live population -- kept because
+          // the alternative on a documentation change is a silent cross-region
+          // reconfigure, and the refusal already exists.
+          this.refuseForeignRegionAdopt(
+            logicalId,
+            resourceType,
+            bucketName,
+            'us-east-1',
+            preflight.region
+          );
+        }
+        if (preflight.kind === 'region') {
+          // The legacy 200 already happened by the time we get here, and it
+          // reset the bucket's ACLs (SDK doc quoted above) — a real, if
+          // smaller, effect of the same adopt, and one the user cannot see
+          // from a successful deploy. Say so rather than leaving it silent.
+          // `preflight.region` is necessarily us-east-1 here, the branch above
+          // having refused everything else, so the message cannot name a region
+          // its own explanation does not apply to.
+          this.logger.warn(
+            `S3 bucket ${bucketName} for ${logicalId} (${resourceType}) already existed in ` +
+              `${preflight.region} and was ADOPTED, not created. In us-east-1 S3 answers a ` +
+              `re-create of a bucket you already own with 200 OK and RESETS that bucket's ` +
+              `access control lists, so any ACL previously set on ${bucketName} is now the ` +
+              `default. cdkd will not delete this bucket if the rest of this create fails.`
+          );
+        }
         this.logger.debug(`Created S3 bucket: ${bucketName}`);
       } catch (createError) {
+        // A cdkd REFUSAL is not an AWS failure to classify. The only one that
+        // can arrive here is the foreign-region adopt raised in the `try`
+        // above, and the classifier below matches on
+        // `message.includes('you already own it')` -- so it survives today only
+        // because that refusal's wording happens not to contain the substring.
+        // A future reword would have this catch swallow the refusal into the
+        // "already owned" arm and configure the foreign bucket: the exact issue
+        // #2227 outcome, reintroduced by a copy-edit. The pass-through is the
+        // same unguarded-wrap class already fixed for `update()`, and it goes
+        // FIRST so no later arm can claim the error.
+        //
+        // Not solved by hoisting the refusal out of the `try` instead: the
+        // `BucketAlreadyOwnedByYou` arm below calls `assertExistingBucketRegion`
+        // on different evidence, so both would fire and double-refuse.
+        if (createError instanceof ProvisioningError) throw createError;
+
         // `BucketAlreadyOwnedByYou` is an idempotent-create success ONLY once
         // the bucket that already exists is confirmed to live in the region
         // this deploy targets. The error is raised on OWNERSHIP, which is
@@ -5647,10 +6246,51 @@ export class S3BucketProvider implements ResourceProvider {
               `Cleaned up partially-created S3 bucket ${logicalId} (${bucketName}) after wiring failure`
             );
           } catch (cleanupError) {
+            // Class at warn, AWS's own text at debug — the sibling arm below
+            // and the update/delete guard both do this, and for the same
+            // reason: an `AccessDenied` on `DeleteBucket` reads `User:
+            // arn:aws:sts::<account>:assumed-role/<role>/<session> is not
+            // authorized to perform: s3:DeleteBucket ...`, so the
+            // default-verbosity line would print the account id, the role name
+            // and the session name. This arm predates that rule (issue #376)
+            // and was the last reader in this file still interpolating an AWS
+            // message into a warn.
+            this.logger.debug(
+              `DeleteBucket cleanup failed for S3 bucket ${logicalId} (${bucketName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+            );
             this.logger.warn(
-              `Failed to clean up partially-created S3 bucket ${logicalId} (${bucketName}): ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. Manual deletion may be required before the next deploy: aws s3api delete-bucket --bucket '${bucketName}'`
+              `Failed to clean up partially-created S3 bucket ${logicalId} (${bucketName}) ` +
+                `(${cleanupError instanceof Error ? cleanupError.name : typeof cleanupError}). ` +
+                `Re-run with --verbose for AWS's own message. Manual deletion may be required ` +
+                `before the next deploy: aws s3api delete-bucket --bucket '${bucketName}'`
             );
           }
+        } else if (preflight.kind === 'indeterminate') {
+          // The us-east-1 probe could not answer, so this deploy cannot tell an
+          // orphan it just made from a bucket that predates it. Skipping the
+          // cleanup leaves at worst an empty orphan bucket, which is
+          // recoverable and named here; running it could delete a user's
+          // bucket, which is not. Warn where it matters — at the moment the
+          // cleanup would have run — rather than on every successful create.
+          //
+          // The CLASS goes in the warn and `preflight.reason` goes to debug.
+          // This is the same `probeBucketRegion` failure the update/delete
+          // guard reports, so it is the same caller-identity leak: on the
+          // headline cohort (a bucket policy denying `s3:GetBucketLocation`)
+          // AWS's text names the account, the role and the session. Fixing only
+          // the guard's copy left this one printing the identical string to the
+          // identical sink.
+          this.logger.debug(
+            `GetBucketLocation failed for S3 bucket ${bucketName} (${logicalId}) during create: ` +
+              `${preflight.reason}`
+          );
+          this.logger.warn(
+            `Not cleaning up S3 bucket ${logicalId} (${bucketName}) after a wiring failure: ` +
+              `this deploy could not confirm whether it created the bucket (region probe failed: ` +
+              `${preflight.errorName}), and in us-east-1 a successful CreateBucket does not prove ` +
+              `it. Re-run with --verbose for AWS's own message. If cdkd created it, delete it ` +
+              `manually before the next deploy: aws s3api delete-bucket --bucket '${bucketName}'`
+          );
         }
         throw innerError;
       }
@@ -5717,6 +6357,27 @@ export class S3BucketProvider implements ResourceProvider {
         wasReplaced: true,
       };
     }
+
+    // Confirm the recorded physical id denotes a bucket in THIS region before
+    // writing anything to it (issue #2245). `UpdateContext` carries no region,
+    // so the expectation is the deploy's own region — which is the region the
+    // state record being updated belongs to.
+    //
+    // Placed BEFORE the try, like the delete-path twin, rather than inside it.
+    // The `catch` below re-labels everything it captures as
+    // `Failed to update S3 bucket <id>: …`, and a deliberate cdkd refusal is
+    // not an AWS failure to re-label: `vp run gen:update-wrap-coverage --check`
+    // flags exactly that shape (a wrap that can capture a typed throw with no
+    // `instanceof` pass-through), and the alternative — adding a pass-through
+    // to the catch — would stop wrapping every OTHER `ProvisioningError` this
+    // method's appliers raise, which is a much wider change than this guard.
+    await this.assertStateBucketRegion(
+      'update',
+      logicalId,
+      resourceType,
+      physicalId,
+      await this.getRegion()
+    );
 
     try {
       // Apply configuration changes. Tags are skipped because
@@ -5814,6 +6475,37 @@ export class S3BucketProvider implements ResourceProvider {
     const allowAutoEmpty =
       context?.forceDataDelete === true ||
       hasCdkAutoDeleteTag(properties, S3_AUTO_DELETE_OBJECTS_TAG);
+
+    // Confirm the recorded physical id denotes a bucket in the region this
+    // state record is for, BEFORE anything destructive happens — ahead of the
+    // auto-empty above all, since emptying a foreign-region bucket destroys
+    // data even when the `DeleteBucket` that follows would fail (issue #2245).
+    //
+    // Gated on `expectedRegion` being present for the same back-compat reason
+    // `assertRegionMatch` states: with no recorded region there is no
+    // expectation to check against, so a pre-v2 record keeps its previous
+    // behavior instead of being refused. `destroy-runner` supplies it from
+    // `StackState.region` whenever the record has one.
+    if (context?.expectedRegion) {
+      await this.assertStateBucketRegion(
+        'delete',
+        logicalId,
+        resourceType,
+        physicalId,
+        context.expectedRegion
+      );
+    } else {
+      // The FIFTH way this guard can fail to run, and the quietest: no probe is
+      // issued at all, because there is no recorded region to compare against.
+      // See `noRecordedRegionCause` for why that cohort is the highest-risk one
+      // and why this warns rather than refuses.
+      this.announceUnverifiedBucketIdentity(
+        'delete',
+        logicalId,
+        physicalId,
+        noRecordedRegionCause()
+      );
+    }
 
     try {
       await this.deleteBucketWithEmptyRetry(logicalId, physicalId, allowAutoEmpty);

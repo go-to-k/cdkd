@@ -82,6 +82,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+import { NoSuchBucket } from '@aws-sdk/client-s3';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 
 const RESOURCE_TYPE = 'AWS::S3::Bucket';
@@ -89,11 +90,46 @@ const BUCKET = 'per-item-string-bucket';
 
 let provider: S3BucketProvider;
 
+/**
+ * Answer every call with `{}` EXCEPT the `us-east-1` pre-flight probe, which
+ * is answered "no such bucket" (issue #2241).
+ *
+ * This file's client is mocked at us-east-1, where the provider asks
+ * `GetBucketLocation` whether the name is already taken before creating it. A
+ * blanket `{}` is a VALID `GetBucketLocationOutput` -- an absent
+ * `LocationConstraint` is S3's spelling of us-east-1 -- so it would tell every
+ * create here that it adopted a bucket that was already there, and the adopt
+ * warning would then satisfy the `warn` assertions that are supposed to be
+ * about per-item string shapes.
+ *
+ * The 404 is the MODELED `NoSuchBucket`, which is what the client really
+ * produces. An earlier revision hand-built a plain `Error` here on the
+ * reasoning that `GetBucketLocationCommand` declares only
+ * `@throws {@link S3ServiceException}` and so could not be yielding the modeled
+ * class; measured 2026-08-26 against the real client, that is wrong --
+ * `DeleteBucket` declares the same lone throw and both operations return
+ * `instanceof NoSuchBucket` with `name: 'NoSuchBucket'` and status 404, errors
+ * being resolved through a per-NAMESPACE schema registry.
+ */
+function primeSendForNewBucket(): void {
+  mockSend.mockImplementation((cmd: unknown) => {
+    if ((cmd as { constructor: { name: string } }).constructor.name === 'GetBucketLocationCommand') {
+      return Promise.reject(
+        new NoSuchBucket({
+          message: 'The specified bucket does not exist',
+          $metadata: { httpStatusCode: 404 },
+        })
+      );
+    }
+    return Promise.resolve({});
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   childLogger.child.mockReturnValue(childLogger);
   provider = new S3BucketProvider();
-  mockSend.mockResolvedValue({});
+  primeSendForNewBucket();
 });
 
 function sentCommands<T>(
@@ -431,7 +467,7 @@ describe('the CONTAINER half of the probe is reachable from the provider too', (
 
       vi.clearAllMocks();
       childLogger.child.mockReturnValue(childLogger);
-      mockSend.mockResolvedValue({});
+      primeSendForNewBucket();
 
       await provider.create('B', RESOURCE_TYPE, site.nonObjectItem, { replayingState: true });
       expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('must be an object'));

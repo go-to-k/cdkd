@@ -2005,8 +2005,15 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
       .map((c) => (c[0] as { constructor: { name: string } }).constructor.name)
       .filter((n) => /PublicAccessBlock/.test(n));
     expect(pabCommands).toEqual([]);
-    // Nothing else should fire either for a pure PAB removal.
-    expect(mockSend).not.toHaveBeenCalled();
+    // Nothing else should fire either for a pure PAB removal -- except the
+    // read-only `GetBucketLocation` that confirms the recorded physical id
+    // denotes a bucket in this region before any write (issue #2245). Asserted
+    // as the WHOLE command list rather than by subtracting that one name, so
+    // the "no call at all" claim keeps its force: any write the refactor this
+    // test blocks would add still shows up here.
+    expect(
+      mockSend.mock.calls.map((c) => (c[0] as { constructor: { name: string } }).constructor.name)
+    ).toEqual(['GetBucketLocationCommand']);
   });
 
   it('PublicAccessBlockConfiguration: still applied when present', async () => {

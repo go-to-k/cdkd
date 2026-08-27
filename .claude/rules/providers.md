@@ -39,6 +39,7 @@ The per-topic detail below is loaded only when a file under `src/provisioning/pr
 | the delete path: `expectedRegion` + the `assertRegionMatch()` region-check helper, `forceDataDelete`, warn-and-continue arms, skip reporting | [provider-delete-path.md](provider-delete-path.md) |
 | reading AWS responses: type != populated, id forms that break `import()`, malformed-value defaults | [provider-aws-response-reads.md](provider-aws-response-reads.md) |
 | fixing a nested CFn -> SDK key divergence | [provider-nested-key-divergence.md](provider-nested-key-divergence.md) |
+| confirming WHICH resource you are acting on: globally-unique names, `*AlreadyExists` short-circuits, a state record's physical id | [provider-resource-identity.md](provider-resource-identity.md) |
 
 Per-file notes for `src/provisioning/**`: [layout-provisioning.md](layout-provisioning.md).
 
@@ -69,65 +70,13 @@ Per-file notes for `src/provisioning/**`: [layout-provisioning.md](layout-provis
 
 ## An "already exists" error is scoped to the API's NAMESPACE, not to your region
 
-Before short-circuiting a create-conflict error to an idempotent success, ask
-what namespace the error is scoped to and whether that namespace is narrower,
-equal to, or WIDER than the region the client is pointed at. A short-circuit is
-only sound when the error can mean nothing but "the resource I want, where I
-want it, is already there".
-
-Nearly every AWS type makes this trivial, in one of two ways, which is why the
-one exception is easy to miss: either the namespace is REGIONAL (SNS topics,
-CloudWatch log groups, SSM parameters, EC2) so the conflict is by construction
-in the region you called, or the namespace is global AND so is the resource
-(IAM roles / users / groups / managed policies / instance profiles, Route 53
-hosted zones, CloudFront distributions) so there is no other region for it to
-be in.
-
-`AWS::S3::Bucket` is the one type where the two come apart — a globally unique
-name over a regionally located resource — and it broke exactly there (issue
-[#2227](https://github.com/go-to-k/cdkd/issues/2227)). `BucketAlreadyOwnedByYou`
-is raised on OWNERSHIP, which is account-global: measured on real AWS, a bucket
-created in `us-west-2` answers it to a `CreateBucket` in `eu-west-1`,
-`us-east-1` and `ap-northeast-1` alike, and the bucket never moves. Treating
-that as success made the deploy apply the whole stack's bucket configuration to
-another region's bucket while reporting success — and it is NOT an
-explicit-`BucketName` edge case, because `generateResourceName` produces
-`{stackName}-{logicalId}` with no region or account in it, so one stack deployed
-to two regions collides by construction.
-
-`S3BucketProvider.assertExistingBucketRegion` is the create-side twin of
-`assertRegionMatch` in `src/provisioning/region-check.ts`. It reads the region
-from the `x-amz-bucket-region` header on the 409 ITSELF, so the common path
-costs no extra API call and no extra IAM permission, and falls back to
-`GetBucketLocation` when the header is absent.
-
-**Not `HeadBucket`** — `src/utils/aws-region-resolver.ts` already recorded why,
-and this guard's first cut re-learned it the expensive way: a cross-region
-`HeadBucket` 301s, and SDK v3 mishandles the empty-body HEAD response into a
-synthetic `name: 'Unknown', message: 'UnknownError'`. The AWS CLI hides this by
-following the redirect, so a measurement taken with the CLI encodes a shape the
-SDK never produces — seven mutation-probed unit tests passed while the guard
-could not fire, and only a real-AWS integ arm caught it. **Not
-`resolveBucketRegion`** from that module either: it never throws and returns a
-fallback region on a failed probe, which would silently turn a fail-CLOSED guard
-into a fail-OPEN one.
-
-Two wire details the readback must fold rather than refuse: an EMPTY / null
-`LocationConstraint` means `us-east-1` (failing closed there would refuse
-correct deploys in the commonest region), and `EU` is a legacy alias for
-`eu-west-1`. And the refusal is `markNonRetryable` AND worded to avoid the
-literal `does not exist`, which is a member of
-`OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS` — otherwise a deterministic,
-user-actionable refusal is retried for the full budget and reads as flaky AWS.
-
-Two things that made the original short-circuit look safe, both worth checking
-in any new one: it was CORRECT for the case it was written for (a retry of a
-create whose first attempt already succeeded), and the mid-delete hazard the
-issue was FILED for turned out not to be reachable — measured, a `DeleteBucket`
-followed immediately by a `CreateBucket` of the same name simply SUCCEEDS, so
-there is no window in which the error can mean "being deleted". Probe the API before building a
-guard, in both directions: a guard against an unreachable case can never fire,
-and the reachable one next to it goes unnoticed.
+A globally unique NAME over a regionally located resource means an
+`*AlreadyExists` / `*AlreadyOwned` error, a state record's physical id, and a
+successful create can each denote a resource in a region you are not deploying
+to. `AWS::S3::Bucket` is where that came apart, three separate ways. The full
+rule is in
+[.claude/rules/provider-resource-identity.md](provider-resource-identity.md),
+auto-loaded under `src/provisioning/providers/`.
 
 ## Adding a New SDK Provider
 
