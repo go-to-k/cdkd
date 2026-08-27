@@ -39,9 +39,17 @@ const { mockSend, childLogger } = vi.hoisted(() => ({
   },
 }));
 
+// eu-west-1, so that the several `expect(childLogger.warn).not.toHaveBeenCalled()`
+// assertions below keep meaning "this well-formed container was not refused".
+// In us-east-1 the provider pre-flights the bucket name before creating it
+// (issue #2241) and warns when the name is already taken -- and this file's
+// catch-all `mockSend.mockResolvedValue({})` answers that probe with a valid
+// us-east-1 `GetBucketLocationOutput`, i.e. "already taken". That warning is
+// about bucket identity, not container shape, so it would turn every no-warn
+// assertion here into a fence on an unrelated code path.
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    s3: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    s3: { send: mockSend, config: { region: () => Promise.resolve('eu-west-1') } },
   }),
 }));
 
@@ -78,7 +86,19 @@ beforeEach(() => {
   vi.clearAllMocks();
   childLogger.child.mockReturnValue(childLogger);
   provider = new S3BucketProvider();
-  mockSend.mockResolvedValue({});
+  // `GetBucketLocation` is answered with THIS client's region rather than the
+  // blanket `{}`: an absent `LocationConstraint` is S3's spelling of
+  // us-east-1, so the blanket answer would tell the update-path identity guard
+  // (issue #2245) that this bucket lives somewhere other than where the mocked
+  // client is, and every update case here would die on that refusal instead of
+  // exercising its container shape.
+  mockSend.mockImplementation((cmd: unknown) =>
+    Promise.resolve(
+      (cmd as { constructor: { name: string } }).constructor.name === 'GetBucketLocationCommand'
+        ? { LocationConstraint: 'eu-west-1' }
+        : {}
+    )
+  );
 });
 
 function sentCommands<T>(

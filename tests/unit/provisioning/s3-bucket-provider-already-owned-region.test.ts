@@ -2,7 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 const { mockSend, clientRegion } = vi.hoisted(() => ({
   mockSend: vi.fn(),
-  clientRegion: { value: 'us-east-1' },
+  // eu-west-1 rather than us-east-1, and the reason is a wire fact rather than
+  // a preference: `BucketAlreadyOwnedByYou` -- the error EVERY case in this
+  // file is about -- is the answer in "all Amazon Web Services Regions except
+  // in the North Virginia Region" (`@aws-sdk/client-s3`
+  // `dist-types/models/errors.d.ts`). A `us-east-1` client therefore receives
+  // it ONLY for a bucket that lives somewhere else; the same-region case there
+  // is answered by the legacy 200 instead, which is issue #2241's path and is
+  // fenced in `s3-bucket-provider-us-east-1-preflight.test.ts`. Defaulting to
+  // us-east-1 made three cases below encode a 409 that region cannot produce.
+  clientRegion: { value: 'eu-west-1' },
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -106,7 +115,7 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
 
   beforeEach(() => {
     vi.clearAllMocks();
-    clientRegion.value = 'us-east-1';
+    clientRegion.value = 'eu-west-1';
     provider = new S3BucketProvider();
   });
 
@@ -138,7 +147,7 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
     it('ADOPTS and configures when the error reports THIS region', async () => {
       // The negative control for the header path. Without it a guard that
       // refused every already-owned bucket would satisfy every case above.
-      mockSend.mockRejectedValueOnce(ownedElsewhere('us-east-1'));
+      mockSend.mockRejectedValueOnce(ownedElsewhere('eu-west-1'));
       mockSend.mockResolvedValue({});
 
       const result = await provider.create('MyBucket', RESOURCE_TYPE, {
@@ -218,26 +227,21 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
     // MEANS us-east-1 -- never "unknown". A fail-closed branch here would
     // refuse correct deploys in the single commonest region, which is exactly
     // what the first version of this guard did.
+    //
+    // Only the REFUSING half of the fold is fenced here. Its ADOPTING twin
+    // used to sit alongside it with `clientRegion.value = 'us-east-1'`, and
+    // that combination -- a 409 received BY a us-east-1 client FOR a bucket
+    // the readback then places IN us-east-1 -- cannot occur: us-east-1 answers
+    // a re-create of a bucket you already own there with the legacy 200, not
+    // with this error (SDK doc quoted at the top of this file). The adopt side
+    // of the same fold is fenced against the path that IS reachable, the
+    // issue #2241 pre-flight, in
+    // `s3-bucket-provider-us-east-1-preflight.test.ts`.
     for (const [label, response] of [
       ['an absent field', {}],
       ['an empty string', { LocationConstraint: '' }],
       ['an explicit null', { LocationConstraint: null }],
     ] as const) {
-      it(`treats ${label} as us-east-1 and ADOPTS when deploying there`, async () => {
-        clientRegion.value = 'us-east-1';
-        mockSend.mockRejectedValueOnce(ownedNoHeader());
-        mockSend.mockResolvedValueOnce(response);
-        mockSend.mockResolvedValue({});
-
-        const result = await provider.create('MyBucket', RESOURCE_TYPE, {
-          BucketName: BUCKET,
-          VersioningConfiguration: { Status: 'Enabled' },
-        });
-
-        expect(result.physicalId).toBe(BUCKET);
-        expect(sentCommands()).toContain('PutBucketVersioningCommand');
-      });
-
       it(`treats ${label} as us-east-1 and REFUSES, naming us-east-1, when deploying elsewhere`, async () => {
         clientRegion.value = 'eu-west-1';
         mockSend.mockRejectedValueOnce(ownedNoHeader());
@@ -301,10 +305,16 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
     });
 
     it('compares case-insensitively on the DEPLOY side, where a raw spelling can actually arrive', async () => {
-      // `--region US-EAST-1` reaches `getRegion()` unfolded. AWS never returns
+      // `--region EU-WEST-1` reaches `getRegion()` unfolded. AWS never returns
       // an uppercase region, so the risk is on this side, not the response side.
-      clientRegion.value = 'US-EAST-1';
-      mockSend.mockRejectedValueOnce(ownedElsewhere('us-east-1'));
+      //
+      // Spelled with eu-west-1 rather than us-east-1 for the reachability
+      // reason recorded above: a us-east-1 client cannot receive this 409 for a
+      // us-east-1 bucket. The unfolded-spelling risk is identical in either
+      // region, and the us-east-1 spelling now decides something ELSE as well
+      // (whether the issue #2241 pre-flight runs), which is fenced separately.
+      clientRegion.value = 'EU-WEST-1';
+      mockSend.mockRejectedValueOnce(ownedElsewhere('eu-west-1'));
       mockSend.mockResolvedValue({});
 
       await expect(

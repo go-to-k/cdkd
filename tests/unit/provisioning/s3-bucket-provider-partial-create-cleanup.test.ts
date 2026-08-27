@@ -5,9 +5,20 @@ const { mockSend, warnSpy } = vi.hoisted(() => ({
   warnSpy: vi.fn(),
 }));
 
+// eu-west-1, not us-east-1, and the reason is a wire fact rather than a
+// preference. Every case in this file turns on whether `CreateBucket` created
+// the bucket, and us-east-1 is the one region where a 200 does not answer that:
+// it replies to a re-create of a bucket you already own with a legacy 200 OK
+// instead of `BucketAlreadyOwnedByYou` (`@aws-sdk/client-s3`
+// `dist-types/models/errors.d.ts`). Two consequences: the adopt case below
+// cannot receive that 409 from a us-east-1 client at all, and the provider runs
+// an extra pre-flight probe there (issue #2241). Both belong to that issue and
+// are fenced in `s3-bucket-provider-us-east-1-preflight.test.ts`; this file
+// stays on the region where the 200/409 pair alone decides, so it keeps testing
+// issue #376's gate rather than #2241's probe.
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
-    s3: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    s3: { send: mockSend, config: { region: () => Promise.resolve('eu-west-1') } },
   }),
 }));
 
@@ -84,10 +95,8 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
     // which is account-global, so the provider confirms the existing bucket is
     // in this stack's region before adopting it. This error carries no
     // `x-amz-bucket-region` header, so the readback takes the
-    // `GetBucketLocation` fallback. An EMPTY `LocationConstraint` is S3's
-    // spelling of us-east-1, which matches this file's mocked client region —
-    // so it doubles as a fence on that fold: were the empty case to fail
-    // closed, this test would go red rather than the branch going unnoticed.
+    // `GetBucketLocation` fallback, and it must report this file's mocked
+    // client region for the adopt to proceed at all.
     //
     // Without the primer the sub-config rejection below is consumed by the
     // readback instead, the run dies there, and the `DeleteBucketCommand`
@@ -95,7 +104,7 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
     // a vacuous pass. The `PutBucketVersioningCommand` assertion at the end is
     // what makes that regression fail loudly instead of going quiet again.
     mockSend.mockRejectedValueOnce(new BucketAlreadyOwnedByYou('you already own it'));
-    mockSend.mockResolvedValueOnce({ LocationConstraint: '' }); // GetBucketLocation readback
+    mockSend.mockResolvedValueOnce({ LocationConstraint: 'eu-west-1' }); // GetBucketLocation readback
     mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
     await expect(

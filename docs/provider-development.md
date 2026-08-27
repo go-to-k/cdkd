@@ -1750,6 +1750,29 @@ fail-closed guard into a fail-open one. See `.claude/rules/providers.md` for
 the full rule, including the two legacy `GetBucketLocation` spellings the fold
 must absorb and why the refusal is `markNonRetryable`.
 
+That guard is scoped to the `BucketAlreadyOwnedByYou` catch on the CREATE path,
+which leaves two neighbouring routes to the wrong bucket that it cannot see —
+`us-east-1`'s legacy 200 (issue
+[#2241](https://github.com/go-to-k/cdkd/issues/2241)) and a state record written
+before the guard existed (issue
+[#2245](https://github.com/go-to-k/cdkd/issues/2245)). `S3BucketProvider` now
+also pre-flights the bucket NAME before `CreateBucket` when the target region is
+`us-east-1`, and shares one `assertStateBucketRegion` between `update()` and
+`delete()`. `.claude/rules/providers.md` carries the mechanism and the three
+rules worth reusing: the pre-flight informs the partial-create CLEANUP GATE only
+and never replaces `CreateBucket` (the ownership oracle), an unanswered probe is
+kept distinct from a confirmed absence, and the state-record guard PROCEEDS on
+both rather than stranding every update and destroy for a least-privilege role.
+
+Note what that last choice COSTS, because it is a new IAM dependency rather than
+a free win: the guard works only where the caller can call `GetBucketLocation`
+on the target. A principal without that grant is NOT an unrelated population —
+it is the same population, unprobeable, and for it the guard is inert on every
+call; a bucket POLICY can `Deny` the call as well, which is indistinguishable on
+the wire from a missing grant. That is why the delete-side degrade logs at
+`warn` rather than `debug`: proceeding unverified into an irreversible delete
+must never look identical to a healthy one.
+
 That rule is also where the probe-first lesson lives, and it cuts both ways
 here: the mid-delete hazard the issue was FILED for is not reachable, so a
 guard against it could never have fired — while the guard that WAS written

@@ -211,6 +211,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['provider-nested-key-divergence.md', 65],
   ['provider-property-fidelity.md', 65],
   ['provider-replay-and-refusals.md', 65],
+  ['provider-resource-identity.md', 65],
   ['providers.md', 92],
   ['state-schema.md', 5],
   ['synthesis.md', 13],
@@ -396,11 +397,17 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 31; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 32; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
-                              //  split out of assets.md). Both landed as 30 independently; the merged
-                              //  count is 31.
+                              //  split out of assets.md). Both landed as 30 independently; merged
+                              //  they made 31. + provider-resource-identity.md (issues
+                              //  go-to-k/cdkd#2241 / go-to-k/cdkd#2245): providers.md's
+                              //  resource-identity section moved out verbatim under a
+                              //  `src/provisioning/providers/**` glob after it pushed the
+                              //  cloud-control-provider.ts payload budget to 105,480 B against a
+                              //  105,000 B cap -- a shared provisioning helper was paying for
+                              //  provider-only detail. That makes 32.
 const CORPUS_BYTES_MIN = 795_000;   // measured 808,384 B -- 13,384 B of slack
 const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
 
