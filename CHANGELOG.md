@@ -1,3 +1,10 @@
+## [0.284.75](https://github.com/go-to-k/cdkd/compare/v0.284.74...v0.284.75) (2026-08-27)
+
+
+### Bug Fixes
+
+* **deployment:** refuse an Fn::Sub over an unbound template Parameter ([#2324](https://github.com/go-to-k/cdkd/issues/2324)) ([12beeb4](https://github.com/go-to-k/cdkd/commit/12beeb4b18c83977ac2e18995a937ee16cf8ce82))
+
 ## [0.284.74](https://github.com/go-to-k/cdkd/compare/v0.284.73...v0.284.74) (2026-08-27)
 
 
