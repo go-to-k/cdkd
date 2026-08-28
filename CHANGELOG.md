@@ -1,3 +1,10 @@
+## [0.284.84](https://github.com/go-to-k/cdkd/compare/v0.284.83...v0.284.84) (2026-08-28)
+
+
+### Bug Fixes
+
+* **provisioning:** confirm the state record region before every CloudControlProvider mutation ([#2378](https://github.com/go-to-k/cdkd/issues/2378)) ([d1382ae](https://github.com/go-to-k/cdkd/commit/d1382ae4f0d9769ae2c01e9d903f4697af124f7f))
+
 ## [0.284.83](https://github.com/go-to-k/cdkd/compare/v0.284.82...v0.284.83) (2026-08-28)
 
 
