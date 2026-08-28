@@ -35,6 +35,7 @@ import {
   IntrinsicResolutionRefusalError,
 } from '../utils/error-handler.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
+import { isListParameterType } from '../utils/parameter-types.js';
 import { classifyReplaySecretRegion } from './secret-region-classification.js';
 import { withRetry } from './retry.js';
 import {
@@ -1654,6 +1655,18 @@ export function parameterTypeMayLoseSecretIdentity(type: string): boolean {
  * ONE definition of parameter-type coercion, at module scope so
  * {@link parameterTypeMayLoseSecretIdentity} probes the same code the resolver
  * runs rather than a copy of it.
+ *
+ * WHICH TYPES ARE LISTS is asked of the SHARED {@link isListParameterType}
+ * rather than enumerated in the `switch` (issue #2347). The `switch` named only
+ * `List<Number>` and `CommaDelimitedList`, so the nine `List<AWS::...>` types
+ * CloudFormation defines -- `List<AWS::EC2::Subnet::Id>` and its siblings --
+ * fell to `default` and a `Ref` to such a parameter resolved to the raw
+ * comma-joined STRING, while `src/synthesis/macro-expander.ts` held the wider,
+ * correct view of the very same question. Both sites now read one predicate.
+ *
+ * `List<Number>` keeps its own arm because it is the only list type whose
+ * ELEMENTS are not strings; every other list type produces trimmed strings,
+ * which is what CloudFormation says a `Ref` to one returns.
  */
 export function coerceParameterTypedValue(value: string, type: string): unknown {
   switch (type) {
@@ -1661,12 +1674,17 @@ export function coerceParameterTypedValue(value: string, type: string): unknown 
       return Number(value);
     case 'List<Number>':
       return value.split(',').map((v) => Number(v.trim()));
-    case 'CommaDelimitedList':
-      return value.split(',').map((v) => v.trim());
-    case 'String':
-    default:
-      return value;
   }
+  // `CommaDelimitedList` and the `List<...>` family. CloudFormation space-trims
+  // each member of a comma-delimited value, so `.trim()` is the wire semantics,
+  // not a convenience.
+  if (isListParameterType(type)) {
+    return value.split(',').map((v) => v.trim());
+  }
+  // `String`, the AWS-specific SCALAR types, the whole
+  // `AWS::SSM::Parameter::Value<...>` family (whose value is a Parameter Store
+  // KEY, not the resolved list), and any unrecognised spelling.
+  return value;
 }
 
 /**
@@ -1688,8 +1706,8 @@ export function coerceParameterTypedValue(value: string, type: string): unknown 
  *   for the same reason the redactor excludes them: a 3-character secret
  *   matches half the alphabet's worth of ordinary identifiers.
  *
- * A `CommaDelimitedList` parameter arrives as an array, so the scan walks
- * string elements too.
+ * A LIST-TYPED parameter — any `List<...>` type or `CommaDelimitedList` — arrives as an
+ * array, so the scan walks string elements too.
  */
 function inheritedSecretsCarriedBy(
   value: unknown,
@@ -4186,7 +4204,8 @@ export class IntrinsicFunctionResolver {
 
     // The 2nd arg is normally a literal array, but CloudFormation also allows it
     // to be a SINGLE intrinsic that RETURNS a list (Fn::Cidr / Fn::GetAZs /
-    // Fn::Split, or a Ref to a CommaDelimitedList parameter). In that case
+    // Fn::Split, or a Ref to a list-typed parameter -- any `List<...>` type
+    // or `CommaDelimitedList`). In that case
     // resolve it first so it becomes an array before we map over it.
     let values: unknown = rawValues;
     if (!Array.isArray(values)) {
@@ -4195,7 +4214,7 @@ export class IntrinsicFunctionResolver {
 
     if (!Array.isArray(values)) {
       throw new Error(
-        `Fn::Join's second argument must be a list (an array literal or a list-returning intrinsic such as Fn::Cidr / Fn::GetAZs / Fn::Split / a Ref to a CommaDelimitedList parameter), but resolved to ${typeof values}`
+        `Fn::Join's second argument must be a list (an array literal or a list-returning intrinsic such as Fn::Cidr / Fn::GetAZs / Fn::Split / a Ref to a list-typed parameter — any List<...> type or CommaDelimitedList), but resolved to ${typeof values}`
       );
     }
 
@@ -4556,9 +4575,10 @@ export class IntrinsicFunctionResolver {
    *
    * - a list-valued `Fn::GetAtt` renders as `Fn::GetAtt [Zone, NameServers]`,
    *   naming both the resource and the attribute;
-   * - a `Ref` to a `CommaDelimitedList` / `List<Number>` parameter — the
-   *   SECOND genuinely reachable array source, via `coerceParameterValue` —
-   *   renders as `Ref MyListParam`, naming the parameter.
+   * - a `Ref` to a LIST-TYPED parameter — any `List<...>` type or `CommaDelimitedList`, per the
+   *   shared `isListParameterType` — the SECOND genuinely reachable array
+   *   source, via `coerceParameterValue` — renders as `Ref MyListParam`,
+   *   naming the parameter.
    *
    * Anything else degrades to its bare intrinsic key, or to `undefined` for a
    * literal (which the message then simply omits).
@@ -4693,12 +4713,13 @@ export class IntrinsicFunctionResolver {
         // value that IS an Fn::GetAtt gets the Route 53 example and the #1868
         // note — that note is addressed to the reader whose Fn::Split was a
         // workaround for THAT attribute bug, so emitting it at a `Ref` to a
-        // CommaDelimitedList parameter, or at a literal array the user wrote
+        // list-typed parameter, or at a literal array the user wrote
         // out by hand, only misdirects. A literal names nothing about itself,
         // so it takes the neutral text rather than the Fn::GetAtt one.
         const remedy =
           source?.kind === 'ref'
-            ? `A CommaDelimitedList / List<Number> parameter is already a list.`
+            ? `A list-typed parameter — any List<...> type (List<AWS::EC2::Subnet::Id>, ` +
+              `List<Number>, …) or CommaDelimitedList — is already a list.`
             : source?.kind === 'getatt'
               ? `A list-valued Fn::GetAtt (for example ` +
                 `AWS::Route53::HostedZone.NameServers or AWS::EC2::VPC.Ipv6CidrBlocks) ` +
@@ -4710,9 +4731,9 @@ export class IntrinsicFunctionResolver {
                 // this arm (Fn::GetAZs, Fn::Cidr, a nested Fn::Split, an
                 // Fn::If / Fn::FindInMap selecting a list).
                 `Several intrinsics already return a list — among them a ` +
-                `list-valued Fn::GetAtt, a Ref to a CommaDelimitedList / ` +
-                `List<Number> parameter, Fn::GetAZs, Fn::Cidr, and Fn::Split ` +
-                `itself.`;
+                `list-valued Fn::GetAtt, a Ref to a list-typed parameter (any ` +
+                `List<...> type or CommaDelimitedList), Fn::GetAZs, Fn::Cidr, ` +
+                `and Fn::Split itself.`;
         throw markNonRetryable(
           new IntrinsicResolutionRefusalError(
             `Fn::Split: the value to split${sourceClause} is ALREADY a list ` +

@@ -527,6 +527,66 @@ describe('diff --recursive: a secret-bearing nested-stack Parameter (#1903)', ()
     expect(secretSend).not.toHaveBeenCalled();
   });
 
+  it('binds a List<AWS::...> child parameter as the token SPLIT BY TYPE too, now that the coercion widened (#2347)', async () => {
+    // Issue #2347: `tokenValueForComparison` moved TRANSITIVELY. It never
+    // named the splitting types -- it asks what the coercion PRODUCED -- so
+    // widening `coerceParameterTypedValue` silently changed its answer for the
+    // whole `List<...>` family, and nothing in this file covered a single one
+    // of them (only `CommaDelimitedList` and `List<Number>` were pinned).
+    //
+    // The verdict must match the `CommaDelimitedList` case above, for the same
+    // reason: the deploy's own `coerceParameterValue` now splits a
+    // `List<AWS::EC2::Subnet::Id>` value on `,` before redaction, so the child's
+    // state holds an ARRAY of expressions, and keeping the raw token would
+    // compare a STRING against that list and report a phantom change on every
+    // run. Deleting the widened arm from the coercion makes this fail.
+    const LIST_PARAM = 'referencetoParentSubnets';
+    const childPath = join(dir, 'child.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Parameters: { [LIST_PARAM]: { Type: 'List<AWS::EC2::Subnet::Id>' } },
+        Resources: {
+          ChildRule: {
+            Type: 'AWS::Events::Rule',
+            Properties: { EventPattern: { detail: { listA: { Ref: LIST_PARAM } } } },
+          },
+        },
+      })
+    );
+
+    const root = await buildDiffTree({
+      stackName: 'Parent',
+      displayName: 'Parent',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Child: {
+            Type: NESTED,
+            Metadata: { 'aws:asset:path': 'child.json' },
+            Properties: { Parameters: { [LIST_PARAM]: SECRET_EXPR } },
+          },
+        },
+      },
+      nestedTemplates: { Child: childPath },
+      recursive: true,
+      stateBackend: fakeBackend({
+        Parent: st('Parent', { Child: res(NESTED, { Parameters: { [LIST_PARAM]: SECRET_EXPR } }) }),
+        'Parent~Child': st('Parent~Child', {
+          // What the deploy path persists for this leaf: a ONE-element ARRAY.
+          ChildRule: res('AWS::Events::Rule', {
+            EventPattern: { detail: { listA: [SECRET_EXPR] } },
+          }),
+        }),
+      }),
+      diffCalculator: new DiffCalculator(),
+    });
+
+    const child = root.children[0]!;
+    expect(child.changes.get('ChildRule')!.changeType).toBe('NO_CHANGE');
+    expect(secretSend).not.toHaveBeenCalled();
+  });
+
   it('keeps a List<Number>-typed child parameter as the token, not an array of NaN (#2327)', async () => {
     // THE FLOOR under the case above, and it was UNFENCED: deleting
     // `tokenValueForComparison`'s "every element is a string" guard left all

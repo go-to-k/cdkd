@@ -1947,11 +1947,30 @@ would apply, comparing the synth template against cdkd's S3 state.
     exposed by it.
     A `Type: Number` / `List<Number>` parameter keeps the **uncoerced** token,
     because casting it yields `NaN` — an ARRAY of them for `List<Number>` —
-    which matches neither side and would diff forever. So does every other
-    declared `Type`, `List<String>` included, which reads as though it belongs
-    beside `CommaDelimitedList` and is not cast at all: cdkd splits only
-    `CommaDelimitedList` and `List<Number>`, and only the first of those keeps
-    every part a string.
+    which matches neither side and would diff forever.
+    Every OTHER list-shaped `Type` is split like `CommaDelimitedList`, because
+    its parts all stay strings. The population is the FAMILY — any `List<...>`
+    type, plus `CommaDelimitedList` itself — rather than a list of names;
+    `List<AWS::EC2::Subnet::Id>`, `List<AWS::EC2::SecurityGroup::Id>` and
+    `List<String>` are examples of it (issue
+    [#2347](https://github.com/go-to-k/cdkd/issues/2347)). The AWS-specific
+    SCALAR types, and the whole `AWS::SSM::Parameter::Value<…>` family — whose
+    value is a Parameter Store KEY rather than the resolved list — keep the
+    uncast token.
+    A LIST-TYPED PARAMETER USED IN `Fn::Equals` CHANGES ANSWER, and this is
+    not limited to the redacted-token case — it is a property of the deploy
+    path (issue
+    [#2347](https://github.com/go-to-k/cdkd/issues/2347)). A `Ref` to a
+    list-shaped parameter now resolves to an ARRAY, and `Fn::Equals` compares
+    the two sides structurally, so `Fn::Equals: [{Ref: Envs}, 'prod']` over a
+    `List<String>` parameter defaulting to `prod` was TRUE (`'prod'` vs
+    `'prod'`) and is now FALSE (`["prod"]` vs `"prod"`). That is the correct
+    answer for a list-valued `Ref`; compare against a LIST
+    (`Fn::Equals: [{Ref: Envs}, ['prod']]`) or declare the parameter
+    `Type: String`. The consequence is that a resource gated on such a
+    condition can flip to pruned, and the next deploy DELETES it — `cdkd diff`
+    previews that delete before any apply, so check a diff after upgrading if
+    you gate resources on a list-typed parameter.
     The split falls exactly there because cdkd's secret redaction is
     string-keyed end to end — a shape whose parts are all strings stays inside
     that model, and a number does not. `cdkd diff` additionally WARNS for any
@@ -1973,7 +1992,10 @@ would apply, comparing the synth template against cdkd's S3 state.
   #### Secret parameters must be `Type: String`
 
   A nested-stack input parameter fed a SECRET dynamic reference must be
-  declared `Type: String` (or `CommaDelimitedList`, with the caveat below).
+  declared `Type: String` (or a list-shaped `Type` — anything
+  `isListParameterType` accepts, i.e. `CommaDelimitedList` or any `List<...>`
+  type; the spellings named elsewhere in this section are examples, not the
+  population — with the caveat below).
   `cdkd deploy` **refuses** a `Type: Number` / `Type: List<Number>` parameter
   in that position, naming the parameter:
 
@@ -1991,13 +2013,15 @@ would apply, comparing the synth template against cdkd's S3 state.
   not. CDK synthesizes every nested-stack cross-reference parameter as
   `Type: String`, so a CDK app never hits this.
 
-  `CommaDelimitedList` is allowed only while the secret itself carries **no
+  A list-shaped `Type` is allowed only while the secret itself carries **no
   comma**, and the refusal is decided by MEASURING the actual value rather
   than by the declared type alone. Splitting on `,` shreds a comma-bearing
   secret into fragments that no longer match the plaintext, so the same
-  refusal fires and names `Type: CommaDelimitedList`. That is the dominant
+  refusal fires and names the declared type. That is the dominant
   Secrets Manager shape — a JSON blob is nothing but commas — so a list-typed
-  secret parameter is usable only for a bare token value.
+  secret parameter is usable only for a bare token value. This applies to
+  every list-shaped type alike, because the refusal asks the coercion what it
+  destroyed rather than consulting a list of type names.
 - `--fail` — exit `1` when any change is detected (parity with `cdk diff
   --fail`). With `--recursive`, considers the whole nested-stack tree, so
   CI can gate on tree-wide drift with a single `cdkd diff <parent>
