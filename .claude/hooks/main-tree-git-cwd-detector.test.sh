@@ -453,9 +453,26 @@ run_case warn  "git rebase --continue in main tree" \
   "$MAIN" 'git rebase --continue'
 
 # 30c. `git merge` -> WARN (a mistargeted merge fast-forwards main as
-#      silently as the incident's rebase did).
+#      silently as the incident's rebase did). This spelling includes the
+#      alternative main-tree sync `git merge --ff-only origin/main`, and
+#      warning on it is ACCEPTED, not an oversight: the hook header's
+#      measurement shows main-tree git state cannot separate a deliberate
+#      sync from a lane's mistargeted one (both happen on a clean main at
+#      origin/main), and the sync spelling the flow actually mandates is
+#      `git pull` (30e), which stays quiet.
 run_case warn  "git merge --ff-only origin/main in main tree" \
   "$MAIN" 'git merge --ff-only origin/main'
+
+# 30c-b/30c-c. Hyphenated READ-ONLY siblings of the new verbs stay out:
+#      `git merge-base` is ship.md's flatten step and `git merge-tree` is
+#      verify-pr's conflict probe, both run in the main tree routinely.
+#      These pin the verb-boundary class (`merge([[:space:]]...)`) that
+#      keeps `merge-base` / `merge-tree` / `cherry-pick`'s hyphen rules
+#      consistent.
+run_case quiet "git merge-base origin/main HEAD in main tree" \
+  "$MAIN" 'git merge-base origin/main HEAD'
+run_case quiet "git merge-tree HEAD origin/main in main tree" \
+  "$MAIN" 'git merge-tree HEAD origin/main'
 
 # 30d. `git cherry-pick` -> WARN.
 run_case warn  "git cherry-pick <sha> in main tree" \

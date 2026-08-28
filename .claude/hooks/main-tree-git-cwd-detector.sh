@@ -324,7 +324,7 @@ GH_PR_MERGE_VERB='gh([[:space:]]+-[^[:space:]]+)*[[:space:]]+pr[[:space:]]+merge
 # PostToolUse `Bash` hook with no `if:` condition, so it runs on EVERY
 # Bash call, and `cmd_matches_verb` costs an awk pass over the whole
 # command (twice here, plus twice more for the cd resolution). The
-# filter is strictly BROADER than either ERE below — every command
+# filter is strictly BROADER than every ERE below — every command
 # matching them contains one of these literals — so it can only skip
 # commands the matcher would also have rejected.
 printf '%s' "$cmd" | grep -qE 'git|vp|markgate|gh' || exit 0

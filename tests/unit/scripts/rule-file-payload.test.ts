@@ -278,9 +278,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['.claude/hooks/integ-local-gate.sh', 108_000, 140_000], // measured 122,313
   // The cwd-race detector's entry moved out of hooks.md when the #2363
   // widening pushed that file past the 120,000 B per-file cap (the #2236
-  // precedent). This path is the only one that loads the satellite, so
-  // without this row it would sit under no budget. Payload is hooks.md +
-  // hooks-cwd-detector.md.
+  // precedent). This path is the representative one for the satellite
+  // (its two globs are the hook and its .test.sh, per the REACH_FLOORS
+  // entry above); without this row the satellite would sit under no
+  // budget. Payload is hooks.md + hooks-cwd-detector.md.
   ['.claude/hooks/main-tree-git-cwd-detector.sh', 108_000, 140_000], // measured 122,121
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
