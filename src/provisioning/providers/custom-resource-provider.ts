@@ -32,7 +32,10 @@ import {
 } from '../../deployment/retry.js';
 import { startInterruptWatch, type InterruptWatch } from '../interrupt-watch.js';
 import { CUSTOM_RESOURCE_RESPONSE_PREFIX } from '../../state/state-prefix.js';
-import { purgeNoncurrentKeyVersions } from '../../state/s3-noncurrent-version-purge.js';
+import {
+  purgeNoncurrentKeyVersions,
+  CUSTOM_RESOURCE_RESPONSE_OBJECT_DESCRIPTION,
+} from '../../state/s3-noncurrent-version-purge.js';
 import {
   isIamPropagationError,
   isMarkedNonRetryable,
@@ -2648,6 +2651,11 @@ export class CustomResourceProvider implements ResourceProvider {
     // so the cleanup path's must-not-abort property holds by construction.
     await purgeNoncurrentKeyVersions(this.s3Client, bucket, [responseKey], {
       logger: this.logger,
+      // Per-caller, because the warning names what a reader must go and
+      // inspect and this module is no longer the only caller (issue #2346).
+      // The SHARED constant, not a literal: `cdkd gc` deletes this same object
+      // and must produce the identical sentence.
+      objectDescription: CUSTOM_RESOURCE_RESPONSE_OBJECT_DESCRIPTION,
     });
   }
 

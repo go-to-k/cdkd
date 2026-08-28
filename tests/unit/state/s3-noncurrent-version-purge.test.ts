@@ -164,6 +164,33 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
     expect(deletes()).toEqual([[{ Key: KEY_A, VersionId: 'null' }]]);
   });
 
+  it('an entry with IsLatest ABSENT is left alone AND reported, never dropped silently', async () => {
+    // Keying on `!== false` is what makes an omitted `IsLatest` fail CLOSED —
+    // deleting it could take a current version. But an entry in `wanted` that
+    // is skipped is still a body cdkd was asked to remove and did not, and
+    // "nothing purged, nothing warned" is the one outcome this module exists to
+    // forbid. Unreachable against real S3, which always populates the field.
+    //
+    // Both halves are asserted, and they are the two that actually exist:
+    // dropping the `recordFailure` leaves the delete assertion green, and
+    // weakening the `IsLatest !== false` guard to `=== true` leaves the warning
+    // green while deleting a possibly-current version. (The report arm has no
+    // `continue` of its own -- the guard below does the skipping -- so there is
+    // no third half to probe.)
+    const s3 = stub({
+      [KEY_A]: [{ Versions: [{ Key: KEY_A, VersionId: 'v-nofield' }] }],
+    });
+
+    await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+    expect(deletes()).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0]![0]);
+    expect(message).toContain('1 key(s)');
+    expect(message).toContain(KEY_A);
+    expect(message).toContain('listing omitted IsLatest');
+  });
+
   it('deletes nothing on an UNVERSIONED bucket', async () => {
     // S3 answers an unversioned bucket with the live object carrying
     // `VersionId: 'null'` and `IsLatest: true`. Nothing is noncurrent.

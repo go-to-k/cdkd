@@ -1238,7 +1238,7 @@ Deletes go through `DeleteObjects` in batches of 1000, the API maximum, so a
 347-version key costs one CLI process rather than 347. A key or version id
 carrying a quote or a backslash falls back to a single-object `delete-object`,
 because the payload is assembled without `jq` — sourcing this file must not add
-a `jq` dependency to the sixteen fixtures that source it. `Quiet: true` means a fully successful call
+a `jq` dependency to the eighteen fixtures that source it. `Quiet: true` means a fully successful call
 returns `{}`, so any `Errors` in the output is a per-object failure that the
 call reported as overall success; it is surfaced as a WARN and the retry loop
 plus the zero-assertion are the backstop. The call pins `--output json`, which
@@ -1260,9 +1260,9 @@ what is how you decide where to add a case.
 
 Static: `tests/unit/scripts/integ-verify-bash-compat.test.ts` scans the shared
 helpers in `tests/integration/*.sh` alongside every `verify.sh` — a bash-4-ism
-in a file sixteen fixtures source is where it does the most damage and is least
+in a file eighteen fixtures source is where it does the most damage and is least
 likely to be noticed. `scripts/check-integ-aws-commands.ts` scans them too,
-since a verb removed from the AWS CLI here breaks sixteen fixtures at once. Both
+since a verb removed from the AWS CLI here breaks eighteen fixtures at once. Both
 carry a per-shape floor, so a total swamped by 247 `verify.sh` files (across 287
 fixture directories) cannot hide the helper going unread.
 

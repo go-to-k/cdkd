@@ -25,7 +25,7 @@ import { spawnSync } from 'node:child_process';
  * prefixes, THAT file owns "no request was issued" and this one owns "and
  * nothing was deleted"; neither is a copy of the other.
  *
- * The helper is sourced by sixteen fixtures and is the only shared shell code
+ * The helper is sourced by eighteen fixtures and is the only shared shell code
  * in the tree, yet nothing in CI ever RAN it: `integ-verify-bash-compat` is a
  * static bash-4-ism scan and `bash -n` only parses. Its three documented traps
  * are all SILENT PARTIAL sweeps -- the run still exits 0 and the script still
@@ -1224,7 +1224,7 @@ describe('the harness is hermetic on every axis it could depend on', () => {
     // does not exist rather than that it is controlled. `jq` is the load-bearing
     // one: the helper's header promises it assembles the DeleteObjects payload
     // by hand precisely so that sourcing it does not add a `jq` dependency to
-    // sixteen fixtures, and this is that promise made executable.
+    // eighteen fixtures, and this is that promise made executable.
     const body = readFileSync(HELPER_PATH, 'utf8')
       .split('\n')
       .map((l) => l.replace(/(^|\s)#.*$/, ''))
@@ -1571,7 +1571,7 @@ function cleanupBody(lines: { text: string; line: number }[]): { text: string; l
  * The #2225 rule.
  *
  * SCOPED TO `cleanup()`, and that scoping is the difference between a rule and
- * a noise generator. Fourteen of the sixteen callers purge `all` on the SUCCESS
+ * a noise generator. Fifteen of the eighteen callers purge `all` on the SUCCESS
  * path, after an unpiped `set -e`-guarded destroy that cannot be reached if it
  * failed -- they are already correct, and an unscoped "an `all` purge must be
  * guarded" rule flagged one of them (`lambda-esm-self-managed-kafka`) by
@@ -2074,8 +2074,13 @@ cleanup() {
   });
 
   it('ACCEPTS a cleanup that only ever purges `noncurrent` (the safe mode)', () => {
-    // This is what fourteen of the sixteen callers do, and flagging them would
-    // be an 88% false-positive rate on the population the rule runs over.
+    // This is what sixteen of the eighteen callers do, and flagging them would
+    // be an 89% false-positive rate on the population the rule runs over.
+    // SIXTEEN, not the fifteen in the header above: that one counts callers that
+    // purge `all` on the SUCCESS path, this one counts callers whose `cleanup`
+    // purges only `noncurrent` -- everything except the two that choose in
+    // `cleanup`. Two different questions that happened to share the answer 14 at
+    // the merge base, which is how they were kept in step by accident.
     const script = `
 cleanup() {
   rc=$?
@@ -2249,8 +2254,70 @@ const FALSIFIED_CLAIMS: readonly {
   },
   {
     retired: 'a bash-4-ism in a file twelve fixtures source is where it does the most damage', // falsified sample
-    why: 'STALE COUNT: sixteen fixtures source the helper, not twelve or fifteen.',
-    re: /\b(twelve|fifteen) fixtures\b/i,
+    why:
+      'STALE COUNT: eighteen fixtures source the helper. The population GROWS -- it was ' +
+      'twelve, then fifteen, then sixteen, and issue #2346 took it to eighteen -- so this ' +
+      'entry is re-falsified by every lane that adds a caller.',
+    // ENUMERATES EVERY SPELLING EXCEPT THE CURRENT ONE, rather than the two
+    // that happened to be wrong when the entry was written. That narrow form
+    // (`/\b(twelve|fifteen) fixtures\b/`) could not see the very number its
+    // own `why` asserted: when the count moved to sixteen and then to
+    // eighteen, the fence guarding this claim was blind to the stale value in
+    // five files INCLUDING this one. A fence that cannot match the number it
+    // guards is worse than none, because it reads as coverage.
+    //
+    // The complement form also means the NEXT lane to add a caller gets a red
+    // test naming every site to update, instead of having to notice.
+    //
+    // SCOPED BY EXCLUSION, not by an allow-list of trailing phrases. The
+    // allow-list form was tried and shipped, and it was measured to reach only
+    // 5 of the 9 sites that state this count -- it missed `s3-versions.sh:221`
+    // ("a `jq` dependency to N fixtures."), `:411` ("Of the N fixtures sourcing
+    // this file"), and two in THIS file -- because the phrase after the count
+    // varies freely while the count does not. An allow-list of prose is the
+    // wrong instrument for prose.
+    //
+    // The two statements that must NOT match are known and named, so excluding
+    // them by their own verb is both narrower and complete: `docs/testing.md`'s
+    // "Sixteen fixtures DO this today" (fixtures seeding a known plaintext, the
+    // #2096 measurement) and `integ-single-exit-trap.test.ts`'s "Sixteen
+    // fixtures LEGITIMATELY re-install ... EXIT" (fixtures with a second trap
+    // installation). Neither population moves when a caller is added here.
+    //
+    // The trailing `(?!\s*$)` is the LINE-WRAP exclusion and it is not
+    // cosmetic: this fence tests one LINE at a time, and
+    // `integ-single-exit-trap.test.ts` wraps immediately after "Sixteen
+    // fixtures", putting its `legitimately` on the next line where the verb
+    // exclusion cannot see it. Measured over the four candidate forms across
+    // the scanned corpus: bare 6 hits, verb-excluded 4, verb+wrap-excluded 3
+    // (all three carrying a `falsified` / `used to` marker the runner already
+    // drops), allow-list 1. Only this form reaches zero while still matching
+    // every real site.
+    //
+    // The residual is a stale site that WRAPS right after the count; none of
+    // the nine current sites does. A future true sentence of the form "<count>
+    // fixtures <verb>" about a third population would also false-positive.
+    // Both are the accepted direction: the fix is one more excluded verb here,
+    // and the alternative -- a fence that silently covers 5 of 9 sites, which
+    // is what the allow-list form measured at -- is what this lane has now been
+    // caught by twice.
+    re: /\b(ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|nineteen|twenty) fixtures\b(?!\s+(do|legitimately)\b)(?!\s*$)/i,
+  },
+  {
+    retired: 'Fourteen of the sixteen callers purge `all` on the SUCCESS path', // falsified sample
+    why:
+      'STALE COUNT: the caller population is EIGHTEEN. Two different claims share that ' +
+      'denominator -- fifteen purge `all` on the SUCCESS path, and sixteen have a cleanup ' +
+      'that purges only `noncurrent` -- and both were 14 at the merge base, which is how ' +
+      'they were kept in step by accident and then moved together by mistake.',
+    // GUARDS THE DENOMINATOR, deliberately not the numerator. The two claims
+    // above have DIFFERENT correct numerators (fifteen and sixteen) over the
+    // same population, so a numerator complement cannot be written without
+    // encoding which sentence is which -- and getting that wrong is exactly the
+    // conflation being fenced. The denominator is the shared quantity, and it
+    // is the one that MOVES: a caller cannot be added without changing it, so
+    // any growth reds this entry and forces both numerators to be re-derived.
+    re: /\bof the (ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|nineteen|twenty) callers\b/i,
   },
 ];
 
@@ -2326,7 +2393,7 @@ describe('helper callers: the purge MODE must follow the DESTROY, not the script
     // A FLOOR that names PERIPHERAL members, not only the central one: a
     // population that quietly shrank to the single fixture this rule was
     // written against would let the rule pass while covering nothing.
-    expect(callers.length).toBeGreaterThanOrEqual(16);
+    expect(callers.length).toBeGreaterThanOrEqual(18);
     const names = callers.map((f) => f.name);
     for (const required of [
       'local-run-task-from-state',
@@ -2354,7 +2421,7 @@ describe('helper callers: the purge MODE must follow the DESTROY, not the script
     const purging = callers.filter((f) =>
       logicalLines(f.script).some((l) => /s3_purge_prefix_versions[^\n]*\ball\b/.test(uncomment(l.text)))
     );
-    expect(purging.length).toBeGreaterThanOrEqual(14);
+    expect(purging.length).toBeGreaterThanOrEqual(17);
     const inCleanupBody = callers.filter((f) => {
       const b = cleanupBody(logicalLines(f.script));
       return b !== undefined && b.some((l) => /s3_purge_prefix_versions[^\n]*\ball\b/.test(uncomment(l.text)));

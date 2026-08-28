@@ -78,12 +78,31 @@ const s3Commands = vi.hoisted(() => {
         super('DeleteObject', input);
       }
     },
+    // `uploadCfnTemplate`'s `cleanup()` also purges the transient key's
+    // noncurrent versions (issue #2346 site 7), which reaches for these two.
+    // Omitting them from the factory is NOT neutral: the shared helper catches
+    // its own construction failure and WARNS, so the suite would keep running
+    // while an extra warning appeared on the cleanup path — which is exactly
+    // how this file's `s3Cleanup failure` test started matching the purge's
+    // warning instead of macro-expander's own.
+    ListObjectVersionsCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('ListObjectVersions', input);
+      }
+    },
+    DeleteObjectsCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('DeleteObjects', input);
+      }
+    },
   };
 });
 vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: vi.fn(() => ({ send: s3SendMock, destroy: s3DestroyMock })),
   PutObjectCommand: s3Commands.PutObjectCommand,
   DeleteObjectCommand: s3Commands.DeleteObjectCommand,
+  ListObjectVersionsCommand: s3Commands.ListObjectVersionsCommand,
+  DeleteObjectsCommand: s3Commands.DeleteObjectsCommand,
 }));
 
 const resolveBucketRegionMock = vi.hoisted(() => vi.fn(async () => 'us-east-1'));
@@ -537,6 +556,18 @@ describe('expandMacros — TemplateURL fallback (over 51,200 bytes)', () => {
     // Sequence the S3 client: first call (PutObject) succeeds, second
     // call (DeleteObject from cleanup) throws.
     s3SendMock.mockReset();
+    // `mockReset` drops the implementation as well as the queue, so the BASE
+    // has to be re-established before the two `Once` primers: cleanup's third
+    // call is the version listing of the noncurrent-version purge (#2346), and
+    // without a base it resolves `undefined`, the helper throws reading
+    // `.Versions`, and its own warning lands on the same cleanup path this test
+    // reads. An empty listing is the honest answer here — the purge finds
+    // nothing to remove and stays silent, leaving exactly one cleanup warning.
+    s3SendMock.mockImplementation(async (cmd: unknown) =>
+      (cmd as { _name?: string })._name === 'ListObjectVersions'
+        ? { Versions: [], DeleteMarkers: [], IsTruncated: false }
+        : {}
+    );
     s3SendMock
       .mockResolvedValueOnce({}) // PutObject succeeds
       .mockRejectedValueOnce(new Error('S3 AccessDenied'));
@@ -549,7 +580,14 @@ describe('expandMacros — TemplateURL fallback (over 51,200 bytes)', () => {
     expect(result.Resources).toEqual(EXPANDED_TEMPLATE.Resources);
     // WARN was logged, naming the bucket + recovery-prefix.
     const warns = loggerWarnMock.mock.calls.map((c) => String(c[0]));
-    const cleanupWarn = warns.find((w) => w.includes('cdkd-migrate-tmp/'));
+    // Selected by macro-expander's OWN opening phrase, not by the
+    // `cdkd-migrate-tmp/` substring both this warning and the #2346 purge
+    // warning contain. The substring form silently re-targeted this assertion
+    // at the purge's message the moment a second warner appeared on this path,
+    // and `find` returns the FIRST match, which is the purge's.
+    const cleanupWarn = warns.find((w) =>
+      w.includes('Failed to delete transient macro-expand template upload')
+    );
     expect(cleanupWarn).toBeDefined();
     expect(cleanupWarn).toContain('cdkd-state-123456789012'); // the bucket name from OPTS
     expect(cleanupWarn).toContain('S3 AccessDenied'); // the underlying error message

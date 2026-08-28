@@ -21,6 +21,17 @@ const s3DestroyMock = vi.hoisted(() => vi.fn());
 const s3SendMock = vi.hoisted(() =>
   vi.fn(async (cmd: { _name: string; input: Record<string, unknown> }) => {
     s3SendCalls.push({ name: cmd._name, input: cmd.input });
+    // One noncurrent body per key, plus the delete marker the bare
+    // DeleteObject just wrote — the post-delete shape of issue #2346 site 7.
+    if (cmd._name === 'ListObjectVersions') {
+      return {
+        Versions: [
+          { Key: cmd.input['Prefix'], VersionId: 'v-body', IsLatest: false },
+          { Key: cmd.input['Prefix'], VersionId: 'dm', IsLatest: true },
+        ],
+        IsTruncated: false,
+      };
+    }
     return {};
   })
 );
@@ -43,6 +54,22 @@ const s3Commands = vi.hoisted(() => {
         super('DeleteObject', input);
       }
     },
+    // Issue #2346 site 7: `cleanup()` now also purges the transient template's
+    // noncurrent versions (the state bucket is versioned). Omitting these two
+    // from the mock is NOT neutral — the shared helper catches its own
+    // construction failure and warns, so the purge would silently no-op and
+    // every wire-sequence assertion below would keep asserting the PRE-FIX
+    // sequence while reading as green.
+    ListObjectVersionsCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('ListObjectVersions', input);
+      }
+    },
+    DeleteObjectsCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('DeleteObjects', input);
+      }
+    },
   };
 });
 
@@ -50,6 +77,8 @@ vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: vi.fn(() => ({ send: s3SendMock, destroy: s3DestroyMock })),
   PutObjectCommand: s3Commands.PutObjectCommand,
   DeleteObjectCommand: s3Commands.DeleteObjectCommand,
+  ListObjectVersionsCommand: s3Commands.ListObjectVersionsCommand,
+  DeleteObjectsCommand: s3Commands.DeleteObjectsCommand,
 }));
 
 vi.mock('../../../src/utils/aws-region-resolver.js', () => ({
@@ -85,8 +114,23 @@ describe('selectChangeSetTemplateSource', () => {
     s3SendCalls.length = 0;
     s3SendMock.mockClear();
     s3DestroyMock.mockClear();
+    // Mirrors the hoisted default, INCLUDING the version listing — this
+    // re-attachment would otherwise silently drop the purge's `DeleteObjects`
+    // arm for every test in the suite (issue #2346 site 7).
     s3SendMock.mockImplementation(async (cmd) => {
       s3SendCalls.push({ name: cmd._name, input: cmd.input });
+      if (cmd._name === 'ListObjectVersions') {
+        // The delete marker goes under `DeleteMarkers`, which is where S3 puts
+        // it; an earlier revision of this stub listed it under `Versions`,
+        // a response shape S3 never produces. The helper merges the two arrays
+        // so the assertions were unaffected, but "the post-delete shape" has to
+        // actually be the post-delete shape.
+        return {
+          Versions: [{ Key: cmd.input['Prefix'], VersionId: 'v-body', IsLatest: false }],
+          DeleteMarkers: [{ Key: cmd.input['Prefix'], VersionId: 'dm', IsLatest: true }],
+          IsTruncated: false,
+        };
+      }
       return {};
     });
   });
@@ -191,7 +235,15 @@ describe('selectChangeSetTemplateSource', () => {
 
       await source.cleanup();
 
-      expect(s3SendCalls.map((c) => c.name)).toEqual(['PutObject', 'DeleteObject']);
+      // The purge pair is part of `cleanup()`'s contract since issue #2346 site 7:
+      // the state bucket is versioned, so the DeleteObject alone leaves the
+      // uploaded template body readable by VersionId.
+      expect(s3SendCalls.map((c) => c.name)).toEqual([
+        'PutObject',
+        'DeleteObject',
+        'ListObjectVersions',
+        'DeleteObjects',
+      ]);
       const put = s3SendCalls[0]!;
       const del = s3SendCalls[1]!;
       expect(del.input['Bucket']).toBe('state-bucket');
@@ -219,7 +271,15 @@ describe('selectChangeSetTemplateSource', () => {
         await source.cleanup();
       }
 
-      expect(s3SendCalls.map((c) => c.name)).toEqual(['PutObject', 'DeleteObject']);
+      // The purge pair is part of `cleanup()`'s contract since issue #2346 site 7:
+      // the state bucket is versioned, so the DeleteObject alone leaves the
+      // uploaded template body readable by VersionId.
+      expect(s3SendCalls.map((c) => c.name)).toEqual([
+        'PutObject',
+        'DeleteObject',
+        'ListObjectVersions',
+        'DeleteObjects',
+      ]);
       expect(s3DestroyMock).toHaveBeenCalledTimes(1);
     });
   });

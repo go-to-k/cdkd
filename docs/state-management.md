@@ -87,7 +87,9 @@ addressed here — see issue
 sidecar closes the sidecar; treat the state file as still carrying the value.
 
 That purge is conditional on `s3:ListBucketVersions` and
-`s3:DeleteObjectVersion` on the state bucket — see
+`s3:DeleteObjectVersion` on the state bucket — as is every other
+noncurrent-version purge cdkd runs (the rollback journal and the bootstrap
+marker below, and the transient CFn template upload) — see
 [Bucket Policy with Least Privilege](#recommended-bucket-policy-with-least-privilege),
 which did not grant either before #2340. It fails soft by design, because it
 runs on a cleanup path that must never abort the operation it follows: without
@@ -120,6 +122,19 @@ resolved properties, the **same sensitivity class as `state.json`** (no new
 secret-exposure class). Every writer holds the stack lock, so no optimistic
 locking is needed.
 
+**Deleting the journal purges its noncurrent versions too**, on every one of
+those paths (issue
+[#2346](https://github.com/go-to-k/cdkd/issues/2346)). The bucket is
+versioned, so a plain `DeleteObject` would leave each earlier body readable
+through `GetObject` with a `VersionId` — and `failedOperations[]` holds the
+attempted properties of the FAILED write verbatim, which is where a literal
+password lands when the resource that failed had one. Unlike `state.json`,
+whose noncurrent versions ARE the recovery capability versioning exists for
+and are deliberately left alone, the journal is transient by design, so
+nothing weighs against removing them. Like the sidecar purge above it fails
+soft: without the two version grants the deploy / rollback / destroy still
+succeeds and a warning names them.
+
 The `cdkd-bootstrap/{region}.json` marker is written by `cdkd bootstrap`
 (unless `--no-assets`) and records that the region opted into cdkd-owned
 asset storage — its body names the region's asset bucket
@@ -136,7 +151,11 @@ and template references are rewritten to match — see the asset-destinations
 section in [docs/cli-reference.md](cli-reference.md); no state schema
 change, the deployed `properties` simply carry the cdkd names); present but
 bucket/repo deleted → hard error
-(never a silent fallback). The marker deliberately lives OUTSIDE the
+(never a silent fallback). `cdkd bootstrap --destroy` removes the marker and, since issue
+[#2346](https://github.com/go-to-k/cdkd/issues/2346), purges its noncurrent
+versions as well — the marker carries no secret (it names the region's asset
+bucket and container repo), so that is class completeness rather than a
+disclosure fix. The marker deliberately lives OUTSIDE the
 `{STATE_PREFIX}/` prefix so stack listing never mistakes it for a stack, and
 per-region keys mean concurrent bootstraps of two regions cannot race on a
 shared object. `cdkd state info` lists the opted-in regions. Full design in
@@ -1242,9 +1261,23 @@ Two consequences worth knowing:
   takeover at `warn` level naming the previous owner, because on the remaining
   chance that the process IS alive, two writers are now operating on the stack.
 - **The state bucket is versioned**, so each renewal adds one `lock.json`
-  object version. A 30-minute deploy writes about fifteen. They are noncurrent
-  the moment the next renewal lands and are removed with the lock itself, but a
-  bucket without a lifecycle rule on noncurrent versions accumulates them.
+  object version. A 30-minute deploy writes about fifteen. They go noncurrent
+  the moment the next renewal lands, and **releasing the lock does not remove
+  them**: the release is a `DeleteObject`, which on a versioned bucket writes a
+  DELETE MARKER and leaves every earlier version readable through `GetObject`
+  with a `VersionId`. Nothing in cdkd purges them today, so the count grows for
+  the life of the bucket -- 452 versions on a single measured key. Nothing
+  sensitive is in them (`lock.json` carries only `owner`, `timestamp`,
+  `expiresAt` and an optional `operation`), so this is storage cost and listing
+  noise rather than disclosure, and the remedy is a **bucket lifecycle rule on
+  noncurrent versions** rather than a code change: purging on release would put
+  a `ListObjectVersions` + `DeleteObjects` round trip on the hot path of every
+  cdkd command and would make `s3:ListBucketVersions` / `s3:DeleteObjectVersion`
+  required for ordinary use rather than only for the cleanup paths that need
+  them. Tracked as a deliberately-open site of issue
+  [#2346](https://github.com/go-to-k/cdkd/issues/2346), whose other sites --
+  the rollback journal, the bootstrap marker, the transient template upload and
+  the custom-resource response sidecar -- ARE purged.
 
 If the holding process dies without releasing, the lock stops being renewed and
 is reclaimed by the next `cdkd` invocation once `expiresAt` passes -- or
@@ -1693,24 +1726,45 @@ stays readable through `GetObject` with a `VersionId`.
   above it, so the `arn:aws:s3:::cdkd-state-bucket/*` ARN covers it. Lets cdkd
   remove them.
 
-**Without them, nothing fails — and that is the point to understand.** The
-purge runs on a cleanup path and must never abort the operation it follows, so
-it logs a warning and the deploy, destroy or `cdkd gc` run still succeeds. What
-does not happen is the removal: a custom resource's response object holds the
-handler's FULL reply, `Data` included, so if the handler mints a secret (a
-generated password, an issued API key) that value stays retrievable by anyone
-who can read the state bucket with a `VersionId`. The warning counts KEYS and
-names them, and spells the two actions exactly as above:
+**Four kinds of object need these two actions, not one.** The set grew with
+issue [#2346](https://github.com/go-to-k/cdkd/issues/2346), and the ordinary
+commands are now in it:
+
+| object | purged by | what its previous versions hold |
+| --- | --- | --- |
+| `rollback-journal.json` | every successful `cdkd deploy`, every clean `cdkd rollback`, `cdkd destroy` / `cdkd state destroy` | `failedOperations[].attemptedProperties` — the properties of the FAILED write, verbatim. Measured on a repo fixture as four versions each carrying a literal `"MasterUserPassword"` |
+| custom-resource response object | `cdkd deploy` (the provider's own cleanup) and `cdkd gc` | the handler's FULL cfn-response, `Data` included — where a handler-minted password or API key lands |
+| transient CFn template | `cdkd import --migrate-from-cloudformation`, `cdkd export`, and MACRO EXPANSION during `cdkd deploy` / `cdkd diff` (any template over the 51,200-byte inline ceiling) | the template body, which carries a secret only if the template does (an inline `Code.ZipFile`, a hand-written literal) |
+| `cdkd-bootstrap/{region}.json` | `cdkd bootstrap --destroy` | the asset bucket and container-repo names. No secret; listed for completeness |
+
+The journal is the one to note if you are deciding whether this matters to you:
+it is written by an ORDINARY failed or interrupted deploy, not by an opt-in
+feature, and it is swept by an ordinary `cdkd destroy`. `state.json` is
+deliberately NOT in this table — its previous versions are the state-recovery
+capability versioning is enabled for — and neither is `lock.json`, whose
+history is bulk rather than exposure (see the lock section above).
+
+**Without the two grants, nothing fails — and that is the point to
+understand.** The purge runs on a cleanup path and must never abort the
+operation it follows, so it logs a warning and the deploy, diff, rollback,
+destroy, `cdkd import`, `cdkd export` or `cdkd gc` run still succeeds. What does not
+happen is the removal: the value stays retrievable by anyone who can read the
+state bucket with a `VersionId`. The warning counts KEYS, names them, names
+WHICH object it failed on, and spells the two actions exactly as above:
 
 ```
 Could not purge noncurrent versions of 1 key(s) in s3://cdkd-state-bucket. Their
 previous versions survive and remain readable via GetObject with a VersionId
-(for a custom-resource response object that is the handler's full response body,
-including `Data`). Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the
-state bucket, or purge the key(s) by hand. Failures:
-custom-resource-responses/cdkd-1756000000000-a1b2c3.json (AccessDenied:
+(the rollback journal, whose `failedOperations[].attemptedProperties` records the
+properties of the failed write verbatim). Grant s3:ListBucketVersions and
+s3:DeleteObjectVersion on the state bucket, or purge the key(s) by hand.
+Failures: cdkd/MyStack/us-east-1/rollback-journal.json (AccessDenied:
 s3:ListBucketVersions)
 ```
+
+The parenthetical is per-object — a custom-resource response object, the
+transient template and the bootstrap marker each name themselves — so the
+warning always says what to go and look at.
 
 (Line-wrapped here; cdkd emits it as one line. It names up to five keys and
 appends `(and N more)` beyond that, so the tail first appears at six.)

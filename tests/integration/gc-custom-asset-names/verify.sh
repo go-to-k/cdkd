@@ -118,6 +118,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# Shared S3 VERSION helpers (issue #2096); used by the Phase 4b marker-version
+# arm below.
+. ../s3-versions.sh
+
 STACK="CdkdGcCustomAssetNamesExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -663,12 +667,79 @@ echo "==> Phase 4b: cdkd bootstrap --destroy (names read from the marker, no --f
 # reached from here without a second real bootstrap cycle, which is not worth a
 # whole extra bucket + repo + push; it is covered by unit test instead
 # ("destroys the storage a RAW upper-cased marker names, and deletes THAT key").
+# --- PREMISE for the marker-version arm below (issue #2346 site 6) ---------
+# The arm certifies that the marker's history is gone after the teardown. An
+# absence is also what a run that never bootstrapped would show, so establish
+# here -- while the marker is still a live object -- that there IS a body for
+# the purge to remove. The helper's tri-state separates "zero" from "could not
+# list": it returns 1 on a failed LIST.
+if ! MARKER_ROWS_BEFORE="$(s3_count_key_versions "${STATE_BUCKET}" "${MARKER_KEY}" all)"; then
+  echo "FAIL: could not list object versions for s3://${STATE_BUCKET}/${MARKER_KEY}." >&2
+  echo "      The post-teardown version assertion would be unverifiable, so failing here instead." >&2
+  exit 1
+fi
+if [ "${MARKER_ROWS_BEFORE}" -lt 1 ]; then
+  echo "FAIL: the bootstrap marker key holds ${MARKER_ROWS_BEFORE} version row(s) before the teardown," >&2
+  echo "      so the assertion after it would certify a purge that had nothing to purge." >&2
+  exit 1
+fi
+echo "    premise: marker key holds ${MARKER_ROWS_BEFORE} version row(s) before the teardown"
+
 node "${LOCAL_DIST}" bootstrap --destroy --state-bucket "${STATE_BUCKET}" \
   --region "${REGION_UPPER}" --yes
 
 assert_gone "custom asset bucket ${ASSET_BUCKET} still exists after bootstrap --destroy" aws s3api head-bucket --bucket "${ASSET_BUCKET}"
 assert_gone "custom container repo ${CONTAINER_REPO} still exists after bootstrap --destroy" aws ecr describe-repositories --repository-names "${CONTAINER_REPO}" --region "${REGION}"
 assert_gone "bootstrap marker ${MARKER_KEY} still exists after bootstrap --destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${MARKER_KEY}"
+
+# The `assert_gone` above is a `head-object` probe, and on a VERSIONED bucket
+# that answers 404 as soon as a DELETE MARKER exists -- every earlier body of
+# the marker stays readable through `GetObject --version-id`. It therefore
+# passes identically with issue #2346's site-6 purge reverted. This is the arm
+# that does not.
+#
+# `all == 1` rather than "nothing survives", for the same reason as the journal
+# arm in tests/integration/rollback-command/verify.sh: an absence is also what
+# a run that never bootstrapped shows. Exactly one surviving row can only be
+# the CURRENT delete marker cdkd's own delete wrote, since the purge filters on
+# `IsLatest` and can never remove it. Reverted, the marker body written in
+# Phase 1 survives alongside it and both counts rise.
+if ! MARKER_ROWS_AFTER="$(s3_count_key_versions "${STATE_BUCKET}" "${MARKER_KEY}" all)"; then
+  echo "FAIL: could not list object versions for s3://${STATE_BUCKET}/${MARKER_KEY} after the teardown." >&2
+  echo "      An unverified purge is not a verified purge - failing rather than assuming." >&2
+  exit 1
+fi
+if ! MARKER_NONCURRENT_AFTER="$(s3_count_key_versions "${STATE_BUCKET}" "${MARKER_KEY}" noncurrent)"; then
+  echo "FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${MARKER_KEY}." >&2
+  exit 1
+fi
+if [ "${MARKER_ROWS_AFTER}" -ne 1 ] || [ "${MARKER_NONCURRENT_AFTER}" -ne 0 ]; then
+  echo "FAIL: after bootstrap --destroy the marker key holds ${MARKER_ROWS_AFTER} row(s)" >&2
+  echo "      (${MARKER_NONCURRENT_AFTER} noncurrent); expected exactly 1 row, the current delete marker," >&2
+  echo "      and 0 noncurrent. ${MARKER_ROWS_BEFORE} row(s) existed before the teardown, so the marker" >&2
+  echo "      body was really there to be removed. Inspect with:" >&2
+  echo "        aws s3api list-object-versions --bucket ${STATE_BUCKET} --prefix ${MARKER_KEY}" >&2
+  exit 1
+fi
+echo "    OK: marker key down to 1 row (the current delete marker), 0 noncurrent (issue #2346 site 6)"
+
+# NEGATIVE CONTROL: a state-bucket key issue #2346 deliberately does NOT purge
+# must keep its history, or the assertion above is equally satisfied by a
+# purge-everything bug. `lock.json` is site 5, left unfixed on purpose, and by
+# this point the fixture has run several acquire/release cycles against it.
+LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
+if ! LOCK_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${LOCK_KEY}" noncurrent)"; then
+  echo "FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${LOCK_KEY}." >&2
+  echo "      Without this count the marker assertion cannot be told apart from a purge-everything bug." >&2
+  exit 1
+fi
+if [ "${LOCK_NONCURRENT}" -lt 1 ]; then
+  echo "FAIL: lock.json has ${LOCK_NONCURRENT} noncurrent version(s) after this fixture's deploy +" >&2
+  echo "      destroy cycles. Either the purge is running on keys issue #2346 excludes, or the lock is" >&2
+  echo "      no longer written per acquisition - both make the marker assertion meaningless." >&2
+  exit 1
+fi
+echo "    OK: ${LOCK_NONCURRENT} noncurrent lock.json version(s) survive, as site 5 intends"
 echo "    OK: custom bucket gone, custom repo gone, marker gone — zero residue (teardown driven by an UPPER-cased --region, issue #1995)"
 
 echo "[verify] PASS — custom-named asset storage bootstrap, publish-to-custom-bucket, gc dry-run/delete precision (incl. the ECR and S3 case-varied host arms and the bucket-name-exactness control), and marker-driven teardown all verified"

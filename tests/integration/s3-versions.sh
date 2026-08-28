@@ -218,7 +218,7 @@ _s3v_flush_batch() {
 # `printf '%s\n'` and why the `|| [ -n "${key}" ]` guard is here as well.
 #
 # The payload is assembled by hand rather than through `jq`, so that sourcing
-# this file does not add a `jq` dependency to sixteen fixtures. That is safe for
+# this file does not add a `jq` dependency to eighteen fixtures. That is safe for
 # cdkd's key space (stack names, regions, ISO timestamps, hashes) but not for
 # arbitrary text, so a key or version id carrying a quote or a backslash is
 # routed to a single-object `delete-object` instead of being interpolated into
@@ -408,10 +408,14 @@ s3_stack_prefix() {
 # belt-and-braces form is safe to keep.)
 #
 # MOST CALLERS DO NOT NEED THIS, and that is why the rule is stated rather than
-# assumed. Of the sixteen fixtures sourcing this file, fourteen purge `all` on
+# assumed. Of the eighteen fixtures sourcing this file, fifteen purge `all` on
 # the SUCCESS PATH -- after an UNPIPED, `set -e`-guarded destroy that simply
 # cannot be reached if it failed -- and purge only `noncurrent` from `cleanup`.
-# That shape needs no status capture at all. The rule binds for the two whose
+# That shape needs no status capture at all. (Fifteen plus the two below is
+# SEVENTEEN, not eighteen: `gc-custom-asset-names` sources this file only for
+# `s3_count_key_versions` and purges nothing, so the decomposition is over the
+# seventeen that purge `all` somewhere, not over the whole caller population.)
+# The rule binds for the two whose
 # `cleanup` ITSELF chooses between the modes (`local-run-task-from-state` and
 # `rollback-cross-region-secret`), because `cleanup` runs under `set +e` on
 # every exit path and therefore knows nothing unless it asks.

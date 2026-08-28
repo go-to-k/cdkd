@@ -24,6 +24,7 @@ import {
   type BootstrapMarker,
 } from '../../assets/asset-storage.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
+import { CUSTOM_RESOURCE_RESPONSE_OBJECT_DESCRIPTION } from '../../state/s3-noncurrent-version-purge.js';
 import { PARTITION_TABLE } from '../../utils/aws-partition.js';
 import { ecrRegistryHostPattern } from '../../utils/ecr-uri.js';
 import { escapeRegExp } from '../../utils/regexp.js';
@@ -1481,6 +1482,10 @@ export async function gcCommand(options: GcOptions): Promise<void> {
             responseCandidates.map((c) => c.key),
             {
               listPrefix: `${CUSTOM_RESOURCE_RESPONSE_PREFIX}/`,
+              // The SHARED constant the provider's own cleanup uses: the two
+              // paths delete the SAME object, so a reader must not be able to
+              // tell which one warned (#2346). One binding cannot drift.
+              objectDescription: CUSTOM_RESOURCE_RESPONSE_OBJECT_DESCRIPTION,
             }
           )
           // See above: a rejecting `finally` would mask GC_DELETE_FAILED.

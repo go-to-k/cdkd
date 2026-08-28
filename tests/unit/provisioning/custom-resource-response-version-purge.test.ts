@@ -56,6 +56,7 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
+import { CUSTOM_RESOURCE_RESPONSE_OBJECT_DESCRIPTION } from '../../../src/state/s3-noncurrent-version-purge.js';
 
 /** One recorded S3 command: its class name plus the fields under test. */
 interface RecordedS3Command {
@@ -316,5 +317,32 @@ describe('CustomResourceProvider response-object cleanup (issue #2340)', () => {
     expect(message).toContain('noncurrent');
     expect(message).toContain('s3:DeleteObjectVersion');
     expect(message).toContain('AccessDenied: s3:ListBucketVersions');
+  });
+
+  it('names the RESPONSE SIDECAR in that warning, sharing one binding with `cdkd gc` (#2346)', async () => {
+    // The parenthetical is per-caller since issue #2346, because it tells a
+    // reader which object to go and inspect and this module stopped being the
+    // helper's only caller. Asserting the CONTENT, not that a warning exists:
+    // the defect being fixed was one hard-coded sentence for every site.
+    //
+    // Compared against the EXPORTED constant rather than a literal copy. `cdkd
+    // gc` deletes this same object and must produce the identical sentence, and
+    // one binding is what makes that structural instead of a rule someone has
+    // to remember — review probed the two-literal version by editing `gc.ts`
+    // alone and the suite stayed green.
+    stubS3(
+      () => [],
+      () => {
+        throw new Error('AccessDenied: s3:ListBucketVersions');
+      }
+    );
+
+    await invoke(newProvider());
+
+    const message = String(childWarnSpy.mock.calls[0]![0]);
+    expect(message).toContain(`(${CUSTOM_RESOURCE_RESPONSE_OBJECT_DESCRIPTION})`);
+    expect(message).toContain("handler's full cfn-response body");
+    expect(message).not.toContain('rollback journal');
+    expect(message).not.toContain('bootstrap marker');
   });
 });

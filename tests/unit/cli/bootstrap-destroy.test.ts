@@ -34,6 +34,7 @@ const {
       getRawObject: vi.fn(),
       listRawKeys: vi.fn(),
       deleteRawObjects: vi.fn(),
+      purgeNoncurrentVersions: vi.fn(),
     },
     callLog,
     // Hoisted rather than per-`getLogger()` so what the command PRINTS is
@@ -138,6 +139,23 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     deleteRawObjects: async (keys: string[]): Promise<void> => {
       for (const k of keys) deletedKeys.add(k);
       await stateBackendMocks.deleteRawObjects(keys);
+    },
+    // Issue #2346 site 6: recorded in `callLog` as well as on the spy, so the
+    // ORDER against the delete is assertable — the purge's `IsLatest` filter
+    // makes running it first a no-op on the live body.
+    //
+    // FORWARDS `options`, and that is load-bearing rather than tidy. An earlier
+    // revision took only `(keys)`, so the spy never saw the second argument and
+    // the `objectDescription` the command passes was UNOBSERVABLE: review
+    // probed it by replacing the string with `PROBE-XXX` and the whole suite
+    // stayed green. A mock that drops an argument silently deletes it from
+    // every assertion written against that spy.
+    purgeNoncurrentVersions: async (
+      keys: string[],
+      options?: Record<string, unknown>
+    ): Promise<void> => {
+      callLog.push('state:purgeNoncurrentVersions');
+      await stateBackendMocks.purgeNoncurrentVersions(keys, options);
     },
   })),
 }));
@@ -306,6 +324,68 @@ describe('cdkd bootstrap --destroy', () => {
 
     // Create side must NOT have run.
     expect(s3CommandNames()).not.toContain(CreateBucketCommand.name);
+  });
+
+  it('PURGES the marker key noncurrent versions after deleting it (issue #2346 site 6)', async () => {
+    // The state bucket is VERSIONED, so `deleteRawObjects` only writes a
+    // DELETE MARKER and the marker object's prior bodies stay readable via
+    // GetObject with a VersionId. Discriminator: the ARGUMENT of
+    // `purgeNoncurrentVersions`. Without the fix the method is never called at
+    // all, so this reads `[]` instead of `[[MARKER_KEY]]` — asserting merely
+    // "delete happened" would pass on the broken code.
+    await runDestroy(['--yes']);
+
+    expect(stateBackendMocks.purgeNoncurrentVersions.mock.calls).toEqual([
+      [[MARKER_KEY], { objectDescription: expect.stringContaining('bootstrap marker') }],
+    ]);
+  });
+
+  it('names the BOOTSTRAP MARKER in the purge warning, not another site\'s object', async () => {
+    // The warning's parenthetical tells a reader which object to go and
+    // inspect, so it is per-caller (issue #2346). Asserting the CONTENT and
+    // not merely "an options object was passed" is the discriminator: the
+    // defect this replaced was a single hard-coded sentence describing a
+    // custom-resource response body, which is not what this command deletes.
+    await runDestroy(['--yes']);
+
+    const [, options] = stateBackendMocks.purgeNoncurrentVersions.mock.calls[0]!;
+    const description = String((options as { objectDescription?: string }).objectDescription);
+    expect(description).toContain('bootstrap marker');
+    expect(description).toContain('asset bucket');
+    expect(description).not.toContain('cfn-response');
+    expect(description).not.toContain('rollback journal');
+    expect(description).not.toContain('template body');
+  });
+
+  it('purges the marker even when the marker DELETE throws (issue #2346)', async () => {
+    // `deleteRawObjects` throws on ANY per-key failure, so before the
+    // `finally` a partial denial skipped the purge entirely and left the
+    // marker's history behind with no version warning — the same exit-path
+    // class as `cdkd gc`'s partial-delete gap. The `IsLatest` filter makes
+    // running it after a failed delete safe.
+    stateBackendMocks.deleteRawObjects.mockImplementation(async () => {
+      callLog.push('state:deleteRawObjects');
+      throw new Error('AccessDenied on the marker key');
+    });
+
+    await expect(runDestroy(['--yes'])).rejects.toThrow(/AccessDenied on the marker key/);
+
+    expect(stateBackendMocks.purgeNoncurrentVersions.mock.calls).toEqual([
+      [[MARKER_KEY], { objectDescription: expect.stringContaining('bootstrap marker') }],
+    ]);
+  });
+
+  it('purges the marker AFTER the delete, so every body it leaves is noncurrent', async () => {
+    // Order is load-bearing: the purge filters on `IsLatest`, so running it
+    // BEFORE the delete would leave the live body as the current version and
+    // remove only the older ones — the exact body this teardown exists to
+    // remove would survive.
+    await runDestroy(['--yes']);
+
+    const deleteIdx = callLog.indexOf('state:deleteRawObjects');
+    const purgeIdx = callLog.indexOf('state:purgeNoncurrentVersions');
+    expect(deleteIdx).toBeGreaterThanOrEqual(0);
+    expect(purgeIdx).toBeGreaterThan(deleteIdx);
   });
 
   it('passes ExpectedBucketOwner on every asset-bucket S3 call', async () => {
