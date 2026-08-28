@@ -97,6 +97,52 @@ git for-each-ref --sort=-committerdate \
   --format='%(committerdate:iso) %(refname:short)' refs/remotes/origin | head -10
 ```
 
+**Every probe above is scoped to YOUR CLONE, and a peer working the same repo
+from a DIFFERENT clone is invisible to all of them until it pushes.** This is not
+the pre-commit window §3-0 covers; it is a blind spot underneath it, and the
+difference matters because the local probes are the ones §3 and §9 present as
+authoritative. `git worktree list`, `git branch -a` and `git -C <worktree> status
+--porcelain` read the worktree table and refs of the checkout you are standing
+in. Another clone has its own. So the reassuring reading — "no worktree for that
+branch here, so no lane holds it" — is not weak evidence, it is NO evidence, and
+`git worktree add <path> -b <branch>` SUCCEEDING is likewise no evidence: it
+proves only that this clone has no such path or branch.
+
+That leaves exactly one cross-clone signal before a push: **the issue thread**.
+The claim comment (§4) is usually described as the lock; across clones it is also
+the only channel through which the lanes can see each other at all, which is why
+§4's re-read is not a formality and why a claim must be believed on its
+timestamp rather than corroborated against a local probe that cannot see the
+claimant.
+
+Measured here 2026-08-27, and the run that added this paragraph is the one that
+got it wrong. It found 16:29Z and 15:09Z claims on go-to-k/cdkd#2333 /
+go-to-k/cdkd#2339 and go-to-k/cdkd#2340, ran every probe in this section, saw no
+branch, no PR and no worktree, and PUBLICLY re-claimed all three on the stated
+premise that the claiming session had been cleared and its work lost. The lanes
+were live in another clone with uncommitted work; they pushed at 17:21Z and
+18:10Z. Two full duplicate implementations were built — four reviewers, a fix
+round, a live arm — before the peer's stand-down comment surfaced the collision.
+The peer named the probe that would have separated the cases, and it would not
+have: `git -C <worktree> status --porcelain` cannot report a worktree this
+checkout does not have. Nothing local could have. The 16:53Z stand-down request
+sat unread on the issue for two hours because nothing in this flow re-reads a
+claim it has already posted.
+
+Two consequences worth stating as rules rather than as a story:
+
+- **Never write, in a public claim, that another session is gone, cleared, or
+  that its work was lost.** You cannot observe any of those. State what you
+  OBSERVED and where you looked — "no pushed branch, no PR, no worktree in this
+  checkout as of <time>" — and let the timestamp decide ownership. A false
+  assertion about a peer's liveness is the part that cost two hours here,
+  because it reads as settled fact to everyone downstream, and it also went into
+  a correction on go-to-k/cdkd#2346 that then had to be corrected again.
+- **Re-read the claim thread at each checkpoint, not only after posting** — at
+  minimum before the first edit, before the push, and before opening the PR.
+  §4 already says to re-read before pushing; a lane that never reaches a push
+  never reaches that check, which is precisely how this one ran to completion.
+
 **Treat any `origin/*` branch pushed within roughly the last hour as a LIVE lane,
 whatever its PR state**, and read what it owns before picking anything:
 
@@ -125,8 +171,12 @@ git -C .claude/worktrees/<w> show --stat HEAD      # the files that commit touch
 git -C .claude/worktrees/<w> status --porcelain   # what it is editing RIGHT NOW
 ```
 
-**The third probe is the only one that sees a live lane, and it outranks the claim
-comment.** The first two read COMMITTED state, so on a lane that has not committed
+**Among the probes in THIS clone, the third is the only one that sees a live lane,
+and there it outranks the claim comment. Across clones the ranking inverts and the
+claim comment is the only signal at all** -- see the cross-clone paragraph above,
+which is the case this sentence used to be read as covering and does not.
+
+The first two read COMMITTED state, so on a lane that has not committed
 yet they describe whatever its base commit was — somebody else's merged work — while
 saying nothing about the file it is holding. The claim comment does not cover the
 gap either: §4 has it written once, before the first edit, so it names the files the
