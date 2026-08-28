@@ -47,15 +47,23 @@ const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 32,132 B (verify-pr)
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator measured ~6.5 KB at the split
-const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file, 58,698 B (implement.md, incl. ported lessons)
+// Re-measured 2026-08-28 after the rule+citation compression (PR #2377):
+// largest stage file is now implement.md at 44,875 B; the cap keeps the same
+// ~9% headroom ratio the original 64,000 held over 58,698 B, so the retro.md
+// §10-b fold-back loop cannot silently erode the compression's gain.
+const MAX_REFERENCE_FILE_BYTES = 49_000;
 
 // The split skill's stage files must still exist and still carry the moved
-// content. 8 files / ~235 KB at the split; the floor sits far enough below
-// that narrative COMPRESSION stays legal while wholesale deletion fails.
-// Division of labor, measured: deleting ONE mid-sized stage file clears both
-// floors here (7 files / ~180 KB) — the per-file guard for that case is
-// work-issues-skill-refs.test.ts's MIRRORED_DOCS count floor, which pins the
-// exact document count. These floors exist for the WHOLESALE direction only.
+// content. 8 files / ~235 KB at the split, compressed to ~181 KB on
+// 2026-08-28 (rule + citation form, PR #2377); the floor sits far enough
+// below that narrative COMPRESSION stays legal while wholesale deletion
+// fails — at ~181 KB the 100 KB floor is ~55% of the corpus, TIGHTER against
+// content-gutting than the ~43% it was at the split, so it is deliberately
+// kept rather than re-derived at ~50%. Division of labor, measured at the
+// split: deleting ONE mid-sized stage file cleared both floors here — the
+// per-file guard for that case is work-issues-skill-refs.test.ts's
+// MIRRORED_DOCS count floor, which pins the exact document count. These
+// floors exist for the WHOLESALE direction only.
 const SPLIT_SKILLS = ['work-issues'];
 const MIN_REFERENCE_FILES = 6;
 const MIN_REFERENCE_CORPUS_BYTES = 100_000;
