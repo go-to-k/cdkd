@@ -21,13 +21,20 @@ import { describe, expect, it } from 'vite-plus/test';
  * by a `check` include glob. A new checker input therefore fails here the
  * moment it is written, naming the include entry to add.
  *
- * Extraction is deliberately LITERAL-ONLY (join(REPO_ROOT, '...') /
- * join(repoRoot, ...) / join(root, ...) with string-literal segments):
- * dynamic paths cannot be resolved statically and repo-wide scanners
- * (git ls-files walks, the rules-corpus walk) are the documented known
- * limit in .markgate.yml's comment — scoping cannot follow a population
- * that is the whole tree. The parser floor below keeps "extracted nothing"
- * from passing as "everything is covered".
+ * Extraction is deliberately LITERAL-ONLY (join|resolve over a named root
+ * variable with string-literal segments). KNOWN LIMITS, stated because the
+ * parser floor below cannot bound them (it only fences the literal parser
+ * going dead, not idiom coverage): (a) a read whose path arrives through a
+ * VARIABLE or a table — cc-protection-doc-coverage.test.ts reads README.md
+ * that way and this PR's review, not this fence, is what found it; (b) a
+ * root-less relative join (work-issues-skill-refs.test.ts's
+ * join('.claude', 'skills', ...) — resolved against cwd, covered today by
+ * the skills glob); (c) template-literal paths; (d) dynamic paths and
+ * repo-wide scanners (git ls-files walks, the rules-corpus walk), the
+ * documented known limit in .markgate.yml's comment — scoping cannot
+ * follow a population that is the whole tree. When adding a NEW test that
+ * reads a repo file through any of those shapes, add the include entry by
+ * hand; this fence only automates the literal idiom.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,8 +58,8 @@ function testSources(): string[] {
   return out;
 }
 
-/** join(REPO_ROOT|repoRoot|root, 'a', 'b', ...) with literal segments only. */
-const JOIN_RE = /join\(\s*(?:REPO_ROOT|repoRoot|root)\s*((?:,\s*'[^']+')+)\s*\)/g;
+/** join|resolve(REPO_ROOT|repoRoot|root|ROOT, 'a', 'b', ...) — literal segments only. */
+const JOIN_RE = /(?:join|resolve)\(\s*(?:REPO_ROOT|repoRoot|root|ROOT)\s*((?:,\s*'[^']+')+)\s*\)/g;
 
 function extractTargets(): Map<string, string[]> {
   const targets = new Map<string, string[]>();
@@ -75,11 +82,16 @@ function checkIncludeGlobs(): string[] {
   const lines = yml.split('\n');
   const start = lines.findIndex((l) => /^ {2}check:/.test(l));
   expect(start, '.markgate.yml has a `check:` gate').toBeGreaterThanOrEqual(0);
+  // Anchor to the `include:` sub-block, not the whole gate: a future
+  // `exclude:` list parsed as include globs would over-cover and mask a
+  // miss (reviewer nit on this PR).
+  let inInclude = false;
   const globs: string[] = [];
   for (let i = start + 1; i < lines.length; i++) {
     if (/^ {2}\S/.test(lines[i])) break; // next gate
+    if (/^ {4}\S/.test(lines[i])) inInclude = /^ {4}include:/.test(lines[i]);
     const m = lines[i].match(/^ {6}- "([^"]+)"/);
-    if (m) globs.push(m[1]);
+    if (m && inInclude) globs.push(m[1]);
   }
   return globs;
 }
@@ -149,6 +161,24 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
         statSync(abs);
       } catch {
         continue;
+      }
+      // Skip case-folded ALIASES of a real path: on APFS existsSync says
+      // true for `docs/_GENERATED` because the filesystem folds case, but
+      // that literal is gen-handled-property-wiring.test.ts's deliberate
+      // case-folding probe, not a distinct checker input. A path counts
+      // only when every segment matches the on-disk entry byte-for-byte.
+      {
+        const segs = rel.split('/');
+        let dir = REPO_ROOT;
+        let exact = true;
+        for (const seg of segs) {
+          if (!readdirSync(dir).includes(seg)) {
+            exact = false;
+            break;
+          }
+          dir = join(dir, seg);
+        }
+        if (!exact) continue;
       }
       if (!covered(rel)) misses.push(`${rel} (read by ${readers.join(', ')})`);
     }
