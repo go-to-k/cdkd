@@ -77,7 +77,7 @@ diff-intrinsic-target-change	2026-08-10T06:18:10Z	PASS	46	verify.sh	0810 P2 swee
 dlm-lifecycle-policy	2026-07-27T09:43:47Z	PASS	140	verify.sh	1160 removal phase 2b final-tree run, destroy 3/0, 0 orphans
 docdb-neptune	2026-07-27T06:16:35Z	PASS	1560	verify.sh	#1160 neptune+docdb removal steps 3b-3d verified; destroy w/o remove-protection 14/0 errors, 0 orphans
 docker-image-asset	2026-08-14T00:41:19Z	PASS	73	verify.sh	PR 1890 review (image-function readback skip); deploy+ECR push+invoke+destroy 2 del 0 err, 0 orph; live probe: both ZIP-only Lambda getters reject with InvalidParameterValueException on a PackageType=Image function
-drift-revert	2026-08-27T08:20:55Z	PASS	159	verify.sh	issue 2291 lane: broad-set run gating deploy-engine / intrinsic-function-resolver / rollback-executor. Chosen because --revert re-resolves persisted expressions, the path this change alters. 13 deleted / 0 errors / 0 orphans.
+drift-revert	2026-08-28T11:28:36Z	PASS	152	verify.sh	issue 2301 lane. Covers the drift --revert path this PR threads expectedRegion into: proves the SAME-region revert (every ordinary run) is untouched, which is the half the change must not break. 13 deleted, 0 errors, 0 orphans.
 drift-revert-arrays	2026-08-13T08:30:39Z	PASS	230	verify.sh	issue 1783/1784 seams; 19 deleted 0 errors 0 orphans
 drift-revert-vpc	2026-08-26T03:47:55Z	PASS	313	verify.sh	issue #2116 broad arm, second fixture (VPC/ENI/EFS/TG breadth deliberately not narrowed to the cheapest run). 21 deleted / 0 errors / 0 orphans
 dsql	2026-07-30T18:11:24Z	PASS	540	verify.sh	4-phase incl. destroy --remove-protection CC flip (#1312); orph clean
@@ -149,7 +149,7 @@ intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 stale
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-08-28T10:05:51Z	PASS	73	verify.sh	issue 2347 lane, broad-set run for the integ-broad gate (intrinsic-function-resolver.ts is cross-cutting). 9 resources deleted, 0 errors, 0 orphans.
+lambda	2026-08-28T11:28:36Z	PASS	76	verify.sh	issue 2301 lane, broad-set run for the integ-broad gate (deploy-engine.ts and rollback-executor.ts are cross-cutting). 9 deleted, 0 errors, 0 orphans.
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
@@ -230,7 +230,7 @@ recreate-mixed-direction	2026-08-08T16:42:21Z	PASS	92	verify.sh	P1 post-#1360 re
 recreate-via-cc-api	2026-08-01T10:00:06Z	PASS	93	verify.sh	0801 regression sweep; SDK->CC mid-life migration ok, 0 orphans
 recreate-via-sdk-provider	2026-08-08T16:40:35Z	PASS	78	verify.sh	P1 post-#1360 replacement-rules touch; CC->SDK mid-life recreate ok, 2 del/0 err, 0 orphans
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-08-26T18:44:00Z	PASS	1332	verify.sh	issue 2244 lane, 2nd run (delta-review fixes touched both providers + delete-budget, re-staling integ-destroy/integ-broad); destroy 11 deleted/0 errors, state cleared, ASG instance terminated, 0 orphans. REGRESSION NET, not a discriminating arm: the terminal-throw release and the failed-compensation retention are not live-inducible (no fixture reaches a terminal delete failure - issue 2239), so every assertion here predates the change; both fenced by unit tests with mutation probes
+remove-protection	2026-08-28T11:28:36Z	PASS	1489	verify.sh	issue 2301 lane. Chosen because the new unconditional pre-flight guard now sits AHEAD of the --remove-protection flips, so this fixture exercises that ordering against real AWS. The 11-error partial destroy is the fixture's protection arm by design; the final destroy was 11 deleted / 0 errors. 0 orphans.
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacement-rules touch; SNS replacement fanout to 10 dependents, 12 del/0 err, 0 orphans
 replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans

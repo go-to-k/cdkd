@@ -2252,7 +2252,12 @@ async function replaySingle(
             // No `desiredFromAwsReadback` — this bag is `previousState.properties`,
             // a TEMPLATE recorded earlier, and setting that flag here would delete
             // a live configuration on rollback (see `UpdateContext`'s own doc).
-            { maskSecrets: createSecretMasker(secrets) },
+            //
+            // `expectedRegion` (issue #2301 item 1): the same `ctx.region` this
+            // executor already puts on every `DeleteContext` it builds. This arm
+            // is addressed BY `current.physicalId`, read out of the state record
+            // being reverted, so it carries the same wrong-region hazard.
+            { maskSecrets: createSecretMasker(secrets), expectedRegion: ctx.region },
           ],
           op.logicalId,
           logger,
@@ -2611,8 +2616,9 @@ export async function replayFailedOperations(
               op.resourceType,
               desiredProps ?? {},
               attemptedProps ?? {},
-              // Same as the `revert` arm: masker only, no readback flag.
-              { maskSecrets: createSecretMasker(secrets) },
+              // Same as the `revert` arm: masker, no readback flag, and
+              // `ctx.region` as `expectedRegion` (issue #2301 item 1).
+              { maskSecrets: createSecretMasker(secrets), expectedRegion: ctx.region },
             ],
             op.logicalId,
             logger,

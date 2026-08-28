@@ -6509,9 +6509,13 @@ export class S3BucketProvider implements ResourceProvider {
     }
 
     // Confirm the recorded physical id denotes a bucket in THIS region before
-    // writing anything to it (issue #2245). `UpdateContext` carries no region,
-    // so the expectation is the deploy's own region — which is the region the
-    // state record being updated belongs to.
+    // writing anything to it (issue #2245). The expectation is the CLIENT's
+    // region (`getRegion()`), which is NOT the same thing as the region the
+    // state record belongs to — `UpdateContext` grew an `expectedRegion` in
+    // issue #2301 carrying the latter, and `drift --revert` demonstrates the
+    // two coming apart: it pins its clients once and then loops over stacks in
+    // whatever regions state holds. Consuming that field here is the remaining
+    // half of #2245 and deliberately not changed in this PR.
     //
     // Placed BEFORE the try, like the delete-path twin, rather than inside it.
     // The `catch` below re-labels everything it captures as

@@ -2046,6 +2046,14 @@ async function runDriftForStack(
     // problem, filed as issue
     // [#1981](https://github.com/go-to-k/cdkd/issues/1981).
     //
+    // Issue [#2301](https://github.com/go-to-k/cdkd/issues/2301) narrowed that
+    // sentence without closing #1981: this command now threads the state key's
+    // region as `UpdateContext.expectedRegion`, and a CLOUD-CONTROL-routed
+    // resource REFUSES rather than writing through the wrong region's client.
+    // SDK-routed resources still write where the ambient clients point, so a
+    // cross-region `--all --revert` is now MIXED — refusals for the CC half,
+    // the #1981 behaviour for the SDK half.
+    //
     // Issue [#2108](https://github.com/go-to-k/cdkd/issues/2108) is the third
     // scope note, and it is the one that made this a BAG of resolvers rather
     // than a single one. #1957 fixed which region this resolver READS FOR — the
@@ -4125,7 +4133,25 @@ async function runRevert(
                 // resolved into and the retry logger below masks with, so the
                 // masker and that logger can never disagree about what this call
                 // considers secret.
-                { desiredFromAwsReadback: true, maskSecrets: createSecretMasker(secrets) }
+                //
+                // `expectedRegion` (issue #2301 item 1) is `report.region` --
+                // the region segment of the state key this report was built
+                // from, i.e. where the record says its resources live. It is
+                // NOT necessarily where the ambient clients point: this command
+                // installs its clients ONCE (the `setAwsClients` call at the top
+                // of `runDrift`) and then loops over stacks in whatever regions
+                // `listStacks()` returned, so a `--revert` for a stack outside
+                // the ambient region was previously issued against the ambient
+                // one -- a write addressed by a state-recorded physical id, in
+                // the wrong region, which is exactly the hazard the guard
+                // exists for. With this threaded, a Cloud-Control-routed
+                // resource in that position REFUSES instead. Same-region
+                // reverts, which is every ordinary run, are unaffected.
+                {
+                  desiredFromAwsReadback: true,
+                  maskSecrets: createSecretMasker(secrets),
+                  expectedRegion: report.region,
+                }
               ),
             outcome.logicalId,
             // Issue #1914: the retry logger echoes the failing call's AWS error

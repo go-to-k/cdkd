@@ -38,6 +38,8 @@ the AWS client's region against `context.expectedRegion` (via the shared
 before treating a `*NotFound` error as idempotent delete success — see
 "DELETE idempotency" below and [docs/provider-development.md](../../docs/provider-development.md).
 
+**That call is the REACTIVE one, and since issue [#2301](https://github.com/go-to-k/cdkd/issues/2301) it is no longer the only shape.** Two things changed for a provider AUTHOR, neither of which changes the call above: `expectedRegion` is now on `UpdateContext` too (`src/types/resource.ts`), threaded by `deploy-engine.ts` / `rollback-executor.ts` / `drift --revert`; and `assertRegionMatch()` takes an optional trailing `RegionCheckPhase` whose DEFAULT is the `NotFound` wording, so every existing provider call site is unchanged and none needs editing. An SDK provider MAY read `context.expectedRegion` in its own `update()` — `S3BucketProvider` is the only one with an update-side region guard today, and it still compares against the deploy's own region (the remaining half of issue [#2245](https://github.com/go-to-k/cdkd/issues/2245)) — but nothing requires it: absent, the helper is a no-op exactly as on the delete side. The UNCONDITIONAL pre-flight form of the check lives in `CloudControlProvider`, outside this file's `paths:` glob; see [layout-provisioning.md](layout-provisioning.md).
+
 `context.forceDataDelete` (issue #1340) is explicit user consent to destroy
 the DATA a resource still contains — set ONLY by the deploy engine's
 replacement / recreate delete sites when `--force-stateful-recreation` was

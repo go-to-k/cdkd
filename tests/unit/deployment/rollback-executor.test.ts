@@ -69,12 +69,21 @@ const silentLogger = {
   child: () => silentLogger,
 } as unknown as RollbackExecutorContext['logger'];
 
-function makeCtx(provider: {
-  delete?: unknown;
-  update?: unknown;
-  create?: unknown;
-  disableOuterRetry?: boolean;
-}): {
+function makeCtx(
+  provider: {
+    delete?: unknown;
+    update?: unknown;
+    create?: unknown;
+    disableOuterRetry?: boolean;
+  },
+  // Defaulted rather than fixed (issue #2301): every other test in this file
+  // wants the historical `us-east-1`, but a fence for a THREADED region cannot
+  // use it -- `us-east-1` is also this repo's fallback region, so an assertion
+  // against that literal passes just as well when the binding is replaced by
+  // the constant. The two region-threading tests below pass a region no
+  // default can produce.
+  region = 'us-east-1'
+): {
   ctx: RollbackExecutorContext;
   events: Array<{ eventType: string; logicalId?: string; provisionedBy?: 'sdk' | 'cc-api' }>;
 } {
@@ -86,7 +95,7 @@ function makeCtx(provider: {
     provisionedBy?: 'sdk' | 'cc-api';
   }> = [];
   const ctx: RollbackExecutorContext = {
-    region: 'us-east-1',
+    region,
     logger: silentLogger,
     providerRegistry: {
       getProviderFor: () => ({ provider }),
@@ -474,7 +483,9 @@ describe('replayRollback', () => {
       'AWS::S3::Bucket',
       { a: 1 },
       { a: 2 },
-      { maskSecrets: expect.any(Function) }
+      // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
+      // Cloud-Control-routed revert cannot be applied from the wrong region.
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' }
     );
     expect(state.B).toBe(prev);
   });
@@ -786,6 +797,29 @@ describe('replayRollback', () => {
     }
   });
 
+  it("the 'revert' arm threads ctx.region into UpdateContext, not a constant (issue #2301)", async () => {
+    // `ap-northeast-1` is deliberately NOT `us-east-1`: this repo's fallback
+    // region IS `us-east-1`, so a fixture that uses it cannot tell a threaded
+    // `ctx.region` from a hardcoded literal -- the assertion passes either way
+    // and fences nothing. Substituting the literal for the binding at the call
+    // site must turn this test RED.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update }, 'ap-northeast-1');
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-B', properties: { a: 2 } }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    const context = update.mock.calls[0]![5] as { expectedRegion?: string };
+    expect(context.expectedRegion).toBe('ap-northeast-1');
+    expect(context.expectedRegion).not.toBe('us-east-1');
+  });
+
   it("the 'revert' arm wraps provider.update in withRetry (issue #1461)", async () => {
     // Deploy (`deploy-engine.ts`) and `drift --revert` (`drift.ts`) have always
     // wrapped their provider.update() calls; this arm did not. That became a
@@ -807,7 +841,7 @@ describe('replayRollback', () => {
     const result = await replayRollback(ops, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function) });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' });
     // The update went THROUGH withRetry, not around it.
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
@@ -1372,7 +1406,9 @@ describe('replayFailedOperations (#1198)', () => {
       'AWS::S3::Bucket',
       { a: 1 },
       { a: 2 },
-      { maskSecrets: expect.any(Function) }
+      // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
+      // Cloud-Control-routed revert cannot be applied from the wrong region.
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' }
     );
     expect(state.B).toBe(prev);
     expect(result.failures).toBe(0);
@@ -1394,7 +1430,7 @@ describe('replayFailedOperations (#1198)', () => {
     const result = await replayFailedOperations(failedOps, state, 'S', ctx);
 
     expect(result.failures).toBe(0);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function) });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' });
     expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
   });
@@ -1466,6 +1502,25 @@ describe('replayFailedOperations (#1198)', () => {
     expect(opts?.onInterrupted?.()).toBeInstanceOf(Error);
   });
 
+  it("the 'revert-failed' arm threads ctx.region too, on its own call site (issue #2301)", async () => {
+    // The twin of the `revert`-arm fence: this is a SECOND `provider.update`
+    // call site in this file, so one threaded and one not is exactly the shape
+    // that ships half a fix.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
+    const { ctx } = makeCtx({ update }, 'ap-northeast-1');
+    const prev = res({ physicalId: 'phys-B', properties: { a: 1 } });
+    const failedOps: FailedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'T', physicalId: 'phys-B', previousState: prev, attemptedProperties: { a: 2 } },
+    ];
+    const state = { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) };
+
+    await replayFailedOperations(failedOps, state, 'S', ctx);
+
+    const context = update.mock.calls[0]![5] as { expectedRegion?: string };
+    expect(context.expectedRegion).toBe('ap-northeast-1');
+    expect(context.expectedRegion).not.toBe('us-east-1');
+  });
+
   it('falls back to current props as the previous side when attemptedProperties absent', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const { ctx } = makeCtx({ update });
@@ -1475,7 +1530,7 @@ describe('replayFailedOperations (#1198)', () => {
     ];
     const state = { B: res({ physicalId: 'phys-B', properties: { a: 1 } }) };
     await replayFailedOperations(failedOps, state, 'S', ctx);
-    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function) });
+    expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 1 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' });
   });
 
   it('deletes a partially-recorded failed CREATE and drops it from state', async () => {

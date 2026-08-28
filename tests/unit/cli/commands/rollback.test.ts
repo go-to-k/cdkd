@@ -321,7 +321,12 @@ describe('rollbackCommand', () => {
       // those fences exist to catch. This site and the property-driven
       // replacement are the ONLY fences covering the main CREATE path, so the
       // loose form would have removed cover from the most-travelled site.
-      { maskSecrets: expect.any(Function) }
+      //
+      // `expectedRegion` is the rollback context's own region, threaded for
+      // issue #2301 item 1 so a Cloud-Control-routed revert-failed cannot be
+      // applied against a client pointing somewhere else. It stays in the
+      // EXACT object for the same arity-strict reason as the rest.
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' }
     );
     expect(backend.saveState).toHaveBeenCalled();
     expect(backend.popRollbackJournalSegment).toHaveBeenCalled();

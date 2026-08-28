@@ -94,7 +94,11 @@ import {
 } from '../analyzer/implicit-delete-deps.js';
 import { withRetry, type RetryLogger } from './retry.js';
 import { maskingRetryLogger } from './masking-retry-logger.js';
-import { isNameCollisionError, isRecreateRetryableError } from './retryable-errors.js';
+import {
+  isMarkedNonRetryable,
+  isNameCollisionError,
+  isRecreateRetryableError,
+} from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
@@ -4588,7 +4592,21 @@ export class DeployEngine {
                     // item 3): same resolved bag, same exposure, so the contract
                     // is applied on both or it has a hole in the shape of
                     // whichever path a given deploy takes.
-                    { maskSecrets: createSecretMasker(updateSecrets) }
+                    //
+                    // `expectedRegion` (issue #2301 item 1) is the same value
+                    // this file already hands every `DeleteContext` it builds:
+                    // the region this stack's state was read under and is
+                    // written back to. The update is addressed BY
+                    // `currentResource.physicalId`, a state-recorded id, so it
+                    // carries the same wrong-region hazard the delete sites do
+                    // -- misapplied configuration rather than destruction, but
+                    // on a resource cdkd does not manage. Typed `string`, so a
+                    // caller with no region hands over `''`; the guard treats
+                    // that as absent and proceeds.
+                    {
+                      maskSecrets: createSecretMasker(updateSecrets),
+                      expectedRegion: this.stackRegion,
+                    }
                   )
                 ),
               logicalId,
@@ -4900,8 +4918,18 @@ export class DeployEngine {
           // interrupted delete read as "already deleted" and dropped a live
           // resource from state. Typed check first: the substring match cannot
           // be made safe, because any needle can appear in a user-chosen name.
+          //
+          // The same holds for a DELIBERATE cdkd REFUSAL (issue #2301): the
+          // Cloud Control pre-flight region check interpolates the LOGICAL ID
+          // into its message, so a construct id containing `NotFoundException`
+          // would make the refusal read as "already deleted" here and drop a
+          // live foreign-region resource from state on the deploy path's
+          // template-removal delete. Twin of the guard in
+          // `destroy-runner.ts`; see the longer note there for why
+          // `isMarkedNonRetryable` is the predicate.
           if (
             !isInterruptedWaitError(deleteError) &&
+            !isMarkedNonRetryable(deleteError) &&
             (msg.includes('does not exist') ||
               msg.includes('was not found') ||
               msg.includes('not found') ||

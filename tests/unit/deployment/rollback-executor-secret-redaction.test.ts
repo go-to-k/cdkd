@@ -479,7 +479,9 @@ describe('rollback replay - secret re-resolution + state redaction (GHSA #1899)'
       'AWS::S3::Bucket',
       { a: 1 },
       { a: 2 },
-      { maskSecrets: expect.any(Function) }
+      // `expectedRegion` is `ctx.region`, threaded for issue #2301 item 1 so a
+      // Cloud-Control-routed revert cannot be applied from the wrong region.
+      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1' }
     );
     // The empty-bag masker really is an identity, so a provider warn on a
     // no-secret op is byte-identical to before this contract existed.

@@ -626,6 +626,36 @@ describe('cdkd drift --revert refuses a region-ambiguous secret reference (issue
     expect(sent.Environment.Variables['SECRET_PASSWORD']).toBe(TOKYO_PASSWORD);
   });
 
+  it("--revert threads the STATE KEY's region into UpdateContext, not the ambient one (issue #2301)", async () => {
+    // The fence for the drift half of issue #2301's threading, and it lives in
+    // THIS file because the region here is `ap-northeast-1` while the ambient
+    // client region is unset (see the `AWS_REGION` handling in the hooks
+    // above). A fixture whose only region is `us-east-1` cannot fence this at
+    // all: `us-east-1` is this repo's fallback, so replacing `report.region`
+    // with that literal keeps such a test green.
+    //
+    // What the threaded value must be is the region the state KEY named --
+    // `listStacks()` is what produced it -- because that is where the record
+    // says its resources live, and `drift` pins its clients once for a run
+    // that can span several regions.
+    const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(NAME_EXPR) }, [CONSUMER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(TOKYO_PASSWORD, 'tampered'),
+      update,
+    });
+
+    await runDrift(['Consumer', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const context = update.mock.calls[0]![5] as { expectedRegion?: string };
+    expect(context.expectedRegion).toBe(CONSUMER_REGION);
+    expect(context.expectedRegion).not.toBe('us-east-1');
+  });
+
   it('no cross-stack reads on record at all: resolves in the consumer region exactly as before', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
