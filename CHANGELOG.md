@@ -1,3 +1,10 @@
+## [0.284.80](https://github.com/go-to-k/cdkd/compare/v0.284.79...v0.284.80) (2026-08-28)
+
+
+### Bug Fixes
+
+* **custom-resource,gc:** purge noncurrent versions of the response sidecar, on both paths that delete one ([#2351](https://github.com/go-to-k/cdkd/issues/2351)) ([ba23c45](https://github.com/go-to-k/cdkd/commit/ba23c4505ed5001539555716a61a36b896306086))
+
 ## [0.284.79](https://github.com/go-to-k/cdkd/compare/v0.284.78...v0.284.79) (2026-08-27)
 
 
