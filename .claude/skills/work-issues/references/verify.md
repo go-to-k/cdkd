@@ -608,23 +608,27 @@ of through the review. Measured 2026-08-29: two of three lanes in one run
 independent review existed. §5's "a lane stops at merge-ready" was already
 written and did not prevent it, because recording a marker reads as part of
 finishing rather than as merging — so name this marker in the lane's brief.
-The gate is not what breaks: `pr-review-gate.sh` compares the recorded
-`.markgate-pr-review-sha` sentinel against the PR's current HEAD and refuses
-with `bound to <sha> (mismatch)`, so a lane-set marker does not authorize an
-unreviewed merge; what it destroys is the record.
+And nothing mechanical catches it, so do not read the sha binding as a
+backstop. `pr-review-gate.sh` compares the recorded `.markgate-pr-review-sha`
+sentinel against the PR's current HEAD and refuses with
+`bound to <sha> (mismatch)` — which catches a marker a later PUSH left behind,
+not a marker set by the wrong AGENT. It cannot tell who set it; the sentinel is
+per-worktree, and §9 merges from the lane's own worktree, so a lane that sets it
+after its final push produces a matching sha and merges unreviewed. The rule is
+the only thing standing there.
 
 **And your own review round is not optional because the lane already ran one.**
-A lane's reviewers are its children — same brief, same framing — so they clear
-what the lane already believes. Measured 2 for 2 in that run: on
-go-to-k/cdk-real-drift#1838 the lane's own 3-axis round reported clean and the
-orchestrator's independent 3-axis pass found a HIGH blocker (a flow-style
-`exclude:` that a hand-rolled YAML scanner could not see, leaving its "no
-exclude declared" tripwire green while markgate really did subtract); on
-go-to-k/cdkd#2383 the same again one spelling deeper (a merge key
-`<<: *anchor` anchored on a SIBLING gate, invisible to both the parser and a
-tripwire that grepped only the `check` block). Both were reproduced against the
-pinned markgate 0.4.1. Take the tier the heuristic gives for YOUR pass; a
-lane's clean round is not a measurement that lowers it.
+A lane's reviewers are its children — same brief, same framing — so the thing
+they are least able to doubt is the premise the lane handed them. Measured on
+go-to-k/cdkd#2383 (2026-08-29): three rounds of the lane's own reviewers each
+found the next spelling of one defect, and it took an independent
+orchestrator-level round — round 4, A/B-ing the hand-rolled parser against the
+`yaml` library over 15 spellings and then against markgate 0.4.1 itself — to
+find the YAML merge key, **the spelling the lane's raw-text tripwire had been
+added specifically to backstop and did not fire on**. The sibling
+go-to-k/cdk-real-drift#1838 spent its own rounds on the same class. So take the
+tier the heuristic gives for YOUR pass: a lane's clean round is evidence about
+the lane's assumptions, not about the diff.
 
 **A reviewer's scratch COPY of a worktree is not detached from git, so its
 `git add -A` writes to the LIVE tree.** A linked worktree's `.git` is a FILE
@@ -637,10 +641,11 @@ which the lane's next commit would have shipped. Nothing announced it — the
 reviewer believed it was on a copy. So two lines belong in every read-only
 reviewer's brief, on top of §5's peer-probe rules: **run no WRITING git verb**
 (`add` / `commit` / `restore` / `checkout` / `stash` / `clean`) anywhere, copy
-included, severing the pointer with `rm .git` if you must copy at all; and
-**report the TARGET worktree's `git status --porcelain` before AND after the
-round.** The before/after pair is what makes damage attributable rather than a
-mystery a later agent finds: that incident surfaced only because the NEXT
+included — and if you must copy, copy OUTSIDE every repository, since deleting
+the `.git` file does not detach the copy, it only makes discovery walk UPWARD
+into whatever encloses it; and **report the TARGET worktree's
+`git status --porcelain` before AND after the round.** The before/after pair is
+what makes damage attributable rather than a mystery a later agent finds: that incident surfaced only because the NEXT
 reviewer volunteered "the tree went dirty mid-review, not mine", after which
 the responsible one self-reported and repaired the index with `git restore
 --staged` (index only, never the working tree). Every reviewer given these two
