@@ -752,9 +752,18 @@ there anyway. Per lane:
 ```bash
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
+mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
 pnpm install                 # worktrees have no node_modules
 vp run build                 # ...and no dist/ — see below
 ```
+
+**`mise trust` is not optional here, and skipping it fails in the direction that
+costs most.** A fresh worktree's `.mise.toml` is untrusted, so `mise exec --
+markgate set` errors instead of writing — and if you read the rc of a pipeline
+rather than of `markgate` itself, it looks like it worked. Measured 2026-08-28:
+`markgate set check` printed `mise ERROR` twice and `markgate status` still said
+`no marker` for every gate. Verify with `markgate status` rather than an exit
+code, which this file already tells you to do for a different reason.
 
 **Build BEFORE the first test run, and read a fresh worktree's failures with that
 in mind.** A worktree starts with no `dist/`, and any test that spawns the built
@@ -1675,6 +1684,19 @@ ran the CI command directly. The temptation is real and comes from this very
 section — the cwd rule below makes invoking a skill feel less controllable than
 typing the commands — so the resolution is to invoke the skill AND control the cwd,
 never to substitute one for the other.
+
+**`vp check --fix` WRITES, so `git commit` after it can commit a tree you did not
+test.** `--fix` reformats the WORKING TREE; `git commit` (without `-a`) commits the
+INDEX. Anything an agent staged before the fix ran is committed in its pre-format
+shape while the reformatted bytes sit unstaged, so the suite you just ran and the
+commit you just made are different trees — and the difference surfaces only as CI's
+`format:check`, minutes later, on a diff that looks untouched. Run `git add -u` (or
+re-stage the named files) after `--fix` and before the commit, and confirm with
+`git status --porcelain` — **matching on `^ M` is not enough**: a file that is both
+staged and reformatted shows as `MM`, which that pattern misses. Test for a
+non-empty second column instead. Measured 2026-08-28: hit twice in one lane, and
+the marker was innocent both times — it digests the working tree, so it matched
+what was tested and not what was committed.
 
 **Start every marker and gate command with an explicit `cd <worktree> &&`.** Both
 skills say to run from "the repo root", which in this mandated worktree flow means
@@ -2720,9 +2742,14 @@ only then do other work while CI runs.
 Two traps in the polling itself, both hit on that run. **"No pending checks" is
 not "checks passed"** — a PR with ZERO checks satisfies it, which is exactly the
 CONFLICTING state above, so an exit condition must require that checks EXIST and
-that none is pending. And `mergeable` is computed lazily: a `gh pr view` seconds
-after a push returns `UNKNOWN UNKNOWN`, which is neither a pass nor a conflict.
-Re-query rather than reading it as either. The `ci-green-gate` hook refuses a
+that none is pending — and that it tests for the states `gh` actually emits.
+`gh pr checks --json state` answers `IN_PROGRESS` / `QUEUED` / `PENDING` /
+`SUCCESS` / `FAILURE` / `SKIPPED`, so a loop whose "still running" test greps
+only `PENDING` exits on the FIRST poll with every check still in flight, and
+reports settled. Measured 2026-08-28 on two PRs, both mid-run. Enumerate the
+non-terminal states, not the one you remember. And `mergeable` is computed
+lazily: a `gh pr view` seconds after a push returns `UNKNOWN UNKNOWN`, which is
+neither a pass nor a conflict. Re-query rather than reading it as either. The `ci-green-gate` hook refuses a
 merge on "no checks reported" for the same reason, so a wrong poll costs a
 retry, not a bad merge.
 
@@ -3274,7 +3301,7 @@ worktree:
 B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
 git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
-mise trust && mise install    # untrusted .mise.toml: vp / markgate will not resolve
+mise trust && mise install    # see section 5 -- same trap, same one-line fix
 pnpm install                  # worktrees have no node_modules
 ```
 
@@ -3502,6 +3529,17 @@ the run evidence behind it — or "no skill change" plus what held.
   Report **STOPPED** only when every lane is merged, every worktree removed and
   nothing is pending; a run that ends STOPPED with an open PR is the failure the
   "Drive each lane to MERGED" rule above exists to prevent.
+
+  **ARM the signal BEFORE you write the line, not after — a named signal is not
+  an armed one.** The rule above says to name what will re-invoke you, and naming
+  it is the part that feels like compliance; the poll, the `Monitor` or the
+  backgrounded `until` loop is the part that actually resumes the run. Write the
+  report only once the thing that will wake you is RUNNING, so the line describes
+  a mechanism rather than an intention. Measured 2026-08-28: a run with two PRs
+  in CI wrote `WAITING — waiting on: CI on both PRs / Signal: gh pr checks` and
+  armed nothing, so it simply ended; the maintainer had to ask why it had
+  stopped. Every other field of that report was accurate, which is what makes the
+  failure invisible from inside — the only thing missing was a running process.
 - **A lane needing a user decision goes through `AskUserQuestion`, never prose.**
   Scope calls this skill legitimately escalates (an issue whose fix direction
   only the maintainer can pick; whether to engage an untrusted comment per §0)
