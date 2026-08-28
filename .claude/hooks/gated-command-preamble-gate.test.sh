@@ -282,6 +282,26 @@ run_case "interpreter AFTER the gated command passes" 0 \
 run_case "interpreter alone (no gated verb) passes" 0 \
   "python3 -c 'print(1)'"
 
+# The char-class subtlety is the whole read/eval distinction: a long option's
+# SECOND dash must be rejected, or `node --version` / `node --check` (which
+# contain c/e after `--`) start refusing. These pass cases fence a future
+# "simplification" of the cluster class.
+run_case "node --version preamble passes (long option, not eval)" 0 \
+  'node --version && git commit -m x'
+run_case "node --check preamble passes (long option, not eval)" 0 \
+  'node --check f.js && git commit -m x'
+run_case "python3 -m module preamble passes (not eval)" 0 \
+  'python3 -m pytest tests/ && git commit -m x'
+# Node accepts =-joined long options; without `=` in the terminator this
+# spelling slipped BOTH arms (review probe).
+run_case "node --eval='code' preamble blocks" 2 \
+  "node --eval='x' && git commit -F /tmp/m.txt"
+# Documented false positive, FENCED so the over-match trade is explicit
+# rather than implied: `perl -c` is a syntax CHECK (a read), and it is
+# refused anyway -- loud, and fixed by splitting the calls.
+run_case "perl -c script.pl is refused (documented over-match)" 2 \
+  'perl -c script.pl && git commit -F /tmp/m.txt'
+
 printf '\nPass: %d  Fail: %d\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then printf '%b' "$fail_log" >&2; exit 1; fi
 exit 0

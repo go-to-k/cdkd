@@ -48,10 +48,18 @@
 #            combine an interpreter one-liner with a gated verb in one call,
 #            so the false-refusal surface is ad-hoc behavior only, and the
 #            remediation (split the calls) is the flow's own standing rule.
-#            KNOWN LIMIT: `python3 script.py` (a script FILE that writes) is
-#            not matched -- a filename is indistinguishable from any other
-#            argument; the eval-flag and stdin forms are the incident
-#            spellings and the ones agents actually write.
+#            KNOWN LIMITS: `python3 script.py` (a script FILE that writes)
+#            is not matched -- a filename is indistinguishable from any
+#            other argument -- and neither are two stdin evasions the
+#            review probed: `echo 'code' | python3` (the segmenter splits
+#            on `|`, leaving a bare interpreter the stdin arm's required
+#            `-` token never matches) and `python3 <script.py`. Matching a
+#            BARE interpreter segment would refuse ordinary invocations,
+#            so these are recorded rather than chased; the eval-flag and
+#            stdin-`-` forms are the incident spellings. Over-match trade,
+#            fenced by a case: `perl -c script.pl` (a syntax CHECK, a
+#            read) is refused -- loud and split-the-calls-fixable, per
+#            this family's stated direction.
 #
 #   ALLOWED  `git add`           - loss is LOUD: the commit fails with
 #                                  "nothing to commit", so nothing is believed.
@@ -185,7 +193,9 @@ COPY_RE='^(cp|mv|tee|touch)([[:space:]]|$)|(^|[[:space:]])sed[[:space:]]+([^[:sp
 # segment-START only -- a lone `-` after a word is common as an ordinary
 # argument (`grep python3 - <file>` reads stdin), so the loose anchor would
 # read an interpreter NAME appearing as an argument as an invocation.
-INTERPRETER_EVAL_RE='(^|[[:space:]])(python3?|node|perl|ruby)([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[a-zA-Z0-9]*[ceE][a-zA-Z0-9]*|--eval)([[:space:]]|$|<)'
+# `=` in the terminator covers `node --eval='code'` (Node accepts =-joined
+# long options; without it the spelling slipped both arms — review probe).
+INTERPRETER_EVAL_RE='(^|[[:space:]])(python3?|node|perl|ruby)([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[a-zA-Z0-9]*[ceE][a-zA-Z0-9]*|--eval)([[:space:]]|$|<|=)'
 INTERPRETER_STDIN_RE='^(python3?|node|perl|ruby)([[:space:]]+-[^[:space:]]+)*[[:space:]]+-([[:space:]]|$|<)'
 
 # Newline-delimited rather than an array: this must run under macOS bash 3.2.
