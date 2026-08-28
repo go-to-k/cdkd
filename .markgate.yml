@@ -96,28 +96,20 @@ gates:
       # a change that narrows what a critic rejects could be committed
       # against a fresh-looking marker.
       - "scripts/**"
-      # The four verification-depth skills are enforcement logic too, for the
-      # same reason as scripts/**: the checker's whole subject is what those
-      # SKILL.md files say, so reintroducing banned wording used to leave the
-      # `check` marker fresh and only CI caught it — the exact gap #1592 closed
-      # for scripts/**. Scoped to the FOUR rather than `.claude/skills/**`:
-      # editing an ungoverned skill (/cleanup, /hunt-bugs, ...) has nothing to
-      # do with this checker and should not force a full typecheck+build+test.
-      - ".claude/skills/review-pr/**"
-      - ".claude/skills/pick-integ/**"
-      - ".claude/skills/run-integ/**"
-      - ".claude/skills/verify-pr/**"
-      # work-issues joins them for the same reason, from the other direction:
-      # it is not a checker, it is a checker's INPUT. tests/unit/scripts/
-      # work-issues-skill-refs.test.ts reads its SKILL.md and fails on any
-      # issue reference in plain prose that is not go-to-k/<repo>#N. Without
-      # this entry a lane could introduce a bare reference there and commit
-      # against a marker that still verifies fresh, because nothing in the
-      # digest changed -- #1592's shape again, with the enforcement input
-      # rather than the enforcement logic sitting outside the gate. CI still
-      # catches it; what this restores is the LOCAL signal, before the commit
-      # rather than minutes later (issue #2041).
-      - ".claude/skills/work-issues/**"
+      # ALL skills, not just the four verification-depth ones plus
+      # work-issues that used to be enumerated here (issue #2364). The old
+      # narrowing argued that "editing an ungoverned skill (/cleanup,
+      # /hunt-bugs, ...) has nothing to do with this checker"; that premise
+      # died when the #2362 split added
+      # tests/unit/scripts/skill-file-payload.test.ts, which readdirSync's
+      # EVERY skill directory and enforces byte caps + reference-corpus
+      # floors — so growing any SKILL.md past its cap reds the suite while a
+      # marker scoped to five skills stayed fresh. The four
+      # verification-depth skills remain in scope for their original reason
+      # too (the checker's SUBJECT is what they say — #1592's shape), and
+      # work-issues for #2041's (work-issues-skill-refs.test.ts reads its
+      # SKILL.md + references/*.md as INPUT).
+      - ".claude/skills/**"
       # `.claude/rules/**` is the #1592 pattern a third time: a checker's INPUT
       # sitting outside the gate that guards it. TEN tests under
       # tests/unit/scripts/ read that directory, and
@@ -143,6 +135,49 @@ gates:
       # CLAUDE.md is a pattern-scanned target of the same checker, so
       # reintroducing banned wording there must stale `check` as well.
       - "CLAUDE.md"
+      # Remaining checker-INPUT files the unit suite reads (issue #2364, the
+      # #1592/#2041 pattern again — each entry maps to the test that reads it;
+      # eligibility-minus-remedy sweep over tests/unit's repo-root reads):
+      #   - .claude/settings.json — settings-bash-matcher-coverage.test.ts
+      #     (the inert-`if:` class)
+      #   - .claude/agents/** — security-surface-list-sync.test.ts reads
+      #     pr-security-reviewer.md
+      #   - the three gate hooks below — cross-cutting-list-sync.test.ts
+      #     (integ-broad / integ-destroy) and security-surface-list-sync
+      #     (pr-review-gate). Precise files rather than `.claude/hooks/**`:
+      #     the policy that a hooks-only diff needs no /check stays true for
+      #     every hook NO test reads, and hook logic already has its own
+      #     harness (test.sh suites + hooks.yml CI).
+      #   - the two workflow YAMLs — provider-error-cause / provider-secret-
+      #     mask / local-reachability read ci.yml; pr-inherit-issue-labels
+      #     .test.ts reads its workflow
+      #   - docs/cli-reference.md — {full,no}-wait-doc-coverage.test.ts read
+      #     the wait-semantics table
+      #   - docs/changelog-cdkd.md + docs/_generated/** —
+      #     changelog-ledger-citation.test.ts (ledger citations) and
+      #     build-integ-coverage-matrix.test.ts (matrix snapshots)
+      # Known limit, deliberate (mirrors go-to-k/cdk-local#620's call):
+      # repo-wide scanners (e.g. rule-file-payload.test.ts's corpus walk,
+      # no-control-bytes-style `git ls-files` scans) read populations scoping
+      # cannot follow without staling the marker on every edit anywhere; the
+      # `.claude/rules/**` entry above covers the rules corpus, and CI is the
+      # backstop for the rest.
+      - ".claude/settings.json"
+      - ".claude/agents/**"
+      - ".claude/hooks/integ-broad-gate.sh"
+      - ".claude/hooks/integ-destroy-gate.sh"
+      - ".claude/hooks/pr-review-gate.sh"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/pr-inherit-issue-labels.yml"
+      - "docs/cli-reference.md"
+      - "docs/changelog-cdkd.md"
+      - "docs/_generated/**"
+      # This file itself (the go-to-k/cdk-local#623 sibling, handled in the
+      # same session): the gate's own definition decides what the marker
+      # MEANS, so editing it — this include list included — must stale a
+      # marker recorded under the old definition. Same argument as
+      # `.mise.toml` below (the pin decides what green means).
+      - ".markgate.yml"
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"
