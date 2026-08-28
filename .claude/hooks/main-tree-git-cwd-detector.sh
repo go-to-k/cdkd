@@ -265,7 +265,7 @@ GIT_VERB='git([[:space:]]+-[^[:space:]]+)*[[:space:]]+(commit|add|push)([[:space
 #
 # The optional `mise exec [args] -- ` prefix is not an optional nicety:
 # this repo pins BOTH `vp` and `markgate` through mise, and
-# `work-issues/SKILL.md` instructs agents to invoke them that way, so a
+# `work-issues/references/gates-and-pr.md` instructs agents to invoke them that way, so a
 # matcher seeing only the bare binaries would miss the real-world shape
 # entirely. It applies to BOTH binaries — an earlier revision honoured
 # it for `markgate` only, and that asymmetry would have gone quiet on

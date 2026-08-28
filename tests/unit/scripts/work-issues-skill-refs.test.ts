@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 /**
- * `.claude/skills/work-issues/SKILL.md` is MIRRORED into the sibling repos
- * (`../cdk-local`, `../cdk-real-drift`) by its own section 10-c, so a bare `#N`
+ * The `.claude/skills/work-issues/` docs (SKILL.md + references/*.md) are
+ * MIRRORED into the sibling repos
+ * (`../cdk-local`, `../cdk-real-drift`) by their own section 10-c, so a bare `#N`
  * issue reference in it is a citation that breaks the moment the section
  * travels: GitHub renders `#N` against whichever repo is READING it, and that
  * number almost always exists there and is unrelated. Section 10-c states the
@@ -34,7 +35,20 @@ import { dirname, join } from 'node:path';
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-const MIRRORED_DOC = join('.claude', 'skills', 'work-issues', 'SKILL.md');
+/**
+ * The mirrored doc is now a DIRECTORY: a thin SKILL.md orchestrator plus the
+ * per-stage files under references/. Every .md in it travels to the siblings,
+ * so every one of them is scanned. The list is derived from the directory
+ * rather than hand-enumerated, so a new stage file joins the scan on creation.
+ */
+const SKILL_DIR = join('.claude', 'skills', 'work-issues');
+const MIRRORED_DOCS = [
+  join(SKILL_DIR, 'SKILL.md'),
+  ...readdirSync(join(repoRoot, SKILL_DIR, 'references'))
+    .filter((f) => f.endsWith('.md'))
+    .sort()
+    .map((f) => join(SKILL_DIR, 'references', f)),
+];
 
 /**
  * Every `#N`, together with the `owner/repo`-ish run of characters glued to its
@@ -130,54 +144,74 @@ function qualifiedRefs(text: string): string[] {
   return [...text.matchAll(ANY_REF)].filter((m) => QUALIFIER.test(m[1]!)).map((m) => m[0]);
 }
 
-describe('work-issues SKILL.md qualifies every issue reference (go-to-k/cdkd#1990)', () => {
-  const markdown = readFileSync(join(repoRoot, MIRRORED_DOC), 'utf8');
+describe('work-issues skill docs qualify every issue reference (go-to-k/cdkd#1990)', () => {
+  for (const doc of MIRRORED_DOCS) {
+    describe(doc, () => {
+      const markdown = readFileSync(join(repoRoot, doc), 'utf8');
 
-  it('has no bare or wrongly-qualified #N reference in plain prose', () => {
-    const violations = findBareIssueRefs(markdown);
-    const detail = violations.map((v) => `  L${v.line}: ${v.ref} (${v.reason}) -- ${v.text}`).join('\n');
-    expect(
-      violations,
-      `Unqualified issue reference(s) in ${MIRRORED_DOC}. This file is mirrored ` +
-        `into ../cdk-local and ../cdk-real-drift (section 10-c), where a bare #N ` +
-        `resolves against the READING repo and a half-qualified cdk-local#N does ` +
-        `not autolink anywhere -- write go-to-k/<repo>#N, or wrap a deliberate ` +
-        `counter-example in a backtick span:\n${detail}`
-    ).toEqual([]);
+      it('has no bare or wrongly-qualified #N reference in plain prose', () => {
+        const violations = findBareIssueRefs(markdown);
+        const detail = violations
+          .map((v) => `  L${v.line}: ${v.ref} (${v.reason}) -- ${v.text}`)
+          .join('\n');
+        expect(
+          violations,
+          `Unqualified issue reference(s) in ${doc}. This directory is mirrored ` +
+            `into ../cdk-local and ../cdk-real-drift (references/retro.md section 10-c), ` +
+            `where a bare #N resolves against the READING repo and a half-qualified ` +
+            `cdk-local#N does not autolink anywhere -- write go-to-k/<repo>#N, or wrap ` +
+            `a deliberate counter-example in a backtick span:\n${detail}`
+        ).toEqual([]);
+      });
+
+      it('every inline code span is closed, so the stripper cannot blank live prose', () => {
+        // Load-bearing, not hygiene: one unbalanced backtick flips inline-span
+        // parity for the whole REST of the file, and every bare ref after it then
+        // sits inside what the stripper thinks is a code span. The assertion above
+        // would go green while missing exactly what it exists to catch, so this is
+        // the guard on the guard. Counted after fences are blanked, since a fence
+        // body legitimately holds odd backticks.
+        const ticksOutsideFences = countTicksOutsideFences(markdown);
+        expect(
+          ticksOutsideFences % 2,
+          `${doc} has an odd number (${ticksOutsideFences}) of backticks ` +
+            `outside fenced blocks -- an unclosed inline span silently exempts every ` +
+            `issue reference after it`
+        ).toBe(0);
+      });
+
+      it('the stripper keeps essentially all of the prose refs (it is not blanking the file)', () => {
+        const inProse = qualifiedRefs(proseOnly(markdown)).length;
+        const inRaw = qualifiedRefs(markdown).length;
+        // Proportional rather than a fixed slack: qualified refs legitimately appear
+        // inside code spans and fences, and every one added there widens the gap.
+        // What this must catch is WHOLESALE blanking, which drives the ratio to
+        // about zero. Per-file counts vary (claim.md is short), so the absolute
+        // floor lives in the corpus-level test below, not here.
+        expect(
+          inProse,
+          `stripper kept only ${inProse} of ${inRaw} qualified refs in ${doc} -- it is ` +
+            `blanking live prose, which would also hide violations`
+        ).toBeGreaterThanOrEqual(Math.floor(inRaw * 0.8));
+      });
+    });
+  }
+
+  it('the corpus still carries a meaningful number of qualified refs at all', () => {
+    // The proportional per-file check above is vacuous on an empty file, so the
+    // absolute floor is corpus-wide: the split must not have silently dropped
+    // the incident citations the per-stage files carry.
+    const total = MIRRORED_DOCS.reduce(
+      (n, doc) => n + qualifiedRefs(readFileSync(join(repoRoot, doc), 'utf8')).length,
+      0
+    );
+    expect(total, 'the work-issues skill corpus has almost no qualified refs at all').toBeGreaterThanOrEqual(40);
   });
 
-  it('every inline code span is closed, so the stripper cannot blank live prose', () => {
-    // Load-bearing, not hygiene: one unbalanced backtick flips inline-span
-    // parity for the whole REST of the file, and every bare ref after it then
-    // sits inside what the stripper thinks is a code span. The assertion above
-    // would go green while missing exactly what it exists to catch, so this is
-    // the guard on the guard. Counted after fences are blanked, since a fence
-    // body legitimately holds odd backticks.
-    const ticksOutsideFences = countTicksOutsideFences(markdown);
-    expect(
-      ticksOutsideFences % 2,
-      `${MIRRORED_DOC} has an odd number (${ticksOutsideFences}) of backticks ` +
-        `outside fenced blocks -- an unclosed inline span silently exempts every ` +
-        `issue reference after it`
-    ).toBe(0);
-  });
-
-  it('the stripper keeps essentially all of the prose refs (it is not blanking the file)', () => {
-    const inProse = qualifiedRefs(proseOnly(markdown)).length;
-    const inRaw = qualifiedRefs(markdown).length;
-    // Self-calibrating rather than a magic constant: the only qualified refs
-    // the stripper legitimately removes are the handful sitting inside code
-    // spans / fences. A stripper that blanks a whole region loses far more.
-    expect(inRaw, `${MIRRORED_DOC} has almost no qualified refs at all`).toBeGreaterThanOrEqual(40);
-    // Proportional rather than a fixed slack: qualified refs legitimately appear
-    // inside code spans and fences, and every one added there widens the gap. A
-    // fixed tolerance of 3 was already within 1 of failing. What this must catch
-    // is WHOLESALE blanking, which drives the ratio to about zero.
-    expect(
-      inProse,
-      `stripper kept only ${inProse} of ${inRaw} qualified refs -- it is blanking ` +
-        `live prose, which would also hide violations`
-    ).toBeGreaterThanOrEqual(Math.floor(inRaw * 0.8));
+  it('the references directory actually holds the stage files (the scan is not vacuous)', () => {
+    // readdirSync-derived lists inherit the "0 files scanned == green" failure
+    // shape, so pin a floor: the split produced 8 stage files.
+    expect(MIRRORED_DOCS.length).toBeGreaterThanOrEqual(9);
   });
 
   it('flags prose but not frontmatter / fences / code spans (self-test)', () => {

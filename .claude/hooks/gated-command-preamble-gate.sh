@@ -7,7 +7,7 @@
 #
 # Why this is a hook rather than a sentence. A PreToolUse denial aborts the
 # WHOLE call before any of it runs, so when the gate refuses, the preamble is
-# silently discarded too. `.claude/skills/work-issues/SKILL.md` section 6 has
+# silently discarded too. `.claude/skills/work-issues/references/gates-and-pr.md` section 6 has
 # said so in prose for months, with three worked examples. It was violated
 # twice in one run on 2026-08-25 by an agent that had read it:
 #
@@ -18,7 +18,7 @@
 #     -> refused; the file was never written, and the retry then failed with
 #        `could not read log file ... No such file or directory`.
 #
-# The repo's own rule for this shape is `.claude/skills/work-issues/SKILL.md`
+# The repo's own rule for this shape is `.claude/skills/work-issues/references/retro.md`
 # section 10-b: when a rule is ALREADY in the text and gets violated anyway,
 # that proves the sentence is not load-bearing, so escalate rather than restate.
 #
@@ -198,7 +198,7 @@ Reads (\`git status\`, \`grep\`, \`gh pr view\`) and \`cd <dir> &&\` are fine in
 same call -- there is nothing to lose. \`git add\` is fine too: losing it fails
 the commit loudly rather than silently.
 
-See .claude/skills/work-issues/SKILL.md section 6.
+See .claude/skills/work-issues/references/gates-and-pr.md section 6.
 EOF
     exit 2
   fi

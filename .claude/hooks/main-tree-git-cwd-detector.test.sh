@@ -171,7 +171,7 @@ run_case quiet "echo containing '; mise exec -- markgate set' string" \
   "$MAIN" 'echo "next; mise exec -- markgate set check"'
 
 # 19b. The `mise exec -- ` prefix must be honoured for `vp` too, not
-#      only `markgate` — work-issues/SKILL.md tells agents to invoke vp
+#      only `markgate` — work-issues/references/gates-and-pr.md tells agents to invoke vp
 #      that way -> WARN.
 run_case warn  "mise exec -- vp run test in main tree" \
   "$MAIN" 'mise exec -- vp run test'
