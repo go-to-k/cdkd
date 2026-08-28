@@ -555,6 +555,31 @@ harnesses in go-to-k/cdk-real-drift were shell, so neither the vitest task nor
 any CI step invoked them — exercised only by hand since the day each was
 written.
 
+**When a fence RE-IMPLEMENTS another tool's resolution, enumerate the TOOL's
+config keys — not the keys this repo happens to use today — and never let the
+tripwire read the parser it protects.** Both halves measured on
+go-to-k/cdkd#2381 (2026-08-29), one from a sibling lane
+(go-to-k/cdk-real-drift#1838) and one from the fix round that answered it:
+
+- **The unused key.** markgate resolves a `hash: files` gate as `include` MINUS
+  `exclude`. No repo in the family has ever written an `exclude`, so the fence
+  modelled `include` alone and reported full coverage over a scope the tool
+  would already have subtracted from. Read the tool's own schema
+  (`markgate init`'s starter config listed `hash` / `include` / `exclude` /
+  `base` / `ttl` / `state_dir` / `requires`) and model or explicitly refuse
+  each key. Probe by changing ONE variable: adding `exclude` while holding
+  `include` constant took `verify` from rc=1 to rc=0, and `set` still exited 0.
+- **The tripwire that inherits the blind spot.** The first fix parsed only
+  `^ {6}- "x"` items and asserted "there is no exclude" through that same
+  parser — so a flow-style `exclude: ["docs/**"]`, the spelling the code's own
+  comment used, left every case GREEN. Six of eight probed YAML spellings
+  parsed as empty. A check on the RAW text, deliberately not routed through the
+  parser, is what can see a parser's own blindness; make the parsed value agree
+  with it so the two cannot drift.
+
+The generalisation: a guard whose *evidence* comes from the thing it guards
+cannot fail in the one direction you built it for.
+
 The general shape: **a fence is not evidence until you have watched it go red
 on something you had not already counted.** Calibration tells you it is not
 noisy; only the spelling and deletion probes tell you it is load-bearing.
