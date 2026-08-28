@@ -2001,6 +2001,51 @@ Two things follow, and the second is the one that is easy to get backwards:
   three rounds plus a live arm that was written, passed, mutation-probed and then
   reverted, so none of it is rebuilt.
 
+**When the fix WIDENS what a guard catches, the thing you removed may have been
+load-bearing — and the instrument you own for measuring that can be structurally
+blind to it.** A bypass fix reads as pure gain: the guard catches more, and
+over-catching is the loud direction this repo already accepts. What that framing
+misses is that the guard sat in an equilibrium, and the property being removed
+may have been the only thing holding back an unrelated over-approximation
+somewhere else. Ask, before believing a widening safe: *what was the thing I am
+deleting actually doing?*
+
+Measured 2026-08-27 on go-to-k/cdkd#2333, which was implemented, reviewed in
+four rounds and WITHDRAWN. The trigger matched a verb as literal text, so
+`git "commit"` evaded every gate; dequoting structural tokens closes that. But
+go-to-k/cdkd#2156 had already widened `GATE_FLAGS` to "one flag token, then ANY
+tokens", so after a `-C` any later token can occupy the verb slot — and the only
+thing keeping ordinary commands out of the gates was that a QUOTED later token
+happened not to match. Dequoting removed that brake, and `git -C <dir> log
+--grep "commit"`, `git show "commit"`, `git grep -n "commit" -- src` and 13 more
+began to BLOCK, `check-gate` on a feature worktree included, which is the normal
+mid-lane state. The bypass was real and the fix was worse than it.
+
+**The survey could not have told you.** `false-refusal-survey.sh` is this repo's
+instrument for exactly this question and it returned a clean `NEWLY CONSIDERED
+0` for that change, because — as its own header states — every text it probes
+lands in ARGUMENT position, never in the flag PREFIX, which is precisely where
+the change acted. A measurement taken in the wrong position is not weak
+evidence, it is none, and it reads identically to the real thing. So name the
+POSITION your change acts in, confirm your instrument probes that position, and
+if it does not, build the arm that does before quoting a zero.
+
+Two corollaries this lane paid for:
+
+- **Derive the reader population before patching readers.** Four rounds each
+  found one more consumer that decides a gate outcome from the same text
+  (`gate_target_dir_strict`, then the `cd` clause of both resolver loops, then
+  `gate_verb_rest_each`, then `gate_pr_selector`, then a hook-local `sed` in
+  `main-tree-branch-gate.sh`). One grep — `grep -n '\[\[ "\$segment" =~'` —
+  returns all eight lib sites at once. Patching them one per round is how a
+  cascade reaches round four still claiming closure.
+- **A benchmark must exercise the path the change is on.** The same lane
+  published "+20% latency" from a run whose command MATCHED, and the new code
+  sits after an early `return` taken on a match — so it measured noise. A
+  reviewer re-measured +0-3%, while the real cost was elsewhere entirely
+  (quadratic on large input). Before quoting a delta, confirm the probe reaches
+  the added code, the same way section 5 requires of a mutation probe.
+
 **Run the integ LAST — after the final edit to any gate-scoped file, not after
 the final edit you happened to think of.** `/run-integ`'s own tail says "review
 polish first, integ last", but the ordering is DECIDED here, and the rule is
