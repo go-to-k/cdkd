@@ -24,9 +24,10 @@
 #         close[s]? #N, closed #N, fix[es]? #N, resolve[s]? #N
 #       These are load-bearing for GitHub's auto-close behavior.
 #     - Soft references: refs: #N, ref: #N, references #N, see #N
-#     - Fully-qualified cross-repo refs: owner/repo#N. Unambiguous by
-#       construction, and the form /work-issues section 10-c mandates
-#       for every citation in the mirrored skill files.
+#     - Fully-qualified cross-repo refs: owner/repo#N, bare or wrapped
+#       in markdown emphasis / quotes (**owner/repo#N**, "owner/repo#N").
+#       Unambiguous by construction, and the form /work-issues section
+#       10-c mandates for every citation in the mirrored skill files.
 #     - Parenthetical: (#N)   — used by squash-merge commit messages
 #       like `feat(...): subject (#231)`.
 #     - Inside fenced code blocks (between matching ``` lines).
@@ -168,9 +169,24 @@ find_offender() {
       # is very often parenthesised or a markdown link label, and requiring
       # whitespace rejected `(go-to-k/cdkd#1476)` -- found by writing the
       # body of the very PR that ships this arm, against the patched hook.
+      # It also admits the MARKDOWN EMPHASIS and quoting characters * ~ |
+      # and the double quote, for the same reason one hop later: a PR body
+      # writes a qualified ref bolded far more often than bare, and
+      # `**go-to-k/cdkd#2367**` was refused twice on 2026-08-29 by an
+      # otherwise-correct body, with the gate error telling the author to use
+      # the very form it had just blocked. None of these characters can occur
+      # INSIDE a slug (the segment class is [A-Za-z0-9._-]), so widening the
+      # boundary cannot admit a new item-number shape -- "step 1/2#3" is
+      # still blocked by the letter requirement, bolded or not.
+      # `_` is deliberately NOT here: it is already in the SEGMENT class, so
+      # `_owner/repo#N` parses as a slug whose owner starts with an
+      # underscore and was allowed before this widening. Adding it would be
+      # dead -- measured by dropping each added character in turn and
+      # re-running this hook test suite: * ~ | and the double quote each
+      # redden a case, `_` reddens none.
       # NOTE: no apostrophes in this block -- it sits inside a single-quoted
       # shell string, so one would terminate the perl program.
-      next if $left =~ m{(?:^|[\s(\[])[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*/[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*$};
+      next if $left =~ m{(?:^|[\s(\[*~|"])[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*/[A-Za-z0-9._-]*[A-Za-z][A-Za-z0-9._-]*$};
       # Otherwise: BLOCKED. Print the hit and the full line context.
       print "$hit\n";
       last;

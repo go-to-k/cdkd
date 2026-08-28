@@ -544,6 +544,11 @@ tree:
   the defect lives in is satisfied BY the collapse it exists to catch:
   narrowing that fence's pathspec to the owner file alone still passed 4/4.
   Name the peripheral members a collapse drops FIRST, not the central one.
+  **And derive the floor from a source the fence does not itself read.** A
+  floor computed from the very pool it guards is unfalsifiable, because
+  deleting pool entries moves both sides of the comparison together — measured
+  2026-08-29: emptying the guarded pool left such a fence 10/10 GREEN. Write
+  the expected count as a LITERAL, so the pool shrinking is what reddens it.
 
 And ask the dumbest question last: **is anything RUNNING it?** The nine hook
 harnesses in go-to-k/cdk-real-drift were shell, so neither the vitest task nor
@@ -727,4 +732,10 @@ because it converts an open gap into a recorded assurance:
   the mutation bind identically, so the probe stayed green; the PRODUCER's
   region separated them. Same lesson as choosing the probe's input (section 5,
   above), from the fixture side: when a probe comes back green, suspect the
-  fixture before concluding the code is fenced.
+  fixture before concluding the code is fenced. The commonest instance is an
+  expected value that COINCIDES with the ambient default, and no count of
+  passing cases can see it: assertions pinned to `'us-east-1'` — at once the
+  fixture's region and this repo's hardcoded fallback — cannot separate a
+  threaded binding from a defaulted one, and substituting the literal for the
+  binding left 434 tests green (2026-08-29). Choose a fixture value the
+  default can never produce.
