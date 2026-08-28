@@ -172,8 +172,11 @@ gates:
       #         table — so a corrected precise list would have gone stale
       #         silently the next time a rule satellite or a budget row named
       #         a new hook. That same commit teaches the fence the bare-literal
-      #         idiom, which closes (1) and (2); (3) remains unrepresentable as
-      #         a list of names either way.
+      #         idiom, which closes (1). It does NOT close (2): those paths live
+      #         in `.claude/rules/*.md` frontmatter and the fence's population
+      #         is `tests/unit` only, so 10 of the 15 never appear there at all.
+      #         (2) and (3) are unrepresentable as a list of names either way,
+      #         which is the argument for the glob.
       #       * the hooks' own harness tests hook BEHAVIOUR; the vitest suite
       #         reads hook files as CORPUS (byte budgets, reach counts, list
       #         sync). A green hooks.yml says nothing about a payload budget.
