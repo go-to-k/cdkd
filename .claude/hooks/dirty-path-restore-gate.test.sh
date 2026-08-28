@@ -186,6 +186,12 @@ run "clustered -qS with a value-free cluster passes"          "$RWS" "git restor
 # git discarded every path the file listed.
 run "--pathspec-from-file is refused, not passed"             "$RWS" "git restore --pathspec-from-file=list.txt" 2
 run "--pathspec-file-nul is refused, not passed"              "$RWS" "git restore --pathspec-from-file=- --pathspec-file-nul" 2
+# BOTH refusal paths advertise the bypass in their message, so the prefixed
+# retry must clear them too (issue #2368 review) — the bypass check sits
+# upstream of every refuse arm, and these two cases pin that ordering
+# against a future move of the check below target resolution.
+run "prefix clears the pathspec-from-file refusal" "$RWS" "CDKD_ALLOW_DIRTY_RESTORE=1 git restore --pathspec-from-file=list.txt" 0
+run "prefix clears the unresolved-target refusal"  "$RWS" "CDKD_ALLOW_DIRTY_RESTORE=1 git -C \"\$WT\" restore f.txt" 0
 
 # QUOTED paths containing a space. `for raw in $paths` split these into `"sp`
 # and `ace.txt"`, neither of which git knows, so the gate passed.
