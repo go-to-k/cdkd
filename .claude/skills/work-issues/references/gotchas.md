@@ -68,7 +68,18 @@
   `git diff main` appears to have removed; rebase instead.
 - **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the main
   tree between calls; use `git -C .claude/worktrees/<branch>` for git ops and
-  re-`cd` before relative-path commands. **Its worst form is not a misplaced
+  re-`cd` before relative-path commands. **A KILLED or REFUSED call is a named
+  reset trigger, and it lies about the filesystem too.** After a tool-call
+  timeout kills a call mid-run, the shell can come back at the session cwd:
+  measured 2026-08-28, a 2-minute timeout ended a probe sequence, the cwd
+  silently reset to the main tree, and the next relative-path append was stopped
+  only by `main-tree-edit-gate`, with the recovery costing ~4 calls (and
+  surfacing go-to-k/cdkd#2368 on the way). A PreToolUse refusal aborts the whole
+  call the same way, so the `mkdir` a later call's `cd` depends on never ran —
+  and a failed `cd` does NOT stop the rest of its call: measured the same day,
+  the lines after one wrote into the main tree. So after any timeout or refusal,
+  run `pwd` AND re-verify what the aborted call was supposed to create, before
+  the next relative-path command. **Its worst form is not a misplaced
   edit but a FALSE GREEN on a verification command**, because a gate run from
   the main tree verifies unmodified `main` and passes: on 2026-08-20 a lane
   reported `vp run typecheck:test` RC=0 twice while its own worktree held 20
