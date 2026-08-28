@@ -41,7 +41,7 @@ import { dirname, join } from 'node:path';
  * above is itself hand-maintained.
  *
  * A SIXTH COPY IS FENCED DIFFERENTLY, and the difference is the point.
- * `.claude/skills/work-issues/SKILL.md` section 2 carries a cross-cutting file
+ * `.claude/skills/work-issues/references/triage.md` section 2 carries a cross-cutting file
  * list of its own, and it answers a DIFFERENT question: not "does this change
  * need a broad real-AWS integ before merge" (runtime blast radius) but "does
  * this file admit only one lane at a time" (edit contention). So it is compared
@@ -97,7 +97,14 @@ const BROAD_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-broad-gate.sh');
 const DESTROY_HOOK = join(repoRoot, '.claude', 'hooks', 'integ-destroy-gate.sh');
 const VERIFY_PR = join(repoRoot, '.claude', 'skills', 'verify-pr', 'SKILL.md');
 const PICK_INTEG = join(repoRoot, '.claude', 'skills', 'pick-integ', 'SKILL.md');
-const WORK_ISSUES = join(repoRoot, '.claude', 'skills', 'work-issues', 'SKILL.md');
+const WORK_ISSUES = join(
+  repoRoot,
+  '.claude',
+  'skills',
+  'work-issues',
+  'references',
+  'triage.md'
+);
 const RUN_INTEG = join(repoRoot, '.claude', 'skills', 'run-integ', 'SKILL.md');
 const MARKGATE_YML = join(repoRoot, '.markgate.yml');
 const CLAUDE_MD = join(repoRoot, 'CLAUDE.md');
@@ -403,7 +410,7 @@ function pathsFromWorkIssuesContested(): string[] {
     );
   expect(
     m,
-    'work-issues/SKILL.md: could not find the section-2 contested-file list. Its anchor ' +
+    'work-issues/references/triage.md: could not find the section-2 contested-file list. Its anchor ' +
       'sentence ("...cross-cutting deploy/destroy ones that almost every non-trivial fix ' +
       'eventually touches:") was reworded, or a blank line now separates it from the bullets. ' +
       'The extractor asserts here rather than returning [], which would compare equal to ' +
@@ -419,12 +426,12 @@ function pathsFromWorkIssuesContested(): string[] {
     }
     expect(
       /^ {2}\S/.test(line),
-      `work-issues/SKILL.md: line ${JSON.stringify(line)} inside the contested-file list is ` +
+      `work-issues/references/triage.md: line ${JSON.stringify(line)} inside the contested-file list is ` +
         'neither a "- `<path>` ..." entry nor a two-space-indented continuation of one. Keep ' +
         'one path per bullet so the list stays machine-readable.',
     ).toBe(true);
   }
-  assertFloor(out, 'work-issues/SKILL.md section-2 contested list', MIN_PATHS);
+  assertFloor(out, 'work-issues/references/triage.md section-2 contested list', MIN_PATHS);
   return out;
 }
 

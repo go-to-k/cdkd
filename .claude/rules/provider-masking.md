@@ -80,7 +80,7 @@ Rules for a provider:
   masks each element in a `.map()` a line above the interpolation and
   `cloudfront-distribution-provider.ts` masks into a `const`, and both are correct.
   It exists because this rule was PROSE and got violated anyway, which is the
-  case `.claude/skills/work-issues/SKILL.md` section 10-b calls for a check
+  case `/work-issues` references/retro.md section 10-b calls for a check
   rather than another sentence. It REFUSES an identity masker — a
   `maskerOrIdentity(undefined)` binding masks nothing, and issue #2007 records
   why one that fences nothing is worse than none (its presence stops the next

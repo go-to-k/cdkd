@@ -24,7 +24,7 @@
  * `sns-topic-provider.ts` carried seven masked sites and one raw. A rule
  * already written and violated anyway is the case where another sentence buys
  * nothing and a mechanical check is the remedy
- * (`.claude/skills/work-issues/SKILL.md` section 10-b).
+ * (`.claude/skills/work-issues/references/retro.md` section 10-b).
  *
  * WHY THE OBVIOUS RULE DOES NOT WORK
  * ----------------------------------
@@ -1451,7 +1451,7 @@ function isConstant(node: ts.Node): boolean {
  * `function noMask(v) { return v; }` passed all of them, and so would a cast, an
  * object property, or a default parameter value. The set of ways to write a
  * no-op is unbounded, so enumerating it can never terminate
- * (`.claude/skills/work-issues/SKILL.md` section 8: when the finding is a new
+ * (`.claude/skills/work-issues/references/verify.md` section 8: when the finding is a new
  * INPUT CLASS rather than a new place the logic is wrong, stop patching
  * instances).
  *
