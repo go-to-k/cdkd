@@ -1,3 +1,10 @@
+## [0.284.81](https://github.com/go-to-k/cdkd/compare/v0.284.80...v0.284.81) (2026-08-28)
+
+
+### Bug Fixes
+
+* **secret-redaction:** certify a LIST-valued nested-stack child leaf on both the persist and the diff side ([#2352](https://github.com/go-to-k/cdkd/issues/2352)) ([0c6ed1b](https://github.com/go-to-k/cdkd/commit/0c6ed1be8ecf64381eca94def10ea1fc212c8622))
+
 ## [0.284.80](https://github.com/go-to-k/cdkd/compare/v0.284.79...v0.284.80) (2026-08-28)
 
 
