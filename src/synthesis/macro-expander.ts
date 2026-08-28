@@ -18,7 +18,11 @@ import type { Logger } from '../types/config.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { MacroExpansionError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
-import { isListParameterType } from '../utils/parameter-types.js';
+import {
+  isListParameterType,
+  SSM_PARAMETER_VALUE_PREFIX,
+  ssmResolvedValueType,
+} from '../utils/parameter-types.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 
 /**
@@ -599,8 +603,25 @@ function stringifyParamDefault(
     // a 2-element comma-joined placeholder for list forms so the pre-
     // macro validator accepts it; the resolved value still doesn't
     // leak into the Processed-stage template either way.
-    if (type.startsWith('AWS::SSM::Parameter::Value<')) {
-      const inner = type.slice('AWS::SSM::Parameter::Value<'.length, -1);
+    if (type.startsWith(SSM_PARAMETER_VALUE_PREFIX)) {
+      // The PEEL is the SHARED {@link ssmResolvedValueType} (issue #2367),
+      // which is also what `resolveParameters` in the deployment layer uses to
+      // coerce an SSM-RESOLVED value. This site's inline `slice` and that one
+      // were two spellings of one question -- exactly the shape issue #2347
+      // deleted from this same module pair when it made
+      // {@link isListParameterType} shared -- and the two disagreed on
+      // strictness: this one required neither a closing `>` nor a non-empty
+      // inner shape.
+      //
+      // THE MALFORMED CASE KEEPS THIS SITE'S OWN ANSWER, deliberately. The
+      // shared peel is the STRICTER of the two originals and returns
+      // `undefined` for `Value<` / `Value<>`; falling those through to the
+      // generic warn below would change the emitted placeholder text
+      // (`placeholder` -> PARAMETER_PLACEHOLDER) and add a warn line, an
+      // unrelated behaviour change. `''` was never list-shaped, so the scalar
+      // arm is what this site already did for them -- now stated rather than
+      // implied.
+      const inner = ssmResolvedValueType(type);
       // `Value<List<...>>` OR `Value<CommaDelimitedList>` need a list
       // shape; everything else (`Value<String>`, `Value<AWS::EC2::*::Id>`,
       // etc.) is a single SSM parameter name.
@@ -612,7 +633,7 @@ function stringifyParamDefault(
       // a `List<AWS::EC2::Subnet::Id>` nested-stack parameter to the child as a
       // string. The predicate is applied to `inner` -- the shape already peeled
       // out of `Value<...>` -- which is exactly the question it answers.
-      if (isListParameterType(inner)) {
+      if (inner !== undefined && isListParameterType(inner)) {
         return 'placeholder,placeholder';
       }
       return 'placeholder';

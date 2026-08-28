@@ -74,3 +74,84 @@ export function isListParameterType(type: string): boolean {
   // anything; require at least one character between the brackets.
   return type.length > 'List<>'.length && type.startsWith('List<') && type.endsWith('>');
 }
+
+/**
+ * The literal prefix of the Systems Manager parameter form. Declared ABOVE the
+ * docblock below so that docblock attaches to {@link ssmResolvedValueType}
+ * rather than to this constant.
+ */
+export const SSM_PARAMETER_VALUE_PREFIX = 'AWS::SSM::Parameter::Value<';
+
+/**
+ * ONE definition of "peel the inner shape out of
+ * `AWS::SSM::Parameter::Value<...>`", returning `undefined` when `type` is not
+ * that form.
+ *
+ * It lives beside {@link isListParameterType} for the reason that predicate
+ * exists at all: this file was created by issue
+ * [#2347](https://github.com/go-to-k/cdkd/issues/2347) after cdkd was found
+ * holding TWO answers to one type question in these same two modules, and
+ * issue [#2367](https://github.com/go-to-k/cdkd/issues/2367) then wrote a
+ * SECOND peel in `src/deployment/intrinsic-function-resolver.ts` next to the
+ * one already in `src/synthesis/macro-expander.ts` -- reproducing the exact
+ * shape #2347 had just deleted, one question with two spellings in one file
+ * pair. Both now call this.
+ *
+ * ## The two callers, and the one deliberate difference between them
+ *
+ * The peel is shared; the handling of a MALFORMED spelling is not, and that is
+ * a call-site policy rather than a second answer:
+ *
+ *  - `resolveParameters` (deployment) treats `undefined` as "do not coerce" and
+ *    keeps the resolved string verbatim -- the safe direction on a path that
+ *    writes state.
+ *  - `stringifyParamDefault` (synthesis) keeps its own pre-existing behaviour
+ *    of emitting the SCALAR placeholder for anything carrying the prefix,
+ *    including a malformed one, rather than falling through to its generic
+ *    warn + `PARAMETER_PLACEHOLDER`. Routing a malformed spelling to that
+ *    fallback would change the emitted placeholder text (`placeholder` ->
+ *    `cdkd-macro-expand-placeholder`) and add a warn line, which is a
+ *    behaviour change unrelated to #2367.
+ *
+ * The STRICTNESS here is the stricter of the two originals: a closing `>` is
+ * required and the inner shape must be non-empty, so `Value<` and `Value<>`
+ * peel to `undefined`. The synthesis site never required either, but it also
+ * never distinguished the cases -- `''` is not list-shaped, so it took the
+ * scalar arm, which is what its `undefined` branch now does explicitly.
+ *
+ * ## WHAT THE SUPPLIED VALUE IS -- AN OPEN DISAGREEMENT INSIDE THIS REPO
+ *
+ * This function answers only "what shape does `Value<...>` WRAP". It
+ * deliberately does NOT settle what the value SUPPLIED for such a parameter
+ * means, because cdkd currently holds two incompatible readings and this
+ * function's callers do not need the answer:
+ *
+ *  - **Read from the AWS documentation** (`cloudformation-supplied-parameter-types.html`,
+ *    2026-08-29): the supplied value is ONE Parameter Store key, phrased in the
+ *    singular throughout ("you must specify a Parameter Store key", "you must
+ *    provide the parameter name"), with `Value<List<String>>` /
+ *    `Value<CommaDelimitedList>` described as "a Systems Manager parameter
+ *    whose value is a list of strings". `aws-cdk-lib`'s own
+ *    `StringListParameter.fromListParameterAttributes` agrees: it emits
+ *    `{type: 'AWS::SSM::Parameter::Value<List<String>>', default:
+ *    attrs.parameterName}` -- a single name.
+ *  - **A LIVE CloudFormation OBSERVATION** recorded at
+ *    `src/synthesis/macro-expander.ts` (the CR-MJ3 fix): a single-string
+ *    placeholder against a `Value<List<*>>` type "would reject the changeset
+ *    with `Parameter ... must be a list`", which is why that site emits a
+ *    2-element comma-joined placeholder. Someone watched CloudFormation do
+ *    that, and a live observation outranks a documentation read.
+ *
+ * THESE MAY BOTH BE TRUE OF DIFFERENT THINGS -- CloudFormation's pre-macro
+ * changeset VALIDATOR may demand a list-shaped literal while the runtime
+ * resolves one key -- and that reconciliation is plausible but UNMEASURED. It
+ * is recorded as unresolved rather than decided, and neither caller depends on
+ * it: the synthesis site is choosing a placeholder for a validator, and the
+ * deployment site is coercing a value `GetParameter` ALREADY returned, which is
+ * downstream of whatever the supplied key meant.
+ */
+export function ssmResolvedValueType(type: string): string | undefined {
+  if (!type.startsWith(SSM_PARAMETER_VALUE_PREFIX) || !type.endsWith('>')) return undefined;
+  const inner = type.slice(SSM_PARAMETER_VALUE_PREFIX.length, -1);
+  return inner.length > 0 ? inner : undefined;
+}

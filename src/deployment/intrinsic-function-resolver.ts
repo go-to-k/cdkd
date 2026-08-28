@@ -35,7 +35,7 @@ import {
   IntrinsicResolutionRefusalError,
 } from '../utils/error-handler.js';
 import { markNonRetryable, isThrottlingError } from './retryable-errors.js';
-import { isListParameterType } from '../utils/parameter-types.js';
+import { isListParameterType, ssmResolvedValueType } from '../utils/parameter-types.js';
 import { classifyReplaySecretRegion } from './secret-region-classification.js';
 import { withRetry } from './retry.js';
 import {
@@ -1688,6 +1688,63 @@ export function coerceParameterTypedValue(value: string, type: string): unknown 
 }
 
 /**
+ * Bind a template-declared `Default` the way the USER-SUPPLIED path binds a
+ * value (issue
+ * [#2367](https://github.com/go-to-k/cdkd/issues/2367)).
+ *
+ * `resolveParameters` writes `parameters[name]` at three sites and only the
+ * user-supplied one asked the coercion anything, so a parameter declared
+ * `Type: CommaDelimitedList` with `Default: "a,b,c"` and no CLI override
+ * reached every consumer as the raw string -- `Fn::Select` over it threw
+ * `Fn::Select: list must be an array, got string`, and a bare `Ref` handed the
+ * provider a comma-joined scalar where the resource schema declares a list.
+ * The defect predates the #2347 widening: it hits `CommaDelimitedList` and
+ * `List<Number>`, the two list types the `switch` has recognised all along.
+ *
+ * CloudFormation's own documentation is written in exactly these terms --
+ * `parameters-section-structure.html`'s worked example declares
+ * `VpcAzs: {Type: CommaDelimitedList, Default: "us-west-2a, us-west-2b,
+ * us-west-2c"}` and then reads it with `Fn::Select`, which is the case that
+ * threw.
+ *
+ * ONLY A STRING IS COERCED, and that is the whole of the rule. `Default` is
+ * typed `unknown` because it is whatever the template parser produced, and the
+ * shapes are not hypothetical -- measured 2026-08-29 on both parsers cdkd
+ * feeds this from:
+ *
+ *  - `aws-cdk-lib`'s `CfnParameter._toCloudFormation` emits `Default:
+ *    this.default` with no conversion, so `{type: 'Number', default: 42}`
+ *    synthesizes the JSON NUMBER `42`, and `{type: 'CommaDelimitedList',
+ *    default: ['a','b','c']}` synthesizes a JSON ARRAY;
+ *  - `parseCfnTemplate` (`src/cli/yaml-cfn.ts`), on the `cdkd import
+ *    --migrate-from-cloudformation` / `cdkd export` path, resolves `Default:
+ *    42` to a number, `Default: "42"` to a string, a YAML sequence to an array
+ *    and `Default: true` to a boolean.
+ *
+ * FOR THE SHAPES MEASURED ABOVE, a non-string default is already what the
+ * declared type calls for -- `42` for a `Number`, `['a','b']` for a
+ * `CommaDelimitedList` -- so coercing it could only damage it.
+ * `String(['a,b','c'])` is `'a,b,c'`, which the split would then shred into
+ * THREE elements, and `String(true)` would turn a boolean a consumer sees today
+ * into text. Stringifying first is therefore not a harmless normalization, and
+ * `coerceParameterTypedValue` takes a `string` precisely because parsing the
+ * wire text is its whole job.
+ *
+ * THE CLAIM IS SCOPED TO THOSE SHAPES ON PURPOSE, because a mismatched pairing
+ * is reachable and is NOT in it: YAML admits `Type: CommaDelimitedList` with
+ * `Default: 42` or `Default: true`, and such a default is passed through as the
+ * scalar it parsed to rather than becoming a one-element list. That is the
+ * PRE-EXISTING behaviour, unchanged here and deliberately so -- a template
+ * pairing a list type with a scalar default is malformed CloudFormation, and
+ * inventing a coercion for it on a path that writes state is a bigger decision
+ * than this fix.
+ */
+function coerceParameterDefault(defaultValue: unknown, type: string): unknown {
+  if (typeof defaultValue !== 'string') return defaultValue;
+  return coerceParameterTypedValue(defaultValue, type);
+}
+
+/**
  * The inherited `plaintext -> expression` pairs that `value` CARRIES.
  *
  * ONE definition, shared by the RECORDING side
@@ -2334,7 +2391,30 @@ export class IntrinsicFunctionResolver {
           const ssmPath = String(paramDef.Default);
           this.logger.debug(`Parameter ${name}: resolving SSM parameter path ${ssmPath}`);
           const resolved = await this.resolveSSMParameter(ssmPath);
-          parameters[name] = resolved;
+          // Coerced against the INNER type peeled out of `Value<...>`, never
+          // the declared outer one -- see {@link ssmResolvedValueType} for why
+          // the outer type is a silent no-op here, and for the two
+          // AWS-published contracts that settle the split and the trim. A
+          // `Value<List<String>>` parameter used to reach consumers as the raw
+          // comma-separated string `GetParameter` returns (issue #2367).
+          //
+          // STRICTLY AFTER the `referencedNames` skip above, which `continue`s
+          // before this branch ever reaches `GetParameter`, so nothing here can
+          // make an unreferenced parameter resolvable again (issue #1002's
+          // `BootstrapVersion` carve-out). That parameter is
+          // `Value<String>` in any case, whose inner type coerces to itself.
+          //
+          // OFF THE DOCUMENTED TYPE SPACE this newly coerces where it used to
+          // pass through: `Value<Number>` is not a Systems Manager parameter
+          // type CloudFormation defines (Parameter Store has String /
+          // StringList / SecureString), but if a template spells it, the peeled
+          // `Number` now yields `Number(resolved)` -- and `NaN` for a
+          // non-numeric Parameter Store value -- rather than the raw string.
+          const resolvedType = ssmResolvedValueType(paramDef.Type);
+          parameters[name] =
+            resolvedType === undefined
+              ? resolved
+              : this.coerceParameterValue(resolved, resolvedType);
           this.logger.debug(
             `Parameter ${name}: resolved SSM value ${maskInherited(
               stringifyParameterForLog(paramDef, resolved)
@@ -2343,7 +2423,11 @@ export class IntrinsicFunctionResolver {
           continue;
         }
 
-        parameters[name] = paramDef.Default;
+        // Bound the way the user-supplied path binds a value, so a defaulted
+        // `CommaDelimitedList` is a list rather than a comma-joined string
+        // (issue #2367). Only a STRING default is coerced -- see
+        // {@link coerceParameterDefault} for the measured parsed shapes.
+        parameters[name] = coerceParameterDefault(paramDef.Default, paramDef.Type);
         this.logger.debug(
           `Parameter ${name}: using default value ${maskInherited(
             stringifyParameterForLog(paramDef, paramDef.Default)
