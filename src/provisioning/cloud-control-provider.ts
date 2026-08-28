@@ -37,7 +37,7 @@ import { ProvisioningError } from '../utils/error-handler.js';
 import { markNonRetryable } from '../deployment/retryable-errors.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
-import { assertRegionMatch, type DeleteContext } from './region-check.js';
+import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './region-check.js';
 import { ccProtectionProperty, type CcProtectionEntry } from './cc-protection-properties.js';
 import { isNonProvisionable } from './unsupported-types.js';
 import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
@@ -48,6 +48,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  UpdateContext,
 } from '../types/resource.js';
 
 /**
@@ -556,10 +557,29 @@ export class CloudControlProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(
       `Updating resource ${logicalId} (${resourceType}), physical ID: ${physicalId}`
+    );
+
+    // Issue #2301 item 1. Ahead of EVERY call this method makes -- including
+    // the `DescribeType` behind `getTopLevelWriteOnlyProperties` -- because a
+    // refusal here should cost nothing and reach AWS with nothing.
+    //
+    // `context` is new on this method: `ResourceProvider.update` has taken an
+    // `UpdateContext` since issue #1732, but this provider never declared the
+    // parameter and the interface carried no region field until now. The
+    // consequence of the gap is a misapplied configuration rather than the
+    // delete path's unrecoverable destruction, which is why issue #2283 took
+    // delete first -- not because this path was safe.
+    await this.assertRecordedRegionAgainstClient(
+      'pre-update',
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId
     );
 
     try {
@@ -735,20 +755,38 @@ export class CloudControlProvider implements ResourceProvider {
       );
     }
 
-    // NOT applied to `update()`, and the reason is narrower than it looks. An
-    // earlier revision of this note claimed `ResourceProvider.update` "carries
-    // no context"; that is FALSE -- `src/types/resource.ts:793-800` gives it a
-    // sixth `context?: UpdateContext` parameter (this provider's own `update`
-    // simply does not declare it). What is actually missing is the FIELD:
-    // `UpdateContext` (`resource.ts:502`, which also extends
-    // `SecretMaskingContext`) carries no region field at all, while
-    // `expectedRegion` is declared on `DeleteContext` alone
-    // (`region-check.ts:27`). So the remedy is one optional field plus
-    // threading it from callers that already hold `state.region` -- a separate
-    // change with its own review, filed as issue #2301 (which also covers the
-    // non-S3 CC delete types). The delete path is taken first because its
-    // consequence is unrecoverable where a misapplied configuration is not.
+    // Issue #2301 item 2: the record's region, checked UNCONDITIONALLY and for
+    // EVERY Cloud-Control-routed type, before anything below runs.
     //
+    // Until this existed, `assertRegionMatch` ran only in the `NotFound` arm of
+    // the catch block at the bottom of this method -- which a wrong-region
+    // delete usually never reaches. A Cloud Control `Identifier` is most often
+    // a NAME, and the same name commonly exists in the client's region too
+    // (the same stack deployed to two regions; cdkd's own `resource-name.ts`
+    // derives an identical name from an identical stack + logical id). So the
+    // delete succeeds -- against the wrong resource, unrecoverably -- and the
+    // guard that was supposed to catch it sat on the branch that error never
+    // takes. The hardening costs ZERO API calls beyond resolving the client's
+    // own configured region, and it is type-INDEPENDENT: unlike
+    // `confirmDeleteTargetIdentity` below it is not about S3, the global
+    // bucket namespace, or the region redirect.
+    //
+    // Ordering against the two neighbours here is deliberate. It comes AFTER
+    // the `finalSnapshotIdentifier` fail-closed above, which is a pure
+    // context-shape refusal needing no I/O, and BEFORE
+    // `confirmDeleteTargetIdentity`, which spends a `GetBucketLocation`: when
+    // both would refuse, the cheaper and more general answer should win.
+    //
+    // The `update()` twin is at the top of `update()` (issue #2301 item 1);
+    // `UpdateContext` now carries `expectedRegion` for it.
+    await this.assertRecordedRegionAgainstClient(
+      'pre-delete',
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId
+    );
+
     // Pre-flight identity confirmation (issue #2283). Deliberately placed
     // ahead of EVERY mutating step below -- the `--remove-protection` flips,
     // the SDK delegations, and the `DeleteResource` itself -- because a
@@ -912,9 +950,20 @@ export class CloudControlProvider implements ResourceProvider {
           err.message?.includes('not found') ||
           err.message?.includes('NotFound')
         ) {
-          const clientRegion = await this.cloudControlClient.config.region();
-          assertRegionMatch(
-            clientRegion,
+          // Through the SAME helper as the pre-flight above (issue #2301
+          // review), not a second hand-rolled comparison. Two comparisons of
+          // the same two values in one method, normalised differently, is a
+          // disagreement waiting to be reached -- and it WAS reachable: this
+          // arm compared raw, so a client region of `US-EAST-1` (which
+          // `foldRegionOption` does not fold, because it only folds `--region`
+          // / `AWS_REGION` / `AWS_DEFAULT_REGION` and not a profile's
+          // `region = US-EAST-1`) passed the pre-flight and was then REFUSED
+          // here against a state region of `us-east-1`. Sharing the helper
+          // also means this refusal is marked non-retryable and gets the same
+          // typed-refusal protection from the "already deleted" message
+          // classifiers as the pre-flight one.
+          await this.assertRecordedRegionAgainstClient(
+            'not-found',
             context?.expectedRegion,
             resourceType,
             logicalId,
@@ -943,15 +992,101 @@ export class CloudControlProvider implements ResourceProvider {
   }
 
   /**
+   * Refuse a Cloud Control call whose target region cannot be shown to be the
+   * one the state record was written in (issue #2301).
+   *
+   * The ONE place this comparison happens, for all three phases: the
+   * pre-flights at the top of `delete()` and `update()`, and the reactive
+   * `not-found` arm inside `delete()`'s catch block. They can therefore never
+   * disagree about what "unknown region" means, nor about how a region is
+   * SPELLED -- the second one was live before this became shared: the reactive
+   * arm compared raw while the pre-flight folded case, so one correct call
+   * could pass the first and be refused by the second. THREE inputs, THREE outcomes, and they are
+   * deliberately not two:
+   *
+   *  - NO recorded region (`undefined`, or an empty / whitespace-only string)
+   *    -> PROCEED, and do not even resolve the client region. This is the
+   *    guard's OWN default: a `version: 1` state record predates the
+   *    region-scoped key layout and carries no region at all, and callers
+   *    typed `region: string` (`deploy-engine.ts`'s `stackRegion`) can hand
+   *    over `''`. Refusing on the absence would break every ordinary
+   *    destroy / update of a pre-v2 record, which is the over-tightening
+   *    failure a one-directional fence never sees.
+   *  - A recorded region that MATCHES the client -> proceed silently. This is
+   *    the ordinary path and it must stay free of new refusals: the whole
+   *    fleet of same-region deletes and updates runs through here.
+   *  - A recorded region that DIFFERS, or a client region that cannot be
+   *    resolved at all -> REFUSE before issuing anything.
+   *
+   * The unresolvable-client-region arm is the one asymmetry worth naming:
+   * {@link CloudControlProvider.confirmDeleteTargetIdentity} PROCEEDS when it
+   * cannot establish a region, and this helper refuses. The two are answering
+   * different questions. That probe asks a remote service where a globally
+   * unique NAME lives, and a least-privilege role that was never granted
+   * `s3:GetBucketLocation` would be stranded by a refusal. Here the caller has
+   * positively recorded a region, the comparison is local and free, and a
+   * client that cannot say where it points cannot be shown to point at that
+   * region -- the same answer `assertRegionMatch` has always given on its
+   * `not-found` phase.
+   *
+   * The refusal is marked non-retryable because it is deterministic: both
+   * loops that wrap these calls -- the destroy runner's own attempt loop and
+   * the deploy engine's / rollback executor's `withRetry` -- would otherwise
+   * spend their full budget re-deriving the same verdict, which reads to a
+   * user as flaky AWS rather than as a refusal.
+   */
+  private async assertRecordedRegionAgainstClient(
+    phase: RegionCheckPhase,
+    expectedRegion: string | undefined,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string
+  ): Promise<void> {
+    // Trimmed AND case-folded, matching `confirmDeleteTargetIdentity` below.
+    // Both halves are load-bearing and both were MEASURED against this suite:
+    // a `--region US-EAST-1` destroy and a padded state region are correct
+    // inputs, and comparing them raw (which is what the `not-found` phase has
+    // always done, on a branch narrow enough that it never showed) would
+    // refuse them. A guard that rejects its own callers' ordinary spellings is
+    // the over-tightening half of this change, not a stricter version of it.
+    const recordedRegion = canonicalizeRegion(expectedRegion?.trim());
+    if (recordedRegion === undefined || recordedRegion === '') return;
+
+    let clientRegion: string | undefined;
+    try {
+      clientRegion = canonicalizeRegion((await this.cloudControlClient.config.region())?.trim());
+    } catch (error) {
+      // Resolution FAILED, which is not the same as "resolved to something
+      // else" -- leave it undefined so `assertRegionMatch` produces the
+      // "client region is unknown" refusal rather than letting a raw SDK
+      // credential-chain error surface from a guard.
+      this.logger.debug(
+        `Could not resolve the Cloud Control client region before the ${phase} region check ` +
+          `for ${logicalId} (${resourceType}): ` +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
+      clientRegion = undefined;
+    }
+
+    try {
+      assertRegionMatch(clientRegion, recordedRegion, resourceType, logicalId, physicalId, phase);
+    } catch (error) {
+      throw markNonRetryable(error as Error);
+    }
+  }
+
+  /**
    * Confirm that the resource `physicalId` names actually lives in the region
    * this destroy is targeting, for the types in
    * {@link CC_DELETE_IDENTITY_CHECKED_TYPES}. No-op for every other type.
    *
    * WHAT THIS GUARDS THAT `assertRegionMatch` DOES NOT
    * ---------------------------------------------------
-   * The existing `assertRegionMatch` in the catch block below compares the
-   * CLIENT's region against the state's region, and only on the `NotFound`
-   * branch. Both halves miss this hazard. An `AWS::S3::Bucket` physical id is
+   * The `assertRegionMatch` comparison — which since issue #2301 runs both as
+   * an unconditional pre-flight and on the `NotFound` arm below — compares the
+   * CLIENT's region against the STATE's. That misses this hazard however often
+   * it runs: both of its inputs can agree while the bucket the physical id
+   * names sits somewhere else entirely. An `AWS::S3::Bucket` physical id is
    * a GLOBALLY unique name, so a state record written before the issue #2227 /
    * #2245 guards existed can name a bucket that is ours but lives elsewhere --
    * a cdkd-GENERATED bucket name carries no region or account: for a name cdkd

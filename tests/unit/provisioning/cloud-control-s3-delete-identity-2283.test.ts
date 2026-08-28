@@ -277,6 +277,14 @@ describe('CloudControlProvider.delete -- S3 bucket identity confirmation (issue 
     });
 
     it(`folds ${label} to us-east-1 and REFUSES when the destroy targets us-west-2`, async () => {
+      // The CLIENT is moved to us-west-2 with the state, because issue #2301's
+      // unconditional pre-flight now refuses a client/state region
+      // DISAGREEMENT before this probe runs at all. That disagreement was
+      // never this test's subject: the #2283 hazard is a bucket whose NAME is
+      // in state but whose bucket lives somewhere else, which is unrelated to
+      // where the client points. Agreeing here keeps the probe as the thing
+      // under test instead of silently handing the verdict to the other guard.
+      clientRegion = 'us-west-2';
       wireBucketLocationResponse(response);
       const provider = new CloudControlProvider();
 
@@ -288,6 +296,9 @@ describe('CloudControlProvider.delete -- S3 bucket identity confirmation (issue 
   }
 
   it('folds the legacy EU constraint to eu-west-1', async () => {
+    // Client moved with the state region -- see the #2301 note on the
+    // us-west-2 arms above.
+    clientRegion = 'eu-west-1';
     wireBucketLocation('EU');
     const provider = new CloudControlProvider();
     await provider.delete('Bucket', BUCKET, S3, undefined, { expectedRegion: 'eu-west-1' });
@@ -299,6 +310,7 @@ describe('CloudControlProvider.delete -- S3 bucket identity confirmation (issue 
     // The refusing polarity of the same fold. A prefix match (`startsWith`)
     // instead of an equality test would read an eu-central-1 bucket as
     // eu-west-1 and permit exactly the delete this guard exists to refuse.
+    clientRegion = 'eu-west-1';
     wireBucketLocation('eu-central-1');
     const provider = new CloudControlProvider();
 
@@ -315,18 +327,30 @@ describe('CloudControlProvider.delete -- S3 bucket identity confirmation (issue 
     expect(ccCallNames()).toContain('DeleteResourceCommand');
   });
 
-  it('prefers the state region over the client region as the comparand', async () => {
-    // Client is pinned to us-east-1 while state says the stack lives in
-    // us-west-2 and the bucket really is there: reading the CLIENT region
-    // would refuse a correct destroy.
+  // Was: 'prefers the state region over the client region as the comparand'.
+  // That property is no longer OBSERVABLE through `delete()`, and the reason is
+  // the point of this replacement rather than a regression. It was measured on
+  // a client pinned to us-east-1 against a state region of us-west-2 -- and
+  // issue #2301's unconditional pre-flight refuses exactly that pair, ahead of
+  // this probe, because a Cloud Control delete addressed by a state-recorded
+  // identifier from a client in another region is the hazard it exists for. So
+  // whenever BOTH regions are present they now agree by construction, and the
+  // comparand choice can no longer be distinguished. The surviving half of
+  // that logic -- state absent, client used as the fallback -- is still driven
+  // by the two tests immediately below.
+  it('refuses a client/state region disagreement BEFORE probing the bucket (issue #2301)', async () => {
     clientRegion = 'us-east-1';
     wireBucketLocation('us-west-2');
     const provider = new CloudControlProvider();
 
-    await provider.delete('Bucket', BUCKET, S3, undefined, { expectedRegion: 'us-west-2' });
+    await expect(
+      provider.delete('Bucket', BUCKET, S3, undefined, { expectedRegion: 'us-west-2' })
+    ).rejects.toThrow(/AWS client region us-east-1 does not match stack state region us-west-2/);
 
-    expect(ccCallNames()).toContain('DeleteResourceCommand');
-    expect(s3CallNames()).toEqual(['GetBucketLocationCommand']);
+    // Ordering, not merely outcome: no `GetBucketLocation`, and no Cloud
+    // Control traffic of any kind.
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(ccCallNames()).toEqual([]);
   });
 
   it('falls back to the client region when state carried none, and can refuse on it', async () => {

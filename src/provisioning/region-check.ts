@@ -119,9 +119,30 @@ export interface DeleteContext {
 }
 
 /**
+ * WHICH CALL THIS CHECK IS GUARDING (issue #2301).
+ *
+ * `'not-found'` (the default, and the only phase before issue #2301) is the
+ * REACTIVE use: the AWS client answered `*NotFound` and the caller is about to
+ * treat that as idempotent delete success. `'pre-delete'` / `'pre-update'` are
+ * the PRE-FLIGHT uses: nothing has been sent yet, and the question is whether
+ * the physical id recorded in state names a resource this client can act on at
+ * all.
+ *
+ * The distinction is only about the MESSAGE. The comparison, the unset /
+ * matching / mismatching outcomes and the thrown type are identical in all
+ * three, deliberately: a second copy of the comparison is how the two halves
+ * drift apart. But the reactive message ("Refusing to treat NotFound as
+ * idempotent delete success") is actively misleading on a pre-flight, where no
+ * `NotFound` was involved and no state record is about to be stripped.
+ */
+export type RegionCheckPhase = 'not-found' | 'pre-delete' | 'pre-update';
+
+/**
  * Verify that the AWS client's region matches the region the resource is
- * expected to live in before treating a `NotFound` error as idempotent
- * delete success.
+ * expected to live in — before treating a `NotFound` error as idempotent
+ * delete success (`phase: 'not-found'`), or before issuing a mutating call
+ * against a state-recorded physical id at all (`'pre-delete'` /
+ * `'pre-update'`, issue #2301).
  *
  * Why: a destroy run with the wrong region would otherwise receive
  * `*NotFound` for every resource and silently strip them all from state,
@@ -130,13 +151,24 @@ export interface DeleteContext {
  * `us-west-2` removed from state by a destroy that ran with a `us-east-1`
  * client.
  *
- * Behavior:
+ * And a `NotFound` is not the only way that ends badly, which is what the
+ * pre-flight phases add: many physical ids are names rather than ARNs, so the
+ * same name usually EXISTS in the client's region too (the same stack deployed
+ * twice, or cdkd's own `resource-name.ts` deriving an identical name from an
+ * identical stack + logical id). Then the wrong-region call never errors — it
+ * succeeds against the wrong resource. That path is unrecoverable on delete
+ * and a misapplied configuration on update, and neither ever reaches the
+ * `NotFound` branch this helper originally lived on.
+ *
+ * Behavior (identical in every phase):
  * - If `expectedRegion` is unset, this is a no-op (back-compat: existing
  *   idempotent semantics preserved for callers that have not been
- *   threaded with state region).
+ *   threaded with state region). An EMPTY string counts as unset — a caller
+ *   typed `region: string` can hand one over, and refusing on it would make
+ *   this guard reject its own default.
  * - If `clientRegion` matches `expectedRegion`, returns silently.
  * - Otherwise throws `ProvisioningError` so the caller surfaces the
- *   mismatch instead of swallowing the NotFound.
+ *   mismatch instead of swallowing the NotFound / issuing the call.
  *
  * @param clientRegion Region resolved from the AWS SDK client config
  *   (typically `await client.config.region()`).
@@ -146,15 +178,19 @@ export interface DeleteContext {
  *   message and on the thrown ProvisioningError.
  * @param logicalId Logical ID of the resource, used in the error message
  *   and on the thrown ProvisioningError.
- * @param physicalId Optional physical ID, used in the error message and
- *   on the thrown ProvisioningError.
+ * @param physicalId Optional physical ID, carried on the thrown
+ *   ProvisioningError.
+ * @param phase Which call is being guarded — see {@link RegionCheckPhase}.
+ *   Defaults to the historical `'not-found'` so every pre-#2301 call site
+ *   keeps its exact wording.
  */
 export function assertRegionMatch(
   clientRegion: string | undefined,
   expectedRegion: string | undefined,
   resourceType: string,
   logicalId: string,
-  physicalId?: string
+  physicalId?: string,
+  phase: RegionCheckPhase = 'not-found'
 ): void {
   if (!expectedRegion) {
     // Back-compat: caller did not supply state region, preserve previous
@@ -164,10 +200,16 @@ export function assertRegionMatch(
 
   if (!clientRegion) {
     throw new ProvisioningError(
-      `Refusing to treat NotFound as idempotent delete success for ${logicalId} ` +
-        `(${resourceType}): AWS client region is unknown but stack state expects ` +
-        `${expectedRegion}. The resource may exist in ${expectedRegion} and would ` +
-        `be silently removed from state if this NotFound were trusted.`,
+      phase === 'not-found'
+        ? `Refusing to treat NotFound as idempotent delete success for ${logicalId} ` +
+            `(${resourceType}): AWS client region is unknown but stack state expects ` +
+            `${expectedRegion}. The resource may exist in ${expectedRegion} and would ` +
+            `be silently removed from state if this NotFound were trusted.`
+        : `Refusing to ${phaseVerb(phase)} ${logicalId} (${resourceType}): AWS client ` +
+            `region is unknown but stack state records the resource in ${expectedRegion}. ` +
+            `cdkd cannot confirm that the physical id recorded in state names the resource ` +
+            `this client would act on, so the ${phaseVerb(phase)} is not issued. Point the ` +
+            `AWS client at ${expectedRegion} (AWS_REGION or your AWS profile) and re-run.`,
       resourceType,
       logicalId,
       physicalId
@@ -176,14 +218,37 @@ export function assertRegionMatch(
 
   if (clientRegion !== expectedRegion) {
     throw new ProvisioningError(
-      `Refusing to treat NotFound as idempotent delete success for ${logicalId} ` +
-        `(${resourceType}): AWS client region ${clientRegion} does not match stack ` +
-        `state region ${expectedRegion}. The resource likely still exists in ` +
-        `${expectedRegion}; rerun the destroy with the correct region (e.g. ` +
-        `--region ${expectedRegion}).`,
+      phase === 'not-found'
+        ? `Refusing to treat NotFound as idempotent delete success for ${logicalId} ` +
+            `(${resourceType}): AWS client region ${clientRegion} does not match stack ` +
+            `state region ${expectedRegion}. The resource likely still exists in ` +
+            `${expectedRegion}; rerun the destroy with the correct region (e.g. ` +
+            `--region ${expectedRegion}).`
+        : `Refusing to ${phaseVerb(phase)} ${logicalId} (${resourceType}): AWS client ` +
+            `region ${clientRegion} does not match stack state region ${expectedRegion}. ` +
+            `The physical id recorded in cdkd state names a resource in ${expectedRegion}, ` +
+            `so this ${phaseVerb(phase)} would act on whatever carries that id in ` +
+            `${clientRegion} instead — which for a name-shaped physical id is a different ` +
+            `resource that usually exists. Point the AWS client at ${expectedRegion} ` +
+            `(AWS_REGION or your AWS profile) and re-run; when the run spans several ` +
+            `regions at once (cdkd drift --all), select the stacks in one region per run, ` +
+            `because no single client region is correct for all of them. If the recorded ` +
+            `region is the wrong one, correct the state record (cdkd state show).`,
       resourceType,
       logicalId,
       physicalId
     );
   }
+}
+
+/**
+ * The operation a pre-flight phase is about to issue, for the message.
+ *
+ * `'not-found'` is EXCLUDED from the parameter type rather than mapped to a
+ * verb: both call sites already sit in the `else` of a
+ * `phase === 'not-found' ? ... : ...`, so an arm answering for it would be
+ * unreachable, and an unreachable arm is a claim no test can hold to account.
+ */
+function phaseVerb(phase: Exclude<RegionCheckPhase, 'not-found'>): string {
+  return phase === 'pre-update' ? 'update' : 'delete';
 }

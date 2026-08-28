@@ -17,6 +17,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
+import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -193,6 +195,26 @@ describe('DeployEngine DELETE — an interrupt is never "already deleted" (#2053
       `phys-${NEEDLE}`,
       new InterruptedWaitError(`DynamoDB Table ${NEEDLE} delete`)
     );
+
+    await expect(buildEngine().deploy(STACK, template)).rejects.toThrow();
+
+    expect(persistedResources()[NEEDLE]).toMatchObject({ physicalId: `phys-${NEEDLE}` });
+  });
+
+  it('keeps the state row for a REGION REFUSAL carrying the needle (issue #2301)', async () => {
+    // Twin of the `destroy-runner.ts` case: the engine's own template-removal
+    // DELETE runs the same substring classifier, so a Cloud Control pre-flight
+    // region refusal naming a needle-carrying logical id would be read as
+    // "already deleted" here too — dropping a live foreign-region resource
+    // from state on an otherwise successful deploy.
+    let refusal: Error | undefined;
+    try {
+      assertRegionMatch('us-east-1', 'us-west-2', TYPE, NEEDLE, `phys-${NEEDLE}`, 'pre-delete');
+    } catch (error) {
+      refusal = markNonRetryable(error as Error);
+    }
+    expect(refusal?.message).toContain('NotFoundException');
+    deleteError = refusal;
 
     await expect(buildEngine().deploy(STACK, template)).rejects.toThrow();
 

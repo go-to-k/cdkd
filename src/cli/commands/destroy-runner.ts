@@ -1513,9 +1513,25 @@ export async function runDestroyForStack(
           // row while reporting success. The typed check has to come first
           // because the substring match cannot be made safe: any needle can
           // appear in a user-chosen name.
+          //
+          // ...and never for a DELIBERATE cdkd REFUSAL either (issue #2301) —
+          // the third member of the same family, and the one this PR would
+          // otherwise have introduced. `CloudControlProvider`'s pre-flight
+          // region check refuses with a message that interpolates the LOGICAL
+          // ID, so a construct id containing `NotFoundException` (or a CFn
+          // logical id carried in by `--migrate-from-cloudformation`) would
+          // make the refusal read as "already deleted": `deletedCount++`, the
+          // state row dropped, success reported over a LIVE resource in
+          // another region — the exact orphan class that guard exists to
+          // prevent, arriving through its own throw. `isMarkedNonRetryable`
+          // is the right predicate rather than a new error type: cdkd marks a
+          // refusal non-retryable precisely because it is a deterministic
+          // verdict rather than an AWS condition, and nothing AWS returns
+          // carries the marker.
           if (
             !isInterruptedWaitError(error) &&
             !isFinalSnapshotError(error) &&
+            !isMarkedNonRetryable(error) &&
             (msg.includes('does not exist') ||
               msg.includes('not found') ||
               msg.includes('No policy found') ||

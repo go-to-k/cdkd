@@ -36,6 +36,11 @@ export interface ResourceProvider {
    * @param resourceType CloudFormation resource type
    * @param properties New properties
    * @param previousProperties Old properties
+   * @param context Optional update context — `desiredFromAwsReadback`,
+   *   `maskSecrets`, and `expectedRegion` (the region the state record being
+   *   updated belongs to, issue #2301). Optional in every sense: a provider
+   *   that needs none of them may declare five parameters, as the examples
+   *   further down this page do.
    * @returns Physical ID (may change if replaced) and attributes
    */
   update(
@@ -43,7 +48,8 @@ export interface ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult>;
 
   /**
@@ -1714,6 +1720,28 @@ preserving the existing idempotent semantics for callers that have not
 been threaded with state region. When set, a region mismatch throws a
 `ProvisioningError` that surfaces both regions and a hint to rerun with
 the correct `--region`.
+
+**The `NotFound` branch is the REACTIVE use, and it is not the only one**
+(issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)). A wrong-region
+call usually never REACHES that branch: most physical ids are NAMES, and the
+same name commonly exists in the client's region as well — the same stack
+deployed twice, or `resource-name.ts` deriving an identical name from an
+identical stack plus logical id — so the call succeeds against the WRONG
+resource instead of erroring. `assertRegionMatch` therefore takes an optional
+sixth `phase` argument: the default `'not-found'` keeps the wording above,
+while `'pre-delete'` / `'pre-update'` word the same refusal for a call that has
+not been issued yet. The comparison and the three outcomes are one
+implementation across all three phases; only the message differs.
+
+`CloudControlProvider` uses those phases UNCONDITIONALLY, for every
+Cloud-Control-routed type, at the top of both `delete()` and `update()` —
+before the `--remove-protection` flips, before the SDK delegations, before the
+`AWS::S3::Bucket` identity probe, and before the `DescribeType` the update
+path's write-only lookup performs. The update side is why `UpdateContext`
+carries an `expectedRegion` of its own (`src/types/resource.ts`), threaded by
+`deploy-engine.ts`, `rollback-executor.ts` and `drift --revert`. An SDK
+provider MAY read the same field, but nothing requires it to: absent, the
+guard is a no-op, exactly as on the delete side.
 
 **The create side has the same question, and it is NOT the same answer.**
 "Handle when `create` is called on an existing resource" above is the usual

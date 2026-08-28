@@ -798,6 +798,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     const context = update.mock.calls[0]![5] as {
       desiredFromAwsReadback?: boolean;
       maskSecrets?: (text: string) => string;
+      expectedRegion?: string;
     };
     expect(typeof context?.maskSecrets).toBe('function');
     // Bound to the bag THIS revert resolved into, not merely present: a masker
@@ -810,6 +811,14 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // The masker rides ALONGSIDE the readback flag rather than replacing it --
     // dropping that flag would change which arm a provider takes on a revert.
     expect(context.desiredFromAwsReadback).toBe(true);
+    // Issue #2301 item 1: and alongside the region the STATE KEY named, which
+    // is what a Cloud-Control-routed provider compares its client against
+    // before writing. PRESENCE only here -- this suite's only region is
+    // `us-east-1`, which is also this repo's fallback, so asserting the VALUE
+    // here would pass just as well against a hardcoded literal. The value is
+    // fenced in `drift-cross-region-secret.test.ts`, whose region is
+    // `ap-northeast-1`.
+    expect(context.expectedRegion).toBeDefined();
   });
 
   it('--revert does not persist the plaintext a provider echoes back in effectiveProperties', async () => {

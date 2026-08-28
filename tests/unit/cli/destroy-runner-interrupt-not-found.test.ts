@@ -59,6 +59,8 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
+import { markNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const REGION = 'us-east-1';
 
@@ -160,6 +162,50 @@ describe('an interrupted delete is never read as "already deleted"', () => {
 
     expect(result.errorCount).toBe(1);
     expect(deleteState).not.toHaveBeenCalled();
+  });
+
+  it('keeps the state row for a REGION REFUSAL carrying the needle (issue #2301)', async () => {
+    // The THIRD member of this family, after the final-snapshot failure
+    // (#1352) and the user abort (#2053 / #1952). `CloudControlProvider`'s
+    // pre-flight region check refuses with a message that interpolates the
+    // LOGICAL ID, so the same user-chosen name that defeated the matcher for
+    // an interrupt defeats it for a deliberate refusal — and here the resource
+    // it would drop is not merely live, it is live IN ANOTHER REGION, which is
+    // the orphan the guard exists to prevent.
+    //
+    // The error is produced by the PRODUCTION helpers rather than paraphrased,
+    // so a reworded refusal cannot leave this test fencing a string that no
+    // longer ships.
+    let refusal: Error | undefined;
+    try {
+      assertRegionMatch(
+        'us-east-1',
+        'us-west-2',
+        'AWS::DynamoDB::Table',
+        NEEDLE_LOGICAL_ID,
+        'phys-id',
+        'pre-delete'
+      );
+    } catch (error) {
+      refusal = markNonRetryable(error as Error);
+    }
+    // Non-vacuity: the refusal really does carry the classifier's needle, via
+    // the logical id it names.
+    expect(refusal?.message).toContain('NotFoundException');
+
+    const mockProviderDelete = vi.fn().mockRejectedValue(refusal);
+    const { ctx, saveState, deleteState } = makeCtx(mockProviderDelete);
+
+    const result = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), ctx);
+
+    expect(result.deletedCount).toBe(0);
+    expect(result.errorCount).toBe(1);
+    // The row SURVIVES — the load-bearing half. An error that is merely logged
+    // while the record is dropped is the failure this fences.
+    expect(deleteState).not.toHaveBeenCalled();
+    const lastSave = saveState.mock.calls.at(-1);
+    expect(lastSave, 'expected the runner to persist the surviving state').toBeDefined();
+    expect(Object.keys((lastSave![2] as StackState).resources)).toContain(NEEDLE_LOGICAL_ID);
   });
 
   it('INVERTED CONTROL — a genuine not-found IS still read as already deleted', async () => {

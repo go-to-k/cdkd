@@ -13,7 +13,7 @@ interface ResourceProvider {
   // (issue #1932): an optional `maskSecrets?: (text: string) => string` that a
   // provider MUST apply to any log line interpolating a RESOLVED property
   // value. See "Masking a resolved property value in a provider log line".
-  update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>): Promise<ResourceUpdateResult>;
+  update(logicalId: string, physicalId: string, resourceType: string, properties: Record<string, unknown>, previousProperties: Record<string, unknown>, context?: UpdateContext): Promise<ResourceUpdateResult>;
   delete(logicalId: string, physicalId: string, resourceType: string, properties?: Record<string, unknown>, context?: DeleteContext): Promise<void | ResourceDeleteResult>;
   getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown>;
 }

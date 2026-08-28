@@ -128,7 +128,12 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
     };
   });
 
-  function makeEngine(): DeployEngine {
+  // Defaulted rather than fixed (issue #2301): `us-east-1` is also this repo's
+  // fallback region, so a region assertion made against an engine built with it
+  // holds just as well when the threaded binding is replaced by that literal.
+  // The threading fence below builds the engine with a region no default
+  // produces.
+  function makeEngine(stackRegion = 'us-east-1'): DeployEngine {
     return new DeployEngine(
       mockStateBackend as never,
       mockLockManager as never,
@@ -136,8 +141,47 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
       mockDiffCalculator as never,
       mockProviderRegistry as never,
       { dryRun: false },
-      'us-east-1'
+      stackRegion
     );
+  }
+
+  /**
+   * State + diff priming for the in-place UPDATE path, shared by the masker
+   * test and the region-threading fence so the two cannot drift apart.
+   */
+  function primeUpdatePath(): CloudFormationTemplate {
+    mockStateBackend.getState!.mockResolvedValue({
+      state: {
+        version: 8,
+        stackName,
+        region: 'us-east-1',
+        resources: {
+          Pool: {
+            physicalId: 'phys',
+            resourceType: RESOURCE_TYPE,
+            properties: { UserPoolName: 'pool', EnabledMfas: 'PREVIOUS' },
+          },
+        },
+        outputs: {},
+        lastModified: 1,
+      },
+      etag: 'etag-old',
+    });
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Pool',
+          {
+            logicalId: 'Pool',
+            changeType: 'UPDATE',
+            resourceType: RESOURCE_TYPE,
+            desiredProperties: secretProps,
+            currentProperties: { UserPoolName: 'pool', EnabledMfas: 'PREVIOUS' },
+          },
+        ],
+      ])
+    );
+    return { Resources: { Pool: { Type: RESOURCE_TYPE, Properties: secretProps } } };
   }
 
   /**
@@ -190,40 +234,7 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
   });
 
   it('UPDATE: passes a masker bound to this resource resolution pass', async () => {
-    mockStateBackend.getState!.mockResolvedValue({
-      state: {
-        version: 8,
-        stackName,
-        region: 'us-east-1',
-        resources: {
-          Pool: {
-            physicalId: 'phys',
-            resourceType: RESOURCE_TYPE,
-            properties: { UserPoolName: 'pool', EnabledMfas: 'PREVIOUS' },
-          },
-        },
-        outputs: {},
-        lastModified: 1,
-      },
-      etag: 'etag-old',
-    });
-    mockDiffCalculator.calculateDiff!.mockResolvedValue(
-      new Map<string, ResourceChange>([
-        [
-          'Pool',
-          {
-            logicalId: 'Pool',
-            changeType: 'UPDATE',
-            resourceType: RESOURCE_TYPE,
-            desiredProperties: secretProps,
-            currentProperties: { UserPoolName: 'pool', EnabledMfas: 'PREVIOUS' },
-          },
-        ],
-      ])
-    );
-    const template: CloudFormationTemplate = {
-      Resources: { Pool: { Type: RESOURCE_TYPE, Properties: secretProps } },
-    };
+    const template = primeUpdatePath();
 
     await makeEngine().deploy(stackName, template);
 
@@ -232,7 +243,27 @@ describe('DeployEngine - provider calls carry a working secret masker (issue #19
       SECRET_PLAINTEXT
     );
     // Arg 5 is the UpdateContext — the twin of the CREATE call's arg 3.
-    expectWorkingMasker(mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined);
+    const updateContext = mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined;
+    expectWorkingMasker(updateContext);
+    // Issue #2301 item 1: the same context also carries the stack's region, so
+    // a Cloud-Control-routed in-place update refuses rather than applying the
+    // patch to whatever the recorded physical id names in the client's region.
+    // PRESENCE only here; the value is fenced by the test below, where the
+    // engine's region is one no default can produce.
+    expect(updateContext?.expectedRegion).toBeDefined();
+  });
+
+  it("UPDATE: expectedRegion follows the engine's stackRegion, not a constant (issue #2301)", async () => {
+    // `eu-central-1` rather than `us-east-1`: the latter is this repo's
+    // fallback region, so substituting the literal for `this.stackRegion` at
+    // the call site leaves a `us-east-1` assertion GREEN. This one must go RED.
+    const template = primeUpdatePath();
+
+    await makeEngine('eu-central-1').deploy(stackName, template);
+
+    const updateContext = mockProvider.update.mock.calls[0]![5] as UpdateContext | undefined;
+    expect(updateContext?.expectedRegion).toBe('eu-central-1');
+    expect(updateContext?.expectedRegion).not.toBe('us-east-1');
   });
 
   it('CREATE: the masker is an identity when this pass resolved no secret', async () => {

@@ -519,6 +519,38 @@ export interface UpdateContext extends SecretMaskingContext {
    * or a validation that protects the AWS call itself.
    */
   desiredFromAwsReadback?: boolean;
+
+  /**
+   * Region recorded in the stack state for the resource being updated
+   * (`StackState.region`), issue #2301 item 1.
+   *
+   * The UPDATE twin of `DeleteContext.expectedRegion`
+   * (`src/provisioning/region-check.ts`), and it is a twin in shape only —
+   * the hazard is the same one, arriving on a path whose consequence is
+   * recoverable where the delete's is not. A provider is handed a
+   * `physicalId` read out of a state record, and most physical ids are NAMES:
+   * if the client's region disagrees with the record's, the call does not
+   * fail, it succeeds against a same-named resource in the client's region.
+   * On delete that is unrecoverable; on update it is a misapplied
+   * configuration on a resource cdkd does not manage.
+   *
+   * Optional, and ABSENT means "do not check" — the guard
+   * (`assertRegionMatch`) is a no-op without it, so a caller that has no
+   * trustworthy region (a pre-v2 state record whose key layout carried none)
+   * keeps the historical behavior rather than being refused. An EMPTY string
+   * is treated the same as absent, because callers typed `region: string`
+   * can produce one.
+   *
+   * The field lives here rather than on a shared base with `DeleteContext`
+   * for the same reason `DeleteContext` itself lives in `region-check.ts`:
+   * that module owns the check, this module owns the interface the
+   * `ResourceProvider` contract hands to `update()`. Threaded today by
+   * `deploy-engine.ts` (the in-place UPDATE), `rollback-executor.ts` (both
+   * revert arms) and `drift.ts` (`--revert`); `CloudControlProvider.update`
+   * is the only consumer so far, and the SDK providers' own twin is issue
+   * #2245.
+   */
+  expectedRegion?: string | undefined;
 }
 
 /**
