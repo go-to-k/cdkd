@@ -1,3 +1,10 @@
+## [0.284.85](https://github.com/go-to-k/cdkd/compare/v0.284.84...v0.284.85) (2026-08-28)
+
+
+### Bug Fixes
+
+* **deployment:** coerce the resolved parameter value on the default and SSM paths too ([#2382](https://github.com/go-to-k/cdkd/issues/2382)) ([f7f630c](https://github.com/go-to-k/cdkd/commit/f7f630cb5a679e0ffbd033240d62002086200ec0))
+
 ## [0.284.84](https://github.com/go-to-k/cdkd/compare/v0.284.83...v0.284.84) (2026-08-28)
 
 
