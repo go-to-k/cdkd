@@ -13,7 +13,10 @@
 #   - PASSES for `git restore --staged <path>` (index only)
 #   - PASSES when only an UNNAMED sibling file is dirty
 #   - BLOCKS when one of several named paths is dirty
-#   - PASSES under the CDKD_ALLOW_DIRTY_RESTORE=1 escape hatch
+#   - PASSES under the CDKD_ALLOW_DIRTY_RESTORE=1 escape hatch, via BOTH
+#     channels: the hook's process env AND a command-text leading
+#     assignment (issue #2368) — with a quoted-mention control and a
+#     wrong-value control pinning the text channel's bounds
 #   - PASSES for a non-Bash tool and for unrelated commands
 #   - Honors `git -C <path>` when the payload cwd is elsewhere
 
@@ -196,8 +199,19 @@ RSPC=$(make_repo)
 run "quoted path with a space, clean, passes"    "$RSPC" "git checkout -- \"sp ace.txt\"" 0
 run "restore <dirty path> blocks" "$R" "git restore tracked.txt" 2
 run "restore -- <dirty path> blocks" "$R" "git restore -- tracked.txt" 2
-run "escape hatch is honored" "$R" "CDKD_ALLOW_DIRTY_RESTORE=1 git checkout -- tracked.txt" 2
+# BOTH bypass channels (issue #2368). The command-text prefix case used to
+# expect exit 2 under the misleading name "escape hatch is honored" — i.e.
+# the suite CERTIFIED that the hook's own advertised remediation did not
+# work when typed by an agent, whose Bash call cannot populate the hook's
+# process env. The prefix is now honored from the text, in command position
+# only, value exactly 1.
+run "escape hatch via command-text prefix passes" "$R" "CDKD_ALLOW_DIRTY_RESTORE=1 git checkout -- tracked.txt" 0
+run "escape hatch prefix after a separator passes" "$R" "cd $R && CDKD_ALLOW_DIRTY_RESTORE=1 git restore tracked.txt" 0
 CDKD_ALLOW_DIRTY_RESTORE=1 run "escape hatch via env passes" "$R" "git checkout -- tracked.txt" 0
+# Controls: a QUOTED mention must not bypass (strip_noncommand_spans
+# neutralises it), and the value must be exactly 1.
+run "quoted mention of the bypass does not bypass" "$R" "echo \"CDKD_ALLOW_DIRTY_RESTORE=1\" && git restore tracked.txt" 2
+run "bypass value other than 1 does not bypass" "$R" "CDKD_ALLOW_DIRTY_RESTORE=0 git restore tracked.txt" 2
 run "restore --staged is index-only, passes" "$R" "git restore --staged tracked.txt" 0
 run "non-Bash tool passes" "$R" "git checkout -- tracked.txt" 0 "Edit"
 run "unnamed dirty sibling does not block a clean target" "$R" "git checkout -- other.txt" 0
