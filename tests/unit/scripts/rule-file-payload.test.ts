@@ -192,6 +192,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['code-layout.md', 261],
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
+  ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
   ['layout-analyzer.md', 12],
   ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
@@ -275,6 +276,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
   // adding a third file would spend down to about 1 KB.
   ['.claude/hooks/integ-local-gate.sh', 108_000, 140_000], // measured 122,313
+  // The cwd-race detector's entry moved out of hooks.md when the #2363
+  // widening pushed that file past the 120,000 B per-file cap (the #2236
+  // precedent). This path is the only one that loads the satellite, so
+  // without this row it would sit under no budget. Payload is hooks.md +
+  // hooks-cwd-detector.md.
+  ['.claude/hooks/main-tree-git-cwd-detector.sh', 108_000, 140_000], // measured 122,121
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -397,7 +404,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 32; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 33; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -408,8 +415,16 @@ const CORPUS_FILE_COUNT = 32; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  cloud-control-provider.ts payload budget to 105,480 B against a
                               //  105,000 B cap -- a shared provisioning helper was paying for
                               //  provider-only detail. That makes 32.
+                              //  + hooks-cwd-detector.md (go-to-k/cdkd#2363): the cwd-race
+                              //  detector's entry moved out of hooks.md verbatim when the #2363
+                              //  family widening pushed hooks.md past the per-file cap again --
+                              //  the #2236 shape repeated. That makes 33.
 const CORPUS_BYTES_MIN = 795_000;   // measured 808,384 B -- 13,384 B of slack
-const CORPUS_BYTES_MAX = 900_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap
+const CORPUS_BYTES_MAX = 915_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+                                    // 900_000 -> 915_000 (go-to-k/cdkd#2363): origin/main sat at 899,989 B --
+                                    // 11 B of headroom -- so ANY rules addition tripped it. Measured after the
+                                    // hooks-cwd-detector.md split: 902,381 B (the widening's net prose is
+                                    // 1,422 B; the satellite's frontmatter + the pointer line are the rest).
 
 /**
  * The repo's tracked files, read once. Memoised because two per-file suites

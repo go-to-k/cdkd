@@ -10,13 +10,24 @@
 # the MAIN tree instead of the intended `.claude/worktrees/<branch>/`
 # worktree.
 #
-# The hook covers TWO families of command, which share that mechanism
-# but fail in opposite ways:
+# The hook covers THREE families of command, which share that
+# mechanism but fail in different ways:
 #
-#   1. GIT MUTATIONS — `git add` / `git commit` / `git push`. The tells
-#      are quiet and easy to misread: "nothing to commit", a
-#      "non-fast-forward" push, or a commit that lands the wrong (or
-#      no) files — none of which look like a cwd bug.
+#   1. GIT MUTATIONS — `git add` / `git commit` / `git push` /
+#      `git rebase` / `git merge` / `git cherry-pick`. The tells are
+#      quiet and easy to misread: "nothing to commit", a
+#      "non-fast-forward" push, a commit that lands the wrong (or no)
+#      files, or a rebase/merge that "fast-forwards" or reports
+#      "Already up to date" against the WRONG tree (issue #2363: a
+#      mistargeted `git rebase origin/main` in the main tree
+#      fast-forwarded silently, harmless only because local `main`
+#      held no unique commits) — none of which look like a cwd bug.
+#      `git pull` is deliberately NOT in this family: the post-merge
+#      sync (/work-issues section 9) runs `git pull` in the MAIN tree
+#      as a mandated step, so warning on it would make the detector's
+#      common case "ignore this" — the same argument as the
+#      `vp run build` exemption below, settled by the verb set rather
+#      than by a state predicate.
 #
 #   2. VERIFICATION COMMANDS — `vp run <task>` / `vp test run <path>`
 #      and `markgate set|verify <gate>` (including the
@@ -28,6 +39,18 @@
 #      family 1 there is no symptom to misread — there is no symptom.
 #      Same for a marker: `markgate set` from the main tree binds the
 #      main tree's content and its per-worktree store, not the lane's.
+#
+#   3. `gh pr merge` — a MARKER-CONSULTING command (issue #2363). The
+#      merge gates resolve the marker store and the
+#      `.markgate-pr-review-sha` sentinel from the tree the command
+#      runs from, so a main-tree `gh pr merge` is judged against the
+#      MAIN tree's markers: a block arrives with a misleading
+#      diagnosis (the fresh marker sits in the worktree — the measured
+#      incident shape), and a pass would attest to the wrong tree
+#      entirely. `gh pr create` is left out: it consults `verify-pr`
+#      the same way, but the same session runs it moments after
+#      setting the markers, so the mistargeted shape has not been
+#      observed there and the family stays minimal.
 #
 # The name is historical (the hook shipped covering only family 1);
 # it is kept so the settings registration, the rules entry and this
@@ -259,7 +282,12 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 # Family 1: state-mutating git verbs that a cwd-race silently
 # misdirects. `git status` / `git log` / `git diff` are read-only and
 # harmless in the wrong tree, so they are skipped to stay quiet.
-GIT_VERB='git([[:space:]]+-[^[:space:]]+)*[[:space:]]+(commit|add|push)([[:space:]]|$|[|;&])'
+# `rebase` / `merge` / `cherry-pick` joined for issue #2363 —
+# continuation forms (`rebase --continue` / `--abort`) match too, on
+# purpose: mistargeted, they error with "No rebase in progress", a tell
+# as misreadable as "nothing to commit". `pull` is deliberately absent
+# (the mandated post-merge main-tree sync — see the header).
+GIT_VERB='git([[:space:]]+-[^[:space:]]+)*[[:space:]]+(commit|add|push|rebase|merge|cherry-pick)([[:space:]]|$|[|;&])'
 
 # Family 2: verification commands whose verdict is taken as evidence.
 #
@@ -286,6 +314,12 @@ GIT_VERB='git([[:space:]]+-[^[:space:]]+)*[[:space:]]+(commit|add|push)([[:space
 RUNNER_PFX='(mise[[:space:]]+exec[[:space:]]+([^[:space:]]+[[:space:]]+)*--[[:space:]]+)?'
 VERIFY_VERB="${RUNNER_PFX}"'(vp[[:space:]]+run[[:space:]]+[^[:space:]]|vp[[:space:]]+test[[:space:]]+run([[:space:]]|$|[|;&])|markgate[[:space:]]+(set|verify)([[:space:]]|$|[|;&]))'
 
+# Family 3: `gh pr merge` (issue #2363). Same flag-token shape as
+# GIT_VERB, with the same accepted gap: a flag VALUE (`gh -R <repo> pr
+# merge`) breaks the match, a missed warning in a hook that only
+# informs. gh has no `-C`, so there is no `-C` handling to consider.
+GH_PR_MERGE_VERB='gh([[:space:]]+-[^[:space:]]+)*[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&])'
+
 # Cheap literal pre-filter before the shared matcher. This hook is a
 # PostToolUse `Bash` hook with no `if:` condition, so it runs on EVERY
 # Bash call, and `cmd_matches_verb` costs an awk pass over the whole
@@ -293,17 +327,19 @@ VERIFY_VERB="${RUNNER_PFX}"'(vp[[:space:]]+run[[:space:]]+[^[:space:]]|vp[[:spac
 # filter is strictly BROADER than either ERE below — every command
 # matching them contains one of these literals — so it can only skip
 # commands the matcher would also have rejected.
-printf '%s' "$cmd" | grep -qE 'git|vp|markgate' || exit 0
+printf '%s' "$cmd" | grep -qE 'git|vp|markgate|gh' || exit 0
 
 git_hit=0
 verify_hit=0
+ghpr_hit=0
 # The shared matcher neutralises heredoc bodies and quoted spans first,
 # then requires COMMAND POSITION — so a commit message or PR body that
 # quotes `vp run test` does not fire (this repo's own commit messages
 # routinely describe the commands they are about).
 cmd_matches_verb "$cmd" "$GIT_VERB" && git_hit=1
 cmd_matches_verb "$cmd" "$VERIFY_VERB" && verify_hit=1
-[[ "$git_hit" == 1 || "$verify_hit" == 1 ]] || exit 0
+cmd_matches_verb "$cmd" "$GH_PR_MERGE_VERB" && ghpr_hit=1
+[[ "$git_hit" == 1 || "$verify_hit" == 1 || "$ghpr_hit" == 1 ]] || exit 0
 
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 base="${hook_cwd:-$PWD}"
@@ -404,7 +440,17 @@ if [[ "$verify_hit" == 1 ]]; then
   fi
 fi
 
-[[ "$git_hit" == 1 || "$verify_hit" == 1 ]] || exit 0
+eff_ghpr="$base"
+if [[ "$ghpr_hit" == 1 ]]; then
+  cdt="$(cmd_last_cd_target "$cmd" "$base" "$GH_PR_MERGE_VERB")"
+  if [[ -n "$cdt" ]]; then
+    eff_ghpr="$cdt"
+  elif has_cd_before_verb "$cmd" "$GH_PR_MERGE_VERB"; then
+    ghpr_hit=0
+  fi
+fi
+
+[[ "$git_hit" == 1 || "$verify_hit" == 1 || "$ghpr_hit" == 1 ]] || exit 0
 
 # Canonicalize for a reliable equality test (macOS symlinked /tmp,
 # trailing slashes, ..).
@@ -468,6 +514,7 @@ post_merge_position() {
 
 warn_git=0
 warn_verify=0
+warn_ghpr=0
 main_tree=""
 if [[ "$git_hit" == 1 ]] && in_main_tree "$eff_git"; then
   warn_git=1
@@ -477,7 +524,11 @@ if [[ "$verify_hit" == 1 ]] && in_main_tree "$eff_verify"; then
   warn_verify=1
   main_tree="$MAIN_TREE"
 fi
-[[ "$warn_git" == 1 || "$warn_verify" == 1 ]] || exit 0
+if [[ "$ghpr_hit" == 1 ]] && in_main_tree "$eff_ghpr"; then
+  warn_ghpr=1
+  main_tree="$MAIN_TREE"
+fi
+[[ "$warn_git" == 1 || "$warn_verify" == 1 || "$warn_ghpr" == 1 ]] || exit 0
 
 # ...AND a feature worktree is currently active (a task is in flight).
 # `.claude/worktrees/<branch>/` is the sanctioned location; if none
@@ -489,12 +540,13 @@ feature_wts=$(git -C "$main_tree" worktree list --porcelain 2>/dev/null \
 [[ -n "$feature_wts" ]] || exit 0
 
 # The MANDATED post-merge rebuild (go-to-k/cdkd#2094). Drops only the
-# VERIFY half — a git mutation riding along keeps its own warning.
+# VERIFY half — a git mutation or a `gh pr merge` riding along keeps
+# its own warning.
 if [[ "$warn_verify" == 1 ]] \
   && verify_is_build_only "$cmd" \
   && post_merge_position "$main_tree"; then
   warn_verify=0
-  [[ "$warn_git" == 1 ]] || exit 0
+  [[ "$warn_git" == 1 || "$warn_ghpr" == 1 ]] || exit 0
 fi
 
 wt_list=$(printf '%s\n' "$feature_wts" | sed -E "s#^$main_tree/##" | head -6 | paste -sd ',' -)
@@ -511,9 +563,14 @@ if [[ "$warn_verify" == 1 ]]; then
 fi
 
 if [[ "$warn_git" == 1 ]]; then
-  msg+="THE COMMAND WAS A GIT MUTATION (\`git add\`/\`commit\`/\`push\`). "
-  msg+="A \"nothing to commit\", a \"non-fast-forward\" push, or a commit that captured the wrong/no files here is almost certainly THAT, not real git state. "
+  msg+="THE COMMAND WAS A GIT MUTATION (\`git add\`/\`commit\`/\`push\`/\`rebase\`/\`merge\`/\`cherry-pick\`). "
+  msg+="A \"nothing to commit\", a \"non-fast-forward\" push, a commit that captured the wrong/no files, a rebase/merge that \"fast-forwarded\" or said \"Already up to date\", or a \"No rebase in progress\" here is almost certainly THAT, not real git state. "
   msg+="Verify: (1) did the edit you intended actually land in the feature worktree? (2) re-run the git op prefixed with \`git -C <feature-worktree>\` (the cwd-race-proof form), NOT a bare git from the main-tree cwd. "
+fi
+
+if [[ "$warn_ghpr" == 1 ]]; then
+  msg+="THE COMMAND WAS \`gh pr merge\`, a MARKER-CONSULTING command: the merge gates resolve the markgate marker store and the \`.markgate-pr-review-sha\` sentinel from the tree the command runs from, so from here they read the MAIN tree's markers — a block arrives with a MISLEADING diagnosis (the fresh marker sits in the worktree), and a pass would attest to the wrong tree entirely. "
+  msg+="Do NOT chase the gate's stated reason from here. Re-run it from the lane that set the markers: \`cd $first_wt && <the same gh pr merge command>\`. "
 fi
 
 msg+="If you genuinely meant to operate on the main tree, ignore this — but the branch-gate will still block a commit/push on \`main\`/\`master\`."
