@@ -2,8 +2,9 @@
 #
 # Seven narrow-scope gates back the pre-commit / pre-PR / pre-merge
 # checks for this repo. Each gate only invalidates within its own
-# `include` set, so a tests-only commit doesn't re-run doc checks and
-# a docs-only commit doesn't re-run typecheck/build/tests. Most gates
+# `include` set, so a tests-only commit doesn't re-run doc checks. The
+# converse no longer holds: `docs/**` is a checker INPUT (issue #2381),
+# so a docs-only commit stales `check` too and re-runs the suite. Most gates
 # invalidate on the CONTENT of those files (`hash: files`);
 # `integ-destroy` instead invalidates on this branch's DELTA against
 # origin/main within them (`hash: diff`), and `integ-broad` /
@@ -142,42 +143,102 @@ gates:
       #     (the inert-`if:` class)
       #   - .claude/agents/** — security-surface-list-sync.test.ts reads
       #     pr-security-reviewer.md
-      #   - the three gate hooks below — cross-cutting-list-sync.test.ts
-      #     (integ-broad / integ-destroy) and security-surface-list-sync
-      #     (pr-review-gate). Precise files rather than `.claude/hooks/**`:
-      #     the policy that a hooks-only diff needs no /check stays true for
-      #     every hook NO test reads, and hook logic already has its own
-      #     harness (test.sh suites + hooks.yml CI).
+      #   - .claude/hooks/** — the WHOLE directory, widened from the three
+      #     precise gate hooks this list used to name (issue #2381). The
+      #     narrowing's stated reason was that "a hooks-only diff needs no
+      #     /check stays true for every hook NO test reads, and hook logic
+      #     already has its own harness (test.sh suites + hooks.yml CI)".
+      #     Both halves are answered rather than overridden:
+      #       * "every hook NO test reads" is an empty set. The suite binds
+      #         to hook paths through three shapes, only ONE of which the
+      #         #2366 sweep's literal-`join(repoRoot, ...)` extractor could
+      #         see: (1) rule-file-payload.test.ts's PAYLOAD_BUDGETS table
+      #         names branch-gate.sh, lib/command-match.sh,
+      #         integ-local-gate.sh and main-tree-git-cwd-detector.sh and
+      #         asserts each EXISTS; (2) fifteen literal hook paths sit in
+      #         `.claude/rules/*.md` frontmatter (gate-sibling-repos.md 8,
+      #         hooks-class-fences.md 5, hooks-cwd-detector.md 2), where the
+      #         wildcard-free reach assertion is an EXACT equality and the
+      #         dead-glob test fires on a rename; (3) hooks.md's
+      #         `.claude/hooks/**` carries REACH_FLOORS 68 against 91 tracked
+      #         hook files — a POPULATION-level binding that no list of file
+      #         NAMES can express, which is what settles glob over a
+      #         corrected precise list. (1) and (2) are the fence's own
+      #         declared blind spot (a) in
+      #         tests/unit/scripts/check-scope-checker-inputs.test.ts, so a
+      #         corrected precise list would go stale silently the next time
+      #         a rule satellite or a budget row named a new hook.
+      #       * the hooks' own harness tests hook BEHAVIOUR; the vitest suite
+      #         reads hook files as CORPUS (byte budgets, reach counts, list
+      #         sync). A green hooks.yml says nothing about a payload budget.
+      #     Chronology, since the order is the opposite of the obvious guess:
+      #     the literal bindings PREDATE the narrowing (`git log -S` puts
+      #     branch-gate.sh in PAYLOAD_BUDGETS at #2215 and
+      #     gate-sibling-repos.md at #2242; the comment landed with #2366 on
+      #     2026-08-28). The rationale was not overtaken — it was incomplete
+      #     when written, because its enumeration came from the extractor
+      #     that cannot see a table.
+      #     Accepted cost: a hooks-only diff now needs /check.
       #   - the two workflow YAMLs — provider-error-cause / provider-secret-
       #     mask / local-reachability read ci.yml; pr-inherit-issue-labels
       #     .test.ts reads its workflow
       #   - README.md — cc-protection-doc-coverage.test.ts asserts its
-      #     registry-type table (found by this PR's own review: the reader
+      #     registry-type table (found by #2366's own review: the reader
       #     resolves the root as `ROOT` and takes the path from a table, so
       #     the sweep's join-literal regex could not see it — the class
       #     fence's stated known limit, demonstrated live)
-      #   - docs/cli-reference.md — {full,no}-wait-doc-coverage.test.ts read
-      #     the wait-semantics table
-      #   - docs/changelog-cdkd.md + docs/_generated/** —
-      #     changelog-ledger-citation.test.ts (ledger citations) and
-      #     build-integ-coverage-matrix.test.ts (matrix snapshots)
-      # Known limit, deliberate (mirrors go-to-k/cdk-local#620's call):
-      # repo-wide scanners (e.g. rule-file-payload.test.ts's corpus walk,
-      # no-control-bytes-style `git ls-files` scans) read populations scoping
-      # cannot follow without staling the marker on every edit anywhere; the
-      # `.claude/rules/**` entry above covers the rules corpus, and CI is the
-      # backstop for the rest.
+      #   - docs/** — the WHOLE tree, widened from the three precise entries
+      #     this list used to name (docs/cli-reference.md,
+      #     docs/changelog-cdkd.md, docs/_generated/**; issue #2381). Those
+      #     three readers are still the reason each of them individually
+      #     matters — {full,no}-wait-doc-coverage.test.ts read the
+      #     wait-semantics table, changelog-ledger-citation.test.ts the
+      #     ledger citations, build-integ-coverage-matrix.test.ts the matrix
+      #     snapshots — but they do not bound the population. The
+      #     "claims this lane corrected stay corrected TREE-WIDE" block in
+      #     tests/unit/scripts/integ-s3-versions-harness.test.ts walks
+      #     ROOTS = ['docs', '.claude/rules', 'tests/unit/scripts',
+      #     'tests/integration'] RECURSIVELY over every .md/.sh/.ts, floors
+      #     the corpus at 300 files, names docs/testing.md, and runs three
+      #     FALSIFIED_CLAIMS regexes over EVERY LINE. `docs` is the only one
+      #     of those four roots that was outside this include. A precise
+      #     list cannot express it: the population is a subtree and the
+      #     predicate is CONTENT.
+      #     docs/** also sits in the `docs` gate. Dual-scope membership is
+      #     established practice here, not an accident: src/**, README.md,
+      #     CLAUDE.md and .claude/rules/** are already in both.
+      # Known limit, deliberate (mirrors go-to-k/cdk-local#620's call, and
+      # sharpened by go-to-k/cdkd#2381 / go-to-k/cdk-local#630):
+      # tests/unit/scripts/source-control-bytes.test.ts reads every tracked
+      # non-binary file via `git ls-files` and stays a carve-out — CI is the
+      # backstop for it.
+      #
+      # The predicate that licenses a carve-out is NOT "repo-wide population
+      # vs finite one". It is: does the assertion fire on a RARE condition,
+      # or on ORDINARY content?
+      #   * RARE — source-control-bytes only reds on a C0 control byte or a
+      #     binary extension missing from BINARY_EXTENSIONS. Ordinary editing
+      #     anywhere in the tree cannot trip it, so a marker that does not
+      #     track the whole tree is proportionate.
+      #   * ORDINARY — a whole-tree scanner whose predicate is ordinary prose
+      #     or ordinary code MUST have its population inside this include, or
+      #     be moved out of the `check` suite. It has no rarity to trade on:
+      #     the next routine edit can red it while the marker reads fresh.
+      #     That is why docs/** is now scoped rather than carved out — the
+      #     FALSIFIED_CLAIMS regexes above match ordinary sentences.
+      # A future whole-tree scanner must therefore NOT inherit this
+      # carve-out by resembling it in POPULATION; it inherits it only by
+      # resembling it in PREDICATE. go-to-k/cdk-real-drift's markdown
+      # prose-shape scanner is the worked counter-example — same repo-wide
+      # population, ordinary-content predicate, so the same call would be
+      # wrong there (go-to-k/cdk-real-drift#1837).
       - "README.md"
       - ".claude/settings.json"
       - ".claude/agents/**"
-      - ".claude/hooks/integ-broad-gate.sh"
-      - ".claude/hooks/integ-destroy-gate.sh"
-      - ".claude/hooks/pr-review-gate.sh"
+      - ".claude/hooks/**"
       - ".github/workflows/ci.yml"
       - ".github/workflows/pr-inherit-issue-labels.yml"
-      - "docs/cli-reference.md"
-      - "docs/changelog-cdkd.md"
-      - "docs/_generated/**"
+      - "docs/**"
       # This file itself (the go-to-k/cdk-local#623 sibling, handled in the
       # same session): the gate's own definition decides what the marker
       # MEANS, so editing it — this include list included — must stale a

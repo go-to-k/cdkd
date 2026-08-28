@@ -154,11 +154,13 @@ Walk the session and collect, with the concrete instance attached to each:
   stop on the growth loop that produced the 231 KB single-file predecessor.
 - **Another skill**, but only one this run actually exercised (`/run-integ`,
   `/verify-pr`, `/review-pr`, `/pick-integ`, `/check`, `/check-docs`,
-  `/cleanup`). The first four sit in the `check` gate's scope, so editing one
-  invalidates the `check` marker and forces a `/check` re-run.
+  `/cleanup`). ALL of them sit in the `check` gate's scope — its include names
+  `.claude/skills/**` since go-to-k/cdkd#2364, not an enumeration of four — so
+  editing any one invalidates the `check` marker and forces a `/check` re-run.
 - **`CLAUDE.md` / `.claude/rules/**`** when it applies to any work in this repo,
   not just this flow (both in the `docs` gate's scope, alongside `src/**`,
-  `docs/**` and `README.md`; `CLAUDE.md` is in `check` as well).
+  `docs/**` and `README.md` — and both in `check` as well, as are those three:
+  every one of them is read by the unit suite as INPUT).
 - **Memory** (`~/.claude/projects/.../memory/`) when the lesson is judgmental
   and cross-repo. Weakest enforcement — the landing spot when nothing above can
   hold the rule, not the default one.

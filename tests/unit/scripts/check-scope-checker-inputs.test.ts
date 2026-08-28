@@ -21,20 +21,39 @@ import { describe, expect, it } from 'vite-plus/test';
  * by a `check` include glob. A new checker input therefore fails here the
  * moment it is written, naming the include entry to add.
  *
- * Extraction is deliberately LITERAL-ONLY (join|resolve over a named root
- * variable with string-literal segments). KNOWN LIMITS, stated because the
- * parser floor below cannot bound them (it only fences the literal parser
- * going dead, not idiom coverage): (a) a read whose path arrives through a
- * VARIABLE or a table — cc-protection-doc-coverage.test.ts reads README.md
- * that way and this PR's review, not this fence, is what found it; (b) a
+ * Extraction runs TWO literal parsers, because one idiom was not enough.
+ *
+ * 1. JOIN idiom — join|resolve over a named root variable with string-literal
+ *    segments.
+ * 2. BARE idiom — a quoted path literal written whole ('.claude/hooks/
+ *    branch-gate.sh'), requiring at least one '/' and a file extension.
+ *    Added for issue #2381: the JOIN parser is structurally blind to a path
+ *    that arrives from a TABLE, and both of that issue's gaps were exactly
+ *    that — rule-file-payload.test.ts's PAYLOAD_BUDGETS rows naming four
+ *    .claude/hooks/*.sh files, and integ-s3-versions-harness.test.ts's
+ *    'docs/testing.md' corpus assertion. Neither was visible here while both
+ *    could red the suite against a fresh marker.
+ *
+ * A bare literal is a CANDIDATE, not proof of a read — a path-shaped string
+ * can be a pure-function argument — so NON_READ_LITERALS below carves out the
+ * measured false positives by name, with the reason, and is itself asserted
+ * exactly so it cannot quietly grow into a blanket suppressor.
+ *
+ * KNOWN LIMITS that remain, stated because the parser floors cannot bound
+ * them (they only fence a parser going dead, not idiom coverage): (a) a
  * root-less relative join (work-issues-skill-refs.test.ts's
  * join('.claude', 'skills', ...) — resolved against cwd, covered today by
- * the skills glob); (c) template-literal paths; (d) dynamic paths and
- * repo-wide scanners (git ls-files walks, the rules-corpus walk), the
- * documented known limit in .markgate.yml's comment — scoping cannot
- * follow a population that is the whole tree. When adding a NEW test that
- * reads a repo file through any of those shapes, add the include entry by
- * hand; this fence only automates the literal idiom.
+ * the skills glob); (b) template-literal paths; (c) a path assembled from
+ * segments that never appear as one literal; (d) dynamic paths and repo-wide
+ * scanners (git ls-files walks, the rules-corpus walk) — scoping cannot
+ * follow a population that is the whole tree, and .markgate.yml's comment
+ * states the predicate that decides when such a scanner may be carved out at
+ * all (rare-condition assertions may; ordinary-content ones may not). (e) A
+ * RECURSIVE corpus walk seeded from a roots ARRAY is not resolved either:
+ * integ-s3-versions-harness.test.ts's ROOTS = ['docs', ...] is covered today
+ * only because that block ALSO names 'docs/testing.md' as a bare literal.
+ * When adding a NEW test that reads a repo file through any of those shapes,
+ * add the include entry by hand.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -61,18 +80,66 @@ function testSources(): string[] {
 /** join|resolve(REPO_ROOT|repoRoot|root|ROOT, 'a', 'b', ...) — literal segments only. */
 const JOIN_RE = /(?:join|resolve)\(\s*(?:REPO_ROOT|repoRoot|root|ROOT)\s*((?:,\s*'[^']+')+)\s*\)/g;
 
-function extractTargets(): Map<string, string[]> {
+/** A whole path written as one quoted literal: at least one '/', ends in an extension. */
+const BARE_RE = /['"]([A-Za-z0-9_.][A-Za-z0-9_./-]*\/[A-Za-z0-9_./-]*\.[A-Za-z0-9]+)['"]/g;
+
+/**
+ * Path-SHAPED literals that are not reads. Each is an argument to a pure
+ * function, so demanding an include entry for it would be noise. Asserted
+ * exactly below: this list may only grow by a deliberate edit, because a
+ * silently growing carve-out is how the fence stops fencing.
+ */
+const NON_READ_LITERALS: ReadonlyMap<string, string> = new Map([
+  [
+    'assets/cdk-vs-cdkd.gif',
+    "source-control-bytes.test.ts passes it to isBinaryPath(), a pure string predicate — the file is never opened",
+  ],
+]);
+
+function record(targets: Map<string, string[]>, rel: string, file: string): void {
+  const list = targets.get(rel) ?? [];
+  list.push(file.slice(REPO_ROOT.length + 1));
+  targets.set(rel, list);
+}
+
+function extractJoinTargets(): Map<string, string[]> {
   const targets = new Map<string, string[]>();
   for (const file of testSources()) {
     const src = readFileSync(file, 'utf8');
     for (const m of src.matchAll(JOIN_RE)) {
       const segs = [...m[1].matchAll(/'([^']+)'/g)].map((s) => s[1]);
       if (segs.some((s) => s.includes('..'))) continue; // escapes the root — not a repo path
-      const rel = segs.join('/');
-      const list = targets.get(rel) ?? [];
-      list.push(file.slice(REPO_ROOT.length + 1));
-      targets.set(rel, list);
+      record(targets, segs.join('/'), file);
     }
+  }
+  return targets;
+}
+
+function extractBareTargets(): Map<string, string[]> {
+  const targets = new Map<string, string[]>();
+  const roots = new Set(readdirSync(REPO_ROOT));
+  for (const file of testSources()) {
+    // THIS file's own path literals are floor declarations, not reads. Counting
+    // them would derive part of the population from the fence itself, so
+    // deleting the last real reader of a path would leave it demanded anyway —
+    // the fence would be asserting against its own text.
+    if (file.endsWith('check-scope-checker-inputs.test.ts')) continue;
+    const src = readFileSync(file, 'utf8');
+    for (const m of src.matchAll(BARE_RE)) {
+      const rel = m[1];
+      if (rel.includes('..') || rel.startsWith('/')) continue;
+      if (!roots.has(rel.split('/')[0])) continue; // not repo-root-relative
+      if (NON_READ_LITERALS.has(rel)) continue;
+      record(targets, rel, file);
+    }
+  }
+  return targets;
+}
+
+function extractTargets(): Map<string, string[]> {
+  const targets = extractJoinTargets();
+  for (const [rel, readers] of extractBareTargets()) {
+    targets.set(rel, [...new Set([...(targets.get(rel) ?? []), ...readers])]);
   }
   return targets;
 }
@@ -130,11 +197,14 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
     return candidates.some((c) => res.some((r) => r.test(c)));
   };
 
-  it('parser floor: the extraction sees the known checker inputs', () => {
+  it('parser floor: the JOIN extraction sees the known checker inputs', () => {
     // Literal floor, NOT derived from the include list (a fence derived from
     // its own remedy goes vacuous — the #2362 table-driven lesson). These
     // are reads that exist in tests/unit today; if one moves, update the
-    // floor deliberately.
+    // floor deliberately. Asserted against the JOIN parser ALONE: merged with
+    // the bare parser, which also finds every one of these, this floor would
+    // stop noticing the join idiom going dead.
+    const joinTargets = extractJoinTargets();
     for (const known of [
       '.claude/settings.json',
       '.github/workflows/ci.yml',
@@ -145,9 +215,38 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
       'docs/cli-reference.md',
       'docs/changelog-cdkd.md',
     ]) {
-      expect([...targets.keys()], `extraction finds ${known}`).toContain(known);
+      expect([...joinTargets.keys()], `JOIN extraction finds ${known}`).toContain(known);
     }
     expect(globs.length, 'include list parsed').toBeGreaterThanOrEqual(10);
+  });
+
+  it('parser floor: the BARE extraction sees what the JOIN parser cannot (issue #2381)', () => {
+    // These two are the #2381 gaps. Both are read as checker input, neither is
+    // written as join(repoRoot, ...), and each reds a different suite when its
+    // file is renamed — so a floor naming them is a floor on the idiom this
+    // parser exists for, not on the remedy. Deliberately asserted against the
+    // BARE parser alone, and deliberately paths the JOIN floor above does NOT
+    // contain.
+    const bareTargets = extractBareTargets();
+    const joinTargets = extractJoinTargets();
+    for (const known of ['.claude/hooks/branch-gate.sh', 'docs/testing.md']) {
+      expect([...bareTargets.keys()], `BARE extraction finds ${known}`).toContain(known);
+      expect(
+        [...joinTargets.keys()],
+        `${known} must stay a BARE-only case, or this floor stops fencing the bare parser`,
+      ).not.toContain(known);
+    }
+  });
+
+  it('the non-read carve-out list stays exactly what was measured', () => {
+    // A carve-out that can grow silently is a suppressor. Each entry is a
+    // path-SHAPED literal proved to be a pure-function argument rather than a
+    // read; adding one must be a deliberate edit here.
+    expect([...NON_READ_LITERALS.keys()].sort()).toEqual(['assets/cdk-vs-cdkd.gif']);
+    for (const [rel, why] of NON_READ_LITERALS) {
+      expect(why.length, `${rel} needs a stated reason`).toBeGreaterThan(20);
+      expect(existsSync(join(REPO_ROOT, rel)), `${rel} still exists`).toBe(true);
+    }
   });
 
   it('every existing out-of-tree read target is inside the check include', () => {
