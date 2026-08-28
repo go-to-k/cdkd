@@ -3,9 +3,10 @@
 #
 # PreToolUse hook. Blocks `git commit` unless both the `check` and
 # `docs` markgate markers are fresh for the current content state.
-# Each gate is scoped (see .markgate.yml) so edits to tests-only
-# invalidate only `check`, and edits to docs-only invalidate only
-# `docs`. Error messages identify which gate needs re-running.
+# Each gate is scoped (see .markgate.yml), so a tests-only edit
+# invalidates only `check`. The converse no longer holds: `docs/**`
+# is a checker INPUT (issue #2381), so a docs-only edit invalidates
+# BOTH. Error messages identify which gate needs re-running.
 #
 # WHY the cwd-aware resolution matters (cdkd #559): this repo is
 # regularly worked in via `git worktree`, and markgate stores marker

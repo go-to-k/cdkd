@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { parse as parseYaml } from 'yaml';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
@@ -312,68 +313,103 @@ function extractTargets(): Map<string, string[]> {
 type GateScope = { include: string[]; exclude: string[] };
 
 /**
- * The raw text of one gate's block, so a check can be made WITHOUT going
- * through the parser below. A tripwire that reads the same parser it is meant
- * to protect cannot see the parser's own blind spot — round 2 measured exactly
- * that: a flow-style `exclude: ["docs/**"]` left all seven cases green.
+ * markgate 0.4.1's complete gate-key set, read from the pinned BINARY's schema
+ * rather than from `markgate init`'s starter config (which emits only six,
+ * omitting `requires` and `composes` — precisely the two a repo is likeliest
+ * not to have written). Anything outside this set is REFUSED below rather than
+ * ignored: an unmodelled key is how a scope silently stops meaning what this
+ * fence assumes.
  */
-function gateBlockText(yml: string, gate: string): string {
-  const lines = yml.split('\n');
-  const start = lines.findIndex((l) => new RegExp(`^ {2}${gate}:`).test(l));
-  if (start < 0) return '';
-  const out: string[] = [];
-  for (let i = start + 1; i < lines.length; i++) {
-    if (/^ {2}\S/.test(lines[i])) break; // next gate
-    out.push(lines[i]);
-  }
-  return out.join('\n');
-}
+/**
+ * `merge: true` is LOAD-BEARING, not a default worth inheriting. YAML's merge
+ * key (`<<: *anchor`) splices another mapping's entries into this one, and
+ * markgate honours it — measured end-to-end on 0.4.1 with an anchor carrying an
+ * `exclude` defined on a SIBLING gate: `set check` rc=0, an edit to the
+ * excluded file keeps `verify` at rc=0 permanently, while an edit to an
+ * included file still reds. Without this option `yaml` reports the check gate's
+ * keys as `["hash", "<<"]` and its `exclude` as undefined, so the scope this
+ * fence reasons about is not the scope markgate uses.
+ */
+const YAML_OPTS = { merge: true } as const;
+
+const MARKGATE_GATE_KEYS = new Set([
+  'hash',
+  'include',
+  'exclude',
+  'base',
+  'ttl',
+  'state_dir',
+  'requires',
+  'composes',
+]);
+
+/** Keys that would change what the marker means in ways this fence cannot model. */
+const REFUSED_GATE_KEYS: ReadonlyMap<string, string> = new Map([
+  [
+    'exclude',
+    'markgate resolves scope as include MINUS exclude. resolveCovered() subtracts it, but a marker RECORDED with an exclude present never blocks on an excluded file again (measured on 0.4.1: `set` rc=0, then an edit to an excluded file keeps `verify` at rc=0 permanently while an included file still reds). Re-verify this fence against the installed markgate, then name the new list here.',
+  ],
+  [
+    'composes',
+    'the binary reports "composes/requires without include makes the gate deps-only", i.e. a gate with no scope of its own. Nothing here knows how to resolve a composed scope — work out what the marker attests to before removing this.',
+  ],
+]);
 
 /**
- * Parses `include` / `exclude` out of one gate, in every spelling YAML allows
- * for a list of strings: block items (`- "x"`, `- 'x'`, `- x`) at any deeper
- * indent, and flow sequences (`include: ["a", 'b', c]`). The first revision
- * accepted only `^ {6}- "..."`; six of eight probed spellings parsed as EMPTY,
- * including the flow one this file's own prose uses.
+ * Parses one gate out of `.markgate.yml` with the `yaml` package — a PRODUCTION
+ * dependency of this repo (package.json), not a scanner written here.
+ *
+ * This is the third revision, and the first two are the argument for it. A
+ * hand-rolled line scanner was written, then patched once per spelling that got
+ * through, and each patch was followed by another spelling:
+ *
+ *   1. block items only            -> a FLOW list (`exclude: ["docs/**"]`) passed
+ *   2. unquoted keys only          -> `"exclude":` passed
+ *   3. block terminated on /^ {2}\S/ -> a 2-space COMMENT between include and
+ *      exclude ended the scan early, and all 14 cases stayed GREEN while
+ *      markgate really did subtract (verified against 0.4.1: `config lint` rc=0,
+ *      `set` rc=0, an edit to the excluded file then keeps `verify` at rc=0)
+ *
+ * Three measurements is enough: a hand-rolled scanner for a real grammar is a
+ * losing position, and the "raw text tripwire" that was supposed to escape the
+ * parser's blind spot inherited every one of them, because it was another
+ * hand-rolled pattern over the same text. The sibling lane
+ * go-to-k/cdk-real-drift#1838 reached the same conclusion.
+ *
+ * Reading a real parser is not the failure the earlier tripwire guarded
+ * against: `yaml` is third-party, versioned and separately tested, so it is not
+ * "the fence checking its own work". What replaces the raw-text tripwire is
+ * FAIL-CLOSED key handling — an allow-list of markgate's keys plus an explicit
+ * refusal list — which is strictly stronger than deny-listing the two spellings
+ * someone thought of.
  */
 function parseGateScope(yml: string, gate: string): GateScope {
-  const out: GateScope = { include: [], exclude: [] };
-  const items = (flow: string): string[] =>
-    flow
-      .split(',')
-      .map((t) => t.trim().replace(/^["']|["']$/g, ''))
-      .filter(Boolean);
-  let key: 'include' | 'exclude' | undefined;
-  for (const line of gateBlockText(yml, gate).split('\n')) {
-    if (/^\s*#/.test(line) || line.trim() === '') continue; // comment / blank: keep the current key
-    // `"exclude":` is legal YAML and markgate 0.4.1 honours it (measured:
-    // set rc=0, an edit to the quoted-excluded file stays rc=0, an included
-    // file still reds). An unquoted-only match let that spelling through both
-    // here and in the raw tripwire.
-    const kv = line.match(/^ {4}["']?(include|exclude)["']?:\s*(.*)$/);
-    if (kv) {
-      key = kv[1] as 'include' | 'exclude';
-      const flow = kv[2].trim().match(/^\[(.*)\]$/);
-      if (flow) {
-        out[key].push(...items(flow[1]));
-        key = undefined; // a flow list is complete on its own line
-      }
-      continue;
-    }
-    if (/^ {4}\S/.test(line)) {
-      key = undefined; // some other gate key (hash / ttl / base / state_dir / requires)
-      continue;
-    }
-    const item = line.match(/^\s+- \s*(.*?)\s*$/);
-    if (item && key) out[key].push(item[1].replace(/^["']|["']$/g, ''));
-  }
-  return out;
+  const doc = parseYaml(yml, YAML_OPTS) as { gates?: Record<string, unknown> } | null;
+  const raw = doc?.gates?.[gate];
+  expect(raw, `.markgate.yml has a \`${gate}:\` gate`).toBeTruthy();
+  const g = raw as Record<string, unknown>;
+
+  const unknown = Object.keys(g).filter((k) => !MARKGATE_GATE_KEYS.has(k));
+  expect(
+    unknown,
+    `the \`${gate}\` gate carries key(s) markgate 0.4.1 does not define: ${unknown.join(', ')}. Either it is a typo markgate silently ignores (its \`config lint\` reports these, but nothing in this repo runs it), or markgate gained a key and this fence has not been taught what it means for scope. Fail closed until that is settled.`,
+  ).toEqual([]);
+
+  const list = (v: unknown): string[] =>
+    v === undefined || v === null ? [] : (Array.isArray(v) ? v : [v]).map((x) => String(x));
+  return { include: list(g['include']), exclude: list(g['exclude']) };
 }
 
 function checkGateScope(): GateScope {
-  const yml = readFileSync(join(REPO_ROOT, '.markgate.yml'), 'utf8');
-  expect(gateBlockText(yml, 'check').length, '.markgate.yml has a `check:` gate').toBeGreaterThan(0);
-  return parseGateScope(yml, 'check');
+  return parseGateScope(readFileSync(join(REPO_ROOT, '.markgate.yml'), 'utf8'), 'check');
+}
+
+/** The parsed `check` gate object, for assertions about keys rather than values. */
+function checkGateRaw(): Record<string, unknown> {
+  const doc = parseYaml(readFileSync(join(REPO_ROOT, '.markgate.yml'), 'utf8'), YAML_OPTS) as {
+    gates?: Record<string, unknown>;
+  };
+  return (doc.gates?.['check'] ?? {}) as Record<string, unknown>;
 }
 
 /**
@@ -479,13 +515,99 @@ describe('gate-scope resolution matches markgate (include MINUS exclude)', () =>
     expect(scope.exclude).toEqual(['src/vendor/**']);
   });
 
-  it('a non-list gate key does not swallow the following items', () => {
+  it('a BLOCK-list sibling key does not leak its items into include', () => {
+    // Shape matters here, and the first version had it wrong. With the sibling
+    // key written as a FLOW list (`requires: [a, b]`) there are no `- ` items
+    // to leak, so the case passed whatever the parser did — it could not fail.
+    // Measured on the hand-rolled predecessor: deleting its key-reset arm made
+    // a fixture like this yield `include: ["src/**", "docs/**"]`, i.e. OVER-
+    // covering, which masks a miss.
+    //
+    // So: a NON-list key sandwiched between two BLOCK lists, and the trailing
+    // one carries a path-shaped item that would be visible in `include` if it
+    // leaked.
     const scope = parseGateScope(
-      ['gates:', '  check:', '    include:', '      - "src/**"', '    requires: [a, b]', '    ttl: 14d'].join('\n'),
+      [
+        'gates:',
+        '  check:',
+        '    include:',
+        '      - "src/**"',
+        '    ttl: 14d',
+        '    requires:',
+        '      - docs',
+        '    state_dir: .markgate-cache',
+        '    exclude:',
+        '      - "src/vendor/**"',
+      ].join('\n'),
+      'check',
+    );
+    expect(scope.include, 'a sibling block list must not leak into include').toEqual(['src/**']);
+    expect(scope.exclude, 'and the real exclude must still be found past two non-list keys').toEqual([
+      'src/vendor/**',
+    ]);
+  });
+
+  it('a 2-space COMMENT between include and exclude does not hide the exclude', () => {
+    // The spelling that defeated revision 3 and left all 14 cases GREEN. The
+    // hand-rolled scanner ended the gate block at /^ {2}\S/, which a 2-space
+    // comment matches. Verified against markgate 0.4.1 that the tool itself
+    // honours this file: `config lint` rc=0, `set` rc=0, then an edit to
+    // docs/a.md keeps `verify` at rc=0 while an edit to docs/b.md reds.
+    const scope = parseGateScope(
+      [
+        'gates:',
+        '  check:',
+        '    hash: files',
+        '    include:',
+        '      - "docs/**"',
+        '  # a note at two-space indent',
+        '    exclude: ["docs/a.md"]',
+      ].join('\n'),
+      'check',
+    );
+    expect(scope.include).toEqual(['docs/**']);
+    expect(scope.exclude).toEqual(['docs/a.md']);
+    expect(resolveCovered('docs/a.md', scope), 'the hidden exclude subtracts').toBe(false);
+    expect(resolveCovered('docs/b.md', scope), 'a sibling is still covered').toBe(true);
+  });
+
+  it('an UNKNOWN gate key fails CLOSED rather than being ignored', () => {
+    // The generalisation of the three spellings that got through: refuse what
+    // is not modelled instead of deny-listing what someone thought of. markgate
+    // 0.4.1 silently ignores an unknown key at runtime, and its `config lint`
+    // would report one — but nothing in this repo runs `config lint`, so this
+    // assertion is the only thing standing there.
+    expect(() =>
+      parseGateScope(
+        ['gates:', '  check:', '    include:', '      - "src/**"', '    ignore:', '      - "src/vendor/**"'].join(
+          '\n',
+        ),
+        'check',
+      ),
+    ).toThrow(/does not define: ignore/);
+  });
+
+  it('a gate key markgate DOES define is accepted', () => {
+    // The other direction, so the allow-list cannot be satisfied by refusing
+    // everything: all eight of markgate 0.4.1's keys parse without throwing.
+    const scope = parseGateScope(
+      [
+        'gates:',
+        '  check:',
+        '    hash: diff',
+        '    base: origin/main',
+        '    ttl: 14d',
+        '    state_dir: .markgate-cache',
+        '    requires: [docs]',
+        '    include:',
+        '      - "src/**"',
+        '    exclude:',
+        '      - "src/vendor/**"',
+      ].join('\n'),
       'check',
     );
     expect(scope.include).toEqual(['src/**']);
-    expect(scope.exclude).toEqual([]);
+    expect(scope.exclude).toEqual(['src/vendor/**']);
   });
 
   it('subtracts exclude from include, and an exact-path exclude is not escaped by the sentinel', () => {
@@ -528,7 +650,11 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
     for (const known of JOIN_FLOOR) {
       expect([...joinTargets.keys()], `JOIN extraction finds ${known}`).toContain(known);
     }
-    expect(globs.length, 'include list parsed').toBeGreaterThanOrEqual(10);
+    // 19 entries on the shipping tree (this PR replaced six precise entries
+    // with two globs, 22 -> 19). Floored at 15: a floor nine entries under its
+    // subject would survive most of the list being deleted, which is the
+    // failure a parse floor exists to catch.
+    expect(globs.length, 'include list parsed').toBeGreaterThanOrEqual(15);
   });
 
   it('parser floor: the BARE extraction sees what the JOIN parser cannot (issue #2381)', () => {
@@ -550,7 +676,12 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
     // defect), while the count only falls when the parser narrows.
     const joinKeys = new Set(extractJoinTargets().keys());
     const bareOnly = [...bareTargets.keys()].filter((k) => !joinKeys.has(k));
-    // Measured 97 on this tree; floored at 75 (~77%) so ordinary churn is free
+    // Measured 97 on the shipping tree (99 with the carve-out disabled), by
+    // appending a probe case to this file that prints
+    // `[...extractBareTargets().keys()].filter((k) => !joinKeys.has(k)).length`.
+    // A review round measured 93 from an isolated `git archive` copy — the
+    // number is tree-dependent, so it is worth naming which tree rather than
+    // treating either as wrong. Floored at 75 (~77%) so ordinary churn is free
     // while a narrowing is not. The first revision floored this at 5, which a
     // 95% collapse would have passed — a floor far under its subject fences
     // only total disappearance, which the named paths above already catch.
@@ -645,35 +776,66 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
     ).toEqual([]);
   });
 
-  it('the check gate has no `exclude`, checked WITHOUT the parser (go-to-k/cdk-real-drift#1838)', () => {
-    // A TRIPWIRE, not a prohibition. resolveCovered() already subtracts
-    // `exclude` the way markgate does, so an exclude that removes a checker
-    // input reds the main assertion. This case exists because the resolver
-    // RE-IMPLEMENTS another tool's semantics: the day someone adds the first
-    // exclude is the day to re-read it against markgate, not to trust a
-    // transcription written when no exclude existed.
+  it('the check gate carries no key this fence cannot model (fail CLOSED)', () => {
+    // Replaces a raw-text tripwire that existed to escape a hand-rolled
+    // parser's blind spot — and inherited every one of them, being another
+    // hand-rolled pattern over the same text (three spellings got through in
+    // three rounds; go-to-k/cdk-real-drift#1838). With the `yaml` package doing
+    // the parsing, the escape hatch is not needed; what replaces it is an
+    // ALLOW-LIST of markgate's keys plus this explicit refusal list, which is
+    // strictly stronger than deny-listing the spellings someone thought of.
     //
-    // Asserted against the RAW gate block, deliberately not through
-    // parseGateScope(). A tripwire reading the parser it protects cannot see
-    // the parser's own blind spot — measured in round 2: the first revision
-    // accepted only `- "x"` items, so a flow-style `exclude: ["docs/**"]` left
-    // every case green while markgate really did subtract it.
+    // parseGateScope() already fails on a key outside markgate's set. This
+    // case covers keys that ARE markgate's but whose meaning this fence does
+    // not model.
+    const g = checkGateRaw();
+    for (const [key, why] of REFUSED_GATE_KEYS) {
+      expect(Object.keys(g), `the \`check\` gate grew a \`${key}:\` key. ${why}`).not.toContain(key);
+    }
+    // And the value-level view must agree, so the two cannot drift.
+    expect(scope.exclude, 'key-level and value-level views disagree about exclude').toEqual([]);
+  });
+
+  it('no gate ANYWHERE declares exclude / composes / a merge key (whole-map raw check)', () => {
+    // Scoped to the WHOLE `gates:` map, not the `check` block, and that is the
+    // structural point rather than a widening for its own sake: a YAML anchor
+    // is DEFINED on one gate and SPLICED into another, so an `exclude` that
+    // reaches `check` through `<<: *sh` is not written anywhere inside the
+    // `check` block at all. A per-block scan cannot see it by construction —
+    // measured on markgate 0.4.1, an anchor carrying `exclude` on a sibling
+    // gate makes `set check` rc=0 and then leaves an edit to the excluded file
+    // at `verify` rc=0 forever, with an included file still redding.
+    //
+    // This is a coarse, deliberately OVER-broad backstop: it refuses a sibling
+    // gate's own legitimate `exclude` too. That is the right direction to fail
+    // — the parsed check above is the precise instrument, and this exists for
+    // the case where the parser and markgate disagree.
     const yml = readFileSync(join(REPO_ROOT, '.markgate.yml'), 'utf8');
-    const block = gateBlockText(yml, 'check');
+    const gatesAt = yml.indexOf('\ngates:');
+    expect(gatesAt, '.markgate.yml has a top-level `gates:` map').toBeGreaterThanOrEqual(0);
+    const gatesMap = yml.slice(gatesAt);
+    const offenders = gatesMap
+      .split('\n')
+      .map((line, i) => ({ line, n: i }))
+      .filter(({ line }) => !/^\s*#/.test(line))
+      .filter(({ line }) => /^\s*["']?(exclude|composes)["']?:/.test(line) || /^\s*<<\s*:/.test(line))
+      .map(({ line }) => line.trim());
     expect(
-      block,
-      'the `check` gate grew an `exclude:` key. That is allowed — but markgate resolves scope as include MINUS exclude, so re-verify this fence against the installed markgate first. Measured on 0.4.1: a marker RECORDED with the exclude present never blocks on an excluded file again (`set` rc=0, then an edit to an excluded file keeps `verify` at rc=0, while an included file still reds). Then replace this assertion with one naming the new list.',
-    ).not.toMatch(/^ {4}["']?exclude["']?:/m);
-    // `composes` is the other key that changes what this marker MEANS: the
-    // binary reports "composes/requires without include makes the gate
-    // deps-only". Refused rather than modelled — nothing here knows how to
-    // resolve a composed scope.
+      offenders,
+      `the \`gates:\` map declares ${offenders.join(' | ')}. Any of these can change what the \`check\` marker attests to — \`exclude\` subtracts from scope, \`composes\` can make a gate deps-only, and a merge key splices another gate's entries in (which is how an exclude reaches \`check\` without appearing in its block). Re-verify this fence against the installed markgate before removing this.`,
+    ).toEqual([]);
+  });
+
+  it('the check gate is still `hash: files`, which is what this fence assumes', () => {
+    // Stated in prose above and asserted nowhere until now. Under `hash: diff`
+    // the marker digests a BRANCH DELTA rather than file content, so "every
+    // checker input is inside the include" stops being the property that makes
+    // the marker sound — an unchanged-but-red input would not be digested at
+    // all.
     expect(
-      block,
-      'the `check` gate grew a `composes:` key, which can make a gate deps-only (no scope of its own). This fence resolves include/exclude and knows nothing about composition — work out what the marker now attests to before removing this assertion.',
-    ).not.toMatch(/^ {4}["']?composes["']?:/m);
-    // And the parser must AGREE with the raw check, so the two cannot drift.
-    expect(scope.exclude, 'parser and raw check disagree about the exclude list').toEqual([]);
+      checkGateRaw()['hash'],
+      'the `check` gate changed hash type; this fence reasons about file-content scope and does not model a branch-delta digest',
+    ).toBe('files');
   });
 
   it('this file contributes no scanned target, and its declared self-reads are LIVE', () => {

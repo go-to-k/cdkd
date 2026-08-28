@@ -555,39 +555,45 @@ harnesses in go-to-k/cdk-real-drift were shell, so neither the vitest task nor
 any CI step invoked them — exercised only by hand since the day each was
 written.
 
-**When a fence RE-IMPLEMENTS another tool's resolution, enumerate the TOOL's
-config keys — not the keys this repo happens to use today — and never let the
-tripwire read the parser it protects.** Both halves measured on
-go-to-k/cdkd#2381 (2026-08-29), one from a sibling lane
-(go-to-k/cdk-real-drift#1838) and one from the fix round that answered it:
+**When a fence must read another tool's CONFIG, parse it with a real parser and
+fail CLOSED on anything unmodelled — do not hand-roll a scanner, and do not
+patch one per spelling.** Measured over three review rounds on
+go-to-k/cdkd#2381 (2026-08-29), with the sibling go-to-k/cdk-real-drift#1838
+reaching the same end:
 
 - **The unused key.** markgate resolves a `hash: files` gate as `include` MINUS
-  `exclude`. No repo in the family has ever written an `exclude`, so the fence
+  `exclude`. No repo in the family had ever written an `exclude`, so the fence
   modelled `include` alone and reported full coverage over a scope the tool
   would already have subtracted from. Read the tool's OWN schema, from the
-  pinned binary rather than from its `init` template: 0.4.1 has eight gate keys
+  pinned binary rather than its `init` template: 0.4.1 has eight gate keys
   (`hash` / `include` / `exclude` / `base` / `ttl` / `state_dir` / `requires` /
-  `composes`) and `init` emits only six of them, omitting the two a repo is
-  likeliest not to have written. Then model or explicitly refuse each.
-- **The tripwire that inherits the blind spot.** The first fix parsed only
-  `^ {6}- "x"` items and asserted "there is no exclude" through that same
-  parser — so a flow-style `exclude: ["docs/**"]`, the spelling the code's own
-  comment used, left every case GREEN, as did single-quoted, unquoted and
-  `"exclude":` items. A check on the RAW text, deliberately not routed through
-  the parser, is what can see a parser's own blindness; make the parsed value
-  agree with it so the two cannot drift.
+  `composes`) and `init` emits six, omitting the two a repo is likeliest not to
+  have written.
+- **Then the spelling treadmill, which is the real lesson.** The first fix was
+  a line scanner, and each round patched the one spelling that had just got
+  through while the next one sailed past: block items only -> a FLOW list
+  passed; unquoted keys only -> `"exclude":` passed; the block scan terminated
+  on `/^ {2}\S/` -> a two-space COMMENT between `include` and `exclude` ended
+  it early and left all fourteen cases GREEN while markgate really did
+  subtract. **Three spellings in three rounds is the signal to stop patterning
+  and change instrument.** A YAML parser was a production dependency the whole
+  time.
+- **A "raw text" tripwire does not escape this.** It was added precisely so the
+  guard would not read the parser it protects — and it inherited every blind
+  spot anyway, because it was another hand-rolled pattern over the same text.
+  Reading a REAL parser is not the failure that guard was for: a third-party,
+  versioned, separately-tested library is not the fence checking its own work.
+  What replaces the tripwire is an ALLOW-LIST of the tool's keys plus an
+  explicit refusal list — strictly stronger than deny-listing the spellings
+  someone happened to think of.
 - **And the probe that establishes any of this must move ONE variable.** The
   rule's first draft published "adding `exclude` while holding `include`
   constant takes `verify` from rc=1 to rc=0" — measured, it stays rc=1, because
   subtracting files changes the digest. The probe behind that sentence had
-  re-`set` the marker in between, moving two variables while claiming to move
-  one. The real hazard needs the marker RECORDED with the exclude present:
-  `set` rc=0, after which an edit to an excluded file keeps `verify` at rc=0
-  forever while an included file still reds. A rule about probes is exactly
-  where an unreproducible probe does the most damage.
-
-The generalisation: a guard whose *evidence* comes from the thing it guards
-cannot fail in the one direction you built it for.
+  re-`set` the marker in between. The real hazard needs the marker RECORDED
+  with the exclude present: `set` rc=0, after which an edit to an excluded file
+  keeps `verify` at rc=0 forever while an included file still reds. A rule
+  about probes is exactly where an unreproducible probe does the most damage.
 
 The general shape: **a fence is not evidence until you have watched it go red
 on something you had not already counted.** Calibration tells you it is not
