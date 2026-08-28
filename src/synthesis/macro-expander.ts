@@ -18,6 +18,7 @@ import type { Logger } from '../types/config.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { MacroExpansionError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { isListParameterType } from '../utils/parameter-types.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 
 /**
@@ -603,7 +604,15 @@ function stringifyParamDefault(
       // `Value<List<...>>` OR `Value<CommaDelimitedList>` need a list
       // shape; everything else (`Value<String>`, `Value<AWS::EC2::*::Id>`,
       // etc.) is a single SSM parameter name.
-      if (inner.startsWith('List<') || inner === 'CommaDelimitedList') {
+      //
+      // Asked of the SHARED {@link isListParameterType} (issue #2347). This
+      // site held the WIDER and correct view of "is this type list-shaped"
+      // while `coerceParameterTypedValue` in the deployment layer held a
+      // narrower one that named only two types; the divergence is what handed
+      // a `List<AWS::EC2::Subnet::Id>` nested-stack parameter to the child as a
+      // string. The predicate is applied to `inner` -- the shape already peeled
+      // out of `Value<...>` -- which is exactly the question it answers.
+      if (isListParameterType(inner)) {
         return 'placeholder,placeholder';
       }
       return 'placeholder';

@@ -165,7 +165,8 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
 
   it('refuses a `Ref` to a CommaDelimitedList parameter, naming the PARAMETER', async () => {
     // The second genuinely reachable array source: `coerceParameterValue`
-    // returns an array for CommaDelimitedList / List<Number>, so this shape
+    // returns an array for any list-typed parameter (any List<...> type or
+    // CommaDelimitedList), so this shape
     // reaches the same refusal as a list-valued Fn::GetAtt.
     const resolver = new IntrinsicFunctionResolver();
     const template = {
@@ -188,7 +189,17 @@ describe('Fn::Split over an already-list value (issue #1874)', () => {
     // The remedy must be the PARAMETER one — asserted precisely enough to
     // distinguish it from the NEUTRAL remedy, which also names
     // CommaDelimitedList but drags Fn::GetAtt in beside it.
-    expect(error.message).toContain('A CommaDelimitedList / List<Number> parameter');
+    //
+    // The wording widened with issue #2347: it named only "CommaDelimitedList
+    // / List<Number>", which is not the set of types that can reach this
+    // refusal -- a `List<AWS::EC2::Subnet::Id>` parameter now resolves to an
+    // array too, and a user hitting this message with one was told about two
+    // types they do not have. It names the FAMILY instead, which restates
+    // `isListParameterType`'s own definition and so cannot go stale again.
+    expect(error.message).toContain('A list-typed parameter');
+    expect(error.message).toContain('any List<...> type');
+    expect(error.message).toContain('CommaDelimitedList');
+    expect(error.message).not.toContain('A CommaDelimitedList / List<Number> parameter');
     expect(error.message).not.toContain('Fn::GetAtt');
     // ...and it must NOT drag in the Route 53 / #1868 story, which is about a
     // different source entirely and only confuses this reader.

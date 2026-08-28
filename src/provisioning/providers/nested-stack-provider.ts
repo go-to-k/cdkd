@@ -675,22 +675,86 @@ export class NestedStackProvider implements ResourceProvider {
       // produce `[object Object]` and the child engine would deploy
       // with a meaningless parameter value. Loud failure is the right
       // signal for the upstream resolver bug.
+      //
+      // An ARRAY is the one non-scalar that is NOT a resolver bug (issue
+      // #2347). A `Ref` to a list-typed parent parameter -- any `List<...>`
+      // type or `CommaDelimitedList` -- resolves to a JS array by design, and
+      // `Parameters` is a string-valued map on the wire, so it is joined back
+      // with `,` exactly as CloudFormation carries a list-typed Parameter
+      // value. The child's own resolver re-splits it against the child's
+      // declared `Type`, so for a NON-EMPTY array whose elements carry no
+      // comma the round-trip returns the same LIST. It is not byte-lossless:
+      // the re-split trims each member, so `[' a ']` comes back as `['a']`.
+      // CloudFormation trims identically, so the padding was never data.
+      //
+      // THE EMPTY ARRAY IS THE ONE ASYMMETRY, and it is deliberate: `[]` joins
+      // to `''`, which the child re-splits to `['']` -- one empty string, not
+      // an empty list. `''` is nonetheless the correct wire value, because a
+      // CloudFormation Parameter is a string and there is no spelling of "no
+      // elements" in it; CFn's own `CommaDelimitedList` has the same hole.
+      // Recorded rather than fixed, so the next reader does not mistake it for
+      // an oversight.
+      //
+      // The SHAPE is copied from `resolveChildImportParameters` in
+      // `src/cli/commands/export.ts` (its `Array.isArray` arm), which already
+      // had to answer this question for `cdkd export`. Deliberately the same
+      // down to `String()`-ing each element first, so a mixed array (a
+      // `List<Number>` resolves to numbers) survives instead of throwing here
+      // and the two paths cannot disagree about what a list-typed Parameter
+      // looks like on the wire. Before #2347 only `CommaDelimitedList` and
+      // `List<Number>` could reach this arm; widening the coercion made the
+      // whole `List<...>` family reach it, which is what turned a working
+      // deploy into the throw below.
+      //
+      // IT IS **NOT** COPIED IN ONE RESPECT, and that divergence is the point:
+      // each ELEMENT is checked here. `export.ts` calls `String(e)` on an
+      // unchecked element, so a nested unresolved intrinsic there becomes
+      // `[object Object]` -- the very shape the refusal below exists to
+      // prevent, arriving one level down. That hole is silent on ITS path too
+      // -- `stillSkipped` is reached only for null/undefined, a non-array
+      // object, or a resolver throw, never for a bad ELEMENT -- so this is a
+      // deliberate divergence rather than a difference in what the two paths
+      // tolerate. It is fixed HERE because this path promises loudness and
+      // ships the value into a child deploy. Do not "restore parity" by
+      // deleting the element check.
       if (typeof v === 'string') {
         result[k] = v;
       } else if (typeof v === 'number' || typeof v === 'boolean') {
         result[k] = String(v);
-      } else {
-        throw new Error(
-          `NestedStackProvider: child Parameter '${k}' resolved to a non-scalar value ` +
-            `(type=${v === null ? 'null' : typeof v}). Parameters must be scalars (string / ` +
-            `number / boolean) by the time they reach the provider — an unresolved intrinsic ` +
-            `here means IntrinsicFunctionResolver upstream did not handle the value, which ` +
-            `is a bug. Surface the unresolved input rather than silently coercing to ` +
-            `'[object Object]'.`
+      } else if (Array.isArray(v)) {
+        const badIndex = v.findIndex(
+          (e) => typeof e !== 'string' && typeof e !== 'number' && typeof e !== 'boolean'
         );
+        if (badIndex !== -1)
+          this.refuseNonScalarParameter(k, v[badIndex], ` element [${badIndex}]`);
+        result[k] = v.map((e) => String(e)).join(',');
+      } else {
+        this.refuseNonScalarParameter(k, v, '');
       }
     }
     return result;
+  }
+
+  /**
+   * ONE refusal for a parameter value the child engine must never receive,
+   * shared by the TOP-LEVEL arm and the per-ELEMENT check inside an array
+   * (issue #2347). Two spellings would be two chances for the element arm to
+   * drift into permissiveness, which is exactly the hole the array arm opened
+   * when it was first written without a check.
+   *
+   * `where` names the position when the offender is an element, so the message
+   * points at `[2]` rather than at the whole parameter.
+   */
+  private refuseNonScalarParameter(k: string, offender: unknown, where: string): never {
+    throw new Error(
+      `NestedStackProvider: child Parameter '${k}'${where} resolved to a non-scalar value ` +
+        `(type=${offender === null ? 'null' : typeof offender}). Parameters must be scalars ` +
+        `(string / number / boolean), or an ARRAY of them from a list-typed parameter, by ` +
+        `the time they reach the provider — an unresolved intrinsic here means ` +
+        `IntrinsicFunctionResolver upstream did not handle the value, which ` +
+        `is a bug. Surface the unresolved input rather than silently coercing to ` +
+        `'[object Object]'.`
+    );
   }
 
   private readChildTemplate(

@@ -1222,6 +1222,77 @@ describe('NestedStackProvider', () => {
         /non-scalar value.*type=null/
       );
     });
+
+    it('joins an ARRAY with commas — a list-typed parent parameter, not a resolver bug (#2347)', () => {
+      // Issue #2347 widened `coerceParameterTypedValue` so the whole
+      // `List<...>` family resolves to a JS array. A parent passing
+      // `Parameters: { SubnetIds: { Ref: SubnetIds } }` for a
+      // `List<AWS::EC2::Subnet::Id>` therefore arrives HERE as an array, where
+      // the pre-#2347 comma-joined string used to arrive. Without this arm the
+      // widening turned a deploy that worked into a throw blaming the resolver.
+      const provider = new NestedStackProvider();
+      expect(
+        extract(provider, {
+          Parameters: { SubnetIds: ['subnet-a', 'subnet-b', 'subnet-c'] },
+        })
+      ).toEqual({ SubnetIds: 'subnet-a,subnet-b,subnet-c' });
+    });
+
+    it('String()s each element first, so a List<Number> array survives instead of throwing', () => {
+      // The reason the arm copies `export.ts`'s shape rather than requiring
+      // `string[]`: a `List<Number>` parameter coerces to NUMBERS, and the two
+      // paths must not disagree about what a list-typed Parameter looks like on
+      // the wire.
+      const provider = new NestedStackProvider();
+      expect(extract(provider, { Parameters: { Ports: [80, 443] } })).toEqual({
+        Ports: '80,443',
+      });
+    });
+
+    it('an EMPTY array is an empty string, not a throw', () => {
+      const provider = new NestedStackProvider();
+      expect(extract(provider, { Parameters: { Empty: [] } })).toEqual({ Empty: '' });
+    });
+
+    it('throws for a NESTED object inside the array, naming the INDEX (#2347)', () => {
+      // The hole the array arm opened when it was first written: `String(e)`
+      // on an unchecked element turns an unresolved intrinsic into the literal
+      // '[object Object]' and SHIPS it to the child deploy -- the exact
+      // outcome the top-level refusal exists to prevent, arriving one level
+      // down. The top-level-object test below does NOT cover this: it only
+      // pins a non-array value.
+      const provider = new NestedStackProvider();
+      let message: string | undefined;
+      try {
+        extract(provider, {
+          Parameters: { Mixed: ['subnet-a', { 'Fn::GetAtt': ['R', 'Arn'] }, 'subnet-c'] },
+        });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toBeDefined();
+      expect(message).toContain("child Parameter 'Mixed' element [1]");
+      expect(message).toContain('non-scalar value');
+      expect(message).toContain('type=object');
+      // The value must never have been coerced on the way to the refusal.
+      expect(message).not.toContain('subnet-a,[object Object],subnet-c');
+    });
+
+    it('throws for a null ELEMENT, which String() would have made the text "null"', () => {
+      const provider = new NestedStackProvider();
+      expect(() => extract(provider, { Parameters: { Holes: ['a', null, 'c'] } })).toThrow(
+        /element \[1\] resolved to a non-scalar value \(type=null\)/
+      );
+    });
+
+    it('still throws for a genuine OBJECT — the array arm must not widen the escape hatch', () => {
+      // The floor under the arm above. An unresolved intrinsic is still a
+      // resolver bug and must stay loud; only ARRAY was reclassified.
+      const provider = new NestedStackProvider();
+      expect(() =>
+        extract(provider, { Parameters: { Bad: { 'Fn::GetAtt': ['R', 'Arn'] } } })
+      ).toThrow(/non-scalar value.*type=object/);
+    });
   });
 
   describe('runChildDeploy (Minor 4 fix — parameters overwrite vs spread-inherit)', () => {

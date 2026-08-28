@@ -754,6 +754,31 @@ describe('expandMacros — Type-aware Parameter placeholders', () => {
       type: 'AWS::SSM::Parameter::Value<CommaDelimitedList>',
       expected: 'placeholder,placeholder',
     },
+    // Issue #2347, the THREE intended divergences from the predicate this site
+    // used to spell inline -- enumerated, because "the one divergence" was
+    // wrong: the shared `isListParameterType` requires a closing `>` AND a
+    // non-empty inner type, so every malformed `inner` beginning `List<`
+    // flips list -> scalar here, and there are three such spellings.
+    //
+    // Requiring the bracket is what keeps the DEPLOY-side coercion
+    // byte-identical to its pre-#2347 answer for malformed input, which is the
+    // side that writes state; this placeholder path is the side that pays for
+    // it. Bounded to templates CFn rejects either way.
+    {
+      name: 'AWS::SSM::Parameter::Value<List<String> (malformed: unclosed)',
+      type: 'AWS::SSM::Parameter::Value<List<String>',
+      expected: 'placeholder',
+    },
+    {
+      name: 'AWS::SSM::Parameter::Value<List<>> (malformed: empty inner)',
+      type: 'AWS::SSM::Parameter::Value<List<>>',
+      expected: 'placeholder',
+    },
+    {
+      name: 'AWS::SSM::Parameter::Value<List<> (malformed: bare List<)',
+      type: 'AWS::SSM::Parameter::Value<List<>',
+      expected: 'placeholder',
+    },
   ];
 
   it.each(CASES)(

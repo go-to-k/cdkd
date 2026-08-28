@@ -411,6 +411,40 @@ describe('IntrinsicFunctionResolver.resolveParameters — the inherited-secret s
     expect(message).toContain("Type: Number");
   });
 
+  it('does NOT refuse a List<AWS::...> parameter carrying a comma-FREE secret (#2347)', async () => {
+    // Issue #2347 widened the coercion, which moves every `List<AWS::...>`
+    // parameter from "never coerced, so never measured" into the SAME measured
+    // refusal `CommaDelimitedList` already took. This is the arm that must keep
+    // WORKING: the elements stay strings, so the recording scan sees the secret
+    // element and the redactor can rewrite it. A refusal here would be a new,
+    // unearned deploy failure.
+    await expect(
+      resolver.resolveParameters(
+        tpl('List<AWS::EC2::Subnet::Id>'),
+        { [PARAM]: `subnet-a,${SECRET},subnet-c` },
+        { inheritedSecrets: new Map([[SECRET, EXPR]]) }
+      )
+    ).resolves.toEqual({ [PARAM]: ['subnet-a', SECRET, 'subnet-c'] });
+  });
+
+  it('REFUSES a List<AWS::...> parameter whose secret CONTAINS a comma (#2347)', async () => {
+    // The twin of the `CommaDelimitedList` JSON-blob case below, on a type that
+    // could not reach this refusal at all before #2347 -- the coercion returned
+    // the raw string, so nothing was destroyed and nothing was measured. This
+    // is the user-visible BEHAVIOUR CHANGE the widening introduces, pinned here
+    // deliberately rather than discovered on a deploy: a comma-bearing secret
+    // in a list-typed parameter is now refused by name.
+    const JSON_SECRET = '{"user":"root","pass":"hunter2"}';
+    const JSON_EXPR = '{{resolve:secretsmanager:prod/db:SecretString:::}}';
+    await expect(
+      resolver.resolveParameters(
+        tpl('List<AWS::EC2::SecurityGroup::Id>'),
+        { [PARAM]: JSON_SECRET },
+        { inheritedSecrets: new Map([[JSON_SECRET, JSON_EXPR]]) }
+      )
+    ).rejects.toThrow(/List<AWS::EC2::SecurityGroup::Id>/);
+  });
+
   it('refuses List<Number> on the same terms', async () => {
     await expect(
       resolver.resolveParameters(tpl('List<Number>'), { [PARAM]: `1,${SECRET},3` }, {

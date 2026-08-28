@@ -255,27 +255,43 @@ export interface StackDiffResult {
  * The comparison therefore has to reproduce the SHAPE the child's state holds
  * for that parameter, and the shape depends on the declared type:
  *
- * - `String` — state holds the expression STRING. Keep the token.
- * - `CommaDelimitedList` — the deploy's own `coerceParameterValue` split the
- *   RESOLVED value on `,` before redaction, so state holds an ARRAY of
- *   expressions. Splitting the TOKEN the same way reproduces it, because the
- *   reference this fixture-shaped case is about carries no comma.
+ * - `String`, and the AWS-specific SCALAR types — state holds the expression
+ *   STRING. Keep the token.
+ * - The LIST-SHAPED types — whatever `isListParameterType` accepts, i.e. any
+ *   `List<...>` type or `CommaDelimitedList` (`List<AWS::EC2::Subnet::Id>`,
+ *   `List<String>`, … are examples, NOT the population) — the deploy's own
+ *   `coerceParameterValue` split the RESOLVED value on `,` before redaction,
+ *   so state holds an ARRAY of expressions. Splitting the TOKEN the same way
+ *   reproduces it, because the reference this fixture-shaped case is about
+ *   carries no comma.
  * - `Number` / `List<Number>` — coercion produces `NaN`, which matches neither
  *   side. Keep the token. (A deploy that actually bound a secret to one of
  *   these is refused by `refuseCoercedInheritedSecret`, so there is no state to
  *   agree with anyway.)
  *
- * `CommaDelimitedList` IS THE ONLY SPLITTING TYPE THAT KEEPS ITS PARTS STRINGS.
- * `List<String>` reads as though it should be here and is NOT: measured against
- * `coerceParameterTypedValue`, its `switch` NAMES only `Number`,
- * `List<Number>` and `CommaDelimitedList` -- `String` is grouped with
- * `default`, and every other type falls there too -- so `List<String>` comes
- * back as the unchanged STRING, which is exactly what state holds for it. This
- * function is therefore right about it, for a reason no reader should have to
- * re-derive. That cdkd and CloudFormation may DISAGREE about whether a
- * `List<String>` parameter is a list is a separate question, filed as issue
- * [#2347](https://github.com/go-to-k/cdkd/issues/2347); nothing here asserts an
- * answer to it.
+ * THE LINE IS NOT A TYPE NAME, IT IS WHETHER EVERY PART SURVIVED AS A STRING.
+ * That is the only property this comparison needs, and it is why the code below
+ * asks the coerced VALUE rather than the declared type. `List<Number>` is the
+ * single list-shaped type that fails it, because its elements are numbers; every
+ * other list-shaped type yields trimmed strings and is therefore split here.
+ *
+ * An earlier revision of this comment said `CommaDelimitedList` was the ONLY
+ * splitting type that keeps its parts strings, and singled `List<String>` out as
+ * reading like it belonged beside it while coming back as an unchanged STRING.
+ * That was a true reading of `coerceParameterTypedValue` at the time -- its
+ * `switch` named only `Number`, `List<Number>` and `CommaDelimitedList`, so every
+ * other `List<...>` spelling fell to `default` -- and it was ALSO the bug, filed
+ * as issue [#2347](https://github.com/go-to-k/cdkd/issues/2347) and since fixed:
+ * the coercion now asks the shared `isListParameterType`
+ * (`src/utils/parameter-types.ts`), so the whole `List<...>` family splits.
+ * The note survives because the shape of the mistake is worth keeping: the claim
+ * was measured against the coercion and was accurate about it, and the coercion
+ * was the thing that was wrong. Measuring the right function does not make the
+ * function right.
+ *
+ * This function needed no change for that fix, which is the point of deriving
+ * rather than enumerating: it never named the splitting types, so widening them
+ * moved it automatically.
  *
  * WHAT "carries no comma" DOES AND DOES NOT COVER. It is verified for the slots
  * that vary in practice -- secret id / parameter name and version stage -- and
