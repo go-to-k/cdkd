@@ -2,6 +2,12 @@
 
 ## 4. CLAIM the chosen issues BEFORE editing
 
+When lanes run as SUBAGENTS (the orchestrator's default for stages 5-8), the
+PARENT posts every claim in this section — the claim is the lock and must name
+the session accountable for the lane — and the claim's `<ref>` names the branch
+/ worktree the dispatched lane agent will create, not a branch the parent
+holds. Everything else in this section is unchanged.
+
 For EACH issue you will start:
 
 ```bash

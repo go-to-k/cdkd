@@ -2,6 +2,15 @@
 
 ## 5. One worktree per lane, then implement
 
+This stage (and stages 6-8) normally runs INSIDE a lane subagent the
+orchestrator dispatched — one general-purpose agent per claimed issue, so the
+lane's diffs, test output and review round-trips never land in the parent
+context. Every rule below applies unchanged inside the lane: hooks fire on the
+lane's tool calls, and markgate markers land in the lane's own worktree.
+Two actions are reserved to the parent's serialization turn and are NOT the
+lane's to start: a real-AWS integ run and the merge (the orchestrator's
+serialization invariant; §9). A lane stops at merge-ready and reports.
+
 Never edit in the main checkout — the `main-tree-branch-gate` hook blocks branching
 there anyway. Per lane:
 

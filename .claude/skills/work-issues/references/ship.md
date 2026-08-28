@@ -2,6 +2,19 @@
 
 ## 9. Ship: merge → pull → release → rebuild → cleanup
 
+With subagent lanes, this stage is the PARENT's serialization point: grant one
+merge-ready lane at a time its turn — resume that lane agent (SendMessage) to
+run its named integ fixtures and merge while it holds the turn, or run
+`/run-integ` and `gh pr merge` yourself FROM THAT LANE'S WORKTREE. The
+worktree matters mechanically, not stylistically: merge-gate verdicts
+(pr-review sha sentinel, verify-pr / integ markers) are computed against the
+tree the command runs from, so a merge issued from the main tree consults the
+WRONG store — measured 2026-08-28, when a fresh pr-review marker sat in the
+lane worktree while the main tree's stale sentinel blocked the merge with a
+misleading sha mismatch (go-to-k/cdkd#2363 records the cwd-race side of it).
+Never two lanes' integs or merges concurrently; everything after the merge in
+this section (pull → release → rebuild → cleanup) stays with the parent.
+
 **Before you watch CI, read the PR's merge state** — `/verify-pr` step 3 already
 says why, and the failure mode is silent, so it is worth the pointer here: a PR
 at `mergeable=CONFLICTING state=DIRTY` never fires CI at all, and
