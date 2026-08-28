@@ -597,3 +597,51 @@ them by direct AWS API call before doing anything else.
 
 `/verify-pr` sets the `check` + `docs` + `verify-pr` markers, and `/run-integ`
 sets the `integ-*` markers — together they unblock `gh pr merge`.
+
+**`pr-review` is not on that list, and a LANE must never set it.** `/review-pr`
+writes it, run by the ORCHESTRATOR, after the reviewers it dispatched have
+reported and every blocker is addressed — the marker records who reviewed what
+at which sha, so a lane setting it is the "sub-agent self-review is not
+independent review" failure of `CLAUDE.md` arriving through the marker instead
+of through the review. Measured 2026-08-29: two of three lanes in one run
+(go-to-k/cdkd#2383, go-to-k/cdk-local#631) set it themselves before any
+independent review existed. §5's "a lane stops at merge-ready" was already
+written and did not prevent it, because recording a marker reads as part of
+finishing rather than as merging — so name this marker in the lane's brief.
+The gate is not what breaks: `pr-review-gate.sh` compares the recorded
+`.markgate-pr-review-sha` sentinel against the PR's current HEAD and refuses
+with `bound to <sha> (mismatch)`, so a lane-set marker does not authorize an
+unreviewed merge; what it destroys is the record.
+
+**And your own review round is not optional because the lane already ran one.**
+A lane's reviewers are its children — same brief, same framing — so they clear
+what the lane already believes. Measured 2 for 2 in that run: on
+go-to-k/cdk-real-drift#1838 the lane's own 3-axis round reported clean and the
+orchestrator's independent 3-axis pass found a HIGH blocker (a flow-style
+`exclude:` that a hand-rolled YAML scanner could not see, leaving its "no
+exclude declared" tripwire green while markgate really did subtract); on
+go-to-k/cdkd#2383 the same again one spelling deeper (a merge key
+`<<: *anchor` anchored on a SIBLING gate, invisible to both the parser and a
+tripwire that grepped only the `check` block). Both were reproduced against the
+pinned markgate 0.4.1. Take the tier the heuristic gives for YOUR pass; a
+lane's clean round is not a measurement that lowers it.
+
+**A reviewer's scratch COPY of a worktree is not detached from git, so its
+`git add -A` writes to the LIVE tree.** A linked worktree's `.git` is a FILE
+holding `gitdir: <repo>/.git/worktrees/<name>`, and `cp -R` carries the
+pointer: every git command inside the copy reads and WRITES the real
+worktree's index and HEAD. Measured 2026-08-29: a read-only code reviewer
+copied a lane's worktree, ran `git add -A` there, and staged three tracked
+DELETIONS under `tests/integration/local-invoke-layers/` in the live tree,
+which the lane's next commit would have shipped. Nothing announced it — the
+reviewer believed it was on a copy. So two lines belong in every read-only
+reviewer's brief, on top of §5's peer-probe rules: **run no WRITING git verb**
+(`add` / `commit` / `restore` / `checkout` / `stash` / `clean`) anywhere, copy
+included, severing the pointer with `rm .git` if you must copy at all; and
+**report the TARGET worktree's `git status --porcelain` before AND after the
+round.** The before/after pair is what makes damage attributable rather than a
+mystery a later agent finds: that incident surfaced only because the NEXT
+reviewer volunteered "the tree went dirty mid-review, not mine", after which
+the responsible one self-reported and repaired the index with `git restore
+--staged` (index only, never the working tree). Every reviewer given these two
+lines in that run reported clean both ways.
