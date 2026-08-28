@@ -1202,6 +1202,42 @@ want_match 0 "beyond the base: -c <key> <spaced idiom value> (commit)" \
 want_match 0 "beyond the base: -c <key> <spaced idiom value> (checkout)" \
   "git -C /repo -c user.name 'O'\\''Brien' checkout -- f.txt" "$GATE_RE_GIT_CHECKOUT"
 
+# --- BACKTICK INSIDE A DOUBLE-QUOTED SPAN (go-to-k/cdkd#2339) ----------------
+#
+# `flush_line`'s in-quote branch handled `$(` but had no backtick arm, so the
+# body was never scanned as a command in its own right and reached the shell
+# with no gate armed. Through the gates that is dirty-path-restore-gate -- the
+# go-to-k/cdkd#1700 data-loss gate -- returning 0 on a command that discards
+# uncommitted work. The two spellings that already worked are what make the
+# third one's failure legible, so all three belong here together.
+CO="$GATE_RE_GIT_CHECKOUT"
+want_match 0 "2339: backtick in a double-quoted span" \
+  'echo "r: `git -C /wt checkout -- f.txt`"' "$CO"
+want_match 0 "2339 control: dollar-paren in a double-quoted span" \
+  'echo "r: $(git -C /wt checkout -- f.txt)"' "$CO"
+want_match 0 "2339 control: bare backtick" \
+  'echo `git -C /wt checkout -- f.txt`' "$CO"
+
+# DOUBLE quotes only. A backtick inside SINGLE quotes does not run, so there is
+# no bypass to close, and firing anyway refuses a markdown code span in a
+# single-quoted body -- this repo's commonest issue/PR shape, measured being
+# blocked by branch-gate before this was scoped.
+want_match 1 "2339 bound: backtick in a SINGLE-quoted span does not run" \
+  "echo 'r: \`git -C /wt checkout -- f.txt\`'" "$CO"
+want_match 1 "2339 bound: markdown code span in a single-quoted body" \
+  "gh issue comment 1 --body 'Run \`git push\` first'" "$P"
+
+# The enclosing command survives, and the separator must sit INSIDE the span:
+# with it outside, the case passes under every mutation because the segment
+# already starts with the verb.
+want_match 0 "2339: enclosing verb survives a substitution carrying a separator" \
+  'git commit -m "built at `date; git push --force` see log"' "$C"
+want_match 0 "2339: a verb INSIDE the span is reached" \
+  'git commit -m "built at `date; git push --force` see log"' "$P"
+# The UNTERMINATED arm, whose fail-open direction its own comment names.
+want_match 0 "2339: unterminated in-quote backtick still segments the body" \
+  'echo "r: `git -C /wt checkout -- f.txt' "$CO"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

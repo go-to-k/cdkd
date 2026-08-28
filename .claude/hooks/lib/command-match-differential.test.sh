@@ -312,6 +312,10 @@ Z2l0IC1DIC93dCAtLXdvcmstdHJlZT0veC9vJ2JyaWVuIHJlc3RvcmUgZi50eHQ=
 Z2ggLVIgby9yIC0tdGVtcGxhdGU9L2EvbyduZWlsbCBwciBtZXJnZSAyMTk1IC0tc3F1YXNo
 Z2l0IC1DIC93dCAtLXdvcmstdHJlZT0veC9vYnJpZW4gY2hlY2tvdXQgLS0gZi50eHQ=
 Z2ggLVIgby9yIC0tdGVtcGxhdGU9L2Evb25laWxsIHByIG1lcmdlIDIxOTUgLS1zcXVhc2g=
+ZWNobyAicjogYGdpdCAtQyAvYWJzL3JlcG8gY2hlY2tvdXQgLS0gZi50eHRgIg==
+ZWNobyAncjogYGdpdCAtQyAvYWJzL3JlcG8gY2hlY2tvdXQgLS0gZi50eHRgJw==
+Z2l0IGNvbW1pdCAtbSAiYnVpbHQgYXQgYGRhdGVgOyBzZWUgbG9nIg==
+Z2ggaXNzdWUgY29tbWVudCAxIC0tYm9keSAnUnVuIGBnaXQgcHVzaGAgZmlyc3Qn
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -440,6 +444,17 @@ ALLOWED="$TMPDIR/allowed.tsv"
 #           later token with a loose apostrophe -- is the one that still does
 #           not, enumerated cell by cell in the superset section below rather
 #           than described as a category.
+# --- go-to-k/cdkd#2339: a backtick inside a DOUBLE-quoted span -------------
+#   INQUOTE_BACKTICK  flush_line's in-quote branch handled `$(` and had no
+#                     backtick arm, so the body of a backtick substitution
+#                     inside a quoted span was never scanned as a command and
+#                     reached the shell ungated. Cells are a segcount rise plus
+#                     the verb that body carries.
+# Id 203 (SINGLE-quoted) and id 205 (a markdown code span in a single-quoted
+# body) are the CONTROLS and declare NO cells: a backtick does not run inside
+# single quotes, so the arm is scoped to double quotes and must leave both
+# alone. Id 204 is the third control -- the ENCLOSING command survives a
+# substitution in its body, so its segcount rises while its own match does not.
 cat > "$ALLOWED" <<'ALLOWED_EOF'
 26	segcount	2	SEGCOUNT	git -C subst-quoted commit
 27	segcount	2	SEGCOUNT	gh -C subst-quoted pr merge
@@ -659,6 +674,12 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 174	m:GATE_RE_GH_PR_MERGE	1	ACCEPTED_FR	gh ... issue comment 42 --body 'we can'\''t pr merge 99 ...'
 174	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	ACCEPTED_FR	gh ... issue comment 42 --body 'we can'\''t pr merge 99 ...'
 174	m:GATE_RE_GH_PR_WRITE	1	ACCEPTED_FR	gh ... issue comment 42 --body 'we can'\''t pr merge 99 ...'
+202	segcount	2	INQUOTE_BACKTICK	backtick in a DOUBLE-quoted span
+202	m:GATE_RE_GIT_SWITCH	1	INQUOTE_BACKTICK	backtick in a DOUBLE-quoted span
+202	t:GATE_RE_GIT_SWITCH	/abs/repo	INQUOTE_BACKTICK	backtick in a DOUBLE-quoted span
+202	m:GATE_RE_GIT_CHECKOUT_RESTORE	1	INQUOTE_BACKTICK	backtick in a DOUBLE-quoted span
+202	t:GATE_RE_GIT_CHECKOUT_RESTORE	/abs/repo	INQUOTE_BACKTICK	backtick in a DOUBLE-quoted span
+204	segcount	2	INQUOTE_BACKTICK	enclosing command survives; its own match unchanged
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -697,7 +718,7 @@ fi
 # so the "undeclared" arm is blind to it and these floors are the only thing
 # that sees it. Raise them with the measurement whenever the corpus grows; do
 # not leave slack "for headroom", which is precisely what defeated them.
-for spec in "NOW_MATCH:93" "NOW_MISS:12" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13"; do
+for spec in "NOW_MATCH:93" "NOW_MISS:12" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"

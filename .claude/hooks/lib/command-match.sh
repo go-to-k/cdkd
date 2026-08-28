@@ -398,6 +398,51 @@ gate_segments_raw() {
           if (cp > 0) extra = extra substr(line, i + 2, cp - i - 2) "\n"
           res = res SEP_SUBST "("; i++; continue
         }
+        # A BACKTICK substitution runs its body exactly as `$(` does, and this
+        # branch had no arm for it, so the body was never scanned as a command
+        # and reached the shell with no gate armed (go-to-k/cdkd#2339). Measured
+        # on origin/main against GATE_RE_GIT_CHECKOUT, the three spellings of one
+        # command disagreed:
+        #
+        #   echo "r: `git -C /wt checkout -- f.txt`"   NOMATCH  <-- ran, ungated
+        #   echo "r: $(git -C /wt checkout -- f.txt)"  MATCH
+        #   echo `git -C /wt checkout -- f.txt`        MATCH
+        #
+        # Through the gates that is dirty-path-restore-gate -- the
+        # go-to-k/cdkd#1700 data-loss gate -- returning 0 on a command that
+        # discards uncommitted work.
+        #
+        # DOUBLE quotes only, unlike the `$(` arm above, and that asymmetry is
+        # measured rather than stylistic. A backtick inside SINGLE quotes does
+        # not run, so there is no bypass to close there, and firing anyway costs
+        # real false refusals: a review measured
+        # `gh issue comment 1 --body '"'"'Run `git push` first'"'"'` -- a markdown code
+        # span in a single-quoted body, this repo'"'"'s commonest issue/PR shape --
+        # being REFUSED by branch-gate. The survey put the single-quoted share at
+        # 36 of 139 newly-considered cells over 400 real commit messages and PR
+        # bodies. The `$(` arm'"'"'s own quote-blindness is a pre-existing
+        # over-approximation, not a contract to copy.
+        #
+        # Backticks do not nest, so the closer is simply the next one -- no depth
+        # counting, unlike close_paren.
+        if (c == "`" && q == "\"") {
+          bt = index(substr(line, i + 1), "`")
+          if (bt > 0) {
+            extra = extra substr(line, i + 1, bt - 1) "\n"
+            # Collapse the span to the placeholder: the enclosing text is DATA
+            # either way, and leaving the body inline would let a `;` or `&&`
+            # inside it reach the enclosing segment as structure.
+            res = res SEP_SUBST
+            i = i + bt
+            continue
+          }
+          # Unterminated on this line: the backtick PARITY tracked by subst_open
+          # has already joined the continuation, so an odd backtick here means
+          # the span was genuinely never closed. Neutralise it and keep scanning
+          # rather than latching -- dropping the rest is the fail-open direction.
+          res = res SEP_SUBST
+          continue
+        }
         res = res c
       }
       return res
