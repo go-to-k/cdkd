@@ -564,18 +564,27 @@ go-to-k/cdkd#2381 (2026-08-29), one from a sibling lane
 - **The unused key.** markgate resolves a `hash: files` gate as `include` MINUS
   `exclude`. No repo in the family has ever written an `exclude`, so the fence
   modelled `include` alone and reported full coverage over a scope the tool
-  would already have subtracted from. Read the tool's own schema
-  (`markgate init`'s starter config listed `hash` / `include` / `exclude` /
-  `base` / `ttl` / `state_dir` / `requires`) and model or explicitly refuse
-  each key. Probe by changing ONE variable: adding `exclude` while holding
-  `include` constant took `verify` from rc=1 to rc=0, and `set` still exited 0.
+  would already have subtracted from. Read the tool's OWN schema, from the
+  pinned binary rather than from its `init` template: 0.4.1 has eight gate keys
+  (`hash` / `include` / `exclude` / `base` / `ttl` / `state_dir` / `requires` /
+  `composes`) and `init` emits only six of them, omitting the two a repo is
+  likeliest not to have written. Then model or explicitly refuse each.
 - **The tripwire that inherits the blind spot.** The first fix parsed only
   `^ {6}- "x"` items and asserted "there is no exclude" through that same
   parser — so a flow-style `exclude: ["docs/**"]`, the spelling the code's own
-  comment used, left every case GREEN. Six of eight probed YAML spellings
-  parsed as empty. A check on the RAW text, deliberately not routed through the
-  parser, is what can see a parser's own blindness; make the parsed value agree
-  with it so the two cannot drift.
+  comment used, left every case GREEN, as did single-quoted, unquoted and
+  `"exclude":` items. A check on the RAW text, deliberately not routed through
+  the parser, is what can see a parser's own blindness; make the parsed value
+  agree with it so the two cannot drift.
+- **And the probe that establishes any of this must move ONE variable.** The
+  rule's first draft published "adding `exclude` while holding `include`
+  constant takes `verify` from rc=1 to rc=0" — measured, it stays rc=1, because
+  subtracting files changes the digest. The probe behind that sentence had
+  re-`set` the marker in between, moving two variables while claiming to move
+  one. The real hazard needs the marker RECORDED with the exclude present:
+  `set` rc=0, after which an edit to an excluded file keeps `verify` at rc=0
+  forever while an included file still reds. A rule about probes is exactly
+  where an unreproducible probe does the most damage.
 
 The generalisation: a guard whose *evidence* comes from the thing it guards
 cannot fail in the one direction you built it for.

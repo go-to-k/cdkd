@@ -227,10 +227,12 @@ gates:
       # The predicate that licenses a carve-out is NOT "repo-wide population
       # vs finite one". It is: does the assertion fire on a RARE condition,
       # or on ORDINARY content?
-      #   * RARE — source-control-bytes only reds on a C0 control byte or a
-      #     binary extension missing from BINARY_EXTENSIONS. Ordinary editing
-      #     anywhere in the tree cannot trip it, so a marker that does not
-      #     track the whole tree is proportionate.
+      #   * RARE — source-control-bytes reds on a C0 control byte or a binary
+      #     extension missing from BINARY_EXTENSIONS. (It also carries corpus
+      #     floors, e.g. `read.length > 2500`, but those have ~850 files of
+      #     slack, so they are not an ordinary-editing surface either.)
+      #     Ordinary editing anywhere in the tree cannot trip it, so a marker
+      #     that does not track the whole tree is proportionate.
       #   * ORDINARY — a whole-tree scanner whose predicate is ordinary prose
       #     or ordinary code MUST have its population inside this include, or
       #     be moved out of the `check` suite. It has no rarity to trade on:

@@ -63,8 +63,10 @@ import { describe, expect, it } from 'vite-plus/test';
  *       here only via the separate 'docs/testing.md' literal beside it. So
  *       what the fence knows about that reader is one file, not the subtree
  *       it really reads. (An earlier draft said rewriting that literal makes
- *       the docs root invisible; measured, it does not — eight other docs/*
- *       literals are read by other tests. The gap is the WALK, not the root.)
+ *       the docs root invisible; measured, it does not — two other REAL docs
+ *       literals are read elsewhere, 'docs/cli-reference.md' and
+ *       'docs/_generated/handled-property-wiring.json', beside several
+ *       synthetic fixture names. The gap is the WALK, not the root.)
  *       The BARE floor names the literal so it cannot be rewritten silently,
  *       which is a mitigation, not a fix.
  *   (f) Both bare parsers scan COMMENTS as well as code, and cannot tell a
@@ -278,20 +280,34 @@ function extractTargets(): Map<string, string[]> {
 /**
  * markgate's file scope for a `hash: files` gate is `include` MINUS `exclude`,
  * so a fence modelling only `include` reports full coverage over a scope the
- * tool has already subtracted from. Measured against markgate 0.4.1 in a
- * throwaway repo, holding `include` CONSTANT and changing only `exclude` (a
- * probe that moves two variables proves nothing about either): with
- * `include: ["docs/**"]` an edit to `docs/a.md` gives `verify` rc=1; adding
- * `exclude: ["docs/**"]` and nothing else gives rc=0 — and `set` still exits 0,
- * so the gate becomes one that can never block. Found by the sibling lane
+ * tool has already subtracted from. Found by the sibling lane
  * go-to-k/cdk-real-drift#1838.
  *
- * markgate 0.4.1's gate keys, from `markgate init`'s starter config: `hash`,
- * `include`, `exclude`, `base`, `ttl`, `state_dir`, `requires`. Of those only
- * `include` and `exclude` select FILES; `base` / `ttl` / `requires` change when
- * a marker is fresh rather than what it digests, and `state_dir` moves where
- * the marker is written. Model the tool's keys, not the ones this repo happens
- * to use today.
+ * Measured against markgate 0.4.1 in a throwaway repo. The hazard is NOT that
+ * adding an exclude to an existing marker turns `verify` green — it does not,
+ * because subtracting files changes the digest (rc stays 1). It is that a
+ * marker RECORDED while the exclude is present is then permanently blind to
+ * the excluded files:
+ *
+ *   include ["docs/**"], exclude ["docs/a.md"] -> `set` rc=0
+ *     edit docs/a.md (excluded) -> `verify` rc=0   <- never blocks again
+ *     edit docs/b.md (included) -> `verify` rc=1
+ *
+ * An earlier revision of this comment stated the rc=1 -> rc=0 transition, from
+ * a probe that re-`set` the marker between the two reads — moving two
+ * variables while claiming to move one, the exact mistake it warns against.
+ *
+ * markgate 0.4.1's gate keys, read from the pinned BINARY's schema rather than
+ * from `markgate init`'s starter config (which names only six of them, omitting
+ * the two this repo would most easily forget): `hash`, `include`, `exclude`,
+ * `base`, `ttl`, `state_dir`, `requires`, `composes`. Of those only `include`
+ * and `exclude` select FILES. `base` / `ttl` / `requires` / `composes` change
+ * when a marker is fresh rather than what it digests, and `state_dir` moves
+ * where the marker is written — but `composes` is not inert either, since the
+ * binary reports that "composes/requires without include makes the gate
+ * deps-only", i.e. a gate with no scope of its own. That is refused rather than
+ * modelled: the tripwire below fires on it too. Model the tool's keys, not the
+ * ones this repo happens to use today.
  */
 type GateScope = { include: string[]; exclude: string[] };
 
@@ -330,7 +346,11 @@ function parseGateScope(yml: string, gate: string): GateScope {
   let key: 'include' | 'exclude' | undefined;
   for (const line of gateBlockText(yml, gate).split('\n')) {
     if (/^\s*#/.test(line) || line.trim() === '') continue; // comment / blank: keep the current key
-    const kv = line.match(/^ {4}(include|exclude):\s*(.*)$/);
+    // `"exclude":` is legal YAML and markgate 0.4.1 honours it (measured:
+    // set rc=0, an edit to the quoted-excluded file stays rc=0, an included
+    // file still reds). An unquoted-only match let that spelling through both
+    // here and in the raw tripwire.
+    const kv = line.match(/^ {4}["']?(include|exclude)["']?:\s*(.*)$/);
     if (kv) {
       key = kv[1] as 'include' | 'exclude';
       const flow = kv[2].trim().match(/^\[(.*)\]$/);
@@ -442,6 +462,19 @@ describe('gate-scope resolution matches markgate (include MINUS exclude)', () =>
 
   it('parses a FLOW sequence, the spelling the first revision was blind to', () => {
     const scope = parseGateScope(FLOW, 'check');
+    expect(scope.include).toEqual(['src/**']);
+    expect(scope.exclude).toEqual(['src/vendor/**']);
+  });
+
+  it('a QUOTED key is parsed, because markgate honours one', () => {
+    // Measured on 0.4.1: with `"exclude": ["docs/a.md"]` the marker sets rc=0,
+    // an edit to docs/a.md keeps verify at rc=0, and an edit to docs/b.md reds.
+    // An unquoted-only match let exactly this spelling through the parser AND
+    // the raw tripwire — the headline failure surviving in one spelling.
+    const scope = parseGateScope(
+      ['gates:', '  check:', '    "include":', '      - "src/**"', "    'exclude': ['src/vendor/**']"].join('\n'),
+      'check',
+    );
     expect(scope.include).toEqual(['src/**']);
     expect(scope.exclude).toEqual(['src/vendor/**']);
   });
@@ -626,10 +659,19 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
     // accepted only `- "x"` items, so a flow-style `exclude: ["docs/**"]` left
     // every case green while markgate really did subtract it.
     const yml = readFileSync(join(REPO_ROOT, '.markgate.yml'), 'utf8');
+    const block = gateBlockText(yml, 'check');
     expect(
-      gateBlockText(yml, 'check'),
-      'the `check` gate grew an `exclude:` key. That is allowed — but markgate resolves scope as include MINUS exclude, so re-verify this fence against the installed markgate first (measured on 0.4.1: adding `exclude: ["docs/**"]` to an unchanged `include: ["docs/**"]` takes `verify` from rc=1 to rc=0, and `set` still exits 0), then replace this assertion with one naming the new list.',
-    ).not.toMatch(/^ {4}exclude:/m);
+      block,
+      'the `check` gate grew an `exclude:` key. That is allowed — but markgate resolves scope as include MINUS exclude, so re-verify this fence against the installed markgate first. Measured on 0.4.1: a marker RECORDED with the exclude present never blocks on an excluded file again (`set` rc=0, then an edit to an excluded file keeps `verify` at rc=0, while an included file still reds). Then replace this assertion with one naming the new list.',
+    ).not.toMatch(/^ {4}["']?exclude["']?:/m);
+    // `composes` is the other key that changes what this marker MEANS: the
+    // binary reports "composes/requires without include makes the gate
+    // deps-only". Refused rather than modelled — nothing here knows how to
+    // resolve a composed scope.
+    expect(
+      block,
+      'the `check` gate grew a `composes:` key, which can make a gate deps-only (no scope of its own). This fence resolves include/exclude and knows nothing about composition — work out what the marker now attests to before removing this assertion.',
+    ).not.toMatch(/^ {4}["']?composes["']?:/m);
     // And the parser must AGREE with the raw check, so the two cannot drift.
     expect(scope.exclude, 'parser and raw check disagree about the exclude list').toEqual([]);
   });
