@@ -32,6 +32,26 @@
 #                                  carrying only its review section that way).
 #   BLOCKED  `cp` / `mv`         - a restore that never ran leaves the tree
 #                                  mid-probe, which reads as a real regression.
+#   BLOCKED  interpreter one-liners (`python3 -c` / `node -e` / `perl -e` /
+#            `ruby -e`, their clustered spellings like `perl -pi -e`, and the
+#            stdin-script form `python3 - <<EOF`) ahead of a gated verb
+#            (issue #2369). The code argument is a QUOTED span the stripper
+#            removes, so the gate cannot see whether it writes -- and the
+#            measured incident was exactly a `python3 -c` that rewrote the
+#            gated command's own body file, discarded by a refusal, with the
+#            retry re-presenting the same offending content and costing a
+#            mis-diagnosis round (twice in one run, 2026-08-28). Treated as
+#            an OPAQUE write conservatively: this family's stated trade is
+#            that dropping too little leaves a loud, fixable false positive
+#            while the alternative is the silent direction. Measured before
+#            widening: ZERO shapes prescribed by this repo's skills/rules
+#            combine an interpreter one-liner with a gated verb in one call,
+#            so the false-refusal surface is ad-hoc behavior only, and the
+#            remediation (split the calls) is the flow's own standing rule.
+#            KNOWN LIMIT: `python3 script.py` (a script FILE that writes) is
+#            not matched -- a filename is indistinguishable from any other
+#            argument; the eval-flag and stdin forms are the incident
+#            spellings and the ones agents actually write.
 #
 #   ALLOWED  `git add`           - loss is LOUD: the commit fails with
 #                                  "nothing to commit", so nothing is believed.
@@ -150,6 +170,23 @@ COPY_RE='^(cp|mv|tee|touch)([[:space:]]|$)|(^|[[:space:]])sed[[:space:]]+([^[:sp
 # The `[^[:space:]]*` suffix and the leading option-cluster are both load
 # bearing: `sed -i.bak` (the portable GNU+BSD spelling) and `sed -E -i ''`
 # were missed without them.
+# Interpreter one-liners (issue #2369; see the header entry). Two arms:
+#   1. an eval-flag token -- a short-option cluster containing c/e/E
+#      (`-c`, `-e`, `-pe`, `-pi -e`, `-0pi`) or the long `--eval` -- after
+#      any number of other flag tokens;
+#   2. the stdin-script form: a bare `-` argument (`python3 - <<'EOF'`),
+#      where the heredoc body is the code and is already stripped.
+# The cluster class deliberately matches MORE spellings than the canonical
+# `-c`/`-e` (`node -pe`, `python3 -Bc`): every such invocation runs code the
+# stripper removed, which is the opaque-write shape, and over-matching inside
+# these four interpreter names costs a loud split-the-calls message at worst.
+# The two arms anchor DIFFERENTLY, on purpose: the eval-flag arm allows a
+# mid-segment position (`time python3 -c ...`), while the bare-`-` arm is
+# segment-START only -- a lone `-` after a word is common as an ordinary
+# argument (`grep python3 - <file>` reads stdin), so the loose anchor would
+# read an interpreter NAME appearing as an argument as an invocation.
+INTERPRETER_EVAL_RE='(^|[[:space:]])(python3?|node|perl|ruby)([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[a-zA-Z0-9]*[ceE][a-zA-Z0-9]*|--eval)([[:space:]]|$|<)'
+INTERPRETER_STDIN_RE='^(python3?|node|perl|ruby)([[:space:]]+-[^[:space:]]+)*[[:space:]]+-([[:space:]]|$|<)'
 
 # Newline-delimited rather than an array: this must run under macOS bash 3.2.
 # TWO lists, deliberately. `preambles` is annotated for the diagnosis and
@@ -208,6 +245,8 @@ EOF
     kind="marker write"
   elif [[ "$stripped" =~ $COPY_RE ]]; then
     kind="file copy/move/in-place edit"
+  elif [[ "$stripped" =~ $INTERPRETER_EVAL_RE ]] || [[ "$stripped" =~ $INTERPRETER_STDIN_RE ]]; then
+    kind="interpreter one-liner (opaque write)"
   else
     # Remove every discarding redirect, then ask whether a write redirect
     # survives. The ORDER of the two strips is inconsequential -- measured, and

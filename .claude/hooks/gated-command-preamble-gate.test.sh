@@ -253,6 +253,35 @@ run_case "/dev/nullx is a real file, not a discard" 2 \
 run_case "/dev/null.bak is a real file, not a discard" 2 \
   'foo >/dev/null.bak && git commit -m x'
 
+# --- Interpreter one-liners are OPAQUE writes (issue #2369). The code argument
+# is a quoted span the stripper removes, so the gate cannot see whether it
+# writes; the measured incident was a `python3 -c` that rewrote the gated
+# command's own body file and was discarded by a refusal, twice in one run. ---
+
+run_case "python3 -c preamble before gh pr create blocks" 2 \
+  "python3 -c 'open(x)' && gh pr create --title t --body-file /tmp/b.md"
+run_case "node -e preamble before gh pr create blocks" 2 \
+  "node -e 'fs.writeFileSync(x)' && gh pr create --title t --body-file /tmp/b.md"
+run_case "perl -pi -e clustered preamble blocks" 2 \
+  "perl -pi -e 's/a/b/' f.md && git commit -F /tmp/m.txt"
+run_case "python3 stdin-script (heredoc) preamble blocks" 2 \
+  'python3 - <<'"'"'PY'"'"'
+code
+PY
+git commit -F /tmp/m.txt'
+
+# Controls, both directions: the widening must not read mentions or
+# argument-position interpreter names as invocations, and an interpreter
+# AFTER the gated command is that command'"'"'s own follow-up.
+run_case "quoted mention of python3 -c in a commit message passes" 0 \
+  'git commit -m "use python3 -c to fix it"'
+run_case "interpreter name in argument position passes" 0 \
+  'grep python3 - </tmp/x && git commit -F /tmp/m.txt'
+run_case "interpreter AFTER the gated command passes" 0 \
+  "git commit -F /tmp/m.txt && python3 -c 'print(1)'"
+run_case "interpreter alone (no gated verb) passes" 0 \
+  "python3 -c 'print(1)'"
+
 printf '\nPass: %d  Fail: %d\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then printf '%b' "$fail_log" >&2; exit 1; fi
 exit 0
