@@ -12,6 +12,11 @@ tree the command runs from, so a merge issued from the main tree consults the
 WRONG store — measured 2026-08-28, when a fresh pr-review marker sat in the
 lane worktree while the main tree's stale sentinel blocked the merge with a
 misleading sha mismatch (go-to-k/cdkd#2363 records the cwd-race side of it).
+Those sentinels are also GITIGNORED, so a fresh worktree has none at all and
+`markgate set` on a sentinel-bound gate refuses there — `dead scope: include
+matches nothing this gate can see ...; the digest would be a constant that
+never goes stale` — which is the gate declining to record an empty set, not a
+markgate fault. Write the sentinel first (`/run-integ` step 11), never bypass.
 Never two lanes' integs or merges concurrently; everything after the merge in
 this section (pull → release → rebuild → cleanup) stays with the parent.
 
@@ -95,12 +100,31 @@ side that main does not already contain, and assert the residual:
 
 ```bash
 # after resolving, before `git rebase --continue`
-grep -c "<a distinctive phrase from the entry you kept>" docs/changelog-cdkd.md   # must be 1
+PHRASE="<a phrase unique to the entry you kept>"
+git show origin/main:docs/changelog-cdkd.md | grep -c "$PHRASE"   # must be 0
+grep -c "$PHRASE" docs/changelog-cdkd.md                          # must be 1
 diff <(git show origin/main:docs/changelog-cdkd.md) docs/changelog-cdkd.md | grep -c '^<'   # must be 0
 ```
 
-The first line is the one that matters; the second re-checks the paragraph
-above.
+**The first line is what makes the second mean anything.** A needle main
+already carries can never read 1, so the count then passes or fails for
+reasons that have nothing to do with your duplicate. Measured 2026-08-29: the
+phrase first reached for was `CloudControlProvider`, and
+`git show origin/main:docs/changelog-cdkd.md | grep -c CloudControlProvider`
+returned **18** that day — the check was vacuous. Take the phrase from YOUR
+entry's own subject and prove it absent from main's copy before counting. The
+third line re-checks the paragraph above.
+
+**The integ ledger is the OTHER generated file a parallel-lane rebase merges,
+and it fails in a different shape:** keeping both sides yields two rows for
+the SAME test, which `docs/_generated/integ-last-run.tsv`'s one-row-per-test
+invariant forbids and CI's `integ-last-run ledger is normalized` step rejects.
+Re-run `vp run integ-ledger-normalize` after any rebase that touched it **and
+commit the rewrite before pushing** — measured 2026-08-29, the normalizer ran
+but its output was never committed and the PR went red. Confirm with `git
+status --porcelain -- docs/_generated/`, never with the normalizer's own
+output: a grep over a check log that keeps only error lines reports a dirty
+tree as clean.
 
 ```bash
 gh pr merge <n> --squash --delete-branch     # squash is the repo's only method

@@ -143,6 +143,29 @@ The lambda/vpc\`-deps\`#5 edge.
 Item x/y\`the code\`#7 remains open.
 ")
 
+# M: qualified cross-repo refs wrapped in markdown emphasis / quotes
+# (allowed). A PR body writes a qualified ref bolded far more often than
+# bare, and until 2026-08-29 the gate blocked exactly that while its own
+# error message told the author to use the qualified form.
+M=$(write_file M.md "# Title
+
+- **go-to-k/cdkd#2367** — bolded, the shape that was blocked twice
+- *go-to-k/cdk-local#533* — italic
+- ~~go-to-k/cdk-real-drift#1792~~ — struck through
+- _go-to-k/cdkd#2378_ — underscore emphasis
+- \"go-to-k/cdkd#2374\" — double-quoted
+|go-to-k/cdkd#2376|an unpadded table cell|
+")
+
+# N: the fraction item number, now wrapped in the same emphasis (blocked).
+# Pins that widening the leading boundary did NOT widen the arm itself --
+# 1/2 has no letter in either segment, bolded or not.
+N=$(write_file N.md "# Title
+
+**step 1/2#3**: the second half
+*item 4/5#6*: and another
+")
+
 # --- ALLOW cases ---
 
 # 1. PR create with bare-number body (A) → exit 0.
@@ -186,6 +209,10 @@ run_case "gh pr view not gated" 0 \
 run_case "gh pr create with qualified owner/repo#N allowed" 0 \
   "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$J")"
 
+# Emphasised / quoted qualified refs are allowed too (2026-08-29).
+run_case "gh pr create with emphasised qualified owner/repo#N allowed" 0 \
+  "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$M")"
+
 # --- BLOCK cases ---
 
 # 2. PR create with #N body (B) → exit 2.
@@ -225,6 +252,11 @@ run_case "gh pr create with code-span slug gadget still blocked" 2 \
 
 run_case "gh pr create with fraction-shaped item number still blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$K")"
+
+# ...and still blocked when wrapped in the emphasis the boundary now admits,
+# which is what pins the 2026-08-29 widening to the BOUNDARY rather than the arm.
+run_case "gh pr create with emphasised fraction-shaped item number still blocked" 2 \
+  "$(printf '{"tool_input":{"command":"gh pr create --body-file %s"}}' "$N")"
 
 run_case "gh pr edit with #N body-file blocked" 2 \
   "$(printf '{"tool_input":{"command":"gh pr edit 123 --body-file %s"}}' "$B")"

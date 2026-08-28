@@ -394,10 +394,15 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
 
     The one-row-per-test invariant is now **enforced by CI** (issue #1112): the
     `integ-last-run ledger is normalized` step re-runs the normalizer and fails on any
-    diff. No manual post-rebase re-check is needed — the whole-file rewrite makes a
-    replayed commit produce an identical file rather than an additive diff, which is what
-    used to let a rebase silently duplicate rows. If a rebase does leave the file dirty,
-    re-run `vp run integ-ledger-normalize` and commit; `--check` reports without writing.
+    diff. The whole-file rewrite makes a REPLAYED commit reproduce the file byte-for-byte
+    instead of appending a duplicate row — but that covers the replay case only. When two
+    lanes recorded the SAME test, the rebase is a CONFLICT, and resolving it keeps both
+    rows: re-run `vp run integ-ledger-normalize` after any rebase that touched this file
+    **and commit the rewrite before pushing**. Measured 2026-08-29: the normalizer was run
+    after the push and its output never committed, so CI turned the PR red. Confirm with
+    `git status --porcelain -- docs/_generated/` rather than the normalizer's own output —
+    a grep over a check log that keeps only error lines reports a dirty tree as clean.
+    (`--check` reports without writing.)
 
 ## Important
 

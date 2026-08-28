@@ -18,11 +18,19 @@ on:
     branches: [main]
     paths:
       - '.claude/hooks/**'
+      # settings.json is what REGISTERS the hooks, and
+      # unresolved-target-class.test.sh derives its whole population from it.
+      # Leaving it out meant go-to-k/cdkd#2380 (a settings-only respelling to
+      # ${CLAUDE_PROJECT_DIR:-.}/...) emptied that population without ever
+      # running this workflow; the breakage only surfaced on the next
+      # unrelated hooks PR, 2026-08-29.
+      - '.claude/settings.json'
       - '.github/workflows/hooks.yml'
   pull_request:
     branches: [main]
     paths:
       - '.claude/hooks/**'
+      - '.claude/settings.json'
       - '.github/workflows/hooks.yml'
 
 jobs:

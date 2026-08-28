@@ -130,7 +130,14 @@ markers.
   an agent handed findings will otherwise fix, verify, and hand back, right
   everywhere except before a real-AWS gate. For reviewers, the reverse:
   dispatch a round SCOPED to the delta and ask for the whole round's findings
-  at once, not trickled.
+  at once, not trickled — **and paste the delta's COMMIT MESSAGE into the
+  brief.** All four reviewer agents read `gh pr diff` / `gh pr view --json
+  files` (`.claude/agents/pr-{code,spec,test,security}-reviewer.md`) and none
+  reads `git log`, so a false claim written into a commit message is invisible
+  to the whole tier however many reviewers you dispatch. Measured 2026-08-29:
+  a delta round's blocker was a commit message citing a function that has
+  never existed in this repo, reachable only because the orchestrator re-read
+  the message itself.
 
 Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup,
 code review, and a **live-test of the changed behavior** on top of `/check`.

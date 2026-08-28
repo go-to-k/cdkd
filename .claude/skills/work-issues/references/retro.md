@@ -284,7 +284,18 @@ pnpm install                  # worktrees have no node_modules
   gets §8's live-test exemption — the prose arm for a SKILL.md / rule edit, the
   command arm (run the suite, drive the failure direction, add the test case)
   as soon as it lands in `.claude/hooks/**` (per §10-b the RIGHT place for a
-  violated written rule).
+  violated written rule). **Run the WHOLE harness there — `bash
+  .claude/hooks/run-tests.sh`, not just your own hook's suite — and read the
+  TALLY, not the exit code of whatever you piped it into.** A hooks edit is
+  what re-triggers the path-filtered `hooks.yml`, so a fence a PEER left inert
+  surfaces as YOUR red CI. Measured 2026-08-29 while shipping this very
+  section: go-to-k/cdkd#2380 had respelled every registration in
+  `.claude/settings.json` as `${CLAUDE_PROJECT_DIR:-.}/...`,
+  `unresolved-target-class.test.sh`'s start-anchored enumeration then matched
+  nothing, so its population guard fired and the suite has failed on `main`
+  since — while the workflow that would have said so never ran, a settings-only
+  PR being outside its `.claude/hooks/**` path filter. Both halves (the
+  enumeration and the filter) were repaired in the retro PR.
 - Agent-instruction files are deliberately NOT down-biased in `/review-pr`'s
   tier heuristic — a wrong rule here propagates into every future session — so
   take the tier the heuristic gives and do not argue it down.

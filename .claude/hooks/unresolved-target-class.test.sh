@@ -88,7 +88,19 @@ for entries in d.get('hooks',{}).values():
     for e in entries:
         for h in e.get('hooks',[]):
             c=(h.get('command') or '').strip()
-            m=re.match(r'^(\.claude/hooks/[A-Za-z0-9._-]+\.sh)\b',c)
+            # A registration may be spelled bare -- `.claude/hooks/x.sh` --
+            # or rooted at the project dir, which go-to-k/cdkd#2380 switched
+            # every entry to on 2026-08-28:
+            #   ${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/x.sh
+            # Anchored at the string start alone this matched NOTHING from
+            # that day on, the population went empty, and the `-z $REGISTERED`
+            # guard below has failed this suite on main ever since -- unseen,
+            # because hooks.yml is path-filtered to `.claude/hooks/**` and the
+            # PR that broke it touched only `.claude/settings.json` (that
+            # filter is widened in the same change as this line).
+            # The optional prefix must be LAZY and end in `/`: a greedy one
+            # eats through `.claude/hooks/` itself and the group never binds.
+            m=re.match(r'^(?:[^\s]*?/)?(\.claude/hooks/[A-Za-z0-9._-]+\.sh)\b',c)
             if m and m.group(1) not in seen: seen.append(m.group(1))
 print("\n".join(seen))
 PY
