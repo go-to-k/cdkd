@@ -37,8 +37,20 @@
 #     them. This gate targets the one spelling whose blast radius is
 #     genuinely wider than it looks.
 #
-# ESCAPE HATCH: CDKD_ALLOW_DIRTY_RESTORE=1 (restore-backup.sh still
-# snapshots, so even the bypass stays recoverable).
+# ESCAPE HATCH: CDKD_ALLOW_DIRTY_RESTORE=1, honored from TWO channels
+# (issue #2368): the hook's own process env, and a leading assignment in
+# the COMMAND TEXT (`CDKD_ALLOW_DIRTY_RESTORE=1 git restore <p>`). The
+# second channel exists because the refusal message advertises exactly
+# that spelling and the primary operator is an agent whose Bash tool
+# call CANNOT populate the hook's env — a PreToolUse hook is spawned
+# with the session environment, and a `VAR=1 cmd` prefix reaches it only
+# as text. Honoring the text is sound here because this gate is not a
+# security boundary (see the failure policy below): typing the variable
+# name IS the deliberate decision the gate exists to force, whichever
+# channel carries it, and restore-backup.sh still snapshots first so
+# even the bypass stays recoverable. The text check goes through
+# strip_noncommand_spans + command position, so a QUOTED mention
+# (a commit message describing the bypass) does not bypass anything.
 #
 # Failure policy: fail OPEN on anything unexpected. A gate that blocks on
 # its own bug is worse than the bug it prevents.
@@ -87,6 +99,19 @@ if ! declare -F gate_matches >/dev/null 2>&1 \
   exit 2
 fi
 gate_matches "$command" "$GATE_RE_GIT_CHECKOUT_RESTORE" || exit 0
+
+# The command-TEXT half of the escape hatch (issue #2368; see the header).
+# Matched against strip_noncommand_spans output in command position — line
+# start or right after a separator / subshell opener — so a quoted mention
+# never bypasses, and the value must be exactly `1`. Guarded on the helper
+# existing: an older library simply leaves this channel un-honored, which
+# fails toward BLOCKING (the pre-#2368 behavior), never toward a silent pass.
+if declare -F strip_noncommand_spans >/dev/null 2>&1; then
+  if strip_noncommand_spans "$command" \
+    | grep -qE '(^|[|;&(][[:space:]]*)CDKD_ALLOW_DIRTY_RESTORE=1([[:space:]]|$)'; then
+    exit 0
+  fi
+fi
 
 # Resolve the working directory the command runs in, mirroring the other
 # cwd-aware gates: the payload cwd, overridden by an explicit `cd <path>`
