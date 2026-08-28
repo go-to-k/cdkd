@@ -434,6 +434,112 @@ run_case quiet "vp run build && eval \"vp run test\" (riding, hidden by eval)" \
 run_case quiet "vp run build in post-merge main tree (after state arms)" \
   "$MAIN" 'vp run build'
 
+# ---------------------------------------------------------------------
+# GIT-family widening (issue #2363): `rebase` / `merge` / `cherry-pick`
+# are the same cwd-race signature as a bare `git commit` — the measured
+# incident was `git rebase origin/main` running in the main tree and
+# fast-forwarding silently. `git pull` must stay OUT: it is the
+# mandated post-merge main-tree sync. Cases 30a-30h.
+# ---------------------------------------------------------------------
+
+# 30a. The incident shape itself -> WARN.
+run_case warn  "git rebase origin/main in main tree" \
+  "$MAIN" 'git rebase origin/main'
+
+# 30b. A continuation form -> WARN (mistargeted, it errors with "No
+#      rebase in progress" — a tell as misreadable as "nothing to
+#      commit").
+run_case warn  "git rebase --continue in main tree" \
+  "$MAIN" 'git rebase --continue'
+
+# 30c. `git merge` -> WARN (a mistargeted merge fast-forwards main as
+#      silently as the incident's rebase did). This spelling includes the
+#      alternative main-tree sync `git merge --ff-only origin/main`, and
+#      warning on it is ACCEPTED, not an oversight: the hook header's
+#      measurement shows main-tree git state cannot separate a deliberate
+#      sync from a lane's mistargeted one (both happen on a clean main at
+#      origin/main), and the sync spelling the flow actually mandates is
+#      `git pull` (30e), which stays quiet.
+run_case warn  "git merge --ff-only origin/main in main tree" \
+  "$MAIN" 'git merge --ff-only origin/main'
+
+# 30c-b/30c-c. Hyphenated READ-ONLY siblings of the new verbs stay out:
+#      `git merge-base` is ship.md's flatten step and `git merge-tree` is
+#      verify-pr's conflict probe, both run in the main tree routinely.
+#      These pin the verb-boundary class (`merge([[:space:]]...)`) that
+#      keeps `merge-base` / `merge-tree` / `cherry-pick`'s hyphen rules
+#      consistent.
+run_case quiet "git merge-base origin/main HEAD in main tree" \
+  "$MAIN" 'git merge-base origin/main HEAD'
+run_case quiet "git merge-tree HEAD origin/main in main tree" \
+  "$MAIN" 'git merge-tree HEAD origin/main'
+
+# 30d. `git cherry-pick` -> WARN.
+run_case warn  "git cherry-pick <sha> in main tree" \
+  "$MAIN" 'git cherry-pick abc1234'
+
+# 30e. CONTROL: `git pull` stays QUIET — it is the mandated post-merge
+#      sync step in the MAIN tree (/work-issues section 9), so adding
+#      it to the family would make the detector's common case "ignore
+#      this". The `pull` token must never join GIT_VERB.
+run_case quiet "git pull in main tree (mandated post-merge sync)" \
+  "$MAIN" 'git pull'
+
+# 30f. The sanctioned spelling -> QUIET (cd redirects to the worktree).
+run_case quiet "cd <worktree> && git rebase origin/main" \
+  "$MAIN" "cd $WT && git rebase origin/main"
+
+# 30g. From the worktree cwd -> QUIET (already in the right tree).
+run_case quiet "git rebase origin/main from feature-worktree cwd" \
+  "$WT" 'git rebase origin/main'
+
+# 30h. Quoted mention -> QUIET (command-position matcher). The `&&`
+#      inside the quotes puts the verb in command position in the RAW
+#      text, so this discriminates the stripper.
+run_case quiet "echo containing '&& git rebase origin/main' string" \
+  "$MAIN" 'echo "then && git rebase origin/main"'
+
+# ---------------------------------------------------------------------
+# `gh pr merge` family (issue #2363): a marker-consulting command whose
+# gate verdicts are computed against the tree it runs from. The
+# incident: a main-tree `gh pr merge` made pr-review-gate read the MAIN
+# tree's stale `.markgate-pr-review-sha` and block with a misleading
+# "mismatch" while the fresh marker sat in the worktree. Cases 31a-31g.
+# ---------------------------------------------------------------------
+
+# 31a. `gh pr merge` from the main tree, worktree active -> WARN.
+run_case warn  "gh pr merge in main tree" \
+  "$MAIN" 'gh pr merge 123 --squash --delete-branch'
+
+# 31b. The sanctioned spelling -> QUIET.
+run_case quiet "cd <worktree> && gh pr merge" \
+  "$MAIN" "cd $WT && gh pr merge 123 --squash"
+
+# 31c. From the worktree cwd -> QUIET.
+run_case quiet "gh pr merge from feature-worktree cwd" \
+  "$WT" 'gh pr merge 123 --squash'
+
+# 31d. Non-merge gh subcommands are NOT marker-consulting -> QUIET.
+#      This pins the family to `pr merge` alone.
+run_case quiet "gh pr checks in main tree (non-merge gh)" \
+  "$MAIN" 'gh pr checks 123 --watch'
+
+# 31e. Quoted mention -> QUIET (with the `&&` that makes the case
+#      discriminate the stripper).
+run_case quiet "echo containing '&& gh pr merge 5' string" \
+  "$MAIN" 'echo "wait && gh pr merge 5"'
+
+# 31f. The #2094 build exemption must not LAUNDER the gh half: a
+#      `vp run build && gh pr merge` in the post-merge position drops
+#      the verify warning and keeps the gh one -> WARN.
+run_case warn  "vp run build && gh pr merge in post-merge main tree" \
+  "$MAIN" 'vp run build && gh pr merge 123 --squash'
+
+# 31g. Unresolvable `cd` before the verb -> QUIET (header rule 4, same
+#      as both other families; case 20e is the resolvable control).
+run_case quiet 'cd "$W" && gh pr merge (quoted var, unresolvable)' \
+  "$MAIN" 'cd "$W" && gh pr merge 123'
+
 # 24. No feature worktree active -> QUIET even for a bare main-tree commit
 #     (no task in flight; ordinary main-tree work governed by branch-gate).
 git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1
@@ -443,6 +549,11 @@ run_case quiet "bare git commit in main tree, NO feature worktree" \
 # 25. Same for a verification command: no task in flight -> QUIET.
 run_case quiet "vp run test in main tree, NO feature worktree" \
   "$MAIN" 'vp run test'
+
+# 25b. Same for the gh family: no task in flight -> QUIET (ordinary
+#      main-tree merges are the single-writer default).
+run_case quiet "gh pr merge in main tree, NO feature worktree" \
+  "$MAIN" 'gh pr merge 123 --squash'
 
 # 26. NON-opted-in repo (no .markgate.yml): bare git commit in its main
 #     tree with a feature worktree active -> QUIET (issue #1259).
