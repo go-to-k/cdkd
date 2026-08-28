@@ -65,10 +65,11 @@ done
 
 Measured in go-to-k/cdk-local 2026-08-27 (fixtures leaking Docker images): a
 remedy-shaped grep (`docker rmi|docker image rm|docker image prune`) found 5
-sites, all already clean; eligibility minus remedy found 12. This repo is the
-most exposed — its defects are often missing entries (an absent
-`handledProperties` row, a provider with no validation arm, a type with no
-comparator), each invisible to a grep for what it lacks.
+sites, all already clean; eligibility minus remedy found six more, plus a
+seventh neither query finds — the remedy-shaped query had seen 5 of 12
+eligible sites. This repo is the most exposed — its defects are often missing
+entries (an absent `handledProperties` row, a provider with no validation arm,
+a type with no comparator), each invisible to a grep for what it lacks.
 
 **The same run then repeated the mistake one level up, which is why this is a
 rule and not a footnote:** it sized the deferred residue from the ONE instance
@@ -173,7 +174,10 @@ none. Measured 2026-08-25: the backlog closes fast (115 open, median 0.17 d)
 but the COUNT does not converge — 13 of 115 open issues are umbrella-shaped
 and **all four of the oldest are** (go-to-k/cdkd#609 at 90 d,
 go-to-k/cdkd#1160, go-to-k/cdkd#1225, go-to-k/cdkd#1393), because no single
-lane can close an issue naming N sites. The unit drifted from one ROOT CAUSE
+lane can close an issue naming N sites. Meanwhile 94 of the 115 open issues
+carry `Session-fit: next` and `Session-fit: now` appears 3 times in the last
+400 — the deferral classifier has one outcome in practice. The unit drifted
+from one ROOT CAUSE
 to one affected SITE, and the site space is types x properties wide — so an
 umbrella either sits open for months or splits into forty issues each paying
 the full fixed cost.

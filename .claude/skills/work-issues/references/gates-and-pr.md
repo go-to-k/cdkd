@@ -15,9 +15,9 @@ git commit --dry-run -m "gate liveness probe"   # from the repo root, on main
 Run it as YOUR OWN Bash tool call — PreToolUse hooks gate the agent's tool
 calls only, so the identical line typed by a human proves nothing. `--dry-run`
 commits nothing whatever the tree looks like. Expected: `Blocked by
-branch-gate` or `Blocked by check-gate`. Git's ordinary output means the gates
-are NOT firing — every gate step below is then self-enforced: run each check by
-hand and say so in the report.
+branch-gate` (the root is on `main`) or `Blocked by check-gate` (markers
+stale). Git's ordinary output means the gates are NOT firing — every gate step
+below is then self-enforced: run each check by hand and say so in the report.
 
 From inside the worktree, run the local quality checks and record the markers:
 
@@ -188,7 +188,9 @@ do not chain the two greps.
 hard-wrapped prose and `grep` is line-based, so a verbatim phrase spanning a
 wrap scores 0 — the same false alarm as a missing `-F`; and the wrap column
 differs per repo, so a phrase that works in one sibling scores 0 in another
-(measured twice, 2026-08-19). Before believing a 0, check the wrap:
+(measured twice on 2026-08-19 — once against go-to-k/cdk-local#530's own
+merged text, once against this repo's copy of the paragraph above). Before
+believing a 0, check the wrap:
 `git show origin/main:<file> | grep -n "<one short word from the phrase>"`
 prints the whole line.
 

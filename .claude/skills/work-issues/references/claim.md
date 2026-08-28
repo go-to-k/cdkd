@@ -52,8 +52,9 @@ gh issue view <n> --json comments \
 yours, post a short stand-down comment naming the winning branch, drop the
 lane, and pick a different issue — without asking; both sessions independently
 reach the same answer from the same timestamps. Escalate to the maintainer only
-when the timestamps cannot settle it (two claims twenty seconds apart needed
-arbitration once — 2026-08-09, go-to-k/cdkd#1446).
+when the timestamps cannot settle it (go-to-k/cdkd#1419 / go-to-k/cdkd#1435
+were claimed twenty seconds apart and needed arbitration — 2026-08-09,
+go-to-k/cdkd#1446).
 
 **The tie-break only works if the LOSER re-reads. Nothing makes it, so the
 window is not seconds — it is the whole lane.** The one-shot check above
