@@ -11,6 +11,7 @@ import {
   IntrinsicFunctionResolver,
   carriesDynamicReference,
   parameterTypeMayLoseSecretIdentity,
+  coerceParameterTypedValue,
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
   computeOutputsDiff,
@@ -245,6 +246,68 @@ export interface StackDiffResult {
 }
 
 /**
+ * The value a TOKEN-valued child parameter must be COMPARED as, given its
+ * declared `Type` (issue [#2327](https://github.com/go-to-k/cdkd/issues/2327)).
+ *
+ * `resolveChildStackParameters` sets `skipDynamicReferences`, so a
+ * secret-bearing nested input reaches this diff as its unresolved
+ * `{{resolve:...}}` expression rather than as the value the deploy will bind.
+ * The comparison therefore has to reproduce the SHAPE the child's state holds
+ * for that parameter, and the shape depends on the declared type:
+ *
+ * - `String` — state holds the expression STRING. Keep the token.
+ * - `CommaDelimitedList` — the deploy's own `coerceParameterValue` split the
+ *   RESOLVED value on `,` before redaction, so state holds an ARRAY of
+ *   expressions. Splitting the TOKEN the same way reproduces it, because the
+ *   reference this fixture-shaped case is about carries no comma.
+ * - `Number` / `List<Number>` — coercion produces `NaN`, which matches neither
+ *   side. Keep the token. (A deploy that actually bound a secret to one of
+ *   these is refused by `refuseCoercedInheritedSecret`, so there is no state to
+ *   agree with anyway.)
+ *
+ * `CommaDelimitedList` IS THE ONLY SPLITTING TYPE THAT KEEPS ITS PARTS STRINGS.
+ * `List<String>` reads as though it should be here and is NOT: measured against
+ * `coerceParameterTypedValue`, its `switch` NAMES only `Number`,
+ * `List<Number>` and `CommaDelimitedList` -- `String` is grouped with
+ * `default`, and every other type falls there too -- so `List<String>` comes
+ * back as the unchanged STRING, which is exactly what state holds for it. This
+ * function is therefore right about it, for a reason no reader should have to
+ * re-derive. That cdkd and CloudFormation may DISAGREE about whether a
+ * `List<String>` parameter is a list is a separate question, filed as issue
+ * [#2347](https://github.com/go-to-k/cdkd/issues/2347); nothing here asserts an
+ * answer to it.
+ *
+ * WHAT "carries no comma" DOES AND DOES NOT COVER. It is verified for the slots
+ * that vary in practice -- secret id / parameter name and version stage -- and
+ * NOT for the JSON-KEY slot, which may contain one:
+ * `{{resolve:secretsmanager:sec:SecretString:a,b::}}` splits into TWO elements
+ * (measured). The consequence is bounded to THIS function: a `cdkd diff
+ * --recursive` over such a parameter reports a phantom change, because the
+ * desired side has two elements where state has one. No write path is reached
+ * -- the persist side never consults this -- and no plaintext is exposed. It is
+ * not closed here because the fix belongs with a comma-aware split of the
+ * expression grammar rather than with a comparison shim.
+ *
+ * MEASURED FROM THE REAL COERCION, never enumerated beside it — the same
+ * discipline {@link parameterTypeMayLoseSecretIdentity} adopted after a
+ * hand-kept type list was found wrong about one of its own three entries. The
+ * test is what the coercion PRODUCED: an unchanged value, a non-array, or an
+ * array carrying a non-string all keep the token, so a `Type` added to
+ * `coerceParameterTypedValue` is covered the day it is added.
+ */
+function tokenValueForComparison(token: unknown, declaredType: string | undefined): unknown {
+  if (typeof token !== 'string' || declaredType === undefined) return token;
+  const coerced = coerceParameterTypedValue(token, declaredType);
+  // `String` and every unrecognised type: the coercion is the identity.
+  if (coerced === token) return token;
+  // `Number`: a scalar that is no longer the token.
+  if (!Array.isArray(coerced)) return token;
+  // `List<Number>`: an array whose elements are no longer the token's text.
+  if (!coerced.every((element) => typeof element === 'string')) return token;
+  return coerced;
+}
+
+/**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
  * vs `template` (synth desired state), with a best-effort intrinsic
  * resolver so changes buried inside intrinsics (e.g. `Fn::Join` literal
@@ -353,8 +416,10 @@ export async function computeStackDiff(
     if (typeof declaredType === 'string' && parameterTypeMayLoseSecretIdentity(declaredType)) {
       logger.warn(
         `Stack ${stackName}: parameter '${name}' is declared 'Type: ${declaredType}' and is fed ` +
-          `a secret dynamic reference. 'cdkd deploy' refuses this — declare it 'Type: String' — ` +
-          `and this diff keeps the unresolved reference rather than coercing it.`
+          `a secret dynamic reference. 'cdkd deploy' refuses this when the coercion actually ` +
+          `destroys the plaintext (a comma-bearing secret in a list-typed parameter) — declare ` +
+          `it 'Type: String' — and this diff compares the unresolved reference, shaped by the ` +
+          `declared type only where that keeps every part of it a string.`
       );
     }
   }
@@ -371,14 +436,24 @@ export async function computeStackDiff(
     // a number, like deploy) — while raw nested inputs survive for any name
     // the template does not declare.
     //
-    // EXCEPT for a redacted token (see `tokenParameterNames`): coercing an
-    // expression by the declared `Type` produces a `NaN` / `"false"` that
-    // matches neither side, so the token itself is kept — which is exactly what
-    // the child's state holds for such a parameter, keeping the comparison
-    // expression-vs-expression.
+    // EXCEPT for a redacted token (see `tokenParameterNames`), which is bound to
+    // the shape the CHILD'S STATE HOLDS for it -- see
+    // {@link tokenValueForComparison}. An earlier revision kept the raw token
+    // for EVERY such parameter and justified it as "exactly what the child's
+    // state holds", which is true only for a SCALAR one; issue
+    // [#2327](https://github.com/go-to-k/cdkd/issues/2327) measured that a
+    // `CommaDelimitedList` parameter's state leaf is an ARRAY, so the raw token
+    // compared a string against a list and reported a phantom change on every
+    // run. An over-stated invariant in a comment is durable precisely because
+    // it stops the next reader looking, which is why the correction is spelled
+    // here rather than only in the helper.
     mergedParameters = { ...parameters, ...templateParameters };
     for (const name of tokenParameterNames) {
-      mergedParameters[name] = (parameters ?? {})[name];
+      const declaredType = (template.Parameters?.[name] as { Type?: unknown } | undefined)?.Type;
+      mergedParameters[name] = tokenValueForComparison(
+        (parameters ?? {})[name],
+        typeof declaredType === 'string' ? declaredType : undefined
+      );
     }
     parametersBound = true;
   } catch (error) {
