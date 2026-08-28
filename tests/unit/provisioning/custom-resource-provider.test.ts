@@ -462,8 +462,13 @@ describe('CustomResourceProvider', () => {
         ),
       });
 
-      // S3 DeleteObject for cleanup
+      // S3 DeleteObject for cleanup, then the ListObjectVersions that purges
+      // the key's noncurrent versions (issue #2340). The queue must cover
+      // BOTH: an exhausted `mockResolvedValueOnce` chain resolves to
+      // `undefined`, which the purge reports as a failure and warns about —
+      // and this test asserts no warning at all.
       mockS3Send.mockResolvedValueOnce({});
+      mockS3Send.mockResolvedValueOnce({ Versions: [], DeleteMarkers: [], IsTruncated: false });
 
       await provider.delete('MyCustom', 'cr-physical-id', 'Custom::MyResource', {
         ServiceToken: 'arn:aws:lambda:us-east-1:123456789012:function:live-handler',

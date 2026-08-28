@@ -29,6 +29,7 @@ const { mockS3Send, mockStsSend, mockEcrSend, mockQuestion, stateBackendMocks, l
       listRawKeys: vi.fn(),
       listRawObjects: vi.fn(),
       deleteRawObjects: vi.fn(),
+      purgeNoncurrentVersions: vi.fn(),
     },
     loggerMocks: {
       setLevel: vi.fn(),
@@ -176,6 +177,7 @@ beforeEach(() => {
   stateBackendMocks.listRawKeys.mockResolvedValue([]);
   stateBackendMocks.listRawObjects.mockResolvedValue([]);
   stateBackendMocks.deleteRawObjects.mockResolvedValue(undefined);
+  stateBackendMocks.purgeNoncurrentVersions.mockResolvedValue(undefined);
   // Empty asset bucket / repo.
   mockS3Send.mockResolvedValue({ Contents: [], IsTruncated: false });
   mockEcrSend.mockResolvedValue({ imageDetails: [] });
@@ -575,5 +577,149 @@ describe('listResponsePlaceholderCandidates (issue #2052)', () => {
     await expect(listResponsePlaceholderCandidates(backend, Date.now(), logger)).resolves.toEqual(
       []
     );
+  });
+});
+
+/**
+ * Issue #2340 — collecting the abandoned placeholders is not enough on a
+ * VERSIONED bucket.
+ *
+ * `deleteRawObjects` writes DELETE MARKERS: every body stays readable through
+ * `GetObject` with a `VersionId`. A response object's body is the handler's
+ * full cfn-response, `Data` included, so a sweep that stops at the delete
+ * leaves behind exactly what it exists to remove.
+ *
+ * These cases pin the WIRING and the ERROR CONTRACT at this call site. The S3
+ * COMMAND STREAM the purge emits is pinned against the real implementation in
+ * `tests/unit/state/s3-noncurrent-version-purge.test.ts` — here the backend is
+ * a stub, so asserting commands would only re-read the stub.
+ */
+describe('cdkd gc: the collected placeholders are purged, not just delete-markered (issue #2340)', () => {
+  it('purges the NONCURRENT versions of exactly the collected keys', async () => {
+    stateBackendMocks.listRawObjects.mockResolvedValue([
+      { key: ABANDONED_KEY, lastModified: OLD, size: 512 },
+      { key: IN_FLIGHT_KEY, lastModified: RECENT, size: 0 },
+    ]);
+
+    await runGc(['--yes']);
+
+    expect(stateBackendMocks.purgeNoncurrentVersions).toHaveBeenCalledTimes(1);
+    const [keys, options] = stateBackendMocks.purgeNoncurrentVersions.mock.calls[0]! as [
+      string[],
+      { listPrefix?: string },
+    ];
+    // The COLLECTED set, not everything the listing returned: the in-flight
+    // key is spared by the age guard and must not be purged either. Purging a
+    // key gc deliberately did not delete would take a version of an object a
+    // concurrent run is still using.
+    expect(keys).toEqual([ABANDONED_KEY]);
+    expect(deletedResponseKeys()).toEqual(keys);
+    // ONE listing for the lot. The prefix is SHARED with every concurrent
+    // deploy in the region, which is safe only because `keys` bounds what is
+    // deleted — asserted directly against the implementation in the state
+    // suite.
+    expect(options.listPrefix).toBe(`${CUSTOM_RESOURCE_RESPONSE_PREFIX}/`);
+  });
+
+  it('purges AFTER the delete, so the delete marker is the surviving CURRENT version', async () => {
+    stateBackendMocks.listRawObjects.mockResolvedValue([
+      { key: ABANDONED_KEY, lastModified: OLD, size: 512 },
+    ]);
+    const order: string[] = [];
+    stateBackendMocks.deleteRawObjects.mockImplementation(async () => {
+      order.push('delete');
+    });
+    stateBackendMocks.purgeNoncurrentVersions.mockImplementation(async () => {
+      order.push('purge');
+    });
+
+    await runGc(['--yes']);
+
+    expect(order).toEqual(['delete', 'purge']);
+  });
+
+  it('does not purge when nothing was collected', async () => {
+    stateBackendMocks.listRawObjects.mockResolvedValue([
+      { key: IN_FLIGHT_KEY, lastModified: RECENT, size: 0 },
+    ]);
+
+    await runGc(['--yes']);
+
+    expect(stateBackendMocks.deleteRawObjects).not.toHaveBeenCalled();
+    expect(stateBackendMocks.purgeNoncurrentVersions).not.toHaveBeenCalled();
+  });
+
+  it('a rejecting purge does NOT mask the delete\'s GC_DELETE_FAILED identity', async () => {
+    // The invariant the `.catch()` in the `finally` exists for. A `finally`
+    // that rejects REPLACES the exception in flight, so before the guard a
+    // failing purge discarded the delete's identity and surfaced itself. This
+    // is the case the placement test above cannot reach, because its delete
+    // succeeds.
+    stateBackendMocks.listRawObjects.mockResolvedValue([
+      { key: ABANDONED_KEY, lastModified: OLD, size: 512 },
+    ]);
+    stateBackendMocks.deleteRawObjects.mockRejectedValue(new Error('AccessDenied on one key'));
+    stateBackendMocks.purgeNoncurrentVersions.mockRejectedValue(
+      new Error('purge blew up in the finally')
+    );
+
+    await expect(runGc(['--yes'])).rejects.toThrow(
+      /Failed to delete abandoned custom-resource response placeholder/
+    );
+    await expect(runGc(['--yes'])).rejects.not.toThrow(/purge blew up in the finally/);
+  });
+
+  it('still purges when the delete PARTIALLY failed', async () => {
+    // `deleteRawObjects` throws on ANY per-key failure — 4999 keys gone, one
+    // `AccessDenied` reaches the same throw as zero keys gone. With the purge
+    // sitting after the try/catch it was never reached, so those 4999 bodies
+    // stayed readable with no version warning at all. It runs in a `finally`
+    // now, so the collection's own failure still surfaces AND the purge runs.
+    stateBackendMocks.listRawObjects.mockResolvedValue([
+      { key: ABANDONED_KEY, lastModified: OLD, size: 512 },
+    ]);
+    stateBackendMocks.deleteRawObjects.mockRejectedValue(
+      new Error('Failed to delete 1 object(s) from bucket: k (AccessDenied: )')
+    );
+
+    await expect(runGc(['--yes'])).rejects.toThrow(
+      /Failed to delete abandoned custom-resource response placeholder/
+    );
+
+    expect(stateBackendMocks.purgeNoncurrentVersions).toHaveBeenCalledTimes(1);
+    expect(stateBackendMocks.purgeNoncurrentVersions.mock.calls[0]![0]).toEqual([ABANDONED_KEY]);
+  });
+
+  it('a rejecting purge neither fails the run nor swallows the success line', async () => {
+    // The call sits in the try's `finally` and is `.catch()`-guarded there, so
+    // a purge failure can never describe a collection that already succeeded
+    // as a failed delete. (An earlier revision of this comment said "OUTSIDE
+    // the try", which was true of the previous placement and was left stale
+    // when the call moved; the assertion it carried -- that the rejection
+    // PROPAGATES -- was the pre-guard contract and is inverted here.)
+    //
+    // The half that matters operationally: an escaping rejection skipped the
+    // `✓ Deleted ...` line after the delete had already succeeded, which is
+    // the outcome the comment at the call site says is impossible. In
+    // production the purge cannot reject at all -- the backend method catches
+    // everything -- so this pins the guard rather than a reachable state.
+    stateBackendMocks.listRawObjects.mockResolvedValue([
+      { key: ABANDONED_KEY, lastModified: OLD, size: 512 },
+    ]);
+    stateBackendMocks.purgeNoncurrentVersions.mockRejectedValue(
+      new Error('AccessDenied: s3:ListBucketVersions')
+    );
+
+    await expect(runGc(['--yes'])).resolves.toBeUndefined();
+
+    expect(deletedResponseKeys()).toContain(ABANDONED_KEY);
+    expect(infoText()).toContain('abandoned custom-resource response');
+    // ...and the guard LOGS rather than swallowing. A silent `.catch()` in the
+    // file whose premise is that quiet failures are the bug would drop a
+    // security-relevant failure with no trace if the backend wrapper ever
+    // regressed — the same trade this change rejected for the truncated
+    // -listing branch.
+    expect(warnText()).toContain('remain readable via GetObject with a VersionId');
+    expect(warnText()).toContain('AccessDenied: s3:ListBucketVersions');
   });
 });

@@ -26,6 +26,10 @@ import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
+import {
+  purgeNoncurrentKeyVersions,
+  type NoncurrentVersionPurgeOptions,
+} from './s3-noncurrent-version-purge.js';
 
 /**
  * Identifier of a state record. The legacy layout (`version: 1`) didn't have
@@ -767,6 +771,55 @@ export class S3StateBackend {
     if (failures.length > 0) {
       throw new StateError(
         `Failed to delete ${failures.length} object(s) from bucket '${this.config.bucket}': ${failures.join('; ')}`
+      );
+    }
+  }
+
+  /**
+   * Delete the NONCURRENT versions of raw sidecar keys in the state bucket
+   * (issue [#2340](https://github.com/go-to-k/cdkd/issues/2340)).
+   *
+   * The versioned-bucket companion to {@link deleteRawObjects}, and
+   * deliberately NOT folded into it. `deleteRawObjects` has SIX call sites,
+   * ENUMERATED rather than given as a grep so that a comment quoting the
+   * command cannot end up matching itself and reporting seven:
+   * `deployment-events-store.ts` x4, `gc.ts`, `bootstrap-destroy.ts`. Four of
+   * the six are in `deployment-events-store.ts`, whose objects
+   * `tests/integration/s3-versions.sh` records as deliberately surviving as
+   * CURRENT objects; a blanket purge there would
+   * change that behaviour AND widen the IAM every caller needs
+   * (`s3:ListBucketVersions`, `s3:DeleteObjectVersion`). So the purge is
+   * opt-in, and today `cdkd gc`'s custom-resource response sweep is the one
+   * caller that opts in.
+   *
+   * NEVER THROWS, and the try/catch below is what makes that true rather than
+   * the helper alone. `ensureClientForBucket()` and `ownerParam()` sit OUTSIDE
+   * the helper's guarantee and both reach AWS — `GetBucketLocation` can be
+   * denied or throttled. Without the wrap, that rejection escaped at
+   * `gc.ts`'s call site and skipped the `✓ Deleted ...` line after the delete
+   * had already succeeded, which is precisely the outcome the comment there
+   * says is impossible.
+   */
+  async purgeNoncurrentVersions(
+    keys: string[],
+    options: Omit<NoncurrentVersionPurgeOptions, 'requestFields' | 'logger'> = {}
+  ): Promise<void> {
+    if (keys.length === 0) return;
+    try {
+      await this.ensureClientForBucket();
+      await purgeNoncurrentKeyVersions(this.s3Client, this.config.bucket, keys, {
+        ...options,
+        requestFields: await this.ownerParam(),
+        logger: this.logger,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Could not purge noncurrent versions of ${keys.length} key(s) in bucket ` +
+          `'${this.config.bucket}': the purge could not be started. Their previous versions ` +
+          `survive and remain readable via GetObject with a VersionId. Grant ` +
+          `s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge the ` +
+          `key(s) by hand. Underlying error: ` +
+          `${error instanceof Error ? error.message : String(error)}`
       );
     }
   }

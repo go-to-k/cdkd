@@ -1431,6 +1431,41 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       // delete 1 object(s) ...` — a partial failure describing itself as total.
       // Both asset arms report the FAILURE count; this one defers to the inner
       // message for it rather than contradicting it.
+      // Issue #2340: the state bucket is VERSIONED (bootstrap enables it), so
+      // the DeleteObjects below only writes delete markers and every body
+      // stays readable by VersionId. A response object's body is the handler's
+      // full cfn-response, `Data` included, so collecting the abandoned ones
+      // without the purge leaves exactly what the sweep exists to remove.
+      //
+      // The purge runs in a `finally`, and that placement is deliberate.
+      // `deleteRawObjects` throws on ANY per-key failure, so a PARTIAL delete
+      // — 4999 keys gone, one `AccessDenied` — used to skip the purge
+      // entirely and leave 4999 readable bodies behind with no version
+      // warning at all.
+      //
+      // A `finally` that can REJECT would replace the exception in flight, so
+      // a failing purge would discard the `GC_DELETE_FAILED` identity of a
+      // failing delete and surface itself instead. `purgeNoncurrentVersions`
+      // already catches everything, but relying on that makes a REMOTE
+      // wrapper load-bearing for THIS site's error identity — an invariant
+      // nothing here states and a future edit there could silently break. The
+      // `.catch()` keeps it local: whatever the backend does, the error the
+      // caller sees is the delete's. It is not a substitute for the backend's
+      // own handling, which is what produces the operator-facing warning.
+      //
+      // It purges the WHOLE candidate list rather than only the keys that were
+      // deleted, because `deleteRawObjects` does not report which succeeded.
+      // That is safe: the `IsLatest` filter inside the purge leaves the
+      // current version of a key whose delete failed completely intact, so the
+      // worst case is that its history goes while the object itself stays.
+      //
+      // `listPrefix` makes it ONE PAGINATED WALK of the shared prefix instead
+      // of one walk per candidate. That is a trade, not a strict win: on a
+      // busy account the shared prefix holds other stacks' in-flight objects
+      // too, so the walk can cost more requests than a handful of per-key
+      // lookups would. It pays off for the thousands-of-keys case this sweep
+      // is built for. Either way membership of the candidate key set, not the
+      // prefix, is what bounds the delete.
       try {
         await stateBackend.deleteRawObjects(responseCandidates.map((c) => c.key));
       } catch (deleteError) {
@@ -1440,6 +1475,29 @@ export async function gcCommand(options: GcOptions): Promise<void> {
             `${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
           'GC_DELETE_FAILED'
         );
+      } finally {
+        await stateBackend
+          .purgeNoncurrentVersions(
+            responseCandidates.map((c) => c.key),
+            {
+              listPrefix: `${CUSTOM_RESOURCE_RESPONSE_PREFIX}/`,
+            }
+          )
+          // See above: a rejecting `finally` would mask GC_DELETE_FAILED.
+          // It LOGS rather than swallowing. Today the backend method catches
+          // and warns with no rethrow, so nothing reaches here — but the guard
+          // exists precisely for the case where that regresses, and a silent
+          // guard would then drop a security-relevant failure with no trace,
+          // which is the trade this same change rejected for the truncated
+          // -listing branch three lines of reasoning away.
+          .catch((purgeError) =>
+            logger.warn(
+              `Could not purge noncurrent versions of the collected custom-resource ` +
+                `response placeholder(s) in ${bucketName}; their previous versions survive ` +
+                `and remain readable via GetObject with a VersionId. Underlying error: ` +
+                `${purgeError instanceof Error ? purgeError.message : String(purgeError)}`
+            )
+          );
       }
       logger.info(
         `✓ Deleted ${responseCandidates.length} abandoned custom-resource response ` +

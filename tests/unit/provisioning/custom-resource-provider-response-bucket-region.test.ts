@@ -97,7 +97,17 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
         ),
       });
     s3Mock.mockResolvedValueOnce({}); // cleanup DeleteObject
+    // ...and the noncurrent-version purge that follows it (issue #2340). It is
+    // part of the cleanup, so it must go through the SAME region-corrected
+    // client — which is what the per-client call counts below now prove.
+    s3Mock.mockResolvedValueOnce({ Versions: [], DeleteMarkers: [], IsTruncated: false });
   };
+
+  /**
+   * S3 calls one successful create makes against the response bucket:
+   * placeholder PutObject, cleanup DeleteObject, ListObjectVersions purge.
+   */
+  const S3_OPS_PER_CREATE = 3;
 
   const createOnce = () =>
     provider.create('MyCustom', 'Custom::MyResource', {
@@ -122,8 +132,9 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
       })
     );
     // Every response-bucket S3 op must go through the corrected client:
-    // the placeholder PutObject + cleanup DeleteObject...
-    expect(correctedSend).toHaveBeenCalledTimes(2);
+    // the placeholder PutObject, the cleanup DeleteObject and the
+    // noncurrent-version purge that follows it...
+    expect(correctedSend).toHaveBeenCalledTimes(S3_OPS_PER_CREATE);
     expect(mockS3Send).not.toHaveBeenCalled();
     // ...and the pre-signed ResponseURL must be signed with it too (the
     // URL's host is region-specific — this is where the 301 originated).
@@ -143,7 +154,7 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
 
     expect(result.physicalId).toBe('phys-1195');
     expect(mockRebuildClientForBucketRegion).toHaveBeenCalledTimes(1);
-    expect(mockS3Send).toHaveBeenCalledTimes(2); // placeholder + cleanup on the original client
+    expect(mockS3Send).toHaveBeenCalledTimes(S3_OPS_PER_CREATE); // all on the original client
     expect(correctedSend).not.toHaveBeenCalled();
   });
 
@@ -199,7 +210,7 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     // create's S3 ops went through the original shared client.
     expect(staleClient.destroy).toHaveBeenCalledTimes(1);
     expect(staleClient.send).not.toHaveBeenCalled();
-    expect(mockS3Send).toHaveBeenCalledTimes(2); // placeholder + cleanup
+    expect(mockS3Send).toHaveBeenCalledTimes(S3_OPS_PER_CREATE);
 
     // The next operation re-probes against the NEW bucket and adopts its
     // replacement normally.
@@ -212,7 +223,7 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
       'bucket-b',
       expect.anything()
     );
-    expect(correctedSend).toHaveBeenCalledTimes(2);
+    expect(correctedSend).toHaveBeenCalledTimes(S3_OPS_PER_CREATE);
   });
 
   it('a stale probe settling while a successor probe is in flight does not clobber the successor (issue #1202)', async () => {
@@ -263,8 +274,8 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
 
     expect(staleClient.destroy).toHaveBeenCalledTimes(1);
     expect(staleClient.send).not.toHaveBeenCalled();
-    expect(mockS3Send).toHaveBeenCalledTimes(2); // first op: placeholder + cleanup
-    expect(correctedSend).toHaveBeenCalledTimes(4); // second + third ops on B's client
+    expect(mockS3Send).toHaveBeenCalledTimes(S3_OPS_PER_CREATE); // first op only
+    expect(correctedSend).toHaveBeenCalledTimes(2 * S3_OPS_PER_CREATE); // second + third ops on B's client
   });
 
   it('shares one in-flight probe across concurrent operations', async () => {
@@ -296,6 +307,6 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
     await Promise.all([first, second]);
 
     expect(mockRebuildClientForBucketRegion).toHaveBeenCalledTimes(1);
-    expect(correctedSend).toHaveBeenCalledTimes(4); // 2 ops x (placeholder + cleanup)
+    expect(correctedSend).toHaveBeenCalledTimes(2 * S3_OPS_PER_CREATE);
   });
 });

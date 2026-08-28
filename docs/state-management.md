@@ -66,6 +66,34 @@ stranded ones — see
 [`cdkd gc`](cli-reference.md#custom-resource-response-placeholders) for the
 staleness rule and why an in-flight run's key is never taken.
 
+**Deleting one is not the same as removing it, because this bucket is
+VERSIONED.** `cdkd bootstrap` turns versioning on, so a plain `DeleteObject`
+writes a DELETE MARKER and every earlier version of the key stays readable
+through `GetObject` with a `VersionId`. That matters here more than anywhere
+else under the state bucket: the object at this key is the handler's FULL
+`cfn-response`, `Data` included, so a handler that mints a secret (a generated
+password, an issued API key) put that value in the state bucket. Until issue
+[#2340](https://github.com/go-to-k/cdkd/issues/2340) both delete paths — the
+provider's own cleanup and `cdkd gc`'s collection — left it retrievable after
+reporting the object gone. Both now purge the key's noncurrent versions as
+well, scoped to that exact key so a concurrent deploy's live placeholder under
+the same shared prefix is never touched.
+
+**This is not the whole account of where that value lives.** A handler-minted
+secret returned in `Data` is also persisted into the resource's `attributes` in
+`state.json`, which is a separate object with a separate lifetime and is NOT
+addressed here — see issue
+[#2274](https://github.com/go-to-k/cdkd/issues/2274). Purging the response
+sidecar closes the sidecar; treat the state file as still carrying the value.
+
+That purge is conditional on `s3:ListBucketVersions` and
+`s3:DeleteObjectVersion` on the state bucket — see
+[Bucket Policy with Least Privilege](#recommended-bucket-policy-with-least-privilege),
+which did not grant either before #2340. It fails soft by design, because it
+runs on a cleanup path that must never abort the operation it follows: without
+those actions the deploy, destroy or `cdkd gc` run still succeeds, a warning
+names the two grants, and the body stays retrievable by `VersionId`.
+
 The `rollback-journal.json` sibling (issue
 [#1183](https://github.com/go-to-k/cdkd/issues/1183)) is written whenever a
 deploy ends **without a completed rollback** — a `--no-rollback` failure, a
@@ -1640,7 +1668,9 @@ bucket alone.
         "s3:GetObject",
         "s3:PutObject",
         "s3:DeleteObject",
-        "s3:ListBucket"
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:DeleteObjectVersion"
       ],
       "Resource": [
         "arn:aws:s3:::cdkd-state-bucket",
@@ -1650,6 +1680,53 @@ bucket alone.
   ]
 }
 ```
+
+The last two are what let cdkd finish deleting an object on a VERSIONED
+bucket, which the state bucket is: `cdkd bootstrap` turns versioning on, so
+`DeleteObject` writes a DELETE MARKER and every earlier version of the key
+stays readable through `GetObject` with a `VersionId`.
+
+- **`s3:ListBucketVersions`** — bucket-level, like the `s3:ListBucket` above
+  it, so the bare `arn:aws:s3:::cdkd-state-bucket` ARN already in `Resource`
+  covers it. Lets cdkd find the leftover versions.
+- **`s3:DeleteObjectVersion`** — object-level, like the `s3:DeleteObject`
+  above it, so the `arn:aws:s3:::cdkd-state-bucket/*` ARN covers it. Lets cdkd
+  remove them.
+
+**Without them, nothing fails — and that is the point to understand.** The
+purge runs on a cleanup path and must never abort the operation it follows, so
+it logs a warning and the deploy, destroy or `cdkd gc` run still succeeds. What
+does not happen is the removal: a custom resource's response object holds the
+handler's FULL reply, `Data` included, so if the handler mints a secret (a
+generated password, an issued API key) that value stays retrievable by anyone
+who can read the state bucket with a `VersionId`. The warning counts KEYS and
+names them, and spells the two actions exactly as above:
+
+```
+Could not purge noncurrent versions of 1 key(s) in s3://cdkd-state-bucket. Their
+previous versions survive and remain readable via GetObject with a VersionId
+(for a custom-resource response object that is the handler's full response body,
+including `Data`). Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the
+state bucket, or purge the key(s) by hand. Failures:
+custom-resource-responses/cdkd-1756000000000-a1b2c3.json (AccessDenied:
+s3:ListBucketVersions)
+```
+
+(Line-wrapped here; cdkd emits it as one line. It names up to five keys and
+appends `(and N more)` beyond that, so the tail first appears at six.)
+
+**The two grants fail in different ways, and only one of them fails loudly on
+its own.** Missing `s3:ListBucketVersions` denies the listing, so the whole
+purge stops. Missing `s3:DeleteObjectVersion` does NOT throw: `DeleteObjects`
+reports per-key refusals in a `response.Errors` array and returns success
+overall, so cdkd has to read that array to notice. It does — a partial failure
+across a batch is counted key by key and named the same way — but it is why
+granting one of the two and not the other is worth avoiding: everything looks
+normal except the warning.
+
+If you are on the older four-action policy, adding these two lines is the whole
+fix; the objects already stranded before the change have to be purged by hand
+(`aws s3api list-object-versions` + `delete-object --version-id`).
 
 #### Recommended: Enable Encryption
 
