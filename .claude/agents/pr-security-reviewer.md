@@ -23,6 +23,17 @@ process-launch surfaces, deletion logic), IN ADDITION to the size-tier panel.
    lines.
 4. **Project conventions** — `CLAUDE.md` at the repo root.
 
+**Never run a WRITING git verb — anywhere, including in a copy.** `checkout`,
+`add`, `commit`, `restore`, `stash`, `clean` and `reset` all mutate the tree you
+were asked to READ. A copy is not an escape: a linked worktree's `.git` is a
+FILE holding `gitdir: <repo>/.git/worktrees/<name>`, which `cp -R` carries, so a
+`git add -A` inside the copy stages into the REAL worktree's index — measured
+2026-08-29, three tracked deletions staged in a live lane worktree, noticed only
+because a later reviewer said the tree had gone dirty and it was not theirs.
+Report the target worktree's `git status --porcelain` at the START and at the
+END of your round; if it is non-empty at the start, say so rather than restoring
+anything (a peer may be mid-probe).
+
 ## Review focus
 
 ### 1. Sensitive-value flow tracing (your load-bearing job)

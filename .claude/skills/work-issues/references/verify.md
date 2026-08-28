@@ -597,3 +597,56 @@ them by direct AWS API call before doing anything else.
 
 `/verify-pr` sets the `check` + `docs` + `verify-pr` markers, and `/run-integ`
 sets the `integ-*` markers — together they unblock `gh pr merge`.
+
+**`pr-review` is not on that list, and a LANE must never set it.** `/review-pr`
+writes it, run by the ORCHESTRATOR, after the reviewers it dispatched have
+reported and every blocker is addressed — the marker records who reviewed what
+at which sha, so a lane setting it is the "sub-agent self-review is not
+independent review" failure of `CLAUDE.md` arriving through the marker instead
+of through the review. Measured 2026-08-29: two of three lanes in one run
+(go-to-k/cdkd#2383, go-to-k/cdk-local#631) set it themselves before any
+independent review existed. §5's "a lane stops at merge-ready" was already
+written and did not prevent it, because recording a marker reads as part of
+finishing rather than as merging — so name this marker in the lane's brief.
+And nothing mechanical catches it, so do not read the sha binding as a
+backstop. `pr-review-gate.sh` compares the recorded `.markgate-pr-review-sha`
+sentinel against the PR's current HEAD and refuses with
+`bound to <sha> (mismatch)` — which catches a marker a later PUSH left behind,
+not a marker set by the wrong AGENT. It cannot tell who set it; the sentinel is
+per-worktree, and §9 merges from the lane's own worktree, so a lane that sets it
+after its final push produces a matching sha and merges unreviewed. The rule is
+the only thing standing there.
+
+**And your own review round is not optional because the lane already ran one.**
+A lane's reviewers are its children — same brief, same framing — so the thing
+they are least able to doubt is the premise the lane handed them. Measured on
+go-to-k/cdkd#2383 (2026-08-29): three rounds of the lane's own reviewers each
+found the next spelling of one defect, and it took an independent
+orchestrator-level round — round 4, A/B-ing the hand-rolled parser against the
+`yaml` library over 15 spellings and then against markgate 0.4.1 itself — to
+find the YAML merge key, **the spelling the lane's raw-text tripwire had been
+added specifically to backstop and did not fire on**. The sibling
+go-to-k/cdk-real-drift#1838 spent its own rounds on the same class. So take the
+tier the heuristic gives for YOUR pass: a lane's clean round is evidence about
+the lane's assumptions, not about the diff.
+
+**A reviewer's scratch COPY of a worktree is not detached from git, so its
+`git add -A` writes to the LIVE tree.** A linked worktree's `.git` is a FILE
+holding `gitdir: <repo>/.git/worktrees/<name>`, and `cp -R` carries the
+pointer: every git command inside the copy reads and WRITES the real
+worktree's index and HEAD. Measured 2026-08-29: a read-only code reviewer
+copied a lane's worktree, ran `git add -A` there, and staged three tracked
+DELETIONS under `tests/integration/local-invoke-layers/` in the live tree,
+which the lane's next commit would have shipped. Nothing announced it — the
+reviewer believed it was on a copy. So two lines belong in every read-only
+reviewer's brief, on top of §5's peer-probe rules: **run no WRITING git verb**
+(`add` / `commit` / `restore` / `checkout` / `stash` / `clean`) anywhere, copy
+included — and if you must copy, copy OUTSIDE every repository, since deleting
+the `.git` file does not detach the copy, it only makes discovery walk UPWARD
+into whatever encloses it; and **report the TARGET worktree's
+`git status --porcelain` before AND after the round.** The before/after pair is
+what makes damage attributable rather than a mystery a later agent finds: that incident surfaced only because the NEXT
+reviewer volunteered "the tree went dirty mid-review, not mine", after which
+the responsible one self-reported and repaired the index with `git restore
+--staged` (index only, never the working tree). Every reviewer given these two
+lines in that run reported clean both ways.

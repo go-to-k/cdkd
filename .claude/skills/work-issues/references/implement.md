@@ -289,9 +289,11 @@ the REPO ROOT the same way, and `run-tests.sh` is itself
 entirely. The trap is invited by the before/after comparison a hook change
 wants — the obvious `git show origin/main:<suite> > /tmp/x.sh && bash
 /tmp/x.sh`. Instead write the old copy beside the real one as
-`.claude/hooks/_old-<name>.test.sh` and delete it after. This is the one place
-§8's scratch-copy idiom does NOT transfer: right for a data file, wrong for a
-runnable harness.
+`.claude/hooks/_old-<name>.test.sh` and delete it after.
+
+§8's scratch-copy idiom is right for a data file, wrong for a runnable
+harness, and wrong for a WORKTREE in a way that WRITES to the live tree rather
+than failing; §8 carries the mechanism and what a reviewer's brief owes for it.
 
 **When the issue reports a stale ENTRY in an enumerated list, audit the whole
 list, in both directions, before fixing the named entry.** Drift almost never
@@ -310,9 +312,9 @@ clean result from the wrong shape is indistinguishable from a clean subject.**
 Auditing go-to-k/cdkd#2096 (2026-08-20) produced SIX confident wrong answers,
 each from a different plausible sampling shape, each hiding a real secret:
 
-- **Newest-N.** The 6 NEWEST state versions cleared `appsync`; versions 12-45
-  held an API key in 17 of 33 — the newest versions come from the run most
-  likely already fixed. Sample across the range, or grep everything.
+- **Newest-N.** The 6 NEWEST state versions cleared `appsync` while versions
+  12-45 held an API key in 17 of 33 — the newest come from the run most likely
+  already fixed. Sample across the range, or grep everything.
 - **One global needle.** A single `cdkd-known-*` grep reported
   `secrets-array-nested` clean while 5 of 7 versions carried
   `cdkd-array-nested-pw-789`. Each fixture spells its OWN literal — derive the
@@ -483,31 +485,28 @@ defeat your exemption logic. Follow calibration with probes against the REAL
 tree:
 
 - **Write the defect in the spelling a PERSON would write, not the one that is
-  easiest to inject.** On the go-to-k/cdkd#2052 lane (2026-08-26) a
-  prefix-sync fence split on `'custom-resource-responses'` *with both quote
-  characters*, and the probe used `` `${'custom-resource-responses'}/` ``,
-  which reds it; the spelling anybody would type —
-  `listRawObjects('custom-resource-responses/')` — puts the trailing slash
-  before the closing quote and sailed through, as did a copy in any file
-  outside the fence's hand-written list. That fence was the very mechanism the
-  "grep for the SHAPE, not for a NAME" rule prescribes, written by someone who
-  had just read that rule — so mutate a fence the way a future contributor
-  would, and derive the population rather than listing it.
+  easiest to inject.** go-to-k/cdkd#2052 (2026-08-26): a prefix-sync fence
+  split on `'custom-resource-responses'` *with both quote characters*, so the
+  probe's `` `${'...'}/` `` reds it while the spelling anybody would type —
+  `listRawObjects('custom-resource-responses/')`, trailing slash inside the
+  quote — sailed through, as did any copy outside the fence's hand-written file
+  list. Its author had just read the "grep for the SHAPE, not for a NAME" rule.
+  Mutate a fence the way a future contributor would, and derive the population
+  rather than listing it.
 - **Write the defect in every spelling the language allows** and confirm each
   is flagged. go-to-k/cdkd#2111 (2026-08-20): a scanner for
   `options.region || process.env['AWS_REGION']` calibrated perfectly (19
-  violations, zero false positives) and matched `||` only — the tree already
-  used `??` at four sites, and the rule was blind to the `opts.` / `args.` bag
-  names two other files use. Widening it immediately surfaced a real unfiled
-  bug.
+  violations, 0 false positives) yet matched `||` only, while the tree used
+  `??` at four sites and two files spell the bag `opts.` / `args.`. Widening it
+  surfaced a real unfiled bug.
 - **Delete the thing the fence REQUIRES, and watch it fail.** A predicate of
   whole-file substrings OR'd together is satisfied by any one: the "every
   region-taking handler folds" fence passed 130/130 while a probe deleted the
-  ONLY fold from four handlers at once, each still containing a different
-  accepted substring. Its POPULATION was wrong too — derived from "mentions
+  ONLY fold from four handlers at once, each still holding a different accepted
+  substring. Its POPULATION was wrong too — derived from "mentions
   `options.region`", it pulled in helpers that merely RECEIVE a folded value
-  while missing the files that actually accept the flag. Derive from what
-  declares the option, and make the predicate per-READ rather than per-file.
+  and missed the files that accept the flag. Derive from what DECLARES the
+  option, and make the predicate per-READ rather than per-file.
 
   The worst population is one derived from the DEFECT itself, because deleting
   the required thing then drops the subject OUT of the population instead of
@@ -557,9 +556,10 @@ written.
 
 **When a fence must read another tool's CONFIG, parse it with a real parser and
 fail CLOSED on anything unmodelled — do not hand-roll a scanner, and do not
-patch one per spelling.** Measured over three review rounds on
-go-to-k/cdkd#2381 (2026-08-29), with the sibling go-to-k/cdk-real-drift#1838
-reaching the same end:
+patch one per spelling.** Measured across go-to-k/cdkd#2383,
+go-to-k/cdk-real-drift#1838 and go-to-k/cdk-local#631 (2026-08-29) — three
+different fences over the same config, all three ending on one that fails
+CLOSED rather than on a better pattern:
 
 - **The unused key.** markgate resolves a `hash: files` gate as `include` MINUS
   `exclude`. No repo in the family had ever written an `exclude`, so the fence
@@ -567,25 +567,33 @@ reaching the same end:
   would already have subtracted from. Read the tool's OWN schema, from the
   pinned binary rather than its `init` template: 0.4.1 has eight gate keys
   (`hash` / `include` / `exclude` / `base` / `ttl` / `state_dir` / `requires` /
-  `composes`) and `init` emits six, omitting the two a repo is likeliest not to
+  `composes`); `init` emits six, dropping the two a repo is likeliest never to
   have written.
-- **Then the spelling treadmill, which is the real lesson.** The first fix was
-  a line scanner, and each round patched the one spelling that had just got
-  through while the next one sailed past: block items only -> a FLOW list
-  passed; unquoted keys only -> `"exclude":` passed; the block scan terminated
-  on `/^ {2}\S/` -> a two-space COMMENT between `include` and `exclude` ended
-  it early and left all fourteen cases GREEN while markgate really did
-  subtract. **Three spellings in three rounds is the signal to stop patterning
-  and change instrument.** A YAML parser was a production dependency the whole
-  time.
-- **A "raw text" tripwire does not escape this.** It was added precisely so the
-  guard would not read the parser it protects — and it inherited every blind
-  spot anyway, because it was another hand-rolled pattern over the same text.
-  Reading a REAL parser is not the failure that guard was for: a third-party,
-  versioned, separately-tested library is not the fence checking its own work.
-  What replaces the tripwire is an ALLOW-LIST of the tool's keys plus an
-  explicit refusal list — strictly stronger than deny-listing the spellings
-  someone happened to think of.
+- **Then the spelling treadmill, which is the real lesson.** Each round patched
+  the one spelling that had just got through while the next sailed past. Block
+  items only -> a FLOW list passed. Unquoted keys only -> `"exclude":` passed.
+  A block scan terminating on `/^ {2}\S/` -> a two-space COMMENT ended it early
+  and left all fourteen cases GREEN while markgate really did subtract. A "raw
+  text" tripwire, added so the guard would not read the parser it protects ->
+  another hand-rolled pattern over the same text, inheriting every blind spot.
+  Last, a YAML merge key (`<<: *anchor`) splicing an `exclude` declared on a
+  SIBLING gate — which that tripwire, added as exactly this backstop, did not
+  fire on either, grepping only the `check` block. go-to-k/cdkd#2383 tallies it
+  as **four spellings across four rounds, each patch moving the hole rather
+  than closing it**. **Three spellings in three rounds is the signal to stop
+  patterning and change instrument** — a YAML parser was a production
+  dependency the whole time, and a third-party, versioned, separately-tested
+  library is not the fence checking its own work.
+- **Neither escape was a fifth pattern.** Either parse for real — with
+  `parse(text, { merge: true })`, without which `yaml` reports the gate's keys
+  as `["hash", "<<"]` and its `exclude` as undefined — then ALLOW-LIST the
+  tool's own keys, fail CLOSED outside them, and raw-scan the WHOLE `gates:`
+  map. Or, where the repo has no parser to reach for, REFUSE the construct
+  rather than model it: go-to-k/cdk-local#631 took that route and then held
+  against every respelling its reviewers constructed. Refusal is the STRICTER
+  option, not the weaker one — an unmodelled shape stops the fence instead of
+  passing through it, which is why an allow-list also beats deny-listing the
+  spellings someone happened to think of.
 - **And the probe that establishes any of this must move ONE variable.** The
   rule's first draft published "adding `exclude` while holding `include`
   constant takes `verify` from rc=1 to rc=0" — measured, it stays rc=1, because
@@ -670,9 +678,9 @@ code "cannot have changed behaviour".
 
 - **Never force-push over a commit you did not author.** A lane agent resumed
   with edits predating four orchestrator commits on its branch and
-  force-pushed; nothing was lost only because the rebase preserved them. Say
-  in the prompt: re-`git fetch` and inspect the branch before any force-push;
-  if it carries work you did not write, STOP and report.
+  force-pushed; only the rebase preserved them. Say in the prompt: re-`git
+  fetch` and inspect the branch first, and if it carries work you did not
+  write, STOP and report.
 - **A new fixture literal must not collide with an existing assertion needle —
   and neither may a new fixture RESOURCE collide with an existing resource's
   VALUE.** The literal form: a `DB_URL` hard-coded `cdkd-user` as its URL user
@@ -681,20 +689,17 @@ code "cannot have changed behaviour".
   report is worse than a missing assertion, being indistinguishable from the
   real thing. The RESOURCE form is the same trap one level up
   (go-to-k/cdkd#2270, 2026-08-26): an arm testing a same-plaintext COLLAPSE
-  necessarily gives two leaves one plaintext — that sharing is what makes the
-  arm discriminate — and it reused the plaintext of a leaf a pre-existing
-  assertion already owned, which then failed on an assertion the lane never
-  wrote. When an arm deliberately makes two things equal, ask what ELSE
-  already holds that value: give the arm its own secret / key / name. The
-  repair is to scope the sharing, not break it — breaking it retires the
-  fence.
+  must give two leaves one plaintext — that sharing is what makes it
+  discriminate — and it reused a plaintext a pre-existing assertion already
+  owned, failing on an assertion the lane never wrote. When an arm makes two
+  things equal, ask what ELSE holds that value and give the arm its own secret
+  / key / name. Scope the sharing; breaking it retires the fence.
 
   **And check the arm's shape actually exercises the fix before spending a run
-  on it.** The obvious decoupling there (two separate RESOURCES) would have
-  been VACUOUS: `perResourceSecrets` is keyed by logical id, so two resources
-  get two single-pair bags and redact correctly with or without the fix. One
-  resource holding both leaves was the only shape where the mechanism under
-  test decides the answer.
+  on it.** The obvious decoupling there (two separate RESOURCES) was VACUOUS:
+  `perResourceSecrets` is keyed by logical id, so two resources get two
+  single-pair bags and redact correctly with or without the fix. One resource holding both leaves was the
+  only shape where the mechanism under test decides the answer.
 - **Execute every read expression you write.** Two integ runs were lost to
   fixture code, not product defects: the literal collision above, and a `jq`
   assignment written through `to_entries[]`, which builds a new array and is
@@ -723,7 +728,9 @@ code "cannot have changed behaviour".
   reviewer: peers are probing this same worktree, `git status --porcelain`
   must be EMPTY before you start a probe, and if it is not, WAIT and re-check
   rather than restoring — a `git show HEAD:<path>` over a peer's edit reverts
-  it. And read any surprising probe result as possibly theirs first.
+  it. And read any surprising probe result as possibly theirs first. §8 adds
+  the AFTER half of that check and the copied-worktree hazard; both also live
+  in `.claude/agents/pr-*-reviewer.md`, so no dispatch can omit them.
 
   **That is a DURATION constraint, not just a precondition, and the
   ORCHESTRATOR breaks it more easily than a lane agent does.** A clean tree at
@@ -750,32 +757,24 @@ because it converts an open gap into a recorded assurance:
   receipt rather than the exit code.
 
   **This rule was already written here and was broken THREE times in one run
-  (2026-08-26), so the fix is to stop asking agents to invent the name: the
-  ORCHESTRATOR assigns each dispatched agent a unique scratch directory IN ITS
-  PROMPT** (`$SCRATCHPAD/lane<issue>-private/`,
-  `$SCRATCHPAD/rev-<role>-<sha>/`), and every prompt says never to write a
-  bare generic name in the scratchpad root. Decided once per run, it cannot be
-  re-derived wrongly per agent. Without it: lane B ran lane A's entire probe
-  table twelve times against lane A's worktree; a reviewer's mutation was
-  restored from `HEAD` by a second reviewer; and an agent reported a live
-  cross-session TRESPASS that had not happened, because the
-  `_old-<name>.test.sh` copies a reviewer is TOLD to write beside their
-  subject look identical, from inside the worktree, to a peer writing there —
-  a collision and a correct convention are indistinguishable to the lane being
-  written into, so the orchestrator has to be the one who knows which is
-  which. A hook was considered and rejected: it would have to match command
-  TEXT for scratch-path writes, the unbounded-bypass-spelling shape
-  go-to-k/cdkd#2156 documents. Pre-assignment moves the decision instead of
-  trying to police it.
+  (2026-08-26), so stop asking agents to invent the name: the ORCHESTRATOR
+  assigns each dispatched agent a unique scratch directory IN ITS PROMPT**
+  (`$SCRATCHPAD/lane<issue>-private/`, `$SCRATCHPAD/rev-<role>-<sha>/`), plus
+  "never a bare generic name in the scratchpad root". Decided once per run, it
+  cannot be re-derived wrongly per agent. Without it: lane B ran lane A's whole
+  probe table twelve times against lane A's worktree; one reviewer's mutation
+  was restored from `HEAD` by another; and a TRESPASS was reported that had not
+  happened, the `_old-<name>.test.sh` copy a reviewer is TOLD to write beside
+  its subject being indistinguishable, from inside the worktree, from a peer
+  writing there. Only the orchestrator can know which is which. A hook was
+  rejected: it would have to match command TEXT for scratch-path writes, the
+  unbounded-bypass shape go-to-k/cdkd#2156 documents.
 - **A probe's FIXTURE, not its mutation, decided the outcome.** A region test
-  set `AWS_REGION` to the CONSUMER's region, under which the correct code and
-  the mutation bind identically, so the probe stayed green; the PRODUCER's
-  region separated them. Same lesson as choosing the probe's input (section 5,
-  above), from the fixture side: when a probe comes back green, suspect the
-  fixture before concluding the code is fenced. The commonest instance is an
-  expected value that COINCIDES with the ambient default, and no count of
-  passing cases can see it: assertions pinned to `'us-east-1'` — at once the
-  fixture's region and this repo's hardcoded fallback — cannot separate a
-  threaded binding from a defaulted one, and substituting the literal for the
-  binding left 434 tests green (2026-08-29). Choose a fixture value the
-  default can never produce.
+  set `AWS_REGION` to the CONSUMER's region, where the correct code and the
+  mutation bind identically; only the PRODUCER's region separated them. When a
+  probe comes back green, suspect the fixture first — and no count of passing
+  cases can see the commonest instance, an expected value COINCIDING with the
+  ambient default: assertions pinned to `'us-east-1'`, at once the fixture's
+  region and this repo's hardcoded fallback, cannot tell a threaded binding
+  from a defaulted one, and substituting the literal for the binding left 434
+  tests green (2026-08-29). Choose a value the default can never produce.
