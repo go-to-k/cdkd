@@ -1,3 +1,10 @@
+## [0.284.82](https://github.com/go-to-k/cdkd/compare/v0.284.81...v0.284.82) (2026-08-28)
+
+
+### Bug Fixes
+
+* **deployment:** converge the two answers to "is this Parameter Type a list" onto one predicate ([#2374](https://github.com/go-to-k/cdkd/issues/2374)) ([339f13d](https://github.com/go-to-k/cdkd/commit/339f13d2f54454b638d9027573f654e2fd80ed3e))
+
 ## [0.284.81](https://github.com/go-to-k/cdkd/compare/v0.284.80...v0.284.81) (2026-08-28)
 
 
