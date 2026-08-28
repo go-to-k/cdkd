@@ -3,6 +3,8 @@ import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { resolveBucketRegion } from '../utils/aws-region-resolver.js';
 import type { TemplateFormat } from './yaml-cfn.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
+import { purgeNoncurrentKeyVersions } from '../state/s3-noncurrent-version-purge.js';
+import { getLogger } from '../utils/logger.js';
 
 /**
  * CloudFormation `TemplateBody` hard limit (51,200 bytes). Templates larger
@@ -86,8 +88,9 @@ export interface UploadCfnTemplateArgs {
 /**
  * Upload a CFn template body to the cdkd state bucket and return both a
  * virtual-hosted-style HTTPS URL CloudFormation can fetch via
- * `TemplateURL` and a `cleanup` callback that deletes the object (and
- * destroys the S3 client).
+ * `TemplateURL` and a `cleanup` callback that deletes the object, PURGES its
+ * noncurrent versions (the state bucket is versioned — see the callback), and
+ * destroys the S3 client.
  *
  * The state bucket's actual region is resolved via `GetBucketLocation`
  * (cached per-process) so the upload client and the URL match the
@@ -151,13 +154,74 @@ export async function uploadCfnTemplate(
   // Commercial output is byte-identical.
   const { urlSuffix } = derivePartitionAndUrlSuffix(region);
   const url = `https://${bucket}.s3.${region}.${urlSuffix}/${key}`;
+  // TWO steps, and the second is not housekeeping (issue
+  // [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 7). The bucket
+  // this writes into is cdkd's STATE bucket, which `cdkd bootstrap` turns
+  // VERSIONING ON for, so the `DeleteObject` below only writes a DELETE MARKER
+  // and the uploaded template body stays readable through `GetObject` with a
+  // `VersionId`. Whether that body carries a secret depends on the template —
+  // an inline `Code.ZipFile` or a hand-written literal does — so the exposure
+  // is conditional, and unlike the rollback journal nobody has measured a real
+  // one. What is NOT conditional is that this object is transient by
+  // construction (uploaded purely to get past the 51,200-byte inline
+  // `TemplateBody` ceiling, deleted the moment the CFn call returns), so its
+  // previous versions have no recovery value and the purge costs nothing on
+  // the other side. That is what makes it the closest analogue to the
+  // custom-resource response sidecar rather than to `state.json`.
+  //
+  // The purge is in a `finally` so a FAILED delete still takes the history:
+  // `purgeNoncurrentKeyVersions` filters on `IsLatest`, so a key whose delete
+  // failed keeps its current version and loses only its older bodies.
+  //
+  // Its own errors are caught rather than allowed to propagate, because a
+  // rejection from a `finally` would REPLACE the delete's error in flight and
+  // every caller of `cleanup()` catches that error to name the leftover key.
+  //
+  // DEFENCE IN DEPTH, and the honest statement is that no mechanism here is
+  // known to reject today. An earlier revision of this comment claimed
+  // `expectedOwnerParam` could, being outside the helper's never-throw
+  // guarantee and reaching STS; that is FALSE — `resolveExpectedBucketOwner`
+  // (`src/utils/expected-bucket-owner.ts`) wraps every await and degrades to
+  // `undefined`. What CAN fire is a caller-supplied `logger` whose `warn`
+  // throws, and a future edit that adds an awaited call between here and the
+  // helper. Naming an unproved mechanism is worse than naming none, so this
+  // says which it is.
+  //
+  // `s3.destroy()` sits in its OWN `finally` under that catch, not after it.
+  // Measured while writing this: with `destroy()` merely following the catch,
+  // a throw raised INSIDE the catch arm skipped it and leaked the connection
+  // pool — and the catch arm is the one place here that is reached only when
+  // something has already gone wrong.
   const cleanup = async (): Promise<void> => {
     try {
       await s3.send(
         new DeleteObjectCommand({ Bucket: bucket, Key: key, ...(await expectedOwnerParam(s3)) })
       );
     } finally {
-      s3.destroy();
+      try {
+        await purgeNoncurrentKeyVersions(s3, bucket, [key], {
+          requestFields: await expectedOwnerParam(s3),
+          // The base logger, NOT a `.child(...)` of it. The purge arm runs on
+          // a path whose whole contract is "must not change what the caller
+          // sees", so it must not depend on a logger shape richer than the
+          // `{ warn }` the helper asks for.
+          logger: getLogger(),
+          objectDescription: 'the transient CloudFormation template body uploaded for this command',
+        });
+      } catch (purgeError) {
+        // Logged rather than swallowed: what survives is the body of an object
+        // cdkd has just reported as removed.
+        getLogger().warn(
+          `Could not purge noncurrent versions of the transient template ` +
+            `s3://${bucket}/${key}; its previous versions survive and remain readable ` +
+            `via GetObject with a VersionId. Grant s3:ListBucketVersions and ` +
+            `s3:DeleteObjectVersion on the state bucket, or purge the key by hand. ` +
+            `Underlying error: ` +
+            `${purgeError instanceof Error ? purgeError.message : String(purgeError)}`
+        );
+      } finally {
+        s3.destroy();
+      }
     }
   };
   return { url, cleanup };

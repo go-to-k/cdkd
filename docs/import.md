@@ -252,7 +252,15 @@ Limitations:
   uploaded to the cdkd state bucket under
   `cdkd-migrate-tmp/<stack>/<timestamp>.json` and submitted via
   `TemplateURL`; the transient object is deleted in a `finally`
-  immediately after `UpdateStack`. Templates over the 1 MB
+  immediately after `UpdateStack`, and its noncurrent versions are
+  purged with it (the state bucket is versioned, so the delete alone
+  would leave the template body readable by `VersionId` — issue
+  [#2346](https://github.com/go-to-k/cdkd/issues/2346)). That purge
+  FAILS SOFT: it needs `s3:ListBucketVersions` and
+  `s3:DeleteObjectVersion` on the state bucket, and without them the
+  migration still succeeds while a warning names the two grants and the
+  previous versions survive — see
+  [state-management.md](state-management.md#recommended-bucket-policy-with-least-privilege). Templates over the 1 MB
   CloudFormation `TemplateURL` ceiling are structurally
   unsubmittable — cdkd fails with a clear error. cdkd state has
   already been written at that point, so re-runs and manual cleanup

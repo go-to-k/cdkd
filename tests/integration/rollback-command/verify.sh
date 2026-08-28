@@ -103,8 +103,18 @@ if [ -z "${STATE_BUCKET:-}" ]; then
   exit 1
 fi
 
+# Shared S3 VERSION helpers (issue #2096). Sourced by ABSOLUTE path rather than
+# the usual `. ../s3-versions.sh`, because this fixture does not `cd` into its
+# own directory until step 1 and the keys below are derived before that.
+. "${REPO_ROOT}/tests/integration/s3-versions.sh"
+
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
+# The NEGATIVE CONTROL for the journal version arm below: a state-bucket key
+# issue #2346 deliberately does NOT purge (site 5 -- `lock.json` carries no
+# secret and sits on the hot path of every command, so the recorded remedy is a
+# bucket lifecycle rule, not code).
+LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
 INIT_STATE_KEY="cdkd/${INIT_STACK}/${REGION}/state.json"
 INIT_JOURNAL_KEY="cdkd/${INIT_STACK}/${REGION}/rollback-journal.json"
 
@@ -218,6 +228,26 @@ if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" >/d
 fi
 echo "[verify]   ok: rollback journal present"
 
+# --- PREMISE for the version arm at step 4b1 -------------------------------
+# That arm certifies that the journal's history is GONE after a clean
+# rollback. `0 versions AND 0 leaks` is not a pass, it is an arm that did
+# nothing -- so establish here, while the journal is still a live object, that
+# there IS a body for the purge to have to remove. `head-object` above already
+# proves the CURRENT version is a real object rather than a delete marker; this
+# adds the count, and distinguishes "zero" from "could not list" via the
+# helper's tri-state (it returns 1 on a failed LIST).
+if ! JOURNAL_VERSIONS_BEFORE="$(s3_count_key_versions "${STATE_BUCKET}" "${JOURNAL_KEY}" all)"; then
+  echo "[verify] FAIL: could not list object versions for s3://${STATE_BUCKET}/${JOURNAL_KEY}." >&2
+  echo "         The step 4b1 version assertion would be unverifiable, so failing here instead." >&2
+  exit 1
+fi
+if [ "${JOURNAL_VERSIONS_BEFORE}" -lt 1 ]; then
+  echo "[verify] FAIL: the journal key holds ${JOURNAL_VERSIONS_BEFORE} version(s) while head-object says it exists." >&2
+  echo "         Step 4b1 would then certify a purge that had nothing to purge." >&2
+  exit 1
+fi
+echo "[verify]   ok: journal key holds ${JOURNAL_VERSIONS_BEFORE} version row(s) before the rollback"
+
 echo "[verify] step 3b: assert --no-rollback left the completed ops on AWS + in partial state"
 V2_MARKER="$(ssm_value "${MARKER_NAME}")"
 if [ "${V2_MARKER}" != "v2" ]; then
@@ -258,7 +288,73 @@ if [ "${POST_COUNT}" != "3" ]; then
   echo "[verify] FAIL: post-rollback state records ${POST_COUNT} resource(s) (expected 3: the v1 resource set)"
   exit 1
 fi
+
 echo "[verify] step 4b ok: journal gone, state back to the v1 resource set"
+
+# --- step 4b1: the journal's NONCURRENT VERSIONS are gone too (issue #2346) ---
+#
+# Step 4b's `head-object` probe is NOT this. The state bucket is VERSIONED
+# (`cdkd bootstrap` turns versioning on), so a bare `DeleteObject` writes a
+# DELETE MARKER: `head-object` answers 404 while every earlier body stays
+# readable through `GetObject --version-id`. That is the whole defect -- the
+# journal's `failedOperations[].attemptedProperties` is the properties of the
+# FAILED write verbatim, measured 2026-08-20 on
+# CdkdDeletionPolicySnapshotHeavyExample as four surviving versions each
+# carrying a literal `"MasterUserPassword": "Cdkdcf2f..."`. So step 4b passes
+# identically with the fix reverted, and this is the arm that does not.
+#
+# WHY THE ASSERTION IS `all == 1` AND NOT MERELY "nothing survives".
+# An absence is also produced by a run that died before writing a journal, and
+# by a teardown sweep having already run. `all == 1` is a POSITIVE marker of
+# the fixed path: exactly one row survives, and it can only be the CURRENT
+# delete marker that cdkd's own `DeleteObject` wrote -- the purge filters on
+# `IsLatest` and so can never remove it. Expected rows here:
+#
+#   fixed    [DM_latest]                      -> all 1, noncurrent 0
+#   reverted [DM_latest, journal body, DM_0]  -> all 3, noncurrent 2
+#
+# (`DM_0` is the delete marker the step-2 CLEAN deploy wrote over a key that
+# never existed -- `deleteRollbackJournal` runs on the success path too.)
+echo "[verify] step 4b1: assert the journal's NONCURRENT versions were purged, not just delete-markered"
+if ! JOURNAL_ALL_AFTER="$(s3_count_key_versions "${STATE_BUCKET}" "${JOURNAL_KEY}" all)"; then
+  echo "[verify] FAIL: could not list object versions for s3://${STATE_BUCKET}/${JOURNAL_KEY} after the rollback." >&2
+  echo "         An unverified purge is not a verified purge - failing rather than assuming." >&2
+  exit 1
+fi
+if ! JOURNAL_NONCURRENT_AFTER="$(s3_count_key_versions "${STATE_BUCKET}" "${JOURNAL_KEY}" noncurrent)"; then
+  echo "[verify] FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${JOURNAL_KEY}." >&2
+  exit 1
+fi
+if [ "${JOURNAL_ALL_AFTER}" -ne 1 ] || [ "${JOURNAL_NONCURRENT_AFTER}" -ne 0 ]; then
+  echo "[verify] FAIL: after a clean rollback the journal key holds ${JOURNAL_ALL_AFTER} row(s)" >&2
+  echo "         (${JOURNAL_NONCURRENT_AFTER} noncurrent); expected exactly 1 row, the current delete marker," >&2
+  echo "         and 0 noncurrent. ${JOURNAL_VERSIONS_BEFORE} row(s) existed before the rollback, so the" >&2
+  echo "         journal body was really there to be removed. Inspect with:" >&2
+  echo "           aws s3api list-object-versions --bucket ${STATE_BUCKET} --prefix ${JOURNAL_KEY}" >&2
+  exit 1
+fi
+echo "[verify]   ok: journal key down to 1 row (the current delete marker), 0 noncurrent"
+
+# NEGATIVE CONTROL. Every assertion above is also satisfied by a purge that
+# fired on EVERYTHING in the state bucket, which would be a different and worse
+# bug -- issue #2346 deliberately leaves `state.json` alone (its noncurrent
+# versions ARE the recovery capability) and deliberately leaves `lock.json`
+# alone (site 5). `lock.json` is the sharper control of the two because this
+# fixture has by now run several acquire/release cycles against it, so its
+# history is guaranteed non-empty rather than merely likely.
+echo "[verify] step 4b2: negative control - lock.json history must SURVIVE"
+if ! LOCK_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${LOCK_KEY}" noncurrent)"; then
+  echo "[verify] FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${LOCK_KEY}." >&2
+  echo "         Without this count the step 4b1 assertion cannot be told apart from a purge-everything bug." >&2
+  exit 1
+fi
+if [ "${LOCK_NONCURRENT}" -lt 1 ]; then
+  echo "[verify] FAIL: lock.json has ${LOCK_NONCURRENT} noncurrent version(s) after three acquire/release" >&2
+  echo "         cycles. Either the purge is running on keys issue #2346 excludes, or the lock is no longer" >&2
+  echo "         being written per acquisition - both make step 4b1's result meaningless." >&2
+  exit 1
+fi
+echo "[verify]   ok: ${LOCK_NONCURRENT} noncurrent lock.json version(s) survive, as site 5 intends"
 
 echo "[verify] step 4c: assert cdkd events recorded a rollback run = SUCCEEDED"
 EVENTS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --format json 2>&1)"
@@ -468,4 +564,31 @@ done
 echo "[verify] step 8 ok: sidecars removed"
 
 trap - EXIT INT TERM
+
+# --- SUCCESS-PATH VERSION SWEEP + ASSERTION (issue #2096) -------------------
+# Step 8 above removes the sidecars with `aws s3 rm` and then proves it with
+# `aws s3 ls`, which is precisely the vacuous shape #2096 was raised about: on
+# a VERSIONED bucket `aws s3 rm` writes a DELETE MARKER, so the listing goes
+# empty while every byte this fixture ever wrote -- including the rollback
+# journal's `failedOperations[].attemptedProperties` -- stays readable through
+# `GetObject --version-id`. This fixture drives THREE failing deploys, so it
+# writes more journal bodies than most.
+#
+# Mode is `all`, not `noncurrent`, and that follows the DESTROY rather than the
+# script: step 7a has already asserted both stacks are gone, so nothing needs
+# the state any more -- and after step 8's `aws s3 rm` the delete marker is the
+# entry carrying `IsLatest == true`, so a noncurrent-only sweep would leave one
+# marker per key behind forever and the zero-assertion could never pass.
+# Placed AFTER the trap disarm so it runs on the NORMAL path (trap 1), which a
+# trap-only sweep never does.
+#
+# Both stacks, because this fixture owns two: `INIT_STACK` is the
+# initial-deploy-failure arm and writes its own journal.
+for sweep_stack in "${STACK}" "${INIT_STACK}"; do
+  SWEEP_PREFIX="$(s3_stack_prefix "${sweep_stack}" "${REGION}")"
+  s3_purge_prefix_versions "${STATE_BUCKET}" "${SWEEP_PREFIX}" all || true
+  s3_assert_versions_swept "${STATE_BUCKET}" "${SWEEP_PREFIX}" \
+    "rollback-command state teardown (${sweep_stack})"
+done
+
 echo "[verify] PASS"

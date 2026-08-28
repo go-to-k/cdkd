@@ -750,7 +750,42 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
         region
       );
       await deleteContainerRepo(marker.containerRepo, region, options.profile, logger);
-      await stateBackend.deleteRawObjects([resolvedMarkerKey]);
+      // The state bucket is VERSIONED (bootstrap enables it), so the delete
+      // below only writes a DELETE MARKER and the marker's history stays
+      // readable through `GetObject` with a `VersionId` (issue
+      // [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 6). The
+      // bootstrap marker carries no secret — it is a small JSON document
+      // naming the region's asset bucket and container repo — so this is
+      // completeness of the class rather than a disclosure fix, and it is
+      // included here only because the remedy is the same one line the other
+      // sites take. Nothing weighs against it: this command's whole purpose is
+      // to remove the marker, so its previous versions have no recovery value.
+      //
+      // Runs on BOTH paths, not just under `--include-state-bucket`. With that
+      // flag the bucket is emptied all-versions and deleted moments later, so
+      // the purge is redundant; WITHOUT it the bucket survives and the
+      // versions do too, which is the case that needs it.
+      //
+      // The `finally` is what makes that true on the FAILING path as well:
+      // `deleteRawObjects` throws on ANY per-key failure, so a bare sequence
+      // skipped the purge entirely whenever the delete was partially denied,
+      // leaving the marker's history behind with no version warning at all —
+      // the same exit-path gap `cdkd gc` closes at its own call site. The
+      // helper's `IsLatest` filter makes running it after a failed delete
+      // safe: the current version survives and only the history goes.
+      //
+      // A rejecting `finally` would REPLACE the delete's error in flight, but
+      // `purgeNoncurrentVersions` never throws and owns its own warning, so
+      // this cannot turn a failing teardown into a differently-failing one,
+      // nor a completed one into a failure.
+      try {
+        await stateBackend.deleteRawObjects([resolvedMarkerKey]);
+      } finally {
+        await stateBackend.purgeNoncurrentVersions([resolvedMarkerKey], {
+          objectDescription:
+            "the bootstrap marker, which names this region's asset bucket and container-asset ECR repository",
+        });
+      }
       logger.info(`✓ Deleted bootstrap marker (${resolvedMarkerKey})`);
 
       // A region bootstrapped TWICE under two spellings has two markers. The

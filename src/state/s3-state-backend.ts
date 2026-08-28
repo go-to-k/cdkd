@@ -511,10 +511,6 @@ export class S3StateBackend {
         this.logger.debug(`Deleted legacy state for stack: ${stackName}`);
       }
 
-      // Sweep the rollback journal (issue #1183) so `cdkd destroy` /
-      // `cdkd state destroy` leave no dangling revert data behind.
-      await this.deleteRollbackJournal(stackName, region);
-
       this.logger.debug(`State deleted: ${stackName} (${region})`);
     } catch (error) {
       const normalized = normalizeAwsError(error, {
@@ -525,6 +521,28 @@ export class S3StateBackend {
         `Failed to delete state for stack '${stackName}' (${region}): ${normalized.message}`,
         normalized
       );
+    } finally {
+      // Sweep the rollback journal (issue #1183) so `cdkd destroy` /
+      // `cdkd state destroy` leave no dangling revert data behind.
+      //
+      // In a `finally`, NOT inside the try above, because of what the journal
+      // holds (issue #2346 site 4). It was reached only after both state
+      // deletes had succeeded, so a throttled or denied `DeleteObject` on
+      // `state.json` threw first and the journal — whose
+      // `failedOperations[].attemptedProperties` records the failed write's
+      // properties verbatim, measured once as a literal `MasterUserPassword` —
+      // survived with its CURRENT object and its whole history intact, no
+      // purge and no warning, while this method's own docs promised the sweep
+      // ran on every destroy path. That is the same exit-path class as the
+      // partial-delete gap `cdkd gc` closes with its own `finally`.
+      //
+      // A `finally` rather than moving it AHEAD of the state deletes: ordering
+      // it first would delete the revert data before the state it reverts,
+      // so an interrupted `cdkd destroy` would leave a state file with no
+      // journal — strictly worse than the reverse. `deleteRollbackJournal` is
+      // best-effort and never throws, so it cannot replace the in-flight
+      // StateError.
+      await this.deleteRollbackJournal(stackName, region);
     }
   }
 
@@ -813,10 +831,17 @@ export class S3StateBackend {
         logger: this.logger,
       });
     } catch (error) {
+      // Carries the caller's `objectDescription` for the same reason the helper
+      // does (issue #2346): this arm fires when the purge could not even START,
+      // and a reader has exactly the same "which object?" question then. Falls
+      // back to naming nothing rather than to the helper's default, because
+      // repeating a generic phrase here would read as a description the caller
+      // supplied.
+      const describing = options.objectDescription ? ` (${options.objectDescription})` : '';
       this.logger.warn(
         `Could not purge noncurrent versions of ${keys.length} key(s) in bucket ` +
           `'${this.config.bucket}': the purge could not be started. Their previous versions ` +
-          `survive and remain readable via GetObject with a VersionId. Grant ` +
+          `survive and remain readable via GetObject with a VersionId${describing}. Grant ` +
           `s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge the ` +
           `key(s) by hand. Underlying error: ` +
           `${error instanceof Error ? error.message : String(error)}`
@@ -916,24 +941,66 @@ export class S3StateBackend {
    * Delete the stack's rollback journal object (idempotent). Called on the
    * deploy success path, after a clean rollback, and via {@link deleteState}
    * so `cdkd destroy` / `cdkd state destroy` sweep it too.
+   *
+   * TWO steps, and the second is not housekeeping (issue
+   * [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 4). `cdkd
+   * bootstrap` turns VERSIONING ON for the state bucket, so the
+   * `DeleteObject` above only writes a DELETE MARKER and leaves every prior
+   * version of the journal readable through `GetObject` with a `VersionId`.
+   * The journal's `failedOperations[].attemptedProperties` is the PROPERTIES
+   * OF THE FAILED WRITE, verbatim — measured 2026-08-20 on
+   * `CdkdDeletionPolicySnapshotHeavyExample` as four surviving versions each
+   * carrying a literal `"MasterUserPassword": "Cdkdcf2f..."` after cdkd
+   * reported the state deleted (recorded in the `s3_stack_prefix` comment of
+   * `tests/integration/s3-versions.sh`, ~line 270). A
+   * delete-only cleanup therefore reports success while the credential stays
+   * retrievable by anyone holding `s3:GetObjectVersion`.
+   *
+   * Unlike `state.json` — whose noncurrent versions ARE the state-recovery
+   * capability versioning is enabled FOR, which is why {@link deleteState}
+   * deliberately does NOT purge — the journal is TRANSIENT by design: it
+   * exists only between a failed / interrupted deploy and its `cdkd
+   * rollback`. There is no recovery capability to weigh against the purge.
+   *
+   * The purge runs UNCONDITIONALLY, including on the arm where the delete
+   * failed. `purgeNoncurrentKeyVersions` filters on `IsLatest`, so a key
+   * whose delete failed keeps its current version intact and only its history
+   * goes — the worst case is that the object survives while its old bodies do
+   * not, which is the safe direction. Skipping the purge when the delete
+   * threw would leave every readable version behind with no warning at all,
+   * the same partial-failure gap `cdkd gc` closed with its `finally`.
    */
   async deleteRollbackJournal(stackName: string, region: string): Promise<void> {
     await this.ensureClientForBucket();
+    const key = this.getRollbackJournalKey(stackName, region);
     try {
       await this.s3Client.send(
         new DeleteObjectCommand({
           Bucket: this.config.bucket,
           ...(await this.ownerParam()),
-          Key: this.getRollbackJournalKey(stackName, region),
+          Key: key,
         })
       );
     } catch (error) {
       // Best-effort: a missing journal is not an error; other failures warn.
-      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return;
-      this.logger.warn(
-        `Failed to delete rollback journal for '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`
-      );
+      // Neither arm RETURNS — an early return here used to skip the purge
+      // below, and a not-found CURRENT object says nothing about whether
+      // noncurrent versions of the key survive (on a versioned bucket a prior
+      // delete leaves a marker as current and every body still readable).
+      if (!isNoSuchKey(error) && (error as { name?: string }).name !== 'NotFound') {
+        this.logger.warn(
+          `Failed to delete rollback journal for '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     }
+    // Delegated to the SHARED purge rather than open-coded, for the reason
+    // `s3-noncurrent-version-purge.ts` gives: a copy per call site is how one
+    // of them keeps the defect after the other is fixed. It never throws, so
+    // this method's best-effort contract holds by construction.
+    await this.purgeNoncurrentVersions([key], {
+      objectDescription:
+        'the rollback journal, whose `failedOperations[].attemptedProperties` records the properties of the failed write verbatim',
+    });
   }
 
   /**

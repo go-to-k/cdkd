@@ -201,6 +201,40 @@ describe('S3StateBackend.purgeNoncurrentVersions (issue #2340)', () => {
     expect(String(warnSpy.mock.calls[0]![0])).toContain('3 key(s)');
   });
 
+  it('the could-not-start warning carries the CALLER\'s object description', async () => {
+    // This arm fires when the purge could not even START, where a reader has
+    // exactly the same "which object?" question as when it started and failed.
+    // Deleting the `${describing}` interpolation left this suite green before
+    // this test existed.
+    mockRebuild.mockRejectedValue(new Error('AccessDenied: s3:GetBucketLocation'));
+
+    await backend().purgeNoncurrentVersions([KEY], {
+      objectDescription: 'the rollback journal, whose attempted properties are recorded verbatim',
+    });
+
+    const message = String(warnSpy.mock.calls[0]![0]);
+    expect(message).toContain('(the rollback journal, whose attempted properties are recorded verbatim)');
+    // Placed where the reader looks for it, immediately after the VersionId
+    // clause — not appended after the remedy.
+    expect(message).toMatch(/VersionId \(the rollback journal[^)]*\)\. Grant s3:ListBucketVersions/);
+  });
+
+  it('omits the parenthetical entirely when the caller described nothing', async () => {
+    // Falls back to naming NOTHING rather than to the helper's generic default:
+    // repeating a generic phrase here would read as a description the caller
+    // actually supplied. This is the branch a presence-only assertion misses.
+    mockRebuild.mockRejectedValue(new Error('AccessDenied: s3:GetBucketLocation'));
+
+    await backend().purgeNoncurrentVersions([KEY]);
+
+    const message = String(warnSpy.mock.calls[0]![0]);
+    expect(message).toContain('readable via GetObject with a VersionId. Grant');
+    // Scoped to the VersionId clause rather than the whole string: the message
+    // legitimately contains `key(s)` elsewhere, and a bare `not.toContain('(')`
+    // fails on that instead of on the branch under test.
+    expect(message).not.toMatch(/VersionId \(/);
+  });
+
   it('NEVER THROWS when the owner-param lookup fails', async () => {
     mockRebuild.mockResolvedValue(null);
     mockExpectedOwner.mockRejectedValue(new Error('no credentials'));

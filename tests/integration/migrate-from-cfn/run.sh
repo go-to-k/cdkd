@@ -111,6 +111,141 @@ assert_migrate_tmp_empty() {
   echo "  ok: cdkd-migrate-tmp/ is empty (transient template cleaned up)"
 }
 
+# ---------------------------------------------------------------------------
+# VERSION-aware assertions for the transient template upload (issue #2346
+# site 7).
+#
+# `assert_migrate_tmp_empty` above proves no CURRENT object survives, and that
+# is genuinely all it can prove: the state bucket is VERSIONED (`cdkd
+# bootstrap` turns versioning on), so the `DeleteObject` in `uploadCfnTemplate`'s
+# `cleanup()` writes a DELETE MARKER and `aws s3 ls` goes empty while every
+# byte of the uploaded TEMPLATE BODY stays readable through
+# `GetObject --version-id`. For a template carrying an inline `Code.ZipFile` or
+# a hand-written literal, that is the same disclosure shape this issue was
+# raised for. So the two assertions compose: the existing one says nothing is
+# current, these say nothing is noncurrent either.
+#
+# WHY A LOCAL COUNTER AND NOT `s3-versions.sh`. The shared helper's
+# prefix-scoped `s3_count_versions` cannot answer this question: its
+# `_s3v_check_prefix` guard hard-requires a `cdkd/<stack>/<region>/` shape and
+# REFUSES anything else, and this prefix is `cdkd-migrate-tmp/` (deliberately
+# outside the state prefix so `state list` never mistakes a transient upload
+# for a stack). Its key-scoped `s3_count_key_versions` needs an exact key, and
+# the key is minted at run time as `<ts>.<ext>` and is already delete-markered
+# by the time this runs. Sourcing the helper anyway, for a control it CAN
+# answer, would additionally enrol this fixture in the harness fence's caller
+# population and move three more committed counts for no coverage gained.
+s3_version_rows() {
+  local prefix="$1" mode="${2:-all}" query out
+  case "${mode}" in
+    noncurrent) query="([Versions, DeleteMarkers][])[?IsLatest==\`false\`][].[Key,VersionId]" ;;
+    # DELETE MARKERS ONLY. This is the mode that makes the positive marker
+    # self-sufficient rather than dependent on `assert_migrate_tmp_empty`
+    # running first: a run that uploaded a template and then DIED before
+    # deleting it adds a row to the all-rows count too, and measured against
+    # the fixtures this arm was written from, an `all >= +1` test PASSES on
+    # exactly that shape. A delete marker can only exist because cdkd's own
+    # `DeleteObject` ran.
+    markers)    query="DeleteMarkers[].[Key,VersionId]" ;;
+    *)          query="([Versions, DeleteMarkers][])[][].[Key,VersionId]" ;;
+  esac
+  # Captured rather than piped, on purpose: piping into the counter hides the
+  # exit status, so a throttled LIST would look exactly like "there is nothing
+  # here" and this arm would certify a purge it never observed.
+  if ! out="$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" \
+      --prefix "${prefix}" --query "${query}" --output text --region us-east-1 2>/dev/null)"; then
+    return 1
+  fi
+  printf '%s\n' "${out}" | awk 'NF && $0 != "None" { n++ } END { print n+0 }'
+}
+
+# assert_migrate_tmp_versions_purged <stack> <rows-before> <noncurrent-before> <expect-upload:yes|no>
+#
+# DELTAS, not absolute counts. `preflight_clean` does not touch
+# `cdkd-migrate-tmp/`, and delete markers left by runs that predate this fix
+# persist, so an absolute floor would be measuring other runs. A delta measures
+# only what THIS migrate did.
+#
+# The POSITIVE marker is `+1 or more` on the DELETE MARKER count for the large
+# stack. It has to be delete markers and not all rows: a delete marker can only
+# exist because `cleanup()`'s own `DeleteObject` ran, so it proves a template
+# was uploaded AND removed in this run, while an all-rows delta is also +1 for
+# a run that uploaded and then died before deleting. Absence alone would prove
+# neither — it is equally what a run that never uploaded shows, and what the
+# SMALL stack shows, whose template goes inline and never touches S3.
+#
+# The DISCRIMINATOR is `+0` on the noncurrent count. With the purge:
+#   [DM_latest]                -> all +1, noncurrent +0
+# Without it:
+#   [DM_latest, template body] -> all +2, noncurrent +1
+assert_migrate_tmp_versions_purged() {
+  local stack="$1" before_markers="$2" before_noncurrent="$3" expect_upload="$4"
+  local after_markers after_noncurrent d_markers d_noncurrent
+
+  if ! after_markers="$(s3_version_rows "cdkd-migrate-tmp/" markers)"; then
+    echo "ASSERTION FAILED: [${stack}] could not list delete markers under cdkd-migrate-tmp/." >&2
+    echo "  An unverified purge is not a verified purge - failing rather than assuming." >&2
+    exit 1
+  fi
+  if ! after_noncurrent="$(s3_version_rows "cdkd-migrate-tmp/" noncurrent)"; then
+    echo "ASSERTION FAILED: [${stack}] could not list noncurrent versions under cdkd-migrate-tmp/." >&2
+    exit 1
+  fi
+  d_markers=$((after_markers - before_markers))
+  d_noncurrent=$((after_noncurrent - before_noncurrent))
+
+  if [ "${expect_upload}" = "no" ] && [ "${d_markers}" -ne 0 ]; then
+    echo "ASSERTION FAILED: [${stack}] the migrate added ${d_markers} delete marker(s) under" >&2
+    echo "  cdkd-migrate-tmp/, but this stack's template is under the 51,200-byte inline" >&2
+    echo "  TemplateBody ceiling and must never reach S3 at all. Either the ceiling moved or" >&2
+    echo "  the inline path regressed into an upload." >&2
+    exit 1
+  fi
+  if [ "${expect_upload}" = "yes" ] && [ "${d_markers}" -lt 1 ]; then
+    echo "ASSERTION FAILED: [${stack}] the migrate added ${d_markers} delete marker(s) under" >&2
+    echo "  cdkd-migrate-tmp/, so no transient template was uploaded and deleted at all." >&2
+    echo "  This stack's template is meant to exceed the 51,200-byte inline TemplateBody" >&2
+    echo "  ceiling (see lib/migrate-large-stack.ts); without an upload the purge assertion" >&2
+    echo "  below would be vacuous." >&2
+    exit 1
+  fi
+  if [ "${d_noncurrent}" -ne 0 ]; then
+    echo "ASSERTION FAILED: [${stack}] the migrate left ${d_noncurrent} NONCURRENT version(s)" >&2
+    echo "  under cdkd-migrate-tmp/ (delete markers +${d_markers}). The transient template body is still" >&2
+    echo "  readable via GetObject --version-id even though 'aws s3 ls' reports the prefix" >&2
+    echo "  empty. Inspect with:" >&2
+    echo "    aws s3api list-object-versions --bucket ${STATE_BUCKET} --prefix cdkd-migrate-tmp/" >&2
+    exit 1
+  fi
+  if [ "${expect_upload}" = "yes" ]; then
+    echo "  ok: transient template uploaded and delete-markered (+${d_markers}), 0 noncurrent left"
+  else
+    echo "  ok: no transient upload for this stack (inline TemplateBody), 0 markers and 0 noncurrent added"
+  fi
+
+  # NEGATIVE CONTROL. Everything above is equally satisfied by a purge that
+  # fired on the WHOLE state bucket, which would be a different and worse bug:
+  # issue #2346 deliberately leaves `state.json` alone (its noncurrent versions
+  # ARE the state-recovery capability versioning exists for) and deliberately
+  # leaves `lock.json` alone (site 5). By this point the migrate has taken and
+  # released the stack lock at least once, so this prefix's history cannot be
+  # legitimately empty.
+  local ctrl
+  if ! ctrl="$(s3_version_rows "cdkd/${stack}/${REGION}/" noncurrent)"; then
+    echo "ASSERTION FAILED: [${stack}] could not list noncurrent versions under the state prefix." >&2
+    echo "  Without this control the assertion above cannot be told apart from a purge-everything bug." >&2
+    exit 1
+  fi
+  if [ "${ctrl}" -lt 1 ]; then
+    echo "ASSERTION FAILED: [${stack}] cdkd/${stack}/${REGION}/ has ${ctrl} noncurrent version(s)" >&2
+    echo "  after a migrate that took and released the stack lock. Either the purge is running on" >&2
+    echo "  keys issue #2346 excludes, or the lock is no longer written per acquisition - both make" >&2
+    echo "  the migrate-tmp assertion above meaningless." >&2
+    exit 1
+  fi
+  echo "  ok: ${ctrl} noncurrent version(s) survive under cdkd/${stack}/${REGION}/, as sites 1-3 and 5 intend"
+}
+
 run_one() {
   local stack="$1"
   preflight_clean "${stack}"
@@ -129,6 +264,19 @@ run_one() {
   # queue URL and the fallback branch succeeds. No `--resource` override
   # needed. This integ is the end-to-end regression guard.
 
+  # Baseline for the version deltas below, taken BEFORE the migrate so the
+  # assertion measures this run rather than whatever earlier runs left behind.
+  # A failed LIST here is fatal for the same reason it is fatal after: a
+  # baseline nobody could read makes the delta meaningless.
+  if ! MIGRATE_TMP_MARKERS_BEFORE="$(s3_version_rows "cdkd-migrate-tmp/" markers)"; then
+    echo "ASSERTION FAILED: [${stack}] could not baseline cdkd-migrate-tmp/ before the migrate." >&2
+    exit 1
+  fi
+  if ! MIGRATE_TMP_NONCURRENT_BEFORE="$(s3_version_rows "cdkd-migrate-tmp/" noncurrent)"; then
+    echo "ASSERTION FAILED: [${stack}] could not baseline noncurrent rows under cdkd-migrate-tmp/." >&2
+    exit 1
+  fi
+
   log "[${stack}] cdkd import --migrate-from-cloudformation"
   AWS_REGION="${REGION}" ${CDKD} import "${stack}" --migrate-from-cloudformation --yes
 
@@ -136,6 +284,17 @@ run_one() {
   assert_state_present "${stack}"
   assert_cfn_gone "${stack}"
   assert_migrate_tmp_empty
+  # Only the LARGE fixture crosses the 51,200-byte inline ceiling (bin/app.ts
+  # calls it "the large (>51,200B TemplateURL) path"; lib/migrate-large-stack.ts
+  # puts it at "about 67-69 KB in practice"). The small one is submitted inline
+  # and must upload nothing, which is asserted rather than skipped.
+  if [[ "${stack}" == "CdkdMigrateLarge" ]]; then
+    assert_migrate_tmp_versions_purged "${stack}" \
+      "${MIGRATE_TMP_MARKERS_BEFORE}" "${MIGRATE_TMP_NONCURRENT_BEFORE}" yes
+  else
+    assert_migrate_tmp_versions_purged "${stack}" \
+      "${MIGRATE_TMP_MARKERS_BEFORE}" "${MIGRATE_TMP_NONCURRENT_BEFORE}" no
+  fi
 
   # PR #331 regression guard: cdkd diff must not warn about
   # `AWS::ECR::Repository.Arn` falling back to physical id, and the

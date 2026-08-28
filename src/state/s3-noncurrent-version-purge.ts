@@ -76,7 +76,53 @@ export interface NoncurrentVersionPurgeOptions {
   listPrefix?: string;
   /** Logger to warn through. Defaults to a module-scoped child. */
   logger?: { warn: (m: string) => void };
+  /**
+   * What the surviving versions CONTAIN, as a noun phrase, dropped into the
+   * warning's parenthetical (issue
+   * [#2346](https://github.com/go-to-k/cdkd/issues/2346)).
+   *
+   * This is per-CALLER rather than a fixed sentence because the warning names
+   * the thing a reader has to go and inspect. Until #2346 the parenthetical was
+   * hard-coded to the custom-resource response body, which was true while the
+   * sidecar was the only caller and became FALSE the moment the rollback
+   * journal, the bootstrap marker and the transient CFn template joined: a user
+   * chasing a warning about "the handler's full response body, including
+   * `Data`" would have been looking for an object that does not exist on those
+   * paths. Widening the sentence into something vague enough to cover all four
+   * was the other option and is worse — the caller knows exactly what it just
+   * failed to purge, so it should say so.
+   *
+   * Only this clause varies. The ACTIONABLE half — the two IAM grants and the
+   * purge-by-hand remedy — is correct at every call site and is not
+   * parameterised.
+   */
+  objectDescription?: string;
 }
+
+/**
+ * Parenthetical used when a caller names nothing.
+ *
+ * True of ANY object this function is pointed at, which is the bar for a
+ * default here: a caller that forgets to describe its object must still emit a
+ * warning that is correct, just less specific. It deliberately does not guess
+ * at content.
+ */
+const DEFAULT_OBJECT_DESCRIPTION = 'the body of an object cdkd has just reported as removed';
+
+/**
+ * `objectDescription` for the custom-resource response sidecar.
+ *
+ * A SHARED CONSTANT rather than the same literal at both sites, for the reason
+ * this whole module is shared: the provider's own `cleanupResponseObject` and
+ * `cdkd gc`'s sweep of the abandoned placeholders delete the SAME object, so a
+ * reader must not be able to tell from the warning which of the two produced
+ * it. Two literals are how one of them drifts — and it is not hypothetical:
+ * review probed it by editing `gc.ts`'s string alone and the suite stayed
+ * green, because nothing tied the two together. One binding cannot drift, and
+ * needs no test to say so.
+ */
+export const CUSTOM_RESOURCE_RESPONSE_OBJECT_DESCRIPTION =
+  "a custom-resource response object, which is the handler's full cfn-response body including `Data`";
 
 /**
  * `DeleteObjects` is capped at 1000 entries per call.
@@ -183,9 +229,11 @@ export async function purgeNoncurrentKeyVersions(
       .map(([key, reasons]) => `${key} (${reasons.join('; ')})`);
     const elided = failed.size - named.length;
     // WARN rather than debug, and never a throw. What survives is the body of
-    // an object cdkd has just reported as deleted; for a custom-resource
-    // response that is the handler's full reply, `Data` included. A user whose
-    // handler mints secrets needs to know which grant would have removed them.
+    // an object cdkd has just reported as deleted; WHICH object is the
+    // caller's to say (`objectDescription`), because the reader's next move is
+    // to go and inspect it. A user whose custom-resource handler mints secrets
+    // needs to know which grant would have removed them, and so does one whose
+    // rollback journal recorded a failed write's properties.
     //
     // Kept at WARN on the provider's per-resource path too, where it can fire
     // once per custom-resource completion. A per-run dedupe was considered and
@@ -197,8 +245,8 @@ export async function purgeNoncurrentKeyVersions(
     logger.warn(
       `Could not purge noncurrent versions of ${failed.size} key(s) in s3://${bucket}. ` +
         `Their previous versions survive and remain readable via GetObject with a VersionId ` +
-        `(for a custom-resource response object that is the handler's full response body, ` +
-        `including \`Data\`). Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the ` +
+        `(${options.objectDescription ?? DEFAULT_OBJECT_DESCRIPTION}). ` +
+        `Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the ` +
         `state bucket, or purge the key(s) by hand. Failures: ${named.join(', ')}` +
         (elided > 0 ? ` (and ${elided} more)` : '')
     );
@@ -252,6 +300,27 @@ async function purgeUnderPrefix(
       // treated as possibly-current and left alone. Keying on `=== true` fails
       // OPEN — it would delete the CURRENT version of a key whose `IsLatest`
       // the response happened to omit.
+      //
+      // But skipping SILENTLY is the one direction this module exists to
+      // forbid: the entry is in `wanted`, so it may be a body we were asked to
+      // remove and did not. Unreachable against real S3, which always populates
+      // the field — which is why it RECORDS rather than throws, and why the
+      // reason says what was assumed. Recorded before the `VersionId` check
+      // below, since an entry with neither field is the same non-removal.
+      // REPORTS ONLY -- the skip itself is the `!== false` guard immediately
+      // below, which already catches `undefined`. An earlier revision ended
+      // this arm with its own `continue`, which was dead: removing it changed
+      // no behaviour, while the comment on its test described it as a separate
+      // mutation half. The two halves that ARE separate are this
+      // `recordFailure` and the guard below.
+      if (entry.IsLatest === undefined) {
+        recordFailure(
+          failed,
+          entry.Key,
+          `version ${entry.VersionId ?? '<unknown>'}: listing omitted IsLatest, so the entry was ` +
+            `left alone rather than risk deleting a current version`
+        );
+      }
       if (entry.IsLatest !== false) continue;
       if (!entry.VersionId) continue;
       stale.push({ Key: entry.Key, VersionId: entry.VersionId });

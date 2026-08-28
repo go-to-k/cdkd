@@ -828,7 +828,7 @@ stream — `2>&1` there makes a benign CLI warning a phantom surviving version
 `delete-object --key`.
 
 Also scanned by `tests/unit/scripts/integ-verify-bash-compat.test.ts` and by
-`scripts/check-integ-aws-commands.ts` (its `aws` verbs run in sixteen fixtures at
+`scripts/check-integ-aws-commands.ts` (its `aws` verbs run in eighteen fixtures at
 once), both with per-shape floors so a total swamped by 247 verify.sh cannot hide
 the helper going unread. Four other integ scanners still cannot see it; the
 per-scanner verdict is recorded in issue

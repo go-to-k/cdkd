@@ -31,6 +31,21 @@ const s3Commands = vi.hoisted(() => {
         super('DeleteObject', input);
       }
     },
+    // Issue #2346 site 7: the noncurrent-version purge in `cleanup()` reaches
+    // for these two. Leaving them out of the mock is NOT neutral — the helper
+    // catches its own construction failure and warns, so every purge
+    // assertion would read as "no purge calls" whether or not the purge is
+    // wired up, which is a false green rather than a failing test.
+    ListObjectVersionsCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('ListObjectVersions', input);
+      }
+    },
+    DeleteObjectsCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('DeleteObjects', input);
+      }
+    },
   };
 });
 
@@ -38,6 +53,8 @@ vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: vi.fn(() => ({ send: s3SendMock, destroy: s3DestroyMock })),
   PutObjectCommand: s3Commands.PutObjectCommand,
   DeleteObjectCommand: s3Commands.DeleteObjectCommand,
+  ListObjectVersionsCommand: s3Commands.ListObjectVersionsCommand,
+  DeleteObjectsCommand: s3Commands.DeleteObjectsCommand,
 }));
 
 const resolveBucketRegionMock = vi.hoisted(() => vi.fn(async () => 'eu-west-1'));
@@ -76,6 +93,17 @@ describe('uploadCfnTemplate', () => {
     // swapped it for a failing variant.
     s3SendMock.mockImplementation(async (cmd) => {
       s3SendCalls.push({ name: cmd._name, input: cmd.input });
+      if (cmd._name === 'ListObjectVersions') {
+        return {
+          Versions: [
+            { Key: cmd.input['Prefix'], VersionId: 'v-body', IsLatest: false },
+            // The delete marker the bare DeleteObject just wrote: CURRENT, so
+            // the purge must leave it, or the template body comes back live.
+            { Key: cmd.input['Prefix'], VersionId: 'dm', IsLatest: true },
+          ],
+          IsTruncated: false,
+        };
+      }
       return {};
     });
   });
@@ -110,11 +138,77 @@ describe('uploadCfnTemplate', () => {
 
     await cleanup();
 
-    expect(s3SendCalls.map((c) => c.name)).toEqual(['PutObject', 'DeleteObject']);
+    // The purge pair is part of cleanup's contract, not an extra: the state
+    // bucket is versioned, so the DeleteObject alone leaves the uploaded
+    // template body readable by VersionId (issue #2346 site 7).
+    expect(s3SendCalls.map((c) => c.name)).toEqual([
+      'PutObject',
+      'DeleteObject',
+      'ListObjectVersions',
+      'DeleteObjects',
+    ]);
     const put = s3SendCalls[0]!;
     const del = s3SendCalls[1]!;
     expect(del.input['Bucket']).toBe('state-bucket');
     expect(del.input['Key']).toBe(put.input['Key']);
+    expect(s3DestroyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('PURGES the transient template body noncurrent versions (issue #2346 site 7)', async () => {
+    // Discriminator: the ARGUMENT of DeleteObjects. Pre-fix `cleanup()` issued
+    // exactly one command, so this list was absent entirely; and a purge that
+    // dropped the `IsLatest` filter would carry `dm` too, undoing the delete.
+    const { cleanup } = await uploadCfnTemplate({
+      bucket: 'state-bucket',
+      body: '{"Resources":{"Fn":{"Properties":{"Code":{"ZipFile":"secret"}}}}}',
+      stackName: 'MyStack',
+    });
+    const key = s3SendCalls[0]!.input['Key'];
+
+    await cleanup();
+
+    const list = s3SendCalls.find((c) => c.name === 'ListObjectVersions')!;
+    // Key-scoped, never prefix-scoped: `cdkd-migrate-tmp/<stack>/` can hold a
+    // CONCURRENT command's live upload.
+    expect(list.input['Prefix']).toBe(key);
+    expect(list.input['Bucket']).toBe('state-bucket');
+
+    const purge = s3SendCalls.find((c) => c.name === 'DeleteObjects')!;
+    expect((purge.input['Delete'] as { Objects: unknown[] }).Objects).toEqual([
+      { Key: key, VersionId: 'v-body' },
+    ]);
+  });
+
+  it('purges even when DeleteObject throws, and still rethrows the delete error', async () => {
+    // A failed delete is exactly when the bodies are most likely to survive.
+    // The purge's `IsLatest` filter keeps this safe: the live object stays and
+    // only its history goes. The delete's error must still reach the caller —
+    // every `cleanup()` call site catches it to name the leftover key.
+    s3SendMock.mockImplementation(async (cmd) => {
+      s3SendCalls.push({ name: cmd._name, input: cmd.input });
+      if (cmd._name === 'DeleteObject') throw new Error('S3 access denied on delete');
+      if (cmd._name === 'ListObjectVersions') {
+        return {
+          Versions: [{ Key: cmd.input['Prefix'], VersionId: 'v-body', IsLatest: false }],
+          IsTruncated: false,
+        };
+      }
+      return {};
+    });
+
+    const { cleanup } = await uploadCfnTemplate({
+      bucket: 'state-bucket',
+      body: 'body',
+      stackName: 'MyStack',
+    });
+
+    await expect(cleanup()).rejects.toThrow(/S3 access denied on delete/);
+    expect(s3SendCalls.map((c) => c.name)).toEqual([
+      'PutObject',
+      'DeleteObject',
+      'ListObjectVersions',
+      'DeleteObjects',
+    ]);
     expect(s3DestroyMock).toHaveBeenCalledTimes(1);
   });
 
