@@ -149,10 +149,12 @@ gates:
       #     /check stays true for every hook NO test reads, and hook logic
       #     already has its own harness (test.sh suites + hooks.yml CI)".
       #     Both halves are answered rather than overridden:
-      #       * "every hook NO test reads" is an empty set. The suite binds
-      #         to hook paths through three shapes, only ONE of which the
-      #         #2366 sweep's literal-`join(repoRoot, ...)` extractor could
-      #         see: (1) rule-file-payload.test.ts's PAYLOAD_BUDGETS table
+      #       * "every hook NO test reads" is not a set the include can be
+      #         drawn around. Measured: 7 of the 91 tracked hooks are read by
+      #         NAME today, but the suite binds to hook paths through three
+      #         shapes, only ONE of which the #2366 sweep's literal
+      #         `join(repoRoot, ...)` extractor could see, and the third binds
+      #         the DIRECTORY: (1) rule-file-payload.test.ts's PAYLOAD_BUDGETS table
       #         names branch-gate.sh, lib/command-match.sh,
       #         integ-local-gate.sh and main-tree-git-cwd-detector.sh and
       #         asserts each EXISTS; (2) fifteen literal hook paths sit in
@@ -163,11 +165,15 @@ gates:
       #         `.claude/hooks/**` carries REACH_FLOORS 68 against 91 tracked
       #         hook files — a POPULATION-level binding that no list of file
       #         NAMES can express, which is what settles glob over a
-      #         corrected precise list. (1) and (2) are the fence's own
-      #         declared blind spot (a) in
-      #         tests/unit/scripts/check-scope-checker-inputs.test.ts, so a
-      #         corrected precise list would go stale silently the next time
-      #         a rule satellite or a budget row named a new hook.
+      #         corrected precise list. Until this change (1) and (2) were
+      #         BOTH invisible to
+      #         tests/unit/scripts/check-scope-checker-inputs.test.ts — its
+      #         literal-join extractor cannot see a path that arrives from a
+      #         table — so a corrected precise list would have gone stale
+      #         silently the next time a rule satellite or a budget row named
+      #         a new hook. That same commit teaches the fence the bare-literal
+      #         idiom, which closes (1) and (2); (3) remains unrepresentable as
+      #         a list of names either way.
       #       * the hooks' own harness tests hook BEHAVIOUR; the vitest suite
       #         reads hook files as CORPUS (byte budgets, reach counts, list
       #         sync). A green hooks.yml says nothing about a payload budget.
@@ -199,8 +205,10 @@ gates:
       #     tests/unit/scripts/integ-s3-versions-harness.test.ts walks
       #     ROOTS = ['docs', '.claude/rules', 'tests/unit/scripts',
       #     'tests/integration'] RECURSIVELY over every .md/.sh/.ts, floors
-      #     the corpus at 300 files, names docs/testing.md, and runs three
-      #     FALSIFIED_CLAIMS regexes over EVERY LINE. `docs` is the only one
+      #     the corpus at 300 files, names docs/testing.md, and runs four
+      #     FALSIFIED_CLAIMS regexes over EVERY LINE — two of which match bare
+      #     number words ("... fixtures", "of the ... callers"), so ordinary
+      #     prose is what trips them. `docs` is the only one
       #     of those four roots that was outside this include. A precise
       #     list cannot express it: the population is a subtree and the
       #     predicate is CONTENT.
@@ -225,7 +233,8 @@ gates:
       #     be moved out of the `check` suite. It has no rarity to trade on:
       #     the next routine edit can red it while the marker reads fresh.
       #     That is why docs/** is now scoped rather than carved out — the
-      #     FALSIFIED_CLAIMS regexes above match ordinary sentences.
+      #     FALSIFIED_CLAIMS regexes above match ordinary sentences, two of
+      #     them on a bare number word.
       # A future whole-tree scanner must therefore NOT inherit this
       # carve-out by resembling it in POPULATION; it inherits it only by
       # resembling it in PREDICATE. go-to-k/cdk-real-drift's markdown
