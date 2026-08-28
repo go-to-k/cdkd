@@ -1,3 +1,10 @@
+## [0.284.83](https://github.com/go-to-k/cdkd/compare/v0.284.82...v0.284.83) (2026-08-28)
+
+
+### Bug Fixes
+
+* **state:** purge noncurrent versions at three more state-bucket delete sites ([#2376](https://github.com/go-to-k/cdkd/issues/2376)) ([422a87a](https://github.com/go-to-k/cdkd/commit/422a87aa667dfee6b607c6ba6a5bb54299ccb399))
+
 ## [0.284.82](https://github.com/go-to-k/cdkd/compare/v0.284.81...v0.284.82) (2026-08-28)
 
 
