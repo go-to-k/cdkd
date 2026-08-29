@@ -348,8 +348,41 @@ whether it has been committed.
 - **`.claude/hooks/stop-unmerged-lane-warn.sh`** covers the quieter half: a
   linked worktree whose branch is COMMITTED but still ahead of `origin/main` --
   a lane that is finished as far as the editor is concerned and unfinished as
-  far as the repo is. Non-blocking; it emits a `systemMessage` naming each such
-  branch, its commit count and its worktree.
+  far as the repo is. It names each such branch, its commit count and its
+  worktree -- but WHICH CHANNEL it leaves by depends on whose lane it is, and on
+  the Stop event that choice is a behavioural one rather than a formatting one:
+
+  | channel | who reads it | the turn |
+  | --- | --- | --- |
+  | `hookSpecificOutput.additionalContext` | the MODEL | CONTINUES -- it gets another turn to act |
+  | `systemMessage` | the USER only | ends normally |
+  | stdout / stderr at exit 0 | nobody (both are discarded on `Stop`) | ends normally |
+
+  There is no fourth option that reaches the model WITHOUT continuing the turn,
+  which is the whole reason this hook has to choose:
+
+  - **this session's own worktree is a lane** -> `additionalContext`. This is the
+    failure the hook exists for.
+  - **only OTHER worktrees are lanes** -> `systemMessage`. The model cannot act
+    on another session's lane, so a continuation buys one extra reply that can
+    only say "not mine".
+  - **`stop_hook_active` set** (the harness already continued once this turn) ->
+    silent, so one nudge never becomes a spin.
+
+  Ownership is decided from `cwd` in the Stop payload, resolved to its worktree
+  root, falling back to this hook copy's own checkout -- in a linked worktree
+  BASH_SOURCE IS the lane. Note the POLARITY against the #2279 defect below: the
+  same path that was wrong as a SKIP is right as an IDENTIFIER.
+
+  **The channel was wrong for months** (go-to-k/cdkd#2389): everything went out
+  as `systemMessage`, so a message written AT THE AGENT ("you are not done",
+  "the honest label is STOPPED, not WAITING") reached only the party that cannot
+  act on it, while the user got the same wall of text every single turn. Fixing
+  it to `additionalContext` unconditionally was measured first and rejected:
+  four forced continuations in one session over ONE lane belonging to another
+  session, each producing a reply that could only say "not mine". Because this
+  repo SQUASH-merges, a merged branch reads as ahead forever, so a single
+  un-removed worktree would have made that permanent.
 
   Why a hook rather than another sentence: `CLAUDE.md` already says a
   NOT-CLOSEABLE verdict is a to-do list and not a stopping point, and already
@@ -361,7 +394,11 @@ whether it has been committed.
   load-bearing by a third spelling of it, so this computes the verdict from the
   REPO instead of from the agent's own self-report -- which is the part that was
   wrong. Deliberately does NOT call `gh` and does NOT fetch: it runs every turn,
-  and a stale `origin/main` can only UNDER-report, which is the safe direction.
+  and a stale `origin/main` can only OVER-report -- a branch whose work already
+  merged keeps reading as ahead -- which is the safe direction, since the
+  failure that matters is MISSING a real lane and staleness cannot cause that.
+  (This sentence said UNDER-report until #2389; the hook's own comment had
+  already been corrected and this copy had not.)
 
   **It shipped INERT for its own primary case** (go-to-k/cdkd#2279, fixed in the
   follow-up). It derived its root from `BASH_SOURCE` and skipped the worktree
