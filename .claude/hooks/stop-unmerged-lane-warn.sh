@@ -56,8 +56,11 @@ cd "$REPO" 2>/dev/null || exit 0
 git rev-parse --verify origin/main >/dev/null 2>&1 || exit 0
 
 # `lane_paths` carries the same rows as `lanes` in a machine-readable form --
-# worktree path, TAB, branch -- so the session's OWN lane can be picked out of
-# them below. These are taken verbatim: measured on macOS 2026-08-30, git
+# BRANCH, TAB, worktree path -- so the session's OWN lane can be picked out of
+# them below. The branch comes FIRST because it is the field that is safe to
+# bound a split by: git refnames may not contain a tab, a space or a backslash,
+# while a worktree PATH may contain all three. Splitting at the first tab
+# therefore yields the whole path, however it is spelled. These are taken verbatim: measured on macOS 2026-08-30, git
 # canonicalises what it hands back, so `git worktree list` reports
 # `/private/var/...` even for a worktree ADDED as `/var/...` or through a
 # symlink, and `rev-parse --show-toplevel` does the same. The uncanonical
@@ -75,7 +78,7 @@ while IFS= read -r wt; do
   [ "${ahead:-0}" -gt 0 ] || continue
   lanes="${lanes}  ${br}  (${ahead} commit(s) ahead, worktree ${wt##*/})
 "
-  lane_paths="${lane_paths}${wt}	${br}
+  lane_paths="${lane_paths}${br}	${wt}
 "
 done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')
 
@@ -159,11 +162,23 @@ session_root=""
 # and never matches -- silently taking the not-mine branch for its OWN lane.
 session_root=$(cd "$session_root" 2>/dev/null && pwd -P) || session_root=$(pwd -P)
 
-# `ENVIRON`, not `-v root=...`: awk expands backslash escapes in a `-v` value,
-# so a worktree path containing a backslash would be compared in a different
-# spelling than the one git reported and never match.
-self_branch=$(printf '%s' "$lane_paths" |
-  root="$session_root" awk -F'\t' '$1 == ENVIRON["root"] { print $2; exit }')
+# Plain shell rather than awk. Every awk spelling of this comparison mangles
+# some path: `-v root=...` expands backslash escapes in the value, and `-F'\t'`
+# splits a path containing a tab into the wrong field. Both are the same class
+# as the space truncation fixed above, and parameter expansion has neither.
+TAB=$(printf '\t')
+self_branch=""
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  row_branch=${row%%"$TAB"*}
+  row_path=${row#*"$TAB"}
+  if [ "$row_path" = "$session_root" ]; then
+    self_branch="$row_branch"
+    break
+  fi
+done <<LANE_ROWS
+$lane_paths
+LANE_ROWS
 
 if [ -n "$self_branch" ]; then
   msg="WARNING: YOUR OWN lane is unmerged -- a NOT-CLOSEABLE verdict is a TO-DO LIST, not a stopping point.

@@ -333,6 +333,33 @@ check "a spaced path can be the session's own lane" "ctx" "$(channel_of "$out")"
 git -C "$REPO" worktree remove --force "$REPO/wt with space"
 git -C "$REPO" branch -q -D feat/spaced
 
+# --- A worktree path containing a BACKSLASH or a TAB is still matched. Both
+# are legal in a path and neither is legal in a git refname, which is why the
+# row is `branch<TAB>path` and split at the FIRST tab -- the branch side cannot
+# contain one, so whatever follows is the whole path however it is spelled.
+# These fence the two awk spellings that were tried and rejected: `-v root=...`
+# expands backslash escapes in the value (the backslash case), and `-F'\t'`
+# puts a tabbed path in the wrong field (the tab case). Neither was visible to
+# any other case -- both mismatch quietly and fall through to the not-mine
+# branch, which is the safe direction and therefore the silent one. ---
+#
+# The payload is built with `json.dumps`, not `printf`: a literal backslash or
+# tab inside a JSON string is not valid JSON, so hand-formatting one makes the
+# hook fall back to BASH_SOURCE and the case then passes or fails for a reason
+# that has nothing to do with the path. Measured -- both cases failed that way
+# on their first attempt. A real harness escapes these; the fixture must too.
+odd_n=0
+for odd in 'bs\path' "$(printf 'tab\tpath')"; do
+  odd_n=$((odd_n + 1))
+  git -C "$REPO" worktree add -q "$REPO/$odd" -b "feat/odd-$odd_n" HEAD
+  git -C "$REPO/$odd" -c user.email=t@t -c user.name=t commit -q --allow-empty -m work
+  payload=$(CWD="$REPO/$odd" python3 -c 'import json, os; print(json.dumps({"cwd": os.environ["CWD"]}))')
+  out=$(run_hook "$REPO" "$RUN" "$payload")
+  check "a path with a backslash or tab is the session's own lane [$odd_n]" "ctx" "$(channel_of "$out")"
+  git -C "$REPO" worktree remove --force "$REPO/$odd"
+  git -C "$REPO" branch -q -D "feat/odd-$odd_n"
+done
+
 # --- `stop_hook_active` as the STRING "false" must not silence the hook. Python
 # treats any non-empty string as truthy, so the naive read makes this the same
 # as `true` -- and since a hook that goes quiet still exits 0, the failure looks
