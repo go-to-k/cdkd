@@ -275,7 +275,39 @@ a peer's live lane holding uncommitted edits under a 12-minute-old
 `session-owner` claim; only the sentinel and §2's `status --porcelain` would
 have named it.
 
-Finally, comment the outcome on each issue if it was not auto-closed. Do NOT
+Finally, comment the outcome on each issue if it was not auto-closed.
+**RELEASE the claim on every issue that did NOT auto-close.** `--delete-branch`
+has just deleted the branch your claim names, so what is left on the issue is a
+lock pointing at nothing: the next session reads "Working on this in branch
+<gone>" and either skips a free issue or has to prove you are finished. Derive
+the population mechanically rather than from memory -- it is every issue this
+run CLAIMED, minus the ones now CLOSED:
+
+```bash
+for n in <the issues you claimed>; do
+  printf '#%s: ' "$n"; gh issue view "$n" --json state -q .state
+done
+```
+
+Every `OPEN` in that list needs a release comment. **They are exactly the
+partially-closed ones** -- a `Closes #N` PR auto-closes its issue and needs
+nothing, while a lane that shipped part of an umbrella said `Refs` on purpose,
+which auto-closes nothing. So the issues that keep a stale claim are the same
+ones a future session is most likely to pick up, which is what makes this worth
+a mechanical step rather than a habit.
+
+Say three things in the comment, because a bare "released" makes the next
+session re-derive what you already know: that the issue is now UNCLAIMED, what
+the merged PR actually closed, and what remains WITH the reason it was left --
+an unsettled trade-off and a missing design decision read very differently to
+someone deciding whether to start. Carry forward anything expensive the lane
+measured (a live arm it built, a population it derived, a family of bugs it
+found), so the next lane inherits the evidence rather than the diagnosis.
+
+A claim on an issue that DID auto-close needs nothing: a closed issue is not a
+lock, and commenting on it only adds noise.
+
+Do NOT
 stop here: what the run taught you is still only in this session's context, so
 go on to §10 — which also decides WHERE each lesson belongs (memory is the
 weakest of the options there, not the default one).
