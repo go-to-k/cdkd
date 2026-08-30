@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getLogger } from '../utils/logger.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * CDK configuration loaded from cdk.json and environment variables
@@ -514,7 +515,13 @@ export async function resolveStateBucketWithDefaultAndSource(
   // also what makes the deploy preflight's `verifyBucketExists` HeadBucket
   // genuinely redundant — see `stateBucketExistenceConfirmed`.
   const stsCredentials = (stsClient as { config?: { credentials?: unknown } }).config?.credentials;
+  // No `profile` argument: the probe's identity comes from `stsCredentials`
+  // below, which was resolved by a client that already carries the proxy
+  // handler AND the profile. When that reuse does not apply, the defaults'
+  // chain is the SDK default chain with the handler threaded through, which is
+  // exactly the profile-less chain this site fell back to before.
   const probe = new S3Client({
+    ...awsClientDefaults(),
     region: 'us-east-1',
     ...(typeof stsCredentials === 'function' && { credentials: stsCredentials as never }),
   });

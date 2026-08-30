@@ -1,4 +1,5 @@
 import { GetBucketLocationCommand, S3Client } from '@aws-sdk/client-s3';
+import { awsClientDefaults } from './aws-client-defaults.js';
 
 /**
  * Per-bucket region cache.
@@ -117,12 +118,23 @@ export async function resolveBucketRegion(
   let probeFailed = false;
 
   const promise = (async (): Promise<string> => {
+    // `auth` deliberately does NOT carry `awsClientDefaults()`. Up to two
+    // clients are built below, and folding the defaults in here would give
+    // them one `requestHandler` -- one routing agent and one credential chain
+    // between them, which is the per-client rule broken through the back door.
+    // The helper is called inside each literal instead, FIRST, so an explicit
+    // `credentials` from `auth` still wins over the injected chain.
     const auth = {
       ...(opts.profile && { profile: opts.profile }),
       ...(opts.credentials && { credentials: opts.credentials }),
     };
     const explicitRegion = opts.region ?? opts.fallbackRegion;
-    let client = new S3Client({ ...(explicitRegion && { region: explicitRegion }), ...auth });
+    // `auth` carries no `region`, so nothing below is shadowed.
+    let client = new S3Client({
+      ...awsClientDefaults({ profile: opts.profile }),
+      ...auth,
+      ...(explicitRegion && { region: explicitRegion }),
+    });
     // With no caller-supplied region the client resolves its own; when that
     // chain yields nothing the client cannot send at all, so pin the historic
     // us-east-1 endpoint rather than turning a working probe into a guess.
@@ -130,7 +142,11 @@ export async function resolveBucketRegion(
     if (!probeRegion) {
       client.destroy();
       probeRegion = 'us-east-1';
-      client = new S3Client({ region: probeRegion, ...auth });
+      client = new S3Client({
+        ...awsClientDefaults({ profile: opts.profile }),
+        ...auth,
+        region: probeRegion,
+      });
     }
     try {
       // ExpectedBucketOwner: a foreign-owned bucket 403s here and falls into

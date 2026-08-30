@@ -15,6 +15,7 @@ import {
   PutImageTagMutabilityCommand,
 } from '@aws-sdk/client-ecr';
 import { getLogger } from '../utils/logger.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { CdkdError, normalizeAwsError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
@@ -534,8 +535,18 @@ export async function verifyAssetStorageExists(
   // turns HeadBucket into a 403 and the error below misreports a foreign
   // bucket.
   const clientOpts = { region, ...(opts.profile && { profile: opts.profile }) };
-  const s3Client = new S3Client(clientOpts);
-  const ecrClient = new ECRClient(clientOpts);
+  // `awsClientDefaults()` is called ONCE PER CLIENT rather than folded into
+  // `clientOpts`. Sharing the bag would share the `requestHandler` it carries,
+  // and therefore the routing agent inside it -- and `NodeHttpHandler.destroy()`
+  // forwards into an agent whose `destroy()` kills ACTIVE sockets, so the
+  // `finally` below destroying one client would tear down the other's. The two
+  // destroys are adjacent today, but the sharing is the hazard the per-client
+  // agent rule exists to prevent, and it is invisible at the call site.
+  const s3Client = new S3Client({ ...awsClientDefaults({ profile: opts.profile }), ...clientOpts });
+  const ecrClient = new ECRClient({
+    ...awsClientDefaults({ profile: opts.profile }),
+    ...clientOpts,
+  });
   try {
     try {
       await s3Client.send(
@@ -1121,10 +1132,12 @@ export class AssetModeResolver {
     let ecrClient: ECRClient | undefined;
     try {
       s3Client = new S3Client({
+        ...awsClientDefaults({ profile: this.profile }),
         region,
         ...(this.profile && { profile: this.profile }),
       });
       ecrClient = new ECRClient({
+        ...awsClientDefaults({ profile: this.profile }),
         region,
         ...(this.profile && { profile: this.profile }),
       });

@@ -15,6 +15,35 @@ import { installOnceLeakDetector } from './once-leak-detector.js';
 import { installStreamFence } from './stream-fence.js';
 
 /**
+ * The unit suite must not depend on whether the DEVELOPER is behind a proxy.
+ *
+ * Since issue #2388 every AWS SDK client spreads `awsClientDefaults()`, which
+ * returns `{}` unless a proxy variable is set and a `requestHandler` plus an
+ * injected `credentials` chain when one is. So on a machine with `HTTPS_PROXY`
+ * exported — the very machine the issue was reported from — every test that
+ * asserts an exact client-config shape sees two extra properties and fails,
+ * while CI stays green. That is a test suite that answers a different question
+ * per machine, so the variables are scrubbed once here.
+ *
+ * The proxy behaviour itself is covered explicitly, by
+ * `tests/unit/utils/aws-client-defaults.test.ts` and
+ * `tests/unit/utils/proxy-routing-agent.test.ts`, which set the variables
+ * themselves and restore them afterwards.
+ */
+for (const name of [
+  'HTTP_PROXY',
+  'http_proxy',
+  'HTTPS_PROXY',
+  'https_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+  'NO_PROXY',
+  'no_proxy',
+]) {
+  delete process.env[name];
+}
+
+/**
  * Global vitest setup — defenses against Node 24 + vitest 1.6.1 surfacing
  * stray unhandled rejections from `withErrorHandling`-wrapped CLI actions.
  *

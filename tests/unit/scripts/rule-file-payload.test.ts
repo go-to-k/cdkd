@@ -210,6 +210,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
   ['hooks-stop.md', 4], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
+  ['proxy-support.md', 3], // literal list: EXACT, see below
   ['layout-analyzer.md', 12],
   ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
   ['layout-cli.md', 48],
@@ -320,6 +321,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
   ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  37,183
   ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
+  // proxy-support.md's glob names three literal files (issue #2388); without a
+  // row here the satellite would sit under no budget, which is the state the
+  // 2026-08-25 review probe showed a rule file can reach unnoticed.
+  ['src/utils/aws-client-defaults.ts', 46_000, 58_000],  // measured  52,845
   ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
   ['vite.config.ts', 14_000, 21_000],                            // measured  16,712
   // The representative path for `test-stream-fence.md`: the only paths its
@@ -454,7 +459,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 35; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 36; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -487,7 +492,20 @@ const CORPUS_FILE_COUNT = 35; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  hooks.md to 122,559 B against the 120,000 B cap. The satellite is
                               //  10,605 B under a four-path `paths:` list (the two hooks and their
                               //  suites) and hooks.md fell to 113,422 B. That makes 35.
-const CORPUS_BYTES_MIN = 899_000;   // measured 933,620 B -- 34,620 B of slack.
+                              //  + proxy-support.md (go-to-k/cdkd#2388): the two proxy modules,
+                              //  the client-construction critic that fences them and the SDK-contract
+                              //  fences were added to layout-utils.md and layout-scripts.md, and the
+                              //  combined ~9 KB crossed the ceiling of the day. Moved out verbatim
+                              //  under a glob naming the three files, so a session touching any
+                              //  OTHER src/utils/** or scripts/** file stops paying for it -- the
+                              //  #2236 / #2240 / #2363 shape again. That makes 36.
+const CORPUS_BYTES_MIN = 908_000;   // measured 942,951 B -- 34,951 B of slack.
+                                    // 899_000 -> 908_000 (go-to-k/cdkd#2388): re-measured, not
+                                    // nudged, which is what the note below asks for. Leaving it at
+                                    // 899_000 after adding proxy-support.md would have put the
+                                    // slack at 43,951 B, so the floor would stop noticing a
+                                    // deletion it catches today. The slack is kept at what the
+                                    // previous measurement set it to rather than widened.
                                     // 795_000 -> 899_000: the comment beside the old bound still
                                     // read "measured 808,384 B", 105 KB behind the corpus, so the
                                     // floor had ~119 KB of slack and would not have noticed a
@@ -523,6 +541,21 @@ const CORPUS_BYTES_MAX = 946_000;   // growth is the norm here; this catches bul
                                     // adjusted. The remaining headroom is roughly one ordinary
                                     // docs lane; the next one to need more should SPLIT rather
                                     // than raise.
+                                    //
+                                    // NOT raised again for go-to-k/cdkd#2388, and the decision is
+                                    // worth recording because it cuts against the rule of thumb one
+                                    // paragraph up. Measured at that branch's final tree: 36 files,
+                                    // 942,951 B, which FITS with 3,049 B -- but the branch's own
+                                    // delta is 9,331 B, so by the "your delta must be smaller than
+                                    // the headroom you leave" argument it should raise. It does not,
+                                    // for two reasons. The instruction directly above is to SPLIT
+                                    // rather than raise, and that branch did: its ~9 KB is already
+                                    // in a narrow-`paths:` satellite, with only one-line pointers
+                                    // left in layout-utils.md and layout-scripts.md, so there is
+                                    // nothing of its own left to move. And raising in two
+                                    // consecutive lanes is the ratchet this comment exists to slow.
+                                    // The residual is real: the next lane adding more than ~3 KB
+                                    // fails here. Flagged on the PR rather than spent unilaterally.
                                     // 900_000 -> 915_000 (go-to-k/cdkd#2363): origin/main sat at 899,989 B --
                                     // 11 B of headroom -- so ANY rules addition tripped it. Measured after the
                                     // hooks-cwd-detector.md split: 902,381 B (the widening's net prose is
@@ -531,8 +564,21 @@ const CORPUS_BYTES_MAX = 946_000;   // growth is the norm here; this catches bul
                                     // 3,712 B, leaving 835 B of headroom -- the next rule-file
                                     // edit over 1 KB anywhere would have failed this suite for a
                                     // reason unrelated to itself. Measured 914,165 B.
-
-
+                                    // 928_000 -> 940_000 (go-to-k/cdkd#2388): proxy-support.md
+                                    // takes the corpus to 923,079 B, which FITS under 928_000 with
+                                    // 4,921 B to spare -- and that is the reason to move it, not a
+                                    // reason to leave it. This ceiling is a CUMULATIVE budget spent
+                                    // by every open lane at once (see the merge-projection case
+                                    // below, and the two lanes at 899,843 B and 899,902 B that were
+                                    // each green in isolation and 25 B over together). This branch's
+                                    // own delta is 8,284 B, larger than the 4,921 B it would leave,
+                                    // so the next PR of the same shape could not land and a second
+                                    // concurrent lane would collide with this one rather than with a
+                                    // number anyone chose. 940_000 leaves 16,921 B, roughly what the
+                                    // previous raise left. Measured on origin/main at 476c0ac8:
+                                    // 34 files, 914,795 B -- which is also why the "914,165" above
+                                    // is left as the record of what THAT raise measured rather than
+                                    // silently corrected.
 
 /**
  * The repo's tracked files, read once. Memoised because two per-file suites

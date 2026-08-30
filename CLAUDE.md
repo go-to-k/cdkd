@@ -109,6 +109,22 @@ Custom Resources handling, the `assertRegionMatch()` region-check helper, and th
   import { foo } from './bar';     // ❌ Wrong
   ```
 
+  **One carve-out**, in the closure reachable from `src/utils/aws-clients.ts`:
+  there the relative import must be spelled `.ts`
+  (`./aws-client-defaults.ts`). `scripts/audit-provider-coverage.ts` imports
+  that file directly and runs under `node`'s native type stripping, which
+  resolves relative specifiers LITERALLY — it does not rewrite `.js` to `.ts`
+  the way TypeScript does at emit time — so a `.js` spelling there fails
+  `vp run audit:coverage:check` in CI with `ERR_MODULE_NOT_FOUND`. The
+  constraint is TRANSITIVE: it binds every module reachable from
+  `aws-clients.ts`, not just that file's own imports. `tsconfig.json`'s
+  `rewriteRelativeImportExtensions` emits the `.ts` spelling as `.js`, and the
+  same spelling is already how `scripts/` and `tests/` cross this boundary.
+  `tests/unit/utils/aws-clients-region-fold.test.ts` fences the whole closure by
+  resolving it the way `node` would, so a `.js` spelling introduced anywhere in
+  it fails a unit test rather than a codegen job several files away. Everywhere
+  else `.js` remains correct.
+
 - **Build System (Vite+)**: New dev / build tasks (lint, format, audit scripts, codegen, etc.) are registered as Vite+ tasks in `vite.config.ts` and invoked via `vp run <task>`. This is the project convention — prefer it over `package.json` `"scripts"` entries or ad-hoc `node` invocations. `vp pack` builds the ESM package through tsdown with a Node 20 runtime target. The global `vp` CLI is pinned by `.mise.toml`; project Node.js is managed by Vite+ from `.node-version`.
 
 - **CLI Configuration Resolution** (option precedence, stack-name matching, concurrency / timeout flags): see [.claude/rules/cli-internals.md](.claude/rules/cli-internals.md).
@@ -164,6 +180,9 @@ high.
 - `archiver` - ZIP packaging for file assets
 - `adm-zip` - ZIP unpacking for the `AWS::CodeCommit::Repository` `Code` seed (S3 zip → initial commit via `CreateCommit`; issue #1066)
 - `chokidar` - File watcher backing `cdkd local start-api --watch` (PR 8c)
+- `https-proxy-agent` / `http-proxy-agent` / `proxy-from-env` / `agent-base` - Proxy support for AWS SDK calls (issue [#2388](https://github.com/go-to-k/cdkd/issues/2388)). The SDK for JavaScript v3 does not read `HTTPS_PROXY` / `HTTP_PROXY` on its own, so `src/utils/aws-client-defaults.ts` supplies an agent. `proxy-agent` was deliberately NOT taken: its PAC support pulls `pac-resolver` / `degenerator` and therefore `vm` into the bundle.
+- `@aws-sdk/credential-provider-node` - `defaultProvider`, injected as the credential chain on the proxied path so the SSO portal / SSO-OIDC clients (which build from `clientConfig` alone) also route through the proxy.
+- `@smithy/node-http-handler` - `NodeHttpHandler`, the request handler the proxy agent is attached to.
 - `yaml` - CFn-aware YAML codec for `cdkd export` / `cdkd import --migrate-from-cloudformation` (preserves `!Ref` / `!GetAtt` / `!Sub` shorthand intrinsics on round-trip — see [src/cli/yaml-cfn.ts](src/cli/yaml-cfn.ts))
 
 ### Dev Dependencies

@@ -12,6 +12,7 @@ import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { ECRClient } from '@aws-sdk/client-ecr';
 import { commonOptions } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { withErrorHandling, normalizeAwsError, CdkdError } from '../../utils/error-handler.js';
 import { bootstrapDestroyCommand } from './bootstrap-destroy.js';
 import { DEFAULT_STATE_PREFIX } from './state-file-keys.js';
@@ -162,6 +163,7 @@ async function bootstrapCommand(options: {
   if (regionNeedsReconciliation(effective)) {
     const probeBackend = new S3StateBackend(
       new S3Client({
+        ...awsClientDefaults({ profile: options.profile }),
         region: effective.region,
         ...(options.profile && { profile: options.profile }),
       }),
@@ -359,6 +361,7 @@ async function bootstrapCommand(options: {
     if (options.assets) {
       logger.info('\nSetting up cdkd asset storage...');
       const ecrClient = new ECRClient({
+        ...awsClientDefaults({ profile: options.profile }),
         region,
         ...(options.profile && { profile: options.profile }),
       });
@@ -370,6 +373,7 @@ async function bootstrapCommand(options: {
       // `prefix` is irrelevant here (the marker is written via prefix-free
       // putRawObject) but the constructor requires one.
       const markerS3Client = new S3Client({
+        ...awsClientDefaults({ profile: options.profile }),
         region,
         ...(options.profile && { profile: options.profile }),
       });
