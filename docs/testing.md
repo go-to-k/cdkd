@@ -1445,6 +1445,43 @@ mechanical swap to `resetAllMocks()` breaks 1181 tests, and the presence of
 implicated a handful of files rather than 182, and needed no remediation batch
 at all.
 
+### Unit-test convention: a green run says nothing
+
+`tests/setup.ts` installs a **stream fence** (`tests/stream-fence.ts`) that
+buffers direct `process.stdout` / `process.stderr` writes made inside a test and
+replays them, headed by the test name, only if that test FAILS.
+
+It exists because vitest attributes and suppresses `console.*` but a raw
+`stream.write()` bypasses that entirely. Product code writes that way on purpose
+where the logger is the wrong channel — the deprecated-`--region` notice in
+`src/cli/options.ts`, the SIGINT notices in `src/provisioning/interrupt-watch.ts`
+and `src/cli/commands/destroy-runner.ts`, the critic summaries under `scripts/` —
+so any suite exercising those paths legitimately printed them. Measured on the
+full suite before the fence: 108 such lines, ~20 KB of `vp test run`'s ~22 KB of
+output, i.e. the reporter's own output was under a tenth of what a PASSING run
+emitted. After: 628 bytes for the same 17,462 tests.
+
+That is a correctness property, not a tidiness one. A green run's output is what
+a person or an agent reads to decide whether to trust the run, and 20 KB of
+notices from passing tests is 20 KB a real signal can hide in.
+
+Two deliberate carve-outs:
+
+- Writes **outside** a test body (module top level, `beforeAll` / `afterAll`)
+  pass straight through. They are diagnostic about the FILE, and there is no
+  failing test to attach them to.
+- `CDKD_TEST_STREAM_PASSTHROUGH=1` disables the fence entirely. Debugging a hang
+  or a crash needs the writes as they happen: a run that never reaches the end of
+  a test never reaches the replay either.
+
+```bash
+CDKD_TEST_STREAM_PASSTHROUGH=1 vp test run tests/unit/cli/destroy-runner-sigint.test.ts
+```
+
+A test that asserts on such a write is unaffected — a `vi.spyOn(process.stderr,
+'write')` replaces the fence's patch for the duration of that test, and the
+fence only ever sees what the spy passes through.
+
 ## 3. Deploy Using cdkd
 
 ```bash

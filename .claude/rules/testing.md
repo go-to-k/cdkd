@@ -16,6 +16,17 @@ paths:
   TS2307 (PR #1226). Copy the import line from a sibling test. Enforced by
   `tests/unit/scripts/test-import-convention.test.ts` (fails the local test
   run, naming the offending file).
+- **A green run must print nothing.** `tests/setup.ts` installs a stream fence
+  (`tests/stream-fence.ts`) that buffers raw `process.stdout` / `process.stderr`
+  writes made inside a test and replays them, headed by the test name, only when
+  that test FAILS. Vitest attributes and suppresses `console.*`; a raw
+  `stream.write()` bypasses that, and product code uses it deliberately where
+  the logger is the wrong channel (the deprecated-`--region` notice, the SIGINT
+  notices, the `scripts/` critic summaries). Measured before the fence: 108
+  lines / ~20 KB of `vp test run`'s ~22 KB full-suite output came from PASSING
+  tests; after, the whole run prints 628 bytes. Writes outside a test body pass through (nothing to
+  attach them to), and `CDKD_TEST_STREAM_PASSTHROUGH=1` disables the fence for
+  debugging a hang, where a replay that never runs is worse than noise.
 - Mocking: Mock AWS SDK with vi.mock()
 - **Mocking `src/utils/aws-clients.js` does NOT isolate a provider that builds
   its OWN client.** `new Route53Client({ region })` inside a provider ignores
