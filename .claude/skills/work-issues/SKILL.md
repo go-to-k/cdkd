@@ -19,6 +19,45 @@ and colliding on the same file. The run does not end at the last merge: the retr
 stage folds what this run taught you back into this skill's files, while the
 evidence still exists.
 
+## Launch mode: main checkout, or already inside a worktree
+
+The flow below creates one worktree per lane, which is right when this skill is
+launched from the MAIN checkout and wrong when the launch location is ALREADY a
+linked worktree (an Orca/ADE workspace, or a session that `cd`-ed into
+`.claude/worktrees/<x>`): `git worktree add` then NESTS a worktree inside one,
+and deleting the outer workspace takes the inner directory, its uncommitted work
+and its git registration with it (go-to-k/cdkd#2390). COMPUTE which one you are
+in before stage 0 and state it in the opening report:
+
+```bash
+[ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" \
+ = "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo MAIN-CHECKOUT || echo IN-PLACE
+```
+
+Equal only in the main checkout — a linked worktree's `--git-dir` is
+`<common-dir>/worktrees/<name>`. `pwd -P` is load-bearing: the main checkout
+answers RELATIVELY (`.git` for both) and macOS spells `/tmp` as `/private/tmp`.
+
+`IN-PLACE` changes four things and nothing else:
+
+- **Take ONE issue, not a batch** (§3). One working tree carries one lane;
+  file-disjointness across lanes stops applying, the claim does not.
+- **Create no worktree** (§5) — work on the branch already checked out here. If
+  that branch is detached or its PR already merged, `git switch -c <branch>
+  origin/main` IN THIS TREE (`main-tree-branch-gate` blocks that only in the
+  main checkout).
+- **Remove no worktree and delete no branch** (§9, §10-d): a lane that removes
+  the tree it runs in deletes its own cwd. Cleanup of this tree belongs to
+  whoever created it — the outer tool, or the operator — and the wrap says so
+  instead of doing it.
+- **`main` is checked out elsewhere**, so §9's post-merge `git checkout main &&
+  git pull` cannot run here — pull the main checkout through `git -C` (§9).
+
+Before using the tree, confirm it is YOURS: `git status --porcelain`,
+`cat "$(git rev-parse --git-dir)/session-owner"`, and the issue thread (§9's
+owner probes). Another session's live lane is a lane, not a workspace — stop and
+report rather than nest a worktree inside it.
+
 ## How this skill is packaged (read this before stage 0)
 
 This file is a thin orchestrator. The full procedure lives in per-stage files
@@ -44,11 +83,13 @@ exactly as in the parent.
   raw backlog listing and issue bodies stay out of the parent context.
 - **Claim (stage 4): the PARENT, never a subagent** — the claim is the lock,
   so it names the session accountable for the lane; it also names the lane
-  branch/worktree the dispatched subagent will create (§4).
+  branch/worktree the dispatched subagent will create (§4), or, IN-PLACE, the
+  branch already checked out here.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, and the stage
   files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`).
-  The lane creates its own worktree per §5, implements, runs `/check` +
+  The lane creates its own worktree per §5 — or works in place, so pass the
+  launch mode in the dispatch — implements, runs `/check` +
   `/check-docs`, opens the PR, dispatches its review tier (a lane may spawn
   reviewer subagents), addresses findings, and drives CI to green — then
   STOPS at merge-ready and reports back: PR number, HEAD sha, markers set,
@@ -79,7 +120,7 @@ the user wants to watch); the stage files apply unchanged either way.
 | 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their clone-locality blind spot, the contested cross-cutting file list (the ONLY copy — `tests/unit/scripts/cross-cutting-list-sync.test.ts` fences it against the gates) |
 | 3. Pick file-disjoint issues | `references/triage.md` | Disjointness gate, freshness quarantine (§3-0), ranking rules (§3-a), naming the next session's verification before writing `next` (§3-b), premise checks against `origin/main` |
 | 4. Claim | `references/claim.md` | Claim comment BEFORE first edit, compare-and-swap re-read, tie-break by earliest timestamp, classification-line upgrade + labels on the same edit |
-| 5. Implement | `references/implement.md` | One worktree per lane, build before first test, sibling-site sweeps (precondition minus remedy, shape not name, count before/after) |
+| 5. Implement | `references/implement.md` | One tree per lane, build before first test, sibling-site sweeps (precondition minus remedy, shape not name, count before/after) |
 | 6. Gates + PR | `references/gates-and-pr.md` | `/check`, `/check-docs`, marker freshness per worktree, PR create |
 | 7. Main advanced | `references/gates-and-pr.md` | Rebase over parallel merges, re-grep what LANDED |
 | 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, review tier + reviewer dispatch, live test |
@@ -97,8 +138,9 @@ the user wants to watch); the stage files apply unchanged either way.
   across clones the issue thread is the ONLY collision signal. (§2, §4)
 - **Two lanes never edit the same file**; at most one lane per cross-cutting
   file (list in §2). (§3)
-- **Never work in the main checkout** — one worktree per lane under
-  `.claude/worktrees/<branch>/`. (§5)
+- **Never work in the main checkout** — one tree per lane: a new worktree under
+  `.claude/worktrees/<branch>/`, or the launch worktree itself when the mode is
+  IN-PLACE. (§5, "Launch mode")
 - **Real-AWS integ runs and merges are SERIALIZED across lanes** — the parent
   grants the turn, one lane at a time; a lane subagent never starts either on
   its own. Everything else (edits, unit tests, markers, PR create, reviews,

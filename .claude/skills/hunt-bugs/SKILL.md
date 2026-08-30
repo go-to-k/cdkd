@@ -153,8 +153,15 @@ Then fix it:
 1. **Root-cause it** in `src/` (replacement-rules, the provider's
    `create`/`update`/`delete`, the diff calculator, the DAG, the intrinsic
    resolver — wherever the divergence-from-CloudFormation lives).
-2. **Fix it in a worktree** (`git worktree add .claude/worktrees/<branch> -b <branch> origin/main`),
-   never in the main tree.
+2. **Fix it in a lane tree, never in the main tree** — from the MAIN checkout
+   that is `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`.
+   If this hunt was LAUNCHED from inside a worktree already (an Orca/ADE
+   workspace, a stray `cd`), create nothing and remove nothing: work on the
+   branch checked out there and leave that tree standing for whoever made it,
+   because nesting a worktree inside one dies with the outer workspace and takes
+   its uncommitted work (go-to-k/cdkd#2390). `/work-issues` SKILL.md "Launch
+   mode" carries the probe that decides which case you are in — do not
+   re-implement it here, for the same single-source reason as above.
 3. **Add a unit test that fails without the fix and passes with it.** This is
    mandatory, not optional — a bug found by integ MUST leave behind a unit test
    that pins the corrected behavior, so the regression can never come back

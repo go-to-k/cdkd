@@ -60,9 +60,10 @@
 - **Stale-base phantom diff** (§7) — never "restore" the peer's lines a stale
   `git diff main` appears to have removed; rebase instead.
 - **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the main
-  tree between calls; use `git -C .claude/worktrees/<branch>` for git ops and
-  re-`cd` before relative-path commands. **A KILLED or REFUSED call is a named
-  reset trigger, and it lies about the filesystem too.** A tool-call timeout
+  tree between calls; use `git -C <lane tree>` for git ops (the path is
+  `.claude/worktrees/<branch>`, or the launch worktree when the mode is
+  IN-PLACE) and re-`cd` before relative-path commands. **A KILLED or REFUSED
+  call is a named reset trigger, and it lies about the filesystem too.** A tool-call timeout
   can return the shell at the session cwd (measured 2026-08-28; surfaced
   go-to-k/cdkd#2368); a PreToolUse refusal aborts the whole call, so the
   `mkdir` a later call's `cd` depends on never ran — and a failed `cd` does
@@ -89,12 +90,26 @@
   `stash@{0}`'s message is yours; parallel lanes stash too, and the indices
   shift (2026-08-19). A blocked call runs NOTHING, preamble included — §6 has
   the rule and what it costs.
+- **An IN-PLACE run ends with the Stop hook still calling its lane unmerged, and
+  the remedy it names is one this mode forbids.**
+  `.claude/hooks/stop-unmerged-lane-warn.sh` enumerates every worktree whose
+  branch is ahead of `origin/main`, and this repo SQUASH-merges, so a merged
+  branch reads as ahead forever; because the launch worktree IS the session's,
+  the warning arrives as `additionalContext` — "remove its worktree and delete
+  the branch" — which SKILL.md "Launch mode" forbids here. Expected, not a
+  defect: confirm the PR is MERGED (`gh pr view <N> --json state`) and say so in
+  the wrap. The tree is only clearable from inside by leaving the branch —
+  `git switch --detach origin/main`, since the hook skips a detached worktree
+  (`git branch --show-current` is empty) and `main` itself is checked out in the
+  main checkout — and whether to do that belongs to the tool that owns the
+  workspace, not to this run.
 
 ## Important existing rules this skill leans on
 
 - **All changes via PR; never commit to `main`.** Feature work lives in its OWN
-  worktree under `.claude/worktrees/<branch>/`; the orchestrator integrates.
-  (`CLAUDE.md` → Workflow Rules.)
+  worktree under `.claude/worktrees/<branch>/` — or, when the run was launched
+  inside a worktree already, in that one (SKILL.md "Launch mode"); the
+  orchestrator integrates. (`CLAUDE.md` → Workflow Rules.)
 - **Always add unit tests** for a fix — do not wait to be asked. (`CLAUDE.md` →
   Workflow Rules.)
 - **Merge with `--squash --delete-branch` only** — the repo's sole merge method.
@@ -114,7 +129,9 @@
   worktree removed, or until the only blockers left are ones you cannot act on
   (CI in flight, a running reviewer, a maintainer decision). Low context is not
   such a blocker: commit, push, file the issue, and continue. If you stop, say
-  per blocker WHY it is not yours to finish.
+  per blocker WHY it is not yours to finish. The removal half is "every worktree
+  THIS RUN added is gone" — an IN-PLACE run added none and leaves its tree
+  standing.
 - **Wrap with a Remaining-work section + State line + Session-close verdict,
   scoped to the issues this run actually worked.** This skill is the easiest
   place to get that scope wrong: the backlog issues you triaged but did NOT

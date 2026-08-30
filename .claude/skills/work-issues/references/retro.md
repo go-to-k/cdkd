@@ -272,6 +272,12 @@ git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
 mise trust && mise install    # see section 5 -- same trap, same one-line fix
 pnpm install                  # worktrees have no node_modules
+
+# IN-PLACE (SKILL.md "Launch mode"): you are NOT on `main` and there is no
+# worktree to add -- the lane's own tree is still here, deps installed. Take the
+# retro branch in it. `main-tree-branch-gate` blocks this only in the main
+# checkout, and the merged lane branch cannot be reused (post-merge-orphan-push).
+git fetch origin && git switch -c "$B" origin/main
 ```
 
 - `chore:` prefix — `.claude/**` is not `src/**`; `commit-prefix-scope-gate`
@@ -303,7 +309,10 @@ pnpm install                  # worktrees have no node_modules
   take the tier the heuristic gives and do not argue it down.
 - **Merge it before the wrap report, then remove the worktree** (`git worktree
   remove .claude/worktrees/<name> && git worktree prune` — §9's closing check
-  is "every worktree THIS run added is gone", and §10 must not undo that). This
+  is "every worktree THIS run added is gone", and §10 must not undo that). An
+  IN-PLACE run added none: it merges and stops there, leaving the tree on the
+  retro branch for whoever owns the workspace (the appendix has what the Stop
+  hook will say about it). This
   is `Session-fit: now`: deferring leaves main self-inconsistent (the skill
   keeps telling the next run to do what this run proved wrong), the evidence
   dies with this session, and an open PR is NOT CLOSEABLE besides.

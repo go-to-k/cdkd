@@ -196,7 +196,13 @@ that number is small the finding is that the FILE is full — a different issue
 from this lane's diff.
 
 ```bash
+# The main checkout is always the FIRST row of `git worktree list`.
+MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
 git checkout main && git pull origin main    # bring the merges local
+# IN-PLACE (SKILL.md "Launch mode"): `main` is checked out in $MAIN, so a
+# `checkout main` here fails with "already used by worktree at ..." -- never
+# leave your own tree, pull the main checkout through -C instead:
+git -C "$MAIN" pull origin main
 ```
 
 That `git pull` fails outright if the shared main tree is dirty, which it
@@ -218,11 +224,20 @@ this repo's `dist/cli.js` (see `/use-cdkd`), so **a fresh `vp run build` on upda
 `npm i -g` reinstall:
 
 ```bash
-vp run build
+vp run build              # IN-PLACE: (cd "$MAIN" && vp run build) -- the global
+                          # link points at the MAIN checkout's dist/cli.js, and
+                          # building this workspace's leaves the user on the old
+                          # binary while every log says the fix shipped.
 ```
 
 **Remove every worktree YOU created** — and only those (a left-behind worktree is
-the silent residue of this flow):
+the silent residue of this flow). **An IN-PLACE run created none, so it removes
+none**: it must not `git worktree remove` the tree it is running in (that
+deletes its own cwd) and must not `git branch -D` the branch it is standing on.
+Cleanup of that tree belongs to whoever created it — the outer tool or the
+operator — so the wrap SAYS that instead of doing it, and the run ends with the
+tree still there. `--delete-branch` on the merge still removes the REMOTE branch,
+which is fine; only the local tree and branch are off limits:
 
 ```bash
 git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts

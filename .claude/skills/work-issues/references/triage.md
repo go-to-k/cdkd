@@ -187,6 +187,25 @@ it here too (the drift in go-to-k/cdkd#2042).
 
 ## 3. Pick a FEW FILE-DISJOINT issues
 
+**How many lanes you may pick is decided by the LAUNCH MODE, so compute that
+first — it is one command and it is not guessable from the prompt:**
+
+```bash
+[ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" \
+ = "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo MAIN-CHECKOUT || echo IN-PLACE
+```
+
+Equal only in the main checkout: a linked worktree's `--git-dir` is
+`<common-dir>/worktrees/<name>`, and `pwd -P` settles the main checkout's
+relative `.git` and macOS's `/tmp` -> `/private/tmp`. `IN-PLACE` means this run
+was launched inside a worktree someone else created (an Orca/ADE workspace, a
+stray `cd`), so it has exactly ONE working tree: **take ONE issue and finish
+it** — a second lane would need a worktree nested inside this one, which dies
+with the outer workspace and takes its uncommitted work (go-to-k/cdkd#2390).
+Rank as usual, claim the top candidate, and leave the rest for the next run.
+Everything below is the MAIN-CHECKOUT case; SKILL.md "Launch mode" carries the
+other three consequences (§4, §5, §9).
+
 The parallel-integration constraint (same as the worktree rule): **two lanes
 must edit DISJOINT files.** Two issues that both land in `deploy-engine.ts`
 cannot be parallelized — bundle them into ONE lane (one worktree, one PR) or

@@ -8,6 +8,13 @@ the session accountable for the lane — and the claim's `<ref>` names the branc
 / worktree the dispatched lane agent will create, not a branch the parent
 holds. Everything else in this section is unchanged.
 
+**IN-PLACE runs name the tree they are STANDING IN** (SKILL.md "Launch mode"):
+the `<ref>` is the branch and worktree already checked out — read them out of
+git rather than composing a name, `git branch --show-current` and
+`git rev-parse --show-toplevel` — because nothing new will be created and a
+claim pointing at a worktree that never appears is exactly what §9's owner
+probes misread. Such a run claims ONE issue (§3), not a set.
+
 For EACH issue you will start:
 
 ```bash

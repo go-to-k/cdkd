@@ -1,20 +1,21 @@
 <!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
-## 5. One worktree per lane, then implement
+## 5. One tree per lane, then implement
 
-This stage (and stages 6-8) normally runs INSIDE a lane subagent the
-orchestrator dispatched — one general-purpose agent per claimed issue, so the
-lane's diffs, test output and review round-trips never land in the parent
-context. Every rule below applies unchanged inside the lane: hooks fire on the
-lane's tool calls, and markgate markers land in the lane's own worktree.
-Two actions are reserved to the parent's serialization turn and are NOT the
-lane's to start: a real-AWS integ run and the merge (the orchestrator's
-serialization invariant; §9). A lane stops at merge-ready and reports.
+This stage (and 6-8) normally runs INSIDE a lane subagent — one per claimed
+issue, so its diffs, test output and review round-trips stay out of the parent
+context. Every rule below holds unchanged there: hooks fire on the lane's tool
+calls, markgate markers land in the lane's own tree. Two actions stay with the
+parent's serialization turn: a real-AWS integ run and the merge (§9). A lane
+stops at merge-ready.
 
-Never edit in the main checkout — the `main-tree-branch-gate` hook blocks branching
-there anyway. Per lane:
+Never edit in the main checkout (`main-tree-branch-gate` blocks branching there).
+Per lane:
 
 ```bash
+# MAIN-CHECKOUT mode only. IN-PLACE (launched inside a linked worktree) skips
+# these two, keeps that tree and its branch, and creates nothing -- nesting dies
+# with the outer workspace (go-to-k/cdkd#2390; probe in §3 / SKILL.md).
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
@@ -28,14 +29,13 @@ instead of writing, and a pipeline's rc hides it (2026-08-28: two `mise ERROR`
 lines, every gate still `no marker`). Verify with `markgate status`, never an
 exit code.
 
-**Build BEFORE the first test run, and read a fresh worktree's failures with
-that in mind.** A worktree has no `dist/`; a test spawning the built CLI fails
-on the missing binary with an assertion message about its SUBJECT (`expected 1
-to be 2`), and the main checkout passes only because it HAS a `dist/` — a
-docs-only lane nearly reported "a peer merge broke main" over 13 such failures
-(go-to-k/cdk-real-drift, 2026-08-27). **A fresh worktree failing where the main
-checkout passes is evidence about the WORKTREE first**; a build costs seconds
-against a false broken-main report.
+**Build BEFORE the first test run, and read a fresh tree's failures with that
+in mind.** A new worktree has no `dist/`; a test spawning the built CLI fails on
+the missing binary with an assertion about its SUBJECT (`expected 1 to be 2`),
+and the main checkout passes only because it HAS one — a docs-only lane nearly
+reported "a peer merge broke main" over 13 such failures (go-to-k/cdk-real-drift,
+2026-08-27). **A fresh tree failing where the main checkout passes is evidence
+about the TREE first**; a build costs seconds against a false report.
 
 **Before fixing, ask whether the defect has SIBLING SITES — and if it does,
 sweep them in THIS lane rather than filing them.** Most defects here are a
@@ -267,11 +267,11 @@ folding cheap. Two consequences: a folded row carries no `Session-fit` /
 the `#N` item-number gate that `gh issue create` bodies get — keep bare `#N`
 out of a folded row yourself. Registration is not execution.
 
-Do the fix in the worktree (match the existing provider/pattern exactly; ESM
-relative imports need the `.js` extension — even in TypeScript). After every
-source change, `vp run build` — the CLI runs from `dist/`, so an unbuilt
-change has no effect. **Always add a unit test that fails without the fix and
-passes with it** (under `tests/unit/**`, AWS SDK mocked via `vi.mock()`) — do
+Do the fix in the lane's tree (match the existing provider/pattern exactly; ESM
+relative imports need the `.js` extension — even in TypeScript). Rebuild with
+`vp run build` after every source change — the CLI runs from `dist/`, so an
+unbuilt change has no effect. **Always add a unit test that fails without the
+fix and passes with it** (under `tests/unit/**`, AWS SDK mocked via `vi.mock()`) — do
 not wait to be asked. **Check first whether the artifact already has a test
 harness** — `.claude/hooks/` carries per-hook `*.test.sh` suites run by
 `run-tests.sh` under its own `hooks.yml` workflow, not visible from
