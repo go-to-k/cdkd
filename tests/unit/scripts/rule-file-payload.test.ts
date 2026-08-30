@@ -304,17 +304,24 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 62_000, 72_000],                            // measured  64,742
-  // This floor is set by a PROPERTY, not by the table's usual ~12%-under
-  // convention, and the property is stricter: it must sit ABOVE `testing.md`
-  // alone (61,358 B), so that deleting `test-stream-fence.md` outright fails
-  // this row. 51_000 and then 57_000 both sat BELOW it and would have gone
-  // green on exactly that deletion. It leaves 2,742 B of slack under the
-  // measurement and 7,258 B under the cap, which is enough for ordinary
-  // editing of either file. Note the three hooks rows do NOT have this
-  // property -- floored at 108_000 against a 114,298 B hooks.md -- so they are
-  // not the precedent for it; they bound growth, this one also bounds loss.
+  ['tests/setup.ts', 63_500, 72_000],                            // measured  64,742
+  // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
+  // convention, and `the tests/setup.ts floor still discriminates` below
+  // RECOMPUTES that property instead of trusting this number. It must sit above
+  // `testing.md` (61,358 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
+  // `test-stream-fence.md` down to the smallest size the `substantive content`
+  // case still allows fails HERE. 51_000, 57_000 and 62_000 were each chosen by
+  // hand and each failed to add signal: the first two sat below `testing.md`
+  // alone, and 62_000 was strictly subsumed -- it fired only under 642 B of
+  // satellite, where `substantive content` already fires at 1,500 B, so a
+  // satellite gutted to 1,501 B passed every check in this file. Note the three
+  // hooks rows do NOT have this property -- floored at 108_000 against a
+  // 114,298 B hooks.md -- so they are not a precedent for it; they bound growth,
+  // this one also bounds loss.
 ];
+
+/** A rule file at or under this is frontmatter and little else -- see the `substantive content` case. */
+const SUBSTANTIVE_MIN_BYTES = 1_500;
 
 const SPLIT_ADVICE =
   'Move the detail into a NEW .claude/rules/<area>.md satellite whose `paths:` glob is as narrow as the content, and leave a one-line pointer behind. Do not summarise or delete the text.';
@@ -441,12 +448,12 @@ const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  family widening pushed hooks.md past the per-file cap again --
                               //  the #2236 shape repeated. That makes 33.
                               //  + test-stream-fence.md: the stream-fence notes were 1,442 B and
-                              //  testing.md had 970 B of headroom under its 62,000 B payload row,
-                              //  so they could not land there. The satellite is 3,114 B and the
-                              //  pointer left behind is 328 B, which is why testing.md still grew
+                              //  testing.md had 970 B of headroom under its payload row, so they
+                              //  could not land there. The
+                              //  satellite is 3,384 B and the pointer left behind is 328 B,
+                              //  which is why testing.md still grew
                               //  (61,030 -> 61,358 B) rather than shrinking -- a split that leaves
-                              //  a pointer always costs the index file something. The satellite
-                              //  itself is 3,384 B. That makes 34.
+                              //  a pointer always costs the index file something. That makes 34.
 const CORPUS_BYTES_MIN = 899_000;   // measured 914,165 B -- 15,165 B of slack.
                                     // 795_000 -> 899_000: the comment beside the old bound still
                                     // read "measured 808,384 B", 105 KB behind the corpus, so the
@@ -520,7 +527,7 @@ describe('.claude/rules payload fence', () => {
         `${name} is ${f.bytes} B -- barely more than frontmatter. Payload is ` +
           'reduced by moving text to a narrower-`paths:` satellite, never by ' +
           'deleting it. If this file is genuinely a stub, say so in the commit.',
-      ).toBeGreaterThan(1_500);
+      ).toBeGreaterThan(SUBSTANTIVE_MIN_BYTES);
     },
   );
 
@@ -781,11 +788,46 @@ describe('.claude/rules payload fence', () => {
     ).toEqual([]);
   });
 
+  it('the tests/setup.ts floor still discriminates a GUTTED satellite', () => {
+    // A floor that merely exists is not a check. This one has to be BELOW the
+    // live payload and ABOVE the two ways `test-stream-fence.md` can stop
+    // carrying its content, and the margin is recomputed here so it fails when
+    // spent rather than when someone notices.
+    //
+    // Deletion is caught by `CORPUS_FILE_COUNT` and by index reachability
+    // anyway, so it is the GUTTING case that this floor uniquely owns: a
+    // satellite trimmed to just over `SUBSTANTIVE_MIN_BYTES` passes every other
+    // assertion in this file.
+    const row = PAYLOAD_BUDGETS.find(([path]) => path === 'tests/setup.ts');
+    expect(row, 'the tests/setup.ts budget row was removed').toBeDefined();
+    const [, floor, cap] = row as readonly [string, number, number];
+
+    const byName = (name: string): number =>
+      ruleFiles.find((r) => r.name === name)?.bytes ?? 0;
+    const testingOnly = byName('testing.md');
+    const satellite = byName('test-stream-fence.md');
+    expect(satellite, 'test-stream-fence.md is missing').toBeGreaterThan(0);
+
+    expect(
+      testingOnly,
+      `deleting test-stream-fence.md would leave ${testingOnly} B, which the ${floor} B floor ` +
+        'must reject'
+    ).toBeLessThan(floor);
+    expect(
+      testingOnly + SUBSTANTIVE_MIN_BYTES,
+      `gutting test-stream-fence.md to ${SUBSTANTIVE_MIN_BYTES} B would leave ` +
+        `${testingOnly + SUBSTANTIVE_MIN_BYTES} B, at or above the ${floor} B floor -- the floor ` +
+        'no longer discriminates. Raise it (and the cap if needed), or say in the commit why the ' +
+        'gutting case is now covered elsewhere.'
+    ).toBeLessThan(floor);
+    expect(testingOnly + satellite).toBeGreaterThanOrEqual(floor);
+    expect(testingOnly + satellite).toBeLessThanOrEqual(cap);
+  });
+
   it('the two corpus bounds are ordered, so neither can be satisfied by crossing', () => {
-    // Checks ORDERING only -- it cannot know whether the band still brackets a
-    // real measurement, which is what the comments beside the constants are
-    // for. Its job is narrower: stop a future edit from satisfying both bounds
-    // by moving them past each other.
+    // Redundant with the corpus case, which asserts the total against BOTH
+    // bounds and so already fails when they cross. Kept only because it names
+    // the cause directly instead of reporting a total that satisfies neither.
     expect(CORPUS_BYTES_MIN).toBeLessThan(CORPUS_BYTES_MAX);
   });
 

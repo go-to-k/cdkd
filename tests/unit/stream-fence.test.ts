@@ -280,13 +280,27 @@ afterAll(() => {
 describe('the fence assumes tests within a file run serially', () => {
   const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-  // Both roots in vite.config.ts's `include`. `src` holds no `.test.ts` today,
-  // which is exactly why the scan below asserts what it FOUND: an arm that
-  // reaches nothing reports clean forever.
+  // Both roots vitest is configured to collect from, taken FROM the config so
+  // the pair cannot drift, with the count each must reach.
+  //
+  // `src` is `exactly: 0` rather than `atLeast: 0`, which asserts nothing:
+  // that arm was found vacuous once already, and `atLeast: 0` left it vacuous.
+  // Written as an equality, adding the first `src/**/*.test.ts` fails here and
+  // forces a real floor to be chosen.
   const ROOTS = [
-    { root: join(REPO_ROOT, 'tests'), atLeast: 800 },
-    { root: join(REPO_ROOT, 'src'), atLeast: 0 },
+    { name: 'tests', atLeast: 800 },
+    { name: 'src', exactly: 0 },
   ] as const;
+
+  it('the roots scanned below are the ones vitest collects from', () => {
+    const config = readFileSync(join(REPO_ROOT, 'vite.config.ts'), 'utf8');
+    const include = /include: \[([^\]]*)\]/.exec(config)?.[1] ?? '';
+    expect(include).toContain("'tests/**/*.test.ts'");
+    expect(include).toContain("'src/**/*.test.ts'");
+    // Two globs, two roots. A third would be scanned by vitest and not by the
+    // critic below.
+    expect(include.split(',').filter((p) => p.trim().length > 0)).toHaveLength(2);
+  });
 
   /**
    * Drop whole-line comments, so PROSE about concurrency is not an offender.
@@ -301,7 +315,13 @@ describe('the fence assumes tests within a file run serially', () => {
   const stripComments = (text: string): string =>
     text
       .split('\n')
-      .filter((line) => !/^\s*(?:\/\/|\/?\*)/.test(line))
+      // The `*` branch is `*` followed by whitespace, another `*`, or `/` — a
+      // JSDoc continuation or terminator. A bare `^\s*\*` also eats a shell
+      // `case` arm like `*) echo ...`, which
+      // `tests/unit/scripts/integ-s3-versions-harness.test.ts:376` has inside a
+      // template literal: the one line in the 840-file corpus this would drop
+      // silently, and a silent drop is the direction that hides a real usage.
+      .filter((line) => !/^\s*(?:\/\/|\/\*|\*(?=[\s*/]|$))/.test(line))
       .join('\n');
 
   const testFilesUnder = (root: string): string[] => {
@@ -314,8 +334,10 @@ describe('the fence assumes tests within a file run serially', () => {
       // a symlink is not a shape this repo uses.
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         // vite.config.ts excludes these from the run, so a fixture's installed
-        // dependencies are not this critic's business either. Five integ
-        // fixtures create `tests/integration/*/node_modules` during a run.
+        // dependencies are not this critic's business either. Measured: 286 of
+        // the 287 integ fixtures carry a `package.json` and 244 `verify.sh`
+        // scripts install into their own directory, so this is a large tree
+        // that appears mid-run, not a corner case.
         if (entry.name === 'node_modules' || entry.name === 'dist') continue;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
@@ -331,15 +353,22 @@ describe('the fence assumes tests within a file run serially', () => {
     // wipe a peer's buffer and a failure could replay another test's writes.
     // The fence would have to become per-test-context first.
     const offenders: string[] = [];
-    let scanned = 0;
-    for (const { root, atLeast } of ROOTS) {
-      const files = testFilesUnder(root);
-      expect(
-        files.length,
-        `the scan of ${root} found ${files.length} test files, under the ${atLeast} it should ` +
-          'reach -- a checker that sees nothing reports clean forever'
-      ).toBeGreaterThanOrEqual(atLeast);
-      scanned += files.length;
+    for (const spec of ROOTS) {
+      const files = testFilesUnder(join(REPO_ROOT, spec.name));
+      if ('exactly' in spec) {
+        expect(
+          files.length,
+          `the scan of ${spec.name} found ${files.length} test files, not the ${spec.exactly} ` +
+            'recorded here. If test files now live there, give this root a real floor instead ' +
+            'of an equality -- an arm that reaches nothing reports clean forever.'
+        ).toBe(spec.exactly);
+      } else {
+        expect(
+          files.length,
+          `the scan of ${spec.name} found ${files.length} test files, under the ${spec.atLeast} ` +
+            'it should reach -- a checker that sees nothing reports clean forever'
+        ).toBeGreaterThanOrEqual(spec.atLeast);
+      }
 
       for (const file of files) {
         // Comments are stripped before matching, so PROSE about concurrency is
@@ -361,7 +390,6 @@ describe('the fence assumes tests within a file run serially', () => {
       }
     }
 
-    expect(scanned).toBeGreaterThan(0);
     expect(
       offenders,
       'these suites run concurrently, which the stream fence single buffer cannot ' +
@@ -369,15 +397,29 @@ describe('the fence assumes tests within a file run serially', () => {
     ).toEqual([]);
   });
 
-  it('vite.config.ts does not turn concurrency on globally', () => {
+  it('nothing turns concurrency on globally', () => {
     // The cheapest way to break the assumption is not per-suite at all:
     // `sequence: { concurrent: true }` makes EVERY test concurrent at once, and
     // the per-file scan above would report nothing.
     const config = stripComments(readFileSync(join(REPO_ROOT, 'vite.config.ts'), 'utf8'));
+    for (const pattern of [/concurrent\s*:\s*true/, /sequence\.concurrent/]) {
+      expect(
+        pattern.test(config),
+        'vite.config.ts enables vitest concurrency globally; the stream fence in ' +
+          'tests/stream-fence.ts keeps one buffer per worker and cannot serve that'
+      ).toBe(false);
+    }
+
+    // And it must remain the file vitest actually reads: a `vitest.config.*` or
+    // `vitest.workspace.*` takes precedence, so one could set `sequence.concurrent`
+    // while the check above keeps reporting clean about a file nobody loads.
+    const competing = readdirSync(REPO_ROOT).filter((entry) =>
+      /^vitest\.(config|workspace)\./.test(entry)
+    );
     expect(
-      /concurrent\s*:\s*true/.test(config),
-      'vite.config.ts enables vitest concurrency globally; the stream fence in ' +
-        'tests/stream-fence.ts keeps one buffer per worker and cannot serve that'
-    ).toBe(false);
+      competing,
+      `${competing.join(', ')} takes precedence over vite.config.ts, so the assertion above ` +
+        'now reads a file vitest does not load. Move the check, or fold the config back in.'
+    ).toEqual([]);
   });
 });
