@@ -55,7 +55,14 @@ jobs:
         run: |
           set -o pipefail
           vp run test 2>&1 | tee /tmp/unit-test.log
-          if ! grep -qE '^[[:space:]]*Test Files[[:space:]]' /tmp/unit-test.log; then
+          # Matched by CONTENT, not by line start, and not by a digit-free gap.
+          # Under CI the summary is ANSI coloured -- the real bytes are
+          # `\e[2m Test Files \e[22m \e[1m\e[32m845 passed` -- so a
+          # `^[[:space:]]*` anchor never matches (this step failed a green run
+          # that way), and a `[^0-9]*` gap stops inside `\e[22m`. Requiring a
+          # COUNT plus passed/failed after the phrase is what keeps prose that
+          # merely mentions it from satisfying the check.
+          if ! grep -qE 'Test Files.*[0-9]+ (passed|failed)' /tmp/unit-test.log; then
             echo "::error::vitest printed no 'Test Files' summary — the suite did not run"
             exit 1
           fi

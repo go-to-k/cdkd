@@ -81,6 +81,26 @@ describe('the CI guard that asserts the unit suite actually ran', () => {
     expect(guardStatus(pattern, ' Test Files  843 passed (843)\n')).toBe(0);
   });
 
+  it('passes on the ANSI-COLOURED summary CI actually produces', () => {
+    // The first version of this guard anchored on `^[[:space:]]*Test Files` and
+    // failed a green CI run, because under CI vitest colours the summary and
+    // the line begins with an escape sequence rather than a space. The fixture
+    // below is copied from the failing run's log (job 99279629061), which is
+    // the input the local pty fixture above does not represent.
+    const e = '\u001b';
+    const coloured = `${e}[2m Test Files ${e}[22m ${e}[1m${e}[32m845 passed${e}[39m${e}[22m${e}[90m (845)${e}[39m\n`;
+    expect(guardStatus(pattern, coloured)).toBe(0);
+  });
+
+  it('passes on a coloured FAILING summary too', () => {
+    // A red run must still count as "the suite ran" -- this guard is about
+    // whether vitest executed, and the step's own exit code carries the verdict.
+    const e = '\u001b';
+    expect(
+      guardStatus(pattern, `${e}[2m Test Files ${e}[22m ${e}[1m${e}[31m1 failed${e}[39m | 844 passed\n`)
+    ).toBe(0);
+  });
+
   it('FAILS on the silent no-op that motivated it', () => {
     // Verbatim from the shape observed on this repo's main worktree: the Vite+
     // cache encoder overflowed, no test ran, and the process exited 0.
