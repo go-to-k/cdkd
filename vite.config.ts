@@ -169,13 +169,18 @@ export default defineConfig({
         command: 'vp pack --watch',
         cache: false,
       },
+      // `vp run check` is CI's required step and `/check` step 1 calls it "the
+      // EXACT command CI runs", so its verdict is evidence twice over. The task
+      // cache did not invalidate on a `src/**` change for `typecheck` (verified,
+      // see that task below), and this task runs the same type-check.
       check: {
         command: 'vp check',
+        cache: false,
       },
       // NOT cached, for the same reason `typecheck` / `typecheck:test` /
       // `test:once-leak` below are not: a correctness gate must never replay a
-      // cached green. It was the last one still caching, and the cache cost two
-      // distinct false greens rather than one.
+      // cached green. The cache cost two distinct false greens here rather than
+      // one.
       //
       // 1. A REPLAY. A repeat invocation printed the previous run's summary
       //    verbatim -- same counts, same duration, same `Start at` -- with
@@ -191,7 +196,12 @@ export default defineConfig({
       //    2026-05-16, each time diagnosed from scratch.
       //
       // The cache bought a replay of a run whose inputs had not changed, which
-      // in the dev loop is a run nobody makes.
+      // in the dev loop is a run nobody makes. `check` / `lint` / `format:check`
+      // / `verify` were the other four still caching and are uncached for the
+      // same reason -- after this, NO task in this file caches, which is the
+      // honest end state: every one of them either produces a verdict that is
+      // read as evidence, or regenerates an artifact whose freshness is the
+      // whole point.
       test: {
         command: 'vp test run',
         cache: false,
@@ -225,8 +235,12 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-once-leak-allowlist.ts',
         cache: false,
       },
+      // A replay measured 2026-08-30: two consecutive `vp run lint` printed a
+      // byte-identical summary with `cache hit, 1.23s saved` BELOW it, where a
+      // `tail` does not reach.
       lint: {
         command: 'vp lint',
+        cache: false,
       },
       'lint:fix': {
         command: 'vp lint --fix',
@@ -238,6 +252,7 @@ export default defineConfig({
       },
       'format:check': {
         command: 'vp fmt --check',
+        cache: false,
       },
       typecheck: {
         command: 'tsc --project tsconfig.json --noEmit',
@@ -264,8 +279,11 @@ export default defineConfig({
         // CI. A ~1s type-check is cheap insurance against a false green.
         cache: false,
       },
+      // Chains four gates, so a cache hit on the CHAIN would report all four
+      // green without running any of them -- the same hazard one level up.
       verify: {
         command: 'vp run check && vp run typecheck:test && vp run test && vp run build',
+        cache: false,
       },
       // The `.claude/hooks/**` smoke tests, run under every bash on the
       // machine. Before issue #1477 no task and no CI job ran them at all,

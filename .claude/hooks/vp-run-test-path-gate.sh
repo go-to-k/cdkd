@@ -4,25 +4,37 @@
 # PreToolUse hook. Blocks `vp run test <path>` and steers the caller to
 # `vp test run <path>`.
 #
-# WHY: `vp run test` goes through the Vite+ TASK runner, and the `test`
-# task participates in `run.cache.tasks`. A repeat invocation with the
-# same inputs REPLAYS the previous result instead of executing, printing
-# `◉ cache hit, replaying` and the earlier run's counts and duration.
+# WHY (historical, and still the reason the STEER stands): `vp run test`
+# goes through the Vite+ TASK runner. The `test` task used to participate
+# in `run.cache.tasks`, so a repeat invocation with the same inputs
+# REPLAYED the previous result instead of executing, printing a
+# `cache hit, replaying` line and the earlier run's counts and duration.
 # For an ordinary test run that is a feature. For a MUTATION PROBE it is
 # a correctness hazard of the worst kind: the probe edits a file the task
 # hash does not cover, the runner replays the pre-mutation verdict, and
 # the probe reports PASS having executed nothing. A probe that cannot
-# fail is indistinguishable from a guard that works, so the failure is
-# silent by construction.
+# fail is indistinguishable from a guard that works.
 #
 # Measured in this repo 2026-08-20 (issue #2050 / #2006 / #1975 lanes):
 # a reviewer's four probes reported PASS without executing, and a repeat
-# of `vp run test tests/unit/cli/version.test.ts` printed
-# `$ vp test run tests/unit/cli/version.test.ts ◉ cache hit, replaying`
-# with byte-identical counts and a byte-identical 122ms duration.
+# of `vp run test tests/unit/cli/version.test.ts` replayed byte-identical
+# counts and a byte-identical 122ms duration.
 #
-# `vp test run <path>` is the command the task delegates to, invoked
-# directly, so it bypasses the task cache and always executes.
+# That mechanism is CLOSED at the root as of 2026-08-30: every task in
+# `vite.config.ts` now carries `cache: false`, fenced by
+# `tests/unit/scripts/vite-task-cache.test.ts`. The steer remains for two
+# reasons that do not depend on the cache:
+#
+#   1. `vp test run <path>` is the command the task delegates to, invoked
+#      directly. Nothing sits between the caller and the verdict, which
+#      is what a probe wants.
+#   2. Through the task runner the child gets a TTY, so vitest switches
+#      to its per-file reporter and turns console interception on. A full
+#      green run measured 1,981 lines / 171 KB that way against 15 lines
+#      / 616 bytes directly.
+#
+# So this is now a CONVENTION gate rather than a correctness one -- keep
+# it, but do not cite the cache as a live hazard.
 #
 # SCOPE: only the form carrying a PATH ARGUMENT. A bare `vp run test`
 # (the whole suite, which the gate flow legitimately runs and caches)
@@ -151,15 +163,16 @@ done
 [ "$found_path" = "1" ] || exit 0
 
 cat >&2 <<'EOF'
-Blocked by vp-run-test-path-gate: `vp run test <path>` REPLAYS a cached
-result instead of executing.
+Blocked by vp-run-test-path-gate: run a path-filtered suite as
+`vp test run <path>`.
 
-`vp run test` goes through the Vite+ task runner, and the `test` task is
-cached, so a repeat invocation prints `◉ cache hit, replaying` with the
-previous run's counts and duration. A mutation probe edits a file the
-task hash does not cover, so the replayed verdict is the PRE-mutation
-one and the probe reports PASS having run nothing — a probe that cannot
-fail looks exactly like a guard that works.
+`vp run test` wraps the run in the Vite+ task runner. Historically that
+REPLAYED a cached result, so a mutation probe reported PASS having
+executed nothing -- which looks exactly like a guard that works. Every
+task now sets `cache: false`, closing that; what remains is that the
+wrapper gives the child a TTY, switching vitest to its per-file reporter
+(1,981 lines / 171 KB for a full green run, against 15 lines / 616 bytes
+directly).
 
 Use the command the task delegates to, invoked directly:
 
