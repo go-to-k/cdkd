@@ -216,6 +216,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['providers.md', 92],
   ['state-schema.md', 5],
   ['synthesis.md', 13],
+  ['test-stream-fence.md', 3], // literal list: EXACT, see below
   ['testing.md', 2532],
 ]);
 
@@ -255,7 +256,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/state/s3-state-backend.ts', 43_000, 55_000],         // measured  48,864
   ['src/types/state.ts', 43_000, 55_000],                    // measured  48,864
   ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
-  ['tests/unit/scripts/rule-file-payload.test.ts', 48_000, 62_000], // measured 55,681
+  // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
+  // the cap had 642 B of headroom and the next edit to that file would have
+  // failed this row for a reason unrelated to itself -- the same argument that
+  // moved CORPUS_BYTES_MAX. Measured 61,358 B (the 55,681 B beside the old cap
+  // was 5,677 B stale).
+  ['tests/unit/scripts/rule-file-payload.test.ts', 48_000, 68_000], // measured 61,358
   // hooks.md is this path's ONLY matcher, so the payload IS hooks.md's size and
   // this row's CAP is dominated by MAX_RULE_FILE_BYTES no matter where it sits:
   // at 135_000 (as shipped) it was 15,000 B past the per-file cap and could not
@@ -294,7 +300,28 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
   ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
   ['vite.config.ts', 14_000, 21_000],                            // measured  16,712
+  // The representative path for `test-stream-fence.md`: the only paths its
+  // literal glob list names are the fence, its suite, and the setup file that
+  // installs it, and none of them is named by any other row. Without this the
+  // satellite sits under no budget at all. Payload is testing.md + the satellite.
+  ['tests/setup.ts', 63_500, 72_000],                            // measured  64,742
+  // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
+  // convention, and `the tests/setup.ts floor still discriminates` below
+  // RECOMPUTES that property instead of trusting this number. It must sit above
+  // `testing.md` (61,358 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
+  // `test-stream-fence.md` down to the smallest size the `substantive content`
+  // case still allows fails HERE. 51_000, 57_000 and 62_000 were each chosen by
+  // hand and each failed to add signal: the first two sat below `testing.md`
+  // alone, and 62_000 was strictly subsumed -- it fired only under 642 B of
+  // satellite, where `substantive content` already fires at 1,500 B, so a
+  // satellite gutted to 1,501 B passed every check in this file. Note the three
+  // hooks rows do NOT have this property -- floored at 108_000 against a
+  // 114,298 B hooks.md -- so they are not a precedent for it; they bound growth,
+  // this one also bounds loss.
 ];
+
+/** A rule file at or under this is frontmatter and little else -- see the `substantive content` case. */
+const SUBSTANTIVE_MIN_BYTES = 1_500;
 
 const SPLIT_ADVICE =
   'Move the detail into a NEW .claude/rules/<area>.md satellite whose `paths:` glob is as narrow as the content, and leave a one-line pointer behind. Do not summarise or delete the text.';
@@ -405,7 +432,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 33; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -420,12 +447,35 @@ const CORPUS_FILE_COUNT = 33; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  detector's entry moved out of hooks.md verbatim when the #2363
                               //  family widening pushed hooks.md past the per-file cap again --
                               //  the #2236 shape repeated. That makes 33.
-const CORPUS_BYTES_MIN = 795_000;   // measured 808,384 B -- 13,384 B of slack
-const CORPUS_BYTES_MAX = 915_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+                              //  + test-stream-fence.md: 876 B of stream-fence notes DID land in
+                              //  testing.md first and fit; the file then grew to 1,442 B against
+                              //  970 B of headroom under its payload row and had to move. (That
+                              //  row's cap has since gone to 68_000 for an unrelated reason, so
+                              //  the same text would fit today -- the split is kept because the
+                              //  satellite's narrow `paths:` is the right home for it, not because
+                              //  the cap forced it.) The
+                              //  satellite is 3,384 B and the pointer left behind is 328 B,
+                              //  which is why testing.md still grew
+                              //  (61,030 -> 61,358 B) rather than shrinking -- a split that leaves
+                              //  a pointer always costs the index file something. That makes 34.
+const CORPUS_BYTES_MIN = 899_000;   // measured 914,165 B -- 15,165 B of slack.
+                                    // 795_000 -> 899_000: the comment beside the old bound still
+                                    // read "measured 808,384 B", 105 KB behind the corpus, so the
+                                    // floor had ~119 KB of slack and would not have noticed a
+                                    // whole satellite being deleted. Re-measured rather than
+                                    // nudged, since a bound that drifts from its measurement stops
+                                    // being one.
+const CORPUS_BYTES_MAX = 928_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
                                     // 900_000 -> 915_000 (go-to-k/cdkd#2363): origin/main sat at 899,989 B --
                                     // 11 B of headroom -- so ANY rules addition tripped it. Measured after the
                                     // hooks-cwd-detector.md split: 902,381 B (the widening's net prose is
                                     // 1,422 B; the satellite's frontmatter + the pointer line are the rest).
+                                    // 915_000 -> 928_000 (test-stream-fence.md): this branch added
+                                    // 3,712 B, leaving 835 B of headroom -- the next rule-file
+                                    // edit over 1 KB anywhere would have failed this suite for a
+                                    // reason unrelated to itself. Measured 914,165 B.
+
+
 
 /**
  * The repo's tracked files, read once. Memoised because two per-file suites
@@ -481,7 +531,7 @@ describe('.claude/rules payload fence', () => {
         `${name} is ${f.bytes} B -- barely more than frontmatter. Payload is ` +
           'reduced by moving text to a narrower-`paths:` satellite, never by ' +
           'deleting it. If this file is genuinely a stub, say so in the commit.',
-      ).toBeGreaterThan(1_500);
+      ).toBeGreaterThan(SUBSTANTIVE_MIN_BYTES);
     },
   );
 
@@ -740,6 +790,67 @@ describe('.claude/rules payload fence', () => {
       dead,
       `These \`paths:\` globs match no tracked file, so the rule file never loads for them: ${dead.join(', ')}. Either the glob has a typo, or the code it named was renamed or removed and the notes went with it.`,
     ).toEqual([]);
+  });
+
+  it('the tests/setup.ts floor still discriminates a GUTTED satellite', () => {
+    // A floor that merely exists is not a check. This one has to be BELOW the
+    // live payload and ABOVE the two ways `test-stream-fence.md` can stop
+    // carrying its content, and the margin is recomputed here so it fails when
+    // spent rather than when someone notices.
+    //
+    // Deletion is caught by `CORPUS_FILE_COUNT` and by index reachability
+    // anyway, so it is the GUTTING case that this floor uniquely owns: a
+    // satellite trimmed to just over `SUBSTANTIVE_MIN_BYTES` passes every other
+    // assertion in this file.
+    //
+    // The usable band is structurally narrow -- `satellite - SUBSTANTIVE_MIN_BYTES`,
+    // which is 1,884 B today -- and `testing.md` growing spends it from the
+    // other side, 641 B of it before this case fires. That is not slack to be
+    // debugged away when it runs out: re-derive the floor, or grow the
+    // satellite so the band widens with it.
+    const row = PAYLOAD_BUDGETS.find(([path]) => path === 'tests/setup.ts');
+    expect(row, 'the tests/setup.ts budget row was removed').toBeDefined();
+    const [, floor, cap] = row as readonly [string, number, number];
+
+    // Computed the same way the row itself is -- by GLOB, not by naming the two
+    // files. `testing.md` globs `tests/**`, so a future satellite split out of
+    // it would also match this path and re-subsume the floor while a name-based
+    // version of this case kept reporting green.
+    const matched = ruleFiles.filter((rule) =>
+      (rule.paths ?? []).some((glob) => globToRegExp(glob).test('tests/setup.ts'))
+    );
+    const satellite = matched.find((r) => r.name === 'test-stream-fence.md');
+    expect(satellite, 'test-stream-fence.md no longer matches tests/setup.ts').toBeDefined();
+    const live = matched.reduce((sum, r) => sum + r.bytes, 0);
+    const withoutSatellite = live - (satellite as { bytes: number }).bytes;
+
+    expect(
+      withoutSatellite,
+      `deleting test-stream-fence.md would leave ${withoutSatellite} B, which the ${floor} B ` +
+        'floor must reject'
+    ).toBeLessThan(floor);
+    expect(
+      withoutSatellite + SUBSTANTIVE_MIN_BYTES,
+      `gutting test-stream-fence.md to ${SUBSTANTIVE_MIN_BYTES} B would leave ` +
+        `${withoutSatellite + SUBSTANTIVE_MIN_BYTES} B, at or above the ${floor} B floor -- the ` +
+        'floor no longer discriminates. Raise it (and the cap if needed), or say in the commit ' +
+        'why the gutting case is now covered elsewhere.'
+    ).toBeLessThan(floor);
+    expect(
+      live,
+      `the live payload is ${live} B, under the ${floor} B floor this case just required`
+    ).toBeGreaterThanOrEqual(floor);
+    expect(
+      live,
+      `the live payload is ${live} B, over the row's ${cap} B cap`
+    ).toBeLessThanOrEqual(cap);
+  });
+
+  it('the two corpus bounds are ordered, so neither can be satisfied by crossing', () => {
+    // Redundant with the corpus case, which asserts the total against BOTH
+    // bounds and so already fails when they cross. Kept only because it names
+    // the cause directly instead of reporting a total that satisfies neither.
+    expect(CORPUS_BYTES_MIN).toBeLessThan(CORPUS_BYTES_MAX);
   });
 
   it('every satellite is reachable from an index, and every index row resolves', () => {

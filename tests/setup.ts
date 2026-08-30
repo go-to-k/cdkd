@@ -12,6 +12,7 @@ import {
   type MockableImplementation,
 } from './constructable-implementation.js';
 import { installOnceLeakDetector } from './once-leak-detector.js';
+import { installStreamFence } from './stream-fence.js';
 
 /**
  * Global vitest setup — defenses against Node 24 + vitest 1.6.1 surfacing
@@ -90,6 +91,11 @@ vi.fn = ((implementation?: MockableImplementation) => {
 // patch above so it composes over it rather than being overwritten by it, and
 // inert unless `CDKD_ONCE_LEAK_DETECT=1`.
 installOnceLeakDetector();
+
+// Buffer raw `process.stdout` / `process.stderr` writes made inside a test and
+// replay them only when that test FAILS. See tests/stream-fence.ts for why a
+// green run printing 20 KB of product notices is a problem worth solving.
+installStreamFence();
 
 const originalExit = process.exit;
 

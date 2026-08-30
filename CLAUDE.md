@@ -115,7 +115,7 @@ Custom Resources handling, the `assertRegionMatch()` region-check helper, and th
 
 ## Testing
 
-Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integration tests under `tests/integration/**` (real AWS account, `us-east-1`). UPDATE testing via `CDKD_TEST_UPDATE=true` and rollback failure injection via `CDKD_TEST_FAIL=true`. A `*Once` primer must be consumed by the test that primed it — `vi.clearAllMocks()` does NOT drain the queue, so a leftover silently shifts every later test in the file; enforced by the `once-leak-detect` CI job (`vp run test:once-leak`, issue #1618). Full guide in [.claude/rules/testing.md](.claude/rules/testing.md) and [docs/testing.md](docs/testing.md).
+Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integration tests under `tests/integration/**` (real AWS account, `us-east-1`). UPDATE testing via `CDKD_TEST_UPDATE=true` and rollback failure injection via `CDKD_TEST_FAIL=true`. A `*Once` primer must be consumed by the test that primed it — `vi.clearAllMocks()` does NOT drain the queue, so a leftover silently shifts every later test in the file; enforced by the `once-leak-detect` CI job (`vp run test:once-leak`, issue #1618). A stream fence in `tests/setup.ts` buffers raw `process.stdout` / `process.stderr` writes made inside a test and replays them only when that test FAILS, so a green run prints its summary and nothing else (`CDKD_TEST_STREAM_PASSTHROUGH=1` opts out while debugging a hang). Full guide in [.claude/rules/testing.md](.claude/rules/testing.md) and [docs/testing.md](docs/testing.md).
 
 ## Debugging Deploy Flow
 

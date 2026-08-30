@@ -16,6 +16,11 @@ paths:
   TS2307 (PR #1226). Copy the import line from a sibling test. Enforced by
   `tests/unit/scripts/test-import-convention.test.ts` (fails the local test
   run, naming the offending file).
+- **A green run must print nothing.** `tests/setup.ts` buffers raw
+  `process.stdout` / `process.stderr` writes made inside a test and replays
+  them only when that test FAILS — see
+  [.claude/rules/test-stream-fence.md](test-stream-fence.md) before adding a
+  test that asserts on one, or when a run goes unexpectedly quiet.
 - Mocking: Mock AWS SDK with vi.mock()
 - **Mocking `src/utils/aws-clients.js` does NOT isolate a provider that builds
   its OWN client.** `new Route53Client({ region })` inside a provider ignores

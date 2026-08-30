@@ -1445,6 +1445,62 @@ mechanical swap to `resetAllMocks()` breaks 1181 tests, and the presence of
 implicated a handful of files rather than 182, and needed no remediation batch
 at all.
 
+### Unit-test convention: a green run says nothing
+
+`tests/setup.ts` installs a **stream fence** (`tests/stream-fence.ts`) that
+buffers direct `process.stdout` / `process.stderr` writes made inside a test and
+replays them, headed by the test name, only if that test FAILS.
+
+It exists because vitest attributes and suppresses `console.*` but a raw
+`stream.write()` bypasses that entirely. Product code writes that way on purpose
+where the logger is the wrong channel — the deprecated-`--region` notice in
+`src/cli/options.ts`, the SIGINT notices in `src/provisioning/interrupt-watch.ts`
+and `src/cli/commands/destroy-runner.ts`, the critic summaries under `scripts/` —
+so any suite exercising those paths legitimately printed them. Measured on the
+full suite before the fence: 108 such lines, ~20 KB of `vp test run`'s ~22 KB of
+output, i.e. the reporter's own output was under a tenth of what a PASSING run
+emitted. After: 616 bytes, 15 lines, for a full green run of 17,473 tests.
+
+That is a correctness property, not a tidiness one. A green run's output is what
+a person or an agent reads to decide whether to trust the run, and 20 KB of
+notices from passing tests is 20 KB a real signal can hide in.
+
+Two deliberate carve-outs:
+
+- Writes **outside** a test body (module top level, `beforeAll` / `afterAll`)
+  pass straight through. They are diagnostic about the FILE, and there is no
+  failing test to attach them to. `beforeEach` / `afterEach` are INSIDE the
+  fence, though — they bracket one specific test, and the fence stops at
+  `onTestFinished`, which runs after `afterEach` — so their writes follow the
+  same rule as the test body's: replayed on failure, dropped on a pass.
+- `CDKD_TEST_STREAM_PASSTHROUGH=1` disables the fence entirely. Debugging a hang
+  or a crash needs the writes as they happen: a run that never reaches the end of
+  a test never reaches the replay either.
+
+```bash
+CDKD_TEST_STREAM_PASSTHROUGH=1 vp test run tests/unit/cli/destroy-runner-sigint.test.ts
+```
+
+A test that asserts on such a write is unaffected: the convention here is to
+REPLACE `process.stderr.write` and restore it afterwards (see
+`tests/unit/cli/options.test.ts` and
+`tests/unit/provisioning/interrupt-watch.test.ts`, both of which note that
+`vi.spyOn` does not intercept the stream cleanly under vitest's output capture).
+A replacement sits above the fence, so the fence never sees those writes at all.
+
+The capture is bounded by the test at BOTH ends. `onTestFinished` stops it while
+keeping the buffer — vitest runs `afterEach` -> `onTestFinished` ->
+`onTestFailed`, so the replay still finds something to replay, and everything
+after that (a later `beforeAll`, `afterAll`, the next file's module top level in
+a reused worker) writes straight through. An earlier cut of this fence started
+the capture and never stopped it, which turned the carve-out above into a silent
+swallow; `tests/unit/stream-fence.test.ts` fences that with an `afterAll` that
+asserts the fence is no longer capturing.
+
+One further assumption: one buffer per worker, so tests within a file must run
+SERIALLY. `it.concurrent` would let one test's capture wipe a peer's buffer.
+This repo uses none, and the same test file fails if that changes.
+
 ## 3. Deploy Using cdkd
 
 ```bash
