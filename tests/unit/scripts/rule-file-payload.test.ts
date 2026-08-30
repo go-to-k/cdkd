@@ -447,9 +447,13 @@ const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  detector's entry moved out of hooks.md verbatim when the #2363
                               //  family widening pushed hooks.md past the per-file cap again --
                               //  the #2236 shape repeated. That makes 33.
-                              //  + test-stream-fence.md: the stream-fence notes were 1,442 B and
-                              //  testing.md had 970 B of headroom under its payload row, so they
-                              //  could not land there. The
+                              //  + test-stream-fence.md: 876 B of stream-fence notes DID land in
+                              //  testing.md first and fit; the file then grew to 1,442 B against
+                              //  970 B of headroom under its payload row and had to move. (That
+                              //  row's cap has since gone to 68_000 for an unrelated reason, so
+                              //  the same text would fit today -- the split is kept because the
+                              //  satellite's narrow `paths:` is the right home for it, not because
+                              //  the cap forced it.) The
                               //  satellite is 3,384 B and the pointer left behind is 328 B,
                               //  which is why testing.md still grew
                               //  (61,030 -> 61,358 B) rather than shrinking -- a split that leaves
@@ -798,30 +802,48 @@ describe('.claude/rules payload fence', () => {
     // anyway, so it is the GUTTING case that this floor uniquely owns: a
     // satellite trimmed to just over `SUBSTANTIVE_MIN_BYTES` passes every other
     // assertion in this file.
+    //
+    // The usable band is structurally narrow -- `satellite - SUBSTANTIVE_MIN_BYTES`,
+    // which is 1,884 B today -- and `testing.md` growing spends it from the
+    // other side, 641 B of it before this case fires. That is not slack to be
+    // debugged away when it runs out: re-derive the floor, or grow the
+    // satellite so the band widens with it.
     const row = PAYLOAD_BUDGETS.find(([path]) => path === 'tests/setup.ts');
     expect(row, 'the tests/setup.ts budget row was removed').toBeDefined();
     const [, floor, cap] = row as readonly [string, number, number];
 
-    const byName = (name: string): number =>
-      ruleFiles.find((r) => r.name === name)?.bytes ?? 0;
-    const testingOnly = byName('testing.md');
-    const satellite = byName('test-stream-fence.md');
-    expect(satellite, 'test-stream-fence.md is missing').toBeGreaterThan(0);
+    // Computed the same way the row itself is -- by GLOB, not by naming the two
+    // files. `testing.md` globs `tests/**`, so a future satellite split out of
+    // it would also match this path and re-subsume the floor while a name-based
+    // version of this case kept reporting green.
+    const matched = ruleFiles.filter((rule) =>
+      (rule.paths ?? []).some((glob) => globToRegExp(glob).test('tests/setup.ts'))
+    );
+    const satellite = matched.find((r) => r.name === 'test-stream-fence.md');
+    expect(satellite, 'test-stream-fence.md no longer matches tests/setup.ts').toBeDefined();
+    const live = matched.reduce((sum, r) => sum + r.bytes, 0);
+    const withoutSatellite = live - (satellite as { bytes: number }).bytes;
 
     expect(
-      testingOnly,
-      `deleting test-stream-fence.md would leave ${testingOnly} B, which the ${floor} B floor ` +
-        'must reject'
+      withoutSatellite,
+      `deleting test-stream-fence.md would leave ${withoutSatellite} B, which the ${floor} B ` +
+        'floor must reject'
     ).toBeLessThan(floor);
     expect(
-      testingOnly + SUBSTANTIVE_MIN_BYTES,
+      withoutSatellite + SUBSTANTIVE_MIN_BYTES,
       `gutting test-stream-fence.md to ${SUBSTANTIVE_MIN_BYTES} B would leave ` +
-        `${testingOnly + SUBSTANTIVE_MIN_BYTES} B, at or above the ${floor} B floor -- the floor ` +
-        'no longer discriminates. Raise it (and the cap if needed), or say in the commit why the ' +
-        'gutting case is now covered elsewhere.'
+        `${withoutSatellite + SUBSTANTIVE_MIN_BYTES} B, at or above the ${floor} B floor -- the ` +
+        'floor no longer discriminates. Raise it (and the cap if needed), or say in the commit ' +
+        'why the gutting case is now covered elsewhere.'
     ).toBeLessThan(floor);
-    expect(testingOnly + satellite).toBeGreaterThanOrEqual(floor);
-    expect(testingOnly + satellite).toBeLessThanOrEqual(cap);
+    expect(
+      live,
+      `the live payload is ${live} B, under the ${floor} B floor this case just required`
+    ).toBeGreaterThanOrEqual(floor);
+    expect(
+      live,
+      `the live payload is ${live} B, over the row's ${cap} B cap`
+    ).toBeLessThanOrEqual(cap);
   });
 
   it('the two corpus bounds are ordered, so neither can be satisfied by crossing', () => {

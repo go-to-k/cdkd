@@ -280,8 +280,10 @@ afterAll(() => {
 describe('the fence assumes tests within a file run serially', () => {
   const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-  // Both roots vitest is configured to collect from, taken FROM the config so
-  // the pair cannot drift, with the count each must reach.
+  // Both roots vitest is configured to collect from, with the count each must
+  // reach. The list is written out rather than parsed; the case below asserts
+  // the config's `include` against the same two literals, so the pair cannot
+  // drift without one of them failing.
   //
   // `src` is `exactly: 0` rather than `atLeast: 0`, which asserts nothing:
   // that arm was found vacuous once already, and `atLeast: 0` left it vacuous.
@@ -335,9 +337,10 @@ describe('the fence assumes tests within a file run serially', () => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         // vite.config.ts excludes these from the run, so a fixture's installed
         // dependencies are not this critic's business either. Measured: 286 of
-        // the 287 integ fixtures carry a `package.json` and 244 `verify.sh`
-        // scripts install into their own directory, so this is a large tree
-        // that appears mid-run, not a corner case.
+        // the 287 integ fixtures carry a `package.json`, and 215 of the 247
+        // `verify.sh` scripts run `npm install` or `pnpm install` (245 mention
+        // `install` at all, counting `vp install`). So this is a large tree that
+        // appears mid-run, not a corner case.
         if (entry.name === 'node_modules' || entry.name === 'dist') continue;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
