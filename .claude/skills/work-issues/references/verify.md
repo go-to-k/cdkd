@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## 8. Verify before merge (`/verify-pr` + `/run-integ`)
 
@@ -222,6 +222,8 @@ which reads as a run that completed instantly. Use a shell watchdog and make
 the firing visible in the log:
 
 ```bash
+LOG=$(mktemp)   # assign it HERE: a separate block is a separate shell, and
+                # `> ""` is a loud failure that costs you the whole run
 bash verify.sh > "$LOG" 2>&1 &
 VPID=$!
 ( sleep 1500; kill -9 $VPID 2>/dev/null; echo "WATCHDOG_FIRED" >> "$LOG" ) &

@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## 0. Safety screen FIRST — untrusted issues/comments (do this before anything)
 
@@ -188,16 +188,10 @@ it here too (the drift in go-to-k/cdkd#2042).
 ## 3. Pick a FEW FILE-DISJOINT issues
 
 **How many lanes you may pick is decided by the LAUNCH MODE, so compute that
-first — it is one command and it is not guessable from the prompt:**
-
-```bash
-[ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" \
- = "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo MAIN-CHECKOUT || echo IN-PLACE
-```
-
-Equal only in the main checkout: a linked worktree's `--git-dir` is
-`<common-dir>/worktrees/<name>`, and `pwd -P` settles the main checkout's
-relative `.git` and macOS's `/tmp` -> `/private/tmp`. `IN-PLACE` means this run
+first — it is one command and it is not guessable from the prompt:** run the
+probe in SKILL.md "Launch mode", which holds the ONLY copy of it. It is not
+restated here on purpose — a second verbatim copy of a two-line command is the
+drift shape §10-b fences elsewhere. `IN-PLACE` means this run
 was launched inside a worktree someone else created (an Orca/ADE workspace, a
 stray `cd`), so it has exactly ONE working tree: **take ONE issue and finish
 it** — a second lane would need a worktree nested inside this one, which dies
@@ -227,7 +221,7 @@ defer one.
   through ranking rule 3 (needs BOTH sides) to rule 4, not to last. Do NOT
   bulk-migrate (`Severity` needs the evidence-holder); upgrade a body to the
   four-line shape when you CLAIM it (§4), when that evidence exists. Four
-  CLASSIFICATION lines, not five: `Notes` is report-only. §5's `Dup-check:`
+  CLASSIFICATION lines, not five: `Notes` is report-only. §5-f's `Dup-check:`
   line is not one of the four — a filing-time record, never re-decided on a
   claim.
 - **Read the body's own classification lines before shortlisting it** —

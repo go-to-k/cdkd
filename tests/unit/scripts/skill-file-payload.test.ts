@@ -55,18 +55,29 @@ const MAX_REFERENCE_FILE_BYTES = 49_000;
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~235 KB at the split, compressed to ~181 KB on
-// 2026-08-28 (rule + citation form, PR #2377); the floor sits far enough
-// below that narrative COMPRESSION stays legal while wholesale deletion
-// fails — at ~181 KB the 100 KB floor is ~55% of the corpus, TIGHTER against
-// content-gutting than the ~43% it was at the split, so it is deliberately
-// kept rather than re-derived at ~50%. Division of labor, measured at the
+// 2026-08-28 (rule + citation form, PR #2377); 9 files / ~202 KB on 2026-08-31,
+// when the mid-lane filing rules moved out of implement.md into filing.md. The
+// floor sits far enough below that narrative COMPRESSION stays legal while
+// wholesale deletion fails — see the re-derivation beside
+// MIN_REFERENCE_CORPUS_BYTES below. Division of labor, measured at the
 // split: deleting ONE mid-sized stage file cleared both floors here — the
 // per-file guard for that case is work-issues-skill-refs.test.ts's
 // MIRRORED_DOCS count floor, which pins the exact document count. These
 // floors exist for the WHOLESALE direction only.
 const SPLIT_SKILLS = ['work-issues'];
 const MIN_REFERENCE_FILES = 6;
-const MIN_REFERENCE_CORPUS_BYTES = 100_000;
+// The floor must sit ABOVE `corpus - largest file`, or hollowing out the single
+// biggest stage file still passes and the guard is silent about it. Re-measured
+// 2026-08-31 AFTER the filing.md split: corpus 201,740 B, largest verify.md
+// 43,529 B (implement.md was the largest until 6.4 KB moved out of it, which is
+// exactly why "largest" is re-derived and never carried forward), so the
+// property needs a floor above 201,740 - 43,529 = 158,211 -- which the 100_000
+// held here had stopped providing as the corpus grew. 161_000 restores it (a
+// strictly TIGHTER assertion; no upper bound was touched) while leaving ~40 KB
+// of narrative compression headroom below the floor, close to the ~23% the
+// sibling cdk-local holds. Re-measure BOTH numbers whenever a stage file
+// changes size materially -- the property is silent when it lapses.
+const MIN_REFERENCE_CORPUS_BYTES = 161_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

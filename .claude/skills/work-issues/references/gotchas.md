@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## Gotchas (learned the hard way)
 
@@ -153,7 +153,7 @@
 
   The report repeats those four lines and adds a `Notes` line for
   session-specific context; the issue body carries no `Notes` but does carry a
-  `Dup-check:` line (section 5), a filing-time record rather than a
+  `Dup-check:` line (section 5-f), a filing-time record rather than a
   classification field. **After a lane merges, `next` is the default**: what
   stays hot is that lane's files and the integ you already ran — a residual
   landing in those files is `now`, anywhere else `next` even when small. A

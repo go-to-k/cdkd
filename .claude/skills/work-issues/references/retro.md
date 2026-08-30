@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## 10. Fold what the run taught you back into this skill
 
@@ -260,6 +260,8 @@ Every worktree THIS run added is gone by §9 and you are back on `main`, where
 `main-tree-edit-gate` blocks editing a tracked file — so the retro gets its own
 worktree:
 
+MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
+
 ```bash
 # Suffix the branch to UTC MINUTE, not day. A merged branch is deleted, and
 # re-pushing that name is refused by post-merge-orphan-push-gate — which a bare
@@ -272,11 +274,19 @@ git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
 mise trust && mise install    # see section 5 -- same trap, same one-line fix
 pnpm install                  # worktrees have no node_modules
+```
 
-# IN-PLACE (SKILL.md "Launch mode"): you are NOT on `main` and there is no
-# worktree to add -- the lane's own tree is still here, deps installed. Take the
-# retro branch in it. `main-tree-branch-gate` blocks this only in the main
-# checkout, and the merged lane branch cannot be reused (post-merge-orphan-push).
+IN-PLACE — run THIS block INSTEAD of the one above, never both: there is no
+worktree to add, and `git worktree add` from inside this tree NESTS the very
+worktree this mode exists to prevent. The lane's own tree is
+still here with its deps installed, and you are not on `main`, so take the
+retro branch in it. `B` is re-assigned because a separate fenced block is a
+separate shell (§9's `$MAIN` trap); `main-tree-branch-gate` blocks the switch
+only in the main checkout, and the merged lane branch cannot be reused
+(post-merge-orphan-push).
+
+```bash
+B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
 git fetch origin && git switch -c "$B" origin/main
 ```
 

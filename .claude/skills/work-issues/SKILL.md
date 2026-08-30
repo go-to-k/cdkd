@@ -37,6 +37,9 @@ in before stage 0 and state it in the opening report:
 Equal only in the main checkout — a linked worktree's `--git-dir` is
 `<common-dir>/worktrees/<name>`. `pwd -P` is load-bearing: the main checkout
 answers RELATIVELY (`.git` for both) and macOS spells `/tmp` as `/private/tmp`.
+Run it INSIDE the repo: outside one both substitutions are empty and `cd ""`
+returns 0, so it prints MAIN-CHECKOUT — a wrong verdict, saved only by the next
+git command failing loudly.
 
 `IN-PLACE` changes four things and nothing else:
 
@@ -53,10 +56,9 @@ answers RELATIVELY (`.git` for both) and macOS spells `/tmp` as `/private/tmp`.
 - **`main` is checked out elsewhere**, so §9's post-merge `git checkout main &&
   git pull` cannot run here — pull the main checkout through `git -C` (§9).
 
-Before using the tree, confirm it is YOURS: `git status --porcelain`,
-`cat "$(git rev-parse --git-dir)/session-owner"`, and the issue thread (§9's
-owner probes). Another session's live lane is a lane, not a workspace — stop and
-report rather than nest a worktree inside it.
+Before using the tree, confirm it is YOURS. The owner probes live in §5 —
+`references/implement.md`, the stage file a lane is actually dispatched with —
+because the lane that adopts the tree reads that file and not this one.
 
 ## How this skill is packaged (read this before stage 0)
 
@@ -87,7 +89,8 @@ exactly as in the parent.
   branch already checked out here.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, and the stage
-  files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`).
+  files to read at stage entry
+  (`references/{implement,filing,gates-and-pr,verify}.md`).
   The lane creates its own worktree per §5 — or works in place, so pass the
   launch mode in the dispatch — implements, runs `/check` +
   `/check-docs`, opens the PR, dispatches its review tier (a lane may spawn
@@ -120,7 +123,8 @@ the user wants to watch); the stage files apply unchanged either way.
 | 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their clone-locality blind spot, the contested cross-cutting file list (the ONLY copy — `tests/unit/scripts/cross-cutting-list-sync.test.ts` fences it against the gates) |
 | 3. Pick file-disjoint issues | `references/triage.md` | Disjointness gate, freshness quarantine (§3-0), ranking rules (§3-a), naming the next session's verification before writing `next` (§3-b), premise checks against `origin/main` |
 | 4. Claim | `references/claim.md` | Claim comment BEFORE first edit, compare-and-swap re-read, tie-break by earliest timestamp, classification-line upgrade + labels on the same edit |
-| 5. Implement | `references/implement.md` | One tree per lane, build before first test, sibling-site sweeps (precondition minus remedy, shape not name, count before/after) |
+| 5. Implement | `references/implement.md` | One tree per lane, owner probes before adopting one, build before first test, sibling-site sweeps (precondition minus remedy, shape not name, count before/after) |
+| 5-f. File what you find | `references/filing.md` | N sites = ONE issue, the dup-check window (mint vs fold into an umbrella), `Severity` / `Effort` as labels, the two `gh issue` gates |
 | 6. Gates + PR | `references/gates-and-pr.md` | `/check`, `/check-docs`, marker freshness per worktree, PR create |
 | 7. Main advanced | `references/gates-and-pr.md` | Rebase over parallel merges, re-grep what LANDED |
 | 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, review tier + reviewer dispatch, live test |

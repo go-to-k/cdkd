@@ -210,8 +210,11 @@ describe('work-issues skill docs qualify every issue reference (go-to-k/cdkd#199
 
   it('the references directory actually holds the stage files (the scan is not vacuous)', () => {
     // readdirSync-derived lists inherit the "0 files scanned == green" failure
-    // shape, so pin a floor: the split produced 8 stage files.
-    expect(MIRRORED_DOCS.length).toBeGreaterThanOrEqual(9);
+    // shape, so pin a floor: the split produced 8 stage files, and 2026-08-31
+    // moved the mid-lane filing rules out of implement.md into a 9th
+    // (references/filing.md), so the floor rises with it -- raising a floor is
+    // strictly tighter, and it is what stops the new file being dropped again.
+    expect(MIRRORED_DOCS.length).toBeGreaterThanOrEqual(10);
   });
 
   it('flags prose but not frontmatter / fences / code spans (self-test)', () => {
