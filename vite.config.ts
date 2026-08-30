@@ -172,8 +172,29 @@ export default defineConfig({
       check: {
         command: 'vp check',
       },
+      // NOT cached, for the same reason `typecheck` / `typecheck:test` /
+      // `test:once-leak` below are not: a correctness gate must never replay a
+      // cached green. It was the last one still caching, and the cache cost two
+      // distinct false greens rather than one.
+      //
+      // 1. A REPLAY. A repeat invocation printed the previous run's summary
+      //    verbatim -- same counts, same duration, same `Start at` -- with
+      //    `cache hit, NNs saved` appended BELOW the green block, where a
+      //    `tail` does not reach. The task key also ignores env vars, so a run
+      //    under `CDKD_EXPECT_DIST=1` could be answered by one without it.
+      // 2. A SILENT NO-OP. When the Vite+ cache encoder overflows its 4 MB
+      //    preallocation while serialising this task's inputs, the lookup fails,
+      //    NOTHING runs, no `Test Files` summary is printed, and the process
+      //    exits 0 -- so `/check` would record its commit-gate marker over a
+      //    suite that never executed. Reproduced on this repo 2026-08-30
+      //    (`needed 6871312 bytes`) and recorded four separate times since
+      //    2026-05-16, each time diagnosed from scratch.
+      //
+      // The cache bought a replay of a run whose inputs had not changed, which
+      // in the dev loop is a run nobody makes.
       test: {
         command: 'vp test run',
+        cache: false,
       },
       'test:watch': {
         command: 'vp test watch',

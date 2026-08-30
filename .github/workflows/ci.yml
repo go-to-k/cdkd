@@ -42,7 +42,23 @@ jobs:
       # either. Keying the loud assertion on a bare `CI` reddened those two
       # jobs; keying it on the build is what actually says "dist was produced,
       # so a skip here means the step order regressed".
-      - run: vp run test
+      # Assert the suite actually RAN, not merely that the step exited 0.
+      # `vp run test` goes through the Vite+ task runner, and a task-runner
+      # failure that never reaches vitest exits 0 while printing no `Test Files`
+      # summary -- observed locally as a cache-encoder overflow
+      # (`Cache lookup failed: Encoded sequence length exceeded preallocation
+      # limit`) that ran nothing and looked green. The `test` task is now
+      # `cache: false`, which removes that particular path, but "the tests
+      # passed" and "the tests ran" are different claims and an exit code only
+      # ever carries the first.
+      - name: unit tests
+        run: |
+          set -o pipefail
+          vp run test 2>&1 | tee /tmp/unit-test.log
+          if ! grep -qE '^[[:space:]]*Test Files[[:space:]]' /tmp/unit-test.log; then
+            echo "::error::vitest printed no 'Test Files' summary — the suite did not run"
+            exit 1
+          fi
         env:
           CDKD_EXPECT_DIST: "1"
 

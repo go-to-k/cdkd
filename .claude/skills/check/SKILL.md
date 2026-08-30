@@ -26,7 +26,10 @@ Run these sequentially and report results:
 1. `vp check --fix` — typecheck + lint + Prettier formatting, with auto-fix. Then `vp run check` — the EXACT command CI's `check-build-test` job runs. The two are NOT equivalent: `vp check --fix` has passed 0-errors while `vp run check` failed with a TS7053 error on the same tree (observed 2026-08-09 on PR #1372 — an implicit-any union index the --fix invocation never surfaced, plus a `no-base-to-string` that --fix reported as a warning but CI failed as an error). Run both; CI parity comes from the second. **Use this, not `vp run lint:fix`**: the CI workflow runs `vp check` (which includes Prettier), and `lint:fix` does NOT touch Prettier formatting — so a `lint:fix`-only run passes locally but CI fails with `Formatting issues found` on the same branch. See memory rule `feedback_vp_check_vs_lint_fix.md` for the underlying gotcha and PR #363 for a concrete trap.
 2. `vp run typecheck:test` — type-checks `tsconfig.test.json` (the `tests/**` project). **`vp check` above only type-checks `tsconfig.json` (src/** + types/**), which excludes `**/*.test.ts`** — so a wrong `import type` or a stale mock shape in a test file would pass `vp check` AND `vp test` (whose "Type Errors" line only covers `*.test-d.ts`). This step is what makes test-file type errors fail locally the same way CI now fails them (issue #1133).
 3. `vp run build`
-4. `vp run test`
+4. `vp test run` — the whole unit suite. **Not `vp run test`**, even though that is the spelling CI uses and the `test` task delegates to exactly this command. Two reasons, both measured on this repo 2026-08-30:
+   - **Output.** Through the task runner the child gets a TTY, so vitest switches to its per-file reporter and turns console interception on: **1,981 lines / 171 KB** for a green run. The same 17,473 tests through `vp test run` print **15 lines / 616 bytes**. Nothing is lost — a failure still renders its full block, and `tests/stream-fence.ts` replays a failing test's raw stream writes.
+   - **Trust.** `vp run test` used to be able to exit 0 having run NOTHING, when the Vite+ cache encoder overflowed while serialising the task's inputs (`Cache lookup failed: Encoded sequence length exceeded preallocation limit`, no `Test Files` line, rc=0). The `test` task is now `cache: false`, which removes that path, but `vp test run` never had it.
+   Read the summary line, not just the exit code: a run that reports no `Test Files` count did not run.
 
 ## Output
 
@@ -37,7 +40,7 @@ Report as a table:
 | typecheck + lint + format (`vp check --fix`) | pass/fail |
 | test-project typecheck (`vp run typecheck:test`) | pass/fail |
 | build | pass/fail |
-| tests (N files, M tests) | pass/fail |
+| tests (N files, M tests) (`vp test run`) | pass/fail |
 
 If all pass, confirm "All checks passed."
 If any fail, show the error output and STOP — do not write the commit-gate marker.
