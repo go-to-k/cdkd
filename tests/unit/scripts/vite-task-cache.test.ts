@@ -20,15 +20,12 @@ const source = (): string => readFileSync(VITE_CONFIG, 'utf8');
 const TASKS_MAP_OPEN = '\n    tasks: {\n';
 
 /** The `run.tasks` map only, so a same-indentation block elsewhere is not read as a task. */
-export function taskMapSource(text: string): string {
+function taskMapSource(text: string): string {
   const start = text.indexOf(TASKS_MAP_OPEN);
   if (start === -1) return '';
   const end = text.indexOf('\n    },', start + TASKS_MAP_OPEN.length);
   return end === -1 ? '' : text.slice(start, end);
 }
-
-/** `name: {` / `'name:with-colon': {` openers, whether or not the brace ends the line. */
-const TASK_OPENER = /^ {6}'?([A-Za-z][\w:-]*)'?:\s*\{/gm;
 
 function taskBlocks(text: string): Map<string, string> {
   const map = taskMapSource(text);
@@ -36,12 +33,12 @@ function taskBlocks(text: string): Map<string, string> {
   // Only an opener whose brace ENDS the line has a block this reads; the
   // count guards below are what make the other shapes a failure rather than a
   // blind spot.
-  const opener = /^ {6}'?([A-Za-z][\w:-]*)'?: \{$/gm;
+  const opener = /^ {6}(?:'([^']*)'|"([^"]*)"|([A-Za-z_$][\w$:-]*)): \{$/gm;
   for (let m = opener.exec(map); m !== null; m = opener.exec(map)) {
     const start = m.index + m[0].length;
     const end = map.indexOf('\n      },', start);
     if (end === -1) continue;
-    blocks.set(m[1] as string, map.slice(start, end));
+    blocks.set((m[1] ?? m[2] ?? m[3]) as string, map.slice(start, end));
   }
   return blocks;
 }
@@ -62,7 +59,7 @@ const stripComments = (text: string): string =>
  * in comments, so that collision is not hypothetical.
  */
 const declaresCacheFalse = (block: string): boolean =>
-  /^\s*cache: false,?\s*$/m.test(stripComments(block));
+  /^\s*cache: false,?\s*(?:\/\/.*)?$/m.test(stripComments(block));
 
 /**
  * Tasks whose verdict is EVIDENCE — a type check, a lint, a format check, a test
@@ -102,15 +99,20 @@ describe('vite.config.ts — a correctness gate must never replay a cached green
     //   'x': { ...sharedTask },              spread, no `command:` token
     //   'x': makeTask('vp test run'),        helper call, no brace at all
     //
-    // Counting KEYS catches the first and the third; counting `command:` tokens
-    // catches the second. Each count alone leaves a shape invisible, and both
-    // were measured: a spread task survived a key-only guard, and a helper call
-    // survived a `command:`-only guard AND a brace-opener count.
+    // Measured, from a 46/46/46 baseline: the KEY count catches all three (a
+    // spread goes 47/46/46, a helper call 47/46/46, a single-line task
+    // 47/46/46). The `command:` count is not redundant -- it uniquely catches a
+    // key the opener regex misses that still declares a command, e.g. a shape
+    // the key pattern has not been widened for yet, which scores 46/47/46. Do
+    // not drop either believing the other covers it.
     //
     // A key is matched at the map's six-space depth; a task's own properties
-    // sit at eight, so nothing inside a block is counted.
+    // sit at eight, so nothing inside a block is counted. Bare, single- and
+    // double-quoted keys and a leading `_` are all accepted, because each is a
+    // legal property key and each was invisible while the pattern demanded
+    // `'?[A-Za-z]`.
     const map = stripComments(taskMapSource(source()));
-    const keys = (map.match(/^ {6}'?[A-Za-z][\w:-]*'?:/gm) ?? []).length;
+    const keys = (map.match(/^ {6}(?:'[^']*'|"[^"]*"|[A-Za-z_$][\w$:-]*):/gm) ?? []).length;
     const commands = (map.match(/\bcommand:/g) ?? []).length;
     const blocks = taskBlocks(source());
     const parsed = blocks.size;
@@ -148,9 +150,13 @@ describe('vite.config.ts — a correctness gate must never replay a cached green
     // The per-task flags are what this suite mostly guards, but they only help
     // a task someone remembered to write them on. This switch is what makes the
     // DEFAULT safe, and nothing else asserts it.
+    // Line-anchored for the same reason `declaresCacheFalse` is: `stripComments`
+    // drops WHOLE-line comments only, so an unanchored pattern passes on
+    // `tasks: true, // reverted from cache: { tasks: false } for speed`
+    // (measured).
     const config = stripComments(source());
     expect(
-      /cache:\s*\{\s*tasks:\s*false,?\s*\}/.test(config),
+      /^\s*tasks: false,?\s*(?:\/\/.*)?$/m.test(config) && /cache: \{/.test(config),
       'vite.config.ts must keep `run: { cache: { tasks: false } }`: it is what stops a task ' +
         'added without an explicit `cache: false` from inheriting a replayable cache'
     ).toBe(true);

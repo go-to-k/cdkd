@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,8 +22,32 @@ const CI_YML = join(REPO_ROOT, '.github', 'workflows', 'ci.yml');
  * It deliberately does NOT re-implement the grep: a copy would drift from the
  * workflow, and a copy that drifts is exactly what this file exists to prevent.
  */
+/**
+ * The `- name: unit tests` step, with commented-out lines dropped.
+ *
+ * Both halves matter and both were measured: reading the whole file finds a
+ * guard that has been moved to a step nobody runs, and keeping `#` lines finds
+ * one that has been commented OUT -- with either, this suite reported 5 passed
+ * over a workflow that no longer checks anything.
+ */
+function unitTestStep(): string {
+  const yml = readFileSync(CI_YML, 'utf8');
+  const start = yml.indexOf('- name: unit tests');
+  expect(
+    start,
+    'the `- name: unit tests` step is gone from .github/workflows/ci.yml. If it was renamed, ' +
+      'update this extractor; if the suite is no longer run there, this whole file is moot.'
+  ).toBeGreaterThan(-1);
+  const next = yml.indexOf('\n      - ', start);
+  return yml
+    .slice(start, next === -1 ? undefined : next)
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+}
+
 function guardPatternFromWorkflow(): string {
-  const step = readFileSync(CI_YML, 'utf8');
+  const step = unitTestStep();
   const match = /grep -qE '([^']+)' \/tmp\/unit-test\.log/.exec(step);
   expect(
     match,
@@ -44,6 +68,8 @@ function guardStatus(pattern: string, text: string): number {
     return 0;
   } catch (error) {
     return (error as { status?: number }).status ?? 1;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -81,9 +107,11 @@ describe('the CI guard that asserts the unit suite actually ran', () => {
 
   it('the workflow still pipes through tee and sets pipefail', () => {
     // The predicate above is only reached if the step captured the output and
-    // did not swallow vitest's own exit status.
-    const yml = readFileSync(CI_YML, 'utf8');
-    expect(yml).toContain('set -o pipefail');
-    expect(yml).toContain('tee /tmp/unit-test.log');
+    // did not swallow vitest's own exit status. Read from the STEP, not the
+    // file, and with comments dropped -- otherwise a commented-out line, or the
+    // same words in a different job, keeps this green.
+    const step = unitTestStep();
+    expect(step).toContain('set -o pipefail');
+    expect(step).toContain('tee /tmp/unit-test.log');
   });
 });
