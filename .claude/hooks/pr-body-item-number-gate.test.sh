@@ -269,6 +269,57 @@ run_case "compound: git push && gh pr create with #N body-file blocked" 2 \
 run_case "quoted mention of gh pr create allowed" 0 \
   "$(jq -cn --arg c "echo \"then gh pr create --body-file $B\"" '{tool_input:{command:$c}}')"
 
+# --- go-to-k/cdkd#2397: the body file does not exist YET. The hook runs BEFORE
+# the command, so in the one-call `heredoc -> file -> --body-file` shape the path
+# is absent and the pre-fix `[[ ! -f "$f" ]] && continue` was a silent pass. Both
+# sibling gates that hit this window already fall back to scanning the whole
+# command; these pin the port. All four fail against the pre-#2397 hook, which
+# exited 0 on every one.
+ABSENT="$TMPDIR_FIX/never-written.md"
+HEREDOC_BAD="cat > $ABSENT <<EOF
+# Title
+
+Must-fix #1: thing one
+EOF
+gh issue create --title t --body-file $ABSENT"
+HEREDOC_OK="cat > $ABSENT <<EOF
+# Title
+
+Must-fix 1: thing one
+EOF
+gh issue create --title t --body-file $ABSENT"
+
+run_case "one-call heredoc with #N in the body is blocked" 2 \
+  "$(jq -cn --arg c "$HEREDOC_BAD" '{tool_input:{command:$c}}')"
+
+# The false-BLOCK direction is what the siblings' comments warn about: this is
+# the shape the rules PRESCRIBE, so a clean body written the same way must pass.
+run_case "one-call heredoc with a clean body still passes" 0 \
+  "$(jq -cn --arg c "$HEREDOC_OK" '{tool_input:{command:$c}}')"
+
+# --- The other half of the same window: the path EXISTS, holding the PREVIOUS
+# body, while the command rewrites it. Reading the file alone judges text nobody
+# is submitting -- and does so while looking like a working gate, which is worse
+# than the absent case.
+STALE=$(write_file stale.md "# Title
+
+Must-fix 1: clean
+")
+STALE_REWRITE="cat > $STALE <<EOF
+# Title
+
+Must-fix #7: rewritten
+EOF
+gh issue create --title t --body-file $STALE"
+run_case "a stale body file is not trusted when the command rewrites it" 2 \
+  "$(jq -cn --arg c "$STALE_REWRITE" '{tool_input:{command:$c}}')"
+
+# The control that keeps the case above honest: the same clean file, NOT
+# rewritten by the command, must still pass. Without it that case would also be
+# satisfied by a hook that blocked whenever a body file was named at all.
+run_case "a clean body file the command does not rewrite still passes" 0 \
+  "$(jq -cn --arg c "gh issue create --title t --body-file $STALE" '{tool_input:{command:$c}}')"
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

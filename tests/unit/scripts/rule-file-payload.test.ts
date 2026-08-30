@@ -193,6 +193,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
+  ['hooks-stop.md', 4], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
   ['layout-analyzer.md', 12],
   ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
@@ -289,6 +290,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
   ['.claude/hooks/main-tree-git-cwd-detector.sh', 108_000, 140_000], // measured 122,121
+  // The Stop-hook entries moved out of hooks.md when issues #2391 / #2396 --
+  // the nudge-cadence rule, the channel table and stop-warn's own suite --
+  // pushed that file to 122,559 B, past the same cap. Representative path for
+  // the satellite (its four globs are the two hooks and their suites, per the
+  // REACH_FLOORS entry above). Payload is hooks.md + hooks-stop.md.
+  ['.claude/hooks/stop-warn.sh', 108_000, 140_000], // measured 124,027
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -432,7 +439,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 35; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -458,6 +465,13 @@ const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  which is why testing.md still grew
                               //  (61,030 -> 61,358 B) rather than shrinking -- a split that leaves
                               //  a pointer always costs the index file something. That makes 34.
+                              //  + hooks-stop.md (go-to-k/cdkd#2391 / go-to-k/cdkd#2396): the two
+                              //  Stop hooks' entries moved out of hooks.md verbatim -- the #2236
+                              //  shape a third time -- when the shared nudge-cadence rule, the
+                              //  output-channel table and `stop-warn`'s first suite pushed
+                              //  hooks.md to 122,559 B against the 120,000 B cap. The satellite is
+                              //  10,605 B under a four-path `paths:` list (the two hooks and their
+                              //  suites) and hooks.md fell to 113,422 B. That makes 35.
 const CORPUS_BYTES_MIN = 899_000;   // measured 914,165 B -- 15,165 B of slack.
                                     // 795_000 -> 899_000: the comment beside the old bound still
                                     // read "measured 808,384 B", 105 KB behind the corpus, so the

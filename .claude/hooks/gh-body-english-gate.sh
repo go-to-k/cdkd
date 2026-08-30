@@ -146,6 +146,48 @@ declare -a OFFENDERS=()
 MAX_REPORT=10
 
 # --- 1. file-borne bodies ---------------------------------------------
+# --- go-to-k/cdkd#2397 helpers -------------------------------------------
+# `cmd_rewrites <path>` -- does THIS command write that path? A heredoc body is
+# written through an ordinary redirect (`cat > f <<EOF`), so matching the
+# redirect covers the heredoc shape without parsing heredocs twice.
+cmd_rewrites() {
+  CMD="$cmd" TARGET="$1" perl -0777 -e '
+    my $c = $ENV{CMD};
+    my $t = quotemeta($ENV{TARGET});
+    exit 0 if $c =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:\s|$)/;
+    exit 1;
+  ' 2>/dev/null
+}
+
+# `heredoc_body_for <path>` -- the body of the heredoc that writes that path.
+# Both orders are handled (`cat > f <<EOF` and `cat <<EOF > f`), quoted and
+# unquoted delimiters, and `<<-`. Prints nothing when the command does not write
+# the path through a heredoc, which leaves the pre-#2397 behaviour (skip) for
+# every shape this cannot see -- a missed scan, never a false block.
+heredoc_body_for() {
+  CMD="$cmd" TARGET="$1" perl -0777 -e '
+    my $c = $ENV{CMD};
+    my $t = quotemeta($ENV{TARGET});
+    my @lines = split /\n/, $c, -1;
+    for my $i (0 .. $#lines) {
+      my $l = $lines[$i];
+      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:\s|$)/;
+      next unless $l =~ /<<-?\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\1/;
+      my $delim = $2;
+      my @body;
+      for my $j ($i + 1 .. $#lines) {
+        my $probe = $lines[$j];
+        $probe =~ s/^\s+//;
+        $probe =~ s/\s+$//;
+        last if $probe eq $delim;
+        push @body, $lines[$j];
+      }
+      print join("\n", @body), "\n" if @body;
+      last;
+    }
+  ' 2>/dev/null
+}
+
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   # The `~/` branch matches a LITERAL tilde in the command string: the
@@ -158,7 +200,38 @@ while IFS= read -r f; do
     "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;;
     *) f="$target_dir/$f" ;;
   esac
-  [ -f "$f" ] || continue
+  # The hook runs BEFORE the command, so when the heredoc that WRITES the body
+  # and the `gh` call that consumes it sit in ONE Bash call, the path is either
+  # absent or still holds what a previous call left there. The header documents
+  # that window as a known limit costing "a missed scan"; go-to-k/cdkd#2397
+  # observed it costing a real one, so it is closed here.
+  #
+  # It is closed by extracting the HEREDOC BODY that writes this path, NOT by
+  # scanning the whole command the way `issue-dup-check-gate.sh` and
+  # `pr-body-item-number-gate.sh` do. Those two look for a specific anchored
+  # pattern, so the extra surface is small. This gate's subject is ANY
+  # non-English character anywhere, and the command legitimately carries some:
+  # a body file under a Japanese-named directory is a documented PASS case
+  # ("japanese in the PATH but english body passes"), which a whole-command scan
+  # would turn into a block. Extracting the body scans exactly the text being
+  # published and nothing else.
+  #
+  # A readable file is re-read from the heredoc too when the command REWRITES
+  # it, because then what is on disk is the PREVIOUS body -- the same window,
+  # in the shape that looks like a working gate while judging text nobody is
+  # submitting.
+  body_text=""
+  body_label="$f"
+  if [ ! -f "$f" ] || cmd_rewrites "$f"; then
+    body_text=$(heredoc_body_for "$f")
+    body_label="$f (heredoc, not yet written)"
+    [ -n "$body_text" ] || continue
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      OFFENDERS+=("$body_label:$hit")
+    done < <(printf '%s\n' "$body_text" | perl -CSD -ne "print \"\$.: \$_\" if /$NON_ENGLISH_RE/" 2>/dev/null | head -"$MAX_REPORT")
+    continue
+  fi
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
     OFFENDERS+=("$f:$hit")

@@ -355,6 +355,65 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# --- go-to-k/cdkd#2397: the body file the command is about to WRITE ----
+# The hook runs before the command, so in the one-call
+# `heredoc -> file -> --body-file` shape the path is absent (or stale) at hook
+# time. The header called that a known limit costing "a missed scan"; these
+# cases close it. The fallback reads the HEREDOC BODY rather than the whole
+# command, which is what keeps the japanese-in-the-PATH case above passing --
+# so that case is now load-bearing rather than incidental.
+ABSENT="$TMP/never-written.md"
+
+run "heredoc body with japanese blocks even though the file does not exist yet" \
+  "cat > $ABSENT <<EOF
+# Title
+
+日本語の本文
+EOF
+gh issue create --title x --body-file $ABSENT" 2
+
+# The false-BLOCK direction: this is the publishing shape the rules prescribe,
+# so an English body written the same way must still pass.
+run "heredoc body in english still passes" \
+  "cat > $ABSENT <<EOF
+# Title
+
+All English content here.
+EOF
+gh issue create --title x --body-file $ABSENT" 0
+
+# The two halves together: a japanese PATH and an english heredoc body. This
+# passes only if the fallback scans the BODY; a whole-command fallback blocks it.
+JPDIR2=$(mktemp -d)/日本語ディレクトリ
+mkdir -p "$JPDIR2"
+run "a japanese path with an english heredoc body still passes" \
+  "cat > $JPDIR2/en.md <<EOF
+All English content here.
+EOF
+gh issue create --title x --body-file $JPDIR2/en.md" 0
+rm -rf "$(dirname "$JPDIR2")"
+
+# The path EXISTS and holds an ENGLISH body, and the command rewrites it with a
+# japanese one. Reading the file alone passes while judging text nobody submits.
+STALE="$TMP/stale.md"
+printf 'All English content here.\n' > "$STALE"
+run "a stale english body file does not excuse a japanese rewrite" \
+  "cat > $STALE <<EOF
+日本語の本文
+EOF
+gh issue create --title x --body-file $STALE" 2
+
+# The control that keeps the case above honest: the same file, NOT rewritten.
+run "an english body file the command does not rewrite still passes" \
+  "gh issue create --title x --body-file $STALE" 0
+
+# `-F` is not gh-unique (`git commit -F`, `awk -F`, `grep -F`, `curl -F`), and
+# the header says the file-existence check is what keeps that from false-
+# blocking. The fallback must not undo that: an `awk -F ,` names a path that
+# will never exist and that the command does not write, so it stays a skip.
+run "a non-gh -F value does not arm the fallback" \
+  "awk -F , '{print \$1}' /dev/null && gh issue create --title x --body-file $STALE" 0
+
 # --- summary ----------------------------------------------------------
 echo
 echo "pass: $PASS  fail: $FAIL"

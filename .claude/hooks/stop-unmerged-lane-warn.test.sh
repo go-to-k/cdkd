@@ -33,7 +33,25 @@ check() {
 # The hook now READS the Stop event's JSON from stdin, so every invocation has
 # to feed it one. Left unfed, `cat` inherits this script's stdin and a case can
 # hang instead of failing -- and a Stop hook that hangs never lets a turn end.
+# Every call starts from a CLEAN nudge record unless a case opts out with
+# `run_hook_keep`. Since go-to-k/cdkd#2391 the hook nudges the model at most
+# once per subject per session and downgrades a repeat to the user channel, so
+# without this reset the cases below would each depend on how many earlier ones
+# happened to share their branch -- and the six that assert `ctx` would pass or
+# fail on their POSITION in the file rather than on the hook's behaviour.
+# Measured: with the reset removed, five of them flip to `sys`.
+clear_nudge_records() {
+  find "$SANDBOX" -name 'stop-nudge-lane' -type f -delete 2>/dev/null || true
+}
+
 run_hook() {
+  clear_nudge_records
+  run_hook_keep "$@"
+}
+
+# The same call WITHOUT the reset -- for the cadence cases, which are precisely
+# about what a second invocation does.
+run_hook_keep() {
   local dir="$1" hook="$2" stdin="${3-}"
   [ "$#" -ge 3 ] || stdin='{}'
   printf '%s' "$stdin" | (cd "$dir" && bash "$hook")
@@ -397,6 +415,97 @@ check "cwd outside any repo stays user-facing" "sys" "$(channel_of "$out")"
 check "...and still exits 0" "0" "$(rc_of)"
 out=$(run_hook "$REPO" "$RUN" "{\"cwd\": \"$REPO\"}")
 check "cwd in the main tree stays user-facing" "sys" "$(channel_of "$out")"
+
+# --- CADENCE (go-to-k/cdkd#2391). `stop_hook_active` stops a nudge spinning
+# INSIDE one turn; nothing stopped it firing again at every later turn-end for
+# as long as the lane existed. Every case here fails against the pre-#2391
+# hook, which had no record to consult and answered `ctx` unconditionally.
+#
+# These build their OWN lanes rather than reusing the ones above. An earlier
+# draft borrowed `wt with space`, which by this point in the file has been
+# removed -- so the case measured the not-my-lane branch and passed or failed on
+# where it sat in the file, exactly the order-dependence `clear_nudge_records`
+# exists to remove. They are also the only cases that must NOT reset the
+# record, so they call `run_hook_keep`.
+git -C "$REPO" worktree add -q "$REPO/wt-cad-a" -b feat/cad-a HEAD
+git -C "$REPO/wt-cad-a" -c user.email=t@t -c user.name=t commit -q --allow-empty -m work
+git -C "$REPO" worktree add -q "$REPO/wt-cad-b" -b feat/cad-b HEAD
+git -C "$REPO/wt-cad-b" -c user.email=t@t -c user.name=t commit -q --allow-empty -m work
+
+A1="{\"cwd\": \"$REPO/wt-cad-a\", \"session_id\": \"sess-one\"}"
+A2="{\"cwd\": \"$REPO/wt-cad-a\", \"session_id\": \"sess-two\"}"
+B1="{\"cwd\": \"$REPO/wt-cad-b\", \"session_id\": \"sess-one\"}"
+
+clear_nudge_records
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "first sight of a lane nudges the model" "ctx" "$(channel_of "$out")"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "the same lane again does NOT force a second turn" "sys" "$(channel_of "$out")"
+# The downgrade must not be a MUTE. Choosing `systemMessage` over silence is the
+# whole point -- the human keeps seeing the lane -- and a hook that simply
+# exited would also read as "not ctx" and pass the line above.
+if printf '%s' "$out" | grep -q 'feat/cad-a'; then
+  pass=$((pass + 1)); printf 'OK   ...but the user is still told which lane\n'
+else
+  fail=$((fail + 1)); fail_log+="FAIL the downgraded warning still names the lane\n"; printf 'FAIL the downgraded warning still names the lane\n'
+fi
+
+# A different LANE is a different subject, so it re-arms. Without this the first
+# lane of a session would silence every later one -- strictly worse than the
+# bounded cost being paid here. The two lanes keep SEPARATE records, since each
+# lives in its own worktree git dir, so this cannot be satisfied by a single
+# shared slot.
+out=$(run_hook_keep "$REPO" "$RUN" "$B1")
+check "a different lane in the same session nudges again" "ctx" "$(channel_of "$out")"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "...and the first lane stays quiet, records being per-worktree" "sys" "$(channel_of "$out")"
+
+# A different SESSION gets its own one nudge. It also overwrites the record --
+# one file per worktree, not one per session, so nothing accumulates in the git
+# dir with no one to clean it up. The cost is that the earlier session re-arms
+# once, which is an EXTRA nudge rather than a missed one; that direction is the
+# reason the trade is acceptable, so it is pinned rather than left to be
+# rediscovered as a bug.
+out=$(run_hook_keep "$REPO" "$RUN" "$A2")
+check "a DIFFERENT session gets its own one nudge" "ctx" "$(channel_of "$out")"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "...and a concurrent session's write costs an extra nudge, not a lost one" "ctx" "$(channel_of "$out")"
+
+# --- PUSH STATE. It is in the SUBJECT (so unpushed -> pushed re-arms exactly
+# once) and in the TEXT (so the message names which half of the work is left) --
+# but NOT in the channel decision. go-to-k/cdkd#2391 proposed making it the
+# discriminator; that would go quiet on a branch pushed with NO PR, which is a
+# real failure and one of the two this hook exists to catch.
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "an unpushed lane says so in the text" "yes" "$(printf '%s' "$out" | grep -qF 'no upstream yet' && echo yes || echo no)"
+
+# `remote.origin.fetch` is load-bearing, not boilerplate: without the refspec
+# git refuses `@{u}` with "upstream branch ... not stored as a remote-tracking
+# branch", the hook reads that as unpushed, and the two cases below pass or fail
+# for a reason that has nothing to do with the cadence. Measured on the first
+# attempt, which is how this comment came to exist.
+git -C "$REPO" config remote.origin.url "$REPO"
+git -C "$REPO" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git -C "$REPO" update-ref "refs/remotes/origin/feat/cad-a" "$(git -C "$REPO" rev-parse feat/cad-a)"
+git -C "$REPO" config "branch.feat/cad-a.remote" origin
+git -C "$REPO" config "branch.feat/cad-a.merge" refs/heads/feat/cad-a
+check "the fixture really did give the lane an upstream" "0" "$(git -C "$REPO/wt-cad-a" rev-list --count '@{u}..' 2>/dev/null || echo MISSING)"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "pushing the lane re-arms the nudge once" "ctx" "$(channel_of "$out")"
+check "...and the text switches to the pushed-but-maybe-no-PR wording" "yes" "$(printf '%s' "$out" | grep -qF 'pushed branch with NO PR' && echo yes || echo no)"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "...and a pushed lane stops nagging again after that one" "sys" "$(channel_of "$out")"
+
+# The continuation flag outranks the cadence: the harness has already resumed
+# once inside this turn, so even a freshly-armed subject must stay silent rather
+# than swap channels and print the same wall of text twice.
+clear_nudge_records
+out=$(run_hook_keep "$REPO" "$RUN" "{\"cwd\": \"$REPO/wt-cad-b\", \"session_id\": \"sess-three\", \"stop_hook_active\": true}")
+check "a resumed turn stays silent even when armed" "" "$out"
+
+git -C "$REPO" worktree remove --force "$REPO/wt-cad-a"
+git -C "$REPO" worktree remove --force "$REPO/wt-cad-b"
+clear_nudge_records
 
 printf '\nPass: %d  Fail: %d\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then

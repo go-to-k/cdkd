@@ -24,9 +24,10 @@ set -u
 
 # The Stop event's JSON arrives on stdin, and is consumed here rather than
 # lazily: the payload has to be drained whether or not this hook goes on to use
-# it. Two fields are PARSED out of it further down, once a lane has actually
+# it. Three fields are PARSED out of it further down, once a lane has actually
 # been found -- `stop_hook_active` (has the harness already continued this
-# turn?) and `cwd` (which worktree is the session in?). Same `cat` form every
+# turn?), `cwd` (which worktree is the session in?) and `session_id` (whose
+# nudge record is this?). Same `cat` form every
 # other hook here uses -- Claude Code writes the payload and closes the pipe,
 # so this does not block.
 input=$(cat 2>/dev/null || true)
@@ -138,9 +139,12 @@ if isinstance(flag, str):
     flag = flag.strip().lower() not in ("", "false", "0", "no")
 print("1" if flag else "0")
 print(data.get("cwd") or "")
+print((data.get("session_id") or "").replace("\t", " ").replace("\n", " "))
 ')
 active=$(printf '%s\n' "$parsed" | sed -n 1p)
 hook_cwd=$(printf '%s\n' "$parsed" | sed -n 2p)
+sid=$(printf '%s\n' "$parsed" | sed -n 3p)
+[ -n "$sid" ] || sid="${CLAUDE_CODE_SESSION_ID:-shared}"
 
 # Already nudged once this turn and the model came back to Stop. Saying it again
 # would spin the turn instead of ending it, so stand down.
@@ -181,13 +185,33 @@ $lane_paths
 LANE_ROWS
 
 if [ -n "$self_branch" ]; then
+  # Whether the branch has been PUSHED is NOT used to decide the channel -- the
+  # discriminator go-to-k/cdkd#2391 proposed. It would have gone quiet on a
+  # branch that is pushed with NO PR, which is a real failure and one of the two
+  # this hook exists to catch. It earns its keep in the TEXT instead, where it
+  # names which half of the remaining work is left. No upstream at all reads as
+  # unpushed, which is what it is.
+  unpushed=$(git -C "$session_root" rev-list --count '@{u}..' 2>/dev/null || echo "")
+  if [ -z "$unpushed" ]; then
+    push_state="unpushed"
+    push_line="It has no upstream yet, so nothing has been submitted: push it, open the PR, then merge."
+  elif [ "$unpushed" -gt 0 ]; then
+    push_state="unpushed"
+    push_line="It has ${unpushed} commit(s) not yet pushed, so nothing carrying them has been submitted: push, open or update the PR, then merge."
+  else
+    push_state="pushed"
+    push_line="It is fully pushed, so a PR may already be in flight -- but a pushed branch with NO PR is exactly the failure this catches. Check, and open one if there is none."
+  fi
   msg="WARNING: YOUR OWN lane is unmerged -- a NOT-CLOSEABLE verdict is a TO-DO LIST, not a stopping point.
 This session's worktree is on '$self_branch', which is committed but not on origin/main, so you are not
-done: rebase, run the gates, open the PR, merge. If you are ending the turn with nothing that will
-re-invoke you, the honest label is STOPPED, not WAITING.
+done: rebase, run the gates, open the PR, merge. $push_line
+If you are ending the turn with nothing that will re-invoke you, the honest label is STOPPED, not WAITING.
 One false positive is expected and is cheap to clear: this repo SQUASH-merges, so a merged branch never
 becomes an ancestor of origin/main and keeps reading as ahead. If '$self_branch' is already merged, the
-remaining work is to remove its worktree and delete the branch -- not to open another PR.
+remaining work is to remove its worktree and delete the branch -- not to open another PR. When this tree
+is one you must NOT remove (an outer tool owns it, or you were launched inside it), detach instead:
+'git switch --detach origin/main' clears the lane here, because a worktree with no current branch is not
+a lane at all.
 Every unmerged lane in this checkout:"
   channel="ctx"
 else
@@ -198,6 +222,58 @@ ancestor of origin/main and keeps reading as ahead -- clearing one means removin
 deleting the branch, not opening another PR).
 Lanes:"
   channel="sys"
+fi
+
+# CADENCE. `stop_hook_active` above stops a nudge from SPINNING inside one
+# turn, and that is all it does. Across turns the condition persists, so an
+# unconditional `additionalContext` costs one forced model turn at every single
+# turn-end for as long as the lane exists -- including the two states where
+# there is nothing left to do: the PR is open and CI is running (the session is
+# legitimately WAITING), and the lane was squash-merged with its worktree left
+# behind, which reads as ahead FOREVER. go-to-k/cdkd#2391 measured both.
+#
+# So the model is nudged at most once per distinct SUBJECT, and a repeat of the
+# same subject falls back to `systemMessage`: the user still sees it, the turn
+# ends. The subject is the branch plus whether it is pushed, so:
+#
+#   a lane never nudged in this session -> nudge
+#   the same lane, unpushed -> pushed   -> nudge (a PR should exist now, and a
+#                                          pushed branch with none is the
+#                                          failure this hook is for)
+#   the same lane, same push state      -> quiet
+#   a DIFFERENT lane                    -> nudge (it is a different subject)
+#
+# The commit COUNT is deliberately not in the key: it changes every time the
+# model commits, which would re-arm the nudge on ordinary work and leave the
+# cadence as unbounded as it started.
+#
+# The record lives in the PER-WORKTREE git dir, so lanes never share one and
+# removing a worktree takes its record with it -- the same resolution markgate
+# uses for its marker store. One file rewritten in place, not one per session:
+# a per-session file would accumulate with nobody to clean it up. A concurrent
+# session in the same worktree can therefore clobber it, which costs an EXTRA
+# nudge rather than a missed one, the safe direction.
+if [ "$channel" = "ctx" ]; then
+  git_dir=$(git -C "$session_root" rev-parse --absolute-git-dir 2>/dev/null || true)
+  if [ -n "$git_dir" ]; then
+    state_file="${git_dir}/stop-nudge-lane"
+    subject="${self_branch}:${push_state}"
+    prev_sid=""
+    prev_subject=""
+    if [ -r "$state_file" ]; then
+      IFS="$TAB" read -r prev_sid prev_subject _ <"$state_file" 2>/dev/null || true
+    fi
+    if [ "$prev_sid" = "$sid" ] && [ "$prev_subject" = "$subject" ]; then
+      channel="sys"
+    else
+      tmp="${state_file}.$$"
+      if printf '%s\t%s\t%s\n' "$sid" "$subject" "$(date +%s)" >"$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$state_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+      else
+        rm -f "$tmp" 2>/dev/null || true
+      fi
+    fi
+  fi
 fi
 
 MSG="$msg
