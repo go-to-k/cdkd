@@ -4,28 +4,42 @@
 # PreToolUse hook. Blocks `vp run test <path>` and steers the caller to
 # `vp test run <path>`.
 #
-# WHY: `vp run test` goes through the Vite+ TASK runner, and the `test`
-# task participates in `run.cache.tasks`. A repeat invocation with the
-# same inputs REPLAYS the previous result instead of executing, printing
-# `◉ cache hit, replaying` and the earlier run's counts and duration.
+# WHY (historical, and still the reason the STEER stands): `vp run test`
+# goes through the Vite+ TASK runner. The `test` task used to participate
+# in `run.cache.tasks`, so a repeat invocation with the same inputs
+# REPLAYED the previous result instead of executing, printing a
+# `cache hit, replaying` line and the earlier run's counts and duration.
 # For an ordinary test run that is a feature. For a MUTATION PROBE it is
 # a correctness hazard of the worst kind: the probe edits a file the task
 # hash does not cover, the runner replays the pre-mutation verdict, and
 # the probe reports PASS having executed nothing. A probe that cannot
-# fail is indistinguishable from a guard that works, so the failure is
-# silent by construction.
+# fail is indistinguishable from a guard that works.
 #
 # Measured in this repo 2026-08-20 (issue #2050 / #2006 / #1975 lanes):
 # a reviewer's four probes reported PASS without executing, and a repeat
-# of `vp run test tests/unit/cli/version.test.ts` printed
-# `$ vp test run tests/unit/cli/version.test.ts ◉ cache hit, replaying`
-# with byte-identical counts and a byte-identical 122ms duration.
+# of `vp run test tests/unit/cli/version.test.ts` replayed byte-identical
+# counts and a byte-identical 122ms duration.
 #
-# `vp test run <path>` is the command the task delegates to, invoked
-# directly, so it bypasses the task cache and always executes.
+# That mechanism is CLOSED at the root as of 2026-08-30: every task in
+# `vite.config.ts` now carries `cache: false`, fenced by
+# `tests/unit/scripts/vite-task-cache.test.ts`. The steer remains for two
+# reasons that do not depend on the cache:
+#
+#   1. `vp test run <path>` is the command the task delegates to, invoked
+#      directly. Nothing sits between the caller and the verdict, which
+#      is what a probe wants.
+#   2. Historically the wrapper also gave the child a TTY, which switched
+#      vitest to its per-file reporter with console interception on: a
+#      full green run measured 1,981 lines / 171 KB that way against 15
+#      lines directly. Disabling the cache closed that too -- re-measured
+#      2026-08-31, `vp run test` prints 651 B against `vp test run`'s
+#      617 B -- so this is now a tie-breaker, not an argument.
+#
+# So this is now a CONVENTION gate rather than a correctness one -- keep
+# it, but do not cite the cache as a live hazard.
 #
 # SCOPE: only the form carrying a PATH ARGUMENT. A bare `vp run test`
-# (the whole suite, which the gate flow legitimately runs and caches)
+# (the whole suite, which the gate flow legitimately runs)
 # passes through, as does any other `vp run <task>`. Flags alone are not
 # paths — `vp run test --coverage` passes.
 #
@@ -151,15 +165,15 @@ done
 [ "$found_path" = "1" ] || exit 0
 
 cat >&2 <<'EOF'
-Blocked by vp-run-test-path-gate: `vp run test <path>` REPLAYS a cached
-result instead of executing.
+Blocked by vp-run-test-path-gate: run a path-filtered suite as
+`vp test run <path>`.
 
-`vp run test` goes through the Vite+ task runner, and the `test` task is
-cached, so a repeat invocation prints `◉ cache hit, replaying` with the
-previous run's counts and duration. A mutation probe edits a file the
-task hash does not cover, so the replayed verdict is the PRE-mutation
-one and the probe reports PASS having run nothing — a probe that cannot
-fail looks exactly like a guard that works.
+`vp run test` wraps the run in the Vite+ task runner. Historically that
+REPLAYED a cached result, so a mutation probe reported PASS having
+executed nothing -- which looks exactly like a guard that works, and the
+same wrapper printed 171 KB for a green run instead of 616 bytes. Every
+task now sets `cache: false`, which closed both. What remains is simply
+that the direct spelling puts nothing between you and the verdict.
 
 Use the command the task delegates to, invoked directly:
 

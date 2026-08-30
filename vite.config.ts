@@ -157,8 +157,15 @@ export default defineConfig({
   },
 
   run: {
+    // Off at the ROOT as well as per task. Every task below carries
+    // `cache: false` and `tests/unit/scripts/vite-task-cache.test.ts` fences
+    // that, but a task added later inherits this switch before it inherits any
+    // fence, so the two are belt and braces rather than a duplication: the
+    // switch makes a new task safe by default, the per-task flags keep the
+    // policy visible where it is read, and the fence keeps them from being
+    // quietly dropped.
     cache: {
-      tasks: true,
+      tasks: false,
     },
     tasks: {
       build: {
@@ -169,11 +176,42 @@ export default defineConfig({
         command: 'vp pack --watch',
         cache: false,
       },
+      // `vp run check` is CI's required step and `/check` step 1 calls it "the
+      // EXACT command CI runs", so its verdict is evidence twice over. The task
+      // cache did not invalidate on a `src/**` change for `typecheck` (verified,
+      // see that task below), and this task runs the same type-check.
       check: {
         command: 'vp check',
+        cache: false,
       },
+      // NOT cached, for the same reason `typecheck` / `typecheck:test` /
+      // `test:once-leak` below are not: a correctness gate must never replay a
+      // cached green. The cache cost two distinct false greens here rather than
+      // one.
+      //
+      // 1. A REPLAY. A repeat invocation printed the previous run's summary
+      //    verbatim -- same counts, same duration, same `Start at` -- with
+      //    `cache hit, NNs saved` appended BELOW the green block, where a
+      //    `tail` does not reach. The task key also ignores env vars, so a run
+      //    under `CDKD_EXPECT_DIST=1` could be answered by one without it.
+      // 2. A SILENT NO-OP. When the Vite+ cache encoder overflows its 4 MB
+      //    preallocation while serialising this task's inputs, the lookup fails,
+      //    NOTHING runs, no `Test Files` summary is printed, and the process
+      //    exits 0 -- so `/check` would record its commit-gate marker over a
+      //    suite that never executed. Reproduced on this repo 2026-08-30
+      //    (`needed 6871312 bytes`) and recorded four separate times since
+      //    2026-05-16, each time diagnosed from scratch.
+      //
+      // The cache bought a replay of a run whose inputs had not changed, which
+      // in the dev loop is a run nobody makes. `check` / `lint` / `format:check`
+      // / `verify` were the other four still caching and are uncached for the
+      // same reason -- after this, NO task in this file caches, which is the
+      // honest end state: every one of them either produces a verdict that is
+      // read as evidence, or regenerates an artifact whose freshness is the
+      // whole point.
       test: {
         command: 'vp test run',
+        cache: false,
       },
       'test:watch': {
         command: 'vp test watch',
@@ -185,8 +223,10 @@ export default defineConfig({
       },
       // Issue #1618 — the unit suite with the runtime `*Once`-leak detector
       // armed. `vp test run` rather than `vp run test` on purpose: the latter
-      // is cached and its key ignores env vars, so it can replay an earlier
-      // green summary and report "no leaks" without having looked.
+      // USED to be cached, with a key that ignores env vars, so it could replay
+      // an earlier green summary and report "no leaks" without having looked.
+      // Nothing caches any more, but the direct spelling is still the one to
+      // use — see the `test` task above.
       'test:once-leak': {
         command: 'CDKD_ONCE_LEAK_DETECT=1 vp test run',
         cache: false,
@@ -204,8 +244,12 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-once-leak-allowlist.ts',
         cache: false,
       },
+      // A replay measured 2026-08-30: two consecutive `vp run lint` printed a
+      // byte-identical summary with `cache hit, 1.23s saved` BELOW it, where a
+      // `tail` does not reach.
       lint: {
         command: 'vp lint',
+        cache: false,
       },
       'lint:fix': {
         command: 'vp lint --fix',
@@ -217,6 +261,7 @@ export default defineConfig({
       },
       'format:check': {
         command: 'vp fmt --check',
+        cache: false,
       },
       typecheck: {
         command: 'tsc --project tsconfig.json --noEmit',
@@ -243,8 +288,11 @@ export default defineConfig({
         // CI. A ~1s type-check is cheap insurance against a false green.
         cache: false,
       },
+      // Chains four gates, so a cache hit on the CHAIN would report all four
+      // green without running any of them -- the same hazard one level up.
       verify: {
-        command: 'vp run check && vp run typecheck:test && vp run test && vp run build',
+        command: 'vp run check && vp run typecheck:test && vp test run && vp run build',
+        cache: false,
       },
       // The `.claude/hooks/**` smoke tests, run under every bash on the
       // machine. Before issue #1477 no task and no CI job ran them at all,

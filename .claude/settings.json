@@ -200,7 +200,7 @@
             "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/vp-run-test-path-gate.sh",
             "timeout": 10,
-            "statusMessage": "Checking for the cached-replay vp run test <path> form..."
+            "statusMessage": "Checking for the wrapped vp run test <path> form..."
           },
           {
             "type": "command",

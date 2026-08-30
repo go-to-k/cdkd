@@ -34,7 +34,7 @@ vp install
 vp run build
 
 # Run tests
-vp run test
+vp test run
 
 # Type check
 vp run typecheck
@@ -54,7 +54,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation.
 
 1. Create a feature branch from `main`
 2. Make your changes
-3. Run `vp run check && vp run test && vp run build`
+3. Run `vp run check && vp test run && vp run build`
 4. Commit with a descriptive message
 5. Open a Pull Request
 

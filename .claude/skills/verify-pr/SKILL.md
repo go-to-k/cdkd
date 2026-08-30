@@ -41,7 +41,7 @@ Run each check and report pass/fail:
      `vp run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
 
 2. **Tests**
-   - `vp run test` - all unit tests pass
+   - `vp test run` - all unit tests pass. Preferred over `vp run test` because nothing sits between the caller and the verdict; the two now print 617 and 651 bytes for the same 17,497 tests (measured 2026-08-31). `/check` step 4 carries the full rationale, including the 171 KB reporter and the exit-0-having-run-nothing path that the `cache: false` change removed.
    - Every scope / diff check in this skill uses `origin/main...HEAD`, not `main...HEAD`. The gate hooks derive their scope from `origin/main` and the `integ-destroy` digest is pinned to `merge-base(origin/main, HEAD)`, so a local `main` that has not been fetched makes this skill and the hook that blocks the merge disagree about what the branch touched.
    - Report test count (files and tests)
    - **Test coverage check**: compare `git diff origin/main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding
@@ -277,7 +277,7 @@ Present results as a table:
 | typecheck | pass/fail |
 | lint | pass/fail |
 | build | pass/fail |
-| tests (N files, M tests) | pass/fail |
+| tests (N files, M tests) (`vp test run`) | pass/fail |
 | test coverage for changes | pass/fail |
 | CI | pass/fail |
 | working tree | clean/dirty |

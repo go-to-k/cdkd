@@ -109,7 +109,7 @@ passing and still exit non-zero, printing the two facts on ADJACENT lines with
 opposite polarity: on 2026-08-20 a lane finished `Tests 14371 passed (14371)` /
 `Type Errors  no errors` and exited **1**, with `Errors  20 errors` in between —
 twenty type errors in the test file. Capture the rc explicitly
-(`vp run test > /tmp/out 2>&1; rc=$?`) rather than reading the tail. The same
+(`vp test run > /tmp/out 2>&1; rc=$?`) rather than reading the tail. The same
 lane is why `typecheck:test` is listed separately in `/check` step 2:
 `vp run typecheck` covers `tsconfig.json` (src + types) and NOT `**/*.test.ts`,
 so "typecheck ✅" was reported truthfully while the errors sat in a file that

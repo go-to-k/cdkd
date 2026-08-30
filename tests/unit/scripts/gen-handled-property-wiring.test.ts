@@ -1444,6 +1444,11 @@ describe('the shipped --check command', () => {
    * unconditional-write avoidance because Vite+ invalidates a task's cache on
    * the WRITE SYSCALL, not on content — so restoring on every case would make
    * `vp run test` permanently uncacheable for everyone.
+   *
+   * That last reason expired on 2026-08-30: no task in `vite.config.ts` caches
+   * any more. The behaviour stays, on the reason that outlived it — a test that
+   * rewrites a tracked file it did not change dirties the worktree, which every
+   * markgate gate reads.
    */
   afterEach(() => {
     for (const [file, { content, stat }] of pristine) {
@@ -1907,8 +1912,10 @@ describe('the shipped --check command', () => {
   it('the WRITER refuses to write with NO usable baseline, even redirected', () => {
     // Reachable without touching the repo, which is the point: an earlier draft
     // exempted redirected writes, leaving the rule testable only by deleting the
-    // real matrix — and a test that WRITES a tracked file makes `vp run test`
-    // permanently uncacheable (Vite+ invalidates on the write syscall).
+    // real matrix — and a test that WRITES a tracked file dirties the worktree
+    // that every markgate gate reads. (It also used to make `vp run test`
+    // permanently uncacheable, since Vite+ invalidated on the write syscall;
+    // nothing caches since 2026-08-30, but the first reason stands.)
     const outDir = join(scratch, 'out-no-baseline-refused');
     const { status, stderr } = run([`--out-dir=${outDir}`, '--baseline=/nonexistent-baseline.json']);
     expect(status).toBe(1);
