@@ -220,7 +220,7 @@ Run each check and report pass/fail:
     - For every `/review-pr` reviewer agent output during this session (including re-reviews after fix-back), walk the reviewer's "Minor / Nit / Informational" section.
     - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker (these are the same three buckets as CLAUDE.md's "Remaining work" taxonomy — Fixed here / TODO / Won't-do):
       - (a) **Fixed in this PR** — point at the fix commit / file:line that resolves the nit.
-      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)"). This is the only bucket that leaves future work. The issue body MUST carry the four classification lines, one field per line (see CLAUDE.md → "The four TODO fields"), plus the `Dup-check:` line `/work-issues` section 5 requires at filing time:
+      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)"). This is the only bucket that leaves future work. The issue body MUST carry the four classification lines, one field per line (see CLAUDE.md → "The four TODO fields"), plus the `Dup-check:` line `/work-issues` section 5-f (`.claude/skills/work-issues/references/filing.md`) requires at filing time:
 
         ```text
         Session-fit: now (do it in this session) | next (not this session) — <reason>

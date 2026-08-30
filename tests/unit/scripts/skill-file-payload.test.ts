@@ -45,12 +45,17 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
-const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 32,132 B (verify-pr)
+const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 32,527 B (verify-pr, 2026-08-31)
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator measured ~6.5 KB at the split
-// Re-measured 2026-08-28 after the rule+citation compression (PR #2377):
-// largest stage file is now implement.md at 44,875 B; the cap keeps the same
-// ~9% headroom ratio the original 64,000 held over 58,698 B, so the retro.md
-// §10-b fold-back loop cannot silently erode the compression's gain.
+// Set 2026-08-28 after the rule+citation compression (PR #2377), when the
+// largest stage file was implement.md at 44,875 B; the cap keeps the same ~9%
+// headroom ratio the original 64,000 held over 58,698 B, so the retro.md §10-b
+// fold-back loop cannot silently erode the compression's gain. Re-measured
+// 2026-08-31: the largest is now verify.md at 43,529 B -- implement.md lost the
+// title when 6.4 KB moved out of it into filing.md, which is why "largest" is
+// re-derived here and never carried forward. The cap is UNCHANGED; only the
+// measurement it was set against is restated, so the next reader compares
+// against a true number.
 const MAX_REFERENCE_FILE_BYTES = 49_000;
 
 // The split skill's stage files must still exist and still carry the moved
@@ -72,12 +77,23 @@ const MIN_REFERENCE_FILES = 6;
 // 43,529 B (implement.md was the largest until 6.4 KB moved out of it, which is
 // exactly why "largest" is re-derived and never carried forward), so the
 // property needs a floor above 201,740 - 43,529 = 158,211 -- which the 100_000
-// held here had stopped providing as the corpus grew. 161_000 restores it (a
-// strictly TIGHTER assertion; no upper bound was touched) while leaving ~40 KB
-// of narrative compression headroom below the floor, close to the ~23% the
-// sibling cdk-local holds. Re-measure BOTH numbers whenever a stage file
-// changes size materially -- the property is silent when it lapses.
-const MIN_REFERENCE_CORPUS_BYTES = 161_000;
+// held here had stopped providing as the corpus grew. 161_000 restored it (a
+// strictly TIGHTER assertion; no upper bound was touched).
+// Re-derived again 2026-08-31 (review round 2): corpus 203,432 B, largest still
+// verify.md 43,529 B, so the property needs a floor above 203,432 - 43,529 =
+// 159,903. 161_000 still HELD -- by 1,097 B. It is raised to 163_000 anyway,
+// because the margin is what decays: the sibling cdk-local was left at 759 B of
+// margin one day and had lapsed the next, and a lapsed floor is not a weaker
+// guard but a SILENT one. 163_000 leaves 3,097 B of margin and ~40 KB of
+// narrative compression headroom below the floor.
+// One thing worth carrying forward that a single number cannot: verify.md
+// (43,529 B) and implement.md (43,405 B) are 124 B apart, so the NEXT edit to
+// either flips which file is "largest" -- the exact move that made the previous
+// raise lapse the day it was written. The floor is deliberately set to survive
+// EITHER being largest (203,432 - 43,405 = 160,027 < 163,000), so a small edit
+// no longer silently invalidates it. Re-measure BOTH numbers whenever a stage
+// file changes size materially.
+const MIN_REFERENCE_CORPUS_BYTES = 163_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

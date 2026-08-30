@@ -230,17 +230,20 @@ git fetch origin && git log origin/main --oneline -3   # look for chore(release)
 cdkd is used from other projects via a global `pnpm link --global` that points at
 this repo's `dist/cli.js` (see `/use-cdkd`), so **a fresh `vp run build` on updated
 `main` is all that's needed for the linked binary to pick up the fix** — no
-`npm i -g` reinstall:
+`npm i -g` reinstall.
+
+MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
 
 ```bash
-vp run build              # MAIN-CHECKOUT only -- IN-PLACE uses the block below.
+vp run build
 ```
 
-IN-PLACE builds the MAIN checkout instead: the global link points at ITS
-`dist/cli.js`, so building this workspace's leaves the user on the old binary
-while every log says the fix shipped. Re-derive `MAIN` inside this block —
-borrowing it from the earlier one gives an EMPTY variable in a fresh shell, and
-`cd ""` succeeds silently, which builds the wrong tree with no error at all:
+IN-PLACE — run THIS block INSTEAD, never both. It builds the MAIN checkout: the
+global link points at ITS `dist/cli.js`, so building this workspace's leaves the
+user on the old binary while every log says the fix shipped. Re-derive `MAIN`
+inside this block — borrowing it from the earlier one gives an EMPTY variable in
+a fresh shell, and `cd ""` succeeds silently, which builds the wrong tree with
+no error at all:
 
 ```bash
 MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')

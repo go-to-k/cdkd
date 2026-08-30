@@ -86,12 +86,40 @@ Dup-check: searched open issues for <terms> -- none covers this root cause
 lines stay exactly as written, and the same two values ride the command:
 
 ```bash
-B=$(mktemp)   # assign it HERE, and write the body into it: a separate fenced
-              # block is a separate Bash call and a separate shell, so a `B` set
-              # in an earlier one is already empty by the time this runs
+B=$(mktemp)   # assign it HERE, and WRITE it before `gh` reads it: a separate
+              # fenced block is a separate Bash call and a separate shell, so a
+              # `B` set in an earlier one is already empty by the time this runs
+cat > "$B" <<'BODY'
+<one paragraph: the root cause, and where the evidence for it is>
+
+Dup-check: searched open issues for <terms> -- none covers this root cause
+Session-fit: next (not this session) -- <reason>
+Severity: high -- <what stays broken while it is undone>
+Effort: large (L) -- <which verification cycle it drags>
+Estimate: ~3 h+ -- <what eats the time>
+BODY
 gh issue create -t 'fix(provider): ...' --body-file "$B" \
   --label severity:high --label effort:large
 ```
+
+**The `cat` is not filler for the reader to skip.** `mktemp` creates the file
+EMPTY, so the two-line form — `B=$(mktemp)` then `--body-file "$B"` with nothing
+in between — files an issue with NO body: no `Dup-check:` line, no
+classification, nothing for §3 to rank. `heredoc -> file -> --body-file` in ONE
+call is this repo's mandated publishing shape for `gh issue create`
+(`gated-command-preamble-gate` refuses that shape for `git commit` /
+`gh pr create` / `gh pr merge` and deliberately does not cover this verb), and
+the delimiter is QUOTED so backticks and `$` in the body stay literal instead of
+being run by the shell.
+
+**`issue-dup-check-gate` does refuse both broken spellings, and its message for
+the likelier one points somewhere else** — measured 2026-08-31 by running the
+hook on each payload. A readable but EMPTY body file is refused for the reason
+you would expect ("carries no `Dup-check:` line"). The two-line form above is
+refused for a DIFFERENT reason: at PreToolUse time `"$B"` is still literal text,
+so the gate reports an unexpanded variable in the `--body-file` path, and a
+reader following that message hard-codes the path and files the empty body on
+the retry. Write the body; do not treat the gate as the thing that will notice.
 
 Prose is invisible to `gh issue list`; the label makes §3's ranking rule 3 a
 listing-time filter, which is what let it move ABOVE the title-prefix
