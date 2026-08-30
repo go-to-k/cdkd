@@ -256,7 +256,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/state/s3-state-backend.ts', 43_000, 55_000],         // measured  48,864
   ['src/types/state.ts', 43_000, 55_000],                    // measured  48,864
   ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
-  ['tests/unit/scripts/rule-file-payload.test.ts', 48_000, 62_000], // measured 55,681
+  // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
+  // the cap had 642 B of headroom and the next edit to that file would have
+  // failed this row for a reason unrelated to itself -- the same argument that
+  // moved CORPUS_BYTES_MAX. Measured 61,358 B (the 55,681 B beside the old cap
+  // was 5,677 B stale).
+  ['tests/unit/scripts/rule-file-payload.test.ts', 48_000, 68_000], // measured 61,358
   // hooks.md is this path's ONLY matcher, so the payload IS hooks.md's size and
   // this row's CAP is dominated by MAX_RULE_FILE_BYTES no matter where it sits:
   // at 135_000 (as shipped) it was 15,000 B past the per-file cap and could not
@@ -299,12 +304,16 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 57_000, 72_000],                            // measured  64,472
-  // The floor is ~12% under, like the rest of the table, and NOT lower: at
-  // 51_000 it sat 10,358 B below `testing.md` alone, so deleting the whole
-  // satellite would have left this row green -- exactly the direction the
-  // floors exist to catch (the three hooks-satellite rows are floored above
-  // hooks.md's own size for the same reason).
+  ['tests/setup.ts', 62_000, 72_000],                            // measured  64,742
+  // This floor is set by a PROPERTY, not by the table's usual ~12%-under
+  // convention, and the property is stricter: it must sit ABOVE `testing.md`
+  // alone (61,358 B), so that deleting `test-stream-fence.md` outright fails
+  // this row. 51_000 and then 57_000 both sat BELOW it and would have gone
+  // green on exactly that deletion. It leaves 2,742 B of slack under the
+  // measurement and 7,258 B under the cap, which is enough for ordinary
+  // editing of either file. Note the three hooks rows do NOT have this
+  // property -- floored at 108_000 against a 114,298 B hooks.md -- so they are
+  // not the precedent for it; they bound growth, this one also bounds loss.
 ];
 
 const SPLIT_ADVICE =
@@ -436,8 +445,9 @@ const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  so they could not land there. The satellite is 3,114 B and the
                               //  pointer left behind is 328 B, which is why testing.md still grew
                               //  (61,030 -> 61,358 B) rather than shrinking -- a split that leaves
-                              //  a pointer always costs the index file something. That makes 34.
-const CORPUS_BYTES_MIN = 899_000;   // measured 913,895 B -- 14,895 B of slack.
+                              //  a pointer always costs the index file something. The satellite
+                              //  itself is 3,384 B. That makes 34.
+const CORPUS_BYTES_MIN = 899_000;   // measured 914,165 B -- 15,165 B of slack.
                                     // 795_000 -> 899_000: the comment beside the old bound still
                                     // read "measured 808,384 B", 105 KB behind the corpus, so the
                                     // floor had ~119 KB of slack and would not have noticed a
@@ -450,15 +460,11 @@ const CORPUS_BYTES_MAX = 928_000;   // growth is the norm here; this catches bul
                                     // hooks-cwd-detector.md split: 902,381 B (the widening's net prose is
                                     // 1,422 B; the satellite's frontmatter + the pointer line are the rest).
                                     // 915_000 -> 928_000 (test-stream-fence.md): this branch added
-                                    // 3,442 B, leaving 1,105 B of headroom -- the next rule-file
+                                    // 3,712 B, leaving 835 B of headroom -- the next rule-file
                                     // edit over 1 KB anywhere would have failed this suite for a
-                                    // reason unrelated to itself. Measured 913,895 B.
+                                    // reason unrelated to itself. Measured 914,165 B.
 
-// Sanity: the two bounds must actually bracket a real measurement, so a future
-// edit cannot satisfy both by moving them past each other.
-if (CORPUS_BYTES_MIN >= CORPUS_BYTES_MAX) {
-  throw new Error('CORPUS_BYTES_MIN must stay below CORPUS_BYTES_MAX');
-}
+
 
 /**
  * The repo's tracked files, read once. Memoised because two per-file suites
@@ -773,6 +779,14 @@ describe('.claude/rules payload fence', () => {
       dead,
       `These \`paths:\` globs match no tracked file, so the rule file never loads for them: ${dead.join(', ')}. Either the glob has a typo, or the code it named was renamed or removed and the notes went with it.`,
     ).toEqual([]);
+  });
+
+  it('the two corpus bounds are ordered, so neither can be satisfied by crossing', () => {
+    // Checks ORDERING only -- it cannot know whether the band still brackets a
+    // real measurement, which is what the comments beside the constants are
+    // for. Its job is narrower: stop a future edit from satisfying both bounds
+    // by moving them past each other.
+    expect(CORPUS_BYTES_MIN).toBeLessThan(CORPUS_BYTES_MAX);
   });
 
   it('every satellite is reachable from an index, and every index row resolves', () => {

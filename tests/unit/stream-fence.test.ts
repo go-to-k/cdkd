@@ -280,12 +280,43 @@ afterAll(() => {
 describe('the fence assumes tests within a file run serially', () => {
   const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+  // Both roots in vite.config.ts's `include`. `src` holds no `.test.ts` today,
+  // which is exactly why the scan below asserts what it FOUND: an arm that
+  // reaches nothing reports clean forever.
+  const ROOTS = [
+    { root: join(REPO_ROOT, 'tests'), atLeast: 800 },
+    { root: join(REPO_ROOT, 'src'), atLeast: 0 },
+  ] as const;
+
+  /**
+   * Drop whole-line comments, so PROSE about concurrency is not an offender.
+   *
+   * Line-based on purpose. A regex that strips `/*` ... `*\/` spans looks more
+   * thorough and is worse here: `vite.config.ts` contains the glob literal
+   * `'**\/*'`, whose `/*` opens a span that the next real block-comment
+   * terminator closes, swallowing the middle of the file. Measured — with that
+   * version, an injected `sequence: { concurrent: true }` at line 72 went
+   * UNDETECTED and the case passed.
+   */
+  const stripComments = (text: string): string =>
+    text
+      .split('\n')
+      .filter((line) => !/^\s*(?:\/\/|\/?\*)/.test(line))
+      .join('\n');
+
   const testFilesUnder = (root: string): string[] => {
     const found: string[] = [];
     const walk = (dir: string): void => {
+      // `withFileTypes` rather than `statSync`: a broken symlink would make the
+      // whole critic throw rather than report. The trade is that a SYMLINKED
+      // directory or test file is skipped where `statSync` would have followed
+      // it; there are none under either root, and a suite reached only through
+      // a symlink is not a shape this repo uses.
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        // `withFileTypes` rather than `statSync`: a broken symlink under
-        // `tests/` would make the whole critic throw rather than report.
+        // vite.config.ts excludes these from the run, so a fixture's installed
+        // dependencies are not this critic's business either. Five integ
+        // fixtures create `tests/integration/*/node_modules` during a run.
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
         else if (entry.isFile() && entry.name.endsWith('.test.ts')) found.push(full);
@@ -299,25 +330,38 @@ describe('the fence assumes tests within a file run serially', () => {
     // One buffer per worker: with `it.concurrent`, one test's begin() would
     // wipe a peer's buffer and a failure could replay another test's writes.
     // The fence would have to become per-test-context first.
-    //
-    // BOTH roots in vite.config.ts's `include` are scanned, not just `tests/**`
-    // — `src/**/*.test.ts` runs under the same setup file and the same worker.
-    const roots = [join(REPO_ROOT, 'tests'), join(REPO_ROOT, 'src')];
     const offenders: string[] = [];
-    for (const root of roots) {
-      for (const file of testFilesUnder(root)) {
-        // A CALL or a chain, not the words: this very file and
-        // `once-leak-detector.test.ts` both discuss `it.concurrent` in prose,
-        // and a bare-word match reports them as offenders. Anchoring on
-        // `.concurrent` alone rather than on `it|test|describe` also catches
-        // a chained form, where the modifier comes first and the concurrency
-        // marker is not preceded by `it` / `test` / `describe` at all.
-        if (/\.concurrent\s*[(.<]/.test(readFileSync(file, 'utf8'))) {
+    let scanned = 0;
+    for (const { root, atLeast } of ROOTS) {
+      const files = testFilesUnder(root);
+      expect(
+        files.length,
+        `the scan of ${root} found ${files.length} test files, under the ${atLeast} it should ` +
+          'reach -- a checker that sees nothing reports clean forever'
+      ).toBeGreaterThanOrEqual(atLeast);
+      scanned += files.length;
+
+      for (const file of files) {
+        // Comments are stripped before matching, so PROSE about concurrency is
+        // not an offender. Without it the critic reports itself and
+        // `once-leak-detector.test.ts`, both of which discuss the spellings
+        // below in comments — and the natural workaround, rewording the prose,
+        // breaks again the next time someone explains the rule.
+        const text = stripComments(readFileSync(file, 'utf8'));
+        // Two spellings, because vitest has two. The modifier form is matched
+        // as a CALL or a chain rather than by the words `it` / `test` /
+        // `describe`, so a chained modifier cannot slip past -- and because
+        // this file and `once-leak-detector.test.ts` both discuss the modifier
+        // in prose, where a bare-word match would report them as offenders.
+        // The second is the options-object form, `it('x', { concurrent: true },
+        // fn)`, which carries no modifier at all.
+        if (/\.concurrent\s*[(.<]/.test(text) || /concurrent\s*:\s*true/.test(text)) {
           offenders.push(file);
         }
       }
     }
 
+    expect(scanned).toBeGreaterThan(0);
     expect(
       offenders,
       'these suites run concurrently, which the stream fence single buffer cannot ' +
@@ -329,7 +373,7 @@ describe('the fence assumes tests within a file run serially', () => {
     // The cheapest way to break the assumption is not per-suite at all:
     // `sequence: { concurrent: true }` makes EVERY test concurrent at once, and
     // the per-file scan above would report nothing.
-    const config = readFileSync(join(REPO_ROOT, 'vite.config.ts'), 'utf8');
+    const config = stripComments(readFileSync(join(REPO_ROOT, 'vite.config.ts'), 'utf8'));
     expect(
       /concurrent\s*:\s*true/.test(config),
       'vite.config.ts enables vitest concurrency globally; the stream fence in ' +

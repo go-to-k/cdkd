@@ -40,10 +40,8 @@ import { beforeEach, onTestFailed, onTestFinished } from 'vite-plus/test';
  *     about the FILE, and there is no failing test to attach it to.
  *     `beforeEach` and `afterEach` are INSIDE the fence, not outside it: they
  *     bracket a specific test, and `finish()` runs at `onTestFinished`, which is
- *     after `afterEach`. So a per-test hook's writes are replayed when that test
- *     fails and dropped when it passes — the same rule as the test body, which
- *     is the point, since that is where a `withRetry` teardown notice comes
- *     from.
+ *     after `afterEach`. So a per-test hook's writes follow the same rule as the
+ *     test body's — replayed when that test fails, dropped when it passes.
  *   - anything at all when `CDKD_TEST_STREAM_PASSTHROUGH=1` is set. Debugging a
  *     hang or a crash needs the writes as they happen: a run that never reaches
  *     the end of a test never reaches the replay either.
