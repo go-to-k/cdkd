@@ -1469,7 +1469,10 @@ Two deliberate carve-outs:
 
 - Writes **outside** a test body (module top level, `beforeAll` / `afterAll`)
   pass straight through. They are diagnostic about the FILE, and there is no
-  failing test to attach them to.
+  failing test to attach them to. `beforeEach` / `afterEach` are INSIDE the
+  fence, though — they bracket one specific test, and the fence stops at
+  `onTestFinished`, which runs after `afterEach` — so their writes follow the
+  same rule as the test body's: replayed on failure, dropped on a pass.
 - `CDKD_TEST_STREAM_PASSTHROUGH=1` disables the fence entirely. Debugging a hang
   or a crash needs the writes as they happen: a run that never reaches the end of
   a test never reaches the replay either.

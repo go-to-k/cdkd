@@ -299,7 +299,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 51_000, 72_000],                            // measured  64,472
+  ['tests/setup.ts', 57_000, 72_000],                            // measured  64,472
+  // The floor is ~12% under, like the rest of the table, and NOT lower: at
+  // 51_000 it sat 10,358 B below `testing.md` alone, so deleting the whole
+  // satellite would have left this row green -- exactly the direction the
+  // floors exist to catch (the three hooks-satellite rows are floored above
+  // hooks.md's own size for the same reason).
 ];
 
 const SPLIT_ADVICE =
@@ -411,9 +416,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-// 29 + gate-sibling-repos.md + test-stream-fence.md (testing.md sat at 61,030 B
-// of its 62,000 B budget, so the stream-fence notes had nowhere to land in it)
-const CORPUS_FILE_COUNT = 34; // hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -428,12 +431,34 @@ const CORPUS_FILE_COUNT = 34; // hooks.md crossed the per-file cap, so
                               //  detector's entry moved out of hooks.md verbatim when the #2363
                               //  family widening pushed hooks.md past the per-file cap again --
                               //  the #2236 shape repeated. That makes 33.
-const CORPUS_BYTES_MIN = 795_000;   // measured 808,384 B -- 13,384 B of slack
-const CORPUS_BYTES_MAX = 915_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+                              //  + test-stream-fence.md: the stream-fence notes were 1,442 B and
+                              //  testing.md had 970 B of headroom under its 62,000 B payload row,
+                              //  so they could not land there. The satellite is 3,114 B and the
+                              //  pointer left behind is 328 B, which is why testing.md still grew
+                              //  (61,030 -> 61,358 B) rather than shrinking -- a split that leaves
+                              //  a pointer always costs the index file something. That makes 34.
+const CORPUS_BYTES_MIN = 899_000;   // measured 913,895 B -- 14,895 B of slack.
+                                    // 795_000 -> 899_000: the comment beside the old bound still
+                                    // read "measured 808,384 B", 105 KB behind the corpus, so the
+                                    // floor had ~119 KB of slack and would not have noticed a
+                                    // whole satellite being deleted. Re-measured rather than
+                                    // nudged, since a bound that drifts from its measurement stops
+                                    // being one.
+const CORPUS_BYTES_MAX = 928_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
                                     // 900_000 -> 915_000 (go-to-k/cdkd#2363): origin/main sat at 899,989 B --
                                     // 11 B of headroom -- so ANY rules addition tripped it. Measured after the
                                     // hooks-cwd-detector.md split: 902,381 B (the widening's net prose is
                                     // 1,422 B; the satellite's frontmatter + the pointer line are the rest).
+                                    // 915_000 -> 928_000 (test-stream-fence.md): this branch added
+                                    // 3,442 B, leaving 1,105 B of headroom -- the next rule-file
+                                    // edit over 1 KB anywhere would have failed this suite for a
+                                    // reason unrelated to itself. Measured 913,895 B.
+
+// Sanity: the two bounds must actually bracket a real measurement, so a future
+// edit cannot satisfy both by moving them past each other.
+if (CORPUS_BYTES_MIN >= CORPUS_BYTES_MAX) {
+  throw new Error('CORPUS_BYTES_MIN must stay below CORPUS_BYTES_MAX');
+}
 
 /**
  * The repo's tracked files, read once. Memoised because two per-file suites

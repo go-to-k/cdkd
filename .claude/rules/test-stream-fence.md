@@ -34,6 +34,11 @@ Vitest runs `afterEach` -> `onTestFinished` -> `onTestFailed` (verified against
 later `beforeAll`, `afterAll`, the next file's module top level in a reused
 worker — writes straight through.
 
+`beforeEach` / `afterEach` are INSIDE the fence, not outside it: they bracket one
+specific test, and `onTestFinished` runs AFTER `afterEach`. So a per-test hook's
+writes follow the same rule as the test body's — replayed when that test fails,
+dropped when it passes.
+
 **Starting the capture without ever stopping it turns the carve-out into a
 silent SWALLOW, which is strictly worse than the noise the fence removes.** That
 is what the first cut of this fence did, and the docs claimed the opposite; an

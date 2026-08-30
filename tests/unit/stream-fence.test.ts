@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -278,33 +278,62 @@ afterAll(() => {
 });
 
 describe('the fence assumes tests within a file run serially', () => {
-  it('no suite uses vitest concurrent mode', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+  const testFilesUnder = (root: string): string[] => {
+    const found: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        // `withFileTypes` rather than `statSync`: a broken symlink under
+        // `tests/` would make the whole critic throw rather than report.
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.isFile() && entry.name.endsWith('.test.ts')) found.push(full);
+      }
+    };
+    walk(root);
+    return found;
+  };
+
+  it('no suite opts into vitest concurrent mode', () => {
     // One buffer per worker: with `it.concurrent`, one test's begin() would
     // wipe a peer's buffer and a failure could replay another test's writes.
     // The fence would have to become per-test-context first.
-    const testsRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+    //
+    // BOTH roots in vite.config.ts's `include` are scanned, not just `tests/**`
+    // — `src/**/*.test.ts` runs under the same setup file and the same worker.
+    const roots = [join(REPO_ROOT, 'tests'), join(REPO_ROOT, 'src')];
     const offenders: string[] = [];
-    const walk = (dir: string): void => {
-      for (const entry of readdirSync(dir)) {
-        const full = join(dir, entry);
-        if (statSync(full).isDirectory()) {
-          walk(full);
-        } else if (entry.endsWith('.test.ts')) {
-          // A CALL or a chain, not the words: this very file and
-          // `once-leak-detector.test.ts` both discuss `it.concurrent` in prose,
-          // and a bare-word match reports them as offenders.
-          if (/\b(?:it|test|describe)\.concurrent\s*[(.<]/.test(readFileSync(full, 'utf8'))) {
-            offenders.push(full);
-          }
+    for (const root of roots) {
+      for (const file of testFilesUnder(root)) {
+        // A CALL or a chain, not the words: this very file and
+        // `once-leak-detector.test.ts` both discuss `it.concurrent` in prose,
+        // and a bare-word match reports them as offenders. Anchoring on
+        // `.concurrent` alone rather than on `it|test|describe` also catches
+        // a chained form, where the modifier comes first and the concurrency
+        // marker is not preceded by `it` / `test` / `describe` at all.
+        if (/\.concurrent\s*[(.<]/.test(readFileSync(file, 'utf8'))) {
+          offenders.push(file);
         }
       }
-    };
-    walk(testsRoot);
+    }
 
     expect(
       offenders,
       'these suites run concurrently, which the stream fence single buffer cannot ' +
         `serve correctly:\n  ${offenders.join('\n  ')}`
     ).toEqual([]);
+  });
+
+  it('vite.config.ts does not turn concurrency on globally', () => {
+    // The cheapest way to break the assumption is not per-suite at all:
+    // `sequence: { concurrent: true }` makes EVERY test concurrent at once, and
+    // the per-file scan above would report nothing.
+    const config = readFileSync(join(REPO_ROOT, 'vite.config.ts'), 'utf8');
+    expect(
+      /concurrent\s*:\s*true/.test(config),
+      'vite.config.ts enables vitest concurrency globally; the stream fence in ' +
+        'tests/stream-fence.ts keeps one buffer per worker and cannot serve that'
+    ).toBe(false);
   });
 });
