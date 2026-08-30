@@ -451,13 +451,13 @@ agree on a constant and one is widely mocked, spell it in both and fence the
 pair with a test importing both — the sync is what matters.
 
 **Run probes with `vp test run <path>`, never `vp run test <path>`.** The
-latter goes through the Vite+ task runner, where `test` is CACHED: a repeat
-prints `◉ cache hit, replaying` and re-reports the previous run without
-executing — a probe edits a file the task hash does not cover, so the replayed
-verdict is the PRE-mutation one and the probe reports PASS having run nothing
-(2026-08-20; one reviewer had FOUR such probes). `vp test run` is the
-delegated command invoked directly, so it always executes.
-`.claude/hooks/vp-run-test-path-gate.sh` blocks the cached form; a bare
+latter wraps the run in the Vite+ task runner, where `test` USED TO BE cached: a
+repeat replayed the previous run without executing, so a probe editing a file
+the task hash does not cover reported PASS having run nothing (2026-08-20; one
+reviewer had FOUR). Nothing caches since 2026-08-30, but `vp test run` stays the
+spelling: it is the delegated command invoked directly, and the wrapper's TTY
+switches vitest to a per-file reporter printing 171 KB per green run vs 616 B.
+`.claude/hooks/vp-run-test-path-gate.sh` blocks the wrapped form; a bare
 `vp run test` (whole suite) is unaffected. Two further false greens ride the
 same command, so read the OUTPUT as well as the rc: a suite can report
 `skipped` rather than `passed` (the `version` test `skipIf`s itself when

@@ -328,9 +328,12 @@ by hand — otherwise the next reader concludes the merged fix is broken.
     for the lint / typecheck config. `vp run check` is not the universal
     answer — it reads neither `ci.yml` nor any hook, and its lint is scoped
     to `src/**`, so for a hook diff it is a probe that cannot fail.
-    - **Run it more than once, BEFORE and AFTER — as `vp run --no-cache check`,
-      with the flag BEFORE the task name.** The `check` task is cached, so a
-      bare repeat replays (`cache hit, replaying`) instead of re-running.
+    - **Run it more than once, BEFORE and AFTER.** The `check` task carried a
+      replayable cache until 2026-08-30, so a bare repeat replayed
+      (`cache hit, replaying`) instead of re-running; it is `cache: false` now,
+      as is every other task. The `--no-cache` form below is no longer needed
+      for that reason, but the flag-order trap is recorded because it still
+      applies to any `vp run` flag.
       **Flag order is the whole trap** (go-to-k/cdkd#2017):
       `vp run check --no-cache` forwards the flag to `vp check`, which
       rejects it — exit 1 from a command that never ran the check, exactly

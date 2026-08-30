@@ -37,7 +37,7 @@
 # it, but do not cite the cache as a live hazard.
 #
 # SCOPE: only the form carrying a PATH ARGUMENT. A bare `vp run test`
-# (the whole suite, which the gate flow legitimately runs and caches)
+# (the whole suite, which the gate flow legitimately runs)
 # passes through, as does any other `vp run <task>`. Flags alone are not
 # paths — `vp run test --coverage` passes.
 #

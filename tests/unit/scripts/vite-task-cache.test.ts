@@ -17,18 +17,52 @@ const source = (): string => readFileSync(VITE_CONFIG, 'utf8');
  * the property this suite guards is a source-level one (`cache: false` appears
  * in the task's block) that survives being read as text.
  */
+const TASKS_MAP_OPEN = '\n    tasks: {\n';
+
+/** The `run.tasks` map only, so a same-indentation block elsewhere is not read as a task. */
+export function taskMapSource(text: string): string {
+  const start = text.indexOf(TASKS_MAP_OPEN);
+  if (start === -1) return '';
+  const end = text.indexOf('\n    },', start + TASKS_MAP_OPEN.length);
+  return end === -1 ? '' : text.slice(start, end);
+}
+
+/** `name: {` / `'name:with-colon': {` openers, whether or not the brace ends the line. */
+const TASK_OPENER = /^ {6}'?([A-Za-z][\w:-]*)'?:\s*\{/gm;
+
 function taskBlocks(text: string): Map<string, string> {
+  const map = taskMapSource(text);
   const blocks = new Map<string, string>();
-  // `name: {` or `'name:with-colon': {`, at the task-map indentation.
+  // Only an opener whose brace ENDS the line has a block this reads; the
+  // count guards below are what make the other shapes a failure rather than a
+  // blind spot.
   const opener = /^ {6}'?([A-Za-z][\w:-]*)'?: \{$/gm;
-  for (let m = opener.exec(text); m !== null; m = opener.exec(text)) {
+  for (let m = opener.exec(map); m !== null; m = opener.exec(map)) {
     const start = m.index + m[0].length;
-    const end = text.indexOf('\n      },', start);
+    const end = map.indexOf('\n      },', start);
     if (end === -1) continue;
-    blocks.set(m[1] as string, text.slice(start, end));
+    blocks.set(m[1] as string, map.slice(start, end));
   }
   return blocks;
 }
+
+/** Whole-line comments dropped, so prose discussing `cache: false` is not counted as code. */
+const stripComments = (text: string): string =>
+  text
+    .split('\n')
+    .filter((line) => !/^\s*(?:\/\/|\/?\*)/.test(line))
+    .join('\n');
+
+/**
+ * `cache: false` as its own STATEMENT, not merely as text somewhere in the block.
+ *
+ * `/\bcache: false\b/` over the raw block passes on
+ * `// cache: false was dropped on purpose` sitting above a `cache: true`, and on
+ * `env: { FOO: 'cache: false' }`. This file's own config discusses `cache: false`
+ * in comments, so that collision is not hypothetical.
+ */
+const declaresCacheFalse = (block: string): boolean =>
+  /^\s*cache: false,?\s*$/m.test(stripComments(block));
 
 /**
  * Tasks whose verdict is EVIDENCE — a type check, a lint, a format check, a test
@@ -59,33 +93,74 @@ describe('vite.config.ts — a correctness gate must never replay a cached green
     expect(blocks.size).toBeGreaterThan(10);
   });
 
-  it('sees every task in the file, so none can hide from the sweep below', () => {
-    // The parser only recognises a block whose brace ENDS the line. A task
-    // written on one line -- `'test:bar': { command: 'vp test run' },` -- would
-    // parse to nothing and inherit caching invisibly, and the vacuity guard
-    // above would still pass on the other 40-odd blocks. Counting `command:`
-    // occurrences is what makes that shape a failure rather than a blind spot.
-    const text = source();
-    // Counted WITHOUT a line anchor on purpose: a single-line task writes
-    // `{ command: ...` mid-line, so an anchored count misses exactly the shape
-    // this case exists to catch — measured, the anchored version passed the
-    // probe. Both spellings currently agree at 46, so the loose pattern costs
-    // no false positives here.
-    const declared = (text.match(/\bcommand:/g) ?? []).length;
-    const parsed = [...taskBlocks(text).values()].filter((b) => /\bcommand:/.test(b)).length;
+  it('sees every task in the map, so none can hide from the sweep below', () => {
+    // The block reader only recognises an opener whose `{` ENDS the line. Three
+    // shapes evade it and would inherit caching invisibly, so each is counted
+    // rather than parsed:
+    //
+    //   'x': { command: 'vp test run' },     one line
+    //   'x': { ...sharedTask },              spread, no `command:` token
+    //   'x': makeTask('vp test run'),        helper call, no brace at all
+    //
+    // Counting KEYS catches the first and the third; counting `command:` tokens
+    // catches the second. Each count alone leaves a shape invisible, and both
+    // were measured: a spread task survived a key-only guard, and a helper call
+    // survived a `command:`-only guard AND a brace-opener count.
+    //
+    // A key is matched at the map's six-space depth; a task's own properties
+    // sit at eight, so nothing inside a block is counted.
+    const map = stripComments(taskMapSource(source()));
+    const keys = (map.match(/^ {6}'?[A-Za-z][\w:-]*'?:/gm) ?? []).length;
+    const commands = (map.match(/\bcommand:/g) ?? []).length;
+    const blocks = taskBlocks(source());
+    const parsed = blocks.size;
+
     expect(
-      parsed,
-      `vite.config.ts declares ${declared} \`command:\` entries but only ${parsed} are inside a ` +
-        'block this suite can read. A task whose `{` does not end its line is invisible here ' +
-        'and would inherit caching unchecked -- put it on multiple lines.'
-    ).toBe(declared);
+      keys,
+      `the task map declares ${keys} tasks but only ${parsed} are blocks this suite can read. ` +
+        'A task whose `{` does not end its line -- or which has no brace at all, being a call ' +
+        'to a helper -- is invisible here and would inherit caching unchecked. Write it out as ' +
+        'a multi-line object literal.'
+    ).toBe(parsed);
+    expect(
+      commands,
+      `the task map declares ${commands} \`command:\` entries against ${parsed} readable ` +
+        'blocks. A task defined without a literal `command:` (a spread of a shared object, or ' +
+        'a helper call) is invisible here -- write it out.'
+    ).toBe(parsed);
+  });
+
+  it('does not read a same-indentation block outside the task map as a task', () => {
+    // The openers are matched at six spaces, which is the task-map depth but
+    // not unique to it: a `coverage: { thresholds: { ... } }` nested one level
+    // deeper in `test:` would present the same shape and be reported as a
+    // caching task. Slicing to `run.tasks` first is what prevents that.
+    const map = taskMapSource(source());
+    expect(map).not.toBe('');
+    expect(map).toContain("command: 'vp test run'");
+    // Two markers from OUTSIDE `run.tasks`: the vitest config block (which is
+    // where a six-space `coverage: {` would appear) and the build config.
+    expect(map).not.toContain('globals: true');
+    expect(map).not.toContain('neverBundle');
+  });
+
+  it('the root run.cache.tasks switch is off, so a new task is safe by default', () => {
+    // The per-task flags are what this suite mostly guards, but they only help
+    // a task someone remembered to write them on. This switch is what makes the
+    // DEFAULT safe, and nothing else asserts it.
+    const config = stripComments(source());
+    expect(
+      /cache:\s*\{\s*tasks:\s*false,?\s*\}/.test(config),
+      'vite.config.ts must keep `run: { cache: { tasks: false } }`: it is what stops a task ' +
+        'added without an explicit `cache: false` from inheriting a replayable cache'
+    ).toBe(true);
   });
 
   it.each(CORRECTNESS_GATE_TASKS)('`%s` is declared `cache: false`', (name) => {
     const block = taskBlocks(source()).get(name);
     expect(block, `task \`${name}\` not found in vite.config.ts`).toBeDefined();
     expect(
-      /\bcache: false\b/.test(block as string),
+      declaresCacheFalse(block as string),
       `task \`${name}\` must carry \`cache: false\`: its verdict is read as evidence, and a ` +
         'cached replay reports a green that predates the edit under test'
     ).toBe(true);
@@ -104,7 +179,7 @@ describe('vite.config.ts — a correctness gate must never replay a cached green
     // regenerates an artifact whose freshness is the point, so there is nothing
     // left for a classifier to be wrong about.
     const offenders = [...taskBlocks(source())]
-      .filter(([, block]) => !/\bcache: false\b/.test(block))
+      .filter(([, block]) => !declaresCacheFalse(block))
       .map(([name]) => name);
     expect(
       offenders,

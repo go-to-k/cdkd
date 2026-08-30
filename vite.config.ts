@@ -157,8 +157,15 @@ export default defineConfig({
   },
 
   run: {
+    // Off at the ROOT as well as per task. Every task below carries
+    // `cache: false` and `tests/unit/scripts/vite-task-cache.test.ts` fences
+    // that, but a task added later inherits this switch before it inherits any
+    // fence, so the two are belt and braces rather than a duplication: the
+    // switch makes a new task safe by default, the per-task flags keep the
+    // policy visible where it is read, and the fence keeps them from being
+    // quietly dropped.
     cache: {
-      tasks: true,
+      tasks: false,
     },
     tasks: {
       build: {
@@ -216,8 +223,10 @@ export default defineConfig({
       },
       // Issue #1618 — the unit suite with the runtime `*Once`-leak detector
       // armed. `vp test run` rather than `vp run test` on purpose: the latter
-      // is cached and its key ignores env vars, so it can replay an earlier
-      // green summary and report "no leaks" without having looked.
+      // USED to be cached, with a key that ignores env vars, so it could replay
+      // an earlier green summary and report "no leaks" without having looked.
+      // Nothing caches any more, but the direct spelling is still the one to
+      // use — see the `test` task above.
       'test:once-leak': {
         command: 'CDKD_ONCE_LEAK_DETECT=1 vp test run',
         cache: false,
@@ -282,7 +291,7 @@ export default defineConfig({
       // Chains four gates, so a cache hit on the CHAIN would report all four
       // green without running any of them -- the same hazard one level up.
       verify: {
-        command: 'vp run check && vp run typecheck:test && vp run test && vp run build',
+        command: 'vp run check && vp run typecheck:test && vp test run && vp run build',
         cache: false,
       },
       // The `.claude/hooks/**` smoke tests, run under every bash on the
