@@ -41,7 +41,7 @@ Run each check and report pass/fail:
      `vp run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
 
 2. **Tests**
-   - `vp test run` - all unit tests pass. **Not `vp run test`**: the task runner gives the child a TTY, so vitest switches to its per-file reporter and a green run prints 171 KB instead of 616 bytes for the same 17,473 tests (measured 2026-08-30). `/check` step 4 carries the full rationale, including the cache-encoder path that once let `vp run test` exit 0 having run nothing.
+   - `vp test run` - all unit tests pass. Preferred over `vp run test` because nothing sits between the caller and the verdict; the two now print 617 and 651 bytes for the same 17,497 tests (measured 2026-08-31). `/check` step 4 carries the full rationale, including the 171 KB reporter and the exit-0-having-run-nothing path that the `cache: false` change removed.
    - Every scope / diff check in this skill uses `origin/main...HEAD`, not `main...HEAD`. The gate hooks derive their scope from `origin/main` and the `integ-destroy` digest is pinned to `merge-base(origin/main, HEAD)`, so a local `main` that has not been fetched makes this skill and the hook that blocks the merge disagree about what the branch touched.
    - Report test count (files and tests)
    - **Test coverage check**: compare `git diff origin/main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding

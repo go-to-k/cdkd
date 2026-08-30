@@ -28,10 +28,12 @@
 #   1. `vp test run <path>` is the command the task delegates to, invoked
 #      directly. Nothing sits between the caller and the verdict, which
 #      is what a probe wants.
-#   2. Through the task runner the child gets a TTY, so vitest switches
-#      to its per-file reporter and turns console interception on. A full
-#      green run measured 1,981 lines / 171 KB that way against 15 lines
-#      / 616 bytes directly.
+#   2. Historically the wrapper also gave the child a TTY, which switched
+#      vitest to its per-file reporter with console interception on: a
+#      full green run measured 1,981 lines / 171 KB that way against 15
+#      lines directly. Disabling the cache closed that too -- re-measured
+#      2026-08-31, `vp run test` prints 651 B against `vp test run`'s
+#      617 B -- so this is now a tie-breaker, not an argument.
 #
 # So this is now a CONVENTION gate rather than a correctness one -- keep
 # it, but do not cite the cache as a live hazard.
@@ -168,11 +170,10 @@ Blocked by vp-run-test-path-gate: run a path-filtered suite as
 
 `vp run test` wraps the run in the Vite+ task runner. Historically that
 REPLAYED a cached result, so a mutation probe reported PASS having
-executed nothing -- which looks exactly like a guard that works. Every
-task now sets `cache: false`, closing that; what remains is that the
-wrapper gives the child a TTY, switching vitest to its per-file reporter
-(1,981 lines / 171 KB for a full green run, against 15 lines / 616 bytes
-directly).
+executed nothing -- which looks exactly like a guard that works, and the
+same wrapper printed 171 KB for a green run instead of 616 bytes. Every
+task now sets `cache: false`, which closed both. What remains is simply
+that the direct spelling puts nothing between you and the verdict.
 
 Use the command the task delegates to, invoked directly:
 

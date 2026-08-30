@@ -28,10 +28,10 @@ vp run build
 vp run dev
 
 # Test (using Vitest)
-vp test run              # NOT `vp run test` -- same 17,473 tests, 616 bytes of
-                         # output instead of 171 KB (the task runner gives the
-                         # child a TTY, which switches vitest to its per-file
-                         # reporter). See .claude/skills/check/SKILL.md step 4.
+vp test run              # preferred over `vp run test`: the delegated command
+                         # invoked directly, with no task runner between the
+                         # caller and the verdict. See
+                         # .claude/skills/check/SKILL.md step 4.
 vp test --ui             # UI mode
 vp run test:coverage     # Coverage
 

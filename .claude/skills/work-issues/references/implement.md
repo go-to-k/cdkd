@@ -455,8 +455,8 @@ latter wraps the run in the Vite+ task runner, where `test` USED TO BE cached: a
 repeat replayed the previous run without executing, so a probe editing a file
 the task hash does not cover reported PASS having run nothing (2026-08-20; one
 reviewer had FOUR). Nothing caches since 2026-08-30, but `vp test run` stays the
-spelling: it is the delegated command invoked directly, and the wrapper's TTY
-switches vitest to a per-file reporter printing 171 KB per green run vs 616 B.
+spelling: it is the delegated command invoked directly, with nothing between the
+caller and the verdict.
 `.claude/hooks/vp-run-test-path-gate.sh` blocks the wrapped form; a bare
 `vp run test` (whole suite) is unaffected. Two further false greens ride the
 same command, so read the OUTPUT as well as the rc: a suite can report
