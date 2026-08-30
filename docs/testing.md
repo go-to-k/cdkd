@@ -1459,7 +1459,7 @@ and `src/cli/commands/destroy-runner.ts`, the critic summaries under `scripts/` 
 so any suite exercising those paths legitimately printed them. Measured on the
 full suite before the fence: 108 such lines, ~20 KB of `vp test run`'s ~22 KB of
 output, i.e. the reporter's own output was under a tenth of what a PASSING run
-emitted. After: 628 bytes for the same 17,462 tests.
+emitted. After: 616 bytes, 15 lines, for a full green run of 17,473 tests.
 
 That is a correctness property, not a tidiness one. A green run's output is what
 a person or an agent reads to decide whether to trust the run, and 20 KB of
@@ -1478,9 +1478,25 @@ Two deliberate carve-outs:
 CDKD_TEST_STREAM_PASSTHROUGH=1 vp test run tests/unit/cli/destroy-runner-sigint.test.ts
 ```
 
-A test that asserts on such a write is unaffected — a `vi.spyOn(process.stderr,
-'write')` replaces the fence's patch for the duration of that test, and the
-fence only ever sees what the spy passes through.
+A test that asserts on such a write is unaffected: the convention here is to
+REPLACE `process.stderr.write` and restore it afterwards (see
+`tests/unit/cli/options.test.ts` and
+`tests/unit/provisioning/interrupt-watch.test.ts`, both of which note that
+`vi.spyOn` does not intercept the stream cleanly under vitest's output capture).
+A replacement sits above the fence, so the fence never sees those writes at all.
+
+The capture is bounded by the test at BOTH ends. `onTestFinished` stops it while
+keeping the buffer — vitest runs `afterEach` -> `onTestFinished` ->
+`onTestFailed`, so the replay still finds something to replay, and everything
+after that (a later `beforeAll`, `afterAll`, the next file's module top level in
+a reused worker) writes straight through. An earlier cut of this fence started
+the capture and never stopped it, which turned the carve-out above into a silent
+swallow; `tests/unit/stream-fence.test.ts` fences that with an `afterAll` that
+asserts the fence is no longer capturing.
+
+One further assumption: one buffer per worker, so tests within a file must run
+SERIALLY. `it.concurrent` would let one test's capture wipe a peer's buffer.
+This repo uses none, and the same test file fails if that changes.
 
 ## 3. Deploy Using cdkd
 

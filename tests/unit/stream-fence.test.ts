@@ -1,23 +1,35 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { describe, it, expect, afterAll } from 'vite-plus/test';
 
 import {
   activeStreamFence,
   createStreamFence,
+  streamFenceDisabled,
   type FenceableStream,
 } from '../stream-fence.js';
 
 /**
  * A stand-in for `process.stdout` / `process.stderr` that records what actually
- * reached the terminal. The fence patches `write` in place, so every assertion
- * below distinguishes "buffered" (nothing here) from "printed" (here).
+ * reached the terminal, and with what arguments. The fence patches `write` in
+ * place, so every assertion below distinguishes "buffered" (nothing here) from
+ * "printed" (here).
  */
-function fakeStream(): FenceableStream & { printed: string[] } {
+function fakeStream(returns = true): FenceableStream & {
+  printed: string[];
+  calls: unknown[][];
+} {
   const printed: string[] = [];
+  const calls: unknown[][] = [];
   return {
     printed,
-    write(chunk: string | Uint8Array) {
+    calls,
+    write(chunk: string | Uint8Array, ...rest: unknown[]) {
       printed.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
-      return true;
+      calls.push([chunk, ...rest]);
+      return returns;
     },
   };
 }
@@ -31,7 +43,23 @@ describe('createStreamFence', () => {
     err.write('module top level\n');
 
     expect(err.printed).toEqual(['module top level\n']);
+    expect(fence.capturing()).toBe(false);
     expect(fence.buffered()).toBeUndefined();
+  });
+
+  it('forwards every argument of a passed-through write and returns the stream own value', () => {
+    // Backpressure is real: product code may do `if (!stream.write(x)) await
+    // drain`. A wrapper that hardcodes `true`, or drops the encoding, changes
+    // the caller's behaviour on a path the fence is supposed to be invisible on.
+    const fence = createStreamFence();
+    const err = fakeStream(false);
+    fence.attach(err, 'stderr');
+
+    const callback = (): void => {};
+    const returned = err.write('body\n', 'utf8', callback);
+
+    expect(returned).toBe(false);
+    expect(err.calls).toEqual([['body\n', 'utf8', callback]]);
   });
 
   it('buffers writes made during a test instead of printing them', () => {
@@ -43,8 +71,9 @@ describe('createStreamFence', () => {
     err.write('Warning: --region is deprecated\n');
 
     expect(err.printed).toEqual([]);
-    expect(fence.buffered()).toEqual([
-      { stream: 'stderr', text: 'Warning: --region is deprecated\n' },
+    expect(fence.capturing()).toBe(true);
+    expect(fence.buffered()?.map((w) => w.text)).toEqual([
+      'Warning: --region is deprecated\n',
     ]);
   });
 
@@ -66,9 +95,6 @@ describe('createStreamFence', () => {
   });
 
   it('heads the replay with the failing test name, on stderr', () => {
-    // The raw writes carry no attribution — that is the whole reason they are
-    // a problem in a run's output. A replay driven by a failure knows which
-    // test it belongs to, so it says so.
     const fence = createStreamFence();
     const out = fakeStream();
     const err = fakeStream();
@@ -77,9 +103,9 @@ describe('createStreamFence', () => {
 
     fence.begin();
     out.write('a stdout notice\n');
-    fence.replay('destroy > releases the lock');
+    fence.replay('destroy.test.ts > destroy > releases the lock');
 
-    expect(err.printed).toEqual(['stderr | destroy > releases the lock\n']);
+    expect(err.printed).toEqual(['stderr | destroy.test.ts > destroy > releases the lock\n']);
     expect(out.printed).toEqual(['a stdout notice\n']);
   });
 
@@ -95,6 +121,20 @@ describe('createStreamFence', () => {
     expect(err.printed).toEqual(['body\n']);
   });
 
+  it('falls back to an attached stream for the header when stderr is not one', () => {
+    // Guards the `?.` on the header write: dropping the header silently is a
+    // worse outcome than putting it on the only stream there is.
+    const fence = createStreamFence();
+    const out = fakeStream();
+    fence.attach(out, 'stdout');
+
+    fence.begin();
+    out.write('body\n');
+    fence.replay('some > test');
+
+    expect(out.printed).toEqual(['stderr | some > test\n', 'body\n']);
+  });
+
   it('does not print the same line twice when replayed more than once', () => {
     const fence = createStreamFence();
     const err = fakeStream();
@@ -106,22 +146,6 @@ describe('createStreamFence', () => {
     fence.replay();
 
     expect(err.printed).toEqual(['once\n']);
-  });
-
-  it('does not re-capture the writes its own replay makes', () => {
-    // The buffer is cleared BEFORE the replay writes, so a replay running while
-    // capture is still active cannot feed itself. Without that ordering the
-    // same line would sit in the buffer again after the replay returned.
-    const fence = createStreamFence();
-    const err = fakeStream();
-    fence.attach(err, 'stderr');
-
-    fence.begin();
-    err.write('boom\n');
-    fence.replay();
-
-    expect(err.printed).toEqual(['boom\n']);
-    expect(fence.buffered()).toEqual([]);
   });
 
   it('invokes the completion callback of a swallowed write in both call shapes', () => {
@@ -159,22 +183,71 @@ describe('createStreamFence', () => {
     expect(err.printed).toEqual(['bytes\n']);
   });
 
-  it('goes back to passing through after the test ends', () => {
+  it('replays a non-utf8 encoding faithfully, and renders it decoded', () => {
+    // `write('6869', 'hex')` writes the two bytes `hi`, not those four
+    // characters. A buffer that keeps only the rendered text would replay the
+    // wrong bytes; one that keeps only the chunk would make `buffered()`
+    // unreadable.
     const fence = createStreamFence();
     const err = fakeStream();
     fence.attach(err, 'stderr');
 
     fence.begin();
-    fence.end();
-    err.write('afterAll diagnostic\n');
+    err.write('6869', 'hex');
 
-    expect(err.printed).toEqual(['afterAll diagnostic\n']);
-    expect(fence.buffered()).toBeUndefined();
+    expect(fence.buffered()?.map((w) => w.text)).toEqual(['hi']);
+
+    fence.replay();
+    expect(err.calls).toEqual([['6869', 'hex']]);
+  });
+
+  it('stops capturing at finish() but keeps the buffer for a later replay', () => {
+    // The ordering this depends on is vitest's: afterEach -> onTestFinished ->
+    // onTestFailed. Clearing the buffer at finish() would make every replay
+    // empty; not stopping capture at all would swallow afterAll and the next
+    // file's top-level writes forever.
+    const fence = createStreamFence();
+    const err = fakeStream();
+    fence.attach(err, 'stderr');
+
+    fence.begin();
+    err.write('during the test\n');
+    fence.finish();
+    err.write('after the test\n');
+
+    expect(fence.capturing()).toBe(false);
+    expect(err.printed).toEqual(['after the test\n']);
+
+    fence.replay();
+    expect(err.printed).toEqual(['after the test\n', 'during the test\n']);
+  });
+
+  it('discards the previous test buffer at begin()', () => {
+    const fence = createStreamFence();
+    const err = fakeStream();
+    fence.attach(err, 'stderr');
+
+    fence.begin();
+    err.write('from the passing test\n');
+    fence.finish();
+    fence.begin();
+    fence.replay();
+
+    expect(err.printed).toEqual([]);
+  });
+});
+
+describe('streamFenceDisabled', () => {
+  it('is off by default and on only for the exact opt-out value', () => {
+    expect(streamFenceDisabled({})).toBe(false);
+    expect(streamFenceDisabled({ CDKD_TEST_STREAM_PASSTHROUGH: '0' })).toBe(false);
+    expect(streamFenceDisabled({ CDKD_TEST_STREAM_PASSTHROUGH: 'true' })).toBe(false);
+    expect(streamFenceDisabled({ CDKD_TEST_STREAM_PASSTHROUGH: '1' })).toBe(true);
   });
 });
 
 describe('the fence installed over the real process streams', () => {
-  const passthrough = process.env['CDKD_TEST_STREAM_PASSTHROUGH'] === '1';
+  const passthrough = streamFenceDisabled(process.env);
 
   it.skipIf(passthrough)('is active while this very test runs', () => {
     // The wiring, not the logic: proves `tests/setup.ts` installed the fence
@@ -182,6 +255,7 @@ describe('the fence installed over the real process streams', () => {
     // the line below would land in the run's output.
     const fence = activeStreamFence();
     expect(fence).toBeDefined();
+    expect(fence?.capturing()).toBe(true);
 
     const marker = 'stream-fence live check — this line must not reach the run output\n';
     process.stderr.write(marker);
@@ -191,5 +265,46 @@ describe('the fence installed over the real process streams', () => {
 
   it.skipIf(!passthrough)('is not installed under CDKD_TEST_STREAM_PASSTHROUGH=1', () => {
     expect(activeStreamFence()).toBeUndefined();
+  });
+});
+
+// The live half of the finish() contract: `afterAll` runs after the last test's
+// `onTestFinished`, so capture must already be off here. If the wiring stopped
+// calling finish(), this write would be buffered and then dropped — exactly the
+// silent-swallow the fence must not do — and the assertion fails the file.
+afterAll(() => {
+  if (streamFenceDisabled(process.env)) return;
+  expect(activeStreamFence()?.capturing()).toBe(false);
+});
+
+describe('the fence assumes tests within a file run serially', () => {
+  it('no suite uses vitest concurrent mode', () => {
+    // One buffer per worker: with `it.concurrent`, one test's begin() would
+    // wipe a peer's buffer and a failure could replay another test's writes.
+    // The fence would have to become per-test-context first.
+    const testsRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          walk(full);
+        } else if (entry.endsWith('.test.ts')) {
+          // A CALL or a chain, not the words: this very file and
+          // `once-leak-detector.test.ts` both discuss `it.concurrent` in prose,
+          // and a bare-word match reports them as offenders.
+          if (/\b(?:it|test|describe)\.concurrent\s*[(.<]/.test(readFileSync(full, 'utf8'))) {
+            offenders.push(full);
+          }
+        }
+      }
+    };
+    walk(testsRoot);
+
+    expect(
+      offenders,
+      'these suites run concurrently, which the stream fence single buffer cannot ' +
+        `serve correctly:\n  ${offenders.join('\n  ')}`
+    ).toEqual([]);
   });
 });

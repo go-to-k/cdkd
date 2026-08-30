@@ -216,6 +216,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['providers.md', 92],
   ['state-schema.md', 5],
   ['synthesis.md', 13],
+  ['test-stream-fence.md', 3], // literal list: EXACT, see below
   ['testing.md', 2532],
 ]);
 
@@ -294,6 +295,11 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
   ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
   ['vite.config.ts', 14_000, 21_000],                            // measured  16,712
+  // The representative path for `test-stream-fence.md`: the only paths its
+  // literal glob list names are the fence, its suite, and the setup file that
+  // installs it, and none of them is named by any other row. Without this the
+  // satellite sits under no budget at all. Payload is testing.md + the satellite.
+  ['tests/setup.ts', 51_000, 72_000],                            // measured  64,472
 ];
 
 const SPLIT_ADVICE =
@@ -405,7 +411,9 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 33; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+// 29 + gate-sibling-repos.md + test-stream-fence.md (testing.md sat at 61,030 B
+// of its 62,000 B budget, so the stream-fence notes had nowhere to land in it)
+const CORPUS_FILE_COUNT = 34; // hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
