@@ -498,9 +498,11 @@ assert_no_plaintext "the producer's persisted outputs bag" "${PRODUCER_OUTPUTS}"
 # evaluation, not of the run's environment.
 #
 # Checked on BOTH keys cdkd writes for an exported output -- the export ALIAS
-# and the logical output id -- because the pre-pass matches an export by either
-# spelling, so a wrong value under only one of them would still reach the
-# verdict.
+# and the logical output id. On this fixture's v9 record the alias is the only
+# key `resolveImportValue` may bind (`importableOutputKeys`, issue #2193), so
+# the alias is what the verdict is reached through; the output-id twin is
+# checked so the two spellings cannot silently diverge (a pre-v9 record, where
+# every key is bindable, would read either).
 for cond_key in "${CONDITIONAL_EXPORT_NAME}" "${CONDITIONAL_OUTPUT}"; do
   COND_STORED=$(printf '%s' "${PRODUCER_STATE_JSON}" \
     | jq -r --arg k "${cond_key}" '.state.outputs[$k] // empty')
@@ -523,9 +525,10 @@ pass "the conditional export stored its UNTAKEN branch ('${CONDITIONAL_PLAIN_VAL
 # would not be the pre-#1899 shape, and the refusal under test could not be
 # attributed to the Fn::If selection.
 #
-# Both keys, for the reason the untaken check gives: the pre-pass matches an
-# export by either spelling, and the discriminator re-reads whichever key the
-# read matched.
+# Both keys, for the reason the untaken check gives: on this v9 record the
+# ALIAS is the only key `resolveImportValue` may bind (`importableOutputKeys`,
+# issue #2193) and therefore the one the discriminator re-reads; the output-id
+# twin is checked so the two spellings cannot silently diverge.
 STATE_TAKEN_EXPORT_VALUE=$(printf '%s' "${PRODUCER_STATE_JSON}" \
   | jq -r --arg k "${TAKEN_CONDITIONAL_EXPORT_NAME}" '.state.outputs[$k] // empty')
 case "${STATE_TAKEN_EXPORT_VALUE}" in
@@ -1385,11 +1388,13 @@ echo "==> Step 10b (assertion 9b - THE Fn::If TAKEN-BRANCH REFUSAL, issue #2163)
 # alone (never --all), backup in a shell variable, restore BEFORE any
 # assertion, purge the seeded noncurrent versions immediately.
 PRODUCER_STATE_BACKUP=$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" -)
-# BOTH keys cdkd writes for the export — the alias and the output id — seeded,
-# because the pre-pass matches an export by either spelling and re-reads
-# whichever key the read matched; a one-key seed could leave the discriminator
-# reading the healthy twin. Each is required to hold the expression step 2
-# captured first, so the seed provably flips expression -> plaintext.
+# BOTH keys cdkd writes for the export — the alias and the output id — seeded.
+# On this v9 record the ALIAS is the only key `resolveImportValue` may bind
+# (`importableOutputKeys`, issue #2193) and therefore the one the discriminator
+# re-reads; the output-id twin is seeded so the two spellings cannot silently
+# diverge across the seed/restore round-trip. Each is required to hold the
+# expression step 2 captured first, so the seed provably flips
+# expression -> plaintext.
 for taken_key in "${TAKEN_CONDITIONAL_EXPORT_NAME}" "${TAKEN_CONDITIONAL_OUTPUT}"; do
   PRE_SEED_TAKEN=$(printf '%s' "${PRODUCER_STATE_BACKUP}" \
     | jq -r --arg k "${taken_key}" '.outputs[$k] // empty')
@@ -1432,7 +1437,11 @@ TAKEN_DIAG_LINES=$(node "${LOCAL_DIST}" scrub "${CONSUMER}" \
   | grep -E "Scrub of ${CONSUMER}:|Resolved Fn::ImportValue")
 set -e
 if [ -z "${TAKEN_DIAG_LINES}" ]; then
-  TAKEN_DIAG_LINES="(the --verbose re-run printed no per-arm classification line and no Resolved Fn::ImportValue line at all — the pre-pass never classified this read)"
+  # Neutral on purpose: an empty capture means either the pre-pass never
+  # classified this read OR the diagnostic re-run itself failed — the two are
+  # indistinguishable from here, and asserting the first would misdirect the
+  # reader on a transient re-run failure.
+  TAKEN_DIAG_LINES="(no per-arm classification line and no Resolved Fn::ImportValue line was captured from the --verbose re-run)"
 fi
 # Restore FIRST, assert second — a failed assertion here must not leave the
 # producer's export holding a plaintext for the teardown below to destroy from.

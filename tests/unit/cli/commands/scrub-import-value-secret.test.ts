@@ -3743,6 +3743,14 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
     expect(logLines.join('\n')).toContain(
       `stored value for '${TAKEN_EXPORT}' already carries a {{resolve:...}} expression`
     );
+    // The `Scrub of <stack>:` PREFIX is load-bearing beyond this suite (issue
+    // #2163 review): the live arm's diagnostic re-run
+    // (tests/integration/cross-stack-secret-import/verify.sh step 10b) greps
+    // `Scrub of <consumer>:` to capture the per-arm decline lines, so a
+    // prefix reword would silently degrade that diagnostic to its fallback
+    // text exactly when it is needed. Pinned here on a green path so the
+    // coupling fails a unit run rather than a real-AWS one.
+    expect(logLines.join('\n')).toContain(`Scrub of ${CONSUMER}: `);
   });
 
   it('the UNTAKEN branch still declines, and now says the template declares no expression for it', async () => {
