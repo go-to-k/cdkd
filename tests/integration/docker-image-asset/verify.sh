@@ -239,6 +239,14 @@ fi
 echo "    OK: the pushed image (tag ${IMAGE_TAG}) is present in ECR (cdkd built + pushed the Docker image asset)"
 
 # --- Assertion: invoking the Lambda runs the pushed image -------------------
+# cdkd deliberately does NOT wait for State=Active after CreateFunction (the
+# wait was removed in PR 121; see lambda-function-provider.ts), and a
+# container-image function takes 10-60 s to leave Pending — so an immediate
+# invoke races activation and fails with ResourceConflictException (issue
+# 2403; two consecutive live failures on 2026-09-01). Wait here: the fixture
+# is asserting the pushed image RUNS, not cdkd's no-wait deploy semantics.
+echo "==> Phase 1a2: wait for the image function to become Active (issue 2403)"
+aws lambda wait function-active-v2 --function-name "${FN_NAME}" --region "${REGION}"
 echo "==> Phase 1b: invoke the Lambda (proves the pushed image actually runs)"
 INVOKE_OUT=$(mktemp)
 trap 'rm -f "${INVOKE_OUT}"' RETURN 2>/dev/null || true
