@@ -242,8 +242,13 @@ IN-PLACE — run THIS block INSTEAD, never both. It builds the MAIN checkout: th
 global link points at ITS `dist/cli.js`, so building this workspace's leaves the
 user on the old binary while every log says the fix shipped. Re-derive `MAIN`
 inside this block — borrowing it from the earlier one gives an EMPTY variable in
-a fresh shell, and `cd ""` succeeds silently, which builds the wrong tree with
-no error at all:
+a fresh shell, and an empty `cd` does not fail in the way you would want.
+Measured 2026-08-31: bash REFUSES `cd ""` (rc=1, `cd: null directory`), so the
+`&&` short-circuits and NOTHING is built at all, while zsh accepts it (rc=0) and
+builds whatever tree the shell happens to be standing in. The end state is the
+same one that matters — the globally linked `dist/` still holds the old build
+while the log says the fix shipped — and the only difference is whether you get
+a one-line complaint or a silently wrong build:
 
 ```bash
 MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')

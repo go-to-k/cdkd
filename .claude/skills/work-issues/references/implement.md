@@ -9,13 +9,14 @@ calls, markgate markers land in the lane's own tree. Two actions stay with the
 parent's serialization turn: a real-AWS integ run and the merge (§9). A lane
 stops at merge-ready.
 
-Never edit in the main checkout (`main-tree-branch-gate` blocks branching there).
+Never edit in the main checkout (`main-tree-branch-gate` blocks branching there —
+with the coverage limit measured below).
 Per lane:
 
 ```bash
 # MAIN-CHECKOUT mode only. IN-PLACE (launched inside a linked worktree) skips
 # these two, keeps that tree and its branch, and creates nothing -- nesting dies
-# with the outer workspace (go-to-k/cdkd#2390; probe in §3 / SKILL.md).
+# with the outer workspace (go-to-k/cdkd#2390; the probe is in §3, its only copy).
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
@@ -24,12 +25,52 @@ vp run build                 # ...and no dist/ — see below
 ```
 
 **IN-PLACE: confirm the tree is YOURS before adopting it** — a stray `cd` into a
-peer's live lane looks exactly like a workspace handed to you. Read `git status
---porcelain`, `cat "$(git rev-parse --git-dir)/session-owner"` and the issue
-thread for a claim naming this branch, under §9's rule that every ownership
-signal establishes LIFE and never absence: any one of them saying "someone is
-here" means STOP and report — never nest a worktree inside a peer's lane to get
-out of it.
+peer's live lane looks exactly like a workspace handed to you. Read every probe
+below under §9's rule that every ownership signal establishes LIFE and never
+absence: any one of them saying "someone is here" means STOP and report — never
+nest a worktree inside a peer's lane to get out of it.
+
+```bash
+# The FIRST line is the anchor, and it is why none of the rest needs a `-C`:
+# every probe under it describes THIS shell's tree, so a cwd that has silently
+# reset to the main checkout (appendix, "Bash cwd silent reset") shows up IN THE
+# OUTPUT instead of being invisible. Anchoring a READ this way is enough --
+# noticing afterwards costs nothing, and the alternative (carrying a captured
+# path forward) buys nothing a printed subject does not. A WRITE is a different
+# problem: see the branch recipe below.
+git rev-parse --show-toplevel   # STOP unless this is the tree you meant to adopt
+git status --porcelain          # non-empty: someone's uncommitted work
+git branch --show-current       # the branch you would be committing to
+git log --oneline -3            # whose commits these are
+cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # this repo's owner sentinel
+```
+
+Then read the issue thread for a claim naming this branch — across clones it is
+the only signal the probes above cannot see.
+
+**If the branch here is detached, or its PR has already merged, take a fresh one
+WITHOUT leaving the tree** — and know what is and is not protecting you while
+you do:
+
+```bash
+git fetch origin && git switch -c <branch> origin/main
+```
+
+The `&&` is deliberate: unchained, a failed `fetch` still branches, off a stale
+`origin/main`. **`main-tree-branch-gate` is the backstop for running that line
+after a cwd reset — but it did NOT cover this spelling until this session's
+hooks change, so do not read the claim as one that always held.** Measured on
+both copies of the hook, 2026-08-31: the version then on `main` skipped to the
+FIRST `git` token, read `git fetch origin && git switch -c ...` as `sub=fetch`,
+fell to a fail-open arm and exited 0 — a BARE `git switch -c <b> origin/main`
+was refused (rc=2) while the chained form THIS FILE PRINTS was not (rc=0), so
+the spelling the skill prescribes was exactly the one the gate missed. This
+session's hooks lane makes the gate match in COMMAND POSITION and judge the
+matched SEGMENT; driven against that copy the chained form is refused (rc=2)
+and the allowance for `git fetch origin && git switch main` still passes (rc=0).
+The protection is that FIXED gate. Until the hooks lane merges to `main`, the
+anchor is all you have: re-run `git rev-parse --show-toplevel` immediately before
+the switch and confirm it is this lane's tree.
 
 **`mise trust` is not optional here, and skipping it fails in the direction that
 costs most.** An untrusted `.mise.toml` makes `mise exec -- markgate set` error

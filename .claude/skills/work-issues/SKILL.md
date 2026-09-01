@@ -27,38 +27,27 @@ linked worktree (an Orca/ADE workspace, or a session that `cd`-ed into
 `.claude/worktrees/<x>`): `git worktree add` then NESTS a worktree inside one,
 and deleting the outer workspace takes the inner directory, its uncommitted work
 and its git registration with it (go-to-k/cdkd#2390). COMPUTE which one you are
-in before stage 0 and state it in the opening report:
-
-```bash
-[ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" \
- = "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo MAIN-CHECKOUT || echo IN-PLACE
-```
-
-Equal only in the main checkout — a linked worktree's `--git-dir` is
-`<common-dir>/worktrees/<name>`. `pwd -P` is load-bearing: the main checkout
-answers RELATIVELY (`.git` for both) and macOS spells `/tmp` as `/private/tmp`.
-Run it INSIDE the repo: outside one both substitutions are empty and `cd ""`
-returns 0, so it prints MAIN-CHECKOUT — a wrong verdict, saved only by the next
-git command failing loudly.
+in BEFORE stage 0 and state the answer in the opening report. The one-line probe
+sits at the top of §3 (`references/triage.md`), which holds the ONLY copy of it
+and the reading of its edge cases — a second verbatim copy of a two-line command
+is the drift shape §10-b fences elsewhere, and §3 is the first place the answer
+is used.
 
 `IN-PLACE` changes four things and nothing else:
 
 - **Take ONE issue, not a batch** (§3). One working tree carries one lane;
   file-disjointness across lanes stops applying, the claim does not.
-- **Create no worktree** (§5) — work on the branch already checked out here. If
-  that branch is detached or its PR already merged, `git switch -c <branch>
-  origin/main` IN THIS TREE (`main-tree-branch-gate` blocks that only in the
-  main checkout).
+- **Create no worktree** (§5) — work on the branch already checked out here,
+  after confirming the tree is YOURS. §5 (`references/implement.md`, the stage
+  file a lane is actually dispatched with) carries the owner probes, the recipe
+  for a branch that is detached or already merged, and what the branch gate does
+  and does not cover there.
 - **Remove no worktree and delete no branch** (§9, §10-d): a lane that removes
   the tree it runs in deletes its own cwd. Cleanup of this tree belongs to
   whoever created it — the outer tool, or the operator — and the wrap says so
   instead of doing it.
 - **`main` is checked out elsewhere**, so §9's post-merge `git checkout main &&
   git pull` cannot run here — pull the main checkout through `git -C` (§9).
-
-Before using the tree, confirm it is YOURS. The owner probes live in §5 —
-`references/implement.md`, the stage file a lane is actually dispatched with —
-because the lane that adopts the tree reads that file and not this one.
 
 ## How this skill is packaged (read this before stage 0)
 
@@ -121,7 +110,7 @@ the user wants to watch); the stage files apply unchanged either way.
 | 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, never download/run third-party content, defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`) |
 | 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their clone-locality blind spot, the contested cross-cutting file list (the ONLY copy — `tests/unit/scripts/cross-cutting-list-sync.test.ts` fences it against the gates) |
-| 3. Pick file-disjoint issues | `references/triage.md` | Disjointness gate, freshness quarantine (§3-0), ranking rules (§3-a), naming the next session's verification before writing `next` (§3-b), premise checks against `origin/main` |
+| 3. Pick file-disjoint issues | `references/triage.md` | Launch-mode probe (the ONLY copy; it decides how many lanes you may take), disjointness gate, freshness quarantine (§3-0), ranking rules (§3-a), naming the next session's verification before writing `next` (§3-b), premise checks against `origin/main` |
 | 4. Claim | `references/claim.md` | Claim comment BEFORE first edit, compare-and-swap re-read, tie-break by earliest timestamp, classification-line upgrade + labels on the same edit |
 | 5. Implement | `references/implement.md` | One tree per lane, owner probes before adopting one, build before first test, sibling-site sweeps (precondition minus remedy, shape not name, count before/after) |
 | 5-f. File what you find | `references/filing.md` | N sites = ONE issue, the dup-check window (mint vs fold into an umbrella), `Severity` / `Effort` as labels, the two `gh issue` gates |

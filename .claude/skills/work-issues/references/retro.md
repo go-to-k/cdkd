@@ -281,9 +281,14 @@ worktree to add, and `git worktree add` from inside this tree NESTS the very
 worktree this mode exists to prevent. The lane's own tree is
 still here with its deps installed, and you are not on `main`, so take the
 retro branch in it. `B` is re-assigned because a separate fenced block is a
-separate shell (§9's `$MAIN` trap); `main-tree-branch-gate` blocks the switch
-only in the main checkout, and the merged lane branch cannot be reused
-(post-merge-orphan-push).
+separate shell (§9's `$MAIN` trap), and the merged lane branch cannot be reused
+(post-merge-orphan-push). `main-tree-branch-gate` does back this switch up
+against a cwd reset, but only since this session's hooks change — §5 measured
+both copies, and the version then on `main` passed the chained `git fetch origin
+&& git switch -c ...` form below (rc=0) while refusing a bare `git switch -c`
+(rc=2). Do not read the backstop as one that always held, and until the hooks
+lane merges to `main`, confirm `git rev-parse --show-toplevel` is this lane's
+tree immediately before running the block.
 
 ```bash
 B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)

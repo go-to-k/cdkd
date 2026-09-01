@@ -86,10 +86,11 @@ Dup-check: searched open issues for <terms> -- none covers this root cause
 lines stay exactly as written, and the same two values ride the command:
 
 ```bash
-B=$(mktemp)   # assign it HERE, and WRITE it before `gh` reads it: a separate
-              # fenced block is a separate Bash call and a separate shell, so a
-              # `B` set in an earlier one is already empty by the time this runs
-cat > "$B" <<'BODY'
+# A LITERAL path, and no shell variable anywhere in this command. Substitute
+# `<issue-slug>` with something lane-specific (the root cause plus your branch)
+# -- parallel lanes share /tmp, and that uniqueness is the only thing `mktemp`
+# was buying here.
+cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
 <one paragraph: the root cause, and where the evidence for it is>
 
 Dup-check: searched open issues for <terms> -- none covers this root cause
@@ -98,28 +99,44 @@ Severity: high -- <what stays broken while it is undone>
 Effort: large (L) -- <which verification cycle it drags>
 Estimate: ~3 h+ -- <what eats the time>
 BODY
-gh issue create -t 'fix(provider): ...' --body-file "$B" \
+gh issue create -t 'fix(provider): ...' \
+  --body-file /tmp/wi-issue-body-<issue-slug>.md \
   --label severity:high --label effort:large
 ```
 
-**The `cat` is not filler for the reader to skip.** `mktemp` creates the file
-EMPTY, so the two-line form — `B=$(mktemp)` then `--body-file "$B"` with nothing
-in between — files an issue with NO body: no `Dup-check:` line, no
-classification, nothing for §3 to rank. `heredoc -> file -> --body-file` in ONE
-call is this repo's mandated publishing shape for `gh issue create`
-(`gated-command-preamble-gate` refuses that shape for `git commit` /
-`gh pr create` / `gh pr merge` and deliberately does not cover this verb), and
-the delimiter is QUOTED so backticks and `$` in the body stay literal instead of
-being run by the shell.
+**The path is LITERAL because a `$VAR` one cannot be filed at all.**
+`issue-dup-check-gate` reads the command TEXT at PreToolUse time, before any of
+it has run, and refuses a `--body-file` path containing `$` or a backtick
+outright: it cannot open such a file to look for the `Dup-check:` line, and it
+fails closed rather than guessing. Measured 2026-08-31 by driving the hook with
+each payload: the `B=$(mktemp)` + `--body-file "$B"` spelling this section used
+to print returns **rc=2 in all three repos** (cdkd, cdk-local, cdk-real-drift),
+so the body it so carefully writes is never filed; the literal-path form above
+returns **rc=0** from every gate that sees it — `issue-dup-check-gate`,
+`issue-classification-label-gate`, and cdkd's `gh-body-english-gate` and
+`gated-command-preamble-gate`. Deleting just the `Dup-check:` line from the
+literal form returns rc=2 again, so that rc=0 is the gate passing a good
+command, not the gate failing to look.
 
-**`issue-dup-check-gate` does refuse both broken spellings, and its message for
-the likelier one points somewhere else** — measured 2026-08-31 by running the
-hook on each payload. A readable but EMPTY body file is refused for the reason
-you would expect ("carries no `Dup-check:` line"). The two-line form above is
-refused for a DIFFERENT reason: at PreToolUse time `"$B"` is still literal text,
-so the gate reports an unexpanded variable in the `--body-file` path, and a
-reader following that message hard-codes the path and files the empty body on
-the retry. Write the body; do not treat the gate as the thing that will notice.
+**The FOLD recipe above keeps `mktemp`, and that asymmetry is the gate set, not
+taste.** Folding runs `gh issue edit`, which `issue-dup-check-gate` does not
+match at all, and the classification gate falls back to reading the command
+text when a path is unresolvable — measured rc=0 from both, same day, same
+driver. Folding also NEEDS a unique file it reads back, which a hand-written
+name cannot promise; minting only needs a name no concurrent lane will reuse,
+which the substituted slug gives.
+
+**The `cat` is not filler for the reader to skip.** The two-line form — create
+an empty file, then point `--body-file` at it with nothing in between — files
+an issue with NO body: no `Dup-check:` line, no classification, nothing for §3
+to rank. It is refused too, but for the reason you would expect ("carries no
+`Dup-check:` line"), and only because the path is readable and empty. Write the
+body; do not treat the gate as the thing that will notice. `heredoc -> file ->
+--body-file` in ONE call is this repo's mandated publishing shape for
+`gh issue create` (`gated-command-preamble-gate` refuses that shape for
+`git commit` / `gh pr create` / `gh pr merge` and deliberately does not cover
+this verb), and the delimiter is QUOTED so backticks and `$` in the body stay
+literal instead of being run by the shell.
 
 Prose is invisible to `gh issue list`; the label makes §3's ranking rule 3 a
 listing-time filter, which is what let it move ABOVE the title-prefix

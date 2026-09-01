@@ -188,17 +188,36 @@ it here too (the drift in go-to-k/cdkd#2042).
 ## 3. Pick a FEW FILE-DISJOINT issues
 
 **How many lanes you may pick is decided by the LAUNCH MODE, so compute that
-first — it is one command and it is not guessable from the prompt:** run the
-probe in SKILL.md "Launch mode", which holds the ONLY copy of it. It is not
-restated here on purpose — a second verbatim copy of a two-line command is the
-drift shape §10-b fences elsewhere. `IN-PLACE` means this run
-was launched inside a worktree someone else created (an Orca/ADE workspace, a
-stray `cd`), so it has exactly ONE working tree: **take ONE issue and finish
-it** — a second lane would need a worktree nested inside this one, which dies
-with the outer workspace and takes its uncommitted work (go-to-k/cdkd#2390).
-Rank as usual, claim the top candidate, and leave the rest for the next run.
-Everything below is the MAIN-CHECKOUT case; SKILL.md "Launch mode" carries the
-other three consequences (§4, §5, §9).
+first — it is one command and it is not guessable from the prompt.** This is the
+ONLY copy of the probe; SKILL.md "Launch mode" points here rather than restating
+it, because a second verbatim copy of a two-line command is the drift shape
+§10-b fences elsewhere:
+
+```bash
+[ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" \
+ = "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo MAIN-CHECKOUT || echo IN-PLACE
+```
+
+Equal only in the main checkout — a linked worktree's `--git-dir` is
+`<common-dir>/worktrees/<name>`. `pwd -P` is load-bearing in BOTH directions:
+the main checkout answers `.git` RELATIVELY for both, so an unnormalised compare
+is only accidentally right, and macOS spells `/tmp` as `/private/tmp`. Run it
+INSIDE the repo. Outside one, `git rev-parse` fails and both substitutions
+collapse to the empty string, so the test compares `""` with `""`
+and prints MAIN-CHECKOUT — a wrong verdict. Measured 2026-08-31, and the
+mechanism differs by shell without changing the answer: bash REFUSES `cd ""`
+(rc=1, `cd: null directory`) so the `&& pwd -P` never runs, while zsh accepts it
+(rc=0) and `pwd -P` then prints the same cwd twice. Nothing downstream reliably
+catches it, either: the next git command runs in whatever tree the shell is
+actually in, and that tree may well be a real repo.
+
+`IN-PLACE` means this run was launched inside a worktree someone else created
+(an Orca/ADE workspace, a stray `cd`), so it has exactly ONE working tree:
+**take ONE issue and finish it** — a second lane would need a worktree nested
+inside this one, which dies with the outer workspace and takes its uncommitted
+work (go-to-k/cdkd#2390). Rank as usual, claim the top candidate, and leave the
+rest for the next run. Everything below is the MAIN-CHECKOUT case; SKILL.md
+"Launch mode" carries the other three consequences (§4, §5, §9).
 
 The parallel-integration constraint (same as the worktree rule): **two lanes
 must edit DISJOINT files.** Two issues that both land in `deploy-engine.ts`
