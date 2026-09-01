@@ -17,6 +17,9 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
 
 // Mock logger so noise doesn't pollute test output.
 vi.mock('../../../src/utils/logger.js', () => ({
+  // Issue #2280: the commands under test call this under --json; the mock
+  // must export it or the import is `undefined` and the call throws.
+  reserveStdoutForPayload: vi.fn(),
   getLogger: () => ({
     debug: vi.fn(),
     info: vi.fn(),

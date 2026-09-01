@@ -7,7 +7,7 @@ import {
   stateOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -61,13 +61,22 @@ export async function eventsCommand(
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  const asJson = options.json === true;
+  // Issue #2280: claim stdout for the payload BEFORE anything can print on
+  // it — `--json --verbose` otherwise mixes debug prose from the state
+  // backend's `child()` loggers into the payload stream, and those modules
+  // are not reachable from this file (the reservation is module-level for
+  // exactly that reason).
+  if (asJson) {
+    reserveStdoutForPayload();
+  }
+
   warnIfDeprecatedRegion(options);
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
   // reaches an SDK client, an ARN segment or a state key. Rationale (and why
   // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
   foldRegionOption(options);
-
-  const asJson = options.json === true;
 
   const awsClients = new AwsClients({
     ...(options.region && { region: options.region }),

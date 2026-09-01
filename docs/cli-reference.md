@@ -2581,6 +2581,16 @@ before. Before issue [#2230](https://github.com/go-to-k/cdkd/issues/2230) these
 lines shared stdout with the payload, so a `--json --accept` run produced a
 document a parser rejected while looking correct on screen.
 
+The same contract holds for **every `--json` surface**, not just `drift`:
+`cdkd list --json`, `cdkd events --json` (and its `--format json` alias), and
+the four `cdkd state {list,resources,show,info} --json` subcommands route
+their `--verbose` debug output, the `Assumed role ...` notice from
+`--role-arn` / `CDKD_ROLE_ARN` runs, and the CDK app's re-emitted stderr
+(bundling progress during `cdkd list`'s synth) to **stderr** while `--json`
+is in effect (issue [#2280](https://github.com/go-to-k/cdkd/issues/2280)).
+`cdkd diff --json` predates the mechanism and instead demotes the logger to
+`warn`, which suppresses rather than moves its info-level lines.
+
 `--json` output shape:
 
 ```json

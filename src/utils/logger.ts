@@ -42,8 +42,12 @@ const colors = {
  *
  * OPT-IN, and deliberately not derived from a `--json` flag inside the
  * logger: nothing changes for a command that does not call
- * {@link reserveStdoutForPayload}. Today only `cdkd drift --json` does, so
- * no other command's output contract moves.
+ * {@link reserveStdoutForPayload}. Every `--json` surface does (issue
+ * [#2280](https://github.com/go-to-k/cdkd/issues/2280) added the remaining
+ * six to `cdkd drift`'s original call: `cdkd list`, `cdkd events`, and the
+ * four `cdkd state {list,resources,show,info}` subcommands); a command
+ * without a `--json` mode never calls it, so no human-facing output
+ * contract moves.
  */
 let stdoutReservedForPayload = false;
 

@@ -7,7 +7,7 @@ import {
   parseContextOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption } from '../region-options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -113,6 +113,17 @@ async function listCommand(
 
   if (options.verbose) {
     logger.setLevel('debug');
+  }
+
+  // Issue #2280: claim stdout for the payload BEFORE anything can print on
+  // it. The worst offender needs no flags at all: `app-executor.ts` re-emits
+  // the CDK app's stderr (bundling progress, warnings) at INFO on a DEFAULT
+  // run, so `cdkd list --long --json` corrupts whenever the app writes to
+  // stderr. Lines are MOVED to stderr, not suppressed (the `diff.ts`
+  // level-demotion alternative): bundling warnings are still information an
+  // operator wants to see.
+  if (options.json) {
+    reserveStdoutForPayload();
   }
 
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
