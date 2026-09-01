@@ -62,7 +62,11 @@ See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation.
 
 See [docs/provider-development.md](docs/provider-development.md) for a step-by-step guide.
 
-## Integration Tests
+## Adding Integration Tests
+
+Add new examples under `tests/integration/`. See existing examples for patterns.
+
+## Running Integration Tests
 
 Integration tests under `tests/integration/` deploy and destroy **real AWS
 resources**, so running them incurs real AWS charges. CI does not run them.
@@ -72,6 +76,11 @@ coverage (see the table below), just say so in your PR — the maintainer runs
 the required tests before merging, at no cost to you. The maintainer's merge
 gates physically block merging until the required integration run has passed,
 so coverage is guaranteed either way; asking is never a burden.
+
+Note this is about *running* the tests, not writing them: if your change adds
+behavior no existing fixture covers (e.g. a new SDK provider), you are still
+expected to add the fixture in the same PR (see "Adding Integration Tests"
+above) — the maintainer can run it for you.
 
 You are welcome to run them yourself against your own AWS account if you
 prefer — see [docs/testing.md](docs/testing.md) for per-test instructions.
@@ -96,10 +105,6 @@ those, so the file is the source of truth. In summary:
 
 When in doubt, open the PR and ask; the maintainer will pick and run the
 right tests.
-
-## Adding Integration Tests
-
-Add new examples under `tests/integration/`. See existing examples for patterns.
 
 ## Code Style
 
