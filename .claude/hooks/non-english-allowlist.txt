@@ -1,0 +1,38 @@
+# non-english-allowlist.txt
+#
+# Repo-relative paths that `non-english-text-gate.sh` does NOT scan.
+#
+# The gate reads each changed file's WHOLE content at the PR head, not just the
+# added lines, so a file that legitimately CONTAINS non-English characters
+# blocks every PR that touches it -- forever, and for a reason that has nothing
+# to do with the change. That had never fired only because no PR had touched
+# such a file since the gate stopped being inert (2026-08-25); measured
+# 2026-08-31, exactly three tracked files carry non-English text, and two of
+# them are here because the characters ARE the subject under test.
+#
+# This is the sidecar the hook's own header has always prescribed for that case.
+# Keep it SMALL and keep each entry's reason with it: an entry is a permanent
+# hole in the English-only rule for that path. Prose that merely happens to be
+# in another language is NOT a candidate -- translate it instead. That is what
+# happened to the third file, `post-merge-sync-reminder.sh`, which carried a
+# verbatim Japanese user quote in a comment and now carries its translation.
+#
+# One path per line. Blank lines and `#` comments are ignored. Paths are
+# repo-relative and matched exactly (no globbing) so an entry cannot silently
+# widen to cover a directory.
+
+# The suite for the gate that DETECTS non-English text in a `gh` body. It cannot
+# be written without the characters it looks for; scanning it would mean the two
+# gates make each other unmaintainable.
+.claude/hooks/gh-body-english-gate.test.sh
+
+# A fixture asserting that a non-ASCII value survives docker argument handling
+# (a single Japanese word meaning "password"). The point of the case is the
+# BYTES, so an English spelling would not exercise it.
+#
+# Note what this comment does NOT do: quote the fixture's actual characters.
+# This file is not on its own list, deliberately -- a list that exempts itself
+# is a hole anyone can widen by writing into it. Measured while adding it: the
+# first draft DID quote them, and the gate blocked the very PR that introduced
+# the list, naming this line. Describe an entry's content; never reproduce it.
+tests/unit/utils/docker-cmd.test.ts
