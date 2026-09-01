@@ -9,12 +9,10 @@ paths:
 
 # Stop hooks
 
-Moved verbatim out of [hooks.md](hooks.md) when that file crossed the 120,000 B
-per-file payload cap again (the go-to-k/cdkd#2236 precedent, and the same move
-go-to-k/cdkd#2363 made for the cwd-race detector). hooks.md keeps a one-line
-pointer in the "Stop hooks" section; this file carries the detail, and its
-`paths:` glob is the four files the detail is about, so a session that is not
-touching a Stop hook does not pay for it.
+Split out of [hooks.md](hooks.md) when that file crossed the 120,000 B per-file
+payload cap again (the go-to-k/cdkd#2236 precedent). Its `paths:` glob is the
+four files the detail is about, so a session not touching a Stop hook does not
+pay for it.
 
 Two hooks fire on `Stop` rather than on a tool call, and they split the same
 question -- "is there work here that is not finished?" -- along the axis of
@@ -59,7 +57,7 @@ otherwise the rule bounds nothing:
 | hook | subject | re-arms when |
 | --- | --- | --- |
 | `stop-warn` | is a commit POSSIBLE (`check` marker fresh) | `blocked -> commitable` ONLY, plus a new dirty spell |
-| `stop-unmerged-lane-warn` | `<own branch>:<pushed\|unpushed>` | a different lane, or the lane becoming pushed |
+| `stop-unmerged-lane-warn` | `<own branch>:<pushed\|unpushed>` | a DIFFERENT branch, or `unpushed -> pushed` ONLY |
 
 Two of those choices are load-bearing and each was arrived at by rejecting the
 obvious alternative:
@@ -68,13 +66,22 @@ obvious alternative:
   Editing anything in the `check` gate's scope invalidates the marker, so
   `commitable -> blocked` is what ordinary work looks like; re-arming on it hands
   back the every-turn cadence the rule exists to bound.
+- The lane predicate is DIRECTED too: `unpushed -> pushed` re-arms, `pushed ->
+  unpushed` never. The undirected `prev_subject != subject` spelling is a bug --
+  `pushed -> unpushed` is an ordinary COMMIT, costing two forced continuations
+  per commit/push cycle forever.
+- Both compare against the last subject OBSERVED, not the last NUDGED, so the
+  record is written on the quiet path too. Recording only on the arm froze
+  `stop-warn` at `fresh -> ctx, stale -> sys, fresh -> sys` (the table promises
+  `ctx`).
 - `stop-unmerged-lane-warn` does NOT key on the commit COUNT, which changes every
   time the model commits, and does not use PUSH STATE as the CHANNEL
   discriminator -- the shape issue #2391 proposed. That discriminator goes quiet
   on a branch pushed with NO PR, which is a real failure and one of the two the
   hook exists for. Push state earns its keep in the subject (so the transition
-  re-arms exactly once) and in the TEXT (so the message names which half of the
-  work is left).
+  re-arms exactly once) and in the TEXT, which has THREE arms: no upstream, an
+  upstream with N commits not on it, and fully pushed. The middle one is where a
+  lane spends most of its life and had no case until 2026-08-31.
 
 The record is one file in the PER-WORKTREE git dir (`stop-nudge-warn` /
 `stop-nudge-lane`), holding `<session id>TAB<subject>TAB<epoch>`, written
@@ -85,7 +92,30 @@ with nobody to clean it up; a concurrent session in the same worktree can
 therefore clobber it, which costs an EXTRA nudge rather than a missed one -- the
 safe direction, and pinned by a case rather than left to be rediscovered as a
 bug. `stop-warn` DELETES its record as soon as the tree is clean, so the next
-dirty spell starts armed.
+dirty spell starts armed. Per-worktree-ness is pinned by a case arming from a
+linked worktree on the same session id and subject.
+
+Four corrections from 2026-08-31, in BOTH hooks, each pinned by a
+mutation-proved case:
+
+- **A RESUMED pass writes no record.** It reaches the user only, so recording
+  there turns "suppress this pass" into "suppress this subject for good" -- and
+  that subject is routinely NEW, having first become true DURING the
+  continuation. The case asserts channel, record untouched AND next turn arming;
+  any two also pass against a hook that never records.
+- **The downgrade changes the TEXT, not only the channel.** Both messages are
+  INSTRUCTIONS, so `systemMessage` addressed a human as the agent -- issue
+  #2389's defect, widened from one path to three. Each hook keeps a `model_msg`
+  and a `user_msg`; the lane hook's push wording splits into a FACT (both
+  channels) and a TODO (model only).
+- **The session id is normalised ONCE, from both sources.** The
+  `CLAUDE_CODE_SESSION_ID` fallback ran raw, in shell, AFTER the Python fold, so
+  a TAB or NEWLINE added a record field, shifted the read-back and re-armed every
+  turn. No coverage before: every payload named a session.
+- **`stop-warn` parses the record by parameter expansion, not `IFS=<TAB> read`.**
+  A TAB is IFS WHITESPACE, so `read` folds a run into one separator and an EMPTY
+  subject field handed `prev_subject` the EPOCH, taking the QUIET arm: a
+  malformed record SILENCING the nudge.
 
 - **`.claude/hooks/stop-warn.sh`** covers the UNCOMMITTED half. It fires when the
   working tree is dirty and says whether a commit is currently allowed (the
@@ -95,14 +125,22 @@ dirty spell starts armed.
   for the lane hook next door, and the reason a `stop-warn says: WARNING ...`
   line kept appearing in the terminal after issue #2392 fixed that one. Two
   Stop hooks were registered; only the other was revisited. Smoke test at
-  `.claude/hooks/stop-warn.test.sh` (29 cases, green under bash 5.x and macOS
-  system bash 3.2; 8 of them fail against the pre-#2396 hook, verified by
-  re-running the suite against it rather than asserted). Two fixture traps are
-  pinned there because each made a case pass for the wrong reason: this git does
-  NOT create `.git/info/` on `init`, so the sandbox's exclude file was never
-  written and the clean-tree case ran against a permanently dirty tree; and with
-  `PATH` emptied `bash` itself is unfindable, so the no-python3 case measured a
-  subshell that never started.
+  `.claude/hooks/stop-warn.test.sh` (65 cases; 12 fail against the pre-2026-08-31
+  hook, each also mutation-proved). Three fixture traps are pinned there, each
+  having made a case pass for the wrong reason: this git does NOT create
+  `.git/info/` on `init`, so the exclude file was never written and the
+  clean-tree case ran against a permanently dirty tree; the no-python3 case
+  emptied `PATH`, where `bash` and `dirname` vanish too, so the hook died at the
+  `cd ""` ABOVE its `command -v python3` guard and deleting that guard left the
+  suite green (the stub now omits only `python3`, and the case asserts exit 0);
+  and every `ctx` assertion depended on its POSITION until a
+  `clear_nudge_records` reset was added.
+
+  **bash 3.2 is exercised on the HOOK, not just the suite.** `/bin/bash <suite>`
+  leaves the hook on `#!/usr/bin/env bash`, which PATH resolves to the 5.x.
+  `HOOK_BASH=<path>` puts a `bash` shim first on PATH; six suites honour it and
+  `run-tests.sh` sets it per shell. Verified with a bash-4-only PARSE error
+  (`;;&` in a `case`) per hook: red with the shim, green without.
 - **`.claude/hooks/stop-unmerged-lane-warn.sh`** covers the quieter half: a
   linked worktree whose branch is COMMITTED but still ahead of `origin/main` --
   a lane that is finished as far as the editor is concerned and unfinished as
@@ -116,7 +154,8 @@ dirty spell starts armed.
     on another session's lane, so a continuation buys one extra reply that can
     only say "not mine".
   - **`stop_hook_active` set** (the harness already continued once this turn) ->
-    silent, so one nudge never becomes a spin.
+    `systemMessage`, so one nudge never becomes a spin. NOT silent, as it used to
+    be: the lane can be COMMITTED during the continuation.
 
   Ownership is decided from `cwd` in the Stop payload, resolved to its worktree
   root, falling back to this hook copy's own checkout -- in a linked worktree
@@ -159,6 +198,8 @@ dirty spell starts armed.
   seven original cases ran the hook from the sandbox's MAIN tree, which is why
   none of them could see it.
 
+  Smoke test at `.claude/hooks/stop-unmerged-lane-warn.test.sh` (77 cases; 11
+  fail against the pre-2026-08-31 hook, each also mutation-proved).
   Its suite carries one trap worth knowing before editing it. On macOS
   `mktemp -d` returns a `/var/folders/...` path whose real location is
   `/private/var/...`; the hook canonicalises its own root with `cd && pwd` while

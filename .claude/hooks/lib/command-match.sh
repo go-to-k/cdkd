@@ -941,6 +941,11 @@ GATE_RE_GIT_SWITCH="^git${GATE_FLAGS}[[:space:]]+(switch|checkout)([[:space:]]|$
 # path restore only when `--` is present, while `git restore` is path-scoped by
 # default -- so it cannot use the combined form.
 GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS}[[:space:]]+checkout([[:space:]]|$)"
+# `switch` alone, for the same reason `checkout` is separate: a caller that
+# judges the ARGUMENT TAIL has to know which verb fired -- `-c` creates a branch
+# under `switch` and is a config override under `checkout` -- so the combined
+# GATE_RE_GIT_SWITCH cannot answer it. main-tree-branch-gate reads both.
+GATE_RE_GIT_SWITCH_ONLY="^git${GATE_FLAGS}[[:space:]]+switch([[:space:]]|$)"
 GATE_RE_GIT_RESTORE="^git${GATE_FLAGS}[[:space:]]+restore([[:space:]]|$)"
 GATE_RE_GIT_CHECKOUT_RESTORE="^git${GATE_FLAGS}[[:space:]]+(checkout|restore)([[:space:]]|$)"
 GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)"

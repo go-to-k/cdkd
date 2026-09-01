@@ -25,6 +25,27 @@ FAIL=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
+# bash 3.2 is NOT exercised on the HOOK by running THIS FILE under /bin/bash.
+# The hook's shebang is `#!/usr/bin/env bash`, which resolves through PATH and
+# finds whatever bash is first there -- Homebrew 5.x on a dev Mac -- so
+# `/bin/bash <suite>` measured the SUITE under 3.2 and the SUBJECT under 5.x.
+# `HOOK_BASH=/bin/bash` puts a `bash` shim first on PATH, so the shebang, the
+# explicit `bash "$HOOK"` calls and any `bash` the hook itself spawns all run
+# that interpreter instead. Run the suite BOTH ways; the tallies must match.
+if [ -n "${HOOK_BASH:-}" ]; then
+  # Resolved to an ABSOLUTE path first. `HOOK_BASH=bash` would otherwise make
+  # `ln -sf bash <shim>/bash` a symlink pointing at ITSELF, and every hook
+  # invocation would then die on ELOOP -- a suite-wide red with a cause nowhere
+  # near the hook.
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMP/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
+
 run() {
   local name="$1" cmd="$2" expect_exit="$3"
   local input exit_code err
@@ -413,6 +434,131 @@ run "an english body file the command does not rewrite still passes" \
 # will never exist and that the command does not write, so it stays a skip.
 run "a non-gh -F value does not arm the fallback" \
   "awk -F , '{print \$1}' /dev/null && gh issue create --title x --body-file $STALE" 0
+
+# --- the `-F ,` case above cannot tell "gate not armed" from "armed, found
+# nothing": both answer 0. Its TWIN makes the difference observable -- same
+# `awk -F ,` prefix, a JAPANESE body file, and a required BLOCK. A hook that
+# bails out of the whole command on an unresolvable `-F` value (a tempting
+# "fix" for the false-block worry) passes the case above and fails this one.
+run "...and the gate IS armed on that same command, it simply found nothing" \
+  "awk -F , '{print \$1}' /dev/null && gh issue create --title x --body-file $JP_BODY" 2
+
+# --- KNOWN LIMIT, both directions: a one-call body written by something other
+# than a heredoc redirect. The extraction reads HEREDOC bodies only.
+#
+#   path ABSENT  -> nothing to read at all, so a non-English body written by
+#                   `printf > f` passes. That is the gap; pinning it is what
+#                   stops it widening silently.
+#   path EXISTS  -> the scan falls back to the FILE, so it still blocks. This
+#                   half is the REGRESSION a reviewer measured against the
+#                   first draft, which skipped whenever no heredoc body was
+#                   found: `printf %s "$B" > f` matched `cmd_rewrites`,
+#                   extracted nothing, and returned 0 where the pre-#2397 hook
+#                   returned 2 -- a fix that made the gate WEAKER than the code
+#                   it replaced.
+PRINTF_ABSENT="$TMP/printf-absent.md"
+run "known limit: a printf-written body at an ABSENT path is not extracted" \
+  "printf '%s\\n' '日本語の本文' > $PRINTF_ABSENT
+gh issue create --title x --body-file $PRINTF_ABSENT" 0
+
+run "...but an EXISTING non-English file is still read when printf rewrites it" \
+  "printf '%s\\n' 'All English content here.' > $JP_BODY
+gh issue create --title x --body-file $JP_BODY" 2
+
+# --- HEREDOC TERMINATOR MATCHING follows bash, not intuition, and both halves
+# are load-bearing. A plain `<<` needs the delimiter ALONE on its line, so an
+# indented `  EOF` sitting INSIDE the body is body text; a first draft stripped
+# all leading whitespace before comparing, ended the extraction there, and left
+# everything after it unscanned while bash still submitted it. That is a silent
+# miss, the one direction a gate must not fail in.
+INDENTED="$TMP/indented-eof.md"
+run "an indented EOF inside a plain << body does not end the extraction" \
+  "cat > $INDENTED <<EOF
+# Title
+
+  EOF
+
+これは日本語
+EOF
+gh issue create --title x --body-file $INDENTED" 2
+
+# ...and the converse: `<<-` DOES accept a TAB-indented terminator, so the body
+# ends there and the non-English text AFTER it is not part of what is being
+# published. Without the tab strip the extraction runs to the end of the command
+# and swallows that text, blocking a body that is entirely English.
+DASHED="$TMP/dashed-eof.md"
+run "a tab-indented terminator DOES end a <<- body" \
+  "cat > $DASHED <<-EOF
+	All English content here.
+	EOF
+gh issue create --title x --body-file $DASHED && echo '完了'" 0
+
+# --- An APPEND is NOT a rewrite. `>>` / `tee -a` leave what is on disk in
+# place: it is the FIRST HALF of the body being submitted, not a superseded
+# copy. Scanning the heredoc chunk INSTEAD of the file left the non-English text
+# already on disk unread -- rc=0 where both the pre-#2397 hook and the first fix
+# answered rc=2, the same "must not SKIP a scan the pre-fix hook performed"
+# class a reviewer had already caught once here.
+APPEND_JP="$TMP/append-jp.md"
+printf '日本語の本文\n' > "$APPEND_JP"
+run "an append does not excuse the non-English text already on disk" \
+  "cat >> $APPEND_JP <<EOF
+All English appended here.
+EOF
+gh pr create --title x --body-file $APPEND_JP" 2
+
+APPEND_EN="$TMP/append-en.md"
+printf 'All English content here.\n' > "$APPEND_EN"
+run "a clean append over an english file still passes" \
+  "cat >> $APPEND_EN <<EOF
+More English appended here.
+EOF
+gh pr create --title x --body-file $APPEND_EN" 0
+
+# --- EVERY heredoc writing the path is extracted, not just the first.
+TWO_CHUNK="$TMP/two-chunk.md"
+run "non-English in the SECOND heredoc chunk is still found" \
+  "cat > $TWO_CHUNK <<A
+All English here.
+A
+cat >> $TWO_CHUNK <<B
+これは日本語
+B
+gh issue create --title x --body-file $TWO_CHUNK" 2
+
+run "...and two English chunks still pass" \
+  "cat > $TWO_CHUNK <<A
+All English here.
+A
+cat >> $TWO_CHUNK <<B
+Still English here.
+B
+gh issue create --title x --body-file $TWO_CHUNK" 0
+
+# --- An EMPTY heredoc body is legal and is not the same thing as "no heredoc".
+# Inferring the latter from empty OUTPUT made an empty heredoc REWRITING a
+# non-English file fall through to the stale file and FALSE-BLOCK, quoting a
+# line that will not exist -- the unclearable block this change exists to end.
+EMPTY_OVER_JP="$TMP/empty-over-jp.md"
+printf '日本語の本文\n' > "$EMPTY_OVER_JP"
+run "an EMPTY heredoc rewriting a non-English file does not false-block" \
+  "cat > $EMPTY_OVER_JP <<EOF
+EOF
+gh issue create --title x --body-file $EMPTY_OVER_JP" 0
+
+# --- The other two widened terminator characters. Only `>f<<EOF` had a case, so
+# narrowing the class back to `[\s<]` left the suite green for `>f;` / `>f&&`.
+SEMI_ABSENT="$TMP/semi-absent.md"
+run "the >f; redirect spelling is still extracted and blocked" \
+  "cat <<EOF >$SEMI_ABSENT; gh issue create --title x --body-file $SEMI_ABSENT
+これは日本語
+EOF" 2
+
+AND_ABSENT="$TMP/and-absent.md"
+run "the >f&& redirect spelling is still extracted and blocked" \
+  "cat <<EOF >$AND_ABSENT&& gh issue create --title x --body-file $AND_ABSENT
+これは日本語
+EOF" 2
 
 # --- summary ----------------------------------------------------------
 echo

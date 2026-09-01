@@ -65,15 +65,23 @@ command -v python3 >/dev/null 2>&1 || exit 0
 # worktrees resolve to `.git/worktrees/<name>`, so lanes never share a record
 # and removing a worktree takes its record with it. Same resolution markgate
 # uses for its marker store.
-git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
-state_file="${git_dir}/stop-nudge-warn"
-
+#
+# Resolved AFTER the dirty check, not before. `--absolute-git-dir` is not
+# ancient, and an `|| exit 0` above the check would let a git that lacks it
+# silence the warning entirely -- trading the whole guardrail for the cadence,
+# which is the wrong way round. Unresolvable here costs only the MODEL channel
+# (see the arm predicate below).
 status=$(git status --porcelain 2>/dev/null || echo "")
+
+git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
+state_file=""
+[ -n "$git_dir" ] && state_file="${git_dir}/stop-nudge-warn"
+
 if [ -z "$status" ]; then
   # Clean tree: nothing to say, and the spell is over. Dropping the record here
   # is what makes the NEXT dirty spell start armed -- without it, a session that
   # commits and then starts new work would be silent for the rest of its life.
-  rm -f "$state_file" 2>/dev/null || true
+  [ -n "$state_file" ] && rm -f "$state_file" 2>/dev/null
   exit 0
 fi
 
@@ -88,11 +96,22 @@ else
   markgate=()
 fi
 
+# TWO texts, not one, and the split is the same defect this hook was written
+# for (go-to-k/cdkd#2389 / go-to-k/cdkd#2396) arriving one level down. The
+# warning is an INSTRUCTION -- "Run /check to allow commit" -- and on the
+# downgrade paths (a repeat subject, a resumed pass, an unpersistable record) it
+# was going out verbatim on `systemMessage`, i.e. to the human, who is being
+# addressed as the agent and has nothing to do about it. There are three such
+# paths now where there was one, so shipping one string would have WIDENED the
+# original defect rather than fixed it. The model text keeps the imperative; the
+# user text states what is TRUE for a human and says the agent has been told.
 if [ ${#markgate[@]} -gt 0 ] && "${markgate[@]}" verify check >/dev/null 2>&1; then
-  msg="WARNING: Uncommitted changes (/check passed, commit allowed)"
+  model_msg="WARNING: Uncommitted changes (/check passed, commit allowed)"
+  user_msg="NOTE: Uncommitted changes here, and /check has passed, so a commit is allowed. The agent has already been told; this is for your visibility."
   subject="commitable"
 else
-  msg="WARNING: Uncommitted changes. Run /check to allow commit (marker invalid)"
+  model_msg="WARNING: Uncommitted changes. Run /check to allow commit (marker invalid)"
+  user_msg="NOTE: Uncommitted changes here, and /check has not passed, so a commit is blocked until it does. The agent has already been told; this is for your visibility."
   subject="blocked"
 fi
 
@@ -100,7 +119,7 @@ fi
 # harness already continued this turn on a hook's account?) and `session_id`
 # (whose record is this?). A STRING "false" is truthy in Python, so the textual
 # spellings are folded down rather than trusted.
-parsed=$(HOOK_INPUT="$input" python3 -c '
+parsed=$(HOOK_INPUT="$input" ENV_SID="${CLAUDE_CODE_SESSION_ID:-}" python3 -c '
 import json, os
 
 try:
@@ -114,25 +133,52 @@ flag = data.get("stop_hook_active")
 if isinstance(flag, str):
     flag = flag.strip().lower() not in ("", "false", "0", "no")
 print("1" if flag else "0")
-print((data.get("session_id") or "").replace("\t", " ").replace("\n", " "))
+
+# BOTH sources are read here and normalised ONCE, which is the whole point of
+# doing it in this block rather than in shell. The fallback used to sit AFTER
+# this, raw: a TAB or a NEWLINE in `CLAUDE_CODE_SESSION_ID` then reached the
+# record, added a field, shifted the read-back, and `prev_sid` never matched
+# again -- unbounded `additionalContext` on every turn, against the harness
+# block cap, from the one input path no suite covered. `str()` because a JSON
+# `session_id` need not be a string.
+sid = data.get("session_id") or os.environ.get("ENV_SID") or "shared"
+sid = str(sid)
+for ch in ("\t", "\n", "\r"):
+    sid = sid.replace(ch, " ")
+print(sid or "shared")
 ')
 active=$(printf '%s\n' "$parsed" | sed -n 1p)
 sid=$(printf '%s\n' "$parsed" | sed -n 2p)
-[ -n "$sid" ] || sid="${CLAUDE_CODE_SESSION_ID:-shared}"
-
-# Already nudged once this turn and the model came back to Stop. Saying it
-# again would spin the turn instead of ending it, so stand down entirely --
-# repeating it on the user channel here would just double the same line.
-[ "$active" = "1" ] && exit 0
+# Defence in depth only: the block above cannot print an empty second line.
+[ -n "$sid" ] || sid="shared"
 
 prev_sid=""
 prev_subject=""
-if [ -r "$state_file" ]; then
-  IFS="$(printf '\t')" read -r prev_sid prev_subject _ <"$state_file" 2>/dev/null || true
+if [ -n "$state_file" ] && [ -r "$state_file" ]; then
+  # Split by parameter expansion rather than `IFS=<TAB> read -r a b _`. A TAB is
+  # IFS WHITESPACE, so `read` folds a run of them into ONE separator: a record
+  # whose subject field is empty (`<sid><TAB><TAB><epoch>`) handed `prev_subject`
+  # the EPOCH, which is non-empty, is not `blocked`, and therefore took the quiet
+  # arm -- a malformed record SILENCING the nudge, the one direction this must
+  # not fail in. Measured; the field-count and empty-file spellings already armed
+  # for a different reason, which is why the fold survived unnoticed.
+  # `|| true` on the read: a record with no trailing newline is a partial line
+  # and returns non-zero while still assigning what it read.
+  prev_line=""
+  IFS= read -r prev_line <"$state_file" 2>/dev/null || true
+  REC_TAB=$(printf '\t')
+  case "$prev_line" in
+    *"$REC_TAB"*)
+      prev_sid="${prev_line%%"$REC_TAB"*}"
+      prev_rest="${prev_line#*"$REC_TAB"}"
+      prev_subject="${prev_rest%%"$REC_TAB"*}"
+      ;;
+    *) prev_sid="$prev_line" ;;
+  esac
 fi
 
-# The arm predicate, spelled as the three rows of the table above. Note that
-# `commitable -> blocked` is deliberately absent.
+# The arm predicate, spelled as the rows of the table above. `commitable ->
+# blocked` is deliberately absent.
 if [ "$prev_sid" != "$sid" ] || [ -z "$prev_subject" ]; then
   arm=1
 elif [ "$prev_subject" = "blocked" ] && [ "$subject" = "commitable" ]; then
@@ -141,21 +187,61 @@ else
   arm=0
 fi
 
-if [ "$arm" = "1" ]; then
+# The record tracks the last OBSERVED subject, and is therefore written on BOTH
+# arms -- only the CHANNEL branches below. Writing it only when arming was a
+# real bug: `prev_subject` then held the last NUDGED subject, so after one
+# `blocked -> commitable` the record stayed `commitable` while the tree went
+# back to `blocked`, and the next `/check` pass -- a moment when committing
+# genuinely became possible again -- was silent. Measured on one dirty spell:
+# `fresh -> ctx, stale -> sys, fresh -> sys`, where the table promises `ctx`.
+# ...but NOT on a pass the harness has already resumed. That pass reaches the
+# user only, so nothing the model could act on happened, and recording the
+# subject as OBSERVED turns "suppress this pass" into "suppress this subject
+# for good": the condition can become true DURING the continuation, which is
+# the whole reason the arm below stops short of silence, and the very next
+# ordinary turn then reads its own first sighting as a repeat and downgrades.
+# Measured before the guard: `{active, blocked} -> sys` then `{blocked} -> sys`,
+# where the cadence promises `ctx` for the first turn a subject is nudgeable.
+persisted=0
+if [ -n "$state_file" ] && [ "$active" != "1" ]; then
   # One file rewritten in place, not one file per session: a per-session file
   # would accumulate in the git dir with nobody to clean it up. A concurrent
   # session in the same worktree can therefore clobber this record, which costs
   # an EXTRA nudge rather than a missed one -- the safe direction. Written via
   # tmp + `mv` so a Stop that races another never leaves a half-line behind.
+  # `2>/dev/null` precedes the write redirect on purpose: applied after it,
+  # bash reports the failed redirect on the hook's real stderr.
   tmp="${state_file}.$$"
-  if printf '%s\t%s\t%s\n' "$sid" "$subject" "$(date +%s)" >"$tmp" 2>/dev/null; then
-    mv -f "$tmp" "$state_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  if printf '%s\t%s\t%s\n' "$sid" "$subject" "$(date +%s)" 2>/dev/null >"$tmp"; then
+    if mv -f "$tmp" "$state_file" 2>/dev/null; then
+      persisted=1
+    else
+      rm -f "$tmp" 2>/dev/null || true
+    fi
   else
     rm -f "$tmp" 2>/dev/null || true
   fi
+fi
+
+# A nudge we cannot RECORD is a nudge we cannot bound: without the record every
+# later turn re-arms, which is the unbounded cadence this whole mechanism
+# exists to remove. So an unresolvable git dir or an unwritable one costs the
+# MODEL channel, not the warning -- the user still gets it, every turn.
+[ "$persisted" = "1" ] || arm=0
+
+# Already continued once this turn on a hook's account. Arming again would spin
+# the turn instead of ending it -- but going fully SILENT here was wrong: the
+# tree can become dirty DURING the continuation, in which case this pass is the
+# first time the condition holds at all and the user would never be told. A
+# bare `systemMessage` does not continue a turn, so it costs nothing.
+[ "$active" = "1" ] && arm=0
+
+if [ "$arm" = "1" ]; then
   channel="ctx"
+  msg="$model_msg"
 else
   channel="sys"
+  msg="$user_msg"
 fi
 
 MSG="$msg

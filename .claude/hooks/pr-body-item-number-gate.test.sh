@@ -14,6 +14,27 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr-body-item-number-gate.sh"
 TMPDIR_FIX="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_FIX"' EXIT
 
+# bash 3.2 is NOT exercised on the HOOK by running THIS FILE under /bin/bash.
+# The hook's shebang is `#!/usr/bin/env bash`, which resolves through PATH and
+# finds whatever bash is first there -- Homebrew 5.x on a dev Mac -- so
+# `/bin/bash <suite>` measured the SUITE under 3.2 and the SUBJECT under 5.x.
+# `HOOK_BASH=/bin/bash` puts a `bash` shim first on PATH, so the shebang, the
+# explicit `bash "$HOOK"` calls and any `bash` the hook itself spawns all run
+# that interpreter instead. Run the suite BOTH ways; the tallies must match.
+if [ -n "${HOOK_BASH:-}" ]; then
+  # Resolved to an ABSOLUTE path first. `HOOK_BASH=bash` would otherwise make
+  # `ln -sf bash <shim>/bash` a symlink pointing at ITSELF, and every hook
+  # invocation would then die on ELOOP -- a suite-wide red with a cause nowhere
+  # near the hook.
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPDIR_FIX/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
+
 write_file() {
   local name="$1"
   local content="$2"
@@ -319,6 +340,158 @@ run_case "a stale body file is not trusted when the command rewrites it" 2 \
 # satisfied by a hook that blocked whenever a body file was named at all.
 run_case "a clean body file the command does not rewrite still passes" 0 \
   "$(jq -cn --arg c "gh issue create --title t --body-file $STALE" '{tool_input:{command:$c}}')"
+
+# --- The CONTROLS for the fallback. The first attempt at go-to-k/cdkd#2397
+# scanned the WHOLE COMMAND when the body file could not be read, copying
+# `issue-dup-check-gate.sh`. That is safe for THAT gate and not for this one:
+# it needs one anchored marker to be PRESENT, so extra text can only make it
+# pass, while this gate objects to content it FINDS, so extra text makes it
+# BLOCK. Both of these are ordinary commands and both went from 0 to 2 under
+# that draft. They are what stops anyone reintroducing it.
+run_case "an item number in the TITLE does not block an absent body file" 0 \
+  "$(jq -cn --arg c "gh issue create --title 'follow-up to #2397 discussion' --body-file $ABSENT" '{tool_input:{command:$c}}')"
+
+run_case "an item number in an earlier commit message does not block" 0 \
+  "$(jq -cn --arg c "git commit -m 'address review #3' && gh pr create --body-file $ABSENT" '{tool_input:{command:$c}}')"
+
+# --- The stale-file polarity the existing case does NOT cover. Above, a CLEAN
+# file is rewritten by an OFFENDING heredoc and must block. Here the file on
+# disk is the offending one and the heredoc replaces it with a clean body: the
+# text being submitted is clean, so the gate must pass. A hook that reads the
+# file whenever it exists blocks a body whose offending line the author cannot
+# find, because it is not in what they are submitting.
+STALE_BAD=$(write_file stale-bad.md "# Title
+
+Must-fix #9: the PREVIOUS body
+")
+STALE_BAD_CLEANED="cat > $STALE_BAD <<EOF
+# Title
+
+Must-fix 9: the body actually being submitted
+EOF
+gh issue create --title t --body-file $STALE_BAD"
+run_case "a stale OFFENDING file cleaned by the heredoc passes" 0 \
+  "$(jq -cn --arg c "$STALE_BAD_CLEANED" '{tool_input:{command:$c}}')"
+
+# --- The TIGHT redirect spelling. `cat >f<<EOF` with no spaces is the same
+# shape as the case above and is what a terminator class of `(?:\s|$)` alone
+# missed: the character after the path is `<`, not whitespace, so neither
+# `cmd_writes_path` nor `heredoc_body_for` matched and the body went unscanned
+# while the command still submitted it.
+TIGHT_BAD="cat >$ABSENT<<EOF
+# Title
+
+Must-fix #2: written by a tight redirect
+EOF
+gh issue create --title t --body-file $ABSENT"
+run_case "the tight >f<<EOF redirect is still extracted and blocked" 2 \
+  "$(jq -cn --arg c "$TIGHT_BAD" '{tool_input:{command:$c}}')"
+
+# --- KNOWN LIMIT, asserted in BOTH directions rather than left to be
+# rediscovered. The extraction reads HEREDOC bodies; a one-call body written by
+# anything else (`printf > f`, `python3 -c ... > f`) cannot be extracted.
+#
+#   path ABSENT  -> there is nothing to read at all, so the offending body
+#                   passes. This is the gap, and pinning it is what stops it
+#                   widening silently.
+#   path EXISTS  -> the scan falls back to the FILE, so the same shape still
+#                   blocks. That fallback is not decoration: a first revision
+#                   skipped whenever no heredoc body was found, which made the
+#                   gate WEAKER than the code it replaced.
+PRINTF_ABSENT="printf '%s\\n' 'Must-fix #5: printf-written' > $ABSENT
+gh issue create --title t --body-file $ABSENT"
+run_case "known limit: a printf-written body at an ABSENT path is not extracted" 0 \
+  "$(jq -cn --arg c "$PRINTF_ABSENT" '{tool_input:{command:$c}}')"
+
+PRINTF_EXISTING="printf '%s\\n' 'Must-fix #5: printf-written' > $B
+gh issue create --title t --body-file $B"
+run_case "...but an EXISTING file is still read when printf rewrites it" 2 \
+  "$(jq -cn --arg c "$PRINTF_EXISTING" '{tool_input:{command:$c}}')"
+
+# --- An APPEND is NOT a rewrite, and treating it as one made this gate weaker
+# than the code it replaced. `>>` / `tee -a` leave what is on disk in place: it
+# is the FIRST HALF of the body being submitted, not a superseded copy. The
+# first fix scanned the heredoc chunk INSTEAD of the file and the offender on
+# disk went unread -- rc=0 where both the pre-#2397 hook and the first fix
+# answered rc=2.
+APPEND_BAD=$(write_file append-bad.md "# Title
+
+Must-fix #8: already on disk
+")
+APPEND_OVER_BAD="cat >> $APPEND_BAD <<EOF
+Must-fix 8: the appended half is clean
+EOF
+gh pr create --body-file $APPEND_BAD"
+run_case "an append does not excuse the offending content already on disk" 2 \
+  "$(jq -cn --arg c "$APPEND_OVER_BAD" '{tool_input:{command:$c}}')"
+
+# The control that keeps it honest: a clean append over a clean file passes, so
+# the case above is not satisfied by a hook that blocks on any append.
+APPEND_OK=$(write_file append-ok.md "# Title
+
+Must-fix 8: clean on disk
+")
+APPEND_OVER_OK="cat >> $APPEND_OK <<EOF
+Must-fix 9: and clean appended
+EOF
+gh pr create --body-file $APPEND_OK"
+run_case "a clean append over a clean file still passes" 0 \
+  "$(jq -cn --arg c "$APPEND_OVER_OK" '{tool_input:{command:$c}}')"
+
+# --- EVERY heredoc writing the path is extracted, not just the first. One
+# command can write a body in two chunks, and stopping at the first left the
+# second -- just as much of what is submitted -- unscanned.
+TWO_CHUNKS="cat > $ABSENT <<A
+# Title
+A
+cat >> $ABSENT <<B
+Must-fix #6: in the SECOND chunk
+B
+gh issue create --title t --body-file $ABSENT"
+run_case "an offender in the SECOND heredoc chunk is still found" 2 \
+  "$(jq -cn --arg c "$TWO_CHUNKS" '{tool_input:{command:$c}}')"
+
+TWO_CHUNKS_OK="cat > $ABSENT <<A
+# Title
+A
+cat >> $ABSENT <<B
+Must-fix 6: in the second chunk
+B
+gh issue create --title t --body-file $ABSENT"
+run_case "...and two clean chunks still pass" 0 \
+  "$(jq -cn --arg c "$TWO_CHUNKS_OK" '{tool_input:{command:$c}}')"
+
+# --- An EMPTY heredoc body is legal, and is not the same thing as "no heredoc".
+# Inferring the latter from empty OUTPUT made an empty heredoc REWRITING an
+# offending file fall through to the stale file and FALSE-BLOCK, quoting a line
+# that will not exist -- the unclearable block this whole change exists to end.
+EMPTY_OVER_BAD=$(write_file empty-over-bad.md "# Title
+
+Must-fix #9: the PREVIOUS body
+")
+EMPTY_REWRITE="cat > $EMPTY_OVER_BAD <<EOF
+EOF
+gh issue create --title t --body-file $EMPTY_OVER_BAD"
+run_case "an EMPTY heredoc rewriting an offending file does not false-block" 0 \
+  "$(jq -cn --arg c "$EMPTY_REWRITE" '{tool_input:{command:$c}}')"
+
+# --- The other two widened terminator characters. Only `>f<<EOF` had a case, so
+# narrowing the class back to `[\s<]` left the suite green for `>f;` and `>f&&`.
+SEMI_BAD="cat <<EOF >$ABSENT; gh issue create --title t --body-file $ABSENT
+# Title
+
+Must-fix #3: semicolon right after the redirect
+EOF"
+run_case "the >f; redirect spelling is still extracted and blocked" 2 \
+  "$(jq -cn --arg c "$SEMI_BAD" '{tool_input:{command:$c}}')"
+
+AND_BAD="cat <<EOF >$ABSENT&& gh issue create --title t --body-file $ABSENT
+# Title
+
+Must-fix #4: && right after the redirect
+EOF"
+run_case "the >f&& redirect spelling is still extracted and blocked" 2 \
+  "$(jq -cn --arg c "$AND_BAD" '{tool_input:{command:$c}}')"
 
 echo
 echo "Pass: $pass  Fail: $fail"

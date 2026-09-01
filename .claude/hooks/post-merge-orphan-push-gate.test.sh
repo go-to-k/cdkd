@@ -276,6 +276,102 @@ STUBEOF
 }
 cross_repo_case
 
+# --- COMMAND POSITION (2026-08-31). The push args used to be extracted from the
+# RAW command with `[[ "$cmd" =~ [[:space:]]push([[:space:]]+(.*))?$ ]]`, and a
+# greedy trailing `(.*)$` makes the LEFTMOST ` push` win. Measured on that
+# expression:
+#
+#   git push origin feat/x                             -> args=[origin feat/x]
+#   echo "remember to push origin main" && git push ... -> args=[origin main" ]
+#   git push origin main && git push origin feat/x     -> args=[origin main ]
+#
+# So a quoted MENTION steered the branch to `main"` and a two-push chain was
+# judged on the first. Either way the merged-PR lookup asks about the wrong
+# branch, finds nothing, and the orphan push proceeds unjudged.
+#
+# These need a HEAD-AWARE mock: the fixed-response mock above answers the same
+# JSON whatever branch is asked about, so it cannot tell WHICH branch the gate
+# judged -- the property every case here is about.
+headaware_case() {
+  local name="$1" want="$2" cmd="$3" want_heads="$4"
+  local dir stub trace out rc heads
+  dir="$TMPDIR/ha-repo"
+  if [ ! -d "$dir" ]; then
+    git init -q -b feat/already-merged "$dir"
+    git -C "$dir" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  fi
+  trace="$TMPDIR/ha-trace.$$"
+  : > "$trace"
+  stub="$TMPDIR/gh-headaware.$$"
+  cat > "$stub" <<EOF_STUB
+#!/usr/bin/env bash
+# Answers per --head, and RECORDS every head it was asked about, so a case can
+# assert which branch the gate judged rather than only what it returned.
+head=""
+prev=""
+for a in "\$@"; do
+  [ "\$prev" = "--head" ] && head="\$a"
+  prev="\$a"
+done
+printf '%s\n' "\$head" >> "$trace"
+if [ "\$head" = "feat/already-merged" ]; then
+  printf '%s\n' '[{"number":263,"mergedAt":"2026-05-11T03:00:00Z","headRefName":"feat/already-merged","title":"feat: cool stuff"}]'
+else
+  printf '%s\n' '[]'
+fi
+EOF_STUB
+  chmod +x "$stub"
+  out=$(jq -n --arg c "$cmd" --arg d "$dir" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}' \
+        | GH_BIN="$stub" bash "$HOOK" 2>&1) && rc=0 || rc=$?
+  heads=$(sort -u "$trace" | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+  if [ "$rc" = "$want" ] && [ "$heads" = "$want_heads" ]; then
+    pass=$((pass + 1))
+    printf 'OK   %s (exit %s, heads asked: [%s])\n' "$name" "$rc" "$heads"
+  else
+    fail=$((fail + 1))
+    fail_log+="FAIL $name: want exit $want heads [$want_heads], got exit $rc heads [$heads]\n"
+    fail_log+="  command: $cmd\n  output : $out\n"
+    printf 'FAIL %s (want exit %s heads [%s], got exit %s heads [%s])\n' "$name" "$want" "$want_heads" "$rc" "$heads"
+  fi
+  rm -f "$stub" "$trace"
+}
+
+# A quoted MENTION of a push must not steer the judgement. The exit code alone
+# discriminates here because the mention names the SAFE branch and the real push
+# names the merged one -- the reverse pairing yields 0 either way and would have
+# fenced nothing.
+headaware_case "a quoted mention of push does not steer the judgement" 2 \
+  'echo "remember to push origin feat/not-merged" && git push origin feat/already-merged' \
+  "feat/already-merged"
+
+# TWO pushes chained. EVERY push is judged, so the merged one is caught wherever
+# it sits; the old leftmost-wins extraction saw only the first.
+headaware_case "a chained push is judged even when it is the SECOND" 2 \
+  'git push origin feat/not-merged && git push origin feat/already-merged' \
+  "feat/already-merged,feat/not-merged"
+headaware_case "...and still when it is the first" 2 \
+  'git push origin feat/already-merged && git push origin feat/not-merged' \
+  "feat/already-merged"
+
+# The `;` separator form, which the old stripping happened to handle -- a
+# control that the move to segments did not lose it.
+headaware_case "cd <dir>; git push <merged-branch> still blocks" 2 \
+  "cd $TMPDIR/ha-repo; git push origin feat/already-merged" \
+  "feat/already-merged"
+
+# The pass direction, so the three blocking cases above are not satisfied by a
+# hook that blocks any chained push.
+headaware_case "a chain of pushes to non-merged branches passes" 0 \
+  'git push origin feat/not-merged && git push origin feat/other-not-merged' \
+  "feat/not-merged,feat/other-not-merged"
+
+# The mandated quoted-body false-positive pair, in its CHAINED spelling. The
+# heads trace must be EMPTY: the gate must not arm at all, which "exit 0" alone
+# cannot tell from "armed and found nothing".
+headaware_case "chained quoted mention alone never arms the gate" 0 \
+  'git status && echo "do not run: git push origin feat/already-merged"' \
+  ""
+
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
   echo

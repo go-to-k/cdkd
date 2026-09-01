@@ -479,7 +479,25 @@ const CORPUS_BYTES_MIN = 899_000;   // measured 914,165 B -- 15,165 B of slack.
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 928_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 946_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+                                    // 928_000 -> 946_000, measured 927,952 B: FORTY-EIGHT bytes of
+                                    // headroom, which is a landmine rather than a bound -- the next
+                                    // lane to add a paragraph anywhere in `.claude/rules/**` fails a
+                                    // test about a file it never opened, and the cheapest way out of
+                                    // that failure is to trim someone else's entry, which the corpus
+                                    // FLOOR exists to forbid. Raised deliberately rather than paid
+                                    // for by compression, and the reason is legible: this lane fixed
+                                    // six hook defects (two of them live gate bypasses) and their
+                                    // rationale is what a rules file is FOR. It was already
+                                    // compressed four times to fit under the old bound, and the full
+                                    // reasoning now lives in the hook comments, which this corpus
+                                    // does not measure -- i.e. the bound was pushing text out of the
+                                    // place a reader looks and into the place they do not.
+                                    // 18,048 B of headroom restored, ~2% of the corpus, sized so an
+                                    // ordinary docs lane fits without a second raise. This is a
+                                    // CEILING, so raising it weakens the guard: re-measure before
+                                    // touching it again, and prefer a narrower-`paths:` satellite
+                                    // whenever the growth is per-area rather than corpus-wide.
                                     // 900_000 -> 915_000 (go-to-k/cdkd#2363): origin/main sat at 899,989 B --
                                     // 11 B of headroom -- so ANY rules addition tripped it. Measured after the
                                     // hooks-cwd-detector.md split: 902,381 B (the widening's net prose is

@@ -13,6 +13,20 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/main-tree-branch-gate.sh"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# bash 3.2 is NOT exercised on the HOOK by running THIS FILE under /bin/bash.
+# The hook's shebang is `#!/usr/bin/env bash`, which resolves through PATH and
+# finds whatever bash is first there -- Homebrew 5.x on a dev Mac. `HOOK_BASH`
+# puts a `bash` shim first on PATH so the subject follows the harness.
+if [ -n "${HOOK_BASH:-}" ]; then
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPDIR/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
+
 # Set up a main repo + one linked worktree under
 # `.claude/worktrees/feat-x/`.
 main_repo="$TMPDIR/main-repo"
@@ -159,6 +173,38 @@ run_case "gh issue body quoting 'git switch' in main tree allowed" 0 \
 #     through.
 run_case "echo body quoting 'git checkout' in main tree allowed" 0 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"echo \"tip: git checkout -b some-feature in a worktree\""}}' "$main_repo")"
+
+# --- CHAINED command position (2026-08-31). The walker this replaced skipped to
+# the FIRST `git` token in the whole command, so a chained `git <verb> && git
+# switch -c <b>` read the FIRST verb, fell to the "unrecognised subcommand, fail
+# open" arm and exited 0 -- a live bypass, reproduced on the real main checkout:
+# the bare form rc=2, the chained twin rc=0. The suite had a `cd <main> && git
+# switch` case and no `git <verb> && git switch` one, which is why it survived.
+run_case "git fetch && git switch -c <feat> in main tree blocked" 2 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git fetch origin && git switch -c wt-probe origin/main" '{cwd:$d,tool_input:{command:$c}}')"
+run_case "git status; git checkout -b <feat> in main tree blocked" 2 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git status --short; git checkout -b wt-probe" '{cwd:$d,tool_input:{command:$c}}')"
+
+# ...and every allowance still holds when chained, which is what keeps the two
+# cases above from being satisfied by a hook that blocks any chained git.
+run_case "git fetch && git switch main in main tree allowed" 0 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git fetch origin && git switch main" '{cwd:$d,tool_input:{command:$c}}')"
+run_case "git status && git checkout -- <path> in main tree allowed" 0 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git status --short && git checkout -- README.md" '{cwd:$d,tool_input:{command:$c}}')"
+run_case "git fetch && git switch -c <feat> in a WORKTREE allowed" 0 \
+  "$(jq -cn --arg d "$worktree_dir" --arg c "git fetch origin && git switch -c wt-probe origin/main" '{cwd:$d,tool_input:{command:$c}}')"
+
+# The blocking verdict must come from the RIGHT segment: an allowed switch in
+# segment 1 must not excuse a blocking one in segment 2. A gate that reads only
+# the first matching segment passes this and fences nothing -- the shape
+# `gate_verb_rest_each` exists for.
+run_case "an allowed switch first does not excuse a blocking one after it" 2 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git switch main && git switch -c wt-probe" '{cwd:$d,tool_input:{command:$c}}')"
+
+# The mandated quoted-body pair in its CHAINED spelling, since the matcher
+# change is exactly where those regress.
+run_case "chained quoted mention of git switch -c in main tree allowed" 0 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git status && echo \"do not run: git switch -c wt-probe\"" '{cwd:$d,tool_input:{command:$c}}')"
 
 echo
 echo "Pass: $pass  Fail: $fail"
