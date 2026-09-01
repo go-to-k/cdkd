@@ -771,6 +771,54 @@ function readAllowedFirstAuthFactors(properties: Record<string, unknown>): strin
 }
 
 /**
+ * The two sub-keys of the CFn `Policies` blob — exactly the members
+ * `UserPoolPolicyType` declares, and exactly the keys `toSdkUserPoolPolicies`
+ * forwards. Iterated by the #1979 removal announcement so a sub-key AWS adds
+ * later joins BOTH the forwarding and the announcement in one edit here.
+ */
+const POLICIES_SUB_KEYS = ['PasswordPolicy', 'SignInPolicy'] as const;
+type PoliciesSubKey = (typeof POLICIES_SUB_KEYS)[number];
+
+/**
+ * Would this property bag put `Policies.<subKey>` on the wire?
+ *
+ * MIRRORS the wire's own two truthiness gates rather than re-deriving a
+ * "present" notion of its own: `create()` / `update()` gate on
+ * `if (properties['Policies'])` and `toSdkUserPoolPolicies` gates each sub-key
+ * on `if (policies['SignInPolicy'])`. The #1979 removal announcement must fire
+ * exactly when the wire STOPS carrying a sub-key it previously carried, so a
+ * hand-written presence test here (`in`, `!== undefined`, a plain-object
+ * guard) would disagree with the wire on `null` / `''` / `0` / `false` — the
+ * config-shape.ts share-the-predicate rule, applied to a truthiness gate.
+ * Agreement is pinned by a unit table that drives every value shape through
+ * the PUBLIC `update()` and asserts warn-iff-not-sent.
+ */
+function sendsPoliciesSubKey(bag: Record<string, unknown>, subKey: PoliciesSubKey): boolean {
+  const policies = bag['Policies'];
+  if (!policies) return false;
+  return Boolean((policies as Record<string, unknown>)[subKey]);
+}
+
+/**
+ * What the removal announcement tells the user about each sub-key: a short
+ * label for the live value the pool keeps, and the AWS default the user must
+ * DECLARE explicitly to get reset behavior (there is no removal path on the
+ * wire, so an explicit declaration is the only way to change the live value).
+ */
+const POLICIES_SUB_KEY_ANNOUNCEMENT: Record<PoliciesSubKey, { label: string; reset: string }> = {
+  PasswordPolicy: {
+    label: 'password policy',
+    reset:
+      'the AWS default is MinimumLength: 8 with every character-class requirement enabled ' +
+      'and TemporaryPasswordValidityDays: 7',
+  },
+  SignInPolicy: {
+    label: 'sign-in policy',
+    reset: 'the AWS default is AllowedFirstAuthFactors: [PASSWORD]',
+  },
+};
+
+/**
  * The PRE-FLIGHT: the reason this user-pool configuration cannot be applied at
  * all, or `undefined` when nothing is known to refuse it.
  *
@@ -1212,17 +1260,47 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * `readLiveMfaConfiguration`'s docstring, which carries the one ledger of
    * which fields were measured to reset and which were not.
    *
-   * **Consequence of that measurement, NOT fixed here: there is no removal
-   * path.** This builder forwards only what the template DECLARES, so deleting
-   * `SignInPolicy` from a template sends nothing for it -- and nothing sent
-   * means nothing changed. A user tightening their auth by removing a
-   * passwordless first-auth factor therefore leaves it live on the pool
-   * indefinitely, and `readCurrentState` keeps reporting a drift that
-   * `cdkd drift --revert` cannot clear, since the revert routes through this
-   * same builder. Clearing it needs an explicit reset value on the wire, which
-   * is a behavior change with its own integ and is out of this lane's scope.
-   * Whether CloudFormation removes it on the same template edit is UNMEASURED
-   * -- do not assume parity in either direction.
+   * **Consequence of that measurement: there is no removal path, and that is
+   * PARITY, not a gap to close with a reset** (issue #1979). This builder
+   * forwards only what the template DECLARES, so deleting `SignInPolicy` from
+   * a template sends nothing for it -- and nothing sent means nothing changed.
+   * Whether that no-op should become an explicit reset was settled by a real
+   * CloudFormation A/B rather than assumed. MEASURED us-east-1 2026-09-02
+   * (issue #1979), on a CFn stack whose pool declared
+   * `PasswordPolicy: {MinimumLength: 12, RequireSymbols: false}` +
+   * `SignInPolicy: {AllowedFirstAuthFactors: [PASSWORD, EMAIL_OTP]}`
+   * (ESSENTIALS tier), three template edits, each reaching UPDATE_COMPLETE:
+   *
+   * - removing the `SignInPolicy` sub-key alone left the live value at
+   *   `[PASSWORD, EMAIL_OTP]`;
+   * - removing the `PasswordPolicy` sub-key alone left the live value at
+   *   `MinimumLength: 12` / `RequireSymbols: false` -- NOT reset to the
+   *   documented defaults (8, every requirement on);
+   * - removing the whole `Policies` container left BOTH sub-keys intact.
+   *
+   * So CloudFormation performs the SAME silent no-op, and a cdkd-side reset
+   * would be a DIVERGENCE from its stated template compatibility, not parity.
+   * What was wrong was only the SILENCE: `update()` announces the
+   * inexpressible removal via `warnOnUnremovablePoliciesSubKeys`, naming the
+   * sub-key, saying the live value is unchanged, and pointing at the
+   * explicit-declaration remedy. It fires on `cdkd deploy`; the other three
+   * `update()` call sites reach it only under conditions each of which is
+   * spelled out at that method, because the obvious reading of two of them is
+   * wrong.
+   *
+   * **The announcement is the ONLY signal, which is why silence was the whole
+   * defect.** The issue predicted that the removal would also leave a
+   * permanent `cdkd drift` difference; MEASURED us-east-1 2026-09-02 on a live
+   * pool (stack `Cdkd1979LiveVerify`), it does not, and the prediction is
+   * withdrawn here rather than repeated. `update()` refreshes
+   * `observedProperties` from the POST-update `readCurrentState`, so the
+   * retained sub-key lands in the drift BASELINE (`observedProperties ??
+   * properties`, `drift.ts`) as well as on the pool: the announcing deploy
+   * converges, the next identical deploy is an honest NO_CHANGE, and both
+   * `cdkd drift` and `cdkd diff` report nothing. Nothing downstream of the
+   * deploy tells the operator that the tightening did not land -- so the warn
+   * is not a supplement to a visible drift, it is the only place the fact
+   * appears at all.
    */
   private toSdkUserPoolPolicies(policies: Record<string, unknown>): UserPoolPolicyType | undefined {
     const result: UserPoolPolicyType = {};
@@ -1664,7 +1742,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *   container sent without `PasswordPolicy` left `PasswordPolicy` intact,
    *   and omitting the container outright left both. Forwarding is still
    *   REQUIRED to APPLY a changed sub-key — preservation is not application —
-   *   and no omission can express a REMOVAL.
+   *   and no omission can express a REMOVAL. CloudFormation measured the same
+   *   way on all three removal edits (2026-09-02, issue #1979; transcript at
+   *   `toSdkUserPoolPolicies`), so the update path ANNOUNCES the removal via
+   *   `warnOnUnremovablePoliciesSubKeys` instead of resetting.
    *
    * `SetUserPoolMfaConfig` — a DIFFERENT API with a DIFFERENT rule, kept in
    * its own section so neither list is read as evidence for the other:
@@ -1758,6 +1839,89 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * Announce a `Policies` sub-key removal the wire cannot express (issue
+   * #1979). Fires once per removed sub-key when the previous side would have
+   * put it on the wire and the desired side no longer does — the same
+   * truthiness gates the forwarding itself uses (`sendsPoliciesSubKey`).
+   *
+   * WARN, not a reset, and not silence. `UpdateUserPool` preserves an omitted
+   * sub-key (measured 2026-08-19, issue #1968) and CloudFormation performs the
+   * SAME no-op on the identical template edit (measured 2026-09-02, issue
+   * #1979; both transcripts at `toSdkUserPoolPolicies`) — so sending a reset
+   * would diverge from cdkd's stated template compatibility, while silence
+   * leaves an operator believing a TIGHTENING landed (the motivating shape:
+   * deleting `SignInPolicy` to revoke a passwordless first-auth factor
+   * deploys green while AWS keeps allowing it). The announcement names the
+   * sub-key, states that the live value is unchanged, and gives the only
+   * remedy that exists on the wire: declaring the sub-key explicitly with the
+   * intended (e.g. default) configuration.
+   *
+   * Reached by four `update()` call sites, and each one needs its own reading
+   * of what "previous" MEANS there:
+   *
+   * - **`cdkd deploy`** (previous = the last-deployed template's record) warns
+   *   on the deploy that carries the removal. Later deploys compare template ==
+   *   record and are honest NO_CHANGEs, matching CloudFormation's own converged
+   *   stack (measured live, transcript at `toSdkUserPoolPolicies`).
+   * - **`cdkd drift --revert`** (previous = the full live readback) is NARROWER
+   *   than it looks, and the obvious reading of it is backwards. The revert's
+   *   DESIRED side is not the drift baseline: `buildRevertNewProperties`
+   *   (`drift.ts`) starts from `{ ...awsProperties }` and overwrites only the
+   *   top-level keys that actually DRIFTED, so an undrifted `Policies` carries
+   *   the LIVE blob and no removal is visible at all. And on a record with no
+   *   `observedProperties` — the case that looks most reachable — the revert
+   *   sets `preserveUntemplated`, whose `mergeUntemplatedValue` merges AWS's
+   *   untemplated sub-keys straight back in, so the sub-key is present on the
+   *   desired side and this warning does not fire -- unless the baseline's own
+   *   `Policies` is not a plain record (a `null`, a string, an unresolved
+   *   intrinsic), the one shape that merge declines: it returns the baseline
+   *   whole and drops the live sub-keys with it. What else reaches it is the
+   *   opposite shape: a record WITH `observedProperties`, plus a sub-key added
+   *   out-of-band after that capture, so `Policies` drifts and the baseline
+   *   written over it lacks the sub-key. The warning is then exactly right —
+   *   the revert cannot take that sub-key back off the pool.
+   * - **The rollback executor's `revert` arm** (previous = the newer state
+   *   record) warns when rolling back to a record that lacked the sub-key; the
+   *   rollback cannot restore that absence either.
+   * - **The rollback executor's `revert-failed-update` arm** passes
+   *   `attemptedProps` as the previous side, which is
+   *   `op.attemptedProperties ?? current.properties` — so a journal segment
+   *   that recorded no attempted properties degrades to the newer state record
+   *   and behaves exactly as the `revert` arm above. With a real attempted bag
+   *   it is the bag of an update that FAILED: if `UpdateUserPool` itself was
+   *   rejected, the attempted sub-key may never have reached AWS, and the
+   *   announcement then names a removal that had nothing to remove. Its literal
+   *   claim (the pool keeps whatever policy it currently has) stays true, and
+   *   the arm is not gated because a failure
+   *   AFTER a successful `UpdateUserPool` is the same-shaped case where the
+   *   sub-key DID land and the warning is fully earned; the two are not
+   *   distinguishable from `attemptedProps` alone.
+   *
+   * The message interpolates NO property values (sub-key names and the
+   * physical id only), so it needs no `maskSecrets` routing.
+   */
+  private warnOnUnremovablePoliciesSubKeys(
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): void {
+    for (const subKey of POLICIES_SUB_KEYS) {
+      if (!sendsPoliciesSubKey(previousProperties, subKey)) continue;
+      if (sendsPoliciesSubKey(properties, subKey)) continue;
+      const { label, reset } = POLICIES_SUB_KEY_ANNOUNCEMENT[subKey];
+      this.logger.warn(
+        `UserPool ${physicalId}: the desired configuration no longer declares ` +
+          `Policies.${subKey}, and no UpdateUserPool input can express that removal — ` +
+          `omitting the sub-key PRESERVES the live value (measured us-east-1 2026-08-19, ` +
+          `issue #1968), so the pool keeps its current ${label}. CloudFormation is the ` +
+          `same no-op on the identical template edit (measured us-east-1 2026-09-02, ` +
+          `issue #1979), so cdkd deliberately sends no reset. To change the live value, ` +
+          `declare Policies.${subKey} explicitly with the intended configuration (${reset}).`
+      );
+    }
+  }
+
+  /**
    * Update a Cognito User Pool
    *
    * Note: PoolName (UserPoolName) is immutable and cannot be changed after
@@ -1839,6 +2003,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       mfaConfiguration === '' && hasMfaConfigProps(properties)
         ? await this.readLiveMfaConfiguration(physicalId)
         : undefined;
+
+    // A removed `Policies` sub-key cannot be put on the wire, and both AWS and
+    // CloudFormation treat the omission as "keep the live value" — announce it
+    // rather than deploying the removal silently (issue #1979; the A/B
+    // transcript lives at `toSdkUserPoolPolicies`). Before the try so the
+    // announcement cannot be lost to an unrelated update failure, and so it is
+    // adjacent to the other pre-call announcements above.
+    this.warnOnUnremovablePoliciesSubKeys(physicalId, properties, previousProperties);
 
     try {
       const updateParams: UpdateUserPoolCommandInput = {

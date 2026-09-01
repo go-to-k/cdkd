@@ -730,6 +730,63 @@ for the full probe transcript and rationale.
 
 ---
 
+### Issue: deleting a Cognito `Policies` sub-key changes nothing on the pool
+
+**Symptoms:**
+
+You remove `Policies.SignInPolicy` from a `AWS::Cognito::UserPool` template --
+typically to revoke a passwordless first-auth factor such as `EMAIL_OTP` -- and
+`cdkd deploy` succeeds, but the pool still allows it. `cdkd drift` and
+`cdkd diff` both report nothing afterwards. The same happens for
+`Policies.PasswordPolicy`, and for deleting the whole `Policies` container.
+
+The one signal cdkd gives is a warning on the deploy that carries the removal:
+
+```text
+UserPool us-east-1_xxxxxxxxx: the desired configuration no longer declares
+Policies.SignInPolicy, and no UpdateUserPool input can express that removal --
+omitting the sub-key PRESERVES the live value ..., so the pool keeps its current
+sign-in policy. ... To change the live value, declare Policies.SignInPolicy
+explicitly with the intended configuration (the AWS default is
+AllowedFirstAuthFactors: [PASSWORD]).
+```
+
+**Cause:**
+
+`UpdateUserPool` treats an omitted `Policies` sub-key as "keep the live value",
+not as "reset it" -- measured us-east-1 2026-08-19 (issue
+[#1968](https://github.com/go-to-k/cdkd/issues/1968)). There is no input that
+expresses a removal, so a template that stops declaring the sub-key sends
+nothing for it and AWS changes nothing. **CloudFormation behaves identically**
+on the same template edit -- measured us-east-1 2026-09-02 on all three removal
+shapes (issue [#1979](https://github.com/go-to-k/cdkd/issues/1979)) -- so this
+is template-compatibility parity, not a cdkd defect, and cdkd deliberately does
+not send a reset that CloudFormation would not.
+
+`cdkd drift` is silent because the same deploy refreshes the drift baseline
+(`observedProperties`) from a post-update read of the live pool, so the retained
+sub-key sits on both sides of the comparison. That is why the deploy-time
+warning is the ONLY place this surfaces.
+
+**Solution:**
+
+Declare the sub-key explicitly with the configuration you want, rather than
+deleting it:
+
+```yaml
+Policies:
+  SignInPolicy:
+    AllowedFirstAuthFactors:
+      - PASSWORD          # revokes EMAIL_OTP by stating the intended set
+```
+
+The AWS defaults, if that is what you are after, are
+`AllowedFirstAuthFactors: [PASSWORD]` for `SignInPolicy` and `MinimumLength: 8`
+with every character-class requirement enabled plus
+`TemporaryPasswordValidityDays: 7` for `PasswordPolicy`.
+
+---
+
 ## Asset Publishing Issues
 
 ### Issue: "Asset publishing failed"

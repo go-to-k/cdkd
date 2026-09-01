@@ -16,6 +16,10 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
  *   CDKD_TEST_UPDATE=true: enabling MFA on an existing pool (the UpdateUserPool
  *   gate) and dropping an undeclared MfaConfiguration back to OFF (the
  *   announced downgrade)
+ * - AWS::Cognito::UserPool Policies sub-key removal (#1979), under
+ *   CDKD_TEST_UPDATE=true: removing Policies.SignInPolicy from the template is
+ *   inexpressible on the wire and a CloudFormation-measured no-op, so the
+ *   deploy must succeed, retain the live value, and ANNOUNCE the removal
  */
 export class CognitoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -196,6 +200,38 @@ export class CognitoStack extends cdk.Stack {
     });
     mfaDowngradePool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // Issue #1979 -- a removed Policies sub-key is an ANNOUNCED no-op, not a
+    // silent one and not a reset.
+    //
+    // Base arm: both Policies sub-keys declared with NON-default values
+    // (MinimumLength 12 vs the default 8; EMAIL_OTP beside the default
+    // PASSWORD), so retention and reset read differently on every asserted
+    // member.
+    // Update arm: the SignInPolicy sub-key is REMOVED (PasswordPolicy stays,
+    // byte-identical) and autoVerifiedAttributes is ADDED as the companion
+    // change -- the same control the #1968 measurement used -- proving the
+    // UpdateUserPool call actually fired, so "the sign-in policy is unchanged"
+    // cannot pass vacuously when no call went out at all.
+    //
+    // The wire cannot express the removal (UpdateUserPool preserves an omitted
+    // sub-key -- measured, issue #1968) and CloudFormation is the same no-op on
+    // the identical edit (measured, issue #1979), so the assertions are: the
+    // deploy SUCCEEDS, the live sign-in policy is RETAINED, and the deploy
+    // output ANNOUNCES the inexpressible removal naming the sub-key.
+    const policyRemovalPool = new cognito.CfnUserPool(this, 'PolicyRemovalUserPool', {
+      userPoolName: `cdkd-test-policy-removal-${cdk.Aws.ACCOUNT_ID}`,
+      // SignInPolicy.AllowedFirstAuthFactors needs the ESSENTIALS tier.
+      userPoolTier: 'ESSENTIALS',
+      policies: {
+        passwordPolicy: { minimumLength: 12, requireSymbols: false },
+        ...(isUpdate
+          ? {}
+          : { signInPolicy: { allowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] } }),
+      },
+      ...(isUpdate ? { autoVerifiedAttributes: ['email'] } : {}),
+    });
+    policyRemovalPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
     // Outputs
     new cdk.CfnOutput(this, 'UserPoolId', {
       value: userPool.userPoolId,
@@ -223,6 +259,10 @@ export class CognitoStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'MfaDowngradeUserPoolId', {
       value: mfaDowngradePool.ref,
+    });
+
+    new cdk.CfnOutput(this, 'PolicyRemovalUserPoolId', {
+      value: policyRemovalPool.ref,
     });
 
     cdk.Tags.of(this).add('Project', 'cdkd');

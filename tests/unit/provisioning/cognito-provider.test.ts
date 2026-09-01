@@ -2836,4 +2836,313 @@ describe('CognitoUserPoolProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
+
+  describe('Policies sub-key removal announcement (#1979)', () => {
+    // A fixed phrase of the announcement, independent of which sub-key fired.
+    const REMOVAL_NEEDLE = 'no UpdateUserPool input can express that removal';
+
+    // Every case here is a plain update with no Schema change and no
+    // MFA-routed property, so the call sequence is exactly
+    // UpdateUserPool -> DescribeUserPool (pinned per test — the once-leak
+    // rule's companion guard).
+    function primeUpdate() {
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        UserPool: {
+          Arn: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_abc123',
+        },
+      });
+    }
+
+    const warned = () => childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+
+    async function updateWith(
+      properties: Record<string, unknown>,
+      previousProperties: Record<string, unknown>
+    ) {
+      return provider.update(
+        'MyUserPool',
+        'us-east-1_abc123',
+        'AWS::Cognito::UserPool',
+        properties,
+        previousProperties
+      );
+    }
+
+    it('announces a SignInPolicy removal and still sends no reset (CFn parity)', async () => {
+      primeUpdate();
+
+      await updateWith(
+        { Policies: { PasswordPolicy: { MinimumLength: 12 } } },
+        {
+          Policies: {
+            PasswordPolicy: { MinimumLength: 12 },
+            SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] },
+          },
+        }
+      );
+
+      const messages = warned();
+      expect(messages).toContain(
+        'UserPool us-east-1_abc123: the desired configuration no longer declares Policies.SignInPolicy'
+      );
+      expect(messages).toContain(REMOVAL_NEEDLE);
+      // The remedy must name the explicit declaration that DOES change the
+      // live value — the only removal path that exists on the wire.
+      expect(messages).toContain('AllowedFirstAuthFactors: [PASSWORD]');
+      // The per-sub-key label (see the twin case for why the header clause
+      // alone is not enough).
+      expect(messages).toContain('keeps its current sign-in policy');
+      // The CloudFormation-parity sentence is the RATIONALE for sending no
+      // reset. Dropping it leaves the operator with no reason why cdkd
+      // declines to act, and nothing else in the suite fenced it.
+      expect(messages).toContain('CloudFormation is the same no-op');
+      expect(messages).not.toContain('keeps its current password policy');
+      // Per-sub-key discrimination: PasswordPolicy stays declared, so it must
+      // not be announced.
+      expect(messages).not.toContain('Policies.PasswordPolicy');
+
+      // The parity pin (measured CFn A/B, us-east-1 2026-09-02, issue #1979):
+      // CloudFormation performs the same no-op on this edit, so the request
+      // must NOT grow a reset value. If a future change makes cdkd send one,
+      // this fails and the divergence has to be deliberate.
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.constructor.name).toBe('UpdateUserPoolCommand');
+      expect(updateCall.input.Policies).toEqual({ PasswordPolicy: { MinimumLength: 12 } });
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('announces a PasswordPolicy removal (the twin sub-key, same shape)', async () => {
+      primeUpdate();
+
+      await updateWith(
+        { Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] } } },
+        {
+          Policies: {
+            PasswordPolicy: { MinimumLength: 12, RequireSymbols: false },
+            SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] },
+          },
+        }
+      );
+
+      const messages = warned();
+      expect(messages).toContain(
+        'UserPool us-east-1_abc123: the desired configuration no longer declares Policies.PasswordPolicy'
+      );
+      // The remedy names the AWS default the user would declare to get reset
+      // behavior explicitly.
+      expect(messages).toContain('MinimumLength: 8');
+      // The remedy's remaining clauses: a partial fence let the rest of the
+      // AWS default be dropped silently.
+      expect(messages).toContain('every character-class requirement enabled');
+      expect(messages).toContain('TemporaryPasswordValidityDays: 7');
+      // The per-sub-key LABEL, not just the header clause: swapping the two
+      // `POLICIES_SUB_KEY_ANNOUNCEMENT` labels would otherwise tell an operator
+      // the pool "keeps its current sign-in policy" for a PasswordPolicy
+      // removal, and every other assertion here — and the integ grep, which
+      // matches the header only — would stay green.
+      expect(messages).toContain('keeps its current password policy');
+      expect(messages).not.toContain('keeps its current sign-in policy');
+      expect(messages).not.toContain('Policies.SignInPolicy');
+
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.input.Policies).toEqual({
+        SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] },
+      });
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('announces BOTH sub-keys when the whole Policies container is removed', async () => {
+      primeUpdate();
+
+      await updateWith(
+        {},
+        {
+          Policies: {
+            PasswordPolicy: { MinimumLength: 12 },
+            SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] },
+          },
+        }
+      );
+
+      const messages = warned();
+      expect(messages).toContain('Policies.PasswordPolicy');
+      expect(messages).toContain('Policies.SignInPolicy');
+      const removalWarnings = childLogger.warn.mock.calls.filter((c) =>
+        String(c[0]).includes(REMOVAL_NEEDLE)
+      );
+      expect(removalWarnings).toHaveLength(2);
+
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.input.Policies).toBeUndefined();
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not announce on a value-only change (both sub-keys stay declared)', async () => {
+      primeUpdate();
+
+      await updateWith(
+        {
+          Policies: {
+            PasswordPolicy: { MinimumLength: 14 },
+            SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] },
+          },
+        },
+        {
+          Policies: {
+            PasswordPolicy: { MinimumLength: 12 },
+            SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] },
+          },
+        }
+      );
+
+      expect(warned()).toBe('');
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not announce when the sub-key was never declared (absent stays absent)', async () => {
+      primeUpdate();
+
+      await updateWith({}, {});
+
+      expect(warned()).toBe('');
+      const updateCall = mockSend.mock.calls[0][0];
+      expect(updateCall.input.Policies).toBeUndefined();
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('announces even when the UpdateUserPool call itself fails', async () => {
+      // The call site sits BEFORE the `try` so an unrelated update failure
+      // cannot swallow the announcement. Without this case, moving the call
+      // inside the `try` (after the send) passes every other test here: the
+      // five cases above all have a SUCCEEDING send, so they never distinguish
+      // the two placements.
+      mockSend.mockRejectedValueOnce(new Error('InvalidParameterException: unrelated'));
+
+      await expect(
+        updateWith(
+          { Policies: { PasswordPolicy: { MinimumLength: 12 } } },
+          {
+            Policies: {
+              PasswordPolicy: { MinimumLength: 12 },
+              SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] },
+            },
+          }
+        )
+      ).rejects.toThrow();
+
+      expect(warned()).toContain(
+        'UserPool us-east-1_abc123: the desired configuration no longer declares Policies.SignInPolicy'
+      );
+      // The block pins its call sequence per test. Here exactly ONE send goes
+      // out -- the UpdateUserPool that rejects -- so `rejects.toThrow()` cannot
+      // be passing for some other reason (a readback rejection, a priming
+      // mismatch that throws before the send), and a future change to the
+      // path's call count cannot silently invalidate the priming above.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('UpdateUserPoolCommand');
+    });
+
+    it('agrees with the wire on BOTH sides of every shape (warn iff the wire drops it)', async () => {
+      // The share-the-predicate fence. The announcement's presence test must
+      // MIRROR the forwarding's own truthiness gates, or the two disagree on
+      // exactly the null / '' / 0 / [] / string shapes. Driven through the
+      // PUBLIC update() so what is compared is the real wire, not a private
+      // helper's opinion of it.
+      //
+      // `sendsPoliciesSubKey` takes BOTH bags, so BOTH orientations are fenced
+      // here, and the wire answer for each shape is DERIVED once rather than
+      // written down:
+      //
+      //   - as the DESIRED side (previous always declares the sub-key):
+      //     announce iff the request no longer carries it;
+      //   - as the PREVIOUS side (desired declares no Policies at all):
+      //     announce iff that shape WOULD have put it on the wire.
+      //
+      // WHAT IS DERIVED vs WHAT IS PINNED, because the two are different
+      // questions and an earlier revision of this case got the split wrong in
+      // each direction:
+      //
+      //   - the ANNOUNCEMENT is DERIVED from `sends`. Hard-coding it cannot
+      //     track the wire: give `toSdkUserPoolPolicies` an empty-object skip
+      //     -- the shape this very provider already applies to
+      //     SmsConfiguration and UserPoolAddOns -- and `sub-key empty object`
+      //     stops reaching the wire, so a hard-coded "announce: no" would have
+      //     cdkd announce the removal of a sub-key that was never sent. That
+      //     is the exact false announcement this case exists to prevent.
+      //   - the WIRE (`sends`) is PINNED per shape, because which shapes reach
+      //     `UpdateUserPool` is a user-visible fact, not an implementation
+      //     detail. Deriving it and comparing it only against itself makes the
+      //     table agree with whatever the wire happens to do -- so applying
+      //     that same empty-object skip to the forwarding AND the predicate
+      //     together passed every case, silently dropping a sub-key cdkd sends
+      //     today. The previous hard-coded table caught that by accident; this
+      //     one catches it on purpose.
+      const previousDeclaring = {
+        Policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD', 'EMAIL_OTP'] } },
+      };
+      // `sends` = does this shape put `Policies.SignInPolicy` on the wire?
+      // Both truthiness gates must pass: the container, then the sub-key.
+      const shapes: Array<{ name: string; policies?: unknown; sends: boolean }> = [
+        { name: 'container absent', sends: false },
+        { name: 'container null', policies: null, sends: false },
+        { name: 'container empty string', policies: '', sends: false },
+        { name: 'container zero', policies: 0, sends: false },
+        { name: 'container false', policies: false, sends: false },
+        // Truthy container, but indexing it yields undefined -- the second
+        // gate is what rejects these two, not the first.
+        { name: 'container bare string', policies: 'Enabled', sends: false },
+        { name: 'container empty array', policies: [], sends: false },
+        { name: 'container empty object', policies: {}, sends: false },
+        { name: 'sub-key null', policies: { SignInPolicy: null }, sends: false },
+        // `{}` is TRUTHY, so this one IS forwarded, as `SignInPolicy: {}`.
+        { name: 'sub-key empty object', policies: { SignInPolicy: {} }, sends: true },
+        {
+          name: 'sub-key declared',
+          policies: { SignInPolicy: { AllowedFirstAuthFactors: ['PASSWORD'] } },
+          sends: true,
+        },
+      ];
+
+      for (const shape of shapes) {
+        const bag: Record<string, unknown> = 'policies' in shape ? { Policies: shape.policies } : {};
+
+        // --- Arm 1: the shape is the DESIRED side. Derives `sends`.
+        mockSend.mockClear();
+        childLogger.warn.mockClear();
+        primeUpdate();
+        await updateWith(bag, previousDeclaring);
+
+        const updateCall = mockSend.mock.calls[0][0];
+        const sends =
+          updateCall.input.Policies !== undefined &&
+          Boolean(updateCall.input.Policies['SignInPolicy']);
+        // The wire itself, pinned (see the note above): a change to WHICH
+        // shapes reach UpdateUserPool must red this table rather than be
+        // absorbed by it.
+        expect(sends, `shape "${shape.name}": is the sub-key forwarded to UpdateUserPool?`).toBe(
+          shape.sends
+        );
+        expect(
+          { shape: shape.name, sends, announced: warned().includes('Policies.SignInPolicy') },
+          `shape "${shape.name}" as DESIRED: announce exactly when the wire drops the sub-key`
+        ).toEqual({ shape: shape.name, sends, announced: !sends });
+        expect(mockSend).toHaveBeenCalledTimes(2);
+
+        // --- Arm 2: the same shape is the PREVIOUS side, desired declares no
+        // Policies at all, so the announcement depends only on whether that
+        // shape reached the wire -- the value arm 1 just measured.
+        mockSend.mockClear();
+        childLogger.warn.mockClear();
+        primeUpdate();
+        await updateWith({}, bag);
+
+        expect(
+          { shape: shape.name, sends, announced: warned().includes('Policies.SignInPolicy') },
+          `shape "${shape.name}" as PREVIOUS: announce exactly when that shape HAD been sent`
+        ).toEqual({ shape: shape.name, sends, announced: sends });
+        expect(mockSend).toHaveBeenCalledTimes(2);
+      }
+    });
+  });
 });
