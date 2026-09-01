@@ -138,6 +138,18 @@ jobs:
       # the integ-coverage step above.
       - run: vp run audit:coverage:check
 
+      # Issue #2388 — fail CI when a file under src/ constructs an
+      # @aws-sdk/client-* client without spreading awsClientDefaults() first.
+      # The AWS SDK for JavaScript v3 does not read HTTPS_PROXY / HTTP_PROXY,
+      # so such a client cannot reach AWS behind a corporate proxy at all — and
+      # it fails at CREDENTIAL resolution, before any service call, with a
+      # certificate error naming neither the proxy nor the client. No test
+      # catches it, because no test runs behind a proxy. Bare `run` like
+      # audit:coverage:check: the critic is pass/fail with nothing to
+      # regenerate. Its allow-list (tests/aws-client-defaults-allowlist.json)
+      # may only shrink — a stale or dead entry fails too.
+      - run: vp run audit:aws-client-defaults:check
+
       # Issue #423 — fail CI when docs/scenario-coverage.md or
       # docs/_generated/scenario-coverage.json is stale relative to
       # the KNOWN_SCENARIOS taxonomy in

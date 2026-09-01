@@ -20,6 +20,7 @@ import { RedshiftClient } from '@aws-sdk/client-redshift';
 import { ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { ACMClient } from '@aws-sdk/client-acm';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
+import { awsClientDefaults, type AwsClientDefaults } from './aws-client-defaults.ts';
 
 /**
  * AWS client configuration
@@ -40,20 +41,27 @@ export interface AwsClientConfig {
 /**
  * {@link canonicalizeRegion}'s body, inlined.
  *
- * This module may NOT import it — `scripts/audit-provider-coverage.ts` runs
- * under `node` with native type stripping and imports this file as
- * `'../src/utils/aws-clients.ts'`, and Node resolves relative specifiers
- * LITERALLY: it does not rewrite `.js` to `.ts` the way TypeScript does at emit
- * time. So a `./aws-partition.js` import here is fine for the bundle and fails
- * the script with `ERR_MODULE_NOT_FOUND` (which is exactly how this was found —
- * 32 `gen-nested-key-coverage` cases went red on the first cut of issue #2065).
- * That constraint had never been written down, because until now this file
- * happened to have NO relative import at all; the script's own import carries
- * the other half of the note.
+ * This module may NOT import it AS `./aws-partition.js` —
+ * `scripts/audit-provider-coverage.ts` runs under `node` with native type
+ * stripping and imports this file as `'../src/utils/aws-clients.ts'`, and Node
+ * resolves relative specifiers LITERALLY: it does not rewrite `.js` to `.ts`
+ * the way TypeScript does at emit time. So a `./aws-partition.js` import here
+ * is fine for the bundle and fails the script with `ERR_MODULE_NOT_FOUND`
+ * (which is exactly how this was found — 32 `gen-nested-key-coverage` cases
+ * went red on the first cut of issue #2065).
+ *
+ * A relative import IS allowed, spelled `.ts` — which resolves under both, and
+ * which `rewriteRelativeImportExtensions` emits as `.js`. `./aws-client-defaults.ts`
+ * is the first one under `src/` (issue #2388); the spelling is established in
+ * `scripts/` and `tests/`. The constraint is TRANSITIVE, so it binds every
+ * module reachable from here, not just this file's own imports. Inlining
+ * `foldRegion` is kept anyway: it is one line, and the alternative is a module
+ * in that closure existing solely to hold it.
  *
  * `tests/unit/utils/aws-clients-region-fold.test.ts` fences BOTH halves: that
  * this stays byte-equivalent to `canonicalizeRegion` over a table of spellings,
- * and that this file gains no relative import that would break the script.
+ * and that every relative import reachable from this file resolves under
+ * literal resolution.
  */
 function foldRegion(region: string): string {
   return region.toLowerCase();
@@ -106,8 +114,22 @@ export class AwsClients {
     };
   }
 
-  private get clientOptions(): Pick<AwsClientConfig, 'region' | 'profile' | 'credentials'> {
+  private get clientOptions(): {
+    region?: string;
+    profile?: string;
+    // Widened beyond `AwsClientConfig['credentials']`: the proxied path
+    // supplies a PROVIDER (a function the SDK calls and memoizes), not a
+    // literal key bag.
+    credentials?:
+      | NonNullable<AwsClientConfig['credentials']>
+      | NonNullable<AwsClientDefaults['credentials']>;
+    requestHandler?: NonNullable<AwsClientDefaults['requestHandler']>;
+  } {
+    // `awsClientDefaults()` FIRST, so an explicit `credentials` below still
+    // wins — see the spread-order note in `aws-client-defaults.ts`. It returns
+    // `{}` unless a proxy variable is set, so the unproxied path is unchanged.
     return {
+      ...awsClientDefaults({ profile: this.config.profile }),
       ...(this.config.region && { region: this.config.region }),
       ...(this.config.profile && { profile: this.config.profile }),
       ...(this.config.credentials && { credentials: this.config.credentials }),

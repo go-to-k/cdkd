@@ -24,6 +24,7 @@
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import type { S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from './logger.js';
+import { awsClientDefaults } from './aws-client-defaults.js';
 
 /**
  * Resolved credential shape we care about. `accessKeyId` doubles as the
@@ -85,6 +86,7 @@ function resolveAccountIdForCredentials(
 
   const promise = (async (): Promise<string | undefined> => {
     const sts = new STSClient({
+      ...awsClientDefaults(),
       ...(typeof region === 'string' && region ? { region } : {}),
       credentials: {
         accessKeyId: credentials.accessKeyId,

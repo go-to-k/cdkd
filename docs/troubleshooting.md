@@ -10,8 +10,9 @@ This document summarizes common issues when using cdkd and their solutions.
 4. [Asset Publishing Issues](#asset-publishing-issues)
 5. [Intrinsic Function Issues](#intrinsic-function-issues)
 6. [Permission Errors](#permission-errors)
-7. [Performance Issues](#performance-issues)
-8. [Orphaned Resources](#orphaned-resources)
+7. [Proxy / Corporate Network](#proxy--corporate-network)
+8. [Performance Issues](#performance-issues)
+9. [Orphaned Resources](#orphaned-resources)
 
 ---
 
@@ -1041,6 +1042,112 @@ aws iam get-role --role-name cdk-hnb659fds-deploy-role-123456789012-us-east-1
     }
   ]
 }
+```
+
+---
+
+## Proxy / Corporate Network
+
+### Issue: "self-signed certificate in certificate chain" on the very first command
+
+```
+$ cdkd bootstrap --profile my-sso-profile
+Starting cdkd bootstrap...
+No --state-bucket specified, resolving default bucket name...
+CredentialsProviderError: Error: self-signed certificate in certificate chain
+```
+
+**The certificate wording is usually a red herring.** On a network whose only
+egress is a corporate proxy, it is the DIRECT route that gets intercepted, so
+the certificate cdkd sees is the interceptor's rather than Amazon's. Routed
+through the proxy, cdkd sees Amazon's own certificate.
+
+cdkd honours the proxy environment variables. If the AWS CLI, `git` and `npm`
+work in the same shell but cdkd does not, check that the variables are exported
+to the process running cdkd — the AWS CLI can also be
+configured through `~/.aws/config`, and `npm` through `~/.npmrc`, so those two
+working is not by itself evidence that the environment carries a proxy.
+
+**Why this needed a change in cdkd at all.** The AWS SDK for JavaScript v3 does
+not read the proxy variables the way botocore (the AWS CLI) and Go's
+`net/http` do; its
+[guide](https://docs.aws.amazon.com/sdk-for-javascript/v3/developer-guide/node-configuring-proxies.html)
+states that a proxy is supplied "through a third-party HTTP agent" by whoever
+constructs the client. Node's own `NODE_USE_ENV_PROXY=1` is not a substitute:
+it rewires the GLOBAL agent, while every SDK client builds its own.
+
+### Variables cdkd honours
+
+| Variable | Effect |
+| --- | --- |
+| `HTTPS_PROXY` / `https_proxy` | Proxy for `https://` requests, which is all AWS traffic in practice |
+| `HTTP_PROXY` / `http_proxy` | Proxy for plain `http://` requests |
+| `ALL_PROXY` / `all_proxy` | Fallback for either scheme |
+| `NO_PROXY` / `no_proxy` | Hosts to reach directly, bypassing the proxy |
+
+Both spellings work; the lower-case ones win where a tool sets both, matching
+the resolution order of every other tool that reads them. The proxy is chosen
+per REQUEST, so `HTTPS_PROXY` and `HTTP_PROXY` may name different proxies and
+each scheme goes to its own.
+
+### `NO_PROXY` matching is EXACT, unlike curl
+
+An entry that does not start with `.` or `*` is compared for **exact equality**
+against the hostname. This surprises most people, because curl treats a bare
+entry as a suffix.
+
+| `NO_PROXY` | `example.com` | `api.example.com` |
+| --- | --- | --- |
+| `example.com` | direct | **proxied** |
+| `.example.com` | **proxied** | direct |
+| `*.example.com` | **proxied** | direct |
+| `example.com,.example.com` | direct | direct |
+
+So covering a domain and its subdomains takes **two entries**.
+
+**CIDR ranges are not supported and are silently ignored.** A hostname never
+contains `/`, so a `10.0.0.0/8` entry falls into the exact-match branch and can
+never match anything. IP addresses must be listed literally
+(`NO_PROXY=10.1.2.3`). A trailing wildcard such as `172.16.*` does not work
+either — only a LEADING `*` is a wildcard.
+
+This matters for VPC-endpoint setups, where the intent is usually to send
+`*.amazonaws.com` direct and everything else through the proxy: write
+`NO_PROXY=.amazonaws.com,amazonaws.com`, not `NO_PROXY=amazonaws.com`.
+
+### A TLS-terminating proxy still needs `NODE_EXTRA_CA_CERTS`
+
+Routing through the proxy removes the need for an extra CA only when the proxy
+opens a **CONNECT tunnel**, because the origin's own certificate is what gets
+validated end to end. A proxy that **terminates TLS** presents its own
+certificate on purpose, and cdkd must be told to trust it:
+
+```bash
+export NODE_EXTRA_CA_CERTS=/path/to/corporate-root-ca.pem
+```
+
+If a certificate error survives correct proxy variables, this is almost always
+what is missing. `NODE_EXTRA_CA_CERTS` must point at a PEM file readable by the
+cdkd process; it is a Node.js variable, so it does not help the AWS CLI (which
+uses `AWS_CA_BUNDLE`).
+
+### The Docker daemon has its own egress
+
+`cdkd deploy` builds and pushes container image assets through the **Docker
+daemon**, and `cdkd local` runs containers through it. The daemon is a separate
+process with its own network configuration — cdkd cannot configure it, and the
+variables above do not reach it. If image pulls or pushes fail behind a proxy
+while everything else works, configure the daemon itself (on Linux, a systemd
+drop-in with `Environment="HTTPS_PROXY=..."`; on Docker Desktop, Settings →
+Resources → Proxies) and restart it.
+
+### Verifying that traffic is routed
+
+Point cdkd at a proxy that cannot work. If the variable is being honoured, the
+command fails; if it succeeds anyway, the variable is not reaching the process:
+
+```bash
+HTTPS_PROXY=http://127.0.0.1:1 cdkd state list --profile <a working profile>
 ```
 
 ---

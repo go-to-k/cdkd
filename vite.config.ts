@@ -327,6 +327,10 @@ export default defineConfig({
         command: 'node scripts/audit-provider-coverage.ts --check',
         cache: false,
       },
+      'audit:aws-client-defaults:check': {
+        command: 'node scripts/check-aws-client-defaults.ts --check',
+        cache: false,
+      },
       'integ-coverage': {
         command: 'node --experimental-strip-types scripts/build-integ-coverage-matrix.ts',
         cache: false,
