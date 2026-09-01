@@ -13,6 +13,27 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/non-english-text-gate.sh"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# bash 3.2 is NOT exercised on the HOOK by running THIS FILE under /bin/bash.
+# The hook's shebang is `#!/usr/bin/env bash`, which resolves through PATH and
+# finds whatever bash is first there -- Homebrew 5.x on a dev Mac -- so
+# `/bin/bash <suite>` measured the SUITE under 3.2 and the SUBJECT under 5.x.
+# `HOOK_BASH=/bin/bash` puts a `bash` shim first on PATH, so the shebang, the
+# explicit `bash "$HOOK"` calls and any `bash` the hook itself spawns all run
+# that interpreter instead. Run the suite BOTH ways; the tallies must match.
+if [ -n "${HOOK_BASH:-}" ]; then
+  # Resolved to an ABSOLUTE path first. `HOOK_BASH=bash` would otherwise make
+  # `ln -sf bash <shim>/bash` a symlink pointing at ITSELF, and every hook
+  # invocation would then die on ELOOP -- a suite-wide red with a cause nowhere
+  # near the hook.
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPDIR/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
+
 init_repo() {
   local dir="$1"
   git init -q -b main "$dir"
@@ -223,6 +244,70 @@ printf '# %s\n' "$(printf '\343\201\202')" > "$D/pnpm-lock.yaml"
 commit_all "$D"
 run_hook "$D"; rc=$?
 if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+# --- Allow-list (go-to-k/cdkd#2397 lane). The gate reads each changed file's
+# WHOLE content, not just the added lines, so a file that legitimately CONTAINS
+# non-English characters blocks EVERY PR that touches it -- forever, and for a
+# reason unrelated to the change. Measured 2026-08-31: three tracked files were
+# in that state, and it had never fired only because no PR had touched one since
+# the gate stopped being inert. The sidecar the hook's header always prescribed
+# now exists. These four cases pin BOTH directions; the allow arm fails against
+# the pre-allowlist hook and every deny arm passes there, so the list cannot
+# quietly become a blanket exemption.
+case_label "allow-listed path with hiragana --> skip"
+D="$TMPDIR/allow1"; init_repo "$D"
+mkdir -p "$D/.claude/hooks"
+printf "run 'x' %s\n" "$(printf '\343\201\202')" > "$D/.claude/hooks/gh-body-english-gate.test.sh"
+commit_all "$D"
+run_hook "$D"; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+# The control that makes the case above mean something: a SIBLING file in the
+# same directory, not on the list, must still block. Without it the case above
+# is also satisfied by a hook that stopped scanning `.claude/hooks/` entirely.
+case_label "a non-listed sibling in the same directory --> block"
+D="$TMPDIR/allow2"; init_repo "$D"
+mkdir -p "$D/.claude/hooks"
+printf "run 'x' %s\n" "$(printf '\343\201\202')" > "$D/.claude/hooks/some-other-gate.test.sh"
+commit_all "$D"
+run_hook "$D"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+# Entries are matched EXACTLY, never as globs or prefixes -- otherwise one entry
+# silently exempts a whole directory, which is the failure mode that makes an
+# allow-list worse than no allow-list.
+case_label "a path merely PREFIXED by a listed one --> block"
+D="$TMPDIR/allow3"; init_repo "$D"
+mkdir -p "$D/.claude/hooks"
+printf "run 'x' %s\n" "$(printf '\343\201\202')" > "$D/.claude/hooks/gh-body-english-gate.test.sh.bak"
+commit_all "$D"
+run_hook "$D"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
+
+# The second listed entry, which is NOT under `.claude/` -- so the list is not
+# accidentally satisfied by some path-prefix rule.
+case_label "the docker-cmd fixture is allow-listed too --> skip"
+D="$TMPDIR/allow4"; init_repo "$D"
+mkdir -p "$D/tests/unit/utils"
+printf "const p = '%s';\n" "$(printf '\343\201\202')" > "$D/tests/unit/utils/docker-cmd.test.ts"
+commit_all "$D"
+run_hook "$D"; rc=$?
+if [[ $rc -eq 0 ]]; then ok; else ng 0 "$rc"; fi
+
+# The allow-list file is NOT on its own list, and that is the defect that
+# blocked this PR from being opened: the first draft of the list QUOTED the
+# Japanese characters of the fixture it describes, and the gate -- correctly --
+# refused the PR naming that line. The fix was to describe the entry rather than
+# reproduce it, NOT to exempt the list. A list that exempts itself is a hole
+# anyone can widen by writing into it, so the property is pinned rather than
+# left to a comment.
+case_label "the allow-list file itself is not exempt --> block"
+D="$TMPDIR/allow5"; init_repo "$D"
+mkdir -p "$D/.claude/hooks"
+printf '# %s\n' "$(printf '\343\201\202')" > "$D/.claude/hooks/non-english-allowlist.txt"
+commit_all "$D"
+run_hook "$D"; rc=$?
+if [[ $rc -eq 2 ]]; then ok; else ng 2 "$rc"; fi
 
 # --- Case 10: git commit (not gh pr) --> pass-through ---
 case_label "git commit --> pass-through"

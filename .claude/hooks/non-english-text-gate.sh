@@ -56,10 +56,16 @@
 # post-merge-orphan-push-gate.sh's contract so a fresh machine still
 # works).
 #
-# No bypass marker — the fix is trivial (translate the text). If a test
-# fixture ever genuinely needs Japanese content (Unicode-handling
-# tests), add a sidecar allow-list file like the integ-coverage gate
-# uses; v1 ships without that mechanism.
+# No bypass marker — the fix is trivial (translate the text). The one
+# exception is the sidecar allow-list this header used to describe as
+# unbuilt: `.claude/hooks/non-english-allowlist.txt`, added once the
+# window it exists for actually closed on a lane. The gate reads each
+# changed file's WHOLE content at the PR head, not just the added
+# lines, so a file that legitimately CONTAINS the characters blocks
+# every PR that touches it, for a reason unrelated to the change. Two
+# files qualify and both are ones where the characters ARE the subject
+# (this gate's body-side twin's own suite; a docker-argument fixture);
+# see that file for why each is there and why prose does not qualify.
 
 set -u
 
@@ -183,9 +189,52 @@ if [[ -z "$changed_files" ]]; then
   exit 0
 fi
 
-# Skip binary / lockfile / asset extensions.
+# The sidecar allow-list, read ONCE into a newline-delimited string rather than
+# per file. Resolved against this hook's OWN directory, not the target repo: the
+# list is part of the gate's definition, and a vendored copy of the hook in some
+# other tree must not be able to widen it.
+# The list is resolved to an ABSOLUTE path from this hook's own directory, and
+# both halves of that are load-bearing.
+#
+# From THIS hook's directory, because the list is part of the gate's DEFINITION:
+# resolving it relative to the target repo would let any repo the agent is
+# induced to touch ship its own `non-english-allowlist.txt` and exempt whatever
+# it likes. Measured: with the relative form, invoking the hook as
+# `bash ./.claude/hooks/non-english-text-gate.sh` against a target repo carrying
+# its own list took that list and returned 0.
+#
+# ABSOLUTE, because the scan `cd`s into the target directory further down. A
+# relative `${BASH_SOURCE[0]%/*}` is relative to the ORIGINAL cwd, and
+# settings.json registers this hook as `${CLAUDE_PROJECT_DIR:-.}/...`, so an
+# unset variable makes BASH_SOURCE relative in the first place.
+#
+# The no-slash fallback tests the DIRECTORY, not the already-suffixed path: a
+# path with no slash leaves `%/*` unchanged, so the old comparison against
+# BASH_SOURCE could never be equal and the fallback was dead code -- the list
+# then resolved under a directory named after the script and was silently
+# absent (over-block, the safe direction, but inert).
+_allow_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_allow_dir" == "${BASH_SOURCE[0]}" ]] && _allow_dir="."
+_allow_dir="$(cd "$_allow_dir" 2>/dev/null && pwd -P)" || _allow_dir=""
+ALLOWLIST_FILE=""
+[[ -n "$_allow_dir" ]] && ALLOWLIST_FILE="${_allow_dir}/non-english-allowlist.txt"
+ALLOWED=""
+if [[ -n "$ALLOWLIST_FILE" && -r "$ALLOWLIST_FILE" ]]; then
+  # Only a WHOLE-LINE comment is stripped. A trailing `s/#.*$//` would truncate
+  # a path legitimately containing `#` to a prefix, and a prefix is exactly what
+  # this list must never match on.
+  ALLOWED=$(grep -v '^[[:space:]]*#' "$ALLOWLIST_FILE" | sed -e 's/[[:space:]]*$//' | grep -v '^$' || true)
+fi
+
+# Skip binary / lockfile / asset extensions, and the allow-listed paths.
 should_scan() {
   local f="$1"
+  # Exact match, never a glob: an entry must not silently widen to a directory.
+  local entry
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    [[ "$f" == "$entry" ]] && return 1
+  done <<<"$ALLOWED"
   case "$f" in
     *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.webp|*.pdf) return 1 ;;
     *.woff|*.woff2|*.ttf|*.eot|*.otf) return 1 ;;

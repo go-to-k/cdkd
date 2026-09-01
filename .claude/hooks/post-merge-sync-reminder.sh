@@ -12,9 +12,14 @@
 # operator sees it in the moment.
 #
 # Surfaced 2026-05-23 after a 2nd violation of the post-merge sync
-# step within the same multi-day session. The user's reaction
-# ("なぜ忘れた? 絶対忘れないようにして欲しい") was the trigger to upgrade
-# from memory-only to hook-enforced.
+# step within the same multi-day session. The maintainer's reaction --
+# "why was it forgotten? make sure it never is again" -- was the
+# trigger to upgrade from memory-only to hook-enforced. (Quoted in
+# translation: the original was verbatim in the session's chat
+# language, which put this file in breach of the repo's English-only
+# rule for committed text and, because `non-english-text-gate` reads a
+# changed file's WHOLE content, would have blocked any PR that touched
+# this hook.)
 
 __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as
