@@ -116,3 +116,39 @@ export const CONDITIONAL_EXPORT_NAME = 'CdkdCrossStackConditionalSecret';
  * having no expression is what turned the wrong verdict into a refusal.
  */
 export const CONDITIONAL_PLAIN_VALUE = 'crossstack-conditional-plain-branch';
+
+/**
+ * `Output.Export.Name` of the producer's SECOND conditional export (issue
+ * [#2163](https://github.com/go-to-k/cdkd/issues/2163)).
+ *
+ * The MIRROR of {@link CONDITIONAL_EXPORT_NAME}: its `Value` is an `Fn::If`
+ * whose TRUE arm is the plain {@link TAKEN_CONDITIONAL_DECOY_VALUE} and whose
+ * FALSE arm — the one the literal-false condition SELECTS — is a real
+ * `{{resolve:secretsmanager:...}}` expression. The deployed value is therefore
+ * always the resolved secret, stored REDACTED as the expression per #1899.
+ *
+ * WHY THE FIXTURE NEEDS BOTH POLARITIES. The untaken-branch export above proves
+ * scrub's branch selection does not refuse over an arm the deploy never took
+ * (#2150's fix). On its own that arm cannot tell a NARROWING of the
+ * producer-plaintext refusal from a REMOVAL of it — a scrub that stopped
+ * looking at `Fn::If` outputs entirely passes it just as well. This export is
+ * the missing negative control: seed its stored value back to the bare
+ * plaintext and `cdkd scrub <consumer>` must still refuse with
+ * `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`, because the SELECTED branch really
+ * does declare the expression. Issue #2163 measured exactly this shape
+ * declining against real AWS while the unit suite refused correctly, so the
+ * live arm is what discriminates.
+ */
+export const TAKEN_CONDITIONAL_EXPORT_NAME = 'CdkdCrossStackConditionalTakenSecret';
+
+/**
+ * The TRUE branch's decoy literal for {@link TAKEN_CONDITIONAL_EXPORT_NAME} —
+ * the arm the deployment never takes.
+ *
+ * Same naming rule as {@link CONDITIONAL_PLAIN_VALUE}: `crossstack` vocabulary,
+ * no substring shared with the plaintext needle, no `{{resolve:` of its own. A
+ * decoy that carried an expression would let a both-arms scan verdict this
+ * export secret-bearing for the WRONG arm and the negative control would pass
+ * for a reason unrelated to what it tests.
+ */
+export const TAKEN_CONDITIONAL_DECOY_VALUE = 'crossstack-conditional-decoy-branch';

@@ -7,6 +7,8 @@ import {
   EXPORT_NAME,
   SECRET_JSON_FIELD,
   SECRET_NAME,
+  TAKEN_CONDITIONAL_DECOY_VALUE,
+  TAKEN_CONDITIONAL_EXPORT_NAME,
   integSecretPlaintext,
 } from './shared.ts';
 
@@ -91,6 +93,34 @@ export class ProducerStack extends cdk.Stack {
         'value is the plain branch, so a scan that sees both arms verdicts this ' +
         'export secret-bearing and then refuses over a stored value nothing can ' +
         'turn into an expression (issue 2150).',
+    });
+
+    // THE TAKEN-BRANCH CONDITIONAL EXPORT (issue
+    // [#2163](https://github.com/go-to-k/cdkd/issues/2163)), the mirror of the
+    // export above and the negative control #2150's arm cannot supply on its
+    // own: here the SECRET expression sits in the FALSE arm — the one the
+    // literal-false condition SELECTS — so the deployed value is always the
+    // resolved secret, stored redacted as the expression.
+    //
+    // `verify.sh` seeds this export's stored value back to the bare plaintext
+    // and asserts `cdkd scrub <consumer>` refuses with
+    // `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`. Without it, a branch selection
+    // that stopped seeing `Fn::If` outputs entirely would pass the untaken arm
+    // just as well as the #2150 narrowing does — issue #2163 measured exactly
+    // this shape declining against real AWS while the unit suite refused.
+    new cdk.CfnOutput(this, 'CrossStackConditionalTakenSecretOutput', {
+      value: cdk.Fn.conditionIf(
+        useSecretBranch.logicalId,
+        TAKEN_CONDITIONAL_DECOY_VALUE,
+        cdk.SecretValue.secretsManager(SECRET_NAME, {
+          jsonField: SECRET_JSON_FIELD,
+        }).unsafeUnwrap()
+      ).toString(),
+      exportName: TAKEN_CONDITIONAL_EXPORT_NAME,
+      description:
+        'An Fn::If whose TAKEN (false) arm carries a secret expression. The ' +
+        'deployed value is the resolved secret, so seeding its stored value ' +
+        'back to plaintext must make scrub refuse (issue 2163).',
     });
 
     new cdk.CfnOutput(this, 'CrossStackSecretPasswordOutput', {

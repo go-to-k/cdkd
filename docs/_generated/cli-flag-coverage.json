@@ -1136,6 +1136,7 @@
         "cache-streaming",
         "conditions",
         "cross-region-state-bucket",
+        "cross-stack-secret-import",
         "custom-resource-provider",
         "deletion-ordering-complex",
         "destroy-interrupt",

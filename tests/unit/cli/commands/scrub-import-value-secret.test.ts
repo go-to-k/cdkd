@@ -3571,11 +3571,12 @@ describe('the plaintext-producer refusal wording (issue #2146 review)', () => {
  *
  * The fixture below is not hand-shaped: `PRODUCER_OUTPUTS` and `CONSUMER_PROPS`
  * are the templates `aws-cdk-lib` actually synthesizes for
- * `tests/integration/cross-stack-secret-import/`, with the #2163 arm's second
- * conditional export (`Fn::If` whose FALSE -- selected -- branch carries the
- * expression) added the same way the fixture builds its first one. The producer
- * STATE is deploy-shaped too: v9, every output stored under BOTH its output name
- * and its `Export.Name` alias, `exportNames` listing only the aliases.
+ * `tests/integration/cross-stack-secret-import/`, whose producer DECLARES the
+ * #2163 arm's second conditional export (`Fn::If` whose FALSE -- selected --
+ * branch carries the expression) now that the live arm is rebuilt into the
+ * fixture. The producer STATE is deploy-shaped too: v9, every output stored
+ * under BOTH its output name and its `Export.Name` alias, `exportNames`
+ * listing only the aliases.
  */
 describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)', () => {
   const P = 'CdkdCrossStackSecretProducer';
@@ -3590,11 +3591,12 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
   const PLAIN_BRANCH = 'crossstack-conditional-plain-branch';
 
   /**
-   * What `cdk synth` emits for the producer fixture, plus the #2163 arm --
-   * re-indented to this file's style rather than pasted verbatim, so the shape
-   * is the fixture's and the formatting is the repo's. Every key, every value
-   * and the `Fn::If` argument ORDER are the synthesized ones; that order is the
-   * only load-bearing part, since `selectTakenConditionalBranches` keys on it.
+   * What `cdk synth` emits for the producer fixture -- re-indented to this
+   * file's style rather than pasted verbatim, and with each output's inert
+   * `Description` string dropped, so the shape is the fixture's and the
+   * formatting is the repo's. Every `Value` shape, every `Export.Name` and the
+   * `Fn::If` argument ORDER are the synthesized ones; that order is the only
+   * load-bearing part, since `selectTakenConditionalBranches` keys on it.
    */
   const PRODUCER_OUTPUTS = {
     CrossStackSecretArnOutput: { Value: { Ref: 'CrossStackSecret500993CD' } },
@@ -3626,14 +3628,14 @@ describe('cdkd scrub names WHICH arm declined a cross-stack read (issue #2163)',
       'Fn::Join': [
         '',
         [
-          'Imported. Conditional export resolved to: ',
+          'Imported from the producer via Fn::ImportValue (issue 1934). Conditional export (issue 2150) resolved to: ',
           { 'Fn::ImportValue': UNTAKEN_EXPORT },
-          ' Taken conditional export resolved to: ',
+          ' Taken conditional export (issue 2163) resolved to: ',
           { 'Fn::ImportValue': TAKEN_EXPORT },
         ],
       ],
     },
-    Name: '/cdkd-integ/x',
+    Name: '/cdkd-integ/cross-stack-secret-import/imported-secret',
     Type: 'String',
     Value: { 'Fn::ImportValue': 'CdkdCrossStackSecretPassword' },
   } as unknown as Record<string, unknown>;
