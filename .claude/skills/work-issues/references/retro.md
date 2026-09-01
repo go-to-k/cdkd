@@ -286,12 +286,14 @@ separate shell (§9's `$MAIN` trap), and the merged lane branch cannot be reused
 against a cwd reset, but only since this session's hooks change — §5 measured
 both copies, and the version then on `main` passed the chained `git fetch origin
 && git switch -c ...` form below (rc=0) while refusing a bare `git switch -c`
-(rc=2). Do not read the backstop as one that always held, and until
-`fix/stop-and-body-file-gates` (go-to-k/cdkd#2391 / go-to-k/cdkd#2396 /
-go-to-k/cdkd#2397) merges to `main` -- check with
-`git log origin/main --oneline -1 -- .claude/hooks/main-tree-branch-gate.sh` --
-confirm `git rev-parse --show-toplevel` is this lane's tree immediately before
-running the block.
+(rc=2). Do not read the backstop as one that always held: until
+`fix/stop-and-body-file-gates` (go-to-k/cdkd#2401) merges to `main`, confirm
+`git rev-parse --show-toplevel` is this lane's tree immediately before running
+the branch block below. Ask whether the fix has landed by CONTENT, not by the
+file's last commit subject (which names an earlier hooks change and reads like
+this one): `git show origin/main:.claude/hooks/main-tree-branch-gate.sh` piped
+to `grep -c gate_verb_rest_each` prints `0` while the fix is absent and
+non-zero once it lands.
 
 ```bash
 B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)

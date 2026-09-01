@@ -46,27 +46,27 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 32,527 B (verify-pr, 2026-08-31)
-const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; re-measured 11,277 B on 2026-09-01
+const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; re-measured 11,546 B on 2026-09-01 (review round 4)
 // That number is the point, not trivia: the orchestrator has grown to within
-// 723 B of its cap while the comment above still quoted the at-split figure, so
-// nobody adding a paragraph could see how little room was left. It reached 11,634 B
-// before this pass MOVED the launch-mode probe and its edge cases into
-// references/triage.md (which already held the section that consumes the answer)
-// rather than compressing them away. Re-measure this comment whenever the
-// orchestrator is edited -- a cap with an unmeasured margin is a cap nobody can
-// plan against.
+// 454 B of its cap while the comment above once still quoted the at-split
+// figure, so nobody adding a paragraph could see how little room was left. It
+// reached 11,634 B before the previous pass MOVED the launch-mode probe and its
+// edge cases into references/triage.md (which already held the section that
+// consumes the answer) rather than compressing them away. Re-measure this
+// comment whenever the orchestrator is edited -- a cap with an unmeasured
+// margin is a cap nobody can plan against.
 // Set 2026-08-28 after the rule+citation compression (PR #2377), when the
 // largest stage file was implement.md at 44,875 B; the cap keeps the same ~9%
 // headroom ratio the original 64,000 held over 58,698 B, so the retro.md §10-b
 // fold-back loop cannot silently erode the compression's gain. Re-measured
-// 2026-09-01: the largest is implement.md again at 45,763 B -- it lost the title
-// to verify.md when 6.4 KB moved out of it into filing.md on 2026-08-31 and took
-// it back when this pass added the owner-probe and branch-recipe text, which is
-// exactly why "largest" is re-derived here and never carried forward. The cap is
-// UNCHANGED; only the measurement it was set against is restated, so the next
-// reader compares against a true number. Headroom is now 3,237 B (6.6%), down
-// from the ~9% the cap was originally sized for -- worth watching, not worth
-// loosening an upper bound over.
+// 2026-09-01 (review round 4): the largest is implement.md again at 46,363 B --
+// it lost the title to verify.md when 6.4 KB moved out of it into filing.md on
+// 2026-08-31 and took it back when the owner-probe and branch-recipe text landed,
+// which is exactly why "largest" is re-derived here and never carried forward.
+// The cap is UNCHANGED; only the measurement it was set against is restated, so
+// the next reader compares against a true number. Headroom is now 2,637 B
+// (5.4%), down from the ~9% the cap was originally sized for -- worth watching,
+// not worth loosening an upper bound over.
 const MAX_REFERENCE_FILE_BYTES = 49_000;
 
 // The split skill's stage files must still exist and still carry the moved
@@ -90,24 +90,24 @@ const MIN_REFERENCE_FILES = 6;
 // property needs a floor above 201,740 - 43,529 = 158,211 -- which the 100_000
 // held here had stopped providing as the corpus grew. 161_000 restored it (a
 // strictly TIGHTER assertion; no upper bound was touched).
-// Re-derived again 2026-09-01 (review round 3): corpus 208,772 B, largest
-// implement.md 45,763 B, so the property needs a floor above 208,772 - 45,763 =
-// 163,009, which 163_000 no longer clears -- by 9 B. Stated precisely, because
-// the imprecise version ("it had already lapsed") reads as a silent decay
-// BETWEEN rounds and that is not what happened: at the previous commit it held
-// by 3,097 B, and this commit's own +5,340 B crossed it. That is the point
-// rather than a mitigation -- one ordinary round of edits was enough to consume
-// a margin raised one round earlier specifically so it would not be, so the
-// raise is sized against the worst case rather than the current one.
-// The worst case is not `corpus - largest`. implement.md (45,763 B) and
-// verify.md (43,529 B) are 2,234 B apart and have already swapped the title
+// Re-derived again 2026-09-01 at the FINAL tree of review round 4: corpus
+// 210,526 B, largest implement.md 46,363 B, so the property needs a floor above
+// 210,526 - 46,363 = 164,163. What the two previous re-derivations measured is
+// that ONE ordinary round consumes the margin the round before it added: 163_000
+// was raised to 168_000 after a single commit's +5,340 B crossed it by 9 B, and
+// this round's edits have already eaten the thinner half of 168_000. So the
+// raise is sized against the worst case rather than against today's number.
+// The worst case is not `corpus - largest`. implement.md (46,363 B) and
+// verify.md (43,529 B) are 2,834 B apart and have already swapped the title
 // once, so the floor must also survive verify.md becoming largest:
-// 208,772 - 43,529 = 165,243. 168_000 clears BOTH -- 4,991 B of margin over
-// today's binding number, 2,757 B over the either-largest one -- and still
-// leaves ~40 KB (208,772 - 168,000 = 40,772 B) of narrative compression
-// headroom below the floor. Re-measure BOTH files whenever a stage file changes
-// size materially: a lapsed floor is not a weaker guard but a SILENT one.
-const MIN_REFERENCE_CORPUS_BYTES = 168_000;
+// 210,526 - 43,529 = 166,997 -- which 168_000 clears by only 1,003 B. 170_000
+// restores the margin: 5,837 B over today's binding number, 3,003 B over the
+// either-largest one, still ~40 KB (210,526 - 170,000 = 40,526 B) of narrative
+// compression headroom below the floor, and strictly TIGHTER than what it
+// replaces (no upper bound is touched). Re-measure BOTH files whenever a stage
+// file changes size materially: a lapsed floor is not a weaker guard but a
+// SILENT one.
+const MIN_REFERENCE_CORPUS_BYTES = 170_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

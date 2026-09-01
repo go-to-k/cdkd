@@ -27,15 +27,14 @@ linked worktree (an Orca/ADE workspace, or a session that `cd`-ed into
 `.claude/worktrees/<x>`): `git worktree add` then NESTS a worktree inside one,
 and deleting the outer workspace takes the inner directory, its uncommitted work
 and its git registration with it (go-to-k/cdkd#2390). COMPUTE which one you are
-in AT THE TOP OF STAGE 3, which is the first place the answer is used, and
-state BOTH the answer and `git rev-parse --show-toplevel`'s value in the opening
-report -- the anchors further down say "STOP unless this is the tree you meant
-to adopt", and without a recorded value there is nothing to compare against. The
-one-line probe
-sits at the top of §3 (`references/triage.md`), which holds the ONLY copy of it
-and the reading of its edge cases — a second verbatim copy of a two-line command
-is the drift shape §10-b fences elsewhere, and §3 is the first place the answer
-is used.
+in AT THE TOP OF STAGE 3: the one-line probe sits there (`references/triage.md`
+holds the ONLY copy of it and the reading of its edge cases — a second verbatim
+copy of a two-line command is the drift shape §10-b fences elsewhere), and §3 is
+the first place the answer is used. State BOTH the mode and `git rev-parse
+--show-toplevel`'s value in the opening report — the first message you write
+after running the probe, before any lane starts — because the anchors further
+down say "STOP unless this is the tree you meant to adopt", and without a
+recorded value there is nothing to compare against.
 
 `IN-PLACE` changes four things and nothing else:
 

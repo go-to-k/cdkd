@@ -68,9 +68,21 @@ the spelling the skill prescribes was exactly the one the gate missed. This
 session's hooks lane makes the gate match in COMMAND POSITION and judge the
 matched SEGMENT; driven against that copy the chained form is refused (rc=2)
 and the allowance for `git fetch origin && git switch main` still passes (rc=0).
-The protection is that FIXED gate. Until `fix/stop-and-body-file-gates` (go-to-k/cdkd#2391 / go-to-k/cdkd#2396 / go-to-k/cdkd#2397) merges to `main` -- check with `git log origin/main --oneline -1 -- .claude/hooks/main-tree-branch-gate.sh`, the
-anchor is all you have: re-run `git rev-parse --show-toplevel` immediately before
-the switch and confirm it is this lane's tree.
+The protection is that FIXED gate. Until `fix/stop-and-body-file-gates`
+(go-to-k/cdkd#2401) merges to `main`, the anchor is all you have: re-run
+`git rev-parse --show-toplevel` immediately before the switch and confirm it is
+this lane's tree. Ask whether the fix has LANDED by CONTENT, never by the last
+commit subject on the file -- that subject names some earlier hooks change and
+reads as though it were this one:
+
+```bash
+git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c gate_verb_rest_each
+```
+
+`0` means the fix is NOT on `main` and the anchor still stands (measured
+2026-09-01); non-zero means it landed and the anchor can be retired. That helper
+is what judges the matched SEGMENT, so it exists only in the fixed copy -- the
+same grep against go-to-k/cdkd#2401's head prints 4.
 
 **`mise trust` is not optional here, and skipping it fails in the direction that
 costs most.** An untrusted `.mise.toml` makes `mise exec -- markgate set` error

@@ -93,8 +93,13 @@ lines stay exactly as written, and the same two values ride the command:
 # Measured: with a file already there carrying `Dup-check:`, a command whose
 # heredoc omits that line exits 0 and then overwrites it, filing the
 # marker-less body. Reusing one slug for a second finding is exactly how that
-# happens. (The reverse cannot: a blocked call runs nothing, so a marker-less
-# file can only exist if a marked command wrote it.)
+# happens. The REVERSE is reachable too, and it costs a FALSE BLOCK: run that
+# same slug a THIRD time with a properly marked heredoc and the gate returns
+# rc=2, because it reads the STALE marker-less file on disk in preference to
+# the heredoc about to replace it -- the refusal is about a stale READABLE
+# file, not a missing marker (measured 2026-09-01, here and in cdk-local).
+# Nor does a marker-less file need a gated writer: a plain
+# `cat > /tmp/wi-issue-body-x.md` carries no `gh` verb, so no gate sees it.
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
 <one paragraph: the root cause, and where the evidence for it is>
 
