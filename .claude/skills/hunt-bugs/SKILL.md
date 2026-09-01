@@ -153,15 +153,21 @@ Then fix it:
 1. **Root-cause it** in `src/` (replacement-rules, the provider's
    `create`/`update`/`delete`, the diff calculator, the DAG, the intrinsic
    resolver — wherever the divergence-from-CloudFormation lives).
-2. **Fix it in a lane tree, never in the main tree** — from the MAIN checkout
-   that is `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`.
-   If this hunt was LAUNCHED from inside a worktree already (an Orca/ADE
-   workspace, a stray `cd`), create nothing and remove nothing: work on the
-   branch checked out there and leave that tree standing for whoever made it,
-   because nesting a worktree inside one dies with the outer workspace and takes
-   its uncommitted work (go-to-k/cdkd#2390). `/work-issues` SKILL.md "Launch
-   mode" carries the probe that decides which case you are in — do not
+2. **Fix it in a lane tree, never in the main tree.** Which tree depends on the
+   launch mode, and the probe that decides it lives in
+   `.claude/skills/work-issues/references/launch-mode.md` — run that, do not
    re-implement it here, for the same single-source reason as above.
+   MAIN-CHECKOUT: `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`.
+   IN-PLACE (this hunt was launched from inside a worktree already — an Orca/ADE
+   workspace, a stray `cd`): create nothing. Work on the branch checked out
+   there and leave that tree standing for whoever made it, because nesting a
+   worktree inside one dies with the outer workspace and takes its uncommitted
+   work (go-to-k/cdkd#2390). That is the ONLY launch-mode arm this skill needs,
+   and the divergence from `/work-issues` is deliberate rather than an omission:
+   this skill has no worktree-REMOVAL step to guard — "Cleanup is
+   non-negotiable" below tracks deployed AWS stacks, not trees — and no
+   post-merge `git checkout main`, so the other IN-PLACE consequences have
+   nothing here to apply to.
 3. **Add a unit test that fails without the fix and passes with it.** This is
    mandatory, not optional — a bug found by integ MUST leave behind a unit test
    that pins the corrected behavior, so the regression can never come back

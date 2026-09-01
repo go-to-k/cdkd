@@ -100,7 +100,7 @@ lines stay exactly as written, and the same two values ride the command:
 # file, not a missing marker (measured 2026-09-01, here and in cdk-local).
 # Nor does a marker-less file need a gated writer: a plain
 # `cat > /tmp/wi-issue-body-x.md` carries no `gh` verb, so no gate sees it.
-cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
+cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY' &&
 <one paragraph: the root cause, and where the evidence for it is>
 
 Dup-check: searched open issues for <terms> -- none covers this root cause
@@ -135,6 +135,18 @@ text when a path is unresolvable — measured rc=0 from both, same day, same
 driver. Folding also NEEDS a unique file it reads back, which a hand-written
 name cannot promise; minting only needs a name no concurrent lane will reuse,
 which the substituted slug gives.
+
+**The `&&` on the `cat` line is the same load-bearing chaining the FOLD recipe
+uses**, for the same reason one scale down: an unchained `cat` that fails
+(unwritable path, full disk) leaves whatever was already at that literal slug
+path, and the gate then reads THAT file, passes it, and `gh issue create` files
+a body this finding never wrote — the stale-readable-file failure the comment
+above already measured in the other direction. Verified 2026-09-01 by driving
+all four gates with the chained payload: `issue-dup-check-gate`,
+`issue-classification-label-gate`, `gh-body-english-gate` and
+`gated-command-preamble-gate` each return rc=0, and deleting the `Dup-check:`
+line from the same chained payload returns rc=2, so that rc=0 is the gates
+passing a good command rather than failing to parse the `&&`.
 
 **The `cat` is not filler for the reader to skip.** The two-line form — create
 an empty file, then point `--body-file` at it with nothing in between — files

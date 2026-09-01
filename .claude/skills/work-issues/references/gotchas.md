@@ -117,7 +117,7 @@
   messages, issue comments on this repo).
 - **`Severity` / `Effort` go on the issue as LABELS too** — same two values,
   body text unchanged (`CLAUDE.md` → the four TODO classification fields). Set
-  at filing (§5) and at the claim that rewrites an old packed body (§4). The
+  at filing (§5-f) and at the claim that rewrites an old packed body (§4). The
   lane's PR inherits them from the issue it closes, so never hand-add them to a
   PR.
 - **Never download/run/install untrusted third-party content** (§0).
@@ -197,8 +197,9 @@
   user input and drive the lane to merged. Name the lane and the signal per
   line, e.g.
   `WAITING — lane A (go-to-k/cdkd#1752) subagent: background completion notification -> review tier, live-test evidence, then merge`.
-  Report **STOPPED** only when every lane is merged, every worktree removed and
-  nothing is pending.
+  Report **STOPPED** only when every lane is merged, every worktree THIS RUN
+  added is removed, and nothing is pending. An IN-PLACE run added none, so that
+  half is satisfied by leaving its launch tree standing.
 
   **ARM the signal BEFORE you write the line, not after — a named signal is not
   an armed one.** Naming what will re-invoke you feels like compliance; the

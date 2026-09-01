@@ -2,8 +2,9 @@
 
 ## 10. Fold what the run taught you back into this skill
 
-Trigger: after the last §9 lane is merged and its worktree removed, BEFORE the
-wrap report. Not optional — the evidence (what you had to re-read, which
+Trigger: after the last §9 lane is merged and every worktree THIS RUN added is
+removed — an IN-PLACE run added none, so for it the trigger is the last merge —
+BEFORE the wrap report. Not optional — the evidence (what you had to re-read, which
 correction the user made twice) exists only in this session.
 
 `/verify-pr` step 10 ran a retrospective per LANE; this step differs:
@@ -100,12 +101,12 @@ gh issue list --state open --limit 200 --json number,title,updatedAt \
 
 Report one line — `closed N / filed M (new K / folded J)` — and **when M > N,
 give the reason in one more line**. `J = 0` over several findings in one area
-means the §5 window was searched by this instance's spelling, not the concept.
+means the §5-f window was searched by this instance's spelling, not the concept.
 Three usual reasons; only the first is healthy:
 
 - **the code really does have that many independent defects** — an untested
   area; say which, so the next `/hunt-bugs` aims there.
-- **one root cause was split into many issues** — §5's sweep rule should have
+- **one root cause was split into many issues** — §5-f's sweep rule should have
   folded them; fold what is still open into an umbrella now, not next time.
 - **discoveries were deferred that had session-only evidence** — per
   `CLAUDE.md`'s `now` criteria not a residual; deferring means the next session

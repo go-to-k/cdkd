@@ -112,9 +112,16 @@ editing (go-to-k/cdkd#1597 was filed by that very lane).
 For each active worktree, find what it ACTUALLY edits (not the stale-base noise):
 
 ```bash
-git -C .claude/worktrees/<w> log --oneline -1     # its own commit subject → the issue it owns
-git -C .claude/worktrees/<w> show --stat HEAD      # the files that commit touches
-git -C .claude/worktrees/<w> status --porcelain   # what it is editing RIGHT NOW
+# <MAIN_CHECKOUT> is the ABSOLUTE path the launch-mode probe printed
+# (references/launch-mode.md). A relative `.claude/worktrees/<w>` is correct
+# only from the main checkout: run IN-PLACE the cwd is a lane tree, the path
+# does not exist, git errors, and this scan reports NOTHING -- which reads as
+# "no competing agents", the exact failure this stage exists to prevent, and it
+# fails QUIETLY. Substitute the recorded path; never `$MAIN_CHECKOUT`, which is
+# empty in this shell and makes `-C` re-target the cwd instead of failing.
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" log --oneline -1     # its own commit subject → the issue it owns
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" show --stat HEAD     # the files that commit touches
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" status --porcelain   # what it is editing RIGHT NOW
 ```
 
 **Among the probes in THIS clone, the third is the only one that sees a live
@@ -187,37 +194,30 @@ it here too (the drift in go-to-k/cdkd#2042).
 
 ## 3. Pick a FEW FILE-DISJOINT issues
 
-**How many lanes you may pick is decided by the LAUNCH MODE, so compute that
-first — it is one command and it is not guessable from the prompt.** This is the
-ONLY copy of the probe; SKILL.md "Launch mode" points here rather than restating
-it, because a second verbatim copy of a two-line command is the drift shape
-§10-b fences elsewhere:
-
-```bash
-[ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" \
- = "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo MAIN-CHECKOUT || echo IN-PLACE
-```
-
-Equal only in the main checkout — a linked worktree's `--git-dir` is
-`<common-dir>/worktrees/<name>`. `pwd -P` is load-bearing in BOTH directions:
-the main checkout answers `.git` RELATIVELY for both, so an unnormalised compare
-is only accidentally right, and macOS spells `/tmp` as `/private/tmp`. Run it
-INSIDE the repo. Outside one, `git rev-parse` fails and both substitutions
-collapse to the empty string, so the test compares `""` with `""`
-and prints MAIN-CHECKOUT — a wrong verdict. Measured 2026-08-31, and the
-mechanism differs by shell without changing the answer: bash REFUSES `cd ""`
-(rc=1, `cd: null directory`) so the `&& pwd -P` never runs, while zsh accepts it
-(rc=0) and `pwd -P` then prints the same cwd twice. Nothing downstream reliably
-catches it, either: the next git command runs in whatever tree the shell is
-actually in, and that tree may well be a real repo.
+**How many lanes you may pick is decided by the LAUNCH MODE, and the parent
+already settled it before stage 0** — `references/launch-mode.md` holds the
+probe (the ONLY copy) and the reading of its edge cases, and the dispatch that
+started this stage carries its `MODE` / `LANE_TREE` / `MAIN_CHECKOUT`. If the
+dispatch did not, STOP and ask for them rather than re-running the probe here:
+a triage subagent's answer is not the parent's, and the parent is the party
+that later runs `git worktree add` or does not.
 
 `IN-PLACE` means this run was launched inside a worktree someone else created
 (an Orca/ADE workspace, a stray `cd`), so it has exactly ONE working tree:
 **take ONE issue and finish it** — a second lane would need a worktree nested
 inside this one, which dies with the outer workspace and takes its uncommitted
 work (go-to-k/cdkd#2390). Rank as usual, claim the top candidate, and leave the
-rest for the next run. Everything below is the MAIN-CHECKOUT case; SKILL.md
-"Launch mode" carries the other three consequences (§4, §5, §9).
+rest for the next run. Everything else in this stage — the disjointness gate
+below, §3-0's freshness quarantine, §3-a's ranking, §3-b, the premise checks —
+is mode-independent and applies to BOTH modes.
+
+**The MAIN-CHECKOUT case is the DISJOINTNESS PARAGRAPH below and nothing
+wider.** An earlier revision said "everything below is the MAIN-CHECKOUT case",
+which told an IN-PLACE run to skip §3-a's security-first ranking, the
+`Severity` ranking, the premise-check-against-`origin/main` rule and §3-0's
+60-minute freshness gate — all of them mode-independent, and the last a HARD
+gate. The rest of what IN-PLACE changes lives in
+`references/launch-mode.md`'s table, mapped to §2, §4, §5, §9 and §10-d.
 
 The parallel-integration constraint (same as the worktree rule): **two lanes
 must edit DISJOINT files.** Two issues that both land in `deploy-engine.ts`

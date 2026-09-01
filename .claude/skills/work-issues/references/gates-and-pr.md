@@ -131,7 +131,7 @@ the TRUE diff and rebase:
 
 ```bash
 git diff --stat $(git merge-base origin/main <branch>)..<branch>       # the real change
-git -C <lane tree> rebase origin/main   # .claude/worktrees/<branch>, or, IN-PLACE, this tree
+git -C "<LANE_TREE>" rebase origin/main   # the path the launch-mode probe recorded
 ```
 
 Re-run gates, `git push --force-with-lease`.

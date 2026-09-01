@@ -9,6 +9,13 @@ calls, markgate markers land in the lane's own tree. Two actions stay with the
 parent's serialization turn: a real-AWS integ run and the merge (§9). A lane
 stops at merge-ready.
 
+That placement is live-proven, not aspirational: on 2026-08-28 two of the three
+skill-split PRs (go-to-k/cdk-local#621, go-to-k/cdk-real-drift#1831) were built
+END-TO-END by lane subagents — worktree, implementation, gates, reviewer
+dispatch, CI — with the parent doing only claims, serialized merges and
+cleanup, and every hook and markgate gate fired inside the lanes' calls exactly
+as in the parent.
+
 Never edit in the main checkout (`main-tree-branch-gate` blocks branching there —
 with the coverage limit measured below).
 Per lane:

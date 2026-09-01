@@ -46,27 +46,29 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 32,527 B (verify-pr, 2026-08-31)
-const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; re-measured 11,546 B on 2026-09-01 (review round 4)
-// That number is the point, not trivia: the orchestrator has grown to within
-// 454 B of its cap while the comment above once still quoted the at-split
-// figure, so nobody adding a paragraph could see how little room was left. It
-// reached 11,634 B before the previous pass MOVED the launch-mode probe and its
-// edge cases into references/triage.md (which already held the section that
-// consumes the answer) rather than compressing them away. Re-measure this
-// comment whenever the orchestrator is edited -- a cap with an unmeasured
-// margin is a cap nobody can plan against.
+const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; re-measured 11,459 B on 2026-09-01 (review round 6), leaving 541 B
+// That number is the point, not trivia: the orchestrator has repeatedly grown to
+// within a few hundred bytes of its cap while this comment still quoted the
+// at-split figure, so nobody adding a paragraph could see how little room was
+// left. Round 6 added the whole parent-runs-the-probe design and still came out
+// 87 B SMALLER than round 4's 11,546 B, by putting the new material in
+// references/launch-mode.md (7,376 B, read once before stage 0) and leaving a
+// pointer here -- the direction this cap exists to force. Re-measure this
+// comment whenever the orchestrator is edited: a cap with an unmeasured margin
+// is a cap nobody can plan against.
 // Set 2026-08-28 after the rule+citation compression (PR #2377), when the
 // largest stage file was implement.md at 44,875 B; the cap keeps the same ~9%
 // headroom ratio the original 64,000 held over 58,698 B, so the retro.md §10-b
 // fold-back loop cannot silently erode the compression's gain. Re-measured
-// 2026-09-01 (review round 4): the largest is implement.md again at 46,363 B --
-// it lost the title to verify.md when 6.4 KB moved out of it into filing.md on
-// 2026-08-31 and took it back when the owner-probe and branch-recipe text landed,
-// which is exactly why "largest" is re-derived here and never carried forward.
-// The cap is UNCHANGED; only the measurement it was set against is restated, so
-// the next reader compares against a true number. Headroom is now 2,637 B
-// (5.4%), down from the ~9% the cap was originally sized for -- worth watching,
-// not worth loosening an upper bound over.
+// 2026-09-01 (review round 6): the largest is implement.md at 46,771 B, with
+// verify.md 3,242 B behind it. The two have already swapped the title once
+// (6.4 KB moved out of implement.md into filing.md on 2026-08-31 and the
+// owner-probe text moved back in), which is exactly why "largest" is re-derived
+// here and never carried forward. The cap is UNCHANGED; only the measurement it
+// was set against is restated, so the next reader compares against a true
+// number. Headroom is now 2,229 B (4.5%), down from the ~9% the cap was
+// originally sized for -- worth watching, not worth loosening an upper bound
+// over.
 const MAX_REFERENCE_FILE_BYTES = 49_000;
 
 // The split skill's stage files must still exist and still carry the moved
@@ -83,31 +85,29 @@ const MAX_REFERENCE_FILE_BYTES = 49_000;
 const SPLIT_SKILLS = ['work-issues'];
 const MIN_REFERENCE_FILES = 6;
 // The floor must sit ABOVE `corpus - largest file`, or hollowing out the single
-// biggest stage file still passes and the guard is silent about it. Re-measured
-// 2026-08-31 AFTER the filing.md split: corpus 201,740 B, largest verify.md
-// 43,529 B (implement.md was the largest until 6.4 KB moved out of it, which is
-// exactly why "largest" is re-derived and never carried forward), so the
-// property needs a floor above 201,740 - 43,529 = 158,211 -- which the 100_000
-// held here had stopped providing as the corpus grew. 161_000 restored it (a
-// strictly TIGHTER assertion; no upper bound was touched).
-// Re-derived again 2026-09-01 at the FINAL tree of review round 4: corpus
-// 210,526 B, largest implement.md 46,363 B, so the property needs a floor above
-// 210,526 - 46,363 = 164,163. What the two previous re-derivations measured is
-// that ONE ordinary round consumes the margin the round before it added: 163_000
-// was raised to 168_000 after a single commit's +5,340 B crossed it by 9 B, and
-// this round's edits have already eaten the thinner half of 168_000. So the
-// raise is sized against the worst case rather than against today's number.
-// The worst case is not `corpus - largest`. implement.md (46,363 B) and
-// verify.md (43,529 B) are 2,834 B apart and have already swapped the title
-// once, so the floor must also survive verify.md becoming largest:
-// 210,526 - 43,529 = 166,997 -- which 168_000 clears by only 1,003 B. 170_000
-// restores the margin: 5,837 B over today's binding number, 3,003 B over the
-// either-largest one, still ~40 KB (210,526 - 170,000 = 40,526 B) of narrative
-// compression headroom below the floor, and strictly TIGHTER than what it
-// replaces (no upper bound is touched). Re-measure BOTH files whenever a stage
-// file changes size materially: a lapsed floor is not a weaker guard but a
-// SILENT one.
-const MIN_REFERENCE_CORPUS_BYTES = 170_000;
+// biggest stage file still passes and the guard is silent about it. That
+// property is now ASSERTED at the bottom of this file rather than only
+// described here -- it had lapsed silently more than once, each time found by a
+// human re-deriving it by hand from a comment.
+// Re-derived 2026-09-01 at the FINAL tree of review round 6: 10 stage files,
+// corpus 220,152 B, largest implement.md 46,771 B, so the property needs a floor
+// above 220,152 - 46,771 = 173,381. The worst case is not that number, though:
+// verify.md is 43,529 B, only 3,242 B behind, and the two have already swapped
+// the title once, so the floor must also survive verify.md becoming largest --
+// 220,152 - 43,529 = 176,623. 180_000 clears the binding number by 6,619 B and
+// the either-largest one by 3,377 B, is strictly TIGHTER than the 170_000 it
+// replaces (no upper bound is touched), and still leaves ~40 KB
+// (220,152 - 180,000 = 40,152 B) of narrative compression headroom below it.
+//
+// What this floor does NOT catch, stated plainly because the comment used to
+// imply otherwise: gutting a NON-largest stage file. Deleting the whole of
+// triage.md (34,955 B) leaves 185,197 B, still over the floor. A byte floor
+// cannot see that, and raising it until it could would forbid legitimate
+// compression. The per-file guards are elsewhere and are about CONTENT rather
+// than size: work-issues-skill-refs.test.ts pins the document COUNT, and
+// work-issues-launch-mode.test.ts pins that each arm-bearing stage file still
+// names the mode it branches on and that the probe still exists exactly once.
+const MIN_REFERENCE_CORPUS_BYTES = 180_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
@@ -189,6 +189,25 @@ describe('skill file payload budget', () => {
           `wholesale deletion as an improvement; this floor is what notices content ` +
           `being DROPPED rather than moved or compressed.`,
       ).toBeGreaterThanOrEqual(MIN_REFERENCE_CORPUS_BYTES);
+
+      // The floor's OWN invariant, asserted rather than described. Everything
+      // above only says "the corpus is big enough"; what the floor is FOR is
+      // that deleting the single largest stage file cannot pass, which holds
+      // only while the floor sits above `corpus - largest`. That property
+      // decays silently as the other files grow -- it has lapsed at least once
+      // per repo, each time discovered by a human re-deriving it by hand from
+      // the comment above. Asserting it makes the next lapse a red test at the
+      // commit that causes it, and the failure message carries the number to
+      // raise the floor to.
+      const largest = Math.max(...refs.map((f) => statSync(f).size));
+      expect(
+        MIN_REFERENCE_CORPUS_BYTES,
+        `MIN_REFERENCE_CORPUS_BYTES (${MIN_REFERENCE_CORPUS_BYTES}) has lapsed: the ` +
+          `${name} corpus is ${total} B and its largest stage file is ${largest} B, so ` +
+          `deleting that one file would leave ${total - largest} B and still pass. Raise ` +
+          `the floor above ${total - largest} (and re-derive the comment beside it), or ` +
+          `re-derive it DOWNWARD in the same commit as a genuine compression pass.`,
+      ).toBeGreaterThan(total - largest);
     });
   }
 });
