@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 
 // Mock logger to suppress output during tests.
 vi.mock('../../../src/utils/logger.js', () => ({
+  // Issue #2280: the commands under test call this under --json; the mock
+  // must export it or the import is `undefined` and the call throws.
+  reserveStdoutForPayload: vi.fn(),
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),

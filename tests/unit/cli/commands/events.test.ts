@@ -32,6 +32,9 @@ vi.mock('../../../../src/state/s3-state-backend.js', () => ({
 
 const logLines: string[] = [];
 vi.mock('../../../../src/utils/logger.js', () => ({
+  // Issue #2280: the commands under test call this under --json; the mock
+  // must export it or the import is `undefined` and the call throws.
+  reserveStdoutForPayload: vi.fn(),
   getLogger: () => ({
     setLevel: vi.fn(),
     info: (m: string) => logLines.push(m),

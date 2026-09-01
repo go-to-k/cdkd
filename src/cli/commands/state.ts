@@ -17,7 +17,7 @@ import {
   validateResourceTimeouts,
   type ResourceTimeoutOption,
 } from '../options.js';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -270,6 +270,14 @@ async function stateListCommand(options: {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
+  // Issue #2280: claim stdout for the payload BEFORE anything can print on
+  // it. `setupStateBackend` runs `applyRoleArnIfSet`, whose `Assumed role
+  // ...` INFO line lives in `src/utils/role-arn.ts` — a module this file
+  // cannot route on its own, which is why the reservation is module-level.
+  if (options.json) {
+    reserveStdoutForPayload();
+  }
+
   const setup = await setupStateBackend(options);
   try {
     const refs = sortRefs(await setup.stateBackend.listStacks());
@@ -486,6 +494,14 @@ async function stateResourcesCommand(
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
+  // Issue #2280: claim stdout for the payload BEFORE anything can print on
+  // it. `setupStateBackend` runs `applyRoleArnIfSet`, whose `Assumed role
+  // ...` INFO line lives in `src/utils/role-arn.ts` — a module this file
+  // cannot route on its own, which is why the reservation is module-level.
+  if (options.json) {
+    reserveStdoutForPayload();
+  }
+
   const setup = await setupStateBackend(options);
   try {
     const refs = await setup.stateBackend.listStacks();
@@ -700,6 +716,14 @@ async function stateShowCommand(
 ): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
+
+  // Issue #2280: claim stdout for the payload BEFORE anything can print on
+  // it. `setupStateBackend` runs `applyRoleArnIfSet`, whose `Assumed role
+  // ...` INFO line lives in `src/utils/role-arn.ts` — a module this file
+  // cannot route on its own, which is why the reservation is module-level.
+  if (options.json) {
+    reserveStdoutForPayload();
+  }
 
   const setup = await setupStateBackend(options);
   try {
@@ -1932,6 +1956,13 @@ async function stateInfoCommand(options: {
 }): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
+
+  // Issue #2280: claim stdout for the payload BEFORE anything can print on
+  // it — ahead of `applyRoleArnIfSet` (its `Assumed role ...` INFO line
+  // lives in `src/utils/role-arn.ts`) and of every state-bucket read below.
+  if (options.json) {
+    reserveStdoutForPayload();
+  }
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling

@@ -4,6 +4,9 @@ import type { ResourceState, StackState } from '../../../src/types/state.js';
 const errorSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
+  // Issue #2280: the commands under test call this under --json; the mock
+  // must export it or the import is `undefined` and the call throws.
+  reserveStdoutForPayload: vi.fn(),
   getLogger: () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
