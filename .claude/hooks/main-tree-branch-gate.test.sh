@@ -868,7 +868,203 @@ else
   fail_log+="FAIL memo: 3 same-tree segments forked \`git worktree list\` $memo_forks time(s) with rc=$memo_rc, expected 1 fork and rc=2\n"
 fi
 
-CASE_FLOOR=142
+# --- ROUND 4: A WORD THE STRIPPER CANNOT ACCOUNT FOR MAY NOT ALLOW ------------
+#
+# Three earlier rounds each taught `gate_argv` one more shell form and each time
+# the next round found the form still missing. These cases pin the INVERSION
+# that replaced that chase: a word is an argument only when every character in
+# it is one the shell provably does not act on, and one that is not sets
+# `parse_certain=0`. Measured against real git 2.53.0 first, HEAD printed before
+# and after, with `some-feature` a branch that EXISTS locally in the fixture --
+# a made-up name never reaches the local-branch arm and measures nothing:
+#
+#   git checkout some-feature $EMPTY               HEAD main -> some-feature
+#   git checkout some-feature ${EMPTY}             HEAD main -> some-feature
+#   git checkout some-feature {fd}>/dev/null       HEAD main -> some-feature
+#   git checkout some-feature {fd}<f.txt           HEAD main -> some-feature
+#
+# All four scored rc=0 against this gate before the inversion: the extra WORD
+# was counted as a second positional, so a real branch switch read as a file
+# restore. `$EMPTY` is the realistic one -- an unset variable holding optional
+# flags.
+#
+# THE PAYLOAD IS BUILT THROUGH A FUNCTION, not by inlining `jq` in the same
+# `$(...)` as a double-quoted word carrying an apostrophe. Under bash 3.2.57
+# that shape loses the quoting on the NEXT single-quoted argument and the jq
+# filter is then BRACE-EXPANDED into two words: measured, `jq: error: syntax
+# error ... at cwd:$d` plus a second error at `tool_input:{command:$c}`, where
+# 5.3.9 prints the object. This suite runs under both shells.
+r4p() { jq -cn --arg d "$main_repo" --arg c "$1" '{cwd:$d,tool_input:{command:$c}}'; }
+R4_AP=$(printf '\047')
+
+run_case_msg "an unquoted \$EMPTY after a branch blocks (it can VANISH)" 2 \
+  "$(r4p 'git checkout some-feature $EMPTY')" \
+  "whose expansion this gate cannot see"
+run_case "an unquoted \${EMPTY} after a branch blocks" 2 \
+  "$(r4p 'git checkout some-feature ${EMPTY}')"
+run_case_msg "the bash fd-variable redirection {fd}> blocks" 2 \
+  "$(r4p 'git checkout some-feature {fd}>/dev/null')" \
+  "whose expansion this gate cannot see"
+run_case "the bash fd-variable redirection {fd}< blocks" 2 \
+  "$(r4p 'git checkout some-feature {fd}<f.txt')"
+# A SHAPE NO ARM NAMES. Nothing in the gate or in this suite mentions a glob,
+# and it lands on BLOCK anyway, because `*` is not on the inert list. That is
+# not over-caution: with `nullglob` set a non-matching pattern expands to NO
+# words, and the command really switches -- measured, `shopt -s nullglob; git
+# checkout some-feature *nomatch*` answered "Switched to branch 'some-feature'"
+# (HEAD moved), against "pathspec did not match" with nullglob off. The hook
+# cannot see which shell option is set.
+run_case "a GLOB word blocks -- a shape no arm names" 2 \
+  "$(r4p 'git checkout some-feature *nomatch*')"
+# OVER-STRICT BY DESIGN, and labelled so rather than dressed up as a bypass:
+# real git leaves HEAD alone here (`~` expands to $HOME, "is outside repository",
+# HEAD stayed `main`). The gate blocks because `~` is not on the inert list. A
+# false block costs one message; the alternative is deciding case by case which
+# expansions are safe, which is the enumeration this round removed.
+run_case "a TILDE word blocks (over-strict, stated)" 2 \
+  "$(r4p 'git checkout some-feature ~')"
+# THE OTHER POLARITY. A `$` that is QUOTED is an ordinary character in a branch
+# name and must still reach the normal arms. Measured: `git checkout -b
+# 'feat\$x'` prints "Switched to a new branch 'feat\$x'" and HEAD moved, and
+# `git checkout main -- 'a\$b.txt'` leaves HEAD on main.
+run_case_msg "a quoted literal \$ in a branch name still NAMES the branch" 2 \
+  "$(r4p "git checkout -b ${R4_AP}feat\$x${R4_AP}")" \
+  "creates new feature branch ${R4_AP}feat\$x${R4_AP}" \
+  "whose expansion this gate cannot see"
+run_case "a quoted literal \$ in a pathspec is still a restore" 0 \
+  "$(r4p "git checkout main -- ${R4_AP}a\$b.txt${R4_AP}")"
+# CONTROL on the inert list itself: `#` mid-word is NOT a comment, and a branch
+# name may contain one. If the list stopped admitting `#` this would block.
+run_case "a # inside a word is inert, not a comment" 0 \
+  "$(r4p 'git checkout main -- has#hash')"
+
+# --- ROUND 4: AN APOSTROPHE INSIDE A `#` COMMENT MUST NOT POISON THE PARSE ----
+#
+# The splittability rc came from tokenizing the WHOLE text while the comment was
+# dropped later, inside the walk -- so a `'` after a `#` was weighed as a quote
+# and the command was refused as unbalanced. Measured against real git:
+# `git checkout main # don't switch lanes` answers "Already on 'main'" and HEAD
+# stays, and `bash -n` calls the text VALID SYNTAX. The comment justifying the
+# old order claimed the opposite in as many words.
+run_case "a comment containing an apostrophe no longer false-blocks" 0 \
+  "$(r4p "git checkout main # don${R4_AP}t switch lanes")"
+run_case "a restore with an apostrophe in its comment is allowed" 0 \
+  "$(r4p "git checkout main -- f.txt # agent${R4_AP}s file")"
+# The DISCRIMINATOR: the comment is still dropped, so a real switch behind one
+# still blocks. Without this the case above would pass on a gate that stopped
+# reading comments at all.
+run_case_msg "a comment does not hide a real switch" 2 \
+  "$(r4p 'git checkout some-feature # switch lane')" \
+  "switches to feature branch"
+
+# --- ROUND 4: THREE OPTIONS GIT ACCEPTS AND THE GATE USED TO BLOCK ------------
+#
+# `parse_certain` was documented as firing "only on commands git itself
+# refuses". Measured against git 2.53.0 that was FALSE for three that run:
+#
+#   git checkout --end-of-options main       rc=0  "Already on 'main'"
+#   git checkout --end-of-options -- f.txt   rc=0  restores, HEAD stays
+#   git checkout --git-completion-helper     rc=0  prints the completion list
+#
+# `--end-of-options` must NOT be mapped onto the `--` arm: it ends OPTION
+# parsing without giving what follows checkout's pathspec meaning, and
+# `git checkout --end-of-options some-feature` really switches (measured, HEAD
+# moved). The third case below is what fails if the two are merged.
+run_case "--end-of-options main is allowed" 0 \
+  "$(r4p 'git checkout --end-of-options main')"
+run_case "--end-of-options -- <path> is a restore, allowed" 0 \
+  "$(r4p 'git checkout --end-of-options -- f.txt')"
+run_case_msg "--end-of-options <branch> still SWITCHES, blocked" 2 \
+  "$(r4p 'git checkout --end-of-options some-feature')" \
+  "switches to feature branch"
+run_case "--git-completion-helper is allowed" 0 \
+  "$(r4p 'git checkout --git-completion-helper')"
+run_case "switch --end-of-options main is allowed" 0 \
+  "$(r4p 'git switch --end-of-options main')"
+
+# --- ROUND 4: THE FENCE NOW COMES BEFORE `--help` -----------------------------
+#
+# `saw_help` returned ahead of the `parse_certain` check, which made the help
+# arm the ONE relaxing verdict that skipped the fence the design rests on.
+# Harmless in this spelling -- git answers "unknown option `frobnicate'" and
+# HEAD stays -- but an exemption with no argument behind it is what the next
+# round finds.
+run_case_msg "an unresolvable option blocks even WITH --help" 2 \
+  "$(r4p 'git checkout --frobnicate --help')" \
+  "cannot resolve"
+
+# --- ROUND 4: ARMS THAT WERE UNFENCED (a reviewer's mutation sweep) -----------
+#
+# Each of these leaves the suite green when its arm is deleted, while the live
+# command flips. Every `want` measured against real git 2.53.0:
+#
+#   git checkout @{-1} -- f.txt                rc=0, HEAD stays (a restore)
+#   git checkout --track main -- f.txt         rc=128 "missing branch name", HEAD stays
+#   git checkout -2 f.txt                      rc=0  "Updated 0 paths", HEAD stays
+#   git checkout -b feat-r4 --conflict merge   rc=0  created feat-r4, HEAD MOVED
+#
+# The `@{-1}` restore is also the discriminator for the ONE exemption the
+# literal-word check carries: without the exemption this blocks.
+run_case "@{-1} with a pathspec is a restore, allowed" 0 \
+  "$(r4p 'git checkout @{-1} -- README.md')"
+run_case "--track with a pathspec is a restore, allowed" 0 \
+  "$(r4p 'git checkout --track origin/remote-only -- README.md')"
+# The `pending` distinction: `value` is the branch name, `skip` is some other
+# flag's argument. Making `skip` assign too leaves the suite green and makes the
+# block name `merge` -- the "blocks for the right reason, names the wrong thing"
+# class this gate has already shipped once.
+run_case_msg "-b <branch> --conflict <style> names the BRANCH, not the style" 2 \
+  "$(r4p 'git checkout -b feat-r4 --conflict merge')" \
+  "creates new feature branch ${R4_AP}feat-r4${R4_AP}" \
+  "${R4_AP}merge${R4_AP}"
+
+# --- ROUND 4: THE ARGV CAPTURE IS READ THROUGH A HERE-STRING -------------------
+#
+# `verdict_for` used to call `gate_argv` twice -- once for the rc, once to feed
+# the walk through a process substitution -- which is two parses of one text and
+# two chances for them to disagree. It captures once now and reads the capture,
+# and that changes one thing: a here-doc over an EMPTY capture still yields one
+# BLANK line. Counted as a positional, that made a bare `git checkout` read as
+# `git checkout ''`, and the DWIM probe `grep -qxF -- ""` matches every remote
+# branch name there is -- so the gate blocked a command that leaves HEAD alone
+# (measured: `git checkout` alone prints the status and stays on `main`).
+run_case "a bare git checkout is still allowed (empty argv)" 0 \
+  "$(r4p 'git checkout')"
+run_case_msg "a bare git switch is still blocked" 2 \
+  "$(r4p 'git switch')" \
+  "no resolvable target"
+# CONTROL, not a fence: the here-doc delimiter is matched in the SCRIPT text
+# rather than in the expansion, so an argument that happens to spell `EOF`
+# cannot end the body early. Nothing reddens this today; it exists so a rewrite
+# that re-scans the capture (an `eval`, a here-string built from it) has a case
+# to fail. The shared library carries the same control for `gate_argv`.
+run_case "an argument spelling the here-doc delimiter survives" 0 \
+  "$(r4p 'git checkout EOF -- README.md')"
+
+# --- ROUND 4: THREE CASES THAT PASSED FOR NO REASON ----------------------------
+#
+# A reviewer's mutation sweep found each of these arms unfenced.
+#
+# The QUOTED `#` case above compares exit codes only, and under `checkout` both
+# arms answer 0 -- treating `'#not-a-comment'` as a comment leaves no positional,
+# which also passes. Its twin under SWITCH is discriminating, because switch has
+# no "no positional" allow: the message either NAMES the argument or says "no
+# resolvable target". Real git: `git switch '#not-a-branch'` answers "fatal:
+# invalid reference: #not-a-branch" with HEAD unmoved, so the block is the
+# conservative arm either way and only the WORDING carries the fact.
+run_case_msg "a quoted # reaches SWITCH as an argument, and is named" 2 \
+  "$(r4p "git switch ${R4_AP}#not-a-branch${R4_AP}" )" \
+  "#not-a-branch"
+# The `--track` arm's guard is `saw_restore == 0 && pathspec_seen == 0 &&
+# npos == 1`, and all three were droppable with the suite staying green. The
+# pathspec half is fenced above; this fences the COUNT half. Real git: `git
+# checkout -t` alone answers "fatal: --track needs a branch name" with HEAD
+# unmoved, so allowing it is correct -- and without `npos == 1` the arm fires on
+# `first_pos=""` and blocks a command git refuses to run.
+run_case "a bare checkout -t is allowed (no start-point to name)" 0 \
+  "$(r4p 'git checkout -t')"
+
+CASE_FLOOR=168
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least $CASE_FLOOR\n"

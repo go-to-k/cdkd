@@ -75,6 +75,7 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null \
   || ! declare -F gate_tokens >/dev/null \
   || ! declare -F gate_argv >/dev/null \
+  || ! declare -F gate_word_is_literal >/dev/null \
   || [ -z "${GATE_EMBEDDING_TOKEN:-}" ] \
   || [ -z "${GATE_REDIR_TOKEN:-}" ]; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
@@ -95,6 +96,13 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   # everything. The conclusion -- name the constants, fail closed -- is right,
   # and the loop terminates only because `gate_tokens` breaks on an empty rest.)
   # `declare -F` cannot see a missing constant; only this can.
+  #
+  # `gate_word_is_literal` is named for a third reason: it is the ONLY thing
+  # standing between the walk and a word whose expansion this gate cannot see.
+  # A library predating it makes the `if ! gate_word_is_literal ...` call exit
+  # 127, which `!` reads as TRUE, so every word would look unaccountable and the
+  # gate would block everything -- loud, but a gate that refuses `git checkout
+  # main` is as unusable as one that allows a switch. Refusing here says why.
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
   echo "so this gate cannot evaluate the command. Restore the file; do not" >&2
   echo "work around the gate." >&2
@@ -309,7 +317,43 @@ remote_dwim_names() {
 # takes no value and carries no effect -- measured: `git checkout --no-orphan
 # some-feature` and `git checkout --no-conflict some-feature` both switch, so the
 # name after them is a positional.
+#
+# `-h` IS NOT THE WHOLE GRAMMAR, and reading it as though it were is what made
+# this gate block commands git runs. Four options are accepted and not printed
+# there, three of them with rc=0 (measured, git 2.53.0, HEAD printed before and
+# after):
+#
+#   --end-of-options              rc=0;   stops option parsing (gitcli(7))
+#   --git-completion-helper       rc=0;   prints the completion list
+#   --git-completion-helper-all   rc=0;   prints it including hidden entries
+#   --help-all                    rc=129; prints the usage, HEAD unmoved
+#
+# All four are `parse-options` built-ins rather than checkout's own, so they
+# exist under BOTH verbs -- confirmed for each, e.g. `git switch
+# --end-of-options main` answers "Already on 'main'". They are at arity 0.
+#
+# THREE ARITIES HERE ARE INERT, and that is deliberate rather than an oversight:
+# `create:1`, `force-create:1` and `orphan:1` never take effect, because the
+# arity line sets `pending=skip` and the effect arm for those three immediately
+# overrides it with `pending=value` (the token IS the branch name, and it has to
+# be captured rather than merely consumed). They are written at their true arity
+# anyway, because this table's job is to state git's grammar -- lowering them to
+# 0 to match the code path would make the table lie about git and would break
+# the moment the effect arm changed.
+#
+# NOTHING PINS THESE TABLES TO THE INSTALLED GIT, stated as a residual rather
+# than hidden. A wholly NEW option name lands on `parse_certain=0` and blocks
+# (verified with `--frobnicate`), and a newly AMBIGUOUS prefix is moot because
+# git refuses the command as well. What would pass silently is an ARITY CHANGE
+# to a name already here -- `--track` going from optional to required, say --
+# because the walk would then consume the wrong token and could ALLOW.
+# Regenerating from `--git-completion-helper-all` would catch a new NAME but not
+# an arity change, so it is not the fix it looks like.
 GATE_CHECKOUT_LONG_OPTS='help:0
+help-all:0
+end-of-options:0
+git-completion-helper:0
+git-completion-helper-all:0
 guess:0
 no-guess:0
 overlay:0
@@ -350,6 +394,10 @@ pathspec-file-nul:0
 no-pathspec-file-nul:0'
 
 GATE_SWITCH_LONG_OPTS='help:0
+help-all:0
+end-of-options:0
+git-completion-helper:0
+git-completion-helper-all:0
 create:1
 no-create:0
 force-create:1
@@ -479,10 +527,71 @@ EOF
 #    general form of the two defects that a POSITIONAL COUNT produced -- first
 #    `--conflict merge <branch>` (a value read as a positional), then
 #    `<branch> 2>/dev/null` (a shell word read as a positional). Both were the
-#    count RELAXING a verdict on a parse that was not complete. Today the arm
-#    fires only on commands git itself refuses ("error: unknown option" /
-#    "error: ambiguous option"), so it costs nothing now; it is what keeps a
-#    FUTURE git option from re-opening the same hole silently.
+#    count RELAXING a verdict on a parse that was not complete.
+#
+#    IT DOES NOT COST NOTHING, and the claim that it did was measured FALSE. The
+#    arm was documented as firing "only on commands git itself refuses". Against
+#    git 2.53.0 it also fired on three git ACCEPTS: `git checkout
+#    --end-of-options main` (rc=0, HEAD stays), `--end-of-options -- f.txt`
+#    (rc=0, restores) and `--git-completion-helper` (rc=0, prints the list).
+#    Those are in the tables now. The residual trade is stated instead of
+#    denied: an option this gate has never heard of is blocked even when git
+#    would run it, because the alternative is to GUESS an arity, and a wrong
+#    arity moves every positional after it. A false block costs one message
+#    naming the option; a false allow costs a switched shared main tree.
+#
+# 4. A WORD THE SHELL OWNS MAY NOT RELAX EITHER. Property 3 is stated for git's
+#    OPTIONS, and for three rounds `gate_argv` did the opposite for the shell's
+#    WORDS: it enumerated the forms it recognised -- a redirection, a trailing
+#    `&`, a `#` comment -- and passed everything else through as an argument.
+#    Each round added a spelling and the next round found the one still missing.
+#    Last time that was `$EMPTY` / `${EMPTY}` (an empty expansion VANISHES, so a
+#    positional git never receives was counted) and `{fd}>/dev/null` (bash's
+#    fd-variable redirection, a word git never receives at all). Both made
+#    `git checkout <branch> <word>` read as a two-positional FILE RESTORE and
+#    PASS -- measured rc=0 where 2 is wanted, on commands that really move HEAD.
+#
+#    The default is therefore INVERTED rather than the list extended. Every word
+#    goes through `gate_word_is_literal`, which admits one only when each of its
+#    characters is on a closed list of characters the shell does not act on, and
+#    a word that fails sets `parse_certain=0`.
+#
+#    HOW WE KNOW A SHAPE NOBODY HAS THOUGHT OF LANDS ON BLOCK. Every shell
+#    construct is SPELLED, and spelled with characters. A construct outside that
+#    closed list -- one added to a future bash, one nobody here has met, one not
+#    written down anywhere -- necessarily contains a character the list does not
+#    hold, and is refused without anyone having enumerated it. The only escape
+#    would be a construct spelled ENTIRELY in inert characters, and an inert
+#    character is by definition one the shell does not act on. So the surface to
+#    audit is the LIST (in the shared library, with a reason recorded per
+#    member), not a catalogue of shell forms.
+#
+#    THE COST IS OVER-STRICTNESS, and it is real: `git checkout main -- "$f"` is
+#    a file restore, and this gate now blocks it, because it cannot see what
+#    `$f` holds. That cost was MEASURED rather than assumed, because inverting a
+#    default trades a silent class of bypasses for a loud class of false
+#    refusals and the trade is only defensible if the second number is known.
+#    Every `git checkout` / `git switch` in the three sibling repos' committed
+#    files was replayed through the hook before and after (payload cwd = a real
+#    main checkout, `<branch>` a branch that exists there):
+#
+#      corpus                                       206 distinct texts
+#      verdict changed 0 -> 2 (newly blocked)        32
+#        ...of those, documentation metasyntax
+#           (`<branch>`, `[<options>]`, table rows)  30
+#        ...runnable commands                         2
+#      verdict changed 2 -> 0 (newly allowed)         2   the `#`-comment fix
+#
+#    Narrowed to lines that actually EXECUTE -- excluding `*.test.sh` and
+#    comment lines -- the three repos hold exactly two `git checkout`
+#    invocations between them, both `git checkout -- "${WATCH_SRC}"` inside
+#    `tests/integration/local-start-api/verify.sh`. Neither is reachable by this
+#    hook: they run from a fixture subdirectory rather than the main worktree
+#    top level, and they run INSIDE a script, where a PreToolUse hook sees only
+#    `bash .../verify.sh`. So the measured false-block count on commands this repo
+#    actually runs is ZERO, and the escape when it is not is named in the
+#    message: spell the path literally, or run from outside the main tree, which
+#    is what the convention asks for anyway.
 #
 # The positional structure this parse still reads is the one GIT reads, and it is
 # a boolean rather than a tally: `first_pos` (the switch target) and
@@ -582,9 +691,9 @@ EOF
 verdict_for() {
   local verb="$1" rest="$2" dir="$3"
   local tok pending="" create_val="" create_flag="" detach_flag="" track_flag=""
-  local prev_ref="" bad_opt=""
-  local saw_help=0 saw_restore=0 end_opts=0 no_guess=0 detach_seen=0
-  local pathspec_seen=0 parse_certain=1 is_pos=0
+  local prev_ref="" bad_opt="" bad_word="" raw_tok="" argv="" argv_rc=0
+  local saw_help=0 saw_restore=0 end_opts=0 dashdash_seen=0 no_guess=0
+  local detach_seen=0 pathspec_seen=0 parse_certain=1 is_pos=0
   local npos=0 first_pos="" name lval lhas letters ch rc
   target_branch=""
   block_reason=""
@@ -593,17 +702,59 @@ verdict_for() {
   # a quote is unbalanced, and `gate_argv` reports that rather than returning a
   # truncation -- `-b agent's-branch` used to yield the single token `-b`, which
   # read as a bare `git checkout` and PASSED. Refusing is the deliberate choice
-  # over a coarser second scan: the text is a shell syntax error in the first
-  # place (measured: "unexpected EOF while looking for matching `''"), so nothing
-  # legitimate is lost, and the message says exactly why.
-  if ! gate_argv "$rest" >/dev/null 2>&1; then
+  # over a coarser second scan: bash refuses to run that text at all ("unexpected
+  # EOF while looking for matching `''"), so nothing legitimate is lost, and the
+  # message says exactly why.
+  #
+  # A `#` COMMENT IS NO LONGER PART OF THAT QUESTION. `gate_argv` cuts one before
+  # it splits, so an apostrophe inside a comment is never weighed as a quote:
+  # `git checkout main # don't switch lanes` blocked here until round 4, on a
+  # command bash calls valid and git answers with "Already on 'main'".
+  #
+  # CAPTURED ONCE. This used to call `gate_argv` for the rc and again to feed the
+  # walk -- two parses of one text, and two chances for them to disagree.
+  argv=$(gate_argv "$rest")
+  argv_rc=$?
+  if [ "$argv_rc" -ne 0 ]; then
     target_branch=""
     block_reason="carries an argument list this gate cannot split into shell words (unbalanced quote), so its target cannot be read -- block conservatively"
     return 0
   fi
 
-  while IFS= read -r tok; do
-    tok=$(gate_unquote "$tok")
+  while IFS= read -r raw_tok; do
+    # A here-string over an EMPTY capture still yields one blank line, and a
+    # blank word must not be counted as a positional: it made a bare
+    # `git checkout` read as `git checkout ''`, whose DWIM probe
+    # (`grep -qxF -- ""`) matches every remote branch name there is.
+    [ -n "$raw_tok" ] || continue
+    # EVERY WORD IS PROVED LITERAL BEFORE ANY ARM READS IT -- property 4 in the
+    # header, the same "an incomplete parse may not ALLOW" fence applied to the
+    # SHELL's grammar instead of git's. `gate_argv` prints the words that are
+    # neither a redirection nor a comment; it does not promise they reach git as
+    # the text printed, and `$EMPTY` / `{fd}>/dev/null` are two measured shapes
+    # where they do not.
+    #
+    # ONE SHAPE IS EXEMPT, and the exemption is PROVED rather than assumed: a
+    # word beginning with the literal characters `@{-`. No expansion can produce
+    # or remove those three characters, so such a word always survives as at
+    # least one word -- it can never VANISH, which is the only direction that
+    # turns a switch into a file restore. Its verdict here is the previous-branch
+    # BLOCK, and the only thing that relaxes that is MORE positionals, which an
+    # expansion can only add. Without the exemption the walk would still block
+    # `git checkout @{-1}` (right) but also `git checkout @{-1} -- README.md`,
+    # which restores a file and leaves HEAD alone -- measured, and a case in this
+    # suite. `gate_segments` truncates the segment at the `}`, so the word
+    # arriving here is `@{-1`; the pattern is the prefix for that reason.
+    case "$raw_tok" in
+      '@{-'*) : ;;
+      *)
+        if ! gate_word_is_literal "$raw_tok"; then
+          parse_certain=0
+          [ -n "$bad_word" ] || bad_word="$raw_tok"
+        fi
+        ;;
+    esac
+    tok=$(gate_unquote "$raw_tok")
     is_pos=0
     if [ -n "$pending" ]; then
       # `value` is a branch name; `skip` is some other flag's required argument,
@@ -617,7 +768,11 @@ verdict_for() {
         # `--` ends the options. Under CHECKOUT everything after it is a
         # pathspec; under SWITCH there is no pathspec form, so what follows is
         # still the branch. Both measured.
-        --) end_opts=1 ;;
+        # `dashdash_seen` carries the PATHSPEC half separately, because
+        # `--end-of-options` ends the options too and does NOT give what follows
+        # checkout's pathspec meaning -- measured, `git checkout
+        # --end-of-options some-feature` really switches.
+        --) end_opts=1; dashdash_seen=1 ;;
         # `-` and `@{-N}` name the PREVIOUS branch under BOTH verbs. The pattern
         # is the PREFIX `@{-`, without the closing brace, and that is measured
         # rather than sloppy: `gate_segments` TRUNCATES a segment at a `}`, so
@@ -666,6 +821,17 @@ verdict_for() {
               # judge.
               guess) no_guess=0 ;;
               no-guess) no_guess=1 ;;
+              # `--end-of-options` stops OPTION parsing without making the next
+              # token a pathspec -- gitcli(7)'s idiom for a script handling an
+              # untrusted ref. Measured against git 2.53.0: `--end-of-options
+              # main` stays on main, `--end-of-options -- f.txt` restores, and
+              # `--end-of-options some-feature` SWITCHES. So it sets `end_opts`
+              # and NOT `dashdash_seen`, and the third shape blocks through the
+              # ordinary local-branch arm rather than through a special case.
+              end-of-options) end_opts=1 ;;
+              # `--help-all` / `--git-completion-helper[-all]` are accepted and
+              # carry no effect on the positionals; they are in the tables so
+              # they resolve rather than land on the unknown-option block.
               *) : ;;
             esac
           fi
@@ -720,25 +886,38 @@ verdict_for() {
       esac
     fi
     if [ "$is_pos" -eq 1 ]; then
-      if [ "$end_opts" -eq 1 ] && [ "$verb" = checkout ]; then
+      if [ "$dashdash_seen" -eq 1 ] && [ "$verb" = checkout ]; then
         pathspec_seen=1
       else
         npos=$((npos + 1))
         if [ "$npos" -eq 1 ]; then first_pos="$tok"; else pathspec_seen=1; fi
       fi
     fi
-  done < <(gate_argv "$rest")
+  done <<EOF
+$argv
+EOF
 
-  [ "$saw_help" -eq 1 ] && return 1
-
+  # THE FENCE COMES FIRST, ahead of every arm that ALLOWS -- `--help` included.
+  # `saw_help` used to return above it, which made the help arm the one relaxing
+  # verdict that skipped the fence this whole design rests on: `git checkout
+  # --frobnicate --help` allowed. Harmless in that spelling, since git answers
+  # "unknown option" and HEAD does not move, but an exemption with no argument
+  # behind it is what the next round finds.
   if [ "$parse_certain" -eq 0 ]; then
-    # Property 3 in the header. The walk met an option it could not resolve, so
+    # Properties 3 and 4 in the header. The walk met an OPTION it could not
+    # resolve against git's grammar, or a WORD whose expansion it cannot see, so
     # it does not know where the positionals are; refusing is the only answer
     # that cannot be wrong in the dangerous direction.
     target_branch=""
-    block_reason="uses an option this gate cannot resolve against \`git $verb\`'s grammar ($bad_opt), so its target cannot be read -- block conservatively"
+    if [ -n "$bad_opt" ]; then
+      block_reason="uses an option this gate cannot resolve against \`git $verb\`'s grammar ($bad_opt), so its target cannot be read -- block conservatively"
+    else
+      block_reason="carries the word \`$bad_word\`, whose expansion this gate cannot see, so its target cannot be read -- block conservatively"
+    fi
     return 0
   fi
+
+  [ "$saw_help" -eq 1 ] && return 1
 
   if [ -n "$create_flag" ]; then
     target_branch="$create_val"
