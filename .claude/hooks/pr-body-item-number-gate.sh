@@ -199,20 +199,199 @@ find_offender() {
 declare -a OFFENDERS=()
 MAX_REPORT=10
 
-while IFS= read -r f; do
-  [[ -z "$f" ]] && continue
-  [[ ! -f "$f" ]] && continue
+# When the named body file cannot be READ, the HEREDOC BODY that writes it is
+# extracted and scanned instead of skipping (go-to-k/cdkd#2397). The hook runs
+# BEFORE the command does, so whenever the heredoc that writes the body and the
+# `gh` call that consumes it sit in ONE Bash call -- the shape this repo
+# mandates for `gh issue create`, which `gated-command-preamble-gate.sh`
+# deliberately does not cover -- the path does not exist yet.
+# `[[ ! -f "$f" ]] && continue` made that a SILENT PASS.
+#
+# NOT the whole command, which is what the first draft did and what this
+# paragraph used to describe. `issue-dup-check-gate.sh` and
+# `issue-classification-label-gate.sh` DO fall back to the command, and that is
+# safe for them and not for this gate: they need one anchored marker to be
+# PRESENT, so extra text can only make them pass, while this gate objects to
+# content it FINDS, so extra text makes it BLOCK. Measured on that draft --
+# `gh issue create --title 'follow-up to #2397 discussion' --body-file <absent>`
+# went 0 -> 2, and so did
+# `git commit -m 'address review #3' && gh pr create --body-file <clean>`. The
+# retraction is argued in full at the extraction loop below; it is stated here
+# too because this is where a reader arrives first, and two header comments
+# describing the REJECTED draft sat 130 lines above the comment retracting it.
+#
+# Measured, and the evidence is a matched pair on ONE body text:
+# go-to-k/cdk-real-drift#1841 was created by a single call carrying both the
+# heredoc and the create command; its body holds bare `#1319` and `#1066`, and
+# this gate did not fire. go-to-k/cdk-real-drift#1844 was attempted from a
+# SEPARATE call while that same file still sat at the path, and the gate blocked
+# quoting those two references back.
+#
+# A file that EXISTS is scanned too when the command rewrites it, because then
+# what is on disk is the PREVIOUS body -- the other half of the same window, and
+# the one that reads as a working gate while judging text nobody submitted.
+# `cmd_writes_path` and `cmd_replaces_path` answer two DIFFERENT questions, and
+# collapsing them was a regression that made this gate weaker than the code it
+# replaced. `>>` / `tee -a` APPEND: the file is not superseded, it is the FIRST
+# HALF of the body being submitted, so its content must still be scanned.
+# Treating an append as a rewrite skipped it entirely -- measured in the sibling
+# repo as rc=0 where both origin/main and the first fix answered rc=2.
+#
+#   writes   -> `>`, `>>`, `tee`, `tee -a`. Look at the command's heredoc chunks.
+#   replaces -> `>`, `tee` only. ONLY then may what is on disk be ignored.
+#
+# A heredoc body is written through exactly these redirects (`cat > f <<EOF`), so
+# matching the redirect covers the heredoc shape without parsing heredocs.
+# The terminator class is not decoration. `(?:\s|$)` alone missed the TIGHT
+# spelling of the very shape this exists for -- `>f<<EOF` -- as well as `>f;` and
+# `>f&&`, so a one-call heredoc written without spaces passed unscanned.
+cmd_writes_path() {
+  local path="$1"
+  CMD="$cmd" TARGET="$path" perl -0777 -e '
+    my $cmd = $ENV{CMD};
+    my $t   = quotemeta($ENV{TARGET});
+    exit 0 if $cmd =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 1;
+  ' 2>/dev/null
+}
 
-  while IFS=$'\t' read -r ln content; do
+# The TRUNCATING half. `>>` and `tee -a` are deliberately absent.
+cmd_replaces_path() {
+  local path="$1"
+  CMD="$cmd" TARGET="$path" perl -0777 -e '
+    my $cmd = $ENV{CMD};
+    my $t   = quotemeta($ENV{TARGET});
+    exit 0 if $cmd =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 1;
+  ' 2>/dev/null
+}
+
+# EVERY heredoc body that writes a given path, in order. Same extraction as
+# `gh-body-english-gate.sh`, and the two are deliberately identical: both gates
+# object to CONTENT they find, so both must scan the text being SUBMITTED and
+# nothing else. Handles both orders (`cat > f <<EOF` / `cat <<EOF > f`), quoted
+# and unquoted delimiters, and `<<-`'s tab-stripped terminator. Exits non-zero
+# when the command writes the path through no heredoc at all.
+heredoc_bodies_for() {
+  CMD="$cmd" TARGET="$1" perl -0777 -e '
+    my $c = $ENV{CMD};
+    my $t = quotemeta($ENV{TARGET});
+    my @lines = split /\n/, $c, -1;
+    my @out;
+    my $found = 0;
+    for (my $i = 0; $i <= $#lines; $i++) {
+      my $l = $lines[$i];
+      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
+      my $dash  = ($1 eq "<<-");
+      my $delim = $3;
+      $found = 1;
+      my $j = $i + 1;
+      while ($j <= $#lines) {
+        my $probe = $lines[$j];
+        # Terminator matching follows bash, not intuition: a plain `<<` needs
+        # the delimiter ALONE on the line, and only `<<-` allows leading
+        # whitespace -- TABS only. Stripping all leading whitespace made an
+        # indented `  EOF` inside the body end the extraction early, so
+        # everything after it went unscanned while bash still submitted it.
+        $probe =~ s/^\t+// if $dash;
+        last if $probe eq $delim;
+        push @out, $lines[$j];
+        $j++;
+      }
+      # Resume AFTER this body, and do NOT stop: a path can be written by more
+      # than one heredoc in one command (`> f <<A ... A; >> f <<B ... B`), and
+      # stopping at the first left the SECOND chunk -- which is just as much of
+      # the submitted body -- unscanned.
+      $i = $j;
+    }
+    print join("\n", @out), "\n" if @out;
+    # The STATUS, not the output, says whether a heredoc was found. An EMPTY
+    # heredoc body is legal and prints nothing, so inferring "no heredoc" from
+    # empty output made an empty heredoc REWRITING an offending file fall
+    # through to the stale file and FALSE-BLOCK -- quoting a line that will not
+    # exist, which the author cannot clear.
+    exit($found ? 0 : 1);
+  ' 2>/dev/null
+}
+
+# `scan_stream <label>` -- read `<lineno><TAB><content>` rows from fd 0 and
+# append any offending line to OFFENDERS. Reading from fd 0 rather than taking
+# the text as an argument is what lets BOTH callers share it: the file arm
+# streams `strip_code_blocks < "$f"` and the heredoc arm streams a string, and
+# neither may run in a SUBSHELL, because `OFFENDERS+=` there would be lost. So
+# call sites use `< <(...)`, never a pipe.
+#
+# It replaces two byte-identical loops ten lines apart -- `scan_text` was
+# extracted for one call site while the other kept its copy -- which is the
+# shape where a fix lands in one and not the other.
+#
+# `local` on every variable: `hit`, `ln` and `content` used to leak into the
+# caller's scope from the duplicated loop.
+scan_stream() {
+  local label="$1" line ln content hit
+  while IFS= read -r line; do
+    # Split at the FIRST tab only. `IFS=$'\t' read -r ln content` folds a TAB
+    # RUN -- a tab is IFS whitespace -- so a tab-indented body line arrived
+    # stripped of its indentation and the offender report quoted a line that is
+    # not the line in the file.
+    ln="${line%%$'\t'*}"
+    content="${line#*$'\t'}"
     [[ -z "$content" ]] && continue
     hit=$(find_offender "$content")
     if [[ -n "$hit" ]]; then
-      OFFENDERS+=("$f:$ln: $content")
+      OFFENDERS+=("$label:$ln: $content")
       if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
-        break
+        return
       fi
     fi
-  done < <(strip_code_blocks < "$f")
+  done
+}
+
+# A file the command REWRITES holds the PREVIOUS body, so reading it judges text
+# nobody is submitting -- in both directions. It can miss (the stale copy is
+# clean, the new one is not) and it can BLOCK a clean submission while quoting a
+# line that will not exist, which the author cannot clear because the offending
+# text is not in what they are submitting. So the text being SUBMITTED is
+# extracted from the heredoc instead.
+#
+# The first attempt scanned the WHOLE COMMAND here, copying `issue-dup-check-
+# gate.sh`. That is safe for THAT gate and not for this one, and the difference
+# is what each looks for: it needs one anchored marker to be PRESENT, so extra
+# text can only make it pass; this gate objects to content it FINDS, so extra
+# text makes it BLOCK. Measured on the first attempt --
+# `gh issue create --title 'follow-up to #2397 discussion' --body-file <absent>`
+# went from 0 to 2, and so did
+# `git commit -m 'address review #3' && gh pr create --body-file <clean>`. Both
+# are ordinary. `gh-body-english-gate.sh` had already refused whole-command
+# scanning for exactly this reason; this gate now matches it line for line.
+#
+# Known miss, stated rather than hidden: a one-call body written by something
+# other than a heredoc redirect (`printf > f`, `python3 -c ... > f`) cannot be
+# extracted, so it falls back to whatever is on disk -- and to nothing at all
+# when the path does not exist yet.
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  body_text=""
+  have_body=0
+  if [[ ! -f "$f" ]] || cmd_writes_path "$f"; then
+    body_text=$(heredoc_bodies_for "$f") && have_body=1
+  fi
+  if [[ "$have_body" == "1" ]]; then
+    scan_stream "$f (heredoc, not yet written)" < <(printf '%s' "$body_text" | strip_code_blocks)
+    if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
+      break
+    fi
+  fi
+  # The file is read UNLESS the command truncates it AND a body was extracted.
+  # An APPEND leaves the existing content as the first half of what is being
+  # submitted, so it must still be scanned; only a `>` / `tee` supersedes it.
+  if [[ "$have_body" == "1" ]] && cmd_replaces_path "$f"; then
+    continue
+  fi
+  [[ -f "$f" ]] || continue
+
+  scan_stream "$f" < <(strip_code_blocks < "$f")
 
   if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
     break

@@ -49,6 +49,7 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_target_dir_strict >/dev/null \
   || ! declare -F gate_refuse_unresolved_target >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
+  || ! declare -F gate_verb_rest_each >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
   # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
   # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
@@ -102,147 +103,179 @@ if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere
   gate_refuse_unresolved_target "post-merge-orphan-push-gate" "${hook_cwd:-$PWD}"
 fi
 
-# Parse `git push [...] <remote> <branch>` out of the command. We strip
-# the `git ... push` prefix (incl. any `-C <path>` between `git` and
-# `push`) and then walk the remaining tokens, skipping known flags that
-# do not take a positional value (-u, --set-upstream, --force, etc.) and
-# flag-with-value pairs (--repo <r>, -o <opt>, --push-option <opt>).
+# Parse `git push [...] <remote> <branch>` out of EVERY `git push` in the
+# command, each from the SEGMENT that matched rather than from whole-command
+# text.
 #
-# We only need to recognise enough flags to land on the (remote, branch)
-# pair for the common shapes; ambiguous / exotic forms fall through to
-# the safe "pass through" branch.
-push_args=""
-# Find `push` and everything after it. The pattern intentionally tolerates
-# the `git -C <path> push` form by ignoring the leading `git -C <path>`.
-if [[ "$cmd" =~ [[:space:]]push([[:space:]]+(.*))?$ || "$cmd" =~ ^push([[:space:]]+(.*))?$ ]]; then
-  # BASH_REMATCH[2] contains the post-`push` portion or empty.
-  push_args="${BASH_REMATCH[2]:-}"
-fi
+# The extraction this replaces was `[[ "$cmd" =~ [[:space:]]push([[:space:]]+(.*))?$ ]]`
+# against the RAW command, and a greedy trailing `(.*)$` makes the LEFTMOST
+# ` push` win. Measured on this file's own expression:
+#
+#   git push origin feat/x                                  -> args=[origin feat/x]
+#   echo "remember to push origin main" && git push ...      -> args=[origin main" ]
+#   git push origin main && git push origin feat/x           -> args=[origin main ]
+#
+# So a quoted MENTION steers the branch to `main"` and a two-push chain is
+# judged on the first one. Either way `gh pr list --head <wrong branch>` finds
+# no merged PR, the gate exits 0, and the orphan push proceeds unjudged -- the
+# exact failure this hook exists to prevent, where the commits silently never
+# reach main. Same class as the `main-tree-branch-gate` walker fixed alongside
+# it, in a different spelling.
+#
+# `gate_verb_rest_each` hands back the tail of each matching segment, so the
+# quoted mention is gone (the shared matcher strips quoted spans before
+# segmenting) and every push is seen. The `%%|*` / `%%;*` / `%%&&*` stripping
+# the old code needed is likewise gone: those characters are SEGMENT
+# BOUNDARIES, so they can no longer appear in a tail. A redirect is not a
+# boundary, so `>` is still trimmed.
+#
+# EVERY push is judged, not just the first: a gate whose verdict depends on the
+# arguments and that reads only the first match has the same hole one operator
+# further along.
+#
+# We only need to recognise enough flags to land on the (remote, branch) pair
+# for the common shapes; ambiguous / exotic forms fall through to the safe
+# "pass through" branch.
 
-# Strip trailing shell-redirection / chain noise (`>x`, `2>&1`,
-# `&& foo`, `; foo`, `| foo`) so they do not pollute positional
-# extraction. Whatever's after the first chain separator can't be a
-# push arg anyway.
-push_args="${push_args%%|*}"
-push_args="${push_args%%;*}"
-push_args="${push_args%%&&*}"
-push_args="${push_args%%>*}"
+# `parse_push_tail <tail>` -> sets `_pp_remote` / `_pp_branch` / `_pp_delete`.
+#
+# Results come back through GLOBALS rather than a TAB-joined line, and that is
+# not a style choice. A TAB is IFS WHITESPACE, so `IFS=<TAB> read -r a b c` folds
+# a run of them into ONE separator: `origin<TAB><TAB>0` (the ordinary
+# `git push -u origin` shape, whose branch field is empty) read back as
+# `remote=origin, branch=0`, and the branch was then compared against a real
+# head ref and passed. Measured -- it reddened this suite's `-u`-without-branch
+# case on the first attempt. The same fold is fixed in `stop-warn.sh` in this
+# lane; it is worth knowing as a class rather than as two incidents.
+parse_push_tail() {
+  local push_args="$1"
+  # A redirect is not a segment separator, so it can still trail the args.
+  push_args="${push_args%%>*}"
 
-# Tokenise. We use read -a so single-quoted args stay together by best
-# effort; an exotic case like `git push origin "feature/x y"` (literal
-# space in branch name) is rare enough that we accept missing it — the
-# gate degrades to pass-through rather than mis-fire.
-# shellcheck disable=SC2206
-tokens=($push_args)
+  # Tokenise. We use word splitting so single-quoted args stay together by best
+  # effort; an exotic case like `git push origin "feature/x y"` (literal space
+  # in branch name) is rare enough that we accept missing it -- the gate
+  # degrades to pass-through rather than mis-fire.
+  # shellcheck disable=SC2206
+  local tokens=($push_args)
 
-remote=""
-branch=""
-delete_push=0
-i=0
-while [ "$i" -lt "${#tokens[@]}" ]; do
-  tok="${tokens[$i]}"
-  case "$tok" in
-    # Skip the trailing `git push` itself if it sneaks in.
-    push) ;;
-    # Flags that take NO value — skip just this token.
-    -u|--set-upstream|-f|--force|--force-with-lease|--force-if-includes|\
-    -n|--dry-run|-v|--verbose|-q|--quiet|--all|--tags|--follow-tags|\
-    --mirror|--prune|--atomic|--no-verify|--verify|--progress|\
-    --no-progress|--ipv4|--ipv6|-4|-6|--thin|--no-thin|--signed|\
-    --no-signed|--porcelain|--no-recurse-submodules)
-      ;;
-    # DELETION, not a content push. Valueless like the group above, but it
-    # inverts what the command MEANS, so it is recorded rather than skipped.
-    # It sat in that group until 2026-08-25, which made the deletion check
-    # below a claim the code did not implement: its comment already said
-    # `git push origin --delete branch` passes through, while the code tested
-    # only the `:branch` refspec form. So the gate refused the routine
-    # post-merge `git push origin --delete <merged-branch>` -- naming the very
-    # PR whose merge is the reason the branch should go -- and the advice it
-    # printed (cherry-pick onto a new branch, open a new PR) was the opposite
-    # of what the user wanted.
-    -d|--delete)
-      delete_push=1
-      ;;
-    # Flags that DO take a value — skip this token AND the next.
-    # `--foo=bar` (single token, captured by *=*) — no extra skip.
-    # `--foo bar` (two tokens) — skip the next token too.
-    # `--recurse-submodules` has BOTH a flag-only form and a
-    # `--recurse-submodules <mode>` form; we peek at the next token
-    # before deciding to consume it.
-    --repo|-o|--push-option|--receive-pack|--exec|--repo=*|\
-    --push-option=*|-o=*|--receive-pack=*|--exec=*|--recurse-submodules|\
-    --recurse-submodules=*)
-      case "$tok" in
-        *=*) ;;
-        --recurse-submodules)
-          next="${tokens[$((i + 1))]:-}"
-          case "$next" in
-            check|on-demand|only|no)
-              i=$((i + 1))
-              ;;
-          esac
-          ;;
-        *)
-          i=$((i + 1))
-          ;;
-      esac
-      ;;
-    # Any other --flag we don't know about — skip just this token, on
-    # the assumption it's flag-only. False negatives (missing the gate
-    # because of a flag we didn't model) are cheaper than blocking
-    # legitimate pushes.
-    -*) ;;
-    # First positional → remote. Second positional → branch (refspec).
-    *)
-      if [ -z "$remote" ]; then
-        remote="$tok"
-      elif [ -z "$branch" ]; then
-        branch="$tok"
-      fi
-      ;;
+  local remote="" branch="" delete_push=0 i=0 tok next
+  while [ "$i" -lt "${#tokens[@]}" ]; do
+    tok="${tokens[$i]}"
+    case "$tok" in
+      # Skip the trailing `git push` itself if it sneaks in.
+      push) ;;
+      # Flags that take NO value — skip just this token.
+      -u|--set-upstream|-f|--force|--force-with-lease|--force-if-includes|\
+      -n|--dry-run|-v|--verbose|-q|--quiet|--all|--tags|--follow-tags|\
+      --mirror|--prune|--atomic|--no-verify|--verify|--progress|\
+      --no-progress|--ipv4|--ipv6|-4|-6|--thin|--no-thin|--signed|\
+      --no-signed|--porcelain|--no-recurse-submodules)
+        ;;
+      # DELETION, not a content push. Valueless like the group above, but it
+      # inverts what the command MEANS, so it is recorded rather than skipped.
+      # It sat in that group until 2026-08-25, which made the deletion check
+      # below a claim the code did not implement: its comment already said
+      # `git push origin --delete branch` passes through, while the code tested
+      # only the `:branch` refspec form. So the gate refused the routine
+      # post-merge `git push origin --delete <merged-branch>` -- naming the very
+      # PR whose merge is the reason the branch should go -- and the advice it
+      # printed (cherry-pick onto a new branch, open a new PR) was the opposite
+      # of what the user wanted.
+      -d|--delete)
+        delete_push=1
+        ;;
+      # Flags that DO take a value — skip this token AND the next.
+      # `--foo=bar` (single token, captured by *=*) — no extra skip.
+      # `--foo bar` (two tokens) — skip the next token too.
+      # `--recurse-submodules` has BOTH a flag-only form and a
+      # `--recurse-submodules <mode>` form; we peek at the next token
+      # before deciding to consume it.
+      --repo|-o|--push-option|--receive-pack|--exec|--repo=*|\
+      --push-option=*|-o=*|--receive-pack=*|--exec=*|--recurse-submodules|\
+      --recurse-submodules=*)
+        case "$tok" in
+          *=*) ;;
+          --recurse-submodules)
+            next="${tokens[$((i + 1))]:-}"
+            case "$next" in
+              check|on-demand|only|no)
+                i=$((i + 1))
+                ;;
+            esac
+            ;;
+          *)
+            i=$((i + 1))
+            ;;
+        esac
+        ;;
+      # Any other --flag we don't know about — skip just this token, on
+      # the assumption it's flag-only. False negatives (missing the gate
+      # because of a flag we didn't model) are cheaper than blocking
+      # legitimate pushes.
+      -*) ;;
+      # First positional → remote. Second positional → branch (refspec).
+      *)
+        if [ -z "$remote" ]; then
+          remote="$tok"
+        elif [ -z "$branch" ]; then
+          branch="$tok"
+        fi
+        ;;
+    esac
+    i=$((i + 1))
+  done
+
+  _pp_remote="$remote"
+  _pp_branch="$branch"
+  _pp_delete="$delete_push"
+}
+
+# Collect the branches this command would push CONTENT to, in command order.
+declare -a PUSH_BRANCHES=()
+while IFS= read -r _push_tail; do
+  _pp_remote=""; _pp_branch=""; _pp_delete=0
+  parse_push_tail "$_push_tail"
+  remote="$_pp_remote"; branch="$_pp_branch"; delete_push="$_pp_delete"
+
+  # Default remote when omitted (e.g. `git push`).
+  [ -n "$remote" ] || remote="origin"
+
+  # The rule applies only to the GitHub origin remote — other remotes pass.
+  [ "$remote" = "origin" ] || continue
+
+  # `git push origin :branch` and `git push origin --delete branch` are
+  # explicit deletion requests, not content pushes — let them through.
+  # Likewise `git push origin <sha>:<branch>` (force-push from a specific
+  # sha) — we can't safely reason about whether the destination ref is
+  # the merged-PR's old head without parsing refspecs, so we pass through.
+  if [ "${delete_push:-0}" -eq 1 ] || [[ "$branch" == :* ]] || [[ "$branch" == *:* ]]; then
+    continue
+  fi
+
+  # When the branch wasn't specified positionally (e.g. `git push origin`
+  # alone, or `git push -u origin` with no branch), derive the current
+  # branch from the resolved target dir.
+  if [ -z "$branch" ]; then
+    branch=$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
+  fi
+
+  # If we still don't have a branch (detached HEAD, non-git dir), there's
+  # nothing to gate.
+  [ -n "$branch" ] || continue
+
+  # Detached-HEAD-style refspecs like `HEAD` aren't a static branch name
+  # the user mistakenly re-pushed, so pass through.
+  case "$branch" in
+    HEAD|refs/*) continue ;;
   esac
-  i=$((i + 1))
-done
 
-# Default remote when omitted (e.g. `git push`).
-if [ -z "$remote" ]; then
-  remote="origin"
-fi
+  PUSH_BRANCHES+=("$branch")
+done < <(gate_verb_rest_each "$cmd" "$GATE_RE_GIT_PUSH")
 
-# Bail out early when the remote isn't `origin`. The rule applies only
-# to the GitHub origin remote — other remotes pass through.
-if [ "$remote" != "origin" ]; then
+if [ "${#PUSH_BRANCHES[@]}" -eq 0 ]; then
   exit 0
 fi
-
-# `git push origin :branch` and `git push origin --delete branch` are
-# explicit deletion requests, not content pushes — let them through.
-# Likewise `git push origin <sha>:<branch>` (force-push from a specific
-# sha) — we can't safely reason about whether the destination ref is
-# the merged-PR's old head without parsing refspecs, so we pass through.
-if [ "$delete_push" -eq 1 ] || [[ "$branch" == :* ]] || [[ "$branch" == *:* ]]; then
-  exit 0
-fi
-
-# When the branch wasn't specified positionally (e.g. `git push origin`
-# alone, or `git push -u origin` with no branch), derive the current
-# branch from the resolved target dir.
-if [ -z "$branch" ]; then
-  branch=$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
-fi
-
-# If we still don't have a branch (detached HEAD, non-git dir), there's
-# nothing to gate.
-if [ -z "$branch" ]; then
-  exit 0
-fi
-
-# Detached-HEAD-style refspecs like `HEAD` aren't a static branch name
-# the user mistakenly re-pushed, so pass through.
-case "$branch" in
-  HEAD|refs/*) exit 0 ;;
-esac
 
 # Locate the gh binary. $GH_BIN, when set and executable, wins — this is
 # the mock injection point for the smoke test. Otherwise look up on
@@ -257,49 +290,68 @@ else
   exit 0
 fi
 
-# Query GitHub for any MERGED PR with this head ref. We use --limit 1
-# because branch names are unique per repo (a branch can only have ever
-# been the head ref of one PR at a time; if multiple PRs ever shared the
-# name, the most-recently-merged one is the relevant one — that's the
-# default ordering anyway).
-#
-# `gh pr list` exits non-zero on auth failure / network error. We treat
-# that as "couldn't check" and pass through with a debug note — same
-# fail-open posture as the missing-gh branch.
-#
-# The `cd` is load-bearing and its absence was a live CROSS-REPO FALSE POSITIVE.
-# `gh` resolves the repo from its CWD, and it has no `-C` flag, so an unwrapped
-# call here read THIS SESSION's repo rather than the push target. Measured
-# 2026-08-25: a push to cdk-real-drift, whose PR go-to-k/cdk-real-drift#1815 was
-# OPEN, was refused citing go-to-k/cdkd#2195 -- a different repo's MERGED PR
-# that merely shared the branch name. These three repos name branches by
-# convention (`chore/issue-dup-check` existed in both simultaneously), so the
-# collision is the normal case, not a coincidence. The gate resolved
-# `target_dir` correctly all along and then did not use it.
-pr_json=$( (cd "$target_dir" 2>/dev/null && "${gh_bin}" pr list --head "$branch" --state merged --limit 1 \
-            --json number,mergedAt,headRefName,title) 2>/dev/null || true)
+pr_number=""
+pr_merged_at=""
+pr_title=""
+branch=""
+_seen=""
+for _cand in "${PUSH_BRANCHES[@]}"; do
+  # One `gh` call per DISTINCT branch: a chain that pushes the same branch
+  # twice must not pay for it twice.
+  case "$_seen" in
+    *"<$_cand>"*) continue ;;
+  esac
+  _seen="$_seen<$_cand>"
 
-if [ -z "$pr_json" ] || [ "$pr_json" = "null" ]; then
-  echo "post-merge-orphan-push-gate: gh pr list failed or returned empty; skipping check." >&2
-  exit 0
-fi
+  # Query GitHub for any MERGED PR with this head ref. We use --limit 1
+  # because branch names are unique per repo (a branch can only have ever
+  # been the head ref of one PR at a time; if multiple PRs ever shared the
+  # name, the most-recently-merged one is the relevant one — that's the
+  # default ordering anyway).
+  #
+  # `gh pr list` exits non-zero on auth failure / network error. We treat
+  # that as "couldn't check" and pass through with a debug note — same
+  # fail-open posture as the missing-gh branch.
+  #
+  # The `cd` is load-bearing and its absence was a live CROSS-REPO FALSE
+  # POSITIVE. `gh` resolves the repo from its CWD, and it has no `-C` flag, so
+  # an unwrapped call here read THIS SESSION's repo rather than the push
+  # target. Measured 2026-08-25: a push to cdk-real-drift, whose PR
+  # go-to-k/cdk-real-drift#1815 was OPEN, was refused citing go-to-k/cdkd#2195
+  # -- a different repo's MERGED PR that merely shared the branch name. These
+  # three repos name branches by convention (`chore/issue-dup-check` existed in
+  # both simultaneously), so the collision is the normal case, not a
+  # coincidence. The gate resolved `target_dir` correctly all along and then did
+  # not use it.
+  pr_json=$( (cd "$target_dir" 2>/dev/null && "${gh_bin}" pr list --head "$_cand" --state merged --limit 1 \
+              --json number,mergedAt,headRefName,title) 2>/dev/null || true)
 
-# jq across an empty array returns "null" for `.[0]` — safe to query
-# scalar fields directly with `// empty` as a defensive default.
-pr_number=$(printf '%s' "$pr_json" | jq -r '.[0].number // empty' 2>/dev/null || echo "")
-pr_head=$(printf '%s' "$pr_json" | jq -r '.[0].headRefName // empty' 2>/dev/null || echo "")
-pr_merged_at=$(printf '%s' "$pr_json" | jq -r '.[0].mergedAt // empty' 2>/dev/null || echo "")
-pr_title=$(printf '%s' "$pr_json" | jq -r '.[0].title // empty' 2>/dev/null || echo "")
+  if [ -z "$pr_json" ] || [ "$pr_json" = "null" ]; then
+    echo "post-merge-orphan-push-gate: gh pr list failed or returned empty; skipping check." >&2
+    continue
+  fi
 
-# No PR matching this branch → nothing to gate.
+  # jq across an empty array returns "null" for `.[0]` — safe to query
+  # scalar fields directly with `// empty` as a defensive default.
+  _num=$(printf '%s' "$pr_json" | jq -r '.[0].number // empty' 2>/dev/null || echo "")
+  _head=$(printf '%s' "$pr_json" | jq -r '.[0].headRefName // empty' 2>/dev/null || echo "")
+
+  # No PR matching this branch → nothing to gate for it.
+  [ -n "$_num" ] || continue
+
+  # Defensive: the API returned a PR but its head ref doesn't match the
+  # branch we asked about. Could happen if `--head` matches loosely on a
+  # future GitHub-side change. Pass through rather than mis-fire.
+  [ "$_head" = "$_cand" ] || continue
+
+  pr_number="$_num"
+  pr_merged_at=$(printf '%s' "$pr_json" | jq -r '.[0].mergedAt // empty' 2>/dev/null || echo "")
+  pr_title=$(printf '%s' "$pr_json" | jq -r '.[0].title // empty' 2>/dev/null || echo "")
+  branch="$_cand"
+  break
+done
+
 if [ -z "$pr_number" ]; then
-  exit 0
-fi
-
-# Defensive: the API returned a PR but its head ref doesn't match the
-# branch we asked about. Could happen if `--head` matches loosely on a
-# future GitHub-side change. Pass through rather than mis-fire.
-if [ "$pr_head" != "$branch" ]; then
   exit 0
 fi
 

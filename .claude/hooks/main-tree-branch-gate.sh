@@ -18,11 +18,15 @@
 #      main tree, forcing PR #547 agent to switch out.
 # See memory feedback_cross_agent_main_tree_contention.md.
 #
-# Resolution order for "where is the git command running":
-#   1. `git -C <path>` — last `-C` wins.
-#   2. Leading `cd <path> && ...` — the cd target.
+# Resolution order for "where is the git command running", applied PER
+# SEGMENT -- a `-C` binds its one command, a `cd` persists into the next:
+#   1. that segment's own `git -C <path>` — last `-C` wins.
+#   2. the `cd <path>` segments before it.
 #   3. The hook's `cwd` field.
 #   4. $PWD.
+# Per segment because one command can straddle two trees, and resolving it
+# once for the whole command bypassed the gate in one direction and
+# false-blocked in the other. Measured; see main_tree_of below.
 #
 # Gate scope:
 #   - Block: `git switch <not-main>`, `git switch -c <branch>`,
@@ -51,7 +55,7 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
   || ! declare -F gate_matches >/dev/null \
-  || ! declare -F gate_target_dir_strict >/dev/null \
+  || ! declare -F gate_verb_rest_each_dir >/dev/null \
   || ! declare -F gate_refuse_unresolved_target >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || ! declare -F strip_noncommand_spans >/dev/null; then
@@ -83,51 +87,11 @@ if ! gate_matches "$cmd" "$GATE_RE_GIT_SWITCH"; then
   exit 0
 fi
 
-# Resolve the target dir the same way branch-gate.sh does.
-# Where the git/gh command will actually RUN.
-#
-# This calls the SHARED resolver in lib/command-match.sh, replacing the
-# hand-rolled `-C` scan this hook used to carry. That copy captured the raw
-# token with no guard for an unexpanded `$VAR`, so the standard worktree
-# spelling `git -C "$W" ...` resolved to the literal `<cwd>/$W`, the repo
-# probe below failed, and the gate exited 0 over a tree it never looked at
-# (go-to-k/cdkd#2027). The strict resolver refuses instead of guessing.
-__verb_ere="$GATE_RE_GIT_SWITCH"
-if ! target_dir=$(gate_target_dir_strict "$cmd" "${hook_cwd:-$PWD}" "$__verb_ere"); then
-  gate_refuse_unresolved_target "main-tree-branch-gate" "${hook_cwd:-$PWD}"
-fi
-
-# Is the target dir the main worktree (= the top-level of the
-# shared .git directory)? `git rev-parse --show-toplevel` returns
-# the current worktree's top — which differs between the main
-# tree and any `.claude/worktrees/<x>/`. The MAIN tree's toplevel
-# equals the directory whose parent contains `.git` as a regular
-# directory (not a gitfile pointing into a worktrees subdir).
-#
-# Cheaper heuristic: the main worktree is whatever `git worktree
-# list` lists first. We use that and compare to target_dir.
-main_tree=$(git -C "$target_dir" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
-
-if [[ -z "$main_tree" ]]; then
-  # Not in a git repo / can't resolve — pass through (we don't gate
-  # what we can't see).
-  exit 0
-fi
-
-# Repo opt-in scope (issue #1259): only repos following the worktree +
-# markgate convention get main-tree branch protection. Unrelated repos
-# (a personal blog, a scratch clone) have no parallel-agent contention
-# on their main tree. Opt-in signal: a `.markgate.yml` at the main
-# worktree root.
-if [[ ! -f "$main_tree/.markgate.yml" ]]; then
-  exit 0
-fi
-
-# Canonicalize both sides before compare. macOS resolves
-# `/tmp` → `/private/tmp` and `/var` → `/private/var` via symlinks;
-# `git worktree list --porcelain` always emits the real path, while
-# the user's cwd may still carry the symlink. `cd <dir> && pwd -P`
-# is the portable canonicalizer (BSD readlink lacks `-f` until 12+).
+# Canonicalize a path before comparing. macOS resolves `/tmp` -> `/private/tmp`
+# and `/var` -> `/private/var` via symlinks; `git worktree list --porcelain`
+# always emits the real path, while the user's cwd may still carry the symlink.
+# `cd <dir> && pwd -P` is the portable canonicalizer (BSD readlink lacks `-f`
+# until 12+).
 canonicalize() {
   local p="$1"
   if [[ -d "$p" ]]; then
@@ -136,145 +100,203 @@ canonicalize() {
     printf '%s' "${p%/}"
   fi
 }
-target_norm=$(canonicalize "$target_dir")
-main_norm=$(canonicalize "$main_tree")
 
-if [[ "$target_norm" != "$main_norm" ]]; then
-  # Target is a worktree (`.claude/worktrees/<x>/` or similar) —
-  # branch-switching there is fine.
-  exit 0
-fi
-
-# Target IS the main worktree. Parse the operation to decide:
-#   `git switch <main|master>`         → allow
-#   `git checkout <main|master>`       → allow
-#   `git switch -c <branch>`           → block
-#   `git switch <other-branch>`        → block
-#   `git checkout -b <branch>`         → block
-#   `git checkout <other-branch>`      → block (only when <other-branch>
-#                                        is a local branch — file-path
-#                                        / sha checkouts pass through)
-#   `git checkout -- <pathspec>`       → allow (file restore)
-#   `git checkout <sha>`               → allow (detached HEAD, rare in
-#                                        agent workflows but legitimate)
+# main_tree_of <dir>
 #
-# Extract the operative subcommand + first non-flag arg via awk
-# tokenization (portable across BSD / GNU sed — `\b` in sed -E is
-# not supported on macOS).
+# Print the MAIN worktree's path when <dir> IS that worktree AND the repo opts
+# into the convention; print nothing and return 1 otherwise.
 #
-# Walk the command's tokens: skip an optional `cd <path> && `
-# prefix, then skip the `git` token + any global flag tokens
-# (`-X` / `--foo` / `-C <path>` / `-c <key>=<val>`), then the
-# next token is the subcommand and everything after is its args.
-# The walker below splits on WHITESPACE, so a quoted `-C` value containing a
-# space arrived as two tokens: `git -C "/a b" switch -c x` skipped `-C` plus
-# `"/a` and then read `b"` as the subcommand, which is not `switch`, so the gate
-# passed a branch switch in the main tree (go-to-k/cdkd#2027 review, blocker 1 --
-# found by the class fence, not by review). Collapse every quoted span to one
-# space-free token first; this parser only needs the subcommand and the first
-# non-flag argument. The branch NAME is read from it, so `git switch "main"`
-# arrives as QUOTEDSPAN and is treated as a non-main branch (it blocks, the safe
-# direction) while `git checkout "feat/x"` is likewise not recognised as a local
-# branch and passes. Both are quoted spellings nobody writes; stated rather than
-# claimed away (go-to-k/cdkd#2027 review round 4).
-cmd_for_parse=$(printf '%s' "$cmd" | sed 's/"[^"]*"/QUOTEDSPAN/g; s/'"'"'[^'"'"']*'"'"'/QUOTEDSPAN/g')
-subcmd_args=$(printf '%s' "$cmd_for_parse" | awk '
-  {
-    i = 1
-    # Skip an optional leading "cd <path> && " prefix.
-    if (i <= NF && $i == "cd") {
-      # Consume "cd <path> &&"; if not followed by &&, fall through.
-      saved_i = i
-      i++
-      if (i <= NF) { i++ }  # path token
-      if (i <= NF && $i == "&&") { i++ } else { i = saved_i }
-    }
-    # Expect "git" next (the gate regex guarantees it appears).
-    while (i <= NF && $i != "git") { i++ }
-    if (i > NF) { print ""; exit }
-    i++  # consume "git"
-    # Skip global flag tokens: any token starting with "-" plus an
-    # optional non-flag value token for the -C / -c family.
-    while (i <= NF && substr($i, 1, 1) == "-") {
-      flag = $i
-      i++
-      # `-C <path>` / `-c <key>=<val>` consume the next token IF
-      # the flag is exactly one of those and the next token does
-      # not start with "-".
-      if ((flag == "-C" || flag == "-c") && i <= NF && substr($i, 1, 1) != "-") {
-        i++
-      }
-    }
-    # Now $i is the subcommand. Print it + everything after.
-    out = ""
-    for (j = i; j <= NF; j++) {
-      out = out (out == "" ? "" : " ") $j
-    }
-    print out
-  }')
-sub=$(printf '%s' "$subcmd_args" | awk '{print $1}')
+# Called PER MATCHED SEGMENT. `-C` and a preceding `cd` can put two segments of
+# one command in two different trees, and this gate's verdict is per segment, so
+# asking this question once for the whole command gets BOTH directions wrong.
+# Measured against the real main checkout and the real linked worktree, payload
+# cwd = the main tree, before this was per-segment:
+#
+#   git -C <worktree> switch -c a && git switch -c b     rc=0, want 2  BYPASS
+#   git -C <worktree> checkout -b a && git checkout -b b rc=0, want 2  BYPASS
+#   git switch main && git -C <worktree> switch -c a     rc=2, want 0  FALSE BLOCK
+#
+# The bypass is the same family as the `git fetch && git switch -c` one this
+# gate closed one commit earlier: the tree was resolved from segment 1, the gate
+# stood down for the whole command, and segment 2 -- in the SHARED main tree --
+# was never judged. The false block refuses a branch creation in a linked
+# worktree, which is precisely what the worktree convention mandates.
+#
+#
+# LIMIT, stated rather than hidden. `gate_segments` FLATTENS a subshell, so a
+# `cd` inside one leaks past the closing paren and steers every later segment:
+#
+#   (cd <worktree> && git switch -c a) && git switch -c b
+#
+# resolves segment 3 to the worktree and PASSES. Measured from the real main
+# checkout, rc=0 where 2 is wanted -- and measured the same against the hook
+# BEFORE the per-segment change, so this is a pre-existing bound rather than one
+# that change introduced. Closing it means teaching the shared segmenter to
+# report subshell depth, which is a change to every gate that calls it, not to
+# this one. The exposure is narrow in the other direction too: the false-BLOCK
+# twin cannot happen, since a leaked `cd` can only ever make the gate quieter.
+# `git rev-parse --show-toplevel` returns the CURRENT worktree's top, which
+# differs between the main tree and any `.claude/worktrees/<x>/`. Cheaper
+# heuristic: the main worktree is whatever `git worktree list` lists first.
+#
+# ONE-ENTRY memo: every ordinary command's segments share a tree, and a miss
+# costs a `git worktree list` fork inside a PreToolUse hook that runs on every
+# Bash call. bash 3.2 has no associative arrays and a deeper cache buys nothing
+# at these sizes.
+_mt_memo_dir=""
+_mt_memo_val=""
+main_tree_of() {
+  local dir="$1" mt
+  if [ "$dir" = "$_mt_memo_dir" ]; then
+    [ -n "$_mt_memo_val" ] || return 1
+    printf '%s' "$_mt_memo_val"
+    return 0
+  fi
+  _mt_memo_dir="$dir"
+  _mt_memo_val=""
+  mt=$(git -C "$dir" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
+  # Not in a git repo / cannot resolve -- pass through (we do not gate what we
+  # cannot see).
+  [ -n "$mt" ] || return 1
+  # Repo opt-in scope (issue #1259): only repos following the worktree +
+  # markgate convention get main-tree branch protection. Unrelated repos (a
+  # personal blog, a scratch clone) have no parallel-agent contention on their
+  # main tree. Opt-in signal: a `.markgate.yml` at the main worktree root.
+  [ -f "$mt/.markgate.yml" ] || return 1
+  # A LINKED worktree (`.claude/worktrees/<x>/` or similar) is exactly where the
+  # convention wants feature branches, so it is not gated.
+  [ "$(canonicalize "$dir")" = "$(canonicalize "$mt")" ] || return 1
+  _mt_memo_val="$mt"
+  printf '%s' "$mt"
+}
 
-case "$sub" in
-  switch)
-    # `git switch <name>` or `git switch -c <name>` or `git switch
-    # -C <name>` (force-create).
-    rest=$(printf '%s' "$subcmd_args" | awk '{$1=""; sub(/^ +/, ""); print}')
-    # If first token is `-c` / `-C`, the branch is being created → block.
-    first_token=$(printf '%s' "$rest" | awk '{print $1}')
-    if [[ "$first_token" == "-c" || "$first_token" == "-C" ]]; then
-      target_branch=$(printf '%s' "$rest" | awk '{print $2}')
-      block_reason="creates new feature branch '$target_branch'"
-    else
-      target_branch="$first_token"
-      if [[ "$target_branch" == "main" || "$target_branch" == "master" ]]; then
-        exit 0
-      fi
-      # `git switch -` (switch back to previous branch) — can't know
-      # what that resolves to without running git. Conservatively
-      # block; agents shouldn't be using `git switch -` in the main
-      # tree anyway.
-      if [[ "$target_branch" == "-" ]]; then
-        block_reason="switches to previous branch (\`git switch -\`); resolved branch unknown — block conservatively"
-      else
-        block_reason="switches to feature branch '$target_branch'"
-      fi
+# Decide from the SEGMENT that matched -- its arguments AND its tree -- not from
+# a walk to the first `git` token in the whole command:
+#
+#   `git switch <main|master>`         -> allow
+#   `git checkout <main|master>`       -> allow
+#   `git switch -c <branch>`           -> block
+#   `git switch <other-branch>`        -> block
+#   `git checkout -b <branch>`         -> block
+#   `git checkout <other-branch>`      -> block (only when <other-branch> is a
+#                                        local branch -- file-path / sha
+#                                        checkouts pass through)
+#   `git checkout -- <pathspec>`       -> allow (file restore)
+#   `git checkout <sha>`               -> allow (detached HEAD)
+#
+# The awk walker this replaces skipped to the FIRST `git` token in the whole
+# command, so a chained `git fetch origin && git switch -c <b> origin/main` read
+# `sub=fetch`, fell to its "unrecognised subcommand, fail open" arm and exited
+# 0 -- a live bypass of the protection the whole worktree discipline rests on,
+# in the spelling this repo's own skills print. Measured on the real main
+# checkout, on `main`: the bare `git switch -c` rc=2, the `git fetch && ...`
+# twin rc=0. The suite had a `cd <main> && git switch` case and no
+# `git <verb> && git switch` one, which is why it survived.
+#
+# Judging the segment also retires the hand-rolled quoted-span collapse and the
+# `cd <path> &&` prefix skip: the shared segmenter already splits on `&&` / `||`
+# / `;` / `|` / newline / subshells / substitutions and strips leading
+# assignments and wrappers, and `GATE_FLAGS` carries the quoted-value
+# alternative a local copy drops (`git -C "/a b" switch -c x`).
+#
+# EVERY matching segment is considered, not just the first. A gate whose verdict
+# depends on the ARGUMENTS and that reads only segment 1 has the same hole one
+# operator further along -- `gate_verb_rest_each`'s own header records
+# dirty-path-restore-gate falling into exactly that during the #2200 review.
+#
+# The two verbs are read with SEPARATE EREs because the tail cannot be judged
+# without knowing which fired: `-c` creates a branch under `switch` and is a
+# config override under `checkout`.
+first_token_of() { printf '%s' "$1" | awk '{print $1}'; }
+second_token_of() { printf '%s' "$1" | awk '{print $2}'; }
+
+target_branch=""
+block_reason=""
+target_dir=""
+main_tree=""
+
+# judge <verb> <verb-ere>
+# Walk every matching segment WITH the tree it runs in, and set block_reason on
+# the first one that must be blocked.
+judge() {
+  local verb="$1" ere="$2" line seg_dir seg_main rest first_token
+  while IFS= read -r line; do
+    # Split on the FIRST tab only. `IFS=$'\t' read -r dir rest` would fold a TAB
+    # RUN inside the rest -- tab is IFS whitespace -- and silently drop an
+    # argument.
+    seg_dir="${line%%$'\t'*}"
+    rest="${line#*$'\t'}"
+    if [ -z "$seg_dir" ]; then
+      # This segment names its tree with an expression the parser cannot read.
+      # Refuse rather than guess: gate_target_dir_strict's contract, now applied
+      # per segment (go-to-k/cdkd#2027).
+      gate_refuse_unresolved_target "main-tree-branch-gate" "${hook_cwd:-$PWD}"
     fi
-    ;;
-  checkout)
-    # `git checkout <name>` / `git checkout -b <name>` / `git
-    # checkout -- <pathspec>` / `git checkout <sha>`.
-    rest=$(printf '%s' "$subcmd_args" | awk '{$1=""; sub(/^ +/, ""); print}')
-    first_token=$(printf '%s' "$rest" | awk '{print $1}')
-    if [[ "$first_token" == "-b" || "$first_token" == "-B" ]]; then
-      target_branch=$(printf '%s' "$rest" | awk '{print $2}')
-      block_reason="creates new feature branch '$target_branch'"
-    elif [[ "$first_token" == "--" ]]; then
-      # File restore — pass through.
-      exit 0
-    elif [[ "$first_token" == "main" || "$first_token" == "master" ]]; then
-      exit 0
-    elif [[ -z "$first_token" ]]; then
-      # `git checkout` with no args — defaults to file restore in some
-      # versions, NOP in others. Pass through.
-      exit 0
-    else
-      # Could be a branch name or a sha. If it resolves to a local
-      # branch via `git show-ref refs/heads/<name>`, treat as branch
-      # switch (block). Otherwise treat as sha / pathspec (pass).
-      if git -C "$target_dir" show-ref --verify --quiet "refs/heads/$first_token" 2>/dev/null; then
-        target_branch="$first_token"
-        block_reason="switches to feature branch '$first_token'"
-      else
-        exit 0
-      fi
-    fi
-    ;;
-  *)
-    # Unrecognized subcommand inside switch|checkout regex match —
-    # shouldn't happen, but fail open to avoid false positives.
-    exit 0
-    ;;
-esac
+    seg_main=$(main_tree_of "$seg_dir") || continue
+    first_token=$(first_token_of "$rest")
+    case "$verb" in
+      switch)
+        case "$first_token" in
+          -c|-C|--create|--force-create)
+            # Name the BRANCH, not the flag. The old shape read token 1 and
+            # printed `--create` as the branch name -- right verdict, wrong text.
+            target_branch=$(second_token_of "$rest")
+            block_reason="creates new feature branch '$target_branch'"
+            ;;
+          # `main` / `master` are the only allowed targets.
+          main|master) continue ;;
+          # `git switch -` resolves to the previous branch, which cannot be
+          # known without running git; block conservatively.
+          -)
+            target_branch="-"
+            block_reason="switches to previous branch (\`git switch -\`); resolved branch unknown -- block conservatively"
+            ;;
+          -d|--detach)
+            # Detaching HEAD moves the SHARED tree off `main` just as a branch
+            # switch does; block, but do not call the flag a branch name.
+            target_branch=""
+            block_reason="detaches HEAD in the main tree (\`git switch $first_token\`)"
+            ;;
+          *)
+            # A bare `git switch` (empty token) blocks conservatively too.
+            target_branch="$first_token"
+            block_reason="switches to feature branch '$first_token'"
+            ;;
+        esac
+        ;;
+      checkout)
+        case "$first_token" in
+          -b|-B)
+            target_branch=$(second_token_of "$rest")
+            block_reason="creates new feature branch '$target_branch'"
+            ;;
+          # `--` is a file restore, `main` / `master` are allowed, and a bare
+          # `git checkout` is a NOP or a restore depending on the git version.
+          --|main|master|"") continue ;;
+          *)
+            # A branch name or a sha. Only a name that resolves to a LOCAL
+            # branch is a branch switch; a sha or a pathspec passes. Asked of
+            # the segment's OWN tree, since that is where it would run.
+            if git -C "$seg_dir" show-ref --verify --quiet "refs/heads/$first_token" 2>/dev/null; then
+              target_branch="$first_token"
+              block_reason="switches to feature branch '$first_token'"
+            else
+              continue
+            fi
+            ;;
+        esac
+        ;;
+    esac
+    target_dir="$seg_dir"
+    main_tree="$seg_main"
+    return 0
+  done < <(gate_verb_rest_each_dir "$cmd" "${hook_cwd:-$PWD}" "$ere")
+  return 1
+}
+
+judge switch "$GATE_RE_GIT_SWITCH_ONLY" || judge checkout "$GATE_RE_GIT_CHECKOUT"
+
+[[ -n "$block_reason" ]] || exit 0
 
 # Compose the block message.
 branch_slug=$(printf '%s' "${target_branch:-feature-branch}" | tr -c 'a-zA-Z0-9._/-' '-')

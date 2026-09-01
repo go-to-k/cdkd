@@ -51,8 +51,20 @@
 #     -b "..."` therefore passes; `--body` is caught. Agent-authored
 #     commands in this repo use `--body-file` or the long flags;
 #   - text the shell assembles at run time (`--body "$(cat jp.txt)"`) is
-#     invisible to a static scan, as is a body file a heredoc EARLIER
-#     IN THE SAME command has not written yet at PreToolUse time;
+#     invisible to a static scan. The related window -- a body file the
+#     SAME command has not written yet at PreToolUse time -- is CLOSED
+#     for the heredoc shape (go-to-k/cdkd#2397, see the extraction
+#     below). What remains of it is narrower: a one-call body written by
+#     something other than a heredoc redirect (`printf > f`,
+#     `python3 -c ... > f`) cannot be extracted, so the scan falls back
+#     to whatever is on disk, which is the PREVIOUS body. This list used
+#     to say that was ALL that remained, and it was not: the extraction
+#     was handed the RESOLVED absolute path while it matches against the
+#     raw command text, so a body written and consumed under a RELATIVE
+#     or `~/` spelling was never scanned at all (rc=0 against rc=2 for
+#     the absolute twin, measured). That one is CLOSED -- both spellings
+#     are now offered to the matchers -- and it is named here because
+#     the list claiming to be complete is what let it sit;
 #   - an unquoted inline value is matched, but one containing shell
 #     metacharacters may be truncated at the first;
 #   - adjacent quoted chunks (`--body "a"$'\''b'\''`) yield only the first;
@@ -146,8 +158,113 @@ declare -a OFFENDERS=()
 MAX_REPORT=10
 
 # --- 1. file-borne bodies ---------------------------------------------
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
+# --- go-to-k/cdkd#2397 helpers -------------------------------------------
+# `cmd_writes <path>` and `cmd_replaces <path>` answer two DIFFERENT questions,
+# and collapsing them into one was a regression that made this gate weaker than
+# the code it replaced. `>>` / `tee -a` APPEND: the file is not superseded, it is
+# the FIRST HALF of the body being submitted, so its content must still be
+# scanned. Treating an append as a rewrite skipped it entirely -- measured as
+# rc=0 where both origin/main and the first fix answered rc=2.
+#
+#   writes   -> `>`, `>>`, `tee`, `tee -a`. Look at the command's heredoc chunks.
+#   replaces -> `>`, `tee` only. ONLY then may what is on disk be ignored.
+#
+# A heredoc body is written through exactly these redirects (`cat > f <<EOF`), so
+# matching the redirect covers the heredoc shape without parsing heredocs twice.
+cmd_writes() {
+  CMD="$cmd" TARGET="$1" perl -0777 -e '
+    my $c = $ENV{CMD};
+    my $t = quotemeta($ENV{TARGET});
+    # `(?:\s|$)` alone missed `>f<<EOF` -- the TIGHT spelling of the very shape
+    # this exists for -- and `>f;` / `>f&&`.
+    exit 0 if $c =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 1;
+  ' 2>/dev/null
+}
+
+cmd_replaces() {
+  CMD="$cmd" TARGET="$1" perl -0777 -e '
+    my $c = $ENV{CMD};
+    my $t = quotemeta($ENV{TARGET});
+    exit 0 if $c =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 1;
+  ' 2>/dev/null
+}
+
+# `heredoc_bodies_for <path>` -- EVERY heredoc body that writes that path, in
+# order. Both orders are handled (`cat > f <<EOF` and `cat <<EOF > f`), quoted
+# and unquoted delimiters, and `<<-`. Exits non-zero when the command writes the
+# path through no heredoc at all, which leaves the pre-#2397 behaviour for every
+# shape this cannot see.
+heredoc_bodies_for() {
+  CMD="$cmd" TARGET="$1" perl -0777 -e '
+    my $c = $ENV{CMD};
+    my $t = quotemeta($ENV{TARGET});
+    my @lines = split /\n/, $c, -1;
+    my @out;
+    my $found = 0;
+    for (my $i = 0; $i <= $#lines; $i++) {
+      my $l = $lines[$i];
+      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
+      my $dash  = ($1 eq "<<-");
+      my $delim = $3;
+      $found = 1;
+      my $j = $i + 1;
+      while ($j <= $#lines) {
+        # Terminator matching follows bash, not intuition: a plain `<<` needs
+        # the delimiter ALONE on the line, and only `<<-` allows leading
+        # whitespace -- TABS only. Stripping all leading whitespace
+        # unconditionally made an indented `  EOF` inside the body end the
+        # extraction early, so everything after it went unscanned while bash
+        # still submitted it. That is a silent miss, the one direction a gate
+        # must not fail in.
+        my $probe = $lines[$j];
+        $probe =~ s/^\t+// if $dash;
+        last if $probe eq $delim;
+        push @out, $lines[$j];
+        $j++;
+      }
+      # Resume AFTER this body, and do NOT stop at the first: a path can be
+      # written by more than one heredoc in one command (`> f <<A ... A;
+      # >> f <<B ... B`), and stopping left the SECOND chunk -- just as much of
+      # the submitted body -- unscanned.
+      $i = $j;
+    }
+    print join("\n", @out), "\n" if @out;
+    # The STATUS, not the output, reports whether a heredoc was found. An EMPTY
+    # heredoc body is legal and prints nothing, so inferring "no heredoc" from
+    # empty output made an empty heredoc REWRITING an offending file fall
+    # through to the stale file and FALSE-BLOCK -- quoting a line that will not
+    # exist, which the author cannot clear.
+    exit($found ? 0 : 1);
+  ' 2>/dev/null
+}
+
+while IFS= read -r f_raw; do
+  [ -n "$f_raw" ] || continue
+  # BOTH spellings are kept, and that is load-bearing rather than tidy.
+  # `f` is the path to READ; `f_raw` is the path as the command SPELLS it, and
+  # the write-detection below (`cmd_writes` / `cmd_replaces` /
+  # `heredoc_bodies_for`) matches its argument against the RAW COMMAND TEXT.
+  # Handed the resolved absolute path, those matched nothing whenever the
+  # command wrote a RELATIVE or `~/` path -- `have_body` stayed 0, the
+  # `[ -f "$f" ] || continue` below then passed silently, and a heredoc body
+  # full of non-English text was never scanned. Measured before this, with the
+  # payload cwd as the write target:
+  #
+  #   cd <d>; cat > body.md <<EOF … EOF; gh issue create --body-file body.md
+  #                                                            rc=0, want 2
+  #   cat > <abs>/b.md <<EOF … EOF;  gh issue create --body-file <abs>/b.md
+  #                                                            rc=2
+  #   cat > ~/p.md <<EOF … EOF;      gh issue create --body-file ~/p.md
+  #                                                            rc=0, want 2
+  #
+  # The twin `pr-body-item-number-gate.sh` does not normalise at all and so
+  # never had the gap, while both files advertise the two extractions as
+  # deliberately identical. They are matched here rather than there, because
+  # reading the file still needs the resolved path.
+  f="$f_raw"
   # The `~/` branch matches a LITERAL tilde in the command string: the
   # shell would have expanded a real one before gh ran, so what survives
   # here is text to match, not something to expand. SC2088's warning is
@@ -158,6 +275,75 @@ while IFS= read -r f; do
     "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;;
     *) f="$target_dir/$f" ;;
   esac
+  # Both spellings are offered to each matcher: the command may write the path
+  # one way and pass it to gh the other (`cat > /abs/b.md … --body-file b.md`),
+  # and either half alone leaves that shape unscanned.
+  # `[ "$f_raw" = "$f" ]` short-circuits the second probe on the common ABSOLUTE
+  # spelling, where the two are the same string: each of these is a `perl`
+  # spawn, and this gate already carries a timeout that a timed-out PreToolUse
+  # hook turns into a silent pass.
+  cmd_writes_either() {
+    cmd_writes "$f_raw" && return 0
+    [ "$f_raw" = "$f" ] && return 1
+    cmd_writes "$f"
+  }
+  cmd_replaces_either() {
+    cmd_replaces "$f_raw" && return 0
+    [ "$f_raw" = "$f" ] && return 1
+    cmd_replaces "$f"
+  }
+  heredoc_bodies_either() {
+    heredoc_bodies_for "$f_raw" && return 0
+    [ "$f_raw" = "$f" ] && return 1
+    heredoc_bodies_for "$f"
+  }
+  # The hook runs BEFORE the command, so when the heredoc that WRITES the body
+  # and the `gh` call that consumes it sit in ONE Bash call, the path is either
+  # absent or still holds what a previous call left there. The header documents
+  # that window as a known limit costing "a missed scan"; go-to-k/cdkd#2397
+  # observed it costing a real one, so it is closed here.
+  #
+  # It is closed by extracting the HEREDOC BODY that writes this path, NOT by
+  # scanning the whole command the way `issue-dup-check-gate.sh` and
+  # `pr-body-item-number-gate.sh` do. Those two look for a specific anchored
+  # pattern, so the extra surface is small. This gate's subject is ANY
+  # non-English character anywhere, and the command legitimately carries some:
+  # a body file under a Japanese-named directory is a documented PASS case
+  # ("japanese in the PATH but english body passes"), which a whole-command scan
+  # would turn into a block. Extracting the body scans exactly the text being
+  # published and nothing else.
+  #
+  # A readable file is re-read from the heredoc too when the command REWRITES
+  # it, because then what is on disk is the PREVIOUS body -- the same window,
+  # in the shape that looks like a working gate while judging text nobody is
+  # submitting.
+  #
+  # PRECEDENCE, and the third arm is the one that matters. The extracted body is
+  # the best evidence when it exists; the FILE is the fallback, not a skip. A
+  # first revision skipped whenever no heredoc body was found, which silently
+  # LOST a scan the pre-#2397 hook performed: `printf %s "$B" > f` followed by
+  # `--body-file f` matched `cmd_rewrites`, extracted nothing (it is not a
+  # heredoc), and passed a file that used to block. A fix that makes a gate
+  # weaker than the code it replaces is the worst outcome available here, so the
+  # skip now happens only when there is genuinely nothing to read: no body AND
+  # no file.
+  body_text=""
+  have_body=0
+  if [ ! -f "$f" ] || cmd_writes_either; then
+    body_text=$(heredoc_bodies_either) && have_body=1
+  fi
+  if [ "$have_body" = "1" ]; then
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      OFFENDERS+=("$f (heredoc, not yet written):$hit")
+    done < <(printf '%s\n' "$body_text" | perl -CSD -ne "print \"\$.: \$_\" if /$NON_ENGLISH_RE/" 2>/dev/null | head -"$MAX_REPORT")
+  fi
+  # The file is read UNLESS the command truncates it AND a body was extracted.
+  # An APPEND leaves the existing content as the first half of what is being
+  # submitted, so it must still be scanned; only a `>` / `tee` supersedes it.
+  if [ "$have_body" = "1" ] && cmd_replaces_either; then
+    continue
+  fi
   [ -f "$f" ] || continue
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue

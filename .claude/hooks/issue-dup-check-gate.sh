@@ -33,7 +33,7 @@
 # x properties wide, so an umbrella either sits open for months or is split
 # into forty issues that each pay the full fixed cost.
 #
-# /work-issues section 5 already says the right thing --
+# /work-issues section 5-f (references/filing.md) already says the right thing --
 #
 #   "N sites of one root cause is ONE issue and ONE PR, never N issues. This
 #    is the single largest source of unbounded backlog growth."
@@ -43,7 +43,7 @@
 # MIRRORING A SKILL LESSON into the sibling repos. The path that files a defect
 # follow-up mid-lane -- the path that produces most of the volume -- runs no
 # duplicate check at all. That gap is what this gate closes: registration is
-# not execution, and section 5's rule has been registered for months while the
+# not execution, and section 5-f's rule has been registered for months while the
 # numbers above are what it actually produced.
 #
 # WHAT IS AND IS NOT GATED
@@ -328,7 +328,7 @@ fi
   echo "written, so an open issue counts one unresolved root cause rather than"
   echo "one unfixed site."
   echo ""
-  echo "Rule: .claude/skills/work-issues/references/implement.md section 5 (\"N sites of one root"
+  echo "Rule: .claude/skills/work-issues/references/filing.md section 5-f (\"N sites of one root"
   echo "cause is ONE issue and ONE PR, never N issues\")."
 } >&2
 exit 2

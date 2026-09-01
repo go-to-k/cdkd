@@ -82,6 +82,21 @@ const RULES_DIR = join(repoRoot, '.claude', 'rules');
  * `layout-scripts.md` at 59,193 B. Lower this cap when hooks.md is split.
  */
 const MAX_RULE_FILE_BYTES = 120_000;
+// DELIBERATE, and recorded because it is now the tightest bound in this file.
+// `hooks.md` measures 117,469 B against this cap on 2026-09-01 -- 2,531 B of
+// headroom, where the hooks-stop.md split (go-to-k/cdkd#2391 / #2396) had left
+// 6,578 B. Two consecutive hook lanes have spent that back, this one by ~1.3 KB
+// of measured corrections to the main-tree-branch-gate entry (a live bypass in
+// both directions, which is what a rules file is FOR).
+//
+// The cap is NOT raised and the file is NOT split here. Raising it weakens the
+// only per-file guard; splitting costs a pointer, a CORPUS_FILE_COUNT bump and
+// a re-derived payload FLOOR for every row that loads hooks.md, and the natural
+// seam -- the `main-tree-branch-gate` entry -- is one a reader of the sibling
+// `branch-gate.sh` still wants. So the decision is: the NEXT lane that needs
+// more than 2,531 B in hooks.md splits it (the #2236 shape, for the fourth
+// time), rather than trimming someone else's entry or nudging this constant.
+// Stated here so that lane inherits a decision instead of a surprise.
 
 /**
  * A single line over this is a bullet that has been appended to for months.
@@ -193,6 +208,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
+  ['hooks-stop.md', 4], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
   ['layout-analyzer.md', 12],
   ['layout-cli-import-export.md', 3], // literal list: EXACT, see below
@@ -268,12 +284,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // fire at all; anywhere under it, the two fire together. The row is here for
   // its FLOOR, which nothing else provides, so the cap simply tracks the
   // per-file cap rather than pretending to add a signal.
-  ['.claude/hooks/branch-gate.sh', 95_000, MAX_RULE_FILE_BYTES], // measured 106,568 -- hooks.md alone
+  ['.claude/hooks/branch-gate.sh', 95_000, MAX_RULE_FILE_BYTES], // measured 117,469 -- hooks.md alone
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
   // than the cap being raised -- a cap that moves when it fires is not a cap.
-  ['.claude/hooks/lib/command-match.sh', 108_000, 140_000], // measured 121,407
+  ['.claude/hooks/lib/command-match.sh', 108_000, 140_000], // measured 132,187
   // The four `integ-*` gates were the heaviest UNBUDGETED paths once
   // `gate-sibling-repos.md` split out of hooks.md: this row is the only one
   // that names them, so without it the satellite sits under no budget at all
@@ -281,14 +297,20 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // Deliberately NOT added to the command-match row above: that path already
   // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
   // adding a third file would spend down to about 1 KB.
-  ['.claude/hooks/integ-local-gate.sh', 108_000, 140_000], // measured 122,313
+  ['.claude/hooks/integ-local-gate.sh', 108_000, 140_000], // measured 132,814
   // The cwd-race detector's entry moved out of hooks.md when the #2363
   // widening pushed that file past the 120,000 B per-file cap (the #2236
   // precedent). This path is the representative one for the satellite
   // (its two globs are the hook and its .test.sh, per the REACH_FLOORS
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
-  ['.claude/hooks/main-tree-git-cwd-detector.sh', 108_000, 140_000], // measured 122,121
+  ['.claude/hooks/main-tree-git-cwd-detector.sh', 108_000, 140_000], // measured 129,490
+  // The Stop-hook entries moved out of hooks.md when issues #2391 / #2396 --
+  // the nudge-cadence rule, the channel table and stop-warn's own suite --
+  // pushed that file to 122,559 B, past the same cap. Representative path for
+  // the satellite (its four globs are the two hooks and their suites, per the
+  // REACH_FLOORS entry above). Payload is hooks.md + hooks-stop.md.
+  ['.claude/hooks/stop-warn.sh', 108_000, 140_000], // measured 133,753
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -432,7 +454,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 35; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -458,14 +480,49 @@ const CORPUS_FILE_COUNT = 34; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  which is why testing.md still grew
                               //  (61,030 -> 61,358 B) rather than shrinking -- a split that leaves
                               //  a pointer always costs the index file something. That makes 34.
-const CORPUS_BYTES_MIN = 899_000;   // measured 914,165 B -- 15,165 B of slack.
+                              //  + hooks-stop.md (go-to-k/cdkd#2391 / go-to-k/cdkd#2396): the two
+                              //  Stop hooks' entries moved out of hooks.md verbatim -- the #2236
+                              //  shape a third time -- when the shared nudge-cadence rule, the
+                              //  output-channel table and `stop-warn`'s first suite pushed
+                              //  hooks.md to 122,559 B against the 120,000 B cap. The satellite is
+                              //  10,605 B under a four-path `paths:` list (the two hooks and their
+                              //  suites) and hooks.md fell to 113,422 B. That makes 35.
+const CORPUS_BYTES_MIN = 899_000;   // measured 933,620 B -- 34,620 B of slack.
                                     // 795_000 -> 899_000: the comment beside the old bound still
                                     // read "measured 808,384 B", 105 KB behind the corpus, so the
                                     // floor had ~119 KB of slack and would not have noticed a
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 928_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 946_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+                                    // 928_000 -> 946_000, measured 927,952 B: FORTY-EIGHT bytes of
+                                    // headroom, which is a landmine rather than a bound -- the next
+                                    // lane to add a paragraph anywhere in `.claude/rules/**` fails a
+                                    // test about a file it never opened, and the cheapest way out of
+                                    // that failure is to trim someone else's entry, which the corpus
+                                    // FLOOR exists to forbid. Raised deliberately rather than paid
+                                    // for by compression, and the reason is legible: this lane fixed
+                                    // six hook defects (two of them live gate bypasses) and their
+                                    // rationale is what a rules file is FOR. It was already
+                                    // compressed four times to fit under the old bound, and the full
+                                    // reasoning now lives in the hook comments, which this corpus
+                                    // does not measure -- i.e. the bound was pushing text out of the
+                                    // place a reader looks and into the place they do not.
+                                    // 18,048 B of headroom restored, ~2% of the corpus, sized so an
+                                    // ordinary docs lane fits without a second raise. This is a
+                                    // CEILING, so raising it weakens the guard: re-measure before
+                                    // touching it again, and prefer a narrower-`paths:` satellite
+                                    // whenever the growth is per-area rather than corpus-wide.
+                                    //
+                                    // RE-MEASURED 2026-09-01 at 933,620 B: 12,380 B of headroom,
+                                    // and NOT raised. Every "measured N" in this file was stale by
+                                    // then -- including figures the previous lane had written --
+                                    // which is the failure this file's own comment names ("a bound
+                                    // that drifts from its measurement stops being one"), so the
+                                    // numbers were re-derived at the final tree rather than
+                                    // adjusted. The remaining headroom is roughly one ordinary
+                                    // docs lane; the next one to need more should SPLIT rather
+                                    // than raise.
                                     // 900_000 -> 915_000 (go-to-k/cdkd#2363): origin/main sat at 899,989 B --
                                     // 11 B of headroom -- so ANY rules addition tripped it. Measured after the
                                     // hooks-cwd-detector.md split: 902,381 B (the widening's net prose is

@@ -941,6 +941,11 @@ GATE_RE_GIT_SWITCH="^git${GATE_FLAGS}[[:space:]]+(switch|checkout)([[:space:]]|$
 # path restore only when `--` is present, while `git restore` is path-scoped by
 # default -- so it cannot use the combined form.
 GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS}[[:space:]]+checkout([[:space:]]|$)"
+# `switch` alone, for the same reason `checkout` is separate: a caller that
+# judges the ARGUMENT TAIL has to know which verb fired -- `-c` creates a branch
+# under `switch` and is a config override under `checkout` -- so the combined
+# GATE_RE_GIT_SWITCH cannot answer it. main-tree-branch-gate reads both.
+GATE_RE_GIT_SWITCH_ONLY="^git${GATE_FLAGS}[[:space:]]+switch([[:space:]]|$)"
 GATE_RE_GIT_RESTORE="^git${GATE_FLAGS}[[:space:]]+restore([[:space:]]|$)"
 GATE_RE_GIT_CHECKOUT_RESTORE="^git${GATE_FLAGS}[[:space:]]+(checkout|restore)([[:space:]]|$)"
 GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)"
@@ -1179,6 +1184,102 @@ gate_verb_rest_each() {
   while IFS= read -r segment; do
     _gate_span=$(gate_verb_span "$segment" "$re") || continue
     printf '%s\n' "${segment:$_gate_span}"
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
+# gate_verb_rest_each_dir <command> <fallback-dir> <verb-ere>
+#
+# `gate_verb_rest_each` plus the working tree EACH matching segment runs in: one
+# "<dir><TAB><rest-after-the-verb>" line per matching segment.
+#
+# WHY the tree has to come out of the SAME walk. Resolving it once per COMMAND
+# -- `gate_target_dir_strict`, whose walk stops at the first matching segment --
+# makes segment 1's tree decide the whole command, so a gate that then judges
+# every segment judges them all against the wrong tree. Measured against both
+# repos' real main checkouts and their real linked worktrees, driving
+# main-tree-branch-gate with a payload cwd of the MAIN tree:
+#
+#   git -C <worktree> switch -c a && git switch -c b     rc=0, want 2  BYPASS
+#   git switch main && git -C <worktree> switch -c a     rc=2, want 0  FALSE BLOCK
+#
+# The first is the `git fetch && git switch -c` bypass these gates exist to
+# close, one operator further along: segment 1 resolves to a linked worktree,
+# the gate stands down for the whole command, and segment 2 -- running in the
+# SHARED main tree -- is never judged. The second refuses a branch creation in a
+# linked worktree, which is exactly what the worktree convention mandates.
+#
+# An EMPTY <dir> means that segment names its tree with an expression this
+# parser cannot read (an unexpanded `$VAR`, a backtick, a glob, a `~user`). It
+# is `gate_target_dir_strict`'s `return 2` in a per-line channel, and a BLOCKING
+# caller must refuse it the same way -- see gate_refuse_unresolved_target.
+#
+# Callers split the line with `${line%%<TAB>*}` / `${line#*<TAB>}`, NOT with
+# `IFS=$'\t' read -r dir rest`: tab is IFS whitespace, so that spelling folds a
+# TAB RUN inside the rest and silently drops an argument.
+#
+# The cd / `-C` reading is a deliberate COPY of gate_target_dir_strict's rather
+# than a shared helper. That function is called by 24 gates and its walk BREAKS
+# at the verb, which is the one thing this walk must not do; a shared helper
+# would have to carry both behaviours and every one of those callers would ride
+# on the flag. `command-match.test.sh` pins the two against each other on the
+# single-segment shape instead, so the copy cannot drift silently.
+gate_verb_rest_each_dir() {
+  local cmd="$1" fallback="$2" re="$3"
+  local target="$fallback" segment cd_target c_target unresolved_cd=0
+  local seg_target seg_unres _gate_span
+  while IFS= read -r segment; do
+    if [[ "$segment" =~ ^cd[[:space:]]+$GATE_PATH_TOKEN ]]; then
+      cd_target=$(gate_unquote "${BASH_REMATCH[1]}")
+      # Same unreadable-expression set as gate_target_dir_strict, and an
+      # unreadable cd is REMEMBERED rather than refused on the spot: a later
+      # ABSOLUTE cd, or an absolute `-C` in the verb's own segment, still makes
+      # it moot.
+      case "$cd_target" in
+        *'$'*|*'`'*|*'*'*|*'?'*|*'{'*) unresolved_cd=1; continue ;;
+        '~'|'~/'*) : ;;
+        '~'*) unresolved_cd=1; continue ;;
+      esac
+      [ -z "$cd_target" ] && continue
+      cd_target=$(gate_expand_tilde "$cd_target")
+      if [[ "$cd_target" == /* ]]; then
+        target="$cd_target"
+        unresolved_cd=0
+      else
+        target="$target/$cd_target"
+      fi
+      continue
+    fi
+    _gate_span=$(gate_verb_span "$segment" "$re") || continue
+    # The running cd state is the SEGMENT's starting point; its own `-C` may
+    # then override it. Neither is written back to `target`, because a `-C` is
+    # scoped to its one command while a `cd` persists to the next segment.
+    seg_target="$target"
+    seg_unres="$unresolved_cd"
+    c_target=$(gate_leading_c_value "$segment")
+    if [ -n "$c_target" ]; then
+      c_target=$(gate_unquote "$c_target")
+      case "$c_target" in
+        *'$'*|*'`'*|*'*'*|*'?'*|*'{'*) seg_unres=1; c_target="" ;;
+        '~'|'~/'*) : ;;
+        '~'*) seg_unres=1; c_target="" ;;
+      esac
+      if [ -n "$c_target" ]; then
+        c_target=$(gate_expand_tilde "$c_target")
+        if [[ "$c_target" == /* ]]; then
+          # An ABSOLUTE `-C` decides where this command runs whatever any
+          # earlier cd did, so an unreadable cd before it stops mattering.
+          seg_target="$c_target"
+          seg_unres=0
+        else
+          # A RELATIVE `-C` resolves against wherever the cds left us, so it
+          # inherits their uncertainty rather than curing it.
+          seg_target="$seg_target/$c_target"
+        fi
+      fi
+    fi
+    [ "$seg_unres" = 1 ] && seg_target=""
+    printf '%s\t%s\n' "$seg_target" "${segment:$_gate_span}"
   done < <(gate_segments "$cmd")
   return 0
 }

@@ -25,6 +25,27 @@ FAIL=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
+# bash 3.2 is NOT exercised on the HOOK by running THIS FILE under /bin/bash.
+# The hook's shebang is `#!/usr/bin/env bash`, which resolves through PATH and
+# finds whatever bash is first there -- Homebrew 5.x on a dev Mac -- so
+# `/bin/bash <suite>` measured the SUITE under 3.2 and the SUBJECT under 5.x.
+# `HOOK_BASH=/bin/bash` puts a `bash` shim first on PATH, so the shebang, the
+# explicit `bash "$HOOK"` calls and any `bash` the hook itself spawns all run
+# that interpreter instead. Run the suite BOTH ways; the tallies must match.
+if [ -n "${HOOK_BASH:-}" ]; then
+  # Resolved to an ABSOLUTE path first. `HOOK_BASH=bash` would otherwise make
+  # `ln -sf bash <shim>/bash` a symlink pointing at ITSELF, and every hook
+  # invocation would then die on ELOOP -- a suite-wide red with a cause nowhere
+  # near the hook.
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMP/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
+
 run() {
   local name="$1" cmd="$2" expect_exit="$3"
   local input exit_code err
@@ -354,6 +375,276 @@ else
   echo "FAIL: hook is NOT registered in .claude/settings.json"
   FAIL=$((FAIL + 1))
 fi
+
+# --- go-to-k/cdkd#2397: the body file the command is about to WRITE ----
+# The hook runs before the command, so in the one-call
+# `heredoc -> file -> --body-file` shape the path is absent (or stale) at hook
+# time. The header called that a known limit costing "a missed scan"; these
+# cases close it. The fallback reads the HEREDOC BODY rather than the whole
+# command, which is what keeps the japanese-in-the-PATH case above passing --
+# so that case is now load-bearing rather than incidental.
+ABSENT="$TMP/never-written.md"
+
+run "heredoc body with japanese blocks even though the file does not exist yet" \
+  "cat > $ABSENT <<EOF
+# Title
+
+日本語の本文
+EOF
+gh issue create --title x --body-file $ABSENT" 2
+
+# The false-BLOCK direction: this is the publishing shape the rules prescribe,
+# so an English body written the same way must still pass.
+run "heredoc body in english still passes" \
+  "cat > $ABSENT <<EOF
+# Title
+
+All English content here.
+EOF
+gh issue create --title x --body-file $ABSENT" 0
+
+# The two halves together: a japanese PATH and an english heredoc body. This
+# passes only if the fallback scans the BODY; a whole-command fallback blocks it.
+JPDIR2=$(mktemp -d)/日本語ディレクトリ
+mkdir -p "$JPDIR2"
+run "a japanese path with an english heredoc body still passes" \
+  "cat > $JPDIR2/en.md <<EOF
+All English content here.
+EOF
+gh issue create --title x --body-file $JPDIR2/en.md" 0
+rm -rf "$(dirname "$JPDIR2")"
+
+# The path EXISTS and holds an ENGLISH body, and the command rewrites it with a
+# japanese one. Reading the file alone passes while judging text nobody submits.
+STALE="$TMP/stale.md"
+printf 'All English content here.\n' > "$STALE"
+run "a stale english body file does not excuse a japanese rewrite" \
+  "cat > $STALE <<EOF
+日本語の本文
+EOF
+gh issue create --title x --body-file $STALE" 2
+
+# The control that keeps the case above honest: the same file, NOT rewritten.
+run "an english body file the command does not rewrite still passes" \
+  "gh issue create --title x --body-file $STALE" 0
+
+# `-F` is not gh-unique (`git commit -F`, `awk -F`, `grep -F`, `curl -F`), and
+# the header says the file-existence check is what keeps that from false-
+# blocking. The fallback must not undo that: an `awk -F ,` names a path that
+# will never exist and that the command does not write, so it stays a skip.
+run "a non-gh -F value does not arm the fallback" \
+  "awk -F , '{print \$1}' /dev/null && gh issue create --title x --body-file $STALE" 0
+
+# --- the `-F ,` case above cannot tell "gate not armed" from "armed, found
+# nothing": both answer 0. Its TWIN makes the difference observable -- same
+# `awk -F ,` prefix, a JAPANESE body file, and a required BLOCK. A hook that
+# bails out of the whole command on an unresolvable `-F` value (a tempting
+# "fix" for the false-block worry) passes the case above and fails this one.
+run "...and the gate IS armed on that same command, it simply found nothing" \
+  "awk -F , '{print \$1}' /dev/null && gh issue create --title x --body-file $JP_BODY" 2
+
+# --- KNOWN LIMIT, both directions: a one-call body written by something other
+# than a heredoc redirect. The extraction reads HEREDOC bodies only.
+#
+#   path ABSENT  -> nothing to read at all, so a non-English body written by
+#                   `printf > f` passes. That is the gap; pinning it is what
+#                   stops it widening silently.
+#   path EXISTS  -> the scan falls back to the FILE, so it still blocks. This
+#                   half is the REGRESSION a reviewer measured against the
+#                   first draft, which skipped whenever no heredoc body was
+#                   found: `printf %s "$B" > f` matched `cmd_rewrites`,
+#                   extracted nothing, and returned 0 where the pre-#2397 hook
+#                   returned 2 -- a fix that made the gate WEAKER than the code
+#                   it replaced.
+PRINTF_ABSENT="$TMP/printf-absent.md"
+run "known limit: a printf-written body at an ABSENT path is not extracted" \
+  "printf '%s\\n' '日本語の本文' > $PRINTF_ABSENT
+gh issue create --title x --body-file $PRINTF_ABSENT" 0
+
+run "...but an EXISTING non-English file is still read when printf rewrites it" \
+  "printf '%s\\n' 'All English content here.' > $JP_BODY
+gh issue create --title x --body-file $JP_BODY" 2
+
+# --- HEREDOC TERMINATOR MATCHING follows bash, not intuition, and both halves
+# are load-bearing. A plain `<<` needs the delimiter ALONE on its line, so an
+# indented `  EOF` sitting INSIDE the body is body text; a first draft stripped
+# all leading whitespace before comparing, ended the extraction there, and left
+# everything after it unscanned while bash still submitted it. That is a silent
+# miss, the one direction a gate must not fail in.
+INDENTED="$TMP/indented-eof.md"
+run "an indented EOF inside a plain << body does not end the extraction" \
+  "cat > $INDENTED <<EOF
+# Title
+
+  EOF
+
+これは日本語
+EOF
+gh issue create --title x --body-file $INDENTED" 2
+
+# ...and the converse: `<<-` DOES accept a TAB-indented terminator, so the body
+# ends there and the non-English text AFTER it is not part of what is being
+# published. Without the tab strip the extraction runs to the end of the command
+# and swallows that text, blocking a body that is entirely English.
+DASHED="$TMP/dashed-eof.md"
+run "a tab-indented terminator DOES end a <<- body" \
+  "cat > $DASHED <<-EOF
+	All English content here.
+	EOF
+gh issue create --title x --body-file $DASHED && echo '完了'" 0
+
+# --- An APPEND is NOT a rewrite. `>>` / `tee -a` leave what is on disk in
+# place: it is the FIRST HALF of the body being submitted, not a superseded
+# copy. Scanning the heredoc chunk INSTEAD of the file left the non-English text
+# already on disk unread -- rc=0 where both the pre-#2397 hook and the first fix
+# answered rc=2, the same "must not SKIP a scan the pre-fix hook performed"
+# class a reviewer had already caught once here.
+APPEND_JP="$TMP/append-jp.md"
+printf '日本語の本文\n' > "$APPEND_JP"
+run "an append does not excuse the non-English text already on disk" \
+  "cat >> $APPEND_JP <<EOF
+All English appended here.
+EOF
+gh pr create --title x --body-file $APPEND_JP" 2
+
+APPEND_EN="$TMP/append-en.md"
+printf 'All English content here.\n' > "$APPEND_EN"
+run "a clean append over an english file still passes" \
+  "cat >> $APPEND_EN <<EOF
+More English appended here.
+EOF
+gh pr create --title x --body-file $APPEND_EN" 0
+
+# --- EVERY heredoc writing the path is extracted, not just the first.
+TWO_CHUNK="$TMP/two-chunk.md"
+run "non-English in the SECOND heredoc chunk is still found" \
+  "cat > $TWO_CHUNK <<A
+All English here.
+A
+cat >> $TWO_CHUNK <<B
+これは日本語
+B
+gh issue create --title x --body-file $TWO_CHUNK" 2
+
+run "...and two English chunks still pass" \
+  "cat > $TWO_CHUNK <<A
+All English here.
+A
+cat >> $TWO_CHUNK <<B
+Still English here.
+B
+gh issue create --title x --body-file $TWO_CHUNK" 0
+
+# --- An EMPTY heredoc body is legal and is not the same thing as "no heredoc".
+# Inferring the latter from empty OUTPUT made an empty heredoc REWRITING a
+# non-English file fall through to the stale file and FALSE-BLOCK, quoting a
+# line that will not exist -- the unclearable block this change exists to end.
+EMPTY_OVER_JP="$TMP/empty-over-jp.md"
+printf '日本語の本文\n' > "$EMPTY_OVER_JP"
+run "an EMPTY heredoc rewriting a non-English file does not false-block" \
+  "cat > $EMPTY_OVER_JP <<EOF
+EOF
+gh issue create --title x --body-file $EMPTY_OVER_JP" 0
+
+# --- The other two widened terminator characters. Only `>f<<EOF` had a case, so
+# narrowing the class back to `[\s<]` left the suite green for `>f;` / `>f&&`.
+SEMI_ABSENT="$TMP/semi-absent.md"
+run "the >f; redirect spelling is still extracted and blocked" \
+  "cat <<EOF >$SEMI_ABSENT; gh issue create --title x --body-file $SEMI_ABSENT
+これは日本語
+EOF" 2
+
+AND_ABSENT="$TMP/and-absent.md"
+run "the >f&& redirect spelling is still extracted and blocked" \
+  "cat <<EOF >$AND_ABSENT&& gh issue create --title x --body-file $AND_ABSENT
+これは日本語
+EOF" 2
+
+
+# --- The path as the command SPELLS it. `f` is normalised to an absolute path
+# before `cmd_writes` / `heredoc_bodies_for` are asked about it, and those two
+# match their argument against the RAW COMMAND TEXT -- so a body written and
+# consumed under a RELATIVE or `~/` spelling matched nothing, `have_body` stayed
+# 0, and the `[ -f "$f" ] || continue` guard passed a heredoc body full of
+# non-English text in silence. Measured before the fix: the absolute spelling
+# rc=2, the relative and `~/` twins rc=0. `pr-body-item-number-gate.sh` does not
+# normalise and never had the gap, while both files advertise the two
+# extractions as deliberately identical.
+RELDIR="$TMP/spelled"
+mkdir -p "$RELDIR"
+relhd=$(jq -nc --arg c "cd $RELDIR; cat > spelled.md <<EOF
+これは日本語
+EOF
+gh issue create --title x --body-file spelled.md" --arg d "$RELDIR" \
+  '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}')
+relhdrc=0
+echo "$relhd" | "$HOOK" >/dev/null 2>&1 || relhdrc=$?
+if [[ "$relhdrc" -eq 2 ]]; then
+  echo "PASS: a RELATIVE heredoc body path is still extracted and blocked (exit 2)"; PASS=$((PASS+1))
+else
+  echo "FAIL: a RELATIVE heredoc body path is still extracted and blocked (exit $relhdrc, expected 2)"; FAIL=$((FAIL+1))
+fi
+# ...and its false-BLOCK direction, so the case above is not satisfied by a
+# hook that blocks every relative body file.
+relok=$(jq -nc --arg c "cd $RELDIR; cat > ok.md <<EOF
+All English content here.
+EOF
+gh issue create --title x --body-file ok.md" --arg d "$RELDIR" \
+  '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}')
+relokrc=0
+echo "$relok" | "$HOOK" >/dev/null 2>&1 || relokrc=$?
+if [[ "$relokrc" -eq 0 ]]; then
+  echo "PASS: an ENGLISH relative heredoc body still passes (exit 0)"; PASS=$((PASS+1))
+else
+  echo "FAIL: an ENGLISH relative heredoc body still passes (exit $relokrc, expected 0)"; FAIL=$((FAIL+1))
+fi
+# The `~/` spelling, with HOME pointed at the sandbox so nothing is written
+# outside it. The command is never executed -- the hook sees text -- so the file
+# genuinely does not exist and the heredoc body is the only evidence there is.
+tildehd=$(jq -nc --arg c "cat > ~/tilde-body.md <<EOF
+これは日本語
+EOF
+gh issue create --title x --body-file ~/tilde-body.md" --arg d "$TMP" \
+  '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}')
+tilderc=0
+echo "$tildehd" | HOME="$TMP" "$HOOK" >/dev/null 2>&1 || tilderc=$?
+if [[ "$tilderc" -eq 2 ]]; then
+  echo "PASS: a ~/ heredoc body path is still extracted and blocked (exit 2)"; PASS=$((PASS+1))
+else
+  echo "FAIL: a ~/ heredoc body path is still extracted and blocked (exit $tilderc, expected 2)"; FAIL=$((FAIL+1))
+fi
+
+# --- The TIGHT redirect spelling `>f<<EOF`, with no space before the path. The
+# character after the path is `<` rather than whitespace, so a terminator class
+# of `(?:\s|$)` alone matched neither `cmd_writes` nor `heredoc_bodies_for` and
+# the body went unscanned while the command still submitted it. The twin
+# `pr-body-item-number-gate.test.sh` has carried this case since its own review
+# and this suite had none, so only that twin could detect the regression.
+TIGHT_ABSENT="$TMP/tight-absent.md"
+run "the tight >f<<EOF redirect is still extracted and blocked" \
+  "cat >$TIGHT_ABSENT<<EOF
+これは日本語
+EOF
+gh issue create --title x --body-file $TIGHT_ABSENT" 2
+
+
+# ...and the STRIP IS TABS ONLY, which neither this suite nor its twin pinned.
+# `<<-` removes leading TABS and nothing else, so a SPACE-indented delimiter is
+# still body text; widening the strip to `\s` ends the extraction at that line
+# and leaves the rest of the submitted body unscanned. That is the silent-miss
+# direction, and the case above does NOT catch it -- its terminator is
+# tab-indented, so `\s` strips it just as `\t` does. Measured through the real
+# hook with `s/^\t+//` widened to `s/^\s+//`: rc 2 -> rc 0 here and in
+# pr-body-item-number-gate, with every other case in both suites still green.
+SPACED="$TMP/spaced-eof.md"
+run "a SPACE-indented terminator does NOT end a <<- body" \
+  "cat > $SPACED <<-EOF
+	# Title
+    EOF
+
+これは日本語
+	EOF
+gh issue create --title x --body-file $SPACED" 2
 
 # --- summary ----------------------------------------------------------
 echo
