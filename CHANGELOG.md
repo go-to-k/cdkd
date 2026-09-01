@@ -1,3 +1,10 @@
+## [0.285.1](https://github.com/go-to-k/cdkd/compare/v0.285.0...v0.285.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **cli:** reserve stdout for the payload on the six remaining --json surfaces ([#2412](https://github.com/go-to-k/cdkd/issues/2412)) ([03f4e93](https://github.com/go-to-k/cdkd/commit/03f4e93e3ffc0ef118de2246e17b10a1db922f7a))
+
 # [0.285.0](https://github.com/go-to-k/cdkd/compare/v0.284.85...v0.285.0) (2026-09-01)
 
 
