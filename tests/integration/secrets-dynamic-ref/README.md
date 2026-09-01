@@ -59,6 +59,31 @@ covers the optional-trailing-field grammar.
 4. Destroy, then assert the Lambda, secret, SSM parameter, and state file are
    all gone.
 
+Phases 1d-1g additionally pin the STATE-REDACTION contract, which is where the
+GHSA-p5qg-v9gv-hc7w follow-ups land. The interesting property is that the same
+leaf gets different answers on different paths, and the fixture states which:
+
+| leaf | `cdkd state refresh-observed` (Phase 1f) | plain `cdkd deploy` (Phase 1g) |
+| --- | --- | --- |
+| `SSM_SECURE_VALUE` (SecureString, whole token) | expression | expression |
+| `SSM_VALUE` (public `String`, whole token) | resolved | resolved |
+| `DB_URL` (SecureString inside text) | expression | expression |
+| `PUBLIC_URL` (public `String` inside text) | expression (residual, issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) | **resolved** |
+
+`PUBLIC_URL` is the only row that differs, and the difference is the point:
+the deploy's own comparison pass performs a `GetParameter` and RECORDS the
+parameter's public type, while `refresh-observed` resolves nothing and has no
+verdict to consult — so it keeps refusing, which over-redacts but discloses
+nothing.
+
+Phase 1f2 covers issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)'s
+last residual row: it deletes `SSM_SECURE_COPY` from the record's persisted
+`properties` (leaving AWS still reporting it), stamps the decrypted value into
+the observed bag, and refreshes. The key now has no position source at all, so
+only a needle DERIVED from the certified sibling can redact it; the phase
+restores `properties` afterwards so the later phases start where Phase 1f left
+them.
+
 **Security:** secret-derived values are never printed; assertions mask them
 (`xx***(len=N)`). Only PASS/FAIL plus a masked snippet appears in the log.
 

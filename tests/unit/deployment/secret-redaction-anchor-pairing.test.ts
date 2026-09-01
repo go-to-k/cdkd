@@ -605,33 +605,68 @@ describe('secret-redaction - anchor pairing, per-element evidence (issue #2012 r
     expect(out['Command']).toEqual(['--pw', PLAIN_A, 'aws-added']);
   });
 
-  it('REFUSES a bag carrying an EXTRA key the source does not have', () => {
-    // Condition (a) in the direction that is actually load-bearing. The object
-    // walk iterates SOURCE keys, so a bag-only key is invisible without the
-    // key-COUNT comparison; `Kind` supplies the per-element evidence, leaving
-    // the count as the only thing refusing. This is the row-6 residual reached
-    // through the anchor arm.
+  it('PAIRS a bag carrying an EXTRA key the source does not have (issue #2012)', () => {
+    // Condition (a) relaxed from key-COUNT equality to CONTAINMENT, and this
+    // assertion is flipped deliberately. It used to pin the row-6 residual
+    // reached through the anchor arm: `Kind` supplies the per-element evidence,
+    // so the count was the only thing refusing — and refusing cost the whole
+    // element, leaving `Val`'s decrypted secret in the drift baseline.
+    //
+    // An extra BAG key buys an attacker nothing here, which is why the
+    // relaxation is safe rather than merely convenient: the walk maps over the
+    // BAG's keys and takes a source leaf only where `Object.hasOwn(source, k)`,
+    // so `AwsAdded` can be neither overwritten nor invented. It is also not an
+    // anchor (the anchors are the SOURCE's non-reference positions) and not
+    // part of `anchorSignature` (computed on SOURCE elements), so neither
+    // corroboration nor distinguishability moves.
+    //
+    // `AwsAdded` keeping its own value is asserted alongside, because that is
+    // the half a fabricating fix would break.
     const out = readback(
       { Fields: [{ Kind: 'entry', Val: PLAIN_A, AwsAdded: 'x' }] },
       { Fields: [{ Kind: 'entry', Val: EXPR_A }] }
     );
 
     const fields = out['Fields'] as Array<Record<string, unknown>>;
-    expect(fields[0]!['Val']).toBe(PLAIN_A);
+    expect(fields[0]!['Val']).toBe(EXPR_A);
     expect(fields[0]!['AwsAdded']).toBe('x');
   });
 
-  it('REFUSES a bag key explicitly set to undefined that the source lacks', () => {
-    // The `JSON.stringify` rationale on `deepEqualJsonValue`, from the key-count
-    // side: stringify DROPS an `undefined` value, so `{Opt: undefined}` and `{}`
-    // would serialize identically while their key counts differ. `Object.keys`
-    // sees `Opt`, so the counts disagree and the pairing refuses.
+  it('still REFUSES when a SOURCE key is missing from the bag, extra bag keys or not', () => {
+    // The direction the relaxation above does NOT touch, stated as its own case
+    // so a future edit cannot widen containment into "skip a missing key" and
+    // still find the suite green. `Name` is in the source and absent from the
+    // bag, so substituting would fabricate a field AWS never reported — the
+    // false redaction that killed the first attempt at these rows — and the
+    // extra `AwsAdded` must not buy the pairing back.
+    const out = readback(
+      { Fields: [{ Kind: 'entry', Val: PLAIN_A, AwsAdded: 'x' }] },
+      { Fields: [{ Kind: 'entry', Name: 'db', Val: EXPR_A }] }
+    );
+
+    const fields = out['Fields'] as Array<Record<string, unknown>>;
+    expect(fields[0]!['Val']).toBe(PLAIN_A);
+    expect(Object.hasOwn(fields[0]!, 'Name')).toBe(false);
+  });
+
+  it('PAIRS past a bag key explicitly set to undefined that the source lacks', () => {
+    // The same relaxation reached through the shape that used to make the
+    // key-COUNT check look indispensable: `JSON.stringify` DROPS an `undefined`
+    // value, so `{Opt: undefined}` and `{}` serialize identically while their
+    // key counts differ. That argument was about `deepEqualJsonValue`, which is
+    // unchanged — an ANCHOR is still compared by it. `Opt` is not an anchor: it
+    // has no source counterpart, so it is not a position the source speaks
+    // about at all, and it is kept verbatim rather than compared.
+    //
+    // Flipped deliberately with its sibling above.
     const out = readback(
       { Fields: [{ Kind: 'entry', Val: PLAIN_A, Opt: undefined }] },
       { Fields: [{ Kind: 'entry', Val: EXPR_A }] }
     );
 
-    expect((out['Fields'] as Array<Record<string, unknown>>)[0]!['Val']).toBe(PLAIN_A);
+    const fields = out['Fields'] as Array<Record<string, unknown>>;
+    expect(fields[0]!['Val']).toBe(EXPR_A);
+    expect(Object.hasOwn(fields[0]!, 'Opt')).toBe(true);
   });
 
   // ------------------------------------------------------ UNTESTED SHAPES --

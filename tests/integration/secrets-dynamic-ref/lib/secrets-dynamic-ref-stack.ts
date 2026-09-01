@@ -170,6 +170,34 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         // trip the guard -- a FALSE leak report that looks exactly like a real
         // one. Any literal added here must not collide with an assertion needle.
         DB_URL: `postgres://app-svc:{{resolve:ssm:${secureParamName}}}@db.${cdk.Aws.REGION}.internal:5432/app`,
+        // A SECOND reference to the SAME SecureString (issue #2012). Its job is
+        // to give Phase 1f2 a leaf it can orphan: that phase deletes this key
+        // from the record's persisted `properties` and refreshes, producing the
+        // shape the issue calls "an observed KEY the source does not carry" —
+        // AWS reports the key, the position source does not carry it, and
+        // before the derived-needle mechanism there was neither a source leaf
+        // to take nor a needle to match, so the DECRYPTED value was persisted.
+        //
+        // The SAME expression as SSM_SECURE_VALUE, not a different one: the
+        // needle is learned from that sibling, and two DIFFERENT expressions
+        // resolving to one plaintext are POISONED by design (the #1910
+        // wrong-reference class), which would make this arm assert the residual
+        // rather than the closure.
+        SSM_SECURE_COPY: `{{resolve:ssm:${secureParamName}}}`,
+        // A PUBLIC mixed leaf (issue #2036), the counterpart of DB_URL. Same
+        // shape — a reference embedded in surrounding text, forced into an
+        // `Fn::Join` by the region token — but built on the PUBLIC `ssm` String
+        // parameter, whose resolved value must STAY resolved in state.
+        //
+        // With an empty secrets map the pass cannot tell a public parameter
+        // from a `SecureString` by spelling, so it used to substitute the
+        // expression here and give the drift baseline a value AWS does not
+        // hold. Phase 1g asserts the resolved value survives on the DEPLOY
+        // path, where the resolver has classified the parameter through a real
+        // `GetParameter`; Phase 1f asserts the refusal still stands on `cdkd
+        // state refresh-observed`, which resolves nothing and therefore has no
+        // verdict to consult.
+        PUBLIC_URL: `https://{{resolve:ssm:${paramName}}}.${cdk.Aws.REGION}.example.internal`,
         // Rollback-probe-only extra (forces a Lambda UPDATE this phase; the
         // rollback removes it). NOT gated as a mode-gated CREATE — the env var
         // is added to an existing resource, and the fixture reverts it via

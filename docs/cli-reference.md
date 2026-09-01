@@ -3622,6 +3622,33 @@ AWS — a credential rotation that silently never happens, invisible to
 covers the drift baseline: `observedProperties` keeps the reference AWS was
 last seen holding, so `cdkd drift --revert` cannot push an undeployed one.
 
+**A value AWS reports at a position your template does not name is redacted
+too** (issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)). The drift
+baseline in `observedProperties` is whatever AWS returned, so it routinely
+carries fields the template never set and list elements the template does not
+have — and a secret can land in one of them (a copied environment variable, an
+entry AWS added). Those positions have no template leaf to match against, so
+before this they kept the resolved plaintext. cdkd now takes the plaintext it
+learned at a position it COULD match — the same secret's own leaf, elsewhere in
+the same record — and replaces every other occurrence of that value in that
+record with the same reference. Nothing is fetched and no extra permission is
+needed: the value comes out of the readback cdkd already has. A value that is
+NOT one of those secrets is left exactly as AWS reported it, so the baseline
+still describes the live resource.
+
+**A PUBLIC Parameter Store value inside a joined string stays readable**
+(issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)). A plain
+`{{resolve:ssm:...}}` is a secret only when the parameter is a `SecureString`,
+and cdkd decides that from the parameter's TYPE rather than from the spelling.
+Where the reference sits INSIDE surrounding text and cdkd had not looked the
+parameter up on that code path, it used to assume the worst and store the
+reference — so the baseline held `https://{{resolve:ssm:/app/host}}/v1` where
+AWS holds `https://prod.example.com/v1`. `cdkd deploy` and `cdkd drift` now
+reuse the parameter type they already read during the run, so a public
+parameter keeps its resolved value. `cdkd state refresh-observed` looks nothing
+up at all, so on that command such a value is still replaced by the reference —
+wrong, but safe, and corrected by the next deploy.
+
 **Known limitation.** Two paths do not yet inherit this redaction, both because
 they resolve a reference through a context that does not record secrets:
 

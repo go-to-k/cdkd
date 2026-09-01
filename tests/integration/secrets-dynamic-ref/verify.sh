@@ -140,6 +140,16 @@ EXPECTED_SECURE="cdkd-known-secure-value-456"
 # secretsmanager pair — because any ssm expression satisfies it. Pinning the
 # parameter NAME is what makes the assertion about THIS reference.
 EXPECTED_DB_URL_EXPR="postgres://app-svc:{{resolve:ssm:${SECURE_PARAM_NAME}}}@db.${REGION}.internal:5432/app"
+# The SecureString reference as a WHOLE token, which is what SSM_SECURE_VALUE
+# and SSM_SECURE_COPY must both hold in state (issues #1901 / #2012).
+EXPECTED_SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
+# The PUBLIC mixed leaf (issue #2036), in BOTH of its forms. The RESOLVED one is
+# what state must hold wherever the parameter's type has been established this
+# process; the EXPRESSION one is what the documented residual still produces on
+# `cdkd state refresh-observed`, which resolves nothing. Pinning both means the
+# fixture states which path gets which answer rather than accepting either.
+EXPECTED_PUBLIC_URL="https://${EXPECTED_SSM}.${REGION}.example.internal"
+EXPECTED_PUBLIC_URL_EXPR="https://{{resolve:ssm:${PARAM_NAME}}}.${REGION}.example.internal"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -280,6 +290,8 @@ ENV_SECRET_PASSWORD_STAGED=$(get_env SECRET_PASSWORD_STAGED)
 ENV_SSM_VALUE=$(get_env SSM_VALUE)
 ENV_SSM_SECURE_VALUE=$(get_env SSM_SECURE_VALUE)
 ENV_DB_URL=$(get_env DB_URL)
+ENV_SSM_SECURE_COPY=$(get_env SSM_SECURE_COPY)
+ENV_PUBLIC_URL=$(get_env PUBLIC_URL)
 
 fail_count=0
 
@@ -313,6 +325,8 @@ check_not_literal SECRET_PASSWORD_STAGED "${ENV_SECRET_PASSWORD_STAGED}"
 check_not_literal SSM_VALUE "${ENV_SSM_VALUE}"
 check_not_literal SSM_SECURE_VALUE "${ENV_SSM_SECURE_VALUE}"
 check_not_literal DB_URL "${ENV_DB_URL}"
+check_not_literal SSM_SECURE_COPY "${ENV_SSM_SECURE_COPY}"
+check_not_literal PUBLIC_URL "${ENV_PUBLIC_URL}"
 
 check_equals "SECRET_PASSWORD (secretsmanager :SecretString:<jsonkey>)" \
   "${ENV_SECRET_PASSWORD}" "${EXPECTED_PASSWORD}"
@@ -336,6 +350,18 @@ check_equals "DB_URL (Fn::Join embedding an ssm SecureString)" \
 # STATE holds, never what the provider is handed.
 check_equals "SSM_SECURE_VALUE (ssm:<name> SecureString param, decrypted)" \
   "${ENV_SSM_SECURE_VALUE}" "${EXPECTED_SECURE}"
+# The PREMISE of Phase 1f2 (issue #2012). That phase asserts the key is redacted
+# once its position source is removed, which proves nothing unless the LIVE
+# resource genuinely holds the decrypted value at that key — the readback is
+# what makes the plaintext arrive in `observedProperties` at all.
+check_equals "SSM_SECURE_COPY (second reference to the same SecureString)" \
+  "${ENV_SSM_SECURE_COPY}" "${EXPECTED_SECURE}"
+# The PREMISE of the #2036 arms in Phases 1f / 1g, for the same reason. Both
+# phases compare the persisted value against the RESOLVED one, so if the public
+# reference never resolved on the way to AWS the comparison would be about a
+# value that does not exist.
+check_equals "PUBLIC_URL (Fn::Join embedding a PUBLIC ssm String)" \
+  "${ENV_PUBLIC_URL}" "${EXPECTED_PUBLIC_URL}"
 
 if [ "${fail_count}" -ne 0 ]; then
   echo "FAIL: ${fail_count} dynamic-reference assertion(s) failed" >&2
@@ -1384,6 +1410,32 @@ else
   echo "FAIL: observed SSM_VALUE should be the resolved '${EXPECTED_SSM}', got $(mask "${RO_SSM}")" >&2
   refresh_fail=1
 fi
+# The PUBLIC mixed leaf on the path with NO evidence (issue #2036's documented
+# RESIDUAL, pinned rather than left implicit). `cdkd state refresh-observed`
+# neither synthesizes nor resolves, so no `GetParameter` ran in this process and
+# the verdict store holds nothing about this parameter — absence is still not
+# evidence, so the leaf is refused and the expression wins. That is the
+# over-redaction #2036 records: visible, recoverable, and not a disclosure. The
+# closure lives on the paths that DO have a verdict, which Phase 1g asserts.
+RO_PUBLIC_URL=$(printf '%s' "${RO_OBSERVED}" | jq -r '.PUBLIC_URL // empty')
+if [ "${RO_PUBLIC_URL}" = "${EXPECTED_PUBLIC_URL_EXPR}" ]; then
+  echo "    OK: observed PUBLIC_URL took the expression (no verdict on this path — #2036's residual)"
+else
+  echo "FAIL: observed PUBLIC_URL should be '${EXPECTED_PUBLIC_URL_EXPR}', got $(mask "${RO_PUBLIC_URL}")" >&2
+  refresh_fail=1
+fi
+# Both whole-token SecureString references, each on its OWN expression. They
+# spell the same reference, so this is not a collapse fence; it is the baseline
+# Phase 1f2 perturbs — that phase orphans SSM_SECURE_COPY from the position
+# source, and an arm that never checked it here could not tell "the derived
+# needle reached it" from "it was fine all along".
+RO_SECURE_COPY=$(printf '%s' "${RO_OBSERVED}" | jq -r '.SSM_SECURE_COPY // empty')
+if [ "${RO_SECURE_COPY}" = "${EXPECTED_SECURE_EXPR}" ]; then
+  echo "    OK: observed SSM_SECURE_COPY kept the expression (positioned by its own source key)"
+else
+  echo "FAIL: observed SSM_SECURE_COPY should be '${EXPECTED_SECURE_EXPR}', got $(mask "${RO_SECURE_COPY}")" >&2
+  refresh_fail=1
+fi
 
 # Same scoping split as Guard 5: the secret's own resource legitimately holds
 # the fixture's hardcoded password, so the password grep is scoped to the
@@ -1404,6 +1456,149 @@ fi
 
 if [ "${refresh_fail}" -ne 0 ]; then
   echo "FAIL: refresh-observed redaction assertions failed" >&2
+  exit 1
+fi
+
+# --- Phase 1f2: an observed KEY the SOURCE does not carry (issue #2012) ---
+# The residual row this lane closes, exercised against a REAL readback rather
+# than a hand-built bag. `refuseUncertifiedReadbackPositions` substitutes only
+# where the position source carries the key; a key AWS reports and the source
+# does not has no source leaf to take, and with an EMPTY secrets map the value
+# scan it falls back to had no needles — so the DECRYPTED SecureString was
+# persisted into `observedProperties` and stayed there.
+#
+# What closes it is a needle DERIVED from a position the same pass certifies:
+# SSM_SECURE_VALUE is in the source as a whole `{{resolve:...}}` token, so
+# certifying it establishes that AWS's value there IS that expression resolved,
+# and SSM_SECURE_COPY — which holds the same plaintext — matches by value.
+#
+# HOW THE SHAPE IS PRODUCED. In the wild the extra key comes from AWS itself
+# (`FunctionArn`, `LastModified`, a defaulted field). A Lambda's
+# `Environment.Variables` is echoed back key-for-key, so the fixture instead
+# DELETES one key from the persisted `properties` before refreshing, which is
+# the same input configuration: source lacks a key the readback has. The deletion
+# is reverted immediately afterwards so Phase 1g starts from the state Phase 1f
+# left, and the live Lambda is never touched.
+#
+# The direct S3 write is the idiom Phase 1f already uses for its staleness
+# sentinel, and is safe for the same reason: nothing holds the lock between
+# phases and the next `saveState` reads its own etag.
+echo "==> Phase 1f2: refresh-observed redacts a key the position source does not carry (issue #2012)"
+
+F2_BEFORE=$(mktemp)
+F2_ORPHANED=$(mktemp)
+F2_RESTORED=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${F2_BEFORE}" --quiet
+F2_LID=$(jq -r '.resources | to_entries[]
+                  | select(.value.resourceType=="AWS::Lambda::Function")
+                  | .key' "${F2_BEFORE}" | head -1)
+if [ -z "${F2_LID}" ]; then
+  echo "FAIL: no AWS::Lambda::Function record in state — Phase 1f2 cannot run" >&2
+  exit 1
+fi
+# Assert the key is THERE before deleting it. `del` on an absent path is a
+# silent no-op, so without this the phase would refresh an unperturbed record
+# and pass on the position pass alone — proving nothing about the needle.
+if ! jq -e --arg lid "${F2_LID}" \
+     '.resources[$lid].properties.Environment.Variables | objects | has("SSM_SECURE_COPY")' \
+     "${F2_BEFORE}" >/dev/null; then
+  echo "FAIL: properties.Environment.Variables.SSM_SECURE_COPY is absent — nothing to orphan" >&2
+  exit 1
+fi
+jq --arg lid "${F2_LID}" \
+  'del(.resources[$lid].properties.Environment.Variables.SSM_SECURE_COPY)' \
+  "${F2_BEFORE}" > "${F2_ORPHANED}"
+if jq -e --arg lid "${F2_LID}" \
+     '.resources[$lid].properties.Environment.Variables | objects | has("SSM_SECURE_COPY")' \
+     "${F2_ORPHANED}" >/dev/null; then
+  echo "FAIL: could not orphan SSM_SECURE_COPY from the position source" >&2
+  exit 1
+fi
+# Stamp the observed side with the PLAINTEXT the pre-fix code would have left
+# there. Two things this buys, and neither is available without it: the refresh
+# has something to CHANGE at this key (so a no-op refresh cannot pass), and the
+# starting state is exactly the leak being closed rather than a bag Phase 1f
+# already cleaned.
+jq --arg lid "${F2_LID}" --arg plain "${EXPECTED_SECURE}" \
+  '.resources[$lid].observedProperties.Environment.Variables.SSM_SECURE_COPY = $plain' \
+  "${F2_ORPHANED}" > "${F2_RESTORED}"
+mv "${F2_RESTORED}" "${F2_ORPHANED}"
+if ! grep -qF "${EXPECTED_SECURE}" "${F2_ORPHANED}"; then
+  echo "FAIL: the plaintext stamp produced no plaintext — jq path expression is wrong" >&2
+  exit 1
+fi
+aws s3 cp "${F2_ORPHANED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+
+node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+F2_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+F2_OBSERVED=$(printf '%s' "${F2_STATE}" \
+  | jq -c --arg lid "${F2_LID}" '.state.resources[$lid].observedProperties.Environment.Variables')
+if [ -z "${F2_OBSERVED}" ] || [ "${F2_OBSERVED}" = "null" ]; then
+  echo "FAIL: refresh-observed wrote no observed Environment.Variables for ${F2_LID}" >&2
+  exit 1
+fi
+
+orphan_fail=0
+F2_COPY=$(printf '%s' "${F2_OBSERVED}" | jq -r '.SSM_SECURE_COPY // empty')
+if [ "${F2_COPY}" = "${EXPECTED_SECURE_EXPR}" ]; then
+  echo "    OK: the orphaned SSM_SECURE_COPY took the expression by DERIVED NEEDLE (#2012)"
+else
+  echo "FAIL: orphaned SSM_SECURE_COPY should be '${EXPECTED_SECURE_EXPR}', got $(mask "${F2_COPY}")" >&2
+  orphan_fail=1
+fi
+# The sibling that SUPPLIED the needle must still be right: a regression that
+# reached the orphan by rewriting everything would show here first.
+F2_SECURE=$(printf '%s' "${F2_OBSERVED}" | jq -r '.SSM_SECURE_VALUE // empty')
+if [ "${F2_SECURE}" = "${EXPECTED_SECURE_EXPR}" ]; then
+  echo "    OK: the certifying sibling SSM_SECURE_VALUE still holds its own expression"
+else
+  echo "FAIL: SSM_SECURE_VALUE should be '${EXPECTED_SECURE_EXPR}', got $(mask "${F2_SECURE}")" >&2
+  orphan_fail=1
+fi
+# The CONTROL, and it is the half that separates a value-keyed needle from a
+# blanket rewrite: a public leaf must not be dragged along. SSM_VALUE is stored
+# RESOLVED and is not the learned plaintext, so it must survive untouched.
+F2_SSM=$(printf '%s' "${F2_OBSERVED}" | jq -r '.SSM_VALUE // empty')
+if [ "${F2_SSM}" = "${EXPECTED_SSM}" ]; then
+  echo "    OK: the public SSM_VALUE was not dragged along by the needle"
+else
+  echo "FAIL: SSM_VALUE should still be the resolved '${EXPECTED_SSM}', got $(mask "${F2_SSM}")" >&2
+  orphan_fail=1
+fi
+# WHOLE-DOCUMENT: the decrypted SecureString has no legitimate home in state.
+if printf '%s' "${F2_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: the decrypted SecureString survived at a position the source does not carry (#2012)" >&2
+  orphan_fail=1
+else
+  echo "    OK: the decrypted SecureString is absent from the WHOLE state document"
+fi
+
+# RESTORE the position source before anything else runs. Done from the bag read
+# at the top of this phase rather than by re-adding the key, so a jq slip cannot
+# leave a subtly different value behind — and asserted, because a silent restore
+# failure would make Phase 1g deploy an UPDATE it is not expecting.
+F2_AFTER=$(mktemp)
+F2_FINAL=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${F2_AFTER}" --quiet
+jq --arg lid "${F2_LID}" --slurpfile before "${F2_BEFORE}" \
+  '.resources[$lid].properties = $before[0].resources[$lid].properties' \
+  "${F2_AFTER}" > "${F2_FINAL}"
+if ! jq -e --arg lid "${F2_LID}" \
+     '.resources[$lid].properties.Environment.Variables | objects | has("SSM_SECURE_COPY")' \
+     "${F2_FINAL}" >/dev/null; then
+  echo "FAIL: could not restore the orphaned key into the position source" >&2
+  exit 1
+fi
+aws s3 cp "${F2_FINAL}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+rm -f "${F2_BEFORE}" "${F2_ORPHANED}" "${F2_AFTER}" "${F2_FINAL}"
+
+if [ "${orphan_fail}" -ne 0 ]; then
+  echo "FAIL: derived-needle redaction assertions failed" >&2
   exit 1
 fi
 
@@ -1513,6 +1708,40 @@ if [ "${G_SSM}" = "${EXPECTED_SSM}" ]; then
   echo "    OK: re-captured SSM_VALUE stayed RESOLVED (public config is not redacted)"
 else
   echo "FAIL: re-captured SSM_VALUE should be the resolved '${EXPECTED_SSM}', got $(mask "${G_SSM}")" >&2
+  deploy_redaction_fail=1
+fi
+
+# CONTROL 3, and the arm issue #2036 is filed for: a PUBLIC ssm reference inside
+# a MIXED leaf. The whole-token SSM_VALUE above cannot stand in for it — the
+# whole-token arm has always kept a public value, while the MIXED arm split on
+# whether a secrets map exists and, with none, substituted the expression over
+# the value AWS holds.
+#
+# This resource is UNCHANGED by this deploy, so its per-resource map IS empty —
+# what changed is that the resolver's own `GetParameter` for this parameter,
+# which the no-op comparison path still performs, now RECORDS the definitive
+# public verdict instead of only retracting a memo. So the leaf keeps the
+# resolved value, and the drift baseline matches AWS again.
+#
+# The pair with Phase 1f is the point: same leaf, same empty map, different
+# answer, because one path has evidence and the other does not.
+G_PUBLIC_URL=$(printf '%s' "${G_OBSERVED}" | jq -r '.PUBLIC_URL // empty')
+if [ "${G_PUBLIC_URL}" = "${EXPECTED_PUBLIC_URL}" ]; then
+  echo "    OK: re-captured PUBLIC_URL kept the RESOLVED public value (#2036)"
+else
+  echo "FAIL: re-captured PUBLIC_URL should be '${EXPECTED_PUBLIC_URL}', got $(mask "${G_PUBLIC_URL}")" >&2
+  echo "      (the expression form '${EXPECTED_PUBLIC_URL_EXPR}' means the public verdict was not consulted)" >&2
+  deploy_redaction_fail=1
+fi
+
+# ...and its SECRET twin on the same deploy, which is what stops the arm above
+# from being satisfied by a blanket "keep the readback for every mixed leaf"
+# regression. Same shape, same empty map, opposite answer.
+G_SECURE_COPY=$(printf '%s' "${G_OBSERVED}" | jq -r '.SSM_SECURE_COPY // empty')
+if [ "${G_SECURE_COPY}" = "${EXPECTED_SECURE_EXPR}" ]; then
+  echo "    OK: re-captured SSM_SECURE_COPY still holds the expression (the SecureString twin)"
+else
+  echo "FAIL: re-captured SSM_SECURE_COPY should be '${EXPECTED_SECURE_EXPR}', got $(mask "${G_SECURE_COPY}")" >&2
   deploy_redaction_fail=1
 fi
 

@@ -1652,6 +1652,7 @@
     "--single-metric-anomaly-detector",
     "--skip-final-cluster-snapshot",
     "--skip-snapshot",
+    "--slurpfile",
     "--snapshot-id",
     "--snapshot-identifier",
     "--snapshot-ids",
