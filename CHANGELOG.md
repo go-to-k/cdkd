@@ -1,3 +1,10 @@
+# [0.285.0](https://github.com/go-to-k/cdkd/compare/v0.284.85...v0.285.0) (2026-09-01)
+
+
+### Features
+
+* **utils:** route AWS SDK calls through HTTPS_PROXY / HTTP_PROXY, honouring NO_PROXY ([#2398](https://github.com/go-to-k/cdkd/issues/2398)) ([bd09078](https://github.com/go-to-k/cdkd/commit/bd0907896b5228c42b80308dcb4a4ee76bb6264e))
+
 ## [0.284.85](https://github.com/go-to-k/cdkd/compare/v0.284.84...v0.284.85) (2026-08-28)
 
 
