@@ -1318,15 +1318,96 @@ ${GVTAB}-m b" "an unreadable -C empties only its own segment" \
 
 
 
+# --- gate_tokens ---------------------------------------------------------------
+#
+# The argument-list splitter main-tree-branch-gate parses options with. It lives
+# HERE rather than in the gate because matching `GATE_EMBEDDING_TOKEN` inside a
+# hook and then reading a positional `${BASH_REMATCH[N]}` out of it is the
+# go-to-k/cdkd#2200 coupling: widening the shared constant shifts the index and
+# silently re-opens the gate. Pinned here so the gate can rely on it.
+tok_case() { # name, text, expected newline-joined tokens
+  local name="$1" text="$2" want="$3" got
+  got=$(gate_tokens "$text")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   gate_tokens: %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL gate_tokens: %s\n' "$name"
+    fail_log="${fail_log}FAIL gate_tokens: $name\n  text: [$text]\n  want: [$want]\n  got : [$got]\n"
+  fi
+}
+tok_case "plain words" " -b feat" "$(printf -- '-b\nfeat')"
+tok_case "leading and trailing space" "   feat   " "feat"
+tok_case "empty text yields nothing" "" ""
+tok_case "only whitespace yields nothing" "    " ""
+tok_case "a double-quoted span stays ONE token" ' -c "wt feat new"' "$(printf -- '-c\n"wt feat new"')"
+tok_case "a single-quoted span stays ONE token" " -c 'wt feat new'" "$(printf -- "-c\n'wt feat new'")"
+tok_case "a glued flag value is not split" " --orphan=feat" "--orphan=feat"
+tok_case "a bare -- survives as its own token" " some-feature -- README.md" "$(printf -- 'some-feature\n--\nREADME.md')"
+tok_case "an unquoted glob is not expanded" " *" "*"
+tok_case "runs of spaces collapse" " a     b" "$(printf -- 'a\nb')"
+
+
+# --- gate_argv ------------------------------------------------------------------
+#
+# `gate_tokens` splits SHELL WORDS; this splits git's ARGV, which is what an
+# option parse actually reads. The difference is not cosmetic: a redirection, its
+# spaced target, a trailing `&` and a `#` comment are all WORDS and none of them
+# is an ARGUMENT, and counting them as arguments is what made
+# `git checkout <branch> 2>/dev/null` read as a two-positional file restore and
+# PASS through main-tree-branch-gate (measured rc=0, want 2, on a command that
+# really moves HEAD).
+argv_case() { # name, text, expected newline-joined argv, expected rc
+  local name="$1" text="$2" want="$3" wantrc="${4:-0}" got gotrc
+  got=$(gate_argv "$text"); gotrc=$?
+  if [ "$got" = "$want" ] && [ "$gotrc" = "$wantrc" ]; then
+    pass=$((pass + 1)); printf 'OK   gate_argv: %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL gate_argv: %s\n' "$name"
+    fail_log="${fail_log}FAIL gate_argv: $name\n  text: [$text]\n  want: [$want] rc=$wantrc\n  got : [$got] rc=$gotrc\n"
+  fi
+}
+argv_case "plain words are argv unchanged" " -b feat" "$(printf -- '-b\nfeat')"
+argv_case "a glued redirection is dropped" " feat 2>/dev/null" "feat"
+argv_case "two glued redirections are dropped" " feat >/dev/null 2>&1" "feat"
+argv_case "an append redirection is dropped" " feat 2>>log" "feat"
+argv_case "a SPACED redirection drops its target too" " feat > /dev/null" "feat"
+argv_case "a numbered spaced redirection drops its target" " feat 2> log" "feat"
+argv_case "an input redirection is dropped" " feat < in" "feat"
+argv_case "a trailing & is dropped" " feat &" "feat"
+argv_case "a comment ends the argv" " feat # switch lane" "feat"
+argv_case "a comment ends it even mid-list" " a # b -- c" "a"
+# The COMMENT rule keys on an UNQUOTED leading `#`. A quoted one is an argument
+# the shell passes through, and the token still carries its quotes here.
+argv_case "a QUOTED # is an argument, not a comment" " '#branch'" "'#branch'"
+argv_case "a # inside a word is not a comment" " feat#1" "feat#1"
+# CONTROLS: the things that look like the above and are NOT shell syntax.
+argv_case "a bare -- survives" " feat -- README.md" "$(printf -- 'feat\n--\nREADME.md')"
+argv_case "a digit-only word is not a redirection" " --unified 3 feat" "$(printf -- '--unified\n3\nfeat')"
+argv_case "a quoted span survives whole" ' -c "wt feat new"' "$(printf -- '-c\n"wt feat new"')"
+# An UNBALANCED quote cannot be split at all. Reporting it is the whole point:
+# `gate_tokens` used to return the prefix it managed and rc=0, so `-b
+# agent's-branch` yielded the single token `-b` and the gate read a bare
+# `git checkout`.
+argv_case "an unbalanced quote returns 1 and nothing" " -b agent's-branch" "" 1
+argv_case "an unbalanced quote at the start returns 1" " a'unbalanced" "" 1
+argv_case "empty text is not a truncation" "" "" 0
+# CONTROL, not a fence: `gate_argv` feeds its loop from a HEREDOC, and a heredoc
+# delimiter is matched in the SCRIPT text rather than in an expansion -- so a
+# token that happens to spell the delimiter cannot end the body early. Nothing
+# reddens this today; it is here so a rewrite that re-scans the value (an `eval`,
+# a here-string built from it) has a case to fail.
+argv_case "a token spelling the heredoc delimiter survives" " EOF -- x" "$(printf -- 'EOF\n--\nx')"
+
+
 # A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
 # one -- or deleting a case -- removes assertions SILENTLY while the tally still
 # reads `fail: 0`. No suite in this repo had one, so the only thing standing
 # between a gutted loop and a green run was somebody noticing the number move.
 # Raise it when cases are added; never lower it to make a red run green.
-CASE_FLOOR=386
+CASE_FLOOR=415
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
-  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least 386\n"
+  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least $CASE_FLOOR\n"
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
 fi
 echo

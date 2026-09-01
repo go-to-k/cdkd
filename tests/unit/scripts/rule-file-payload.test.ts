@@ -207,6 +207,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['code-layout.md', 261],
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
+  ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
   ['hooks-stop.md', 4], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
@@ -306,6 +307,23 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
   ['.claude/hooks/main-tree-git-cwd-detector.sh', 108_000, 140_000], // measured 129,490
+  // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
+  // argument-parse rewrite's measured before/after table pushed that file to
+  // 122,862 B -- past the same 120,000 B per-file cap, and one line past the
+  // long-line ratchet with it. Representative path for the satellite (its two
+  // globs are the hook and its suite, per the REACH_FLOORS entry above);
+  // without this row the satellite would sit under no budget at all. Payload is
+  // hooks.md + hooks-main-tree-branch.md.
+  ['.claude/hooks/main-tree-branch-gate.sh', 118_000, 152_000], // measured 135,138
+  //   The comment here read "measured 124,200" and the payload was already
+  //   124,758 when it was written -- 558 B behind on the day it shipped, because
+  //   the satellite kept being edited after the figure was taken. Re-measured at
+  //   the tree that ships it: 135,138 B (hooks.md 114,602 B, unchanged, plus the
+  //   satellite at 20,536 B, up from 10,156 B) after the second parse round's
+  //   before/after table, its four causes and its two retired claims. The BAND
+  //   moved with the measurement rather than the measurement being trimmed to
+  //   the band: 140,000 left 4,862 B of headroom over the new figure, which is
+  //   the landmine shape CORPUS_BYTES_MAX's own comment names.
   // The Stop-hook entries moved out of hooks.md when issues #2391 / #2396 --
   // the nudge-cadence rule, the channel table and stop-warn's own suite --
   // pushed that file to 122,559 B, past the same cap. Representative path for
@@ -459,7 +477,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 36; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 37; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -499,20 +517,45 @@ const CORPUS_FILE_COUNT = 36; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  under a glob naming the three files, so a session touching any
                               //  OTHER src/utils/** or scripts/** file stops paying for it -- the
                               //  #2236 / #2240 / #2363 shape again. That makes 36.
-const CORPUS_BYTES_MIN = 908_000;   // measured 942,951 B -- 34,951 B of slack.
-                                    // 899_000 -> 908_000 (go-to-k/cdkd#2388): re-measured, not
-                                    // nudged, which is what the note below asks for. Leaving it at
-                                    // 899_000 after adding proxy-support.md would have put the
-                                    // slack at 43,951 B, so the floor would stop noticing a
-                                    // deletion it catches today. The slack is kept at what the
-                                    // previous measurement set it to rather than widened.
+                              //  + hooks-main-tree-branch.md (2026-09-01): main-tree-branch-gate's
+                              //  entry moved out of hooks.md verbatim -- the #2236 shape a fourth
+                              //  time -- when the argument-parse rewrite's measured before/after
+                              //  table pushed hooks.md to 122,862 B against the same 120,000 B cap,
+                              //  and one line past the >4000 B long-line ratchet with it. The
+                              //  satellite is 20,536 B under a two-path `paths:` list (the gate
+                              //  and its suite) and hooks.md fell to 114,602 B. That makes 37.
+                              //  (This line said 9,598 B while the file already measured 10,156 B,
+                              //  and 20,536 B after the 2026-09-02 round. Re-measure at the tree
+                              //  that SHIPS the figure: a size taken mid-edit and never re-read is
+                              //  the same defect as a stale `want` in a table.)
+const CORPUS_BYTES_MIN = 917_000;   // measured 951,706 B -- 34,706 B of slack.
+                                    // 899_000 -> 917_000 (2026-09-02), re-measured with the same
+                                    // ~34 KB of slack the previous bound was set with. The comment
+                                    // beside 899_000 still read "measured 933,620 B", 18 KB behind
+                                    // the corpus, which is how a floor stops being one.
                                     // 795_000 -> 899_000: the comment beside the old bound still
                                     // read "measured 808,384 B", 105 KB behind the corpus, so the
                                     // floor had ~119 KB of slack and would not have noticed a
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 946_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 985_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+                                    // 946_000 -> 985_000, measured 951,706 B in the tree and
+                                    // 961,037 B PROJECTED against origin/main (which is itself at
+                                    // 942,951 B -- a parallel lane has spent part of the same
+                                    // budget). The old bound had 4,674 B of headroom left over this
+                                    // branch's 941,326 B -- 74% of the ~18 KB the previous raise
+                                    // deliberately bought had been spent by this branch alone
+                                    // -- which is the landmine the paragraph below already names.
+                                    // Raised at the tree that spends it, rather than left for the
+                                    // next lane to hit on a file it never opened. The bound is set
+                                    // against the PROJECTION, not the working tree, since that is
+                                    // the number the merge produces: 985,000 leaves ~24 KB over it.
+                                    // What the bytes bought: a second parse round closing a
+                                    // regression this branch had introduced (shell WORDS counted as
+                                    // git ARGUMENTS) plus five more holes, with the before/after
+                                    // table, the four causes and two retired claims. That rationale
+                                    // is what a rules file is FOR.
                                     // 928_000 -> 946_000, measured 927,952 B: FORTY-EIGHT bytes of
                                     // headroom, which is a landmine rather than a bound -- the next
                                     // lane to add a paragraph anywhere in `.claude/rules/**` fails a
