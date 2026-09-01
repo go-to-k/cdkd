@@ -92,10 +92,13 @@ const MIN_REFERENCE_FILES = 6;
 // strictly TIGHTER assertion; no upper bound was touched).
 // Re-derived again 2026-09-01 (review round 3): corpus 208,772 B, largest
 // implement.md 45,763 B, so the property needs a floor above 208,772 - 45,763 =
-// 163,009 -- and 163_000 had ALREADY LAPSED, by 9 B, one round after being
-// raised specifically so it would not. That is the third time this number has
-// decayed between rounds, so the raise is sized against the worst case rather
-// than the current one.
+// 163,009, which 163_000 no longer clears -- by 9 B. Stated precisely, because
+// the imprecise version ("it had already lapsed") reads as a silent decay
+// BETWEEN rounds and that is not what happened: at the previous commit it held
+// by 3,097 B, and this commit's own +5,340 B crossed it. That is the point
+// rather than a mitigation -- one ordinary round of edits was enough to consume
+// a margin raised one round earlier specifically so it would not be, so the
+// raise is sized against the worst case rather than the current one.
 // The worst case is not `corpus - largest`. implement.md (45,763 B) and
 // verify.md (43,529 B) are 2,234 B apart and have already swapped the title
 // once, so the floor must also survive verify.md becoming largest:

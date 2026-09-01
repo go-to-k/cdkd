@@ -68,7 +68,7 @@ the spelling the skill prescribes was exactly the one the gate missed. This
 session's hooks lane makes the gate match in COMMAND POSITION and judge the
 matched SEGMENT; driven against that copy the chained form is refused (rc=2)
 and the allowance for `git fetch origin && git switch main` still passes (rc=0).
-The protection is that FIXED gate. Until the hooks lane merges to `main`, the
+The protection is that FIXED gate. Until `fix/stop-and-body-file-gates` (go-to-k/cdkd#2391 / go-to-k/cdkd#2396 / go-to-k/cdkd#2397) merges to `main` -- check with `git log origin/main --oneline -1 -- .claude/hooks/main-tree-branch-gate.sh`, the
 anchor is all you have: re-run `git rev-parse --show-toplevel` immediately before
 the switch and confirm it is this lane's tree.
 

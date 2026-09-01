@@ -87,9 +87,14 @@ lines stay exactly as written, and the same two values ride the command:
 
 ```bash
 # A LITERAL path, and no shell variable anywhere in this command. Substitute
-# `<issue-slug>` with something lane-specific (the root cause plus your branch)
-# -- parallel lanes share /tmp, and that uniqueness is the only thing `mktemp`
-# was buying here.
+# `<issue-slug>` per FINDING, not per lane -- the root cause plus your branch.
+# Two reasons, and the second is the one that bites: parallel lanes share /tmp,
+# AND the gate prefers a READABLE file at that path over the heredoc below it.
+# Measured: with a file already there carrying `Dup-check:`, a command whose
+# heredoc omits that line exits 0 and then overwrites it, filing the
+# marker-less body. Reusing one slug for a second finding is exactly how that
+# happens. (The reverse cannot: a blocked call runs nothing, so a marker-less
+# file can only exist if a marked command wrote it.)
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
 <one paragraph: the root cause, and where the evidence for it is>
 
