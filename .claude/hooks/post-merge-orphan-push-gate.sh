@@ -291,7 +291,6 @@ else
 fi
 
 pr_number=""
-pr_head=""
 pr_merged_at=""
 pr_title=""
 branch=""
@@ -346,7 +345,6 @@ for _cand in "${PUSH_BRANCHES[@]}"; do
   [ "$_head" = "$_cand" ] || continue
 
   pr_number="$_num"
-  pr_head="$_head"
   pr_merged_at=$(printf '%s' "$pr_json" | jq -r '.[0].mergedAt // empty' 2>/dev/null || echo "")
   pr_title=$(printf '%s' "$pr_json" | jq -r '.[0].title // empty' 2>/dev/null || echo "")
   branch="$_cand"

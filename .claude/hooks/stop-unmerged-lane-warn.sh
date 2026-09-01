@@ -70,8 +70,13 @@ git rev-parse --verify origin/main >/dev/null 2>&1 || exit 0
 # canonicalised and these rows are not.
 lanes=""
 lane_paths=""
+# EVERY worktree, not only the lanes: the no-lane exit below has to be able
+# to clear a cadence record wherever one was left.
+all_worktrees=""
 while IFS= read -r wt; do
   [ -n "$wt" ] || continue
+  all_worktrees="${all_worktrees}${wt}
+"
   br=$(git -C "$wt" branch --show-current 2>/dev/null) || continue
   [ -n "$br" ] || continue
   case "$br" in main | master) continue ;; esac
@@ -83,7 +88,47 @@ while IFS= read -r wt; do
 "
 done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')
 
-[ -n "$lanes" ] || exit 0
+if [ -z "$lanes" ]; then
+  # The condition has CLEARED: no worktree in this repo is ahead of
+  # `origin/main`. Drop every cadence record, so the NEXT lane starts ARMED.
+  #
+  # Without this the record outlived the condition, and the miss is reachable
+  # by the very remedy this hook prints. Measured: nudge (ctx), repeat (sys),
+  # `git switch --detach origin/main` so nothing is a lane, re-attach and
+  # commit again in the SAME session -> `sys`, never `ctx`. The subject is
+  # `<branch>:<push state>`, so returning to the same branch in the same push
+  # state reproduces the stored subject exactly and the nudge is SWALLOWED --
+  # a MISSED nudge, which this file and `.claude/rules/hooks-stop.md` both call the
+  # unsafe direction. `stop-warn.sh` in the sibling repo has always dropped its
+  # record on the clean-tree exit for exactly this reason.
+  #
+  # EVERY worktree's record is dropped, including other sessions'. "No lane is
+  # ahead" is a REPO-GLOBAL fact, so no session has anything left to be quiet
+  # about; and the cost of being wrong is one EXTRA nudge, which is the trade
+  # the record's own concurrent-clobber comment already accepts.
+  #
+  # The git dir is derived without forking -- a main worktree has `.git` as a
+  # DIRECTORY, a linked one has it as a FILE holding `gitdir: <path>`. This
+  # runs on the silent path, which is most turns, so a `git rev-parse` per
+  # worktree here would be a per-turn cost paid by every clean session.
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    wt_git_dir=""
+    if [ -d "$wt/.git" ]; then
+      wt_git_dir="$wt/.git"
+    elif [ -f "$wt/.git" ]; then
+      IFS=' ' read -r _ wt_git_dir <"$wt/.git" 2>/dev/null || wt_git_dir=""
+    fi
+    # git writes an ABSOLUTE `gitdir:`; a relative one would resolve against
+    # this hook's own cwd and the `rm -f` would simply find nothing, which is
+    # the safe direction (an extra nudge, never a missed one).
+    [ -n "$wt_git_dir" ] || continue
+    rm -f "$wt_git_dir/stop-nudge-lane" 2>/dev/null || true
+  done <<CLEAR_RECORDS_EOF
+$all_worktrees
+CLEAR_RECORDS_EOF
+  exit 0
+fi
 
 # Everything past here builds a payload with `python3`. Without it the script
 # would end on a `command not found` and exit 127 -- on every turn, for a hook
@@ -200,6 +245,9 @@ done <<LANE_ROWS
 $lane_paths
 LANE_ROWS
 
+# Declared here, outside the branch: the not-mine arm never composes a user
+# text with a tail, and `set -u` aborts on the substitution below otherwise.
+user_tail=""
 if [ -n "$self_branch" ]; then
   # Whether the branch has been PUSHED is NOT used to decide the channel -- the
   # discriminator go-to-k/cdkd#2391 proposed. It would have gone quiet on a
@@ -241,9 +289,18 @@ Every unmerged lane in this checkout:"
   # what the DOWNGRADE paths sent to the human -- go-to-k/cdkd#2389's defect
   # reproduced inside its own fix, and now on three paths (a repeat subject, a
   # resumed pass, an unpersistable record) rather than one.
+  # The CLOSING CLAUSE is per DOWNGRADE PATH. "The agent has already been told"
+  # is true on exactly ONE of the three: on the RESUMED path this pass may be
+  # the first time the condition holds at all, and on the UNPERSISTABLE-RECORD
+  # path `arm` is forced 0 on EVERY turn, so the agent is never told and the
+  # user was being assured otherwise forever. One string across all three
+  # re-committed, in the user's own voice, the very defect the channel split
+  # exists to fix. The default below is the repeat-subject path; the two
+  # overrides sit at the lines that force `arm=0`.
+  user_tail="The agent has already been told about this lane in this session, so this is a status line for you rather than a task."
   user_msg="NOTE: this session's worktree is on '$self_branch', which is committed but not on origin/main.
 $push_fact
-The agent has already been told; this is for your visibility. If '$self_branch' is in fact already merged,
+__USER_TAIL__ If '$self_branch' is in fact already merged,
 what is left is to remove its worktree and delete the branch -- this repo SQUASH-merges, so a merged branch
 keeps reading as ahead forever.
 Every unmerged lane in this checkout:"
@@ -256,7 +313,16 @@ ancestor of origin/main and keeps reading as ahead -- clearing one means removin
 deleting the branch, not opening another PR).
 Lanes:"
   # This arm is already written for whoever reads it: it says there is nothing
-  # here for this session to do. One string is correct, so both channels take it.
+  # here for this session to do. One string is correct, so both channels take
+  # it -- and that is NOT the collapse the self-lane arm above forbids, which is
+  # about a text written AT the agent reaching a person.
+  #
+  # `model_msg` is nevertheless the one that is never READ on this arm: the
+  # `channel="sys"` below is unconditional, so the emit block always takes
+  # `user_msg`. Assigning it anyway is deliberate -- the emit block expands
+  # `$model_msg` on its ctx branch, so leaving it unset here would abort under
+  # `set -u` the first time this arm ever learned to arm. It is a guard, not
+  # leftover code, which is why it is named as one rather than deleted.
   user_msg="$model_msg"
   channel="sys"
 fi
@@ -300,7 +366,28 @@ if [ "$channel" = "ctx" ]; then
     prev_sid=""
     prev_subject=""
     if [ -r "$state_file" ]; then
-      IFS="$TAB" read -r prev_sid prev_subject _ <"$state_file" 2>/dev/null || true
+      # Split by parameter expansion rather than `IFS=<TAB> read -r a b _`, the
+      # spelling stop-warn.sh replaced over a MEASURED bug. A TAB is IFS
+      # WHITESPACE, so `read` folds a RUN of them into one separator: a record
+      # whose subject field is empty (`<sid><TAB><TAB><epoch>`) hands
+      # `prev_subject` the NEXT field, and the predicate below then compares a
+      # timestamp -- or, when that field happens to look like `<branch>:<state>`,
+      # matches it and goes QUIET. A malformed record SILENCING the nudge is the
+      # one direction this must not fail in. `stop-warn.sh` fences this three
+      # ways and the lane twin had no malformed-record case at all, so only the
+      # hook that already had the fix could detect its own regression.
+      # `|| true` on the read: a record with no trailing newline is a partial
+      # line and returns non-zero while still assigning what it read.
+      prev_line=""
+      IFS= read -r prev_line <"$state_file" 2>/dev/null || true
+      case "$prev_line" in
+        *"$TAB"*)
+          prev_sid="${prev_line%%"$TAB"*}"
+          prev_rest="${prev_line#*"$TAB"}"
+          prev_subject="${prev_rest%%"$TAB"*}"
+          ;;
+        *) prev_sid="$prev_line" ;;
+      esac
     fi
     prev_branch=${prev_subject%:*}
     prev_push=${prev_subject##*:}
@@ -342,10 +429,19 @@ if [ "$channel" = "ctx" ]; then
     if [ "$resumed" = "1" ]; then
       : # observed nothing the model could act on; leave the record alone
     elif printf '%s\t%s\t%s\n' "$sid" "$subject" "$(date +%s)" 2>/dev/null >"$tmp"; then
-      if mv -f "$tmp" "$state_file" 2>/dev/null; then
+      # `mv -f <file> <dir>` returns SUCCESS -- it moves the tmp INSIDE the
+      # directory -- so `mv` alone certified a record that was never written.
+      # The readback next turn then found nothing, `persisted` was 1 anyway,
+      # and every later turn re-armed: the UNBOUNDED model channel this whole
+      # cadence exists to remove, arriving through the success check.
+      # Measured: `mv -f <file> <dir>` -> rc 0, file inside the directory.
+      # So the destination is confirmed to be a regular FILE, and the tmp the
+      # non-move left inside it is swept -- otherwise the git dir grows one
+      # orphan per turn.
+      if mv -f "$tmp" "$state_file" 2>/dev/null && [ -f "$state_file" ]; then
         persisted=1
       else
-        rm -f "$tmp" 2>/dev/null || true
+        rm -f "$tmp" "$state_file/${tmp##*/}" 2>/dev/null || true
       fi
     else
       rm -f "$tmp" 2>/dev/null || true
@@ -355,10 +451,24 @@ if [ "$channel" = "ctx" ]; then
   # A nudge that cannot be RECORDED cannot be bounded, and an unbounded one is
   # what this mechanism exists to remove -- so an unresolvable or unwritable git
   # dir costs the MODEL channel, not the warning.
-  [ "$persisted" = "1" ] || arm=0
-  [ "$resumed" = "1" ] && arm=0
+  if [ "$persisted" != "1" ]; then
+    arm=0
+    user_tail="The agent has NOT been told: this hook could not record the nudge here (unresolvable or unwritable git dir), so it stays on this channel every turn."
+  fi
+  # LAST, so it wins the wording: a resumed pass never writes the record either,
+  # so `persisted` is 0 on every one of them and the clause above would
+  # otherwise mislabel every continuation as an unwritable git dir.
+  if [ "$resumed" = "1" ]; then
+    arm=0
+    user_tail="The turn has already been continued once, so the agent is not being interrupted again on this pass."
+  fi
   [ "$arm" = "1" ] || channel="sys"
 fi
+
+# The tail is substituted at EMIT time, not built into `user_msg` above: the
+# downgrade paths that decide which tail is true are evaluated after the text is
+# composed, so an already-expanded string could not be corrected.
+user_msg="${user_msg/__USER_TAIL__/$user_tail}"
 
 if [ "$channel" = "ctx" ]; then
   msg="$model_msg"

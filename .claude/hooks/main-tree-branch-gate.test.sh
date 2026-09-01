@@ -63,6 +63,34 @@ run_case() {
   fi
 }
 
+# The exit code alone cannot say WHICH branch a block is about, and the message
+# is the whole product of a block -- it names the branch to replay in a
+# worktree. `run_case` compares exit codes only, so a gate that blocks for the
+# right reason and NAMES THE WRONG THING is green there.
+#
+# run_case_msg <name> <want-exit> <payload> <must-contain> [<must-not-contain>]
+run_case_msg() {
+  local name="$1" want="$2" payload="$3" have="$4" nothave="${5:-}"
+  local out got why=""
+  out=$(printf '%s' "$payload" | "$HOOK" 2>&1)
+  printf '%s' "$payload" | "$HOOK" >/dev/null 2>&1
+  got=$?
+  [[ "$got" == "$want" ]] || why="want exit $want, got $got"
+  printf '%s' "$out" | grep -qF -- "$have" || why="${why:+$why; }message lacks [$have]"
+  if [[ -n "$nothave" ]] && printf '%s' "$out" | grep -qF -- "$nothave"; then
+    why="${why:+$why; }message wrongly contains [$nothave]"
+  fi
+  if [[ -z "$why" ]]; then
+    pass=$((pass + 1))
+    printf 'OK   %s (exit %s, names [%s])\n' "$name" "$got" "$have"
+  else
+    fail=$((fail + 1))
+    fail_log+="FAIL $name: $why\n"
+    fail_log+="  payload: $payload\n"
+    fail_log+="  output : $out\n"
+  fi
+}
+
 # --- ALLOW cases ---
 
 # 1. git switch main in main tree → allow (going back to main).
@@ -206,6 +234,59 @@ run_case "an allowed switch first does not excuse a blocking one after it" 2 \
 run_case "chained quoted mention of git switch -c in main tree allowed" 0 \
   "$(jq -cn --arg d "$main_repo" --arg c "git status && echo \"do not run: git switch -c wt-probe\"" '{cwd:$d,tool_input:{command:$c}}')"
 
+# --- PER-SEGMENT TREE RESOLUTION (2026-09-01). The tree used to be resolved
+# ONCE for the whole command, outside the per-segment walk, so segment 1's tree
+# decided every segment. That is a gate BYPASS in one direction and a FALSE
+# BLOCK in the other, and both were live. Measured against the real main
+# checkout and its real linked worktree, payload cwd = the main tree:
+#
+#   git -C <wt> switch -c a && git switch -c b       rc=0, want 2
+#   git -C <wt> checkout -b a && git checkout -b b   rc=0, want 2
+#   git switch main && git -C <wt> switch -c a       rc=2, want 0
+#
+# The first two are the `git fetch && git switch -c` bypass above, one operator
+# further along; the third refuses a branch creation IN a linked worktree, which
+# is the shape the whole worktree convention mandates.
+run_case "worktree segment first does not excuse a main-tree switch after it" 2 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git -C $worktree_dir switch -c a && git switch -c wt-probe" '{cwd:$d,tool_input:{command:$c}}')"
+run_case "worktree segment first does not excuse a main-tree checkout after it" 2 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git -C $worktree_dir checkout -b a && git checkout -b wt-probe" '{cwd:$d,tool_input:{command:$c}}')"
+run_case "a main-tree segment first does not condemn a worktree one after it" 0 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git switch main && git -C $worktree_dir switch -c a" '{cwd:$d,tool_input:{command:$c}}')"
+# A `cd` PERSISTS into later segments while a `-C` binds only its own command --
+# the two halves of the per-segment resolution, each with its false direction.
+run_case "cd into a worktree carries into the next segment (allowed)" 0 \
+  "$(jq -cn --arg d "$main_repo" --arg c "cd $worktree_dir && git switch -c a && git switch -c b" '{cwd:$d,tool_input:{command:$c}}')"
+run_case "a -C back at the main tree after a cd to a worktree still blocks" 2 \
+  "$(jq -cn --arg d "$main_repo" --arg c "cd $worktree_dir && git switch -c a && git -C $main_repo switch -c wt-probe" '{cwd:$d,tool_input:{command:$c}}')"
+# An UNREADABLE tree in the LATER segment must still refuse: the per-segment
+# walk carries gate_target_dir_strict's contract per line, and dropping it there
+# would restore #2027 one operator along.
+run_case "an unreadable -C in a later segment is refused, not passed" 2 \
+  "$(jq -cn --arg d "$worktree_dir" --arg c "git switch -c a && git -C \"\$W\" switch -c b" '{cwd:$d,tool_input:{command:$c}}')"
+
+# --- The block MESSAGE names the branch, not the flag. The verdict was already
+# right for `git switch --create feat/x`; the text called the branch `--create`,
+# which is what the reader is told to replay in a worktree.
+run_case_msg "long-form --create names the branch, not the flag" 2 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git switch --create feat-new" '{cwd:$d,tool_input:{command:$c}}')" \
+  "feat-new" "'--create'"
+run_case_msg "--detach is reported as a detach, not as a branch named --detach" 2 \
+  "$(jq -cn --arg d "$main_repo" --arg c "git switch --detach origin/main" '{cwd:$d,tool_input:{command:$c}}')" \
+  "detaches HEAD" "feature branch '--detach'"
+
+
+# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
+# one -- or deleting a case -- removes assertions SILENTLY while the tally still
+# reads `fail: 0`. No suite in this repo had one, so the only thing standing
+# between a gutted loop and a green run was somebody noticing the number move.
+# Raise it when cases are added; never lower it to make a red run green.
+CASE_FLOOR=36
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  fail=$((fail + 1))
+  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least 36\n"
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+fi
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then

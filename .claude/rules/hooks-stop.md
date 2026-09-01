@@ -56,8 +56,15 @@ otherwise the rule bounds nothing:
 
 | hook | subject | re-arms when |
 | --- | --- | --- |
-| `stop-warn` | is a commit POSSIBLE (`check` marker fresh) | `blocked -> commitable` ONLY, plus a new dirty spell |
-| `stop-unmerged-lane-warn` | `<own branch>:<pushed\|unpushed>` | a DIFFERENT branch, or `unpushed -> pushed` ONLY |
+| `stop-warn` | is a commit POSSIBLE (`check` marker fresh) | a DIFFERENT `session_id`, a record that is absent or MALFORMED, or `blocked -> commitable` |
+| `stop-unmerged-lane-warn` | `<own branch>:<pushed\|unpushed>` | a DIFFERENT `session_id`, a record that is absent or MALFORMED, a DIFFERENT branch, or `unpushed -> pushed` |
+
+The **session id** is an arming condition in its own right and this column used
+to omit it, which made the table read as if only the subject transitions
+mattered. It is the first clause of both predicates: a second session in the
+same worktree sees a record it did not write, arms, and overwrites it. So does a
+MALFORMED record -- one whose subject is not a value this hook writes -- which
+is deliberate and is the safe direction (see below).
 
 Two of those choices are load-bearing and each was arrived at by rejecting the
 obvious alternative:
@@ -89,14 +96,29 @@ tmp-then-`mv`. Per-worktree because that is where markgate keeps its markers too
 and because removing a worktree then takes its record with it. ONE file rather
 than one per session, because a per-session file would accumulate in the git dir
 with nobody to clean it up; a concurrent session in the same worktree can
-therefore clobber it, which costs an EXTRA nudge rather than a missed one -- the
-safe direction, and pinned by a case rather than left to be rediscovered as a
-bug. `stop-warn` DELETES its record as soon as the tree is clean, so the next
-dirty spell starts armed. Per-worktree-ness is pinned by a case arming from a
-linked worktree on the same session id and subject.
+therefore clobber it, and the cost is in the SAFE direction -- extra nudges,
+never a missed one. "An EXTRA nudge", singular, understated it: the two sessions
+alternate, so each turn finds the other's session id in the record and arms
+again, and the extra cost is one nudge PER TURN for as long as both sessions run
+in that worktree. It stays the accepted trade because it is bounded by the
+condition itself (it stops when either session's lane clears) and because the
+alternative -- a file per session -- accumulates with nobody to delete it.
 
-Four corrections from 2026-08-31, in BOTH hooks, each pinned by a
-mutation-proved case:
+BOTH hooks DELETE the record when the condition clears: `stop-warn` on the
+clean-tree exit, and `stop-unmerged-lane-warn` when no worktree in the repo is
+ahead of `origin/main` (it clears EVERY worktree's record there, since "no lane
+is ahead" is a repo-global fact). Without that the record outlives the condition
+and the next genuine first sighting of the same subject is DOWNGRADED -- a
+MISSED nudge, reachable through the `git switch --detach origin/main` remedy the
+lane hook itself prints. Only `stop-warn` did it until 2026-09-01.
+Per-worktree-ness is pinned by a case arming from a linked worktree on the same
+session id and subject.
+
+Corrections from 2026-08-31 and 2026-09-01, each pinned by a mutation-proved
+case. Where one applies to only ONE of the two hooks it now says so: an earlier
+version of this list said "in BOTH hooks" of all four, and the last one had
+landed in `stop-warn` alone -- which is the one shape where only the hook that
+already HAS the fix can detect its own regression:
 
 - **A RESUMED pass writes no record.** It reaches the user only, so recording
   there turns "suppress this pass" into "suppress this subject for good" -- and
@@ -112,10 +134,29 @@ mutation-proved case:
   `CLAUDE_CODE_SESSION_ID` fallback ran raw, in shell, AFTER the Python fold, so
   a TAB or NEWLINE added a record field, shifted the read-back and re-armed every
   turn. No coverage before: every payload named a session.
-- **`stop-warn` parses the record by parameter expansion, not `IFS=<TAB> read`.**
+- **BOTH hooks parse the record by parameter expansion, not `IFS=<TAB> read`.**
   A TAB is IFS WHITESPACE, so `read` folds a run into one separator and an EMPTY
-  subject field handed `prev_subject` the EPOCH, taking the QUIET arm: a
-  malformed record SILENCING the nudge.
+  subject field handed `prev_subject` the NEXT field, taking the QUIET arm: a
+  malformed record SILENCING the nudge. `stop-warn` was corrected on 2026-08-31
+  and the lane hook on 2026-09-01; until then the lane suite had no
+  malformed-record case at all.
+- **A MALFORMED subject is normalised to ABSENT, not merely an empty one.**
+  `stop-warn`'s predicate tested only the empty spelling, so a record whose
+  field 2 held non-empty garbage still bought silence (`<sid>TABGARBAGETAB111`
+  -> `sys` where the table promises `ctx`). `subject` has a closed value set, so
+  anything else is now cleared before the predicate.
+- **`mv -f <tmp> <record>` is not proof the record was written.** `mv -f` onto a
+  DIRECTORY returns 0 and moves the tmp inside it, so `persisted` was set, the
+  readback found nothing, and every later turn re-armed -- unbounded
+  `additionalContext` against `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, arriving
+  through the success check, plus one orphan tmp per turn. Both hooks now
+  confirm the destination is a regular FILE and sweep the stray tmp.
+- **The user text's closing clause is per DOWNGRADE PATH.** "The agent has
+  already been told" is true on the repeat-subject path only. On a RESUMED pass
+  this may be the first turn the condition holds at all, and on the
+  UNPERSISTABLE-RECORD path `arm` is forced 0 every turn so the agent is never
+  told. One string across all three re-committed issue #2389's defect in the
+  user's own voice.
 
 - **`.claude/hooks/stop-warn.sh`** covers the UNCOMMITTED half. It fires when the
   working tree is dirty and says whether a commit is currently allowed (the

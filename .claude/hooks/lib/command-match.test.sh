@@ -1238,6 +1238,97 @@ want_match 0 "2339: a verb INSIDE the span is reached" \
 want_match 0 "2339: unterminated in-quote backtick still segments the body" \
   'echo "r: `git -C /wt checkout -- f.txt' "$CO"
 
+# --- gate_verb_rest_each_dir: the tree AND the tail, per segment, one walk ----
+#
+# The subject must EXIST, for the same reason `want_strict`'s guard above does:
+# an absent function makes every case below vacuous.
+if declare -F gate_verb_rest_each_dir >/dev/null; then
+  pass=$((pass + 1)); printf 'OK   %s\n' "gate_verb_rest_each_dir is defined"
+else
+  fail=$((fail + 1)); printf 'FAIL %s\n' "gate_verb_rest_each_dir undefined"
+  fail_log+="FAIL gate_verb_rest_each_dir is not defined; every case below is vacuous\n"
+fi
+
+GVTAB=$(printf '\t')
+
+# want_each <expected, newline-joined> <label> <cmd> <fallback> <regex>
+want_each() {
+  local want="$1" label="$2" cmd="$3" fallback="$4" re="$5" got
+  got=$(gate_verb_rest_each_dir "$cmd" "$fallback" "$re")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n' "$label"
+    fail_log+="FAIL $label\n  want: $want\n  got:  $got\n"
+  fi
+}
+
+# THE ANTI-DRIFT FENCE. `gate_verb_rest_each_dir` carries a deliberate COPY of
+# gate_target_dir_strict's cd / `-C` reading (that function BREAKS at the verb,
+# which this walk must not). On a SINGLE-segment command the two must agree, so
+# the copy cannot drift without a red case here.
+for _gv in 'git commit -m x' 'cd /w/t && git commit -m x' 'cd /w && cd /w/b && git commit -m x' \
+           'git -C /w/t commit -m x' 'cd /other && git -C /w/t commit -m x' \
+           'cd rel && git commit -m x' 'cd "/w t" && git commit -m x'; do
+  _gvs=$(gate_target_dir_strict "$_gv" /fallback "$C") || _gvs="REFUSE"
+  _gve=$(gate_verb_rest_each_dir "$_gv" /fallback "$C")
+  _gve="${_gve%%$GVTAB*}"
+  [ -n "$_gve" ] || _gve="REFUSE"
+  if [ "$_gvs" = "$_gve" ]; then
+    pass=$((pass + 1)); printf 'OK   per-segment dir agrees with the strict resolver :: %s\n' "$_gv"
+  else
+    fail=$((fail + 1)); printf 'FAIL per-segment dir disagrees :: %s\n' "$_gv"
+    fail_log+="FAIL per-segment dir disagrees :: $_gv\n  strict: $_gvs\n  each:   $_gve\n"
+  fi
+done
+# ...and the REFUSAL channel agrees too: strict returns 2, this prints an EMPTY
+# dir field. Kept in its own loop because the values are compared as strings and
+# `REFUSE` is the harness's spelling for both.
+for _gv in 'git -C "$W" commit -m x' 'cd "$W" && git commit -m x' 'git -C ~root/x commit -m x'; do
+  _gvs=$(gate_target_dir_strict "$_gv" /fallback "$C") || _gvs="REFUSE"
+  _gve=$(gate_verb_rest_each_dir "$_gv" /fallback "$C")
+  _gve="${_gve%%$GVTAB*}"
+  [ -n "$_gve" ] || _gve="REFUSE"
+  if [ "$_gvs" = "REFUSE" ] && [ "$_gve" = "REFUSE" ]; then
+    pass=$((pass + 1)); printf 'OK   both refuse an unreadable target :: %s\n' "$_gv"
+  else
+    fail=$((fail + 1)); printf 'FAIL refusal disagreement :: %s\n' "$_gv"
+    fail_log+="FAIL refusal disagreement :: $_gv\n  strict: $_gvs\n  each:   $_gve\n"
+  fi
+done
+unset _gv _gvs _gve
+
+# ...and the part the strict resolver CANNOT express: two segments, two trees.
+want_each "/w/one${GVTAB}-m a
+/w/two${GVTAB}-m b" "two -C segments resolve independently" \
+  'git -C /w/one commit -m a && git -C /w/two commit -m b' /fallback "$C"
+# A `cd` PERSISTS into later segments; a `-C` binds only its own command.
+want_each "/w/t${GVTAB}-m a
+/w/t${GVTAB}-m b" "a cd carries into later segments" \
+  'cd /w/t && git commit -m a && git commit -m b' /fallback "$C"
+want_each "/w/t${GVTAB}-m a
+/w/o${GVTAB}-m b
+/w/t${GVTAB}-m c" "a -C does not leak into the next segment" \
+  'cd /w/t && git commit -m a && git -C /w/o commit -m b && git commit -m c' /fallback "$C"
+# An unreadable target in ONE segment leaves that segment's dir EMPTY and the
+# others intact -- the per-segment shape of the strict resolver's refusal.
+want_each "/fallback${GVTAB}-m a
+${GVTAB}-m b" "an unreadable -C empties only its own segment" \
+  'git commit -m a && git -C "$W" commit -m b' /fallback "$C"
+
+
+
+# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
+# one -- or deleting a case -- removes assertions SILENTLY while the tally still
+# reads `fail: 0`. No suite in this repo had one, so the only thing standing
+# between a gutted loop and a green run was somebody noticing the number move.
+# Raise it when cases are added; never lower it to make a red run green.
+CASE_FLOOR=386
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  fail=$((fail + 1))
+  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least 386\n"
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+fi
 echo
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then

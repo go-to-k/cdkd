@@ -560,6 +560,92 @@ run "the >f&& redirect spelling is still extracted and blocked" \
 これは日本語
 EOF" 2
 
+
+# --- The path as the command SPELLS it. `f` is normalised to an absolute path
+# before `cmd_writes` / `heredoc_bodies_for` are asked about it, and those two
+# match their argument against the RAW COMMAND TEXT -- so a body written and
+# consumed under a RELATIVE or `~/` spelling matched nothing, `have_body` stayed
+# 0, and the `[ -f "$f" ] || continue` guard passed a heredoc body full of
+# non-English text in silence. Measured before the fix: the absolute spelling
+# rc=2, the relative and `~/` twins rc=0. `pr-body-item-number-gate.sh` does not
+# normalise and never had the gap, while both files advertise the two
+# extractions as deliberately identical.
+RELDIR="$TMP/spelled"
+mkdir -p "$RELDIR"
+relhd=$(jq -nc --arg c "cd $RELDIR; cat > spelled.md <<EOF
+これは日本語
+EOF
+gh issue create --title x --body-file spelled.md" --arg d "$RELDIR" \
+  '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}')
+relhdrc=0
+echo "$relhd" | "$HOOK" >/dev/null 2>&1 || relhdrc=$?
+if [[ "$relhdrc" -eq 2 ]]; then
+  echo "PASS: a RELATIVE heredoc body path is still extracted and blocked (exit 2)"; PASS=$((PASS+1))
+else
+  echo "FAIL: a RELATIVE heredoc body path is still extracted and blocked (exit $relhdrc, expected 2)"; FAIL=$((FAIL+1))
+fi
+# ...and its false-BLOCK direction, so the case above is not satisfied by a
+# hook that blocks every relative body file.
+relok=$(jq -nc --arg c "cd $RELDIR; cat > ok.md <<EOF
+All English content here.
+EOF
+gh issue create --title x --body-file ok.md" --arg d "$RELDIR" \
+  '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}')
+relokrc=0
+echo "$relok" | "$HOOK" >/dev/null 2>&1 || relokrc=$?
+if [[ "$relokrc" -eq 0 ]]; then
+  echo "PASS: an ENGLISH relative heredoc body still passes (exit 0)"; PASS=$((PASS+1))
+else
+  echo "FAIL: an ENGLISH relative heredoc body still passes (exit $relokrc, expected 0)"; FAIL=$((FAIL+1))
+fi
+# The `~/` spelling, with HOME pointed at the sandbox so nothing is written
+# outside it. The command is never executed -- the hook sees text -- so the file
+# genuinely does not exist and the heredoc body is the only evidence there is.
+tildehd=$(jq -nc --arg c "cat > ~/tilde-body.md <<EOF
+これは日本語
+EOF
+gh issue create --title x --body-file ~/tilde-body.md" --arg d "$TMP" \
+  '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}')
+tilderc=0
+echo "$tildehd" | HOME="$TMP" "$HOOK" >/dev/null 2>&1 || tilderc=$?
+if [[ "$tilderc" -eq 2 ]]; then
+  echo "PASS: a ~/ heredoc body path is still extracted and blocked (exit 2)"; PASS=$((PASS+1))
+else
+  echo "FAIL: a ~/ heredoc body path is still extracted and blocked (exit $tilderc, expected 2)"; FAIL=$((FAIL+1))
+fi
+
+# --- The TIGHT redirect spelling `>f<<EOF`, with no space before the path. The
+# character after the path is `<` rather than whitespace, so a terminator class
+# of `(?:\s|$)` alone matched neither `cmd_writes` nor `heredoc_bodies_for` and
+# the body went unscanned while the command still submitted it. The twin
+# `pr-body-item-number-gate.test.sh` has carried this case since its own review
+# and this suite had none, so only that twin could detect the regression.
+TIGHT_ABSENT="$TMP/tight-absent.md"
+run "the tight >f<<EOF redirect is still extracted and blocked" \
+  "cat >$TIGHT_ABSENT<<EOF
+これは日本語
+EOF
+gh issue create --title x --body-file $TIGHT_ABSENT" 2
+
+
+# ...and the STRIP IS TABS ONLY, which neither this suite nor its twin pinned.
+# `<<-` removes leading TABS and nothing else, so a SPACE-indented delimiter is
+# still body text; widening the strip to `\s` ends the extraction at that line
+# and leaves the rest of the submitted body unscanned. That is the silent-miss
+# direction, and the case above does NOT catch it -- its terminator is
+# tab-indented, so `\s` strips it just as `\t` does. Measured through the real
+# hook with `s/^\t+//` widened to `s/^\s+//`: rc 2 -> rc 0 here and in
+# pr-body-item-number-gate, with every other case in both suites still green.
+SPACED="$TMP/spaced-eof.md"
+run "a SPACE-indented terminator does NOT end a <<- body" \
+  "cat > $SPACED <<-EOF
+	# Title
+    EOF
+
+これは日本語
+	EOF
+gh issue create --title x --body-file $SPACED" 2
+
 # --- summary ----------------------------------------------------------
 echo
 echo "pass: $PASS  fail: $FAIL"

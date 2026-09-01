@@ -199,17 +199,26 @@ find_offender() {
 declare -a OFFENDERS=()
 MAX_REPORT=10
 
-# When the named body file cannot be READ, scan the WHOLE COMMAND instead of
-# skipping (go-to-k/cdkd#2397). The hook runs BEFORE the command does, so
-# whenever the heredoc that writes the body and the `gh` call that consumes it
-# sit in ONE Bash call -- the shape this repo mandates for `gh issue create`,
-# which `gated-command-preamble-gate.sh` deliberately does not cover -- the path
-# does not exist yet. `[[ ! -f "$f" ]] && continue` made that a SILENT PASS.
+# When the named body file cannot be READ, the HEREDOC BODY that writes it is
+# extracted and scanned instead of skipping (go-to-k/cdkd#2397). The hook runs
+# BEFORE the command does, so whenever the heredoc that writes the body and the
+# `gh` call that consumes it sit in ONE Bash call -- the shape this repo
+# mandates for `gh issue create`, which `gated-command-preamble-gate.sh`
+# deliberately does not cover -- the path does not exist yet.
+# `[[ ! -f "$f" ]] && continue` made that a SILENT PASS.
 #
-# Both sibling gates already do this: `issue-dup-check-gate.sh` and
-# `issue-classification-label-gate.sh` hit the same window and fall back to the
-# command, each with a comment saying that failing closed there would refuse the
-# flow the rules prescribe. So this is a port, not a design decision.
+# NOT the whole command, which is what the first draft did and what this
+# paragraph used to describe. `issue-dup-check-gate.sh` and
+# `issue-classification-label-gate.sh` DO fall back to the command, and that is
+# safe for them and not for this gate: they need one anchored marker to be
+# PRESENT, so extra text can only make them pass, while this gate objects to
+# content it FINDS, so extra text makes it BLOCK. Measured on that draft --
+# `gh issue create --title 'follow-up to #2397 discussion' --body-file <absent>`
+# went 0 -> 2, and so did
+# `git commit -m 'address review #3' && gh pr create --body-file <clean>`. The
+# retraction is argued in full at the extraction loop below; it is stated here
+# too because this is where a reader arrives first, and two header comments
+# describing the REJECTED draft sat 130 lines above the comment retracting it.
 #
 # Measured, and the evidence is a matched pair on ONE body text:
 # go-to-k/cdk-real-drift#1841 was created by a single call carrying both the
@@ -306,10 +315,28 @@ heredoc_bodies_for() {
   ' 2>/dev/null
 }
 
-scan_text() {
-  # $1 = label used in the offender report, $2 = the text to scan.
-  local label="$1"
-  while IFS=$'\t' read -r ln content; do
+# `scan_stream <label>` -- read `<lineno><TAB><content>` rows from fd 0 and
+# append any offending line to OFFENDERS. Reading from fd 0 rather than taking
+# the text as an argument is what lets BOTH callers share it: the file arm
+# streams `strip_code_blocks < "$f"` and the heredoc arm streams a string, and
+# neither may run in a SUBSHELL, because `OFFENDERS+=` there would be lost. So
+# call sites use `< <(...)`, never a pipe.
+#
+# It replaces two byte-identical loops ten lines apart -- `scan_text` was
+# extracted for one call site while the other kept its copy -- which is the
+# shape where a fix lands in one and not the other.
+#
+# `local` on every variable: `hit`, `ln` and `content` used to leak into the
+# caller's scope from the duplicated loop.
+scan_stream() {
+  local label="$1" line ln content hit
+  while IFS= read -r line; do
+    # Split at the FIRST tab only. `IFS=$'\t' read -r ln content` folds a TAB
+    # RUN -- a tab is IFS whitespace -- so a tab-indented body line arrived
+    # stripped of its indentation and the offender report quoted a line that is
+    # not the line in the file.
+    ln="${line%%$'\t'*}"
+    content="${line#*$'\t'}"
     [[ -z "$content" ]] && continue
     hit=$(find_offender "$content")
     if [[ -n "$hit" ]]; then
@@ -318,7 +345,7 @@ scan_text() {
         return
       fi
     fi
-  done < <(printf '%s' "$2" | strip_code_blocks)
+  done
 }
 
 # A file the command REWRITES holds the PREVIOUS body, so reading it judges text
@@ -351,7 +378,7 @@ while IFS= read -r f; do
     body_text=$(heredoc_bodies_for "$f") && have_body=1
   fi
   if [[ "$have_body" == "1" ]]; then
-    scan_text "$f (heredoc, not yet written)" "$body_text"
+    scan_stream "$f (heredoc, not yet written)" < <(printf '%s' "$body_text" | strip_code_blocks)
     if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
       break
     fi
@@ -364,16 +391,7 @@ while IFS= read -r f; do
   fi
   [[ -f "$f" ]] || continue
 
-  while IFS=$'\t' read -r ln content; do
-    [[ -z "$content" ]] && continue
-    hit=$(find_offender "$content")
-    if [[ -n "$hit" ]]; then
-      OFFENDERS+=("$f:$ln: $content")
-      if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
-        break
-      fi
-    fi
-  done < <(strip_code_blocks < "$f")
+  scan_stream "$f" < <(strip_code_blocks < "$f")
 
   if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
     break

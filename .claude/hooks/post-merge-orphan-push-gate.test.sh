@@ -14,6 +14,32 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/post-merge-orphan-push-gate.
 
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# bash 3.2 is NOT exercised on the HOOK by running THIS FILE under /bin/bash.
+# The hook's shebang is `#!/usr/bin/env bash`, which resolves through PATH and
+# finds whatever bash is first there -- Homebrew 5.x on a dev Mac -- so
+# `/bin/bash <suite>` measured the SUITE under 3.2 and the SUBJECT under 5.x.
+# `HOOK_BASH` puts a `bash` shim first on PATH so the shebang, the explicit
+# `bash "$HOOK"` calls, and any `bash` the hook itself spawns all follow the
+# harness. Proved load-bearing rather than assumed: injecting a `;;&` (a bash
+# 4+ case terminator) into the hook reddens cases only WITH the shim in place.
+if [ -n "${HOOK_BASH:-}" ]; then
+  # Resolved to an ABSOLUTE path first: `HOOK_BASH=bash` would otherwise make
+  # `ln -sf bash <shim>/bash` a symlink pointing at ITSELF, and every hook
+  # invocation would die on ELOOP -- a suite-wide red with a cause nowhere near
+  # the hook.
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPDIR/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
+# PRINTED, not merely honoured: a suite that does not say which interpreter it
+# measured cannot be read as evidence about either one.
+printf 'hook interpreter: %s (bash %s)\n' \
+  "$(command -v bash)" "$(bash -c 'echo "$BASH_VERSION"')"
+
 
 # Fixture git worktree on a feature branch (so `symbolic-ref --short HEAD`
 # returns a non-empty branch name).

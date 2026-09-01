@@ -104,16 +104,27 @@ fi
 # addressed as the agent and has nothing to do about it. There are three such
 # paths now where there was one, so shipping one string would have WIDENED the
 # original defect rather than fixed it. The model text keeps the imperative; the
-# user text states what is TRUE for a human and says the agent has been told.
+# user text states what is TRUE for a human.
+#
+# ...and the CLOSING CLAUSE is per PATH, because "the agent has already been
+# told" is true on exactly ONE of the three. On the RESUMED path this pass may
+# be the first time the condition holds at all (the tree can go dirty inside the
+# continuation -- that is why the arm stops short of silence rather than exiting).
+# On the UNPERSISTABLE-RECORD path `arm` is forced 0 on EVERY turn, so the agent
+# is never told and the user was being assured otherwise forever. One string
+# across all three re-committed, in the user's own voice, the error the channel
+# split exists to fix.
 if [ ${#markgate[@]} -gt 0 ] && "${markgate[@]}" verify check >/dev/null 2>&1; then
   model_msg="WARNING: Uncommitted changes (/check passed, commit allowed)"
-  user_msg="NOTE: Uncommitted changes here, and /check has passed, so a commit is allowed. The agent has already been told; this is for your visibility."
+  user_base="NOTE: Uncommitted changes here, and /check has passed, so a commit is allowed."
   subject="commitable"
 else
   model_msg="WARNING: Uncommitted changes. Run /check to allow commit (marker invalid)"
-  user_msg="NOTE: Uncommitted changes here, and /check has not passed, so a commit is blocked until it does. The agent has already been told; this is for your visibility."
+  user_base="NOTE: Uncommitted changes here, and /check has not passed, so a commit is blocked until it does."
   subject="blocked"
 fi
+# The default is the REPEAT-SUBJECT path, the only one on which it is true.
+user_tail="The agent has already been told; this is for your visibility."
 
 # Two fields are read out of the Stop payload: `stop_hook_active` (has the
 # harness already continued this turn on a hook's account?) and `session_id`
@@ -177,6 +188,19 @@ if [ -n "$state_file" ] && [ -r "$state_file" ]; then
   esac
 fi
 
+# `subject` has a CLOSED value set, so anything else in the record is not a
+# subject this hook wrote -- treat it as absent, which arms. The predicate below
+# only ever tested the EMPTY spelling, so a record with NON-EMPTY garbage in
+# field 2 fell through to the quiet arm and SILENCED the nudge. Measured:
+# `<sid><TAB><TAB>111` -> ctx (the empty spelling, already handled) while
+# `<sid><TAB>GARBAGE<TAB>111` -> sys, on a first sighting the table promises
+# `ctx` for. A malformed record must never buy silence; that is the one
+# direction this hook must not fail in.
+case "$prev_subject" in
+  blocked | commitable) ;;
+  *) prev_subject="" ;;
+esac
+
 # The arm predicate, spelled as the rows of the table above. `commitable ->
 # blocked` is deliberately absent.
 if [ "$prev_sid" != "$sid" ] || [ -z "$prev_subject" ]; then
@@ -213,10 +237,19 @@ if [ -n "$state_file" ] && [ "$active" != "1" ]; then
   # bash reports the failed redirect on the hook's real stderr.
   tmp="${state_file}.$$"
   if printf '%s\t%s\t%s\n' "$sid" "$subject" "$(date +%s)" 2>/dev/null >"$tmp"; then
-    if mv -f "$tmp" "$state_file" 2>/dev/null; then
+    # `mv -f <file> <dir>` returns SUCCESS -- it moves the tmp INSIDE the
+    # directory -- so `mv` alone certified a record that was never written.
+    # The readback next turn then found nothing, `persisted` was 1 anyway,
+    # and every later turn re-armed: the UNBOUNDED model channel this whole
+    # cadence exists to remove, arriving through the success check.
+    # Measured: `mv -f <file> <dir>` -> rc 0, file inside the directory.
+    # So the destination is confirmed to be a regular FILE, and the tmp the
+    # non-move left inside it is swept -- otherwise the git dir grows one
+    # orphan per turn.
+    if mv -f "$tmp" "$state_file" 2>/dev/null && [ -f "$state_file" ]; then
       persisted=1
     else
-      rm -f "$tmp" 2>/dev/null || true
+      rm -f "$tmp" "$state_file/${tmp##*/}" 2>/dev/null || true
     fi
   else
     rm -f "$tmp" 2>/dev/null || true
@@ -227,21 +260,30 @@ fi
 # later turn re-arms, which is the unbounded cadence this whole mechanism
 # exists to remove. So an unresolvable git dir or an unwritable one costs the
 # MODEL channel, not the warning -- the user still gets it, every turn.
-[ "$persisted" = "1" ] || arm=0
+if [ "$persisted" != "1" ]; then
+  arm=0
+  user_tail="The agent has NOT been told: this hook could not record the nudge here (unresolvable or unwritable git dir), so it stays on this channel every turn."
+fi
 
 # Already continued once this turn on a hook's account. Arming again would spin
 # the turn instead of ending it -- but going fully SILENT here was wrong: the
 # tree can become dirty DURING the continuation, in which case this pass is the
 # first time the condition holds at all and the user would never be told. A
 # bare `systemMessage` does not continue a turn, so it costs nothing.
-[ "$active" = "1" ] && arm=0
+# LAST, so it wins the wording: a resumed pass never writes the record either,
+# so `persisted` is 0 on every one of them and the clause above would otherwise
+# mislabel every continuation as an unwritable git dir.
+if [ "$active" = "1" ]; then
+  arm=0
+  user_tail="The turn has already been continued once, so the agent is not being interrupted again on this pass."
+fi
 
 if [ "$arm" = "1" ]; then
   channel="ctx"
   msg="$model_msg"
 else
   channel="sys"
-  msg="$user_msg"
+  msg="$user_base $user_tail"
 fi
 
 MSG="$msg

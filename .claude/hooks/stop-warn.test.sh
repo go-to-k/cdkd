@@ -430,6 +430,57 @@ printf 'sess-mal%sblocked%snot-a-number\n' "$TAB" "$TAB" >"$(record_path)"
 out=$(run_hook_keep "$MAL")
 check "a garbage TIMESTAMP is not malformed: the field is never read" "sys" "$(channel_of "$out")"
 
+# ...and the spelling that is NOT empty. `subject` has a closed value set
+# (`blocked` / `commitable`), so anything else in field 2 is not a subject this
+# hook wrote -- but the predicate only ever tested the EMPTY case, so garbage
+# with a non-empty value fell to the QUIET arm and bought silence. Measured
+# before the normalisation: `<sid><TAB><TAB>111` -> ctx (handled) while
+# `<sid><TAB>GARBAGE<TAB>111` -> sys, on a first sighting the table promises
+# `ctx` for.
+clear_nudge_records
+printf 'sess-mal%sGARBAGE%s123\n' "$TAB" "$TAB" >"$(record_path)"
+out=$(run_hook_keep "$MAL")
+check "a record with a NON-EMPTY garbage subject arms" "ctx" "$(channel_of "$out")"
+
+# ...and the control that keeps the normalisation honest: a record carrying a
+# REAL subject still goes quiet, so the case above is not satisfied by a hook
+# that stopped reading field 2 at all.
+clear_nudge_records
+printf 'sess-mal%sblocked%s123\n' "$TAB" "$TAB" >"$(record_path)"
+out=$(run_hook_keep "$MAL")
+check "...while a record with a REAL subject still goes quiet" "sys" "$(channel_of "$out")"
+
+# --- The user text's CLOSING CLAUSE is per downgrade path. "The agent has
+# already been told" is true on exactly ONE of the three: on the RESUMED path
+# the hook's own comment says this pass may be the first time the condition
+# holds at all, and on the UNPERSISTABLE-RECORD path `arm` is forced 0 every
+# turn, so the agent is never told and the user was assured otherwise forever.
+TOLD='The agent has already been told'
+# 1. repeat subject -- the one path where the claim is TRUE.
+clear_nudge_records
+out=$(run_hook_keep "$S1")
+out=$(run_hook_keep "$S1")
+check "the repeat-subject downgrade DOES say the agent was told" "yes" \
+  "$(printf '%s' "$(text_of "$out")" | grep -qF "$TOLD" && echo yes || echo no)"
+# 2. resumed pass -- the model was not interrupted on this pass.
+clear_nudge_records
+out=$(run_hook_keep '{"session_id": "sess-resume-voice", "stop_hook_active": true}')
+check "the RESUMED downgrade does not claim the agent was told" "no" \
+  "$(printf '%s' "$(text_of "$out")" | grep -qF "$TOLD" && echo yes || echo no)"
+check "...and says why it is on this channel instead" "yes" \
+  "$(printf '%s' "$(text_of "$out")" | grep -qF 'continued once' && echo yes || echo no)"
+# 3. unpersistable record -- the agent is NEVER told on this path.
+clear_nudge_records
+rm -f "$(record_path)"
+chmod a-w "$(git -C "$REPO" rev-parse --absolute-git-dir)"
+out=$(run_hook '{"session_id": "sess-nopersist-voice"}')
+chmod u+w "$(git -C "$REPO" rev-parse --absolute-git-dir)"
+check "the UNPERSISTABLE downgrade does not claim the agent was told" "no" \
+  "$(printf '%s' "$(text_of "$out")" | grep -qF "$TOLD" && echo yes || echo no)"
+check "...and says the nudge could not be recorded" "yes" \
+  "$(printf '%s' "$(text_of "$out")" | grep -qF 'could not record' && echo yes || echo no)"
+
+
 # --- The record is PER-WORKTREE, resolved with `rev-parse --absolute-git-dir`.
 # A linked worktree resolves to `.git/worktrees/<name>`, so two lanes in one
 # checkout never silence each other and removing a worktree takes its record
@@ -513,6 +564,68 @@ env_sid_case "leading tab" "$(printf '\tenv-sess-lead')"
 env_sid_case "embedded tab" "$(printf 'env\tsess-mid')"
 env_sid_case "embedded newline" "$(printf 'env\nsess-nl')"
 
+# The env fallback's SOURCE, keyed on the RECORD rather than on the reset. The
+# four cases above clear the record before each value, so they fence the tab /
+# newline FOLD and not the `CLAUDE_CODE_SESSION_ID` line they name: with that
+# source removed every run reads `shared`, and a cleared record makes each
+# value's FIRST run arm regardless. Driving A, B, A through ONE record is what
+# separates them -- three distinct sessions each get their own nudge, while a
+# hook that cannot tell them apart swallows the second and the third.
+clear_nudge_records
+env_src=""
+for esid in 'src-a' 'src-b' 'src-a'; do
+  ENV_SID="$esid"
+  out=$(run_hook_keep '{}')
+  env_src="${env_src}$(channel_of "$out") "
+done
+ENV_SID=""
+check "each env-supplied session gets its own nudge" "ctx ctx ctx " "$env_src"
+
+# ...and NEITHER source present. `sid` then defaults to `shared`, and that
+# bucket has to be bounded like any other: without the default the record's
+# first field is empty, which is where a tab-separated read is least forgiving.
+clear_nudge_records
+noid=""
+for _ in 1 2 3 4; do
+  out=$(run_hook_keep '{}')
+  noid="${noid}$(channel_of "$out") "
+done
+check "a session with no id at all is still bounded after one nudge" "ctx sys sys sys " "$noid"
+
+# --- A failed record write must say nothing on the hook's REAL stderr. The
+# redirect is `2>/dev/null >"$tmp"`, in that order, and the order is the point:
+# redirections apply left to right, and the open that FAILS is the fd-1 open of
+# `$tmp`. Written `>"$tmp" 2>/dev/null` that open happens while fd 2 is still
+# the real stderr, so "Permission denied" is printed there from an ADVISORY
+# hook, on every turn. Nothing in this suite captured the hook's stderr.
+clear_nudge_records
+rm -f "$(record_path)"
+chmod a-w "$(git -C "$REPO" rev-parse --absolute-git-dir)"
+stderr_on_ro=$(printf '%s' '{"session_id": "sess-roerr"}' | (cd "$REPO" && CLAUDE_CODE_SESSION_ID="" bash "$RUN" 2>&1 >/dev/null))
+chmod u+w "$(git -C "$REPO" rev-parse --absolute-git-dir)"
+check "an unwritable git dir prints nothing on the hook's real stderr" "" "$stderr_on_ro"
+
+# --- The record path is a DIRECTORY. `mv -f <file> <dir>` returns SUCCESS -- it
+# moves the tmp INSIDE the directory -- so the write was certified, the readback
+# on the next turn found nothing, and EVERY turn re-armed the model channel
+# while the git dir grew one orphan tmp per turn. That is the unbounded cadence
+# this mechanism exists to remove, arriving through the success check. It is the
+# same class as the unwritable-git-dir case above, and the one shape `mv`'s own
+# exit code cannot report. Measured with `mv` alone: `ctx ctx ctx`.
+printf 'stale\n' >"$VERDICT"
+rm -f "$(record_path)"
+mkdir -p "$(record_path)"
+dir_channels=""
+for _ in 1 2 3; do
+  out=$(run_hook_keep '{"session_id": "sess-dirrec"}')
+  dir_channels="${dir_channels}$(channel_of "$out") "
+done
+dir_orphans=$(find "$(record_path)" -type f 2>/dev/null | wc -l | tr -d ' ')
+rm -f "$(record_path)"/* 2>/dev/null || true
+rmdir "$(record_path)" 2>/dev/null || true
+check "a record path that is a DIRECTORY never arms the model channel" "sys sys sys " "$dir_channels"
+check "...and leaves no orphan tmp behind in the git dir" "0" "$dir_orphans"
+
 # --- The two channels must not carry the SAME text. `additionalContext` is read
 # by the model, `systemMessage` by a human, and the warning is an INSTRUCTION
 # ("Run /check to allow commit"). Shipping one string sends that instruction to
@@ -533,6 +646,18 @@ check "...and the USER text does NOT address the reader as the agent" "no" \
 check "...while still telling the user what is true" "yes" \
   "$(printf '%s' "$sys_text" | grep -qF 'Uncommitted changes' && echo yes || echo no)"
 
+
+# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
+# one -- or deleting a case -- removes assertions SILENTLY while the tally still
+# reads `fail: 0`. No suite in this repo had one, so the only thing standing
+# between a gutted loop and a green run was somebody noticing the number move.
+# Raise it when cases are added; never lower it to make a red run green.
+CASE_FLOOR=77
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  fail=$((fail + 1))
+  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least 77\n"
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+fi
 printf '\nPass: %d  Fail: %d\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then
   printf '%b' "$fail_log" >&2

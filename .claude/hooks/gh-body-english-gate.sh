@@ -57,7 +57,14 @@
 #     below). What remains of it is narrower: a one-call body written by
 #     something other than a heredoc redirect (`printf > f`,
 #     `python3 -c ... > f`) cannot be extracted, so the scan falls back
-#     to whatever is on disk, which is the PREVIOUS body;
+#     to whatever is on disk, which is the PREVIOUS body. This list used
+#     to say that was ALL that remained, and it was not: the extraction
+#     was handed the RESOLVED absolute path while it matches against the
+#     raw command text, so a body written and consumed under a RELATIVE
+#     or `~/` spelling was never scanned at all (rc=0 against rc=2 for
+#     the absolute twin, measured). That one is CLOSED -- both spellings
+#     are now offered to the matchers -- and it is named here because
+#     the list claiming to be complete is what let it sit;
 #   - an unquoted inline value is matched, but one containing shell
 #     metacharacters may be truncated at the first;
 #   - adjacent quoted chunks (`--body "a"$'\''b'\''`) yield only the first;
@@ -234,8 +241,30 @@ heredoc_bodies_for() {
   ' 2>/dev/null
 }
 
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
+while IFS= read -r f_raw; do
+  [ -n "$f_raw" ] || continue
+  # BOTH spellings are kept, and that is load-bearing rather than tidy.
+  # `f` is the path to READ; `f_raw` is the path as the command SPELLS it, and
+  # the write-detection below (`cmd_writes` / `cmd_replaces` /
+  # `heredoc_bodies_for`) matches its argument against the RAW COMMAND TEXT.
+  # Handed the resolved absolute path, those matched nothing whenever the
+  # command wrote a RELATIVE or `~/` path -- `have_body` stayed 0, the
+  # `[ -f "$f" ] || continue` below then passed silently, and a heredoc body
+  # full of non-English text was never scanned. Measured before this, with the
+  # payload cwd as the write target:
+  #
+  #   cd <d>; cat > body.md <<EOF … EOF; gh issue create --body-file body.md
+  #                                                            rc=0, want 2
+  #   cat > <abs>/b.md <<EOF … EOF;  gh issue create --body-file <abs>/b.md
+  #                                                            rc=2
+  #   cat > ~/p.md <<EOF … EOF;      gh issue create --body-file ~/p.md
+  #                                                            rc=0, want 2
+  #
+  # The twin `pr-body-item-number-gate.sh` does not normalise at all and so
+  # never had the gap, while both files advertise the two extractions as
+  # deliberately identical. They are matched here rather than there, because
+  # reading the file still needs the resolved path.
+  f="$f_raw"
   # The `~/` branch matches a LITERAL tilde in the command string: the
   # shell would have expanded a real one before gh ran, so what survives
   # here is text to match, not something to expand. SC2088's warning is
@@ -246,6 +275,28 @@ while IFS= read -r f; do
     "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;;
     *) f="$target_dir/$f" ;;
   esac
+  # Both spellings are offered to each matcher: the command may write the path
+  # one way and pass it to gh the other (`cat > /abs/b.md … --body-file b.md`),
+  # and either half alone leaves that shape unscanned.
+  # `[ "$f_raw" = "$f" ]` short-circuits the second probe on the common ABSOLUTE
+  # spelling, where the two are the same string: each of these is a `perl`
+  # spawn, and this gate already carries a timeout that a timed-out PreToolUse
+  # hook turns into a silent pass.
+  cmd_writes_either() {
+    cmd_writes "$f_raw" && return 0
+    [ "$f_raw" = "$f" ] && return 1
+    cmd_writes "$f"
+  }
+  cmd_replaces_either() {
+    cmd_replaces "$f_raw" && return 0
+    [ "$f_raw" = "$f" ] && return 1
+    cmd_replaces "$f"
+  }
+  heredoc_bodies_either() {
+    heredoc_bodies_for "$f_raw" && return 0
+    [ "$f_raw" = "$f" ] && return 1
+    heredoc_bodies_for "$f"
+  }
   # The hook runs BEFORE the command, so when the heredoc that WRITES the body
   # and the `gh` call that consumes it sit in ONE Bash call, the path is either
   # absent or still holds what a previous call left there. The header documents
@@ -278,8 +329,8 @@ while IFS= read -r f; do
   # no file.
   body_text=""
   have_body=0
-  if [ ! -f "$f" ] || cmd_writes "$f"; then
-    body_text=$(heredoc_bodies_for "$f") && have_body=1
+  if [ ! -f "$f" ] || cmd_writes_either; then
+    body_text=$(heredoc_bodies_either) && have_body=1
   fi
   if [ "$have_body" = "1" ]; then
     while IFS= read -r hit; do
@@ -290,7 +341,7 @@ while IFS= read -r f; do
   # The file is read UNLESS the command truncates it AND a body was extracted.
   # An APPEND leaves the existing content as the first half of what is being
   # submitted, so it must still be scanned; only a `>` / `tee` supersedes it.
-  if [ "$have_body" = "1" ] && cmd_replaces "$f"; then
+  if [ "$have_body" = "1" ] && cmd_replaces_either; then
     continue
   fi
   [ -f "$f" ] || continue

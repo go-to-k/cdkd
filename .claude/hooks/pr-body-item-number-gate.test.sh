@@ -493,6 +493,59 @@ EOF"
 run_case "the >f&& redirect spelling is still extracted and blocked" 2 \
   "$(jq -cn --arg c "$AND_BAD" '{tool_input:{command:$c}}')"
 
+# --- HEREDOC TERMINATOR MATCHING follows bash, not intuition, and both halves
+# are load-bearing. The twin `gh-body-english-gate.test.sh` has carried these
+# two and this suite had none, while both hooks advertise the extraction as
+# deliberately identical -- so only the twin that HAS the case could detect a
+# regression in the line they share.
+#
+# A plain `<<` needs the delimiter ALONE on its line, so an indented `  EOF`
+# sitting INSIDE the body is body text. Stripping leading whitespace before the
+# compare ends the extraction there and leaves everything after it unscanned
+# while bash still submits it -- a silent miss, the direction a gate must not
+# fail in.
+INDENTED="$TMPDIR_FIX/indented-eof.md"
+INDENTED_BAD="cat > $INDENTED <<EOF
+# Title
+
+  EOF
+
+Must-fix #7: after an indented terminator
+EOF
+gh issue create --title t --body-file $INDENTED"
+run_case "an indented EOF inside a plain << body does not end the extraction" 2 \
+  "$(jq -cn --arg c "$INDENTED_BAD" '{tool_input:{command:$c}}')"
+
+# ...and the converse: `<<-` DOES accept a TAB-indented terminator, so the body
+# ends there and what follows is not part of what is being published. Without
+# the tab strip the extraction runs on and swallows that text, blocking a body
+# that is clean.
+DASHED="$TMPDIR_FIX/dashed-eof.md"
+DASHED_OK="cat > $DASHED <<-EOF
+	Must-fix 1: clean body
+	EOF
+gh issue create --title t --body-file $DASHED && echo 'see #12'"
+run_case "a tab-indented terminator DOES end a <<- body" 0 \
+  "$(jq -cn --arg c "$DASHED_OK" '{tool_input:{command:$c}}')"
+
+# ...and the STRIP IS TABS ONLY, which neither suite pinned. `<<-` removes
+# leading TABS and nothing else, so a SPACE-indented delimiter is still body
+# text. Widening the strip to `\s` ends the extraction at that line and leaves
+# the rest of the submitted body unscanned. Measured through the real hooks with
+# `s/^\t+//` widened to `s/^\s+//`: rc 2 -> rc 0 in both this gate and
+# gh-body-english-gate, and every other case in both suites stayed green.
+SPACED="$TMPDIR_FIX/spaced-eof.md"
+SPACED_BAD="cat > $SPACED <<-EOF
+	# Title
+    EOF
+
+Must-fix #8: after a SPACE-indented terminator
+	EOF
+gh issue create --title t --body-file $SPACED"
+run_case "a SPACE-indented terminator does NOT end a <<- body" 2 \
+  "$(jq -cn --arg c "$SPACED_BAD" '{tool_input:{command:$c}}')"
+
+
 echo
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
