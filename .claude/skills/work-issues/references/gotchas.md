@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## Gotchas (learned the hard way)
 
@@ -60,9 +60,10 @@
 - **Stale-base phantom diff** (§7) — never "restore" the peer's lines a stale
   `git diff main` appears to have removed; rebase instead.
 - **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the main
-  tree between calls; use `git -C .claude/worktrees/<branch>` for git ops and
-  re-`cd` before relative-path commands. **A KILLED or REFUSED call is a named
-  reset trigger, and it lies about the filesystem too.** A tool-call timeout
+  tree between calls; use `git -C <lane tree>` for git ops (the path is
+  `.claude/worktrees/<branch>`, or the launch worktree when the mode is
+  IN-PLACE) and re-`cd` before relative-path commands. **A KILLED or REFUSED
+  call is a named reset trigger, and it lies about the filesystem too.** A tool-call timeout
   can return the shell at the session cwd (measured 2026-08-28; surfaced
   go-to-k/cdkd#2368); a PreToolUse refusal aborts the whole call, so the
   `mkdir` a later call's `cd` depends on never ran — and a failed `cd` does
@@ -89,12 +90,26 @@
   `stash@{0}`'s message is yours; parallel lanes stash too, and the indices
   shift (2026-08-19). A blocked call runs NOTHING, preamble included — §6 has
   the rule and what it costs.
+- **An IN-PLACE run ends with the Stop hook still calling its lane unmerged, and
+  the remedy it names is one this mode forbids.**
+  `.claude/hooks/stop-unmerged-lane-warn.sh` enumerates every worktree whose
+  branch is ahead of `origin/main`, and this repo SQUASH-merges, so a merged
+  branch reads as ahead forever; because the launch worktree IS the session's,
+  the warning arrives as `additionalContext` — "remove its worktree and delete
+  the branch" — which SKILL.md "Launch mode" forbids here. Expected, not a
+  defect: confirm the PR is MERGED (`gh pr view <N> --json state`) and say so in
+  the wrap. The tree is only clearable from inside by leaving the branch —
+  `git switch --detach origin/main`, since the hook skips a detached worktree
+  (`git branch --show-current` is empty) and `main` itself is checked out in the
+  main checkout — and whether to do that belongs to the tool that owns the
+  workspace, not to this run.
 
 ## Important existing rules this skill leans on
 
 - **All changes via PR; never commit to `main`.** Feature work lives in its OWN
-  worktree under `.claude/worktrees/<branch>/`; the orchestrator integrates.
-  (`CLAUDE.md` → Workflow Rules.)
+  worktree under `.claude/worktrees/<branch>/` — or, when the run was launched
+  inside a worktree already, in that one (SKILL.md "Launch mode"); the
+  orchestrator integrates. (`CLAUDE.md` → Workflow Rules.)
 - **Always add unit tests** for a fix — do not wait to be asked. (`CLAUDE.md` →
   Workflow Rules.)
 - **Merge with `--squash --delete-branch` only** — the repo's sole merge method.
@@ -102,7 +117,7 @@
   messages, issue comments on this repo).
 - **`Severity` / `Effort` go on the issue as LABELS too** — same two values,
   body text unchanged (`CLAUDE.md` → the four TODO classification fields). Set
-  at filing (§5) and at the claim that rewrites an old packed body (§4). The
+  at filing (§5-f) and at the claim that rewrites an old packed body (§4). The
   lane's PR inherits them from the issue it closes, so never hand-add them to a
   PR.
 - **Never download/run/install untrusted third-party content** (§0).
@@ -114,7 +129,9 @@
   worktree removed, or until the only blockers left are ones you cannot act on
   (CI in flight, a running reviewer, a maintainer decision). Low context is not
   such a blocker: commit, push, file the issue, and continue. If you stop, say
-  per blocker WHY it is not yours to finish.
+  per blocker WHY it is not yours to finish. The removal half is "every worktree
+  THIS RUN added is gone" — an IN-PLACE run added none and leaves its tree
+  standing.
 - **Wrap with a Remaining-work section + State line + Session-close verdict,
   scoped to the issues this run actually worked.** This skill is the easiest
   place to get that scope wrong: the backlog issues you triaged but did NOT
@@ -136,7 +153,7 @@
 
   The report repeats those four lines and adds a `Notes` line for
   session-specific context; the issue body carries no `Notes` but does carry a
-  `Dup-check:` line (section 5), a filing-time record rather than a
+  `Dup-check:` line (section 5-f), a filing-time record rather than a
   classification field. **After a lane merges, `next` is the default**: what
   stays hot is that lane's files and the integ you already ran — a residual
   landing in those files is `now`, anywhere else `next` even when small. A
@@ -180,8 +197,9 @@
   user input and drive the lane to merged. Name the lane and the signal per
   line, e.g.
   `WAITING — lane A (go-to-k/cdkd#1752) subagent: background completion notification -> review tier, live-test evidence, then merge`.
-  Report **STOPPED** only when every lane is merged, every worktree removed and
-  nothing is pending.
+  Report **STOPPED** only when every lane is merged, every worktree THIS RUN
+  added is removed, and nothing is pending. An IN-PLACE run added none, so that
+  half is satisfied by leaving its launch tree standing.
 
   **ARM the signal BEFORE you write the line, not after — a named signal is not
   an armed one.** Naming what will re-invoke you feels like compliance; the

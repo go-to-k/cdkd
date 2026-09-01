@@ -123,7 +123,7 @@ deploy-update-destroy sequence) so the later fixer has the evidence.
 
 **Two of the four are ALSO LABELS on the filed issue** -- the body lines stay exactly as written, and the same values ride the command as `--label severity:<high|medium|low> --label effort:<small|medium|large>`. Prose is invisible to `gh issue list`, so the ranking rule that says "higher `Severity` first" costs one `gh issue view` per candidate without them -- which is why `/work-issues` now applies it ABOVE the title-prefix heuristic (its section 3, rule 3). An issue this hunt files WITHOUT a `Severity` is one that rule cannot rank at all, so it falls back to being sorted by its title prefix. `Session-fit` and `Estimate` get no label (the first is re-decided at claim time, the second is a free-form duration). Enforced by `.claude/hooks/issue-classification-label-gate.sh`, which refuses a `gh issue create` whose body states a value the labels do not carry; the fix PR inherits the issue's labels automatically via `.github/workflows/pr-inherit-issue-labels.yml`, so never hand-add them to a PR.
 
-These four are the CLASSIFICATION lines and there are still four of them. A filed issue carries one more line, written at filing time rather than at classification time: `Dup-check:`, recording that the open issue list was searched for an issue already naming this root cause (`/work-issues` section 5; enforced by `.claude/hooks/issue-dup-check-gate.sh`, which refuses `gh issue create` without it). It answers a different question -- not "when and at what cost" but "is this a new root cause at all" -- and on a HIT there is no new issue to classify, because the finding becomes a checklist row in the issue that already covers the root cause.
+These four are the CLASSIFICATION lines and there are still four of them. A filed issue carries one more line, written at filing time rather than at classification time: `Dup-check:`, recording that the open issue list was searched for an issue already naming this root cause (`/work-issues` section 5-f, in `.claude/skills/work-issues/references/filing.md`; enforced by `.claude/hooks/issue-dup-check-gate.sh`, which refuses `gh issue create` without it). It answers a different question -- not "when and at what cost" but "is this a new root cause at all" -- and on a HIT there is no new issue to classify, because the finding becomes a checklist row in the issue that already covers the root cause.
 
 ```text
 Session-fit: now (do it in this session) | next (not this session) — <reason>
@@ -153,8 +153,21 @@ Then fix it:
 1. **Root-cause it** in `src/` (replacement-rules, the provider's
    `create`/`update`/`delete`, the diff calculator, the DAG, the intrinsic
    resolver — wherever the divergence-from-CloudFormation lives).
-2. **Fix it in a worktree** (`git worktree add .claude/worktrees/<branch> -b <branch> origin/main`),
-   never in the main tree.
+2. **Fix it in a lane tree, never in the main tree.** Which tree depends on the
+   launch mode, and the probe that decides it lives in
+   `.claude/skills/work-issues/references/launch-mode.md` — run that, do not
+   re-implement it here, for the same single-source reason as above.
+   MAIN-CHECKOUT: `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`.
+   IN-PLACE (this hunt was launched from inside a worktree already — an Orca/ADE
+   workspace, a stray `cd`): create nothing. Work on the branch checked out
+   there and leave that tree standing for whoever made it, because nesting a
+   worktree inside one dies with the outer workspace and takes its uncommitted
+   work (go-to-k/cdkd#2390). That is the ONLY launch-mode arm this skill needs,
+   and the divergence from `/work-issues` is deliberate rather than an omission:
+   this skill has no worktree-REMOVAL step to guard — "Cleanup is
+   non-negotiable" below tracks deployed AWS stacks, not trees — and no
+   post-merge `git checkout main`, so the other IN-PLACE consequences have
+   nothing here to apply to.
 3. **Add a unit test that fails without the fix and passes with it.** This is
    mandatory, not optional — a bug found by integ MUST leave behind a unit test
    that pins the corrected behavior, so the regression can never come back

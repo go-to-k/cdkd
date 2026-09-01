@@ -1,20 +1,29 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
-## 5. One worktree per lane, then implement
+## 5. One tree per lane, then implement
 
-This stage (and stages 6-8) normally runs INSIDE a lane subagent the
-orchestrator dispatched — one general-purpose agent per claimed issue, so the
-lane's diffs, test output and review round-trips never land in the parent
-context. Every rule below applies unchanged inside the lane: hooks fire on the
-lane's tool calls, and markgate markers land in the lane's own worktree.
-Two actions are reserved to the parent's serialization turn and are NOT the
-lane's to start: a real-AWS integ run and the merge (the orchestrator's
-serialization invariant; §9). A lane stops at merge-ready and reports.
+This stage (and 6-8) normally runs INSIDE a lane subagent — one per claimed
+issue, so its diffs, test output and review round-trips stay out of the parent
+context. Every rule below holds unchanged there: hooks fire on the lane's tool
+calls, markgate markers land in the lane's own tree. Two actions stay with the
+parent's serialization turn: a real-AWS integ run and the merge (§9). A lane
+stops at merge-ready.
 
-Never edit in the main checkout — the `main-tree-branch-gate` hook blocks branching
-there anyway. Per lane:
+That placement is live-proven, not aspirational: on 2026-08-28 two of the three
+skill-split PRs (go-to-k/cdk-local#621, go-to-k/cdk-real-drift#1831) were built
+END-TO-END by lane subagents — worktree, implementation, gates, reviewer
+dispatch, CI — with the parent doing only claims, serialized merges and
+cleanup, and every hook and markgate gate fired inside the lanes' calls exactly
+as in the parent.
+
+Never edit in the main checkout (`main-tree-branch-gate` blocks branching there —
+with the coverage limit measured below).
+Per lane:
 
 ```bash
+# MAIN-CHECKOUT mode only. IN-PLACE (launched inside a linked worktree) skips
+# these two, keeps that tree and its branch, and creates nothing -- nesting dies
+# with the outer workspace (go-to-k/cdkd#2390; the probe is in §3, its only copy).
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
@@ -22,20 +31,79 @@ pnpm install                 # worktrees have no node_modules
 vp run build                 # ...and no dist/ — see below
 ```
 
+**IN-PLACE: confirm the tree is YOURS before adopting it** — a stray `cd` into a
+peer's live lane looks exactly like a workspace handed to you. Read every probe
+below under §9's rule that every ownership signal establishes LIFE and never
+absence: any one of them saying "someone is here" means STOP and report — never
+nest a worktree inside a peer's lane to get out of it.
+
+```bash
+# The FIRST line is the anchor, and it is why none of the rest needs a `-C`:
+# every probe under it describes THIS shell's tree, so a cwd that has silently
+# reset to the main checkout (appendix, "Bash cwd silent reset") shows up IN THE
+# OUTPUT instead of being invisible. Anchoring a READ this way is enough --
+# noticing afterwards costs nothing, and the alternative (carrying a captured
+# path forward) buys nothing a printed subject does not. A WRITE is a different
+# problem: see the branch recipe below.
+git rev-parse --show-toplevel   # STOP unless this is the tree you meant to adopt
+git status --porcelain          # non-empty: someone's uncommitted work
+git branch --show-current       # the branch you would be committing to
+git log --oneline -3            # whose commits these are
+cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # this repo's owner sentinel
+```
+
+Then read the issue thread for a claim naming this branch — across clones it is
+the only signal the probes above cannot see.
+
+**If the branch here is detached, or its PR has already merged, take a fresh one
+WITHOUT leaving the tree** — and know what is and is not protecting you while
+you do:
+
+```bash
+git fetch origin && git switch -c <branch> origin/main
+```
+
+The `&&` is deliberate: unchained, a failed `fetch` still branches, off a stale
+`origin/main`. **`main-tree-branch-gate` is the backstop for running that line
+after a cwd reset — but it did NOT cover this spelling until this session's
+hooks change, so do not read the claim as one that always held.** Measured on
+both copies of the hook, 2026-08-31: the version then on `main` skipped to the
+FIRST `git` token, read `git fetch origin && git switch -c ...` as `sub=fetch`,
+fell to a fail-open arm and exited 0 — a BARE `git switch -c <b> origin/main`
+was refused (rc=2) while the chained form THIS FILE PRINTS was not (rc=0), so
+the spelling the skill prescribes was exactly the one the gate missed. This
+session's hooks lane makes the gate match in COMMAND POSITION and judge the
+matched SEGMENT; driven against that copy the chained form is refused (rc=2)
+and the allowance for `git fetch origin && git switch main` still passes (rc=0).
+The protection is that FIXED gate. Until `fix/stop-and-body-file-gates`
+(go-to-k/cdkd#2401) merges to `main`, the anchor is all you have: re-run
+`git rev-parse --show-toplevel` immediately before the switch and confirm it is
+this lane's tree. Ask whether the fix has LANDED by CONTENT, never by the last
+commit subject on the file -- that subject names some earlier hooks change and
+reads as though it were this one:
+
+```bash
+git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c gate_verb_rest_each
+```
+
+`0` means the fix is NOT on `main` and the anchor still stands (measured
+2026-09-01); non-zero means it landed and the anchor can be retired. That helper
+is what judges the matched SEGMENT, so it exists only in the fixed copy -- the
+same grep against go-to-k/cdkd#2401's head prints 4.
+
 **`mise trust` is not optional here, and skipping it fails in the direction that
 costs most.** An untrusted `.mise.toml` makes `mise exec -- markgate set` error
 instead of writing, and a pipeline's rc hides it (2026-08-28: two `mise ERROR`
 lines, every gate still `no marker`). Verify with `markgate status`, never an
 exit code.
 
-**Build BEFORE the first test run, and read a fresh worktree's failures with
-that in mind.** A worktree has no `dist/`; a test spawning the built CLI fails
-on the missing binary with an assertion message about its SUBJECT (`expected 1
-to be 2`), and the main checkout passes only because it HAS a `dist/` — a
-docs-only lane nearly reported "a peer merge broke main" over 13 such failures
-(go-to-k/cdk-real-drift, 2026-08-27). **A fresh worktree failing where the main
-checkout passes is evidence about the WORKTREE first**; a build costs seconds
-against a false broken-main report.
+**Build BEFORE the first test run, and read a fresh tree's failures with that
+in mind.** A new worktree has no `dist/`; a test spawning the built CLI fails on
+the missing binary with an assertion about its SUBJECT (`expected 1 to be 2`),
+and the main checkout passes only because it HAS one — a docs-only lane nearly
+reported "a peer merge broke main" over 13 such failures (go-to-k/cdk-real-drift,
+2026-08-27). **A fresh tree failing where the main checkout passes is evidence
+about the TREE first**; a build costs seconds against a false report.
 
 **Before fixing, ask whether the defect has SIBLING SITES — and if it does,
 sweep them in THIS lane rather than filing them.** Most defects here are a
@@ -152,126 +220,18 @@ region-redirect middleware mishandling the empty-body HEAD 301 → synthetic
 `UnknownError`), plus the fail-OPEN trap the fix had to avoid — a grep for
 `UnknownError` or `followRegionRedirects` would have found it in seconds.
 
-**N sites of one root cause is ONE issue and ONE PR, never N issues.** Split
-into N, each site pays the full fixed cost — triage, claim, worktree, review
-tier, integ run, merge, release — for the same edit N times; swept together
-that cost is paid once, the reviewer sees the whole class, and sites 2..N
-cannot sit open while site 1's fix drifts away. Two boundaries:
+**A defect the sweep turns up that this lane is NOT fixing gets FILED, and
+the rules for that are their own stage file: `references/filing.md` (§5-f)**
+— N sites of one root cause is ONE issue and ONE PR, the dup-check window
+that decides mint-vs-fold, and the `Severity` / `Effort` labels that filing
+carries. Read it at the moment the sweep produces something this lane will
+not close; it is not optional context.
 
-- **A sweep that would make the PR unreviewable is a genuine `next`** — file an
-  explicit umbrella naming every site (§3 sorts umbrellas last), and say which
-  sites this lane DID close, so the residue is unambiguous.
-- **Sweep the same ROOT CAUSE, not the same AREA.** Two unrelated bugs in one
-  provider are two issues; one wrong assumption at five call sites is one. The
-  test: a single sentence describes the fix at every site.
-
-**And whatever you do file, resolve it against the issues ALREADY OPEN first.**
-This looks for a sibling ISSUE, not a sibling site — the umbrella covering
-your finding was written from a DIFFERENT site, by a different lane, naming a
-different provider. §10-c runs this check rigorously for mirrored skill
-LESSONS; the mid-lane defect-filing path, where the volume comes from, ran
-none. Measured 2026-08-25: the backlog closes fast (115 open, median 0.17 d)
-but the COUNT does not converge — 13 of 115 open issues are umbrella-shaped
-and **all four of the oldest are** (go-to-k/cdkd#609 at 90 d,
-go-to-k/cdkd#1160, go-to-k/cdkd#1225, go-to-k/cdkd#1393), because no single
-lane can close an issue naming N sites. Meanwhile 94 of the 115 open issues
-carry `Session-fit: next` and `Session-fit: now` appears 3 times in the last
-400 — the deferral classifier has one outcome in practice. The unit drifted
-from one ROOT CAUSE
-to one affected SITE, and the site space is types x properties wide — so an
-umbrella either sits open for months or splits into forty issues each paying
-the full fixed cost.
-
-```bash
-# Search the CONCEPT, not this instance's spelling -- the same reason the code
-# sweep above greps for a SHAPE rather than a name.
-gh issue list --state open --limit 200 --search '<root-cause concept>' \
-  --json number,title
-# Then the body window, which the search index misses: an umbrella names its
-# sites in the body, not the title.
-gh issue list --state open --limit 200 --json number,title,body \
-  --jq '.[] | select((.body // "") | test("<shared symbol / call / assumption>";"i"))
-        | "\(.number)\t\(.title)"'
-# `(.body // "")`, not `.body`: an issue filed with no body makes `test` abort
-# the whole jq program with "null (null) cannot be matched", so one body-less
-# issue silently costs you the entire window.
-```
-
-On a HIT, the finding becomes a CHECKLIST ROW in that issue rather than a new
-issue number:
-
-```bash
-U=$(mktemp)   # NOT a fixed /tmp path -- parallel lanes share the scratchpad
-gh issue view <hit> --json body -q .body > "$U" \
-  && [ -s "$U" ] \
-  && printf -- '- [ ] <site>: <one line, plus where the evidence is>\n' >> "$U" \
-  && gh issue edit <hit> --body-file "$U"
-```
-
-**The chaining and the `-s` test are load-bearing, not style.** The redirect
-truncates `$U` before `gh` runs, so an unchained recipe whose `view` fails
-(wrong number, non-repo cwd, transient error) leaves an empty file the
-`printf` fills with one row — and the `edit` then replaces the umbrella's
-WHOLE body with it, destroying every previously folded finding (the one
-outcome §10-0 says must never happen). `mktemp` for the same reason at another
-scale: parallel lanes share the scratchpad and an uncoordinated
-read-modify-write loses a row — never run two folds against the same issue
-concurrently.
-
-On a MISS — the expected outcome for a genuinely new root cause — file it, and
-record the search so the next lane can see the window was checked:
-
-```text
-Dup-check: searched open issues for <terms> -- none covers this root cause
-```
-
-**File it with its `Severity` / `Effort` values ALSO as labels** — the body
-lines stay exactly as written, and the same two values ride the command:
-
-```bash
-gh issue create -t 'fix(provider): ...' --body-file "$B" \
-  --label severity:high --label effort:large
-```
-
-Prose is invisible to `gh issue list`; the label makes §3's ranking rule 3 a
-listing-time filter, which is what let it move ABOVE the title-prefix
-heuristic (a prefix is a proxy for what `Severity` measures). It stays gated
-on BOTH candidates carrying the value — a label-only query under-counts, so
-the body remains the authority. Only these two get labels: `Session-fit` is
-re-decided at claim (a stale label is worse than none), and `Estimate` is
-free-form. The same applies at §4's CLAIM, where an old packed body is
-rewritten into the four-line shape — carry `--add-label` on that
-`gh issue edit`. Enforced by
-`.claude/hooks/issue-classification-label-gate.sh`, which refuses a
-`gh issue create` / `gh issue edit` whose body states a value the labels do
-not carry; `gh issue comment` is not gated. A folded checklist row carries no
-classification of its own — write the severity into the row's text.
-
-**This is not a filing threshold, and it must never be used as one.** §10-0 is
-explicit that `filed <= closed` is not a target and an unfiled finding is
-strictly worse than a filed one. Nothing here changes WHETHER a defect gets
-written down, only WHERE. An open issue then counts one unresolved root cause
-instead of one unfixed site — root causes are bounded by the codebase, sites
-by types x properties, so that is the number that can converge.
-
-Enforced by `.claude/hooks/issue-dup-check-gate.sh`, which refuses
-`gh issue create` without the `Dup-check:` line — the same refusal covers
-`gh api repos/<o>/<r>/issues`, which mints an issue through the REST verb.
-`gh issue edit` and `gh issue comment` are deliberately NOT gated BY THAT
-GATE: folding is the outcome it steers toward, so taxing the cheap path would
-defeat it (the classification-label gate makes the opposite call about `edit`
-for the opposite reason; the two are independent). Folding is not CHEAPER than
-minting (one command vs three); the gate makes minting non-free rather than
-folding cheap. Two consequences: a folded row carries no `Session-fit` /
-`Severity`, so §3's ranking cannot see it, and `gh issue edit` passes through
-the `#N` item-number gate that `gh issue create` bodies get — keep bare `#N`
-out of a folded row yourself. Registration is not execution.
-
-Do the fix in the worktree (match the existing provider/pattern exactly; ESM
-relative imports need the `.js` extension — even in TypeScript). After every
-source change, `vp run build` — the CLI runs from `dist/`, so an unbuilt
-change has no effect. **Always add a unit test that fails without the fix and
-passes with it** (under `tests/unit/**`, AWS SDK mocked via `vi.mock()`) — do
+Do the fix in the lane's tree (match the existing provider/pattern exactly; ESM
+relative imports need the `.js` extension — even in TypeScript). Rebuild with
+`vp run build` after every source change — the CLI runs from `dist/`, so an
+unbuilt change has no effect. **Always add a unit test that fails without the
+fix and passes with it** (under `tests/unit/**`, AWS SDK mocked via `vi.mock()`) — do
 not wait to be asked. **Check first whether the artifact already has a test
 harness** — `.claude/hooks/` carries per-hook `*.test.sh` suites run by
 `run-tests.sh` under its own `hooks.yml` workflow, not visible from

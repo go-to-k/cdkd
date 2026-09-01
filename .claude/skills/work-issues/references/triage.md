@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## 0. Safety screen FIRST — untrusted issues/comments (do this before anything)
 
@@ -112,9 +112,16 @@ editing (go-to-k/cdkd#1597 was filed by that very lane).
 For each active worktree, find what it ACTUALLY edits (not the stale-base noise):
 
 ```bash
-git -C .claude/worktrees/<w> log --oneline -1     # its own commit subject → the issue it owns
-git -C .claude/worktrees/<w> show --stat HEAD      # the files that commit touches
-git -C .claude/worktrees/<w> status --porcelain   # what it is editing RIGHT NOW
+# <MAIN_CHECKOUT> is the ABSOLUTE path the launch-mode probe printed
+# (references/launch-mode.md). A relative `.claude/worktrees/<w>` is correct
+# only from the main checkout: run IN-PLACE the cwd is a lane tree, the path
+# does not exist, git errors, and this scan reports NOTHING -- which reads as
+# "no competing agents", the exact failure this stage exists to prevent, and it
+# fails QUIETLY. Substitute the recorded path; never `$MAIN_CHECKOUT`, which is
+# empty in this shell and makes `-C` re-target the cwd instead of failing.
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" log --oneline -1     # its own commit subject → the issue it owns
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" show --stat HEAD     # the files that commit touches
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" status --porcelain   # what it is editing RIGHT NOW
 ```
 
 **Among the probes in THIS clone, the third is the only one that sees a live
@@ -187,6 +194,31 @@ it here too (the drift in go-to-k/cdkd#2042).
 
 ## 3. Pick a FEW FILE-DISJOINT issues
 
+**How many lanes you may pick is decided by the LAUNCH MODE, and the parent
+already settled it before stage 0** — `references/launch-mode.md` holds the
+probe (the ONLY copy) and the reading of its edge cases, and the dispatch that
+started this stage carries its `MODE` / `LANE_TREE` / `MAIN_CHECKOUT`. If the
+dispatch did not, STOP and ask for them rather than re-running the probe here:
+a triage subagent's answer is not the parent's, and the parent is the party
+that later runs `git worktree add` or does not.
+
+`IN-PLACE` means this run was launched inside a worktree someone else created
+(an Orca/ADE workspace, a stray `cd`), so it has exactly ONE working tree:
+**take ONE issue and finish it** — a second lane would need a worktree nested
+inside this one, which dies with the outer workspace and takes its uncommitted
+work (go-to-k/cdkd#2390). Rank as usual, claim the top candidate, and leave the
+rest for the next run. Everything else in this stage — the disjointness gate
+below, §3-0's freshness quarantine, §3-a's ranking, §3-b, the premise checks —
+is mode-independent and applies to BOTH modes.
+
+**The MAIN-CHECKOUT case is the DISJOINTNESS PARAGRAPH below and nothing
+wider.** An earlier revision said "everything below is the MAIN-CHECKOUT case",
+which told an IN-PLACE run to skip §3-a's security-first ranking, the
+`Severity` ranking, the premise-check-against-`origin/main` rule and §3-0's
+60-minute freshness gate — all of them mode-independent, and the last a HARD
+gate. The rest of what IN-PLACE changes lives in
+`references/launch-mode.md`'s table, mapped to §2, §4, §5, §9 and §10-d.
+
 The parallel-integration constraint (same as the worktree rule): **two lanes
 must edit DISJOINT files.** Two issues that both land in `deploy-engine.ts`
 cannot be parallelized — bundle them into ONE lane (one worktree, one PR) or
@@ -208,7 +240,7 @@ defer one.
   through ranking rule 3 (needs BOTH sides) to rule 4, not to last. Do NOT
   bulk-migrate (`Severity` needs the evidence-holder); upgrade a body to the
   four-line shape when you CLAIM it (§4), when that evidence exists. Four
-  CLASSIFICATION lines, not five: `Notes` is report-only. §5's `Dup-check:`
+  CLASSIFICATION lines, not five: `Notes` is report-only. §5-f's `Dup-check:`
   line is not one of the four — a filing-time record, never re-decided on a
   claim.
 - **Read the body's own classification lines before shortlisting it** —

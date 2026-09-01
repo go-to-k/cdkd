@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## 4. CLAIM the chosen issues BEFORE editing
 
@@ -7,6 +7,22 @@ PARENT posts every claim in this section — the claim is the lock and must name
 the session accountable for the lane — and the claim's `<ref>` names the branch
 / worktree the dispatched lane agent will create, not a branch the parent
 holds. Everything else in this section is unchanged.
+
+**IN-PLACE runs name the tree they are STANDING IN**
+(`references/launch-mode.md`): the `<ref>` is the branch already checked out
+here plus the `LANE_TREE` the probe recorded. Read the BRANCH out of git rather
+than composing a name — `git -C "<LANE_TREE>" branch --show-current` — and take
+the TREE from the opening report rather than re-deriving it with
+`git rev-parse --show-toplevel`, whose answer follows a cwd that may have
+silently reset to the main checkout. Nothing new will be created, and a claim
+pointing at a worktree that never appears is exactly what §9's owner probes
+misread.
+
+**An empty branch name means the tree is DETACHED, not that the claim is
+blocked.** The branch is created in §5, after this stage — so write "the branch
+§5 will create in `<LANE_TREE>`" and post the claim on time. A claim delayed
+until a branch exists is a claim posted after the first edit, which is the one
+thing this stage forbids. Such a run claims ONE issue (§3), not a set.
 
 For EACH issue you will start:
 

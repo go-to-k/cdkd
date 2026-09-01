@@ -1,4 +1,4 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## 9. Ship: merge → pull → release → rebuild → cleanup
 
@@ -195,8 +195,23 @@ neighbour). Do the subtraction when you WRITE the target:
 that number is small the finding is that the FILE is full — a different issue
 from this lane's diff.
 
+MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
+
 ```bash
 git checkout main && git pull origin main    # bring the merges local
+```
+
+IN-PLACE — run THIS block INSTEAD, never both: `main` is checked out in the main
+tree, so a `checkout main` here fails with "already used by worktree at ...".
+Never leave your own tree; pull the main checkout through `-C`. `MAIN` is
+derived HERE and not borrowed from a neighbouring block — each fenced block is
+its own Bash call and its own shell, so a variable assigned in another one is
+empty here:
+
+```bash
+# The main checkout is always the FIRST row of `git worktree list`.
+MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
+git -C "$MAIN" pull origin main
 ```
 
 That `git pull` fails outright if the shared main tree is dirty, which it
@@ -215,14 +230,39 @@ git fetch origin && git log origin/main --oneline -3   # look for chore(release)
 cdkd is used from other projects via a global `pnpm link --global` that points at
 this repo's `dist/cli.js` (see `/use-cdkd`), so **a fresh `vp run build` on updated
 `main` is all that's needed for the linked binary to pick up the fix** — no
-`npm i -g` reinstall:
+`npm i -g` reinstall.
+
+MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
 
 ```bash
 vp run build
 ```
 
+IN-PLACE — run THIS block INSTEAD, never both. It builds the MAIN checkout: the
+global link points at ITS `dist/cli.js`, so building this workspace's leaves the
+user on the old binary while every log says the fix shipped. Re-derive `MAIN`
+inside this block — borrowing it from the earlier one gives an EMPTY variable in
+a fresh shell, and an empty `cd` does not fail in the way you would want.
+Measured 2026-08-31: bash REFUSES `cd ""` (rc=1, `cd: null directory`), so the
+`&&` short-circuits and NOTHING is built at all, while zsh accepts it (rc=0) and
+builds whatever tree the shell happens to be standing in. The end state is the
+same one that matters — the globally linked `dist/` still holds the old build
+while the log says the fix shipped — and the only difference is whether you get
+a one-line complaint or a silently wrong build:
+
+```bash
+MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
+( cd "$MAIN" && vp run build )
+```
+
 **Remove every worktree YOU created** — and only those (a left-behind worktree is
-the silent residue of this flow):
+the silent residue of this flow). **An IN-PLACE run created none, so it removes
+none**: it must not `git worktree remove` the tree it is running in (that
+deletes its own cwd) and must not `git branch -D` the branch it is standing on.
+Cleanup of that tree belongs to whoever created it — the outer tool or the
+operator — so the wrap SAYS that instead of doing it, and the run ends with the
+tree still there. `--delete-branch` on the merge still removes the REMOTE branch,
+which is fine; only the local tree and branch are off limits:
 
 ```bash
 git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts

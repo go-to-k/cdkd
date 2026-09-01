@@ -1,9 +1,10 @@
-<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
+<!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
 ## 10. Fold what the run taught you back into this skill
 
-Trigger: after the last §9 lane is merged and its worktree removed, BEFORE the
-wrap report. Not optional — the evidence (what you had to re-read, which
+Trigger: after the last §9 lane is merged and every worktree THIS RUN added is
+removed — an IN-PLACE run added none, so for it the trigger is the last merge —
+BEFORE the wrap report. Not optional — the evidence (what you had to re-read, which
 correction the user made twice) exists only in this session.
 
 `/verify-pr` step 10 ran a retrospective per LANE; this step differs:
@@ -100,12 +101,12 @@ gh issue list --state open --limit 200 --json number,title,updatedAt \
 
 Report one line — `closed N / filed M (new K / folded J)` — and **when M > N,
 give the reason in one more line**. `J = 0` over several findings in one area
-means the §5 window was searched by this instance's spelling, not the concept.
+means the §5-f window was searched by this instance's spelling, not the concept.
 Three usual reasons; only the first is healthy:
 
 - **the code really does have that many independent defects** — an untested
   area; say which, so the next `/hunt-bugs` aims there.
-- **one root cause was split into many issues** — §5's sweep rule should have
+- **one root cause was split into many issues** — §5-f's sweep rule should have
   folded them; fold what is still open into an umbrella now, not next time.
 - **discoveries were deferred that had session-only evidence** — per
   `CLAUDE.md`'s `now` criteria not a residual; deferring means the next session
@@ -260,6 +261,8 @@ Every worktree THIS run added is gone by §9 and you are back on `main`, where
 `main-tree-edit-gate` blocks editing a tracked file — so the retro gets its own
 worktree:
 
+MAIN-CHECKOUT (SKILL.md "Launch mode") — run THIS block, and not the next one:
+
 ```bash
 # Suffix the branch to UTC MINUTE, not day. A merged branch is deleted, and
 # re-pushing that name is refused by post-merge-orphan-push-gate — which a bare
@@ -272,6 +275,30 @@ git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
 mise trust && mise install    # see section 5 -- same trap, same one-line fix
 pnpm install                  # worktrees have no node_modules
+```
+
+IN-PLACE — run THIS block INSTEAD of the one above, never both: there is no
+worktree to add, and `git worktree add` from inside this tree NESTS the very
+worktree this mode exists to prevent. The lane's own tree is
+still here with its deps installed, and you are not on `main`, so take the
+retro branch in it. `B` is re-assigned because a separate fenced block is a
+separate shell (§9's `$MAIN` trap), and the merged lane branch cannot be reused
+(post-merge-orphan-push). `main-tree-branch-gate` does back this switch up
+against a cwd reset, but only since this session's hooks change — §5 measured
+both copies, and the version then on `main` passed the chained `git fetch origin
+&& git switch -c ...` form below (rc=0) while refusing a bare `git switch -c`
+(rc=2). Do not read the backstop as one that always held: until
+`fix/stop-and-body-file-gates` (go-to-k/cdkd#2401) merges to `main`, confirm
+`git rev-parse --show-toplevel` is this lane's tree immediately before running
+the branch block below. Ask whether the fix has landed by CONTENT, not by the
+file's last commit subject (which names an earlier hooks change and reads like
+this one): `git show origin/main:.claude/hooks/main-tree-branch-gate.sh` piped
+to `grep -c gate_verb_rest_each` prints `0` while the fix is absent and
+non-zero once it lands.
+
+```bash
+B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
+git fetch origin && git switch -c "$B" origin/main
 ```
 
 - `chore:` prefix — `.claude/**` is not `src/**`; `commit-prefix-scope-gate`
@@ -303,7 +330,10 @@ pnpm install                  # worktrees have no node_modules
   take the tier the heuristic gives and do not argue it down.
 - **Merge it before the wrap report, then remove the worktree** (`git worktree
   remove .claude/worktrees/<name> && git worktree prune` — §9's closing check
-  is "every worktree THIS run added is gone", and §10 must not undo that). This
+  is "every worktree THIS run added is gone", and §10 must not undo that). An
+  IN-PLACE run added none: it merges and stops there, leaving the tree on the
+  retro branch for whoever owns the workspace (the appendix has what the Stop
+  hook will say about it). This
   is `Session-fit: now`: deferring leaves main self-inconsistent (the skill
   keeps telling the next run to do what this run proved wrong), the evidence
   dies with this session, and an open PR is NOT CLOSEABLE besides.
