@@ -75,8 +75,9 @@ so coverage is guaranteed either way; asking is never a burden.
 
 You are welcome to run them yourself against your own AWS account if you
 prefer — see [docs/testing.md](docs/testing.md) for per-test instructions.
-The `local-*` tests are the exception on cost: they need only a local Docker
-daemon and touch no AWS resources.
+Most `local-*` tests are the exception on cost: they need only a local
+Docker daemon and touch no AWS resources (`local-invoke-from-state` is the
+one exception — it also deploys and destroys real AWS resources).
 
 ### When is an integration test needed, and which one?
 
@@ -89,7 +90,7 @@ those, so the file is the source of truth. In summary:
 | --- | --- |
 | Deletion logic — `src/provisioning/providers/**`, destroy commands, rollback / retry code | An integration test that completes deploy **and destroy** cleanly (`integ-destroy`) |
 | Cross-cutting deploy/destroy code — `src/deployment/deploy-engine.ts`, `src/analyzer/dag-builder.ts`, intrinsic resolution, provider registration | A broad multi-resource test in addition to any feature-specific one (`integ-broad`; the test-name set is listed in `.markgate.yml`) |
-| Local execution — `src/local/**`, `src/cli/commands/local-*.ts` | A `local-*` test — Docker only, no AWS charges (`integ-local`) |
+| Local execution — `src/local/**`, `src/cli/commands/local-*.ts` | A `local-*` test — Docker-based, most need no AWS account (`integ-local`) |
 | A state schema version bump in `src/types/state.ts` | The `schema-v<N>-to-v<N+1>-migration` round-trip test (`integ-schema-migration`) |
 | None of the above | No integration test — unit tests and CI are enough |
 
