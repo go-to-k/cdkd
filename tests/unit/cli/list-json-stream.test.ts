@@ -186,13 +186,25 @@ describe('list --json keeps stdout to the payload (issue #2280)', () => {
   });
 
   /**
-   * The other direction: the reservation is scoped to `--json`. The default
-   * human output contract (one display id per line on stdout) does not move.
+   * The other direction: the reservation is scoped to `--json`. The
+   * discriminating assertion is the CHATTER one — the synth prose goes
+   * through `logger.info`, so an over-tightened fix that reserves
+   * unconditionally would move it to stderr and red this case. The human
+   * rows themselves are direct `process.stdout.write` calls the reservation
+   * never touches; their assertion pins the default output contract but
+   * cannot discriminate on its own.
    */
-  it('list WITHOUT --json keeps its human rows on stdout', async () => {
-    const { stdout, error } = await runList([]);
+  it('list WITHOUT --json keeps its human rows AND its logger prose on stdout', async () => {
+    mockSynthesize.mockImplementation(async () => {
+      getLogger().child('AppExecutor').info(CHATTER);
+      return { stacks: [makeStack({ stackName: 'MyStack' })] };
+    });
+
+    const { stdout, stderr, error } = await runList([]);
 
     expect(error).toBeUndefined();
     expect(stdout).toContain('MyStack');
+    expect(stdout).toContain(CHATTER);
+    expect(stderr).not.toContain(CHATTER);
   });
 });

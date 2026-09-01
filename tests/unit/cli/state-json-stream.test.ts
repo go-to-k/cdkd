@@ -339,15 +339,26 @@ describe('state --json subcommands keep stdout to the payload (issue #2280)', ()
   });
 
   /**
-   * The other direction: the reservation is scoped to `--json`. A non-json
-   * run's output contract does not move — the human rows still land on
-   * stdout. This is what catches an over-tightened fix that reserves
-   * unconditionally.
+   * The other direction: the reservation is scoped to `--json`. The
+   * discriminating assertion is the ASSUMED_LINE one — `applyRoleArnIfSet`'s
+   * notice goes through `logger.info`, so an over-tightened fix that
+   * reserves unconditionally would move it to stderr and red this case. The
+   * human rows themselves are direct `process.stdout.write` calls the
+   * reservation never touches; their assertion pins the default output
+   * contract but cannot discriminate on its own.
    */
-  it('state list WITHOUT --json keeps its human rows on stdout', async () => {
-    const { stdout, error } = await runState(['list', '--state-bucket', 'b']);
+  it('state list WITHOUT --json keeps its human rows AND its logger prose on stdout', async () => {
+    const { stdout, stderr, error } = await runState([
+      'list',
+      '--role-arn',
+      ROLE_ARN,
+      '--state-bucket',
+      'b',
+    ]);
 
     expect(error).toBeUndefined();
     expect(stdout).toContain('TestStack (us-east-1)');
+    expect(stdout).toContain(ASSUMED_LINE);
+    expect(stderr).not.toContain(ASSUMED_LINE);
   });
 });
