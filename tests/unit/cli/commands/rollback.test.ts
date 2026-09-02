@@ -86,7 +86,21 @@ interface FakeBackend {
   setCustomResourceResponseBucket?: ReturnType<typeof vi.fn>;
 }
 
+/**
+ * Lock spies hoisted out of `installSetup` so a case can assert them.
+ * `cdkd rollback` acquires the stack lock BEFORE its confirmation prompt, so
+ * the refusal has to release it on the way out -- the guarantee
+ * `docs/cli-reference.md` states for all four commands that hold a lock at
+ * their prompt. A stuck lock blocks every other session against that stack,
+ * which is a worse outcome than the run that failed. Re-created per test in
+ * `installSetup` so counts do not accumulate across cases.
+ */
+let mockAcquireLockWithRetry: ReturnType<typeof vi.fn>;
+let mockReleaseLock: ReturnType<typeof vi.fn>;
+
 function installSetup(backend: Partial<FakeBackend>): FakeBackend {
+  mockAcquireLockWithRetry = vi.fn().mockResolvedValue(undefined);
+  mockReleaseLock = vi.fn().mockResolvedValue(undefined);
   const full: FakeBackend = {
     listStacks: vi.fn().mockResolvedValue([]),
     listRawKeys: vi.fn().mockResolvedValue([]),
@@ -102,8 +116,8 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
   setupMock.mockResolvedValue({
     stateBackend: full,
     lockManager: {
-      acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
-      releaseLock: vi.fn().mockResolvedValue(undefined),
+      acquireLockWithRetry: mockAcquireLockWithRetry,
+      releaseLock: mockReleaseLock,
     },
     awsClients: {},
     region: 'us-east-1',
@@ -208,6 +222,9 @@ describe('rollbackCommand', () => {
     expect(backend.saveState).not.toHaveBeenCalled();
     expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
     expect(backend.deleteState).not.toHaveBeenCalled();
+    // ...and the lock taken before the prompt is handed back, not leaked.
+    expect(mockAcquireLockWithRetry).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
   it('still PROMPTS on a TTY, with its shipped (y/N): suffix, and a decline stops it', async () => {

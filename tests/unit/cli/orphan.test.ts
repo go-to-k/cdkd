@@ -648,5 +648,14 @@ describe('cdkd orphan (per-resource)', () => {
     expect(message).toContain('-f / --force');
     expect(readlineQuestion).not.toHaveBeenCalled();
     expect(mockSaveState).not.toHaveBeenCalled();
+    // The lock is acquired BEFORE this prompt, so the refusal must release it
+    // on the way out. `docs/cli-reference.md` states that as a guarantee for
+    // all four commands that hold a lock at their prompt -- `cdkd orphan`,
+    // `cdkd import`, `cdkd export`, `cdkd rollback` -- and a stuck lock would
+    // block every other session against this stack, not merely fail this run.
+    // Asserted per command rather than once, because each acquires and
+    // releases in its own `try` / `finally`.
+    expect(mockAcquireLock).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 });
