@@ -1,4 +1,3 @@
-import * as readline from 'node:readline/promises';
 import { Command } from 'commander';
 import {
   appOptions,
@@ -11,6 +10,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
@@ -450,14 +450,21 @@ function stringifyForAudit(value: unknown): string {
   return JSON.stringify(value);
 }
 
-async function confirmPrompt(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = await rl.question(`${prompt} [y/N] `);
-    return /^y(es)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
+/**
+ * `cdkd orphan`'s confirmation prompt. Its only call site is inside the
+ * `if (!options.yes && !options.force)` block above, which is what keeps
+ * `confirmOrRefuse`'s non-interactive refusal (issue #2275) from firing on a
+ * flagged run.
+ *
+ * Exported for unit testing — internal to the command flow otherwise.
+ */
+export async function confirmPrompt(prompt: string): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    refusal:
+      'The cdkd orphan confirmation prompt cannot run in a non-interactive ' +
+      'environment. Pass -y / --yes (or -f / --force) to confirm the orphan, or run ' +
+      'the command from a real terminal.',
+  });
 }
 
 /**

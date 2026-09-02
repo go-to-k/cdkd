@@ -339,6 +339,37 @@ function buildLockManager(opts?: { acquireFn?: (stackName: string) => Promise<bo
 
 const STATE_BUCKET = 'cdkd-state-test';
 
+/**
+ * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
+ * prompt this file drives now REFUSES a non-interactive stdin
+ * (`CdkdError` / `NON_INTERACTIVE_CONFIRM`, from the shared
+ * `confirmOrRefuse` helper) instead of hanging on a `question` an EOF stdin
+ * can never settle. Vitest's stdin is NOT a TTY, so every case that exercises
+ * the PROMPT has to present as interactive; the refusal cases set it back.
+ * Same stub as `state-destroy.test.ts` / `gc.test.ts` /
+ * `prefix-migration-check.test.ts`.
+ *
+ * `defineProperty`, not a plain assignment: `process.stdin.isTTY` is typed
+ * `boolean` while the saved original is `boolean | undefined` (it is absent
+ * when stdin is not a TTY).
+ */
+function setStdinIsTty(value: boolean | undefined): void {
+  Object.defineProperty(process.stdin, 'isTTY', {
+    value,
+    configurable: true,
+    writable: true,
+  });
+}
+
+let originalIsTTY: boolean | undefined;
+beforeEach(() => {
+  originalIsTTY = process.stdin.isTTY;
+  setStdinIsTty(true);
+});
+afterEach(() => {
+  setStdinIsTty(originalIsTTY);
+});
+
 describe('runPerStackImportLoop (issue #464 PR B2) — leaf-only happy path', () => {
   beforeEach(() => {
     infoSpy.mockReset();
@@ -1969,6 +2000,67 @@ describe('runPerStackImportLoop (issue #589) — review-residual coverage', () =
     expect(deleted).toEqual([]);
     expect(acquired).toEqual([]);
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the ROUTING
+   * half. `tests/unit/cli/non-interactive-confirm-guards.test.ts` probes this
+   * command's prompt HELPER directly (the `NON_INTERACTIVE_CONFIRM` code, the
+   * refusal wording, the never-settling-question hang fence); what a
+   * helper-level probe cannot see is whether the COMMAND's own call site
+   * still reaches it, or has grown a second `readline.createInterface` of its
+   * own. This case drives the real command path with no confirmation flag and
+   * a non-TTY stdin, and asserts the refusal surfaces with nothing mutated.
+   */
+  it('REFUSES a non-interactive run, naming -y / --yes, before any AWS write', async () => {
+    setStdinIsTty(undefined);
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { MyBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'b-refuse' } },
+    });
+    const { backend: stateBackend, deleted } = buildStateBackend({ 'Root|us-east-1': root });
+    const { manager: lockManager, acquired } = buildLockManager();
+    const { client: cfnClient, calls } = buildCfnClient();
+
+    // Called directly (no `withErrorHandling` in the way), so the raw error is
+    // observable here as well as its message.
+    const error = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: {},
+      rootTemplateFormat: 'json',
+      tree: { stackName: 'Root', region: 'us-east-1', state: root, nestedChildren: new Map() },
+      rootTemplate: {
+        Resources: { MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b-refuse' } } },
+      },
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+      },
+      options: {
+        dryRun: false,
+        yes: false,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    }).catch((e: unknown) => e);
+
+    expect((error as { code?: string }).code).toBe('NON_INTERACTIVE_CONFIRM');
+    expect((error as Error).message).toContain(
+      'The cdkd export confirmation prompt cannot run'
+    );
+    expect((error as Error).message).toContain('-y / --yes');
+    expect(readlineQuestion).not.toHaveBeenCalled();
+    expect(calls.filter((c) => c.name === 'CreateChangeSet')).toEqual([]);
+    expect(deleted).toEqual([]);
+    expect(acquired).toEqual([]);
   });
 });
 

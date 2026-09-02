@@ -1,4 +1,3 @@
-import * as readline from 'node:readline/promises';
 import { Command, Option } from 'commander';
 import {
   commonOptions,
@@ -16,6 +15,7 @@ import { registerAllProviders } from '../../provisioning/register-providers.js';
 import { refusesFinalSnapshot } from '../../provisioning/final-snapshot.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
 import { withStackName } from '../../provisioning/resource-name.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import { setupStateBackend, resolveSingleRegion } from './state.js';
 import { startRunRecorder } from './deployment-events-run.js';
 import {
@@ -184,15 +184,23 @@ function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boolean): 
   }
 }
 
-async function confirm(question: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = await rl.question(`${question} (y/N): `);
-    const t = answer.trim().toLowerCase();
-    return t === 'y' || t === 'yes';
-  } finally {
-    rl.close();
-  }
+/**
+ * `cdkd rollback`'s confirmation prompt. Exported for unit testing — internal
+ * to the rollback flow otherwise, whose only call site is inside the
+ * `if (!skipConfirmation)` block below.
+ *
+ * The `(y/N): ` suffix is preserved verbatim from before issue #2275 folded
+ * the non-interactive guard into `confirmOrRefuse`: it is user-visible output,
+ * and only this site and `cdkd state orphan` ever spelled it that way.
+ */
+export async function confirm(question: string): Promise<boolean> {
+  return confirmOrRefuse(question, {
+    suffix: ' (y/N): ',
+    refusal:
+      'The cdkd rollback confirmation prompt cannot run in a non-interactive ' +
+      'environment. Pass --force (or -y / --yes) to confirm the rollback, or run ' +
+      'the command from a real terminal.',
+  });
 }
 
 export async function rollbackCommand(

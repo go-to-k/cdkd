@@ -146,6 +146,35 @@ async function runRefresh(
   return { output: cap.output.join(''), error };
 }
 
+/**
+ * The same driver WITHOUT the injected `--yes`, so the confirmation gate at
+ * the top of `stateRefreshObservedCommand` is actually reached.
+ *
+ * NOTE this file mocks NO readline: with issue
+ * [#2275](https://github.com/go-to-k/cdkd/issues/2275)'s guard the command
+ * never creates an interface, so there is nothing to stub. That is also what
+ * makes the case below discriminating in the production shape — remove the
+ * guard and it reaches the REAL `node:readline/promises` against vitest's
+ * EOF stdin and HANGS, which is the defect itself rather than a proxy for it.
+ */
+async function runRefreshUnconfirmed(
+  args: string[]
+): Promise<{ output: string; error: unknown }> {
+  const cap = captureStdout();
+  let error: unknown;
+  try {
+    const cmd = createStateCommand();
+    cmd.exitOverride();
+    cmd.commands.forEach((sub) => sub.exitOverride());
+    await cmd.parseAsync(['refresh-observed', ...args], { from: 'user' });
+  } catch (e) {
+    error = e;
+  } finally {
+    cap.restore();
+  }
+  return { output: cap.output.join(''), error };
+}
+
 function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
   return {
     physicalId: overrides.physicalId ?? 'phys-id',
@@ -225,6 +254,43 @@ describe('cdkd state refresh-observed', () => {
     expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Could not acquire lock/);
     expect(mockSaveState).not.toHaveBeenCalled();
     expect(mockReleaseLock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the ROUTING
+   * half. `tests/unit/cli/non-interactive-confirm-guards.test.ts` probes this
+   * command's prompt HELPER directly (the `NON_INTERACTIVE_CONFIRM` code, the
+   * refusal wording, the never-settling-question hang fence); what a
+   * helper-level probe cannot see is whether the COMMAND's own call site
+   * still reaches it. This case drives the real command path with no `--yes`
+   * and vitest's non-TTY stdin, and asserts the refusal surfaces with nothing
+   * mutated.
+   */
+  it('REFUSES a non-interactive run without --yes, naming -y / --yes', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Bucket1: makeResource({
+          physicalId: 'b',
+          resourceType: 'AWS::S3::Bucket',
+          properties: { BucketName: 'b' },
+        }),
+      })
+    );
+
+    const { error } = await runRefreshUnconfirmed(['TestStack']);
+
+    expect(error).toBeDefined();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    // `formatError` renders `<name>: <message>`, so the name pins that this is
+    // a `CdkdError` rather than a bare `Error` — the shape CI branches on.
+    expect(message).toContain('CdkdError');
+    expect(message).toContain('The cdkd state refresh-observed confirmation prompt cannot run');
+    expect(message).toContain('-y / --yes');
+    // Refused before the lock and before any write.
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 
   it('refreshes observedProperties on every resource and saves the updated state', async () => {

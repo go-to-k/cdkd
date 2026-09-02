@@ -285,6 +285,37 @@ function driftedState(): { state: StackState; etag: string } {
   });
 }
 
+/**
+ * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
+ * prompt this file drives now REFUSES a non-interactive stdin
+ * (`CdkdError` / `NON_INTERACTIVE_CONFIRM`, from the shared
+ * `confirmOrRefuse` helper) instead of hanging on a `question` an EOF stdin
+ * can never settle. Vitest's stdin is NOT a TTY, so every case that exercises
+ * the PROMPT has to present as interactive; the refusal cases set it back.
+ * Same stub as `state-destroy.test.ts` / `gc.test.ts` /
+ * `prefix-migration-check.test.ts`.
+ *
+ * `defineProperty`, not a plain assignment: `process.stdin.isTTY` is typed
+ * `boolean` while the saved original is `boolean | undefined` (it is absent
+ * when stdin is not a TTY).
+ */
+function setStdinIsTty(value: boolean | undefined): void {
+  Object.defineProperty(process.stdin, 'isTTY', {
+    value,
+    configurable: true,
+    writable: true,
+  });
+}
+
+let originalIsTTY: boolean | undefined;
+beforeEach(() => {
+  originalIsTTY = process.stdin.isTTY;
+  setStdinIsTty(true);
+});
+afterEach(() => {
+  setStdinIsTty(originalIsTTY);
+});
+
 describe('drift --json keeps stdout to the payload (issue #2230)', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
   // `applyRoleArnIfSet` WRITES the assumed credentials into `process.env`, so
@@ -588,6 +619,35 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     // consulted rather than constructed and abandoned.
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     expect(() => JSON.parse(stdout)).not.toThrow();
+  });
+
+  /**
+   * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the ROUTING
+   * half. `tests/unit/cli/non-interactive-confirm-guards.test.ts` probes this
+   * command's prompt HELPER directly (the `NON_INTERACTIVE_CONFIRM` code, the
+   * refusal wording, the never-settling-question hang fence); what a
+   * helper-level probe cannot see is whether the COMMAND's own call site
+   * still reaches it, or has grown a second `readline.createInterface` of its
+   * own. This case drives the real command path with no confirmation flag and
+   * a non-TTY stdin, and asserts the refusal surfaces with nothing mutated.
+   */
+  it('REFUSES a non-interactive --accept run and never opens the prompt', async () => {
+    setStdinIsTty(undefined);
+    mockGetState.mockResolvedValue(driftedState());
+    mockRegistryGetProvider.mockReturnValue(DRIFTED_PROVIDER);
+
+    // No `-y` and no `--dry-run`, so the prompt would be reached.
+    const { stderr, error } = await runDrift([...ARGS, '--accept']);
+
+    expect(error).toBeDefined();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const text = stripAnsi(stderr);
+    expect(text).toContain('CdkdError');
+    expect(text).toContain('The cdkd drift confirmation prompt cannot run');
+    expect(text).toContain('-y / --yes');
+    // Refused before the interface exists, and state left alone.
+    expect(mockCreateInterface).not.toHaveBeenCalled();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 
   it('without --json the confirmation prompt stays on stdout', async () => {

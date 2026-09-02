@@ -1,4 +1,3 @@
-import * as readline from 'node:readline/promises';
 import {
   CloudFormationClient,
   DescribeStacksCommand,
@@ -10,6 +9,7 @@ import {
   waitUntilStackDeleteComplete,
 } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../utils/logger.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import { STABLE_TERMINAL_STATUSES } from '../cfn-stack-states.js';
 import {
   CFN_TEMPLATE_BODY_LIMIT,
@@ -906,14 +906,23 @@ async function walkCfnStackTree(
   return { stackName, physicalId, resources, nested };
 }
 
-async function confirmPrompt(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = await rl.question(`${prompt} [y/N] `);
-    return /^y(es)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
+/**
+ * The CloudFormation-stack retirement confirmation prompt, reached from
+ * `cdkd import --migrate-from-cloudformation` and `cdkd migrate
+ * --retire-cfn-stack` (both spell the skip flag `-y` / `--yes`). Its only call
+ * site is inside the `if (!yes)` block above, which is what keeps
+ * `confirmOrRefuse`'s non-interactive refusal (issue #2275) from firing on a
+ * `--yes` run.
+ *
+ * Exported for unit testing — internal to the command flow otherwise.
+ */
+export async function confirmPrompt(prompt: string): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    refusal:
+      'The CloudFormation stack retirement confirmation prompt cannot run in a ' +
+      'non-interactive environment. Pass -y / --yes to confirm the retirement, or run ' +
+      'the command from a real terminal.',
+  });
 }
 
 /**

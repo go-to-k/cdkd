@@ -1,4 +1,3 @@
-import * as readline from 'node:readline/promises';
 import { readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -35,6 +34,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import { describeTypeWithThrottleRetry } from '../../provisioning/describe-type.js';
 import { withRetry } from '../../deployment/retry.js';
@@ -6793,14 +6793,23 @@ function printNextSteps(args: {
   logger.info('');
 }
 
-async function confirmPrompt(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = await rl.question(`${prompt} [y/N] `);
-    return /^y(es)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
+/**
+ * `cdkd export`'s confirmation prompt, shared by its THREE call sites (the
+ * rollback-journal override, the single-stack migration confirm, and the
+ * nested-stack tree-wide confirm in `runPerStackImportLoop`). Every one of
+ * them sits inside an `if (!options.yes ...)` block, which is what keeps
+ * `confirmOrRefuse`'s non-interactive refusal (issue #2275) from firing on a
+ * `--yes` run.
+ *
+ * Exported for unit testing — internal to the export flow otherwise.
+ */
+export async function confirmPrompt(prompt: string): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    refusal:
+      'The cdkd export confirmation prompt cannot run in a non-interactive ' +
+      'environment. Pass -y / --yes to confirm, or run the command from a real ' +
+      'terminal.',
+  });
 }
 
 export function createExportCommand(): Command {

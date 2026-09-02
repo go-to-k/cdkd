@@ -1,6 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
-import * as readline from 'node:readline/promises';
 import { Command } from 'commander';
 import {
   appOptions,
@@ -11,6 +10,7 @@ import {
   useCdkBootstrapAssetsOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption, namedCliRegion } from '../region-options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -1652,14 +1652,20 @@ function formatOutcome(outcome: ImportOutcome): string {
   }
 }
 
-async function confirmPrompt(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = await rl.question(`${prompt} [y/N] `);
-    return /^y(es)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
+/**
+ * `cdkd import`'s confirmation prompt. Its only call site is inside the
+ * `if (!options.yes)` block above, which is what keeps `confirmOrRefuse`'s
+ * non-interactive refusal (issue #2275) from firing on a `--yes` run.
+ *
+ * Exported for unit testing — internal to the command flow otherwise.
+ */
+export async function confirmPrompt(prompt: string): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    refusal:
+      'The cdkd import confirmation prompt cannot run in a non-interactive ' +
+      'environment. Pass -y / --yes to confirm the state write, or run the command ' +
+      'from a real terminal.',
+  });
 }
 
 /**

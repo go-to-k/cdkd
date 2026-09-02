@@ -339,15 +339,24 @@ describe('state --json subcommands keep stdout to the payload (issue #2280)', ()
   });
 
   /**
-   * The other direction: the reservation is scoped to `--json`. The
-   * discriminating assertion is the ASSUMED_LINE one — `applyRoleArnIfSet`'s
-   * notice goes through `logger.info`, so an over-tightened fix that
-   * reserves unconditionally would move it to stderr and red this case. The
-   * human rows themselves are direct `process.stdout.write` calls the
-   * reservation never touches; their assertion pins the default output
-   * contract but cannot discriminate on its own.
+   * Issue [#2435](https://github.com/go-to-k/cdkd/issues/2435): `state list`'s
+   * reservation is UNCONDITIONAL. `--json` picks the payload's ENCODING; it
+   * was never what made stdout a payload stream, and the DEFAULT mode writes
+   * one `Stack (region)` reference per line — the shape
+   * `cdkd state list | while read -r ref` consumes, the same contract as
+   * `cdkd list`'s default mode (issue #2410, `list-json-stream.test.ts`).
+   *
+   * The case this replaces asserted the opposite ("no `--json` ⇒ prose stays
+   * on stdout"), which #2435 deliberately made false. The over-tightening
+   * control it used to provide now lives on `state resources` at the bottom of
+   * this file, where the `--json` gate is still the intended behaviour.
    */
-  it('state list WITHOUT --json keeps its human rows AND its logger prose on stdout', async () => {
+  it('state list with NO flags leaves stdout to the stack references (issue #2435)', async () => {
+    mockListStacks.mockResolvedValue([
+      { stackName: 'TestStack', region: 'us-east-1' },
+      { stackName: 'OtherStack', region: 'us-west-2' },
+    ]);
+
     const { stdout, stderr, error } = await runState([
       'list',
       '--role-arn',
@@ -357,7 +366,111 @@ describe('state --json subcommands keep stdout to the payload (issue #2280)', ()
     ]);
 
     expect(error).toBeUndefined();
+    // Byte-exact: the payload is the reference list and nothing else, sorted.
+    // `toContain` would pass with the role-assumption notice appended, which
+    // is precisely the corruption a `while read -r ref` loop sees.
+    expect(stdout).toBe('OtherStack (us-west-2)\nTestStack (us-east-1)\n');
+
+    // MOVED, not dropped — the operator still sees the notice.
+    expect(stderr).toContain(ASSUMED_LINE);
+    expect(stdout).not.toContain(ASSUMED_LINE);
+  });
+
+  /**
+   * The spelling the issue MEASURED: `--verbose` with no `--json` put 1,094
+   * bytes of DEBUG stack trace on stdout. `--verbose` also reaches a different
+   * `ConsoleLogger.emit` arm from the INFO case above (`console.debug`), so
+   * this is not a second spelling of it.
+   */
+  it('state list --verbose keeps DEBUG prose off stdout with no --json (issue #2435)', async () => {
+    const { stdout, stderr, error } = await runState([
+      'list',
+      '--verbose',
+      '--role-arn',
+      ROLE_ARN,
+      '--state-bucket',
+      'b',
+    ]);
+
+    expect(error).toBeUndefined();
+    expect(stdout).toBe('TestStack (us-east-1)\n');
+    expect(stderr).toContain('Assuming role');
+    expect(stdout).not.toContain('Assuming role');
+  });
+
+  /**
+   * `--long` without `--json` is a formatted VIEW, not a record set, and it is
+   * swept along by the same reservation because the claim is taken before the
+   * mode is known. Fenced so that "swept along" is a decision on record rather
+   * than an accident: the view itself must still be on stdout (it is a direct
+   * `process.stdout.write`), and only the logger prose moves.
+   */
+  it('state list --long without --json keeps its view on stdout, prose on stderr', async () => {
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName: 'TestStack',
+        region: 'us-east-1',
+        resources: {},
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"etag-1"',
+    });
+
+    const { stdout, stderr, error } = await runState([
+      'list',
+      '--long',
+      '--role-arn',
+      ROLE_ARN,
+      '--state-bucket',
+      'b',
+    ]);
+
+    expect(error).toBeUndefined();
     expect(stdout).toContain('TestStack (us-east-1)');
+    expect(stdout).toContain('Resources: 0');
+    expect(stderr).toContain(ASSUMED_LINE);
+    expect(stdout).not.toContain(ASSUMED_LINE);
+  });
+
+  /**
+   * THE OVER-TIGHTENING CONTROL, and the fence on issue #2435's scope line.
+   * `state resources` / `show` / `info` keep the `--json` gate deliberately:
+   * their flagless output is a formatted human VIEW (aligned columns, rendered
+   * blocks) with no record-set mode behind it, so reserving stdout there would
+   * move an operator's prose off the stream they are already reading it on for
+   * no consumer's benefit.
+   *
+   * Without this case, "make every `state` reservation unconditional" would
+   * pass the whole file — which is the change the issue explicitly declined.
+   */
+  it('state resources WITHOUT --json still keeps its logger prose on stdout', async () => {
+    mockGetState.mockResolvedValue({
+      state: {
+        version: 2,
+        stackName: 'TestStack',
+        region: 'us-east-1',
+        resources: {
+          Bucket1: { physicalId: 'phys-1', resourceType: 'AWS::S3::Bucket', properties: {} },
+        },
+        outputs: {},
+        lastModified: 0,
+      },
+      etag: '"etag-1"',
+    });
+
+    const { stdout, stderr, error } = await runState([
+      'resources',
+      'TestStack',
+      '--role-arn',
+      ROLE_ARN,
+      '--state-bucket',
+      'b',
+    ]);
+
+    expect(error).toBeUndefined();
+    expect(stdout).toContain('Bucket1');
     expect(stdout).toContain(ASSUMED_LINE);
     expect(stderr).not.toContain(ASSUMED_LINE);
   });
