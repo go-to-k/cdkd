@@ -1156,6 +1156,7 @@
         "import-auto-mode",
         "import-nested-stack",
         "lambda-url-authtype-replay",
+        "local-invoke",
         "local-invoke-agentcore-from-state",
         "local-start-alb-from-state",
         "macro-expansion",
