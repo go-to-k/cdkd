@@ -1,3 +1,10 @@
+## [0.285.4](https://github.com/go-to-k/cdkd/compare/v0.285.3...v0.285.4) (2026-09-02)
+
+
+### Bug Fixes
+
+* **secret-redaction:** close the last two readback leaks with needles derived from the record's own certified positions ([#2415](https://github.com/go-to-k/cdkd/issues/2415)) ([ce15d20](https://github.com/go-to-k/cdkd/commit/ce15d208ed5597b839a4c231b792613db31946c8))
+
 ## [0.285.3](https://github.com/go-to-k/cdkd/compare/v0.285.2...v0.285.3) (2026-09-02)
 
 
