@@ -227,14 +227,16 @@ export async function purgeNoncurrentKeyVersions(
   if (failed.size > 0) {
     const named = [...failed.entries()]
       .slice(0, MAX_NAMED_FAILURES)
-      // `displaySafe` on the KEY, not just on the reasons: the key embeds a
-      // stack name and a region that reached cdkd from an S3 listing or a lock
-      // body, so it is attacker-influenceable text heading for a terminal.
-      // `lock-manager.ts` already sanitizes the same value at its own call
-      // site; without this the shared helper's warning was the one raw path,
-      // and issue #2346 site 5 made it newly reachable at `warn` on the
-      // force-unlock and takeover arms.
-      .map(([key, reasons]) => `${displaySafe(key)} (${reasons.join('; ')})`);
+      // Sanitized WHOLE, key and reasons alike. The key embeds a stack name and
+      // a region that reached cdkd from an S3 listing or a lock body; the
+      // reasons carry AWS-supplied text (`err.Message`, the SDK's error string,
+      // a `VersionId`). Neither is cdkd-authored, both end up on a terminal, and
+      // sanitizing only the key would leave half of this line raw while a
+      // comment claimed it was covered. `lock-manager.ts` already sanitizes the
+      // key at its own call site; without this the shared helper's warning was
+      // the one raw path, and issue #2346 site 5 made it newly reachable at
+      // `warn` on the force-unlock and takeover arms.
+      .map(([key, reasons]) => displaySafe(`${key} (${reasons.join('; ')})`));
     const elided = failed.size - named.length;
     // WARN rather than debug, and never a throw. What survives is the body of
     // an object cdkd has just reported as deleted; WHICH object is the

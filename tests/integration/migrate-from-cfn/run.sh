@@ -274,8 +274,14 @@ assert_migrate_tmp_versions_purged() {
 # than no control at all.
 assert_state_history_survives() {
   local stack="$1" rows versioning
+  # `--region` like every other s3api call in this file, and stderr CAPTURED
+  # rather than discarded: now that ERROR is fatal, the message has to name the
+  # real cause instead of guessing at one. Its own text used to assert a missing
+  # grant, which is only one of the three things that reach this arm.
+  local probe_err
+  probe_err="$(mktemp)"
   versioning="$(aws s3api get-bucket-versioning --bucket "${STATE_BUCKET}" \
-    --query 'Status' --output text 2>/dev/null || echo 'ERROR')"
+    --region "${REGION}" --query 'Status' --output text 2>"${probe_err}" || echo 'ERROR')"
   # ERROR and Suspended are NOT the same answer, and collapsing them is how a
   # control deletes itself quietly. 'None'/'Suspended' is a real answer that
   # makes this assertion meaningless, so skipping is right. 'ERROR' means the
@@ -288,9 +294,12 @@ assert_state_history_survives() {
     echo "ASSERTION FAILED: [${stack}] could not read the versioning state of" >&2
     echo "  s3://${STATE_BUCKET}. The control below is only meaningful on a versioned" >&2
     echo "  bucket, so an unreadable answer cannot be treated as 'skip' - that would" >&2
-    echo "  drop the control and still report PASS. Grant s3:GetBucketVersioning." >&2
+    echo "  drop the control and still report PASS. AWS said:" >&2
+    sed 's/^/    /' "${probe_err}" >&2
+    rm -f "${probe_err}"
     exit 1
   fi
+  rm -f "${probe_err}"
   if [ "${versioning}" != "Enabled" ]; then
     echo "  skip: s3://${STATE_BUCKET} reports versioning '${versioning}', not 'Enabled', so a" >&2
     echo "        deleted object leaves no noncurrent body to assert on. This control needs a" >&2

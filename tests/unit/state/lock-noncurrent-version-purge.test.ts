@@ -615,7 +615,10 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
         Promise.reject(new Error('GetBucketLocation denied'))
       );
 
-      // The delete's own failure is what surfaces -- not the purge's.
+      // Both errors carry the SAME message, so this rejection alone cannot say
+      // which one surfaced. What fences the hoist mutation is the warn COUNT
+      // below: hoisted, the purge's failure escapes instead of being reported,
+      // and there is no warn at all.
       await expect(manager().forceReleaseLock(STACK, REGION)).rejects.toThrow(
         'GetBucketLocation denied'
       );

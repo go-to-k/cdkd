@@ -1299,9 +1299,18 @@ Two consequences worth knowing:
   directly:
 
   ```bash
+  # Both halves matter: the purge removes noncurrent BODIES and noncurrent
+  # DELETE MARKERS, and a released lock key accumulates one marker per cycle,
+  # so counting bodies alone undercounts the growth. The `|| ` + "[]" default is
+  # not decoration either -- on a fully purged key the response carries no
+  # `Versions` array at all, and `length(null)` is a JMESPath ERROR, so the
+  # naive query fails exactly when the answer should be 0.
   aws s3api list-object-versions --bucket <state-bucket> \
     --prefix "cdkd/<stack>/<region>/lock.json" \
-    --query 'length(Versions[?IsLatest==`false`])'
+    --query 'length(Versions[?IsLatest==`false`] || `[]`)'
+  aws s3api list-object-versions --bucket <state-bucket> \
+    --prefix "cdkd/<stack>/<region>/lock.json" \
+    --query 'length(DeleteMarkers[?IsLatest==`false`] || `[]`)'
   ```
 
   Two things this does NOT do. The CURRENT version is never touched -- the

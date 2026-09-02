@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { displaySafe } from '../../../src/utils/display-safe.js';
 import {
   purgeNoncurrentKeyVersions,
   type NoncurrentVersionPurgeOptions,
@@ -917,15 +918,26 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
     const s3 = stub(
       { [nasty]: [{ Versions: [{ Key: nasty, VersionId: 'v1', IsLatest: false }] }] },
       undefined,
-      () => ({ Errors: [{ Key: nasty, VersionId: 'v1', Code: 'AccessDenied' }] })
+      () => ({
+        Errors: [
+          { Key: nasty, VersionId: 'v1', Code: 'AccessDenied\u001b[0m', Message: 'de\u0000nied' },
+        ],
+      })
     );
 
     await purgeNoncurrentKeyVersions(s3, BUCKET, [nasty], { logger: logger() });
 
     const message = String(warn.mock.calls[0]![0]);
-    expect(message).toContain('AccessDenied');
-    // The control: the surrounding text still names the failure, so this is
-    // about the KEY being escaped rather than the message being empty.
+    // The EXACT sanitized rendering, not two negative literals: `not.toContain`
+    // pairs also pass when the sanitizer returns '' or strips one escape and
+    // leaves another, so they fence far less than they appear to.
+    // The REASON is AWS-supplied text too, so it must be sanitized alongside the
+    // key. Asserting only a clean reason cannot tell whole-entry sanitization
+    // from key-only -- the two render identically when the reason has nothing
+    // to escape, and the weaker form passed until this fixture made the reason
+    // dirty as well.
+    expect(message).toContain(displaySafe(`${nasty} (version v1: AccessDenied\u001b[0m - de\u0000nied)`));
+    // ...and the raw forms really are gone.
     expect(message).not.toContain('\u001b[31m');
     expect(message).not.toContain('\u0000');
   });
