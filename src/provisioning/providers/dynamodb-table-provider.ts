@@ -4255,9 +4255,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * `observedProperties` baseline, a later AWS-side increase surfaces as drift
    * on a property the user never declared and `--revert` would issue a
    * decrease AWS rejects. `readCurrentState` therefore emits it only when the
-   * DESIRED bag declares it (the fix issue #1742 PROPOSES for the per-index
-   * sibling — still open and unlanded at the time of writing, so this is the
-   * first site to carry the shape), never as a blanket drop:
+   * DESIRED bag declares it (the same shape issue #1742 proposed for the
+   * per-index sibling, which landed in #1859 — this site carried it first),
+   * never as a blanket drop:
    * `AWS::DynamoDB::Table` accepts an explicit `WarmThroughput` and a real
    * change to one must stay visible. Known residual on that declared arm
    * (issue #1768): AWS may GROW a declared value, which is reported as drift —

@@ -5167,9 +5167,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // That convergence is BOUNDED to records written by a post-#1420
           // binary. An `observedProperties` bag written before the #1420 CFn
           // reverse map holds the raw `GlobalSecondaryIndexDescription[]`
-          // (`IndexArn` / `IndexStatus` / `ItemCount` / `Backfilling`), which a
-          // one-member strip cannot converge — those records were already
-          // drifting on four other members and are outside what this closes.
+          // (`IndexArn` / `IndexStatus` / `ItemCount` / `IndexSizeBytes` /
+          // `Backfilling`), which a one-member strip cannot converge — those
+          // records were already drifting on five other members and are
+          // outside what this closes.
           if (gsi.WarmThroughput) {
             const warm: Record<string, unknown> = {};
             if (gsi.WarmThroughput.ReadUnitsPerSecond !== undefined) {
