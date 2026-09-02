@@ -138,6 +138,22 @@ markers.
   a delta round's blocker was a commit message citing a function that has
   never existed in this repo, reachable only because the orchestrator re-read
   the message itself.
+- **An EXEMPTION is the highest-risk edit a fence can receive, and every round
+  that adds one should probe it in both directions before the round ends.** A
+  carve-out is added to stop a false positive, which means it is written while
+  agreeing that the fence was WRONG — the exact posture in which nobody asks
+  what it now lets through. Measured across one change on 2026-09-02, where
+  three consecutive delta rounds each found the round before it had traded a
+  crude fence for a token-spendable escape: a line-wide `--no-guess` skip that a
+  mention anywhere on the line could buy; a clause-wide negation marker that
+  exempted ELEVEN prescriptive sentences the bare form had flagged, including
+  the composite mutant's own command; and a sentence-scoped one that made an
+  entire fenced code block inherit one exemption. Two questions close it, and
+  both are cheap: does a PRESCRIPTIVE use of the same words spend the exemption
+  (probe one), and is the exemption LOAD-BEARING at all — delete its wiring and
+  the suite must go red, or it is indistinguishable from a fence that never had
+  it. The second question is the one that gets skipped: a decorative carve-out
+  reads as caution and is a gap.
 - **Reviewer subagents spawned BY A LANE report to the MAIN session, not to
   the lane that spawned them.** Completion notifications go to the top-level
   session, so a lane that dispatches reviewers and then waits on their reports

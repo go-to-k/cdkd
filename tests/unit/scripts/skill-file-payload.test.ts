@@ -119,9 +119,9 @@ const MEASURED: Record<string, { corpusBytes: number; largest: { file: string; b
   // against work-issues' numbers -- permanently red, with a message naming the
   // wrong file.
   'work-issues': {
-    corpusBytes: 242_120,
+    corpusBytes: 244_747,
     largest: { file: 'implement.md', bytes: 48_340 },
-    runnerUp: { file: 'verify.md', bytes: 44_410 },
+    runnerUp: { file: 'verify.md', bytes: 45_623 },
   },
 };
 
@@ -137,7 +137,7 @@ const MIN_REFERENCE_FILES = 6;
 // number is the pre-merge one). The inputs are in MEASURED below and asserted,
 // so only the REASONING lives here: the floor must clear `corpus - largest`,
 // and also `corpus - runnerUp` for the day the two swap places (they have
-// swapped once already). 202_000 clears them by ~9.6k and ~5.7k -- the pair the
+// swapped once already). 203_000 clears them by ~6.6k and ~3.9k -- the pair the
 // 180_000 it replaces was sized to hold -- is strictly TIGHTER than that value
 // (no upper bound is touched), and leaves ~41 KB of narrative compression
 // headroom below it.
@@ -152,7 +152,7 @@ const MIN_REFERENCE_FILES = 6;
 //
 // What this floor does NOT catch, stated plainly because the comment used to
 // imply otherwise: gutting a NON-largest stage file. Deleting the whole of
-// triage.md (38,974 B) would leave 202,080 B -- which the CURRENT floor happens to
+// triage.md (38,974 B) would leave 205,773 B -- which the CURRENT floor happens to
 // catch, by where it landed rather than by design; a smaller file gutted the
 // same way still slips through. A byte floor
 // cannot see that, and raising it until it could would forbid legitimate
@@ -160,7 +160,7 @@ const MIN_REFERENCE_FILES = 6;
 // than size: work-issues-skill-refs.test.ts pins the document COUNT, and
 // work-issues-launch-mode.test.ts pins that each arm-bearing stage file still
 // names the mode it branches on and that the probe still exists exactly once.
-const MIN_REFERENCE_CORPUS_BYTES = 202_000;
+const MIN_REFERENCE_CORPUS_BYTES = 203_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

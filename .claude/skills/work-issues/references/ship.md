@@ -141,8 +141,20 @@ output: a grep over a check log that keeps only error lines reports a dirty
 tree as clean.
 
 ```bash
-gh pr merge <n> --squash --delete-branch     # squash is the repo's only method
+gh pr merge <n> -R <owner>/<repo> --squash --delete-branch   # squash is the only method here
 ```
+
+**`-R` is not optional in a run that touches more than one repo.** Without it
+`gh` infers the repo from the CWD, and a cwd persists across Bash calls — so a
+merge issued after any earlier `cd` into a sibling checkout targets THAT repo.
+Measured 2026-09-02: `gh pr merge 2432` ran against cdk-local because a marker
+check had left the shell there, and it failed only because no PR 2432 existed
+in that repo. Had one existed, the wrong PR would have merged. The error it
+gives is `Could not resolve to a PullRequest with the number of <n>`, which
+reads as a GitHub or permissions problem and sends you to the wrong diagnosis
+entirely. Pass `-R` on EVERY `gh` call in a multi-repo run — `pr view`,
+`pr checks` and `issue comment` mis-target just as silently, they just fail
+less loudly.
 
 (**`--delete-branch` prints a bare `fatal:` line and the merge SUCCEEDED
 anyway — read it as the expected artifact, not a failed merge.** Run from the

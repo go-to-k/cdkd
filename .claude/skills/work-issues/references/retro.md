@@ -189,7 +189,15 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   lessons filed twenty minutes apart by two hops):
   - **The session that FINDS the lesson lands all three** — the default, not
     the ambitious option; the narrow exception (cannot pay the remaining gate
-    cycles) is justified in the wrap.
+    cycles) is justified in the wrap. Land the mirror BEFORE the original's
+    review rounds are finished, not after: the mirror gets its own reviewers,
+    and they read the same design with none of the original's momentum behind
+    it. Measured 2026-09-02 — the cdk-local port's reviewers found an unchained
+    `git branch -D` that deletes on a FAILED switch, and a quote-parsing bug,
+    BOTH in code cdkd had already merged past a three-axis panel; cdkd's found
+    a `git switch` DWIM the port had inherited. Neither repo alone would have
+    caught both, so the mirror is a second review pass that happens to also be
+    the deliverable.
   - **Filing a mirror issue covers the WHOLE remainder, in one turn** — file
     into EVERY repo still missing it at once, each issue naming the other
     filings plus the repo already landed; partial filing produced the pairs above.
