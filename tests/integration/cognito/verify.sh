@@ -30,6 +30,14 @@
 #     full-replace SetUserPoolMfaConfig then resets it to OFF -- template-is-truth
 #     parity that is deliberately UNCHANGED -- and cdkd must ANNOUNCE the
 #     downgrade naming the live value, instead of doing it silently.
+#   - PolicyRemovalUserPool (issue #1979): a pool created with both Policies
+#     sub-keys is re-deployed with SignInPolicy REMOVED (plus a companion
+#     autoVerifiedAttributes change proving UpdateUserPool fired). No wire
+#     input can express the removal (UpdateUserPool preserves an omitted
+#     sub-key, issue #1968) and CloudFormation is the same no-op on the
+#     identical edit (measured us-east-1 2026-09-02), so the assertions are
+#     RETENTION of the live sign-in policy plus the announcement naming the
+#     sub-key -- the pre-fix behavior was the same no-op with no announcement.
 # Then asserts the destroy path removes the pools and the state file.
 #
 # All four properties route through the SDK CognitoUserPoolProvider (the
@@ -200,6 +208,7 @@ cleanup() {
   if [ -n "${ACCOUNT_ID}" ]; then
     local stray
     for name in "cdkd-test-mfa-transition-${ACCOUNT_ID}" "cdkd-test-mfa-downgrade-${ACCOUNT_ID}" \
+      "cdkd-test-policy-removal-${ACCOUNT_ID}" \
       "cdkd-test-mfa-preflight-off-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-signin-${ACCOUNT_ID}" \
       "cdkd-test-mfa-preflight-optional-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-webauthn-${ACCOUNT_ID}"; do
       stray="$(pool_id_by_name "${name}")"
@@ -464,6 +473,35 @@ if [ "${DOWNGRADE_MFA_CONFIG_BEFORE}" != "OPTIONAL" ] || [ "${DOWNGRADE_SOFTWARE
 fi
 echo "    OK: MFA-downgrade pool baseline MfaConfiguration == OPTIONAL with SOFTWARE_TOKEN_MFA enabled"
 
+# --- Assertion 8b: policy-removal baseline (issue #1979) --------------
+# Baseline-live rule: the retention assertion in Phase 2 is meaningless unless
+# the sub-key demonstrably reached AWS first. Also pin the companion property's
+# BEFORE state (no auto-verified attributes), so Phase 2's ["email"] readback
+# proves the update call fired rather than reading back a pre-existing value.
+POLICY_REMOVAL_NAME="cdkd-test-policy-removal-${ACCOUNT_ID}"
+POLICY_REMOVAL_POOL_ID="$(pool_id_by_name "${POLICY_REMOVAL_NAME}")"
+if [ -z "${POLICY_REMOVAL_POOL_ID}" ]; then
+  echo "FAIL: no user pool named '${POLICY_REMOVAL_NAME}' after Phase 1" >&2
+  exit 1
+fi
+echo "    Policy-removal UserPool id: ${POLICY_REMOVAL_POOL_ID}"
+
+POLICY_REMOVAL_BEFORE=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${POLICY_REMOVAL_POOL_ID}" --region "${REGION}" --output json)
+PR_FACTORS_BEFORE=$(echo "${POLICY_REMOVAL_BEFORE}" \
+  | jq -c '.UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors // []')
+if ! echo "${PR_FACTORS_BEFORE}" | jq -e 'index("EMAIL_OTP") != null and index("PASSWORD") != null' >/dev/null; then
+  echo "FAIL: policy-removal pool baseline SignInPolicy.AllowedFirstAuthFactors is ${PR_FACTORS_BEFORE}, expected to contain PASSWORD and EMAIL_OTP (the base arm declares both)" >&2
+  exit 1
+fi
+PR_AUTOVERIFY_BEFORE=$(echo "${POLICY_REMOVAL_BEFORE}" \
+  | jq -c '.UserPool.AutoVerifiedAttributes // []')
+if [ "${PR_AUTOVERIFY_BEFORE}" != "[]" ]; then
+  echo "FAIL: policy-removal pool baseline AutoVerifiedAttributes is ${PR_AUTOVERIFY_BEFORE}, expected none (the base arm declares none; the update arm's ['email'] is the fired-call companion)" >&2
+  exit 1
+fi
+echo "    OK: policy-removal pool baseline has SignInPolicy live and no auto-verified attributes"
+
 # --- Phase 2: update arm (issue #1925) --------------------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (MFA update transitions)"
 UPDATE_LOG="$(mktemp -t cdkd-cognito-update.XXXXXX)"
@@ -515,7 +553,7 @@ echo "    OK: MFA-transition pool went OFF -> ON with SOFTWARE_TOKEN_MFA enabled
 # grep is what discriminates -- the wire behavior below is unchanged by design.
 #
 # BOUND to this pool's id. The warning is emitted as `UserPool <id>: ...`, and
-# this stack deploys six pools whose MFA arms differ, so an unbound grep would
+# this stack deploys seven pools whose MFA arms differ, so an unbound grep would
 # be satisfied by another pool's message and this assertion would pass without
 # the pool under test having warned at all.
 if ! grep -q "UserPool ${DOWNGRADE_POOL_ID}: the template declares no MfaConfiguration" "${UPDATE_LOG}"; then
@@ -560,6 +598,58 @@ if [ "${DOWNGRADE_WA_RP}" != "downgrade.cdkd.example.com" ]; then
 fi
 echo "    OK: MFA-downgrade pool went OPTIONAL -> OFF with its WebAuthn config intact"
 
+# --- Assertion 11b: the SignInPolicy removal is ANNOUNCED (#1979) -----
+# The load-bearing half: before the fix the removal deploy was byte-identical
+# on the wire and printed nothing. BOUND to this pool's id (seven pools deploy in
+# this stack) and to the exact producer wording the unit suite also pins, so a
+# wording drift breaks the unit test loudly before it can blind this grep.
+if ! grep -q "UserPool ${POLICY_REMOVAL_POOL_ID}: the desired configuration no longer declares Policies.SignInPolicy" "${UPDATE_LOG}"; then
+  echo "FAIL: the SignInPolicy removal deployed without an announcement (no 'UserPool ${POLICY_REMOVAL_POOL_ID}: the desired configuration no longer declares Policies.SignInPolicy' in the deploy output — issue #1979)" >&2
+  grep -i "SignInPolicy" "${UPDATE_LOG}" >&2 || true
+  exit 1
+fi
+# Per-sub-key discrimination: PasswordPolicy stays declared on the update arm,
+# so an announcement naming it would mean the detection fires per-container
+# rather than per-sub-key.
+if grep -q "UserPool ${POLICY_REMOVAL_POOL_ID}: the desired configuration no longer declares Policies.PasswordPolicy" "${UPDATE_LOG}"; then
+  echo "FAIL: the removal announcement fired for Policies.PasswordPolicy, which the update arm still declares (per-sub-key detection broken — issue #1979)" >&2
+  exit 1
+fi
+echo "    OK: the inexpressible SignInPolicy removal was announced for ${POLICY_REMOVAL_POOL_ID}"
+
+# --- Assertion 11c: the live sign-in policy is RETAINED ---------------
+# CFn parity (measured us-east-1 2026-09-02, issue #1979): CloudFormation's own
+# UPDATE_COMPLETE on this edit leaves the live value untouched, so cdkd must
+# NOT reset it. If a future change makes cdkd send a reset, this fails and the
+# divergence has to be deliberate.
+POLICY_REMOVAL_AFTER=$(aws cognito-idp describe-user-pool \
+  --user-pool-id "${POLICY_REMOVAL_POOL_ID}" --region "${REGION}" --output json)
+PR_FACTORS_AFTER=$(echo "${POLICY_REMOVAL_AFTER}" \
+  | jq -c '.UserPool.Policies.SignInPolicy.AllowedFirstAuthFactors // []')
+if ! echo "${PR_FACTORS_AFTER}" | jq -e 'index("EMAIL_OTP") != null and index("PASSWORD") != null' >/dev/null; then
+  echo "FAIL: after the removal deploy, SignInPolicy.AllowedFirstAuthFactors is ${PR_FACTORS_AFTER}, expected PASSWORD and EMAIL_OTP retained (the wire cannot express the removal, and CFn is the same no-op — issue #1979)" >&2
+  exit 1
+fi
+# The declared sub-key must still be forwarded untouched — a removal detection
+# that also stopped forwarding PasswordPolicy would be a regression of #1380's
+# forwarding fix, invisible to the retention assertion above.
+PR_MINLEN_AFTER=$(echo "${POLICY_REMOVAL_AFTER}" \
+  | jq -r '.UserPool.Policies.PasswordPolicy.MinimumLength // "null"')
+if [ "${PR_MINLEN_AFTER}" != "12" ]; then
+  echo "FAIL: after the removal deploy, PasswordPolicy.MinimumLength is '${PR_MINLEN_AFTER}', expected 12 (the still-declared sub-key must keep forwarding)" >&2
+  exit 1
+fi
+# Fired-call companion (the nlb-source-nat rule): 'the sign-in policy is
+# unchanged' passes vacuously when no call went out at all, so prove
+# UpdateUserPool ran by the companion property it carried in the same request.
+PR_AUTOVERIFY_AFTER=$(echo "${POLICY_REMOVAL_AFTER}" \
+  | jq -c '.UserPool.AutoVerifiedAttributes // [] | sort')
+if [ "${PR_AUTOVERIFY_AFTER}" != '["email"]' ]; then
+  echo "FAIL: after the removal deploy, AutoVerifiedAttributes is ${PR_AUTOVERIFY_AFTER}, expected [\"email\"] (the companion change proving UpdateUserPool fired did not land)" >&2
+  exit 1
+fi
+echo "    OK: sign-in policy retained (PASSWORD + EMAIL_OTP), PasswordPolicy still forwarded, companion change landed"
+
 rm -f "${UPDATE_LOG}"
 UPDATE_LOG=""
 
@@ -584,6 +674,9 @@ echo "    OK: MFA-transition UserPool is gone"
 
 assert_gone "MFA-downgrade UserPool ${DOWNGRADE_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${DOWNGRADE_POOL_ID}" --region "${REGION}"
 echo "    OK: MFA-downgrade UserPool is gone"
+
+assert_gone "Policy-removal UserPool ${POLICY_REMOVAL_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${POLICY_REMOVAL_POOL_ID}" --region "${REGION}"
+echo "    OK: Policy-removal UserPool is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
@@ -906,4 +999,4 @@ assert_gone "rollback journal s3://${STATE_BUCKET}/cdkd/${PREFLIGHT_STACK}/${REG
 echo "    OK: rollback journal is gone"
 
 echo ""
-echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 / MFA pre-flight refusals on the UPDATE path with canaries proving no API call went out #1977 + #1975, plus three negative controls / clean destroy)"
+echo "==> cognito test passed (SignInPolicy #1380 / UserPoolTier / EnabledMfas(SOFTWARE_TOKEN) / WebAuthn* backfill (EMAIL_OTP-as-MFA unit-only) / MfaConfiguration defaulting both arms OFF+OPTIONAL #1920 / MFA update transitions: enable-on-update + announced undeclared downgrade #1925 / announced+retained Policies.SignInPolicy removal with fired-call companion #1979 / MFA pre-flight refusals on the UPDATE path with canaries proving no API call went out #1977 + #1975, plus three negative controls / clean destroy)"

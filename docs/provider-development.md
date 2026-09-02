@@ -2212,6 +2212,18 @@ Checklist when writing or reviewing an `update()`:
   "empty-string default" that pinned a payload real AWS rejects; only an integ
   whose removal phase actually drops the key surfaced it. If you add a
   clear-on-removal arm, add the removal phase to a fixture in the same change.
+- **The CFn-reset premise itself is per-type — A/B it before writing the
+  reset, because where CloudFormation does NOT reset, the reset is the bug.**
+  Removing a Cognito UserPool `Policies` sub-key (`SignInPolicy` /
+  `PasswordPolicy`, or the whole container) reaches UPDATE_COMPLETE in
+  CloudFormation with every live value intact (measured us-east-1 2026-09-02,
+  issue #1979) — CFn performs the same merge-semantics no-op the raw API
+  does, so a cdkd-side reset would DIVERGE from template compatibility. The
+  correct shape there is pass-through-nothing plus a WARN naming the sub-key
+  and the explicit-declaration remedy (`warnOnUnremovablePoliciesSubKeys` in
+  `cognito-provider.ts`): under both A/B answers the only wrong option is
+  silence, because the user who deleted the sub-key believes a change (often
+  a TIGHTENING) landed.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit
