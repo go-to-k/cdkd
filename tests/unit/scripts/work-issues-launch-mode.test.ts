@@ -184,7 +184,20 @@ export function commandLines(block: string): string[] {
       const c = line[i]!;
       if (quote) {
         if (c === quote) quote = null;
-      } else if (c === '"' || c === "'") {
+      } else if (c === '"') {
+        quote = c;
+      } else if (c === "'" && /(^|[\s=(])'/.test(line.slice(Math.max(0, i - 1), i + 1))) {
+        // A single quote OPENS a string only where a string can START -- at the
+        // line's beginning or after whitespace / `=` / `(`. Treating every `'`
+        // as an opener makes an APOSTROPHE INSIDE A WORD ("the tool's branch")
+        // open a string that never closes, so every `#` after it looks quoted
+        // and the trailing comment is never stripped. The caller then compares
+        // the comment-bearing line against the prescribed command and reports a
+        // mismatch for an edit that was fine -- a false FAILURE, which is the
+        // expensive direction for a fence nobody expects to be wrong.
+        // Found on the go-to-k/cdk-local#651 sibling lane, whose copy of this
+        // helper had the same defect (go-to-k/cdkd#2432 shipped it here).
+        // A double quote needs no such rule: `"` does not appear inside words.
         quote = c;
       } else if (c === '#' && i > 0 && /\s/.test(line[i - 1]!)) {
         return line.slice(0, i);
@@ -303,7 +316,9 @@ describe('work-issues launch-mode probe', () => {
     // equality subsumes it.
     const PRESCRIBED = [
       "git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'",
-      '[ -z "$(git status --porcelain)" ] \\',
+      'DIRTY=$(git status --porcelain)',
+      "[ -z \"$DIRTY\" ] || echo 'dirty -> commit or stash first, then re-run this block'",
+      '[ -z "$DIRTY" ] \\',
       '&& git switch --no-guess <LAUNCH_BRANCH> \\',
       '&& git branch -D <each branch this run created>',
       'git branch --show-current',
@@ -473,6 +488,36 @@ describe('work-issues launch-mode probe', () => {
     expect(read(join('references', 'retro.md'))).toMatch(/LAST step of the whole run/);
   });
 
+  describe('commandLines() -- the helper every block fence reads through', () => {
+    // Direct tests, because until now this helper was exercised only INCIDENTALLY
+    // by whatever the two fenced blocks happened to contain. That is enough to
+    // notice it crashing and not enough to notice it mis-parsing: a helper that
+    // silently keeps a trailing comment makes the ordered-equality fence above
+    // report a mismatch for an edit that was correct, and the failure names the
+    // BLOCK rather than the parser.
+    it.each([
+      ['git status --porcelain   # plain trailing comment', 'git status --porcelain'],
+      // The regression: an apostrophe inside a word is not a string opener.
+      ["echo the tool's name   # a real comment", "echo the tool's name"],
+      // ...while a real single-quoted string still hides a `#`.
+      ["git commit -m 'closes #651'", "git commit -m 'closes #651'"],
+      ['git commit -m "closes #651"', 'git commit -m "closes #651"'],
+      ["git branch --list '<your prefix>*'   # trailing", "git branch --list '<your prefix>*'"],
+      ['git switch --no-guess <LAUNCH_BRANCH>', 'git switch --no-guess <LAUNCH_BRANCH>'],
+      // `#` needs preceding whitespace to start a comment, or `refs/heads/#1`
+      // style arguments would be truncated.
+      ['git show-ref --verify refs/heads/x#y', 'git show-ref --verify refs/heads/x#y'],
+    ])('parses %j', (line, expected) => {
+      expect(commandLines(line)).toEqual([expected]);
+    });
+
+    it('drops blank lines and whole-line comments', () => {
+      expect(commandLines('# a heading\n\ngit status --porcelain\n')).toEqual([
+        'git status --porcelain',
+      ]);
+    });
+  });
+
   describe('the withdrawn fast-forward cannot come back anywhere', () => {
     // The block-scoped fences above only see the ONE restore recipe. Measured,
     // four realistic re-introductions passed every one of them: the
@@ -507,10 +552,21 @@ describe('work-issues launch-mode probe', () => {
       // an injected `git -C "<LANE_TREE>" branch -D <LAUNCH_BRANCH>` there pass
       // green (measured). The set of files that MENTION the command is wider
       // than the set that DEFINES it, and it is the mention that misleads.
+      // A carve-out for prose that WARNS AGAINST the very command it names.
+      // Without it the scan forbids the skill from documenting its own hazard --
+      // "Never `git reset --hard` while `LAUNCH_BRANCH` is checked out" reads as
+      // a violation -- which is a fence that blocks the correct edit. Scoped to a
+      // NEGATION in the same sentence, the same shape the fast-forward polarity
+      // check uses, so it cannot be satisfied by an approving mention.
+      const FORBIDS = /\b(never|do not|don't|must not|cannot|no verb may|forbidden)\b/i;
       const hits = skillDocs()
-        .map((doc) => ({ doc, hit: MOVING.exec(read(doc))?.[0] }))
-        .filter((r) => r.hit)
-        .map((r) => `${r.doc}: ${r.hit}`);
+        .flatMap((doc) =>
+          read(doc)
+            .replace(/\s*\n\s*/g, ' ')
+            .split(/(?<=\.)\s+/)
+            .filter((sent) => MOVING.test(sent) && !FORBIDS.test(sent))
+            .map((sent) => `${doc}: ${MOVING.exec(sent)?.[0]}`)
+        );
       expect(
         hits,
         `A skill doc aims a branch-moving verb at LAUNCH_BRANCH. That branch is the outer ` +

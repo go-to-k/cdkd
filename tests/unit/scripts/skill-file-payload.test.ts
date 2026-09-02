@@ -119,7 +119,7 @@ const MEASURED: Record<string, { corpusBytes: number; largest: { file: string; b
   // against work-issues' numbers -- permanently red, with a message naming the
   // wrong file.
   'work-issues': {
-    corpusBytes: 241_365,
+    corpusBytes: 241_829,
     largest: { file: 'implement.md', bytes: 48_340 },
     runnerUp: { file: 'verify.md', bytes: 44_410 },
   },

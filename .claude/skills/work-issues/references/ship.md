@@ -295,7 +295,9 @@ shell, and an empty `git switch ""` is not the failure you want):
 
 ```bash
 git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
-[ -z "$(git status --porcelain)" ] \
+DIRTY=$(git status --porcelain)
+[ -z "$DIRTY" ] || echo 'dirty -> commit or stash first, then re-run this block'
+[ -z "$DIRTY" ] \
   && git switch --no-guess <LAUNCH_BRANCH> \
   && git branch -D <each branch this run created>  # AS-IS: no pull, no rebase, no fast-forward
 git branch --show-current      # must print <LAUNCH_BRANCH>
@@ -317,7 +319,12 @@ below forbids — and it does so on exactly the path that was supposed to fall
 through to the fallback. `--no-guess` makes the missing branch an error instead.
 
 The dirty-tree check is a TEST, and it is the FIRST link of the chain rather
-than a line of its own. `git status --porcelain` exits 0 whether the tree is
+than a line of its own — with the outcome ANNOUNCED on the line above it,
+because a chain that simply stops produces no output at all. Making the test the
+chain head fixed one problem and introduced another: a dirty tree used to say
+`exit 1`, and silently doing nothing is a worse answer than either, one line
+below the `|| echo` that exists to keep the neighbouring command
+self-describing. `git status --porcelain` exits 0 whether the tree is
 dirty or clean, so `&&` cannot carry ITS verdict — the guard has to read the
 OUTPUT, which is what `[ -z ... ]` does. But having read it, the result must
 gate what follows: a reader copies a line, not its intent, and an unchained
