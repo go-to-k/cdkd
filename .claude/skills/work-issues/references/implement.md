@@ -9,15 +9,13 @@ calls, markgate markers land in the lane's own tree. Two actions stay with the
 parent's serialization turn: a real-AWS integ run and the merge (§9). A lane
 stops at merge-ready.
 
-That placement is live-proven, not aspirational: on 2026-08-28 two of the three
-skill-split PRs (go-to-k/cdk-local#621, go-to-k/cdk-real-drift#1831) were built
-END-TO-END by lane subagents — worktree, implementation, gates, reviewer
-dispatch, CI — with the parent doing only claims, serialized merges and
-cleanup, and every hook and markgate gate fired inside the lanes' calls exactly
-as in the parent.
+That placement is live-proven: on 2026-08-28 two of the three skill-split PRs
+(go-to-k/cdk-local#621, go-to-k/cdk-real-drift#1831) were built END-TO-END by
+lane subagents — worktree, implementation, gates, reviewer dispatch, CI — with
+the parent doing only claims, serialized merges and cleanup, and every hook and
+markgate gate firing inside the lanes' calls exactly as in the parent.
 
-Never edit in the main checkout (`main-tree-branch-gate` blocks branching there —
-with the coverage limit measured below).
+Never edit in the main checkout (`main-tree-branch-gate` blocks branching there).
 Per lane:
 
 ```bash
@@ -59,13 +57,12 @@ the only signal the probes above cannot see.
 
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The branch
 this tree arrived on is `LAUNCH_BRANCH`: the OUTER TOOL's, not this run's, and §9
-puts it back untouched at the end (`references/launch-mode.md` — "a branch to PUT
-BACK, never one to commit to"). This rule was CONDITIONAL until go-to-k/cdkd#2417
-("if the branch here is detached, or its PR has already merged"), and the
-condition was wrong in the common case: `gh pr merge --delete-branch` deletes the
-remote branch the PR was opened from, so a lane that committed onto the outer
-tool's branch would delete it on the way out. Know what is and is not protecting
-you while you branch:
+puts it back untouched at the end (`references/launch-mode.md` carries the rule
+and why committing onto it would DELETE the outer tool's branch). The ALWAYS is
+what the evidence bought: the rule was CONDITIONAL until go-to-k/cdkd#2417 ("if
+the branch here is detached, or its PR has already merged") and the condition
+was wrong in the common case. Know what is and is not protecting you while you
+branch:
 
 ```bash
 git status --porcelain   # must be empty FIRST -- see below
@@ -81,16 +78,13 @@ The `&&` is deliberate: unchained, a failed `fetch` still branches, off a stale
 `origin/main`. **`main-tree-branch-gate` is the backstop for running that line
 after a cwd reset, and it now covers this spelling** — it matches in COMMAND
 POSITION and judges the matched SEGMENT, so the chained form is refused (rc=2)
-while the allowance for `git fetch origin && git switch main` still passes.
-It did NOT always: measured 2026-08-31, the copy then on `main` skipped to the
-FIRST `git` token, read this line as `sub=fetch` and exited 0, so the spelling
-this file PRINTS was exactly the one the gate missed while a bare
-`git switch -c <b> origin/main` was refused. The fix landed in
-go-to-k/cdkd#2406 (verified on `main` 2026-09-02 by CONTENT, never by the
-file's last commit subject:
-`git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c
-gate_verb_rest_each` prints non-zero), which retires the interim advice to
-re-anchor with `git rev-parse --show-toplevel` before every switch.
+while `git fetch origin && git switch main` still passes. It did NOT always:
+measured 2026-08-31, the copy then on `main` skipped to the FIRST `git` token,
+read `sub=fetch` and exited 0 — the spelling this file PRINTS was the one it
+missed, while a bare `git switch -c <b> origin/main` was refused. Fixed in
+go-to-k/cdkd#2406; settle which copy is deployed by CONTENT, never by a commit
+subject: `git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c
+gate_verb_rest_each` prints non-zero.
 
 **`mise trust` is not optional here, and skipping it fails in the direction that
 costs most.** An untrusted `.mise.toml` makes `mise exec -- markgate set` error
@@ -191,6 +185,9 @@ grep -rn "<a line the shape cannot omit>" src/ | grep -v test
 **And count the population BEFORE you fix, then assert the count afterwards.**
 Re-deriving the number from the post-fix tree cannot detect a copy the sweep
 never saw — the fix removed the very thing you would grep for.
+A fix that REMOVES a behaviour owes a SECOND population — the assertions that
+the behaviour happens, which do not go red when it stops (`references/verify.md`,
+"The inverse bites when your fix REMOVES a behaviour").
 
 **Paste the command with the number, and re-run it before you ship.** The
 go-to-k/cdkd#2227 sweep (2026-08-26) claimed "88 hits across 13 files"; the
@@ -347,13 +344,10 @@ which the reject-unsafe arm also produces; asserting
 `ambient.ssm !== instances.at(-1)` where `ambient.ssm` is a LAZY getter
 constructing at assertion time — measuring its own side effect.
 
-**A probe COUNT goes stale across review rounds, so a matrix carried forward
-is wrong even when every row was true when written.** Later rounds add cases
-depending on the same line: two published "1 RED" rows measured 4 and 6 on the
-final tree (2026-08-26) — nothing regressed; the matrix was PATCHED rather
-than RE-MEASURED. When a body or changelog publishes a matrix, re-run it on
-the tree you are about to merge and say which tree the counts are from — a
-count with no subject is not a measurement.
+**Publishing a probe MATRIX — in a PR body, a changelog, a commit message —
+re-measures it on the tree you are about to merge**; carrying one forward across
+review rounds is wrong even when every row was true when written
+(`references/verify.md`, "A tally patched instead of re-measured").
 
 So name the discriminator first and assert THAT: which client was constructed
 with what region, which call the stub actually received, what the second
@@ -369,10 +363,11 @@ the fence (each hit on 2026-08-25, each nearly cost a working assertion):
    read as "no match": a `perl -0pi -e "s|^\|...|...|m"` delimited by the same
    `|` it escapes matches nothing; a `sed -E`-only alternation (`\|`) is a GNU
    extension matching nothing on macOS; a `sed: bad flag` prints ABOVE the
-   suite output and scrolls past. Prove it with
-   `grep -c '<the mutated text>'` before reading the result; prefer `python3`
-   with an `assert anchor in s` — an assertion that throws is louder than a
-   quoting slip that matches zero.
+   suite output and scrolls past. Prove it with `grep -c '<the anchor>'` before
+   reading the result, and require **exactly 1** — `python3` with
+   `assert s.count(anchor) == 1` is louder than a quoting slip that matches
+   zero, and unlike an `in` test it also catches the ambiguous anchor the
+   void-probe rule below is about.
 2. **Does the case's execution path REACH the edited line?** Breaking a hook's
    branch-lookup left its suite green because every case carried an explicit
    PR number, so the lookup never ran. The fix is a case that HAS to take that
@@ -389,6 +384,21 @@ sha whose default was the same literal on both producing and consuming sides,
 so breaking the producing call still served the content. Only after all four
 does "the fence is weak" remain — deleting an assertion on an unexamined green
 is how a working guard gets removed.
+
+**And a RED probe is void as easily as a green one — there it reads as the
+fence FIRING.** Four instances in one run (2026-09-02, go-to-k/cdkd#2428 /
+go-to-k/cdkd#2450): an anchor matching TWICE (a duplicated
+`purgeLockVersions(key, 'reap')` line; `throw new ProvisioningError(` recurring
+through the file) mutates every copy, so the red belongs to a broader change
+than the one you attribute it to; and an edit that does not COMPILE (a
+malformed multi-line replacement, an import the mutation orphaned) fails the
+suite at LOAD, printing failures indistinguishable from discrimination. Read
+the TALLY and the failure TEXT, never the rc — which lies in both directions
+here: a suite can report `skipped` rather than `passed` (the `version` test
+`skipIf`s itself when `dist/` is absent, the normal state of a fresh worktree),
+and a run whose every test passes can still exit non-zero (§6's rc rule). A
+load error, or a test count below the file's own, VOIDS the probe: re-anchor
+and re-run rather than record it.
 
 **Choose the probe's INPUT to discriminate too, not only its mutation.** The
 mutation decides which code changes; the input decides whether the change is
@@ -433,18 +443,13 @@ agree on a constant and one is widely mocked, spell it in both and fence the
 pair with a test importing both — the sync is what matters.
 
 **Run probes with `vp test run <path>`, never `vp run test <path>`.** The
-latter wraps the run in the Vite+ task runner, where `test` USED TO BE cached: a
-repeat replayed the previous run without executing, so a probe editing a file
-the task hash does not cover reported PASS having run nothing (2026-08-20; one
-reviewer had FOUR). Nothing caches since 2026-08-30, but `vp test run` stays the
-spelling: it is the delegated command invoked directly, with nothing between the
-caller and the verdict.
+wrapped form puts the Vite+ task runner between caller and verdict, and while
+`test` was cached (until 2026-08-30) a repeat replayed the previous run without
+executing, so a probe editing a file the task hash did not cover reported PASS
+having run nothing (2026-08-20; one reviewer had FOUR).
 `.claude/hooks/vp-run-test-path-gate.sh` blocks the wrapped form; a bare
-`vp run test` (whole suite) is unaffected. Two further false greens ride the
-same command, so read the OUTPUT as well as the rc: a suite can report
-`skipped` rather than `passed` (the `version` test `skipIf`s itself when
-`dist/` is absent — the normal state of a fresh worktree), and a run whose
-every test passes can still exit non-zero — see the rc rule in section 6.
+`vp run test` (whole suite) is unaffected. Read the OUTPUT as well as the rc —
+the void-probe rule above carries the two false greens that ride this command.
 
 **A repo-wide SCANNER test is calibrated against the PRE-FIX tree, not written
 from the issue's wording.** When the test globs the tree, the issue's

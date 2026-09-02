@@ -85,10 +85,16 @@ git rebase origin/main                                   # at most one conflict
 ```
 
 Read as advice it gets skipped — at the moment you type `git rebase` you have
-not hit a conflict yet. On 2026-08-25 all three lanes of one run rebased
-un-flattened, every one stopped on `docs/changelog-cdkd.md` at its FIRST
-commit with more queued behind, and each was aborted, flattened and rebased
-again — the same work twice.
+not hit a conflict yet — so it now has a HOOK behind it,
+`.claude/hooks/flatten-before-rebase-gate.sh`, which refuses `git rebase
+<upstream>` when the branch carries 2+ commits and touches one of the two
+append-shaped files above. Five lanes across two runs bought it: on 2026-08-25
+all three lanes of one run rebased un-flattened, every one stopped on
+`docs/changelog-cdkd.md` at its FIRST commit with more queued behind, and each
+was aborted, flattened and rebased again; on 2026-09-02 BOTH lanes of one
+IN-PLACE run did it again (go-to-k/cdkd#2428 / go-to-k/cdkd#2450), where
+flattening turned four conflicts into one. `CDKD_SKIP_FLATTEN_GATE=1` bypasses
+it for a deliberate history-preserving rebase.
 
 After resolving, verify BOTH sides survived rather than trusting the resolution
 — for the changelog the cheapest form is a whole-file diff against main, which

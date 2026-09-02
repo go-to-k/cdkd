@@ -71,6 +71,37 @@ rm -f /tmp/run-touched.$$
 Pipe the whole loop through `sort -u` — a body naming the same file twice
 otherwise prints two findings.
 
+**An EMPTY result is not "nothing to promote" — check that the extraction saw a
+FILE at all.** A body names its subject by SYMBOL at least as often as by path,
+and the regex then yields a plausible-looking non-file that suffix-matches
+nothing, so the loop prints no candidates rather than admitting it could not see
+the subject — the same VOID-versus-result confusion `references/implement.md`
+fences for mutation probes. Measured 2026-09-02: go-to-k/cdkd#2442's subject is
+`EFSProvider.createOrAdoptAccessPoint`, the extraction stopped at the capital
+and produced `EFSProvider.create` (plus `i.e`), and the run's merged diff DID
+touch `src/provisioning/providers/efs-provider.ts` — the criterion fired while
+the loop reported nothing. **A DOTFILE path is invisible the same way, and in
+this repo that is most of the tooling surface.** The extraction's first
+character class is `[A-Za-z0-9_]`, which cannot start on `.`, so
+`.claude/hooks/x.test.sh` in a body yields `claude/hooks/x.test.sh`; the match
+is then anchored `(^|/)`, and the character before `claude` in the diff line is
+`.` rather than `/` or start-of-line. Measured 2026-09-02 on this section's own
+run: go-to-k/cdkd#2455 named a file the retro PR ADDED and the loop reported
+nothing. Print what the extraction found, and resolve by hand whenever no token
+is path-shaped OR the diff is mostly dotfiles:
+
+```bash
+# Self-contained: a separate fenced block is a separate shell (section 10-d
+# spells the same trap out for `B`), so `$b` from the loop above is empty here.
+gh issue view <n> --json body -q .body \
+  | grep -oE '\.?[A-Za-z0-9_][A-Za-z0-9_./-]*\.[a-z]+' | sort -u   # leading dot KEPT
+git grep -l '<the symbol the body names>' -- src tests   # when none is a path
+```
+
+The `\.?` is the one-character fix for the dotfile half; the symbol half has no
+regex fix, which is why the instruction above is to LOOK rather than to trust an
+empty result.
+
 **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
 citation from a target (measured: one deferral hit its fix's single file, the
 other hit FOUR, three cited as precedent). Do not skim past a hit: do the item,
