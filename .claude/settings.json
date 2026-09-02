@@ -204,6 +204,12 @@
           },
           {
             "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/flatten-before-rebase-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking whether the branch should be flattened before rebasing..."
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/dirty-path-restore-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking for a restore that would discard uncommitted work..."

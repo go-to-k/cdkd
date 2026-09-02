@@ -46,7 +46,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 33,598 B (verify-pr, 2026-09-02)
-const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; re-measured 11,578 B on 2026-09-02 (go-to-k/cdkd#2417), leaving 422 B
+const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; its CURRENT size is asserted as MEASURED.orchestratorBytes below, never quoted here
 // That number is the point, not trivia: the orchestrator has repeatedly grown to
 // within a few hundred bytes of its cap while this comment still quoted the
 // at-split figure, so nobody adding a paragraph could see how little room was
@@ -71,10 +71,11 @@ const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB a
 // fold-back loop cannot silently erode the compression's gain. Re-measured
 // 2026-09-02 (go-to-k/cdkd#2417): the largest is STILL implement.md -- see
 // MEASURED below for its size, which is asserted rather than quoted. THIS FILE
-// IS EFFECTIVELY FULL: the next lesson landing in implement.md must pay for
-// itself by retiring stale text in the same file (this run retired the
-// go-to-k/cdkd#2401 interim hedge, now settled by go-to-k/cdkd#2406) or the
-// stage needs splitting -- go-to-k/cdkd#2424. The two have already swapped the title once
+// IS EFFECTIVELY FULL, and the 2026-09-02 work-issues retro is the run that
+// proved it: two lessons wanted implement.md, only ONE could land there, and
+// paying for that one took five compressions plus moving an existing passage
+// out to verify.md -- and the file still ended 441 B LARGER than it started. That is the last cheap payment; the slack MEASURED below is
+// what is left, so the stage needs splitting: go-to-k/cdkd#2424. The two have already swapped the title once
 // (6.4 KB moved out of implement.md into filing.md on 2026-08-31 and the
 // owner-probe text moved back in), which is exactly why "largest" is re-derived
 // here and never carried forward. The cap is UNCHANGED; only the measurement it
@@ -113,15 +114,21 @@ const MAX_REFERENCE_FILE_BYTES = 49_000;
  * eroding cap is visible BEFORE it is breached -- MAX_REFERENCE_FILE_BYTES is a
  * bare upper bound and can only report a file that is already over.
  */
-const MEASURED: Record<string, { corpusBytes: number; largest: { file: string; bytes: number }; runnerUp: { file: string; bytes: number } }> = {
+const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number; largest: { file: string; bytes: number }; runnerUp: { file: string; bytes: number } }> = {
   // Keyed by skill, NOT module-global: the assertion below is generated per
   // entry of SPLIT_SKILLS, so a second split skill would otherwise be measured
   // against work-issues' numbers -- permanently red, with a message naming the
   // wrong file.
   'work-issues': {
-    corpusBytes: 249_677,
-    largest: { file: 'implement.md', bytes: 48_340 },
-    runnerUp: { file: 'verify.md', bytes: 46_945 },
+    // The orchestrator is here rather than in a comment because the comment
+    // form drifted silently: it read 11,578 B / 422 B of slack from
+    // go-to-k/cdkd#2417 until 2026-09-02, while SKILL.md had been 11,548 B
+    // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
+    // checked it, which is the same failure the corpus figures had.
+    orchestratorBytes: 11_548,
+    corpusBytes: 254_562,
+    largest: { file: 'implement.md', bytes: 48_781 },
+    runnerUp: { file: 'verify.md', bytes: 48_497 },
   },
 };
 
@@ -142,6 +149,20 @@ const MIN_REFERENCE_FILES = 6;
 // (no upper bound is touched), and leaves ~44 KB of narrative compression
 // headroom below it.
 //
+// RAISED 206_000 -> 208_000 by the 2026-09-02 work-issues retro
+// (go-to-k/cdkd#2459), at the tree that spent it. 206_000 had ALREADY lapsed on
+// that branch's rebase: `corpus - runnerUp` reached 206,065, 65 B past it, so
+// the assertion below was red rather than merely tight. 208_000 clears the two
+// directions by 2,219 and 1,935 B and leaves 46,562 B of compression headroom.
+//
+// It lapsed because that rebase made the two leaders SWAP -- the case the
+// paragraph above calls "one ordinary stage-file edit away" -- and then swap
+// back once the branch paid for its own additions. verify.md came off
+// origin/main at 49,039 B, 39 B OVER the per-file cap, with this branch's two
+// bullets on it; compressing those by 542 B put it back under and returned
+// implement.md to the lead. Both figures are in MEASURED, so the next swap reds
+// this file rather than passing quietly.
+//
 // The EITHER-LARGEST margin is the one that erodes, and the go-to-k/cdkd#2417
 // run is why the warning is here rather than in a commit message: it grew SEVEN
 // non-leader stage files, which moves `corpus - runnerUp` up without moving the
@@ -155,29 +176,40 @@ const MIN_REFERENCE_FILES = 6;
 // before a reviewer re-derived it. Growing the RUNNER-UP moves `corpus` and
 // `runnerUp` by the same amount, so it leaves `corpus - runnerUp` UNCHANGED and
 // spends only the binding (largest-side) margin; the either-largest margin is
-// spent by growth in every OTHER file. That run added 1,322 B to verify.md and
+// spent by growth in every OTHER file. The third case completes it: RELOCATING
+// text from the leader into the runner-up leaves `corpus` unchanged while
+// raising `runnerUp`, so `corpus - runnerUp` FALLS and the either-largest
+// margin is RELAXED -- go-to-k/cdkd#2459 did exactly that, and it is the one
+// move that buys per-file cap headroom without spending this floor.
+// That run added 1,322 B to verify.md and
 // 3,608 B across launch-mode / retro / ship, and it is the SECOND number that
 // moved the either-largest margin -- from 3,876 B under the old 203_000 floor
 // to 268 B -- and forced this raise.
 //
-// The two leaders are now 1,395 B apart -- less than that run's single 1,322 B
-// edit to the runner-up -- so "the day the two swap places" is one ordinary
-// stage-file edit away, not hypothetical. MEASURED names both files, so a swap
-// reds it rather than passing quietly.
+// "The day the two swap places" is not hypothetical -- the paragraph above
+// records it happening on this branch's own rebase, and MEASURED names both
+// files so a swap reds this file rather than passing quietly. An earlier
+// revision quoted the gap between them here; that number was falsified by the
+// very MEASURED update that accompanied it, so the fact is stated without one.
 //
 // What this floor does NOT catch, stated plainly because the comment used to
 // imply otherwise: gutting a NON-largest stage file. Deleting the whole of
-// triage.md (38,974 B) would leave 210,703 B, which the CURRENT floor does NOT
+// triage.md (38,974 B) would leave 215,588 B, which the CURRENT floor does NOT
 // catch. Earlier revisions of this comment recorded that it DID, "by where it
-// landed rather than by design" -- and that coincidence has now expired exactly
-// as predicted, the corpus having grown past it. A smaller file gutted the same
-// way was never caught either. A byte floor
+// landed rather than by design", and read that as a coincidence which had since
+// expired. Measured at all three commits where the claim was written or
+// revised, there was no coincidence to expire -- the leftover cleared the floor
+// every time: 39c2e919 (floor 180_000, leftover 185,197), 30196099 (202_000,
+// 202,391), 18184707 (206_000, 210,703). The sentence was wrong when first
+// written and stayed green because a comment is not an assertion, which is this
+// file's thesis. A smaller file gutted the same way was never caught either.
+// A byte floor
 // cannot see that, and raising it until it could would forbid legitimate
 // compression. The per-file guards are elsewhere and are about CONTENT rather
 // than size: work-issues-skill-refs.test.ts pins the document COUNT, and
 // work-issues-launch-mode.test.ts pins that each arm-bearing stage file still
 // names the mode it branches on and that the probe still exists exactly once.
-const MIN_REFERENCE_CORPUS_BYTES = 206_000;
+const MIN_REFERENCE_CORPUS_BYTES = 208_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
@@ -305,6 +337,7 @@ describe('skill file payload budget', () => {
       // message rather than a TypeError from `sized[1]`.
       expect(sized.length, `${name} has too few stage files to have a runner-up`).toBeGreaterThan(1);
       const actual = {
+        orchestratorBytes: statSync(join(skillsDir, name, 'SKILL.md')).size,
         corpusBytes: sized.reduce((n, e) => n + e.bytes, 0),
         largest: sized[0]!,
         runnerUp: sized[1]!,
@@ -313,6 +346,8 @@ describe('skill file payload budget', () => {
       expect(
         actual,
         `The MEASURED record at the top of this file no longer matches the tree.\n` +
+          `  SKILL.md   ${expected!.orchestratorBytes} -> ${actual.orchestratorBytes} ` +
+          `(${MAX_ORCHESTRATOR_BYTES - actual.orchestratorBytes} B under its cap)\n` +
           `  corpus     ${expected!.corpusBytes} -> ${actual.corpusBytes}\n` +
           `  largest    ${expected!.largest.file} ${expected!.largest.bytes} -> ` +
           `${actual.largest.file} ${actual.largest.bytes}\n` +
@@ -324,11 +359,12 @@ describe('skill file payload budget', () => {
           `  ${actual.largest.file} has ${capHeadroom} B left under the ` +
           `${MAX_REFERENCE_FILE_BYTES} B per-file cap.\n` +
           `Update MEASURED and re-read the comments that cite it -- every byte claim in ` +
-          `this file is derived from these three numbers, and a stale one silently ` +
+          `this file is derived from these four numbers, and a stale one silently ` +
           `misleads the next author into planning against room that is not there. If the ` +
           `either-largest margin has gone small or negative, raise ` +
           `MIN_REFERENCE_CORPUS_BYTES in the same commit.`
       ).toEqual({
+        orchestratorBytes: expected!.orchestratorBytes,
         corpusBytes: expected!.corpusBytes,
         largest: { file: expected!.largest.file, bytes: expected!.largest.bytes },
         runnerUp: { file: expected!.runnerUp.file, bytes: expected!.runnerUp.bytes },

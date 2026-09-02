@@ -947,6 +947,30 @@ GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS}[[:space:]]+checkout([[:space:]]|$)"
 # GATE_RE_GIT_SWITCH cannot answer it. main-tree-branch-gate reads both.
 GATE_RE_GIT_SWITCH_ONLY="^git${GATE_FLAGS}[[:space:]]+switch([[:space:]]|$)"
 GATE_RE_GIT_RESTORE="^git${GATE_FLAGS}[[:space:]]+restore([[:space:]]|$)"
+# A STRICT prefix, for the one gate whose verb is ALSO an ordinary English word
+# that shows up as an argument. `GATE_FLAGS` deliberately over-approximates --
+# one flag token then ANY words -- which is right where the verb is unambiguous
+# and wrong where it is not: measured 2026-09-02, `git -C <lane> log --grep
+# rebase main` matched `^git${GATE_FLAGS}[[:space:]]+rebase`, and the gate
+# reading it refused a READ-ONLY query while prescribing `reset --soft`. So the
+# prefix here is an ALLOWLIST of git's real global flags, and the verb must be
+# the actual subcommand. An unrecognised global flag simply fails to match,
+# which suits a gate whose miss is cheaper than its false block; do NOT reach
+# for this shape in a gate that must fail closed.
+#
+# It lives HERE rather than in the hook because `unresolved-target-class.test.sh`
+# fence 1 forbids any hook outside this library from spelling a `-C` scan, and
+# it is right to: a second copy of that shape is how go-to-k/cdkd#2455 (the
+# attached `-C<path>` form going unread) stays hard to fix in one place.
+# `_GATE_GIT_GLOBAL_VALUE` accepts a QUOTED value, because `git -C "<path>"` is
+# the spelling this repo's own flow prints and a lane path can contain a space.
+# A bare `[^[:space:]]+` stopped at the quote and the whole pattern failed to
+# match, standing the gate down on exactly the form it documents.
+_GATE_GIT_GLOBAL_VALUE="(\"[^\"]*\"|'[^']*'|[^[:space:]]+)"
+GATE_GIT_GLOBAL="(-C[[:space:]]*${_GATE_GIT_GLOBAL_VALUE}|-c[[:space:]]*${_GATE_GIT_GLOBAL_VALUE}|--git-dir=${_GATE_GIT_GLOBAL_VALUE}|--work-tree=${_GATE_GIT_GLOBAL_VALUE}|--namespace=${_GATE_GIT_GLOBAL_VALUE}|--exec-path=${_GATE_GIT_GLOBAL_VALUE}|-p|--paginate|-P|--no-pager|--bare|--no-optional-locks|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-replace-objects)"
+# flatten-before-rebase-gate. `rebase` is a common word in commit messages, PR
+# bodies and `--grep` arguments, which is why this one takes the strict prefix.
+GATE_RE_GIT_REBASE="^git([[:space:]]+${GATE_GIT_GLOBAL})*[[:space:]]+rebase([[:space:]]|$)"
 GATE_RE_GIT_CHECKOUT_RESTORE="^git${GATE_FLAGS}[[:space:]]+(checkout|restore)([[:space:]]|$)"
 GATE_RE_GH_PR_CREATE_OR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)"
 # non-english-text-gate guards every way PR prose reaches GitHub.

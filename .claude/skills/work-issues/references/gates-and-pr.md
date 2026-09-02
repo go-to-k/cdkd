@@ -161,10 +161,18 @@ the TRUE diff and rebase:
 
 ```bash
 git diff --stat $(git merge-base origin/main <branch>)..<branch>       # the real change
+# FLATTEN TO ONE COMMIT FIRST -- recipe in references/ship.md (§9); the
+# flatten-before-rebase-gate hook refuses this line otherwise.
 git -C "<LANE_TREE>" rebase origin/main   # the path the launch-mode probe recorded
 ```
 
 Re-run gates, `git push --force-with-lease`.
+
+**The flatten step is `references/ship.md` §9's, and it is pointed at from HERE
+because the rule sitting two stages after the command is what made it
+skippable** — read it before you type `git rebase`, not after the first
+conflict. `.claude/hooks/flatten-before-rebase-gate.sh` now refuses the
+unflattened rebase, so this pointer is a courtesy rather than the enforcement.
 
 **Re-run the SUITE after the rebase, not just the gates — and rebuild first.**
 A pre-rebase green attests to a tree that no longer exists: the rebase pulls in

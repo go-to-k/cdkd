@@ -177,6 +177,15 @@ markers.
   the suite must go red, or it is indistinguishable from a fence that never had
   it. The second question is the one that gets skipped: a decorative carve-out
   reads as caution and is a gap.
+- **Every fix a round applies is UNFENCED by default: the suite it passes is
+  the suite that passed BEFORE it.** A finding's prose is not a test and a round
+  adds no case unless you add one, so the round's green is the previous round's.
+  Measured 2026-09-02: three of go-to-k/cdkd#2428's round-2 fixes each left the
+  suite 27/27 GREEN when reverted, and go-to-k/cdkd#2450's escaping fix stayed
+  green weakened to keys-only (its fixture had nothing to escape — the input
+  shape, `references/implement.md`). Revert each fix in turn and require a red;
+  one nothing reddens is a claim, not a change. The exemption bullet above is
+  this rule's highest-risk instance, not a separate one.
 - **Reviewer subagents spawned BY A LANE report to the MAIN session, not to
   the lane that spawned them.** Completion notifications go to the top-level
   session, so a lane that dispatches reviewers and then waits on their reports
@@ -254,6 +263,15 @@ go-to-k/cdkd#2108 / go-to-k/cdkd#2109; none visible by reading the script):
   pass AFTER your change; if none, add the discriminating one, guarded
   against vacuity (an ABSENCE-from-an-array assertion must first require the
   array to exist).
+- **The inverse bites when a fix REMOVES a behaviour: an assertion that the
+  behaviour HAPPENS does not go red, it goes over-determined.** Three integ
+  fixtures asserted `lock.json` keeps noncurrent versions; after
+  go-to-k/cdkd#2450 purged them the counts stayed non-zero on accumulated DELETE
+  MARKERS, so all three kept PASSING while their comments became false. Sweep
+  the test tree by the assertion's SHAPE, not the issue's wording — that is what
+  turned up a THIRD copy the issue never named, already vacuous — and RE-POINT
+  each hit rather than deleting it, since a deleted negative control leaves that
+  direction unfenced.
 
 The probe is one extra run of a fixture you are already running: revert the
 fix, rebuild, run, confirm the arm goes RED, restore, rebuild. **Probe each
@@ -530,7 +548,9 @@ sentence. Habits that each caught something:
   - **A tally patched instead of re-measured.** Published 20 / 21 / 18 / 2;
     re-measured on the shipping tree: 23 / 24 / 22 / 3. "Every case is
     reddened by at least one mutation" is now COMPUTED as a set difference,
-    not asserted.
+    not asserted. A probe MATRIX rots identically — later rounds add cases on
+    the same line, so two published "1 RED" rows measured 4 and 6 on the final
+    tree (2026-08-26), nothing regressed. Say which tree a count came from.
   - **A blanket direction claim contradicted by its own list.**
     go-to-k/cdkd#2311's prose said three bounds "are fail-CLOSED" while its
     own bullet four lines above described one hiding a site.

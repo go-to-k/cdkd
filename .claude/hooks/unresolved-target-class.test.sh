@@ -545,9 +545,23 @@ fi
 #
 # The check is a partition: registered == exercised + declared. A new hook
 # lands in NEITHER list and fails, which is the case a floor cannot catch.
+# `flatten-before-rebase-gate` is unexercisable here for a PRESENT-TENSE reason
+# and a counterfactual one, and only the first is why it sits in this list.
+# PRESENT: neither CMD_TEMPLATES nor NOSRC_TEMPLATES contains a `rebase`
+# template, and neither fixture stages a branch with 2+ commits touching an
+# append-shaped file -- so there is no literal control for this gate to block,
+# whatever its posture. Adding one means teaching both template sets a git
+# HISTORY shape they do not have, which is a change to this fence rather than
+# to that hook. COUNTERFACTUAL, stated so the next reader does not "fix" it the
+# quick way: even given such a control, that gate stands DOWN on an unreadable
+# target where fence 3's six spellings require a refusal, because its miss
+# costs one avoidable changelog conflict while a wrong refusal lands on someone
+# already fighting a rebase. So moving it into EXPECTED_EXERCISED today would
+# red fence 3 permanently.
 DECLARED_UNEXERCISED="
 closes-paren-form-gate            verdict is the PR BODY, not the target tree
 commit-msg-heredoc-gate           verdict is the command SHAPE, target-independent
+flatten-before-rebase-gate        no rebase template exists to block -- see the note above
 gated-command-preamble-gate       verdict is the command SHAPE, target-independent
 gh-body-english-gate              verdict is the published BODY, not the target tree
 integ-coverage-matrix-gate        needs the real repo toolchain (node + the regen script) in the target
