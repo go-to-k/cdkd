@@ -552,21 +552,40 @@ describe('work-issues launch-mode probe', () => {
       // an injected `git -C "<LANE_TREE>" branch -D <LAUNCH_BRANCH>` there pass
       // green (measured). The set of files that MENTION the command is wider
       // than the set that DEFINES it, and it is the mention that misleads.
-      // A carve-out for prose that WARNS AGAINST the very command it names.
-      // Without it the scan forbids the skill from documenting its own hazard --
-      // "Never `git reset --hard` while `LAUNCH_BRANCH` is checked out" reads as
-      // a violation -- which is a fence that blocks the correct edit. Scoped to a
-      // NEGATION in the same sentence, the same shape the fast-forward polarity
-      // check uses, so it cannot be satisfied by an approving mention.
+      // TWO scans, because prose and code need opposite treatment -- and running
+      // one scan over both was a LIVE GAP, not a tidiness issue.
+      //
+      // PROSE needs a carve-out: without it the scan forbids the skill from
+      // documenting its own hazard ("Never `git reset --hard` while
+      // `LAUNCH_BRANCH` is checked out" reads as a violation), and a fence that
+      // blocks the correct edit is one the next person weakens. The carve-out is
+      // scoped to a NEGATION in the same sentence, so an approving mention
+      // cannot spend it.
+      //
+      // CODE must get NO carve-out, and must be read a LINE at a time. A command
+      // is a command: nothing about a nearby sentence makes it safe. Measured
+      // after the carve-out shipped in go-to-k/cdkd#2446 -- joining lines into
+      // "sentences" makes a whole fenced block ONE sentence, so a block sitting
+      // near a negation inherited its exemption, and
+      // `git branch -f <LAUNCH_BRANCH> origin/main` added to a launch-mode.md
+      // block was NOT caught. The restore and fallback blocks are covered by
+      // their ordered equality; every OTHER block in every OTHER file was not.
       const FORBIDS = /\b(never|do not|don't|must not|cannot|no verb may|forbidden)\b/i;
-      const hits = skillDocs()
-        .flatMap((doc) =>
-          read(doc)
-            .replace(/\s*\n\s*/g, ' ')
-            .split(/(?<=\.)\s+/)
-            .filter((sent) => MOVING.test(sent) && !FORBIDS.test(sent))
-            .map((sent) => `${doc}: ${MOVING.exec(sent)?.[0]}`)
-        );
+      const fenced = /^[ \t]*```[\s\S]*?^[ \t]*```/gm;
+      const hits = skillDocs().flatMap((doc) => {
+        const text = read(doc);
+        const inCode = (text.match(fenced) ?? [])
+          .flatMap((block) => block.split('\n'))
+          .filter((line) => MOVING.test(line))
+          .map((line) => `${doc} [code]: ${MOVING.exec(line)?.[0]}`);
+        const inProse = text
+          .replace(fenced, '')
+          .replace(/\s*\n\s*/g, ' ')
+          .split(/(?<=\.)\s+/)
+          .filter((sent) => MOVING.test(sent) && !FORBIDS.test(sent))
+          .map((sent) => `${doc} [prose]: ${MOVING.exec(sent)?.[0]}`);
+        return [...inCode, ...inProse];
+      });
       expect(
         hits,
         `A skill doc aims a branch-moving verb at LAUNCH_BRANCH. That branch is the outer ` +
