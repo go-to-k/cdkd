@@ -31,8 +31,82 @@ if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
 fi
 
-echo "==> Synthesizing fixture CDK app"
-${CDKD} synth >/dev/null
+# Synth, with the two streams captured SEPARATELY rather than discarded.
+# Issue go-to-k/cdkd#2410 moved `cdkd synth`'s default output contract --
+# stdout is the CloudFormation template and nothing else, every log line goes
+# to stderr -- and until this assertion existed that contract had no live
+# coverage at all: `cdkd synth` runs in ~20 verify.sh scripts and every one of
+# them sends it to /dev/null, so the unit suites were the only thing holding
+# it. Asserted here rather than in a new fixture because this one already
+# synthesizes the app.
+#
+# Deliberately NOT asserted: that the template PARSES. `toYaml` still leaves
+# YAML indicator characters unquoted, so a template containing `"*"` emits a
+# bare `- *` a parser rejects (issue go-to-k/cdkd#2421). That is a serializer
+# defect, not a stream one; asserting it here would red on an unrelated fix.
+echo "==> Synthesizing fixture CDK app (and asserting the stdout/stderr split)"
+SYNTH_OUT=$(mktemp)
+SYNTH_ERR=$(mktemp)
+# This script's convention is an ACCUMULATING EXIT trap: each later `trap`
+# RE-DECLARES the whole list rather than adding to it, so a new temp file must
+# be threaded through every subsequent declaration or the one that follows
+# silently disarms its cleanup. Adding these two here alone leaked them.
+trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}"' EXIT
+${CDKD} synth >"${SYNTH_OUT}" 2>"${SYNTH_ERR}"
+
+# stdout is the template: it must start at a template key and carry NO prose.
+grep -q '^Resources:' "${SYNTH_OUT}" || {
+  echo "FAIL: cdkd synth stdout does not contain a top-level 'Resources:' key"
+  echo "--- stdout ---"; cat "${SYNTH_OUT}"
+  exit 1
+}
+for PROSE in 'Synthesizing CDK app' 'Synthesis complete' 'Output:'; do
+  grep -qF "${PROSE}" "${SYNTH_OUT}" && {
+    echo "FAIL: cdkd synth leaked prose onto stdout: ${PROSE}"
+    echo "--- stdout ---"; cat "${SYNTH_OUT}"
+    exit 1
+  }
+  # ...and the same line must have ARRIVED on stderr, not merely be absent
+  # from stdout -- the reservation MOVES lines, it does not suppress them.
+  grep -qF "${PROSE}" "${SYNTH_ERR}" || {
+    echo "FAIL: cdkd synth prose missing from stderr (suppressed, not moved): ${PROSE}"
+    echo "--- stderr ---"; cat "${SYNTH_ERR}"
+    exit 1
+  }
+done
+echo "    stdout: template only ($(wc -l <"${SYNTH_OUT}" | tr -d ' ') lines); stderr: prose ($(wc -l <"${SYNTH_ERR}" | tr -d ' ') lines)"
+
+# Same contract on `cdkd list`, which had even less live coverage than synth:
+# it appears in ZERO verify.sh scripts. Issue go-to-k/cdkd#2410 made its
+# reservation UNCONDITIONAL -- every mode's stdout is a payload, not just the
+# `--json` spellings -- so the default one-id-per-line mode is asserted here,
+# which is the mode a shell loop reads and the one the flag-keyed reservation
+# used to leave corruptible. Rides this fixture because it already synthesizes
+# the app; no new fixture.
+echo "==> Asserting cdkd list keeps stdout to the payload"
+LIST_OUT=$(mktemp)
+LIST_ERR=$(mktemp)
+trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}"' EXIT
+${CDKD} list --verbose >"${LIST_OUT}" 2>"${LIST_ERR}"
+
+# Every stdout line must be a stack id and nothing else. `--verbose` is what
+# makes this discriminating: it guarantees the logger has lines to emit, so a
+# reservation regression shows up as extra stdout lines rather than as an
+# empty diff.
+while IFS= read -r LINE; do
+  [[ -n "${LINE}" ]] || continue
+  [[ "${LINE}" == "CdkdLocalInvokeFixture" ]] || {
+    echo "FAIL: cdkd list stdout carried a non-payload line: ${LINE}"
+    echo "--- stdout ---"; cat "${LIST_OUT}"
+    exit 1
+  }
+done <"${LIST_OUT}"
+grep -q 'DEBUG' "${LIST_ERR}" || {
+  echo "FAIL: cdkd list --verbose produced no debug output on stderr, so this assertion proves nothing"
+  echo "--- stderr ---"; cat "${LIST_ERR}"
+  exit 1
+}
+echo "    stdout: ids only ($(wc -l <"${LIST_OUT}" | tr -d ' ') lines); stderr: debug ($(wc -l <"${LIST_ERR}" | tr -d ' ') lines)"
 
 # Test 1 — asset-backed Lambda echoes event + env var
 echo "==> [1/6] Invoking EchoHandler with default empty event"
@@ -46,7 +120,7 @@ echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
 # Test 2 — event payload via --event
 echo "==> [2/6] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}"' EXIT
+trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
 RESULT_2=$(${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_2}"
@@ -58,7 +132,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 # Test 3 — --env-vars override (Parameters)
 echo "==> [3/6] Invoking EchoHandler with --env-vars Parameters block"
 ENV_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
+trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 # Use a wildcard `Parameters` block so the test doesn't break if the
 # L1 logical ID changes.
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
@@ -72,7 +146,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 # Test 4 — --env-vars function-specific key by display path
 echo "==> [4/6] Invoking EchoHandler with --env-vars display-path key"
 DP_ENV_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}"' EXIT
+trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}"' EXIT
 # The display-path key matches `Metadata['aws:cdk:path']` — i.e. the
 # same form `cdkd local invoke <target>` already accepts.
 echo '{"CdkdLocalInvokeFixture/EchoHandler":{"GREETING":"path-key-overridden"}}' > "${DP_ENV_FILE}"
@@ -86,7 +160,7 @@ echo "${RESULT_4}" | grep -q '"greeting":"path-key-overridden"' || {
 # Test 5 — inline (Code.ZipFile) Lambda
 echo "==> [5/6] Invoking InlineHandler (Code.ZipFile)"
 INLINE_EVENT=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}"' EXIT
+trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
 RESULT_5=$(${CDKD} local invoke CdkdLocalInvokeFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_5}"

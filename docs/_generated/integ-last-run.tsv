@@ -169,7 +169,7 @@ launchtemplate-asg-inplace	2026-08-19T23:10:58Z	PASS	87	verify.sh	issue 1997 mas
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-07-26T20:40:20Z	PASS	23	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-invoke	2026-09-02T12:38:17Z	PASS	32	verify.sh	PR 2441 (issue 2410) integ-local gate; 6/6 invokes, rc 0; docker sweep empty on ps -a + task nets + svc nets
+local-invoke	2026-09-02T13:00:45Z	PASS	34	verify.sh	PR 2441 (issue 2410), re-run after the fixture gained two assertions the final review found missing: cdkd synth and cdkd list now have their stdout/stderr split asserted live (synth 207 stdout / 20 stderr, list 1 / 26). 6/6; docker sweep empty on ps -a + both network filters
 local-invoke-agentcore	2026-09-02T12:42:20Z	PASS	134	verify.sh	PR 2441 (issue 2410) — first PASS since the 0824 FAIL. Issue 2191's aws-cdk-lib L2 drop is reverted upstream (resolved 2.267.0 exports Runtime / AgentCoreRuntime / AgentRuntimeArtifact again); fixture unchanged since 1102. 21/21; docker sweep empty on ps -a + both network filters
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean

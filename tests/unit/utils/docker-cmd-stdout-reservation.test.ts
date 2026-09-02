@@ -258,8 +258,9 @@ describe("spawnStreaming routes a child's live stdout by the reservation (issue 
  * into the payload with NO `--verbose` and no flag at all — where the
  * `spawnStreaming` leak above needed `--verbose` to open. Under a
  * reservation fd 1 is redirected to OUR fd 2 (`['inherit', 2, 'inherit']`)
- * rather than piped, so the child keeps a real terminal descriptor and
- * docker's progress bars still animate.
+ * rather than piped, so the child keeps a descriptor rather than a pipe --
+ * which is what lets docker's progress bars animate, though only while
+ * stderr is itself a terminal; under `2> file` they degrade to plain lines.
  *
  * WHY A CHILD OF OUR OWN. `'inherit'` hands over the PROCESS's file
  * descriptors, not its JS `process.stdout` object, so the `capture()` helper

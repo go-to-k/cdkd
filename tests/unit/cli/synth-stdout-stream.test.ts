@@ -42,12 +42,26 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => {
 });
 
 const mockResolveApp = vi.fn();
-vi.mock('../../../src/cli/config-loader.js', () => ({
-  resolveApp: (cliApp?: string) => mockResolveApp(cliApp),
-}));
+// `importOriginal` spread rather than a full replacement, matching the
+// sibling suites: a factory that enumerates exports silently becomes a
+// `TypeError: x is not a function` INSIDE the command the day the module
+// under test imports one more of them, and it surfaces as empty stdout or a
+// parse error rather than as a missing symbol (memory rule
+// `mock-factory-missing-export-fails-as-undefined-call`). `synth.ts` uses
+// only `resolveApp` today; this keeps that from being load-bearing.
+vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/cli/config-loader.js')>();
+  return {
+    ...actual,
+    resolveApp: (cliApp?: string) => mockResolveApp(cliApp),
+  };
+});
 
 const mockStsSend = vi.hoisted(() => vi.fn());
-vi.mock('@aws-sdk/client-sts', () => ({
+// Same reason as above: `applyRoleArnIfSet` is driven for real here, so it is
+// the SDK module whose export surface must not be enumerated.
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@aws-sdk/client-sts')>()),
   STSClient: vi.fn().mockImplementation(() => ({
     send: mockStsSend,
     destroy: vi.fn(),

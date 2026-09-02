@@ -58,7 +58,11 @@ const colors = {
  * commands where it is not involved at all: `cdkd synth` (the template),
  * `cdkd list` in EVERY mode (the YAML and the one-id-per-line spellings, not
  * just `--json`), `cdkd local invoke` (the function response) and
- * `cdkd local invoke-agentcore` (the agent response). Those call it
+ * `cdkd local invoke-agentcore` (the agent response). NOTE `cdkd list`
+ * appears in BOTH paragraphs and is one call site, not two: issue
+ * go-to-k/cdkd#2280 added it under `--json` and issue go-to-k/cdkd#2410 made
+ * that same call unconditional. Ten commands call this in total, not eleven.
+ * Those four call it
  * UNCONDITIONALLY at command entry, so for them the DEFAULT human output
  * contract is the one that moved — deliberately, and documented per command
  * in `docs/cli-reference.md`. What has NOT changed is that the decision stays

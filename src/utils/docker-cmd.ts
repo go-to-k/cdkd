@@ -250,9 +250,16 @@ export interface ForegroundOptions {
 }
 
 /**
- * Foreground (stdio-inherit) spawn — the inherit-mode counterpart to
+ * Foreground (descriptor-inheriting) spawn — the inherit-mode counterpart to
  * {@link spawnStreaming}. Used by {@link runDockerForeground} for docker-CLI
  * subprocesses.
+ *
+ * "inherit" is not unqualified, and THIS is the function that qualifies it:
+ * while a command holds a payload reservation
+ * ({@link isStdoutReservedForPayload}) the child's fd 1 is redirected to the
+ * parent's fd 2, so its output cannot land in the payload
+ * ([#2410](https://github.com/go-to-k/cdkd/issues/2410)). stdin and stderr
+ * are inherited either way. See the inline note at the `spawn` call.
  *
  * The ENOENT branch crafts a docker-specific install hint ("Install Docker
  * (or set CDK_DOCKER ...)"), so non-docker callers reusing this helper

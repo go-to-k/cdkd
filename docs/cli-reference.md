@@ -1365,6 +1365,14 @@ Three consequences worth stating explicitly:
      concept, so `Building container image (platform=...)` and `Skipping
      docker build ...` print on stdout for a container-image Lambda
      ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
+
+  A THIRD was listed here until issue
+  [#2410](https://github.com/go-to-k/cdkd/issues/2410) and is now CLOSED, named
+  rather than deleted so it is not reported again: `docker pull` progress
+  reached stdout because the pull runs with the child inheriting cdkd's
+  descriptors, and cdkd runs it unconditionally for an image pulled from ECR --
+  so it needed no flag at all. While a reservation is held that child's stdout
+  is redirected to stderr.
 - **`cdkd synth`'s stdout is the template, but it is not yet valid YAML for
   every template.** The renderer leaves YAML indicator characters unquoted, so
   a template containing `"*"` -- any IAM policy `Resource` / `Action`, any CORS
