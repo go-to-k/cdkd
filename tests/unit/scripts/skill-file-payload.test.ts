@@ -46,7 +46,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 33,598 B (verify-pr, 2026-09-02)
-const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; re-measured 11,459 B on 2026-09-01 (review round 6), leaving 541 B
+const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; re-measured 11,578 B on 2026-09-02 (go-to-k/cdkd#2417), leaving 422 B
 // That number is the point, not trivia: the orchestrator has repeatedly grown to
 // within a few hundred bytes of its cap while this comment still quoted the
 // at-split figure, so nobody adding a paragraph could see how little room was
@@ -56,18 +56,33 @@ const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB a
 // pointer here -- the direction this cap exists to force. Re-measure this
 // comment whenever the orchestrator is edited: a cap with an unmeasured margin
 // is a cap nobody can plan against.
+// go-to-k/cdkd#2417 added a FOURTH probe value (LAUNCH_BRANCH) and spent ~120 B
+// here saying so. Its rules -- what the value is, why it is never re-derived,
+// and the section 9 restore it drives -- went to
+// references/{launch-mode,claim,ship,retro,gotchas,implement,triage}.md, which
+// is why a change touching a dozen files cost the always-loaded one three
+// clauses. Every number in this file is now ASSERTED against the tree by the
+// MEASURED record below, not merely written down: it drifted twice inside that
+// single change (once when a later edit grew a stage file, once after a rebase
+// pulled in go-to-k/cdkd#2418) and both times a human had to catch it.
 // Set 2026-08-28 after the rule+citation compression (PR #2377), when the
 // largest stage file was implement.md at 44,875 B; the cap keeps the same ~9%
 // headroom ratio the original 64,000 held over 58,698 B, so the retro.md §10-b
 // fold-back loop cannot silently erode the compression's gain. Re-measured
-// 2026-09-01 (review round 6): the largest is implement.md at 46,771 B, with
-// verify.md 3,242 B behind it. The two have already swapped the title once
+// 2026-09-02 (go-to-k/cdkd#2417): the largest is STILL implement.md -- see
+// MEASURED below for its size, which is asserted rather than quoted. THIS FILE
+// IS EFFECTIVELY FULL: the next lesson landing in implement.md must pay for
+// itself by retiring stale text in the same file (this run retired the
+// go-to-k/cdkd#2401 interim hedge, now settled by go-to-k/cdkd#2406) or the
+// stage needs splitting -- go-to-k/cdkd#2424. The two have already swapped the title once
 // (6.4 KB moved out of implement.md into filing.md on 2026-08-31 and the
 // owner-probe text moved back in), which is exactly why "largest" is re-derived
 // here and never carried forward. The cap is UNCHANGED; only the measurement it
 // was set against is restated, so the next reader compares against a true
-// number. Headroom is now 2,229 B (4.5%), down from the ~9% the cap was
-// originally sized for -- worth watching, not worth loosening an upper bound
+// number -- and MEASURED below makes that mechanical instead of aspirational,
+// reporting the leader's remaining headroom in its own failure message. Down
+// from the ~9% the cap was originally sized for -- worth watching,
+// not worth loosening an upper bound
 // over.
 const MAX_REFERENCE_FILE_BYTES = 49_000;
 
@@ -82,6 +97,34 @@ const MAX_REFERENCE_FILE_BYTES = 49_000;
 // per-file guard for that case is work-issues-skill-refs.test.ts's
 // MIRRORED_DOCS count floor, which pins the exact document count. These
 // floors exist for the WHOLESALE direction only.
+/**
+ * The measurements every comment in this file reasons from, ASSERTED against the
+ * tree rather than quoted in prose.
+ *
+ * WHY: each byte figure here used to live only in a comment, and comments drift
+ * in the one direction that matters -- silently, while every assertion stays
+ * green. Inside go-to-k/cdkd#2417 alone the stated corpus went stale TWICE (a
+ * later edit grew a stage file; a rebase pulled in go-to-k/cdkd#2418), and both
+ * times a reviewer, not the suite, caught it. The floor below already had a
+ * self-checking invariant; the per-file cap and the corpus figures did not, and
+ * that asymmetry is what this closes.
+ *
+ * It also surfaces the leader's remaining HEADROOM in its failure message, so an
+ * eroding cap is visible BEFORE it is breached -- MAX_REFERENCE_FILE_BYTES is a
+ * bare upper bound and can only report a file that is already over.
+ */
+const MEASURED: Record<string, { corpusBytes: number; largest: { file: string; bytes: number }; runnerUp: { file: string; bytes: number } }> = {
+  // Keyed by skill, NOT module-global: the assertion below is generated per
+  // entry of SPLIT_SKILLS, so a second split skill would otherwise be measured
+  // against work-issues' numbers -- permanently red, with a message naming the
+  // wrong file.
+  'work-issues': {
+    corpusBytes: 241_365,
+    largest: { file: 'implement.md', bytes: 48_340 },
+    runnerUp: { file: 'verify.md', bytes: 44_410 },
+  },
+};
+
 const SPLIT_SKILLS = ['work-issues'];
 const MIN_REFERENCE_FILES = 6;
 // The floor must sit ABOVE `corpus - largest file`, or hollowing out the single
@@ -89,25 +132,35 @@ const MIN_REFERENCE_FILES = 6;
 // property is now ASSERTED at the bottom of this file rather than only
 // described here -- it had lapsed silently more than once, each time found by a
 // human re-deriving it by hand from a comment.
-// Re-derived 2026-09-01 at the FINAL tree of review round 6: 10 stage files,
-// corpus 220,152 B, largest implement.md 46,771 B, so the property needs a floor
-// above 220,152 - 46,771 = 173,381. The worst case is not that number, though:
-// verify.md is 43,529 B, only 3,242 B behind, and the two have already swapped
-// the title once, so the floor must also survive verify.md becoming largest --
-// 220,152 - 43,529 = 176,623. 180_000 clears the binding number by 6,619 B and
-// the either-largest one by 3,377 B, is strictly TIGHTER than the 170_000 it
-// replaces (no upper bound is touched), and still leaves ~40 KB
-// (220,152 - 180,000 = 40,152 B) of narrative compression headroom below it.
+// Re-derived 2026-09-02 at the FINAL tree of go-to-k/cdkd#2417, AFTER rebasing
+// onto go-to-k/cdkd#2418 (re-derive AFTER the rebase, not before, or every
+// number is the pre-merge one). The inputs are in MEASURED below and asserted,
+// so only the REASONING lives here: the floor must clear `corpus - largest`,
+// and also `corpus - runnerUp` for the day the two swap places (they have
+// swapped once already). 202_000 clears them by ~9.6k and ~5.7k -- the pair the
+// 180_000 it replaces was sized to hold -- is strictly TIGHTER than that value
+// (no upper bound is touched), and leaves ~41 KB of narrative compression
+// headroom below it.
+//
+// The EITHER-LARGEST margin is the one that erodes, and this run is why the
+// warning is here rather than in a commit message: it grew SEVEN non-leader
+// stage files, which moves `corpus - runnerUp` up without moving the leader at
+// all, and the floor had to be re-derived FOUR times inside one change as
+// successive review rounds landed. If you are adding to a stage file that is
+// not the largest, expect to re-derive this line -- and MEASURED will tell you
+// so rather than letting it slide.
 //
 // What this floor does NOT catch, stated plainly because the comment used to
 // imply otherwise: gutting a NON-largest stage file. Deleting the whole of
-// triage.md (34,955 B) leaves 185,197 B, still over the floor. A byte floor
+// triage.md (38,974 B) would leave 202,080 B -- which the CURRENT floor happens to
+// catch, by where it landed rather than by design; a smaller file gutted the
+// same way still slips through. A byte floor
 // cannot see that, and raising it until it could would forbid legitimate
 // compression. The per-file guards are elsewhere and are about CONTENT rather
 // than size: work-issues-skill-refs.test.ts pins the document COUNT, and
 // work-issues-launch-mode.test.ts pins that each arm-bearing stage file still
 // names the mode it branches on and that the probe still exists exactly once.
-const MIN_REFERENCE_CORPUS_BYTES = 180_000;
+const MIN_REFERENCE_CORPUS_BYTES = 202_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
@@ -199,15 +252,70 @@ describe('skill file payload budget', () => {
       // the comment above. Asserting it makes the next lapse a red test at the
       // commit that causes it, and the failure message carries the number to
       // raise the floor to.
-      const largest = Math.max(...refs.map((f) => statSync(f).size));
+      // ONE assertion, on the RUNNER-UP. `corpus - runnerUp >= corpus - largest`
+      // always holds, so a separate check against `largest` could never fail
+      // while this one passed -- keeping both looked like two guarantees and was
+      // one. The runner-up is also the binding direction in practice: it is the
+      // margin that erodes when a change grows NON-leader files, which is what
+      // this one did, four times over.
+      const bySize = refs.map((f) => statSync(f).size).sort((a, b) => b - a);
+      const largest = bySize[0]!;
+      const runnerUp = bySize[1]!;
       expect(
         MIN_REFERENCE_CORPUS_BYTES,
-        `MIN_REFERENCE_CORPUS_BYTES (${MIN_REFERENCE_CORPUS_BYTES}) has lapsed: the ` +
-          `${name} corpus is ${total} B and its largest stage file is ${largest} B, so ` +
-          `deleting that one file would leave ${total - largest} B and still pass. Raise ` +
-          `the floor above ${total - largest} (and re-derive the comment beside it), or ` +
-          `re-derive it DOWNWARD in the same commit as a genuine compression pass.`,
-      ).toBeGreaterThan(total - largest);
+        `MIN_REFERENCE_CORPUS_BYTES (${MIN_REFERENCE_CORPUS_BYTES}) has lapsed. The ${name} ` +
+          `corpus is ${total} B, largest ${largest} B, runner-up ${runnerUp} B. Deleting the ` +
+          `largest would leave ${total - largest} B; deleting the runner-up once the two swap ` +
+          `places would leave ${total - runnerUp} B, and the floor must clear BOTH. Raise it ` +
+          `above ${total - runnerUp} (and re-derive the comment beside it), or re-derive it ` +
+          `DOWNWARD in the same commit as a genuine compression pass.`
+      ).toBeGreaterThan(total - runnerUp);
+    });
+
+    it(`${name}: the byte figures this file reasons from still match the tree`, () => {
+      const expected = MEASURED[name];
+      expect(
+        expected,
+        `SPLIT_SKILLS lists "${name}" but MEASURED has no entry for it. Add one (the ` +
+          `numbers are printed by the assertion below once the key exists), or this ` +
+          `skill's byte figures are unasserted.`
+      ).toBeDefined();
+      const sized = referenceFiles(name)
+        .map((f) => ({ file: f.split('/').pop()!, bytes: statSync(f).size }))
+        .sort((a, b) => b.bytes - a.bytes);
+      // A split skill has at least MIN_REFERENCE_FILES stage files (asserted
+      // above), but read defensively so a one-file skill fails with THIS
+      // message rather than a TypeError from `sized[1]`.
+      expect(sized.length, `${name} has too few stage files to have a runner-up`).toBeGreaterThan(1);
+      const actual = {
+        corpusBytes: sized.reduce((n, e) => n + e.bytes, 0),
+        largest: sized[0]!,
+        runnerUp: sized[1]!,
+      };
+      const capHeadroom = MAX_REFERENCE_FILE_BYTES - actual.largest.bytes;
+      expect(
+        actual,
+        `The MEASURED record at the top of this file no longer matches the tree.\n` +
+          `  corpus     ${expected!.corpusBytes} -> ${actual.corpusBytes}\n` +
+          `  largest    ${expected!.largest.file} ${expected!.largest.bytes} -> ` +
+          `${actual.largest.file} ${actual.largest.bytes}\n` +
+          `  runner-up  ${expected!.runnerUp.file} ${expected!.runnerUp.bytes} -> ` +
+          `${actual.runnerUp.file} ${actual.runnerUp.bytes}\n` +
+          `  floor margins: ${MIN_REFERENCE_CORPUS_BYTES - (actual.corpusBytes - actual.largest.bytes)} ` +
+          `(binding) / ${MIN_REFERENCE_CORPUS_BYTES - (actual.corpusBytes - actual.runnerUp.bytes)} ` +
+          `(either-largest)\n` +
+          `  ${actual.largest.file} has ${capHeadroom} B left under the ` +
+          `${MAX_REFERENCE_FILE_BYTES} B per-file cap.\n` +
+          `Update MEASURED and re-read the comments that cite it -- every byte claim in ` +
+          `this file is derived from these three numbers, and a stale one silently ` +
+          `misleads the next author into planning against room that is not there. If the ` +
+          `either-largest margin has gone small or negative, raise ` +
+          `MIN_REFERENCE_CORPUS_BYTES in the same commit.`
+      ).toEqual({
+        corpusBytes: expected!.corpusBytes,
+        largest: { file: expected!.largest.file, bytes: expected!.largest.bytes },
+        runnerUp: { file: expected!.runnerUp.file, bytes: expected!.runnerUp.bytes },
+      });
     });
   }
 });

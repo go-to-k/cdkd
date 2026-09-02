@@ -22,8 +22,10 @@ Per lane:
 
 ```bash
 # MAIN-CHECKOUT mode only. IN-PLACE (launched inside a linked worktree) skips
-# these two, keeps that tree and its branch, and creates nothing -- nesting dies
-# with the outer workspace (go-to-k/cdkd#2390; the probe is in §3, its only copy).
+# these two and creates NO WORKTREE -- nesting dies with the outer workspace
+# (go-to-k/cdkd#2390). It DOES still take a branch, in place: see the branch
+# recipe below, which is unconditional. (The probe lives in
+# references/launch-mode.md, its only copy -- not in §3, where it used to sit.)
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
@@ -55,41 +57,40 @@ cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # this repo's owner
 Then read the issue thread for a claim naming this branch — across clones it is
 the only signal the probes above cannot see.
 
-**If the branch here is detached, or its PR has already merged, take a fresh one
-WITHOUT leaving the tree** — and know what is and is not protecting you while
-you do:
+**Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The branch
+this tree arrived on is `LAUNCH_BRANCH`: the OUTER TOOL's, not this run's, and §9
+puts it back untouched at the end (`references/launch-mode.md` — "a branch to PUT
+BACK, never one to commit to"). This rule was CONDITIONAL until go-to-k/cdkd#2417
+("if the branch here is detached, or its PR has already merged"), and the
+condition was wrong in the common case: `gh pr merge --delete-branch` deletes the
+remote branch the PR was opened from, so a lane that committed onto the outer
+tool's branch would delete it on the way out. Know what is and is not protecting
+you while you branch:
 
 ```bash
+git status --porcelain   # must be empty FIRST -- see below
 git fetch origin && git switch -c <branch> origin/main
 ```
 
+`git status` comes first because `git switch` carries uncommitted changes
+ACROSS: branching out of a dirty tree moves someone else's work onto your lane
+branch, and §9's restore moves it onto the outer tool's. One hazard, both
+directions, checked on both sides.
+
 The `&&` is deliberate: unchained, a failed `fetch` still branches, off a stale
 `origin/main`. **`main-tree-branch-gate` is the backstop for running that line
-after a cwd reset — but it did NOT cover this spelling until this session's
-hooks change, so do not read the claim as one that always held.** Measured on
-both copies of the hook, 2026-08-31: the version then on `main` skipped to the
-FIRST `git` token, read `git fetch origin && git switch -c ...` as `sub=fetch`,
-fell to a fail-open arm and exited 0 — a BARE `git switch -c <b> origin/main`
-was refused (rc=2) while the chained form THIS FILE PRINTS was not (rc=0), so
-the spelling the skill prescribes was exactly the one the gate missed. This
-session's hooks lane makes the gate match in COMMAND POSITION and judge the
-matched SEGMENT; driven against that copy the chained form is refused (rc=2)
-and the allowance for `git fetch origin && git switch main` still passes (rc=0).
-The protection is that FIXED gate. Until `fix/stop-and-body-file-gates`
-(go-to-k/cdkd#2401) merges to `main`, the anchor is all you have: re-run
-`git rev-parse --show-toplevel` immediately before the switch and confirm it is
-this lane's tree. Ask whether the fix has LANDED by CONTENT, never by the last
-commit subject on the file -- that subject names some earlier hooks change and
-reads as though it were this one:
-
-```bash
-git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c gate_verb_rest_each
-```
-
-`0` means the fix is NOT on `main` and the anchor still stands (measured
-2026-09-01); non-zero means it landed and the anchor can be retired. That helper
-is what judges the matched SEGMENT, so it exists only in the fixed copy -- the
-same grep against go-to-k/cdkd#2401's head prints 4.
+after a cwd reset, and it now covers this spelling** — it matches in COMMAND
+POSITION and judges the matched SEGMENT, so the chained form is refused (rc=2)
+while the allowance for `git fetch origin && git switch main` still passes.
+It did NOT always: measured 2026-08-31, the copy then on `main` skipped to the
+FIRST `git` token, read this line as `sub=fetch` and exited 0, so the spelling
+this file PRINTS was exactly the one the gate missed while a bare
+`git switch -c <b> origin/main` was refused. The fix landed in
+go-to-k/cdkd#2406 (verified on `main` 2026-09-02 by CONTENT, never by the
+file's last commit subject:
+`git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c
+gate_verb_rest_each` prints non-zero), which retires the interim advice to
+re-anchor with `git rev-parse --show-toplevel` before every switch.
 
 **`mise trust` is not optional here, and skipping it fails in the direction that
 costs most.** An untrusted `.mise.toml` makes `mise exec -- markgate set` error
@@ -325,6 +326,16 @@ it was probe wreckage before it could commit. With a pre-probe commit the
 separator is just `git diff` — anything unstaged after a probe is the probe's
 (mirrored from go-to-k/cdk-real-drift#1853; go-to-k/cdkd#2416 is this repo's
 filing).
+
+**Restore a probe from a BYTE-EXACT COPY, never an inverse string replace.**
+`cp <file> <backup>` before, `cp <backup> <file>` after, proved by
+`git diff -- <file>` printing nothing. An inverse replace is a second edit with
+its own failure modes; Python's `str.replace('', x)` is the sharp one, matching
+between EVERY character so the "revert" rewrites the file. Measured 2026-09-02
+(go-to-k/cdk-real-drift#1854): an 11 KB stage file became 838 KB, and the three
+probes AFTER it scored a corrupted subject, so their verdicts meant nothing
+while still reading as evidence. The DOWNSTREAM probes are the real cost — the
+corrupted file is obvious, they are not.
 
 **A mutation probe proves a test discriminates only if it changes the value
 the test READS.** Four vacuous tests shipped across three lanes on 2026-08-19,

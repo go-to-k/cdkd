@@ -13,8 +13,10 @@ COMMON=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
 GITDIR=$(cd "$(git rev-parse --git-dir)" && pwd -P)
 LANE_TREE=$(cd "$(git rev-parse --show-toplevel)" && pwd -P)
 MAIN_CHECKOUT=$(dirname "$COMMON")
+LAUNCH_BRANCH=$(git branch --show-current)   # empty when launched detached
 [ "$GITDIR" = "$COMMON" ] && MODE=MAIN-CHECKOUT || MODE=IN-PLACE
-printf 'MODE=%s\nLANE_TREE=%s\nMAIN_CHECKOUT=%s\n' "$MODE" "$LANE_TREE" "$MAIN_CHECKOUT"
+printf 'MODE=%s\nLANE_TREE=%s\nMAIN_CHECKOUT=%s\nLAUNCH_BRANCH=%s\n' \
+  "$MODE" "$LANE_TREE" "$MAIN_CHECKOUT" "$LAUNCH_BRANCH"
 ```
 
 ### Why here and not at the top of stage 3
@@ -36,11 +38,11 @@ would be enough to move it:
   later runs `git worktree add` or does not. Computing it in the parent before
   dispatching anything removes the problem instead of documenting it.
 
-So: run it in the parent, pass `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` into the
-triage dispatch and into every lane dispatch, and state all three in the
-opening report.
+So: run it in the parent, pass `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` /
+`LAUNCH_BRANCH` into the triage dispatch and into every lane dispatch, and state
+all four in the opening report.
 
-### Reading the three values
+### Reading the four values
 
 `GITDIR` equals `COMMON` only in the main checkout — a linked worktree's
 `--git-dir` is `<common-dir>/worktrees/<name>`. `pwd -P` is load-bearing in
@@ -55,6 +57,25 @@ standing in" and so are exactly wrong in the mode that needs the value.
 `LANE_TREE` is "the tree this run stands in", NOT "the lane worktree":
 MAIN-CHECKOUT records the main checkout under it, and the two are equal there.
 IN-PLACE they differ, and that difference is the whole point.
+
+`LAUNCH_BRANCH` is `git branch --show-current` **at probe time** — the branch
+the tree was handed to this run ON, which IN-PLACE means the branch the OUTER
+TOOL created. An EMPTY value is a legitimate answer, not a probe failure: it
+says the run was launched detached, and §9's restore keeps a detach fallback for
+exactly that case. It is the one value that becomes UNRECOVERABLE if not
+recorded now — §5 switches the tree onto the lane's own branch, so every later
+`git branch --show-current` answers with the LANE's branch and the thing this
+value exists to name (what to put back) is gone. MAIN-CHECKOUT records it and
+does nothing with it: the run never leaves the main checkout, so §9's restore
+arm does not fire there.
+
+**IN-PLACE, `LAUNCH_BRANCH` is a branch to PUT BACK, never one to commit to.**
+§5 branches in place off `origin/main` instead of committing onto it, and the
+reason is not tidiness: `gh pr merge --delete-branch` (§9) deletes the REMOTE
+branch the PR was opened from, so a lane that worked directly on the outer
+tool's branch would delete the outer tool's branch on the way out — a far
+heavier interference than the detached HEAD this whole rule exists to avoid.
+The lane owns its own branch and deletes only that one.
 
 **The guard on the first line is not decoration.** Outside a work tree every
 `git rev-parse` fails and each substitution collapses to the empty string, so
@@ -103,15 +124,15 @@ tree:
 
 | # | Consequence | Where |
 |---|---|---|
-| 1 | Take ONE issue and finish it — a second lane would need a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work (go-to-k/cdkd#2390) | §3 |
+| 1 | Lanes run SERIALLY — a second CONCURRENT lane would need a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work (go-to-k/cdkd#2390). Several issues in one run is still fine when they share this tree in sequence: claim them all up front with the later ones marked QUEUED, and stand the unstarted ones down with a four-field comment if the run times out, which leaves every issue claimable (measured 2026-09-02, go-to-k/cdkd#2417) | §3 |
 | 2 | §2's worktree probes take `<MAIN_CHECKOUT>/.claude/worktrees/<w>`, not a relative path | §2 |
-| 3 | The claim names the branch and tree already checked out here, read out of git rather than composed | §4 |
-| 4 | Create no worktree; work on the branch already here, after confirming the tree is YOURS | §5 |
-| 5 | A tree that is DETACHED or whose PR already merged does create a branch — in place, without leaving the tree | §5 |
-| 6 | Remove no worktree and delete no branch: a lane that removes the tree it runs in deletes its own cwd. Cleanup belongs to whoever created it | §9, §10-d |
+| 3 | The claim names the tree already checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
+| 4 | Create no worktree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS, not only when the tree is detached or its PR has merged — and never commit onto `LAUNCH_BRANCH` | §5 |
+| 5 | Remove no worktree: a lane that removes the tree it runs in deletes its own cwd. Cleanup of the TREE belongs to whoever created it | §9, §10-d |
+| 6 | Switch back to `LAUNCH_BRANCH` **as-is** — no pull, no rebase, no fast-forward — and delete only the branches THIS run created; detach only when `LAUNCH_BRANCH` was empty at probe time or is now gone | §9 |
 | 7 | `main` is checked out in the main checkout, so the post-merge `git checkout main && git pull` cannot run here — pull through `git -C "<MAIN_CHECKOUT>"` | §9 |
 | 8 | The post-release rebuild targets the MAIN checkout for the same reason | §9 |
-| 9 | The retro branch is created in THIS tree, so the run legitimately ends on a branch that is not the one it started on | §10-d |
+| 9 | The retro branch is created in THIS tree too, so the `LAUNCH_BRANCH` restore is the run's LAST step — after the retro PR merges, not inside §9's per-lane cleanup | §10-d |
 
 "Four things and nothing else" was the previous count, and it was wrong in the
 direction that matters: this file is not always loaded, SKILL.md is, so an

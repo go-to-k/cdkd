@@ -109,8 +109,10 @@ clean-tree exit, and `stop-unmerged-lane-warn` when no worktree in the repo is
 ahead of `origin/main` (it clears EVERY worktree's record there, since "no lane
 is ahead" is a repo-global fact). Without that the record outlives the condition
 and the next genuine first sighting of the same subject is DOWNGRADED -- a
-MISSED nudge, reachable through the `git switch --detach origin/main` remedy the
-lane hook itself prints. Only `stop-warn` did it until 2026-09-01.
+MISSED nudge, reachable through either remedy the lane hook prints -- the
+`LAUNCH_BRANCH` restore it recommends first (go-to-k/cdkd#2417) and the
+`git switch --detach origin/main` fallback behind it, both of which leave the
+worktree not-a-lane. Only `stop-warn` did it until 2026-09-01.
 Per-worktree-ness is pinned by a case arming from a linked worktree on the same
 session id and subject.
 

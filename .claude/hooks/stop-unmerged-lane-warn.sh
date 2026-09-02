@@ -280,9 +280,11 @@ If you are ending the turn with nothing that will re-invoke you, the honest labe
 One false positive is expected and is cheap to clear: this repo SQUASH-merges, so a merged branch never
 becomes an ancestor of origin/main and keeps reading as ahead. If '$self_branch' is already merged, the
 remaining work is to remove its worktree and delete the branch -- not to open another PR. When this tree
-is one you must NOT remove (an outer tool owns it, or you were launched inside it), detach instead:
-'git switch --detach origin/main' clears the lane here, because a worktree with no current branch is not
-a lane at all.
+is one you must NOT remove (an outer tool owns it, or you were launched inside it), clear the lane by
+LEAVING the branch: switch back to the one the tree was handed to you on, as-is, then delete the lane
+branch. Detaching ('git switch --detach origin/main') also clears it -- a worktree with no current
+branch is not a lane -- but it leaves the outer tool showing a detached workspace it created on a
+branch, so it is the fallback for a tree that was launched detached, not the default.
 Every unmerged lane in this checkout:"
   # The USER text for the same condition. Every word of `model_msg` above is an
   # instruction to the agent, and until 2026-08-31 that exact wall of text was

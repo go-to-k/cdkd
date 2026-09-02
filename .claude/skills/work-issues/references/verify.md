@@ -138,6 +138,18 @@ markers.
   a delta round's blocker was a commit message citing a function that has
   never existed in this repo, reachable only because the orchestrator re-read
   the message itself.
+- **Reviewer subagents spawned BY A LANE report to the MAIN session, not to
+  the lane that spawned them.** Completion notifications go to the top-level
+  session, so a lane that dispatches reviewers and then waits on their reports
+  waits for something that cannot arrive, while the parent collects verdicts it
+  did not ask for and may not connect to a lane. Measured 2026-09-02
+  (go-to-k/cdkd#2417): a lane's two reviewers both delivered upward, the lane
+  blocked, and the parent relayed both verdicts by hand. Pick one shape and say
+  which in the dispatch: the lane runs its reviewers **synchronously** (so it
+  holds its own turn until they return), or the **parent owns the review
+  dispatch** and relays each verdict down — the latter under §9's
+  queued-versus-`Resuming` rule, because a lane waiting on a review is stopped
+  at exactly the moment the relay is sent.
 
 Run `/verify-pr`. It layers CI status, docs consistency, AWS-resource cleanup,
 code review, and a **live-test of the changed behavior** on top of `/check`.

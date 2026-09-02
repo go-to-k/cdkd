@@ -124,6 +124,21 @@ git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" show --stat HEAD     # the files 
 git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" status --porcelain   # what it is editing RIGHT NOW
 ```
 
+**A branch that `origin/main..<branch>` reports as ahead is NOT necessarily
+unmerged — this repo SQUASH-merges, so the merged commit on `main` carries a
+DIFFERENT sha and the original tip stays outside `main`'s ancestry forever.**
+The same artifact §9 cites for needing `git branch -D` rather than `-d` reads,
+in a collision scan, as "a live lane holding unpushed work". Ask the question by
+CONTENT instead: `gh pr list --state all --head <branch> --json number,state`,
+or grep `main` for a line the commit introduced. Measured 2026-09-02: a
+cdk-real-drift worktree showing one commit ahead was treated as a live peer
+holding `references/verify.md`, a lane was told to skip that file on that basis,
+and the commit had in fact merged as go-to-k/cdk-real-drift#1853 nine hours
+earlier — the cost was a wrongly narrowed scope and a follow-up PR to undo it.
+Note this cuts the OTHER way from every rule around it: the probes below can
+only establish LIFE, but this one can manufacture a false positive, so it is the
+one place in this stage where a signal must be argued DOWN rather than up.
+
 **Among the probes in THIS clone, the third is the only one that sees a live
 lane, and there it outranks the claim comment. Across clones the ranking
 inverts and the claim comment is the only signal at all** (above).
@@ -204,10 +219,17 @@ that later runs `git worktree add` or does not.
 
 `IN-PLACE` means this run was launched inside a worktree someone else created
 (an Orca/ADE workspace, a stray `cd`), so it has exactly ONE working tree:
-**take ONE issue and finish it** — a second lane would need a worktree nested
+**run lanes SERIALLY** — a second CONCURRENT lane would need a worktree nested
 inside this one, which dies with the outer workspace and takes its uncommitted
-work (go-to-k/cdkd#2390). Rank as usual, claim the top candidate, and leave the
-rest for the next run. Everything else in this stage — the disjointness gate
+work (go-to-k/cdkd#2390). Rank as usual. Taking SEVERAL issues is still fine when
+they share this one tree in SEQUENCE: claim them all up front (§4) with every lane
+after the first marked `QUEUED`, finish them one at a time, and if the run ends
+before reaching one, stand it down with a comment carrying the four
+classification fields. That shape was measured on 2026-09-02
+(go-to-k/cdkd#2417): three lanes claimed, one merged, and the two unstarted ones
+left in a state the next session could pick up without re-deriving anything.
+Claiming only the top candidate is also fine — the point is that the QUEUED ones
+are visibly spoken for rather than silently abandoned. Everything else in this stage — the disjointness gate
 below, §3-0's freshness quarantine, §3-a's ranking, §3-b, the premise checks —
 is mode-independent and applies to BOTH modes.
 

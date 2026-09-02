@@ -283,18 +283,11 @@ worktree this mode exists to prevent. The lane's own tree is
 still here with its deps installed, and you are not on `main`, so take the
 retro branch in it. `B` is re-assigned because a separate fenced block is a
 separate shell (§9's `$MAIN` trap), and the merged lane branch cannot be reused
-(post-merge-orphan-push). `main-tree-branch-gate` does back this switch up
-against a cwd reset, but only since this session's hooks change — §5 measured
-both copies, and the version then on `main` passed the chained `git fetch origin
-&& git switch -c ...` form below (rc=0) while refusing a bare `git switch -c`
-(rc=2). Do not read the backstop as one that always held: until
-`fix/stop-and-body-file-gates` (go-to-k/cdkd#2401) merges to `main`, confirm
-`git rev-parse --show-toplevel` is this lane's tree immediately before running
-the branch block below. Ask whether the fix has landed by CONTENT, not by the
-file's last commit subject (which names an earlier hooks change and reads like
-this one): `git show origin/main:.claude/hooks/main-tree-branch-gate.sh` piped
-to `grep -c gate_verb_rest_each` prints `0` while the fix is absent and
-non-zero once it lands.
+(post-merge-orphan-push). `main-tree-branch-gate` backs this switch up
+against a cwd reset, and since go-to-k/cdkd#2406 landed (on `main` 2026-09-02)
+it covers the chained `git fetch origin && git switch -c ...` form below as well
+as the bare one — §5 has the measurement of both copies and the content probe
+that settles which is deployed.
 
 ```bash
 B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
@@ -331,9 +324,20 @@ git fetch origin && git switch -c "$B" origin/main
 - **Merge it before the wrap report, then remove the worktree** (`git worktree
   remove .claude/worktrees/<name> && git worktree prune` — §9's closing check
   is "every worktree THIS run added is gone", and §10 must not undo that). An
-  IN-PLACE run added none: it merges and stops there, leaving the tree on the
-  retro branch for whoever owns the workspace (the appendix has what the Stop
-  hook will say about it). This
+  IN-PLACE run added none, so instead this is where it runs §9's IN-PLACE
+  cleanup arm — **the LAST step of the whole run**: `git switch
+  --no-guess <LAUNCH_BRANCH> && git branch -D` every branch this run created,
+  the retro branch included. AS-IS: no pull, no rebase, no fast-forward — the
+  branch is the outer tool's artifact. CHAINED, because an unchained delete
+  after a failed switch still removes every branch that is not checked out; and
+  `--no-guess` because a plain `switch` would re-create the branch from
+  `origin` instead of failing through to the fallback. §9 deliberately
+  does NOT do it per-lane, because THIS section branches in the same tree and
+  would undo it. Leaving the tree on the retro branch — the previous
+  instruction here — makes the unmerged-lane Stop hook warn every turn (the
+  appendix has the wording), and detaching instead is visible-surprising in the
+  outer tool's UI; restoring what the tool created is quiet on both counts.
+  This
   is `Session-fit: now`: deferring leaves main self-inconsistent (the skill
   keeps telling the next run to do what this run proved wrong), the evidence
   dies with this session, and an open PR is NOT CLOSEABLE besides.
