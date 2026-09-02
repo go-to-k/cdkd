@@ -906,6 +906,30 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
     expect(atSeven).toContain('(and 2 more)');
   });
 
+  it('SANITIZES the key it names, which is attacker-influenceable text', async () => {
+    // The key embeds a stack name and a region that reached cdkd from an S3
+    // listing or a lock body, and this warning is the helper's only output. It
+    // was the one raw path: `lock-manager.ts` sanitizes the same value at its
+    // own call site, so the wrapper's message was safe while the helper's was
+    // not -- and issue #2346 site 5 made this one newly reachable at `warn` on
+    // the force-unlock and takeover arms.
+    const nasty = 'cdkd/ev\u0000il\u001b[31m/us-east-1/lock.json';
+    const s3 = stub(
+      { [nasty]: [{ Versions: [{ Key: nasty, VersionId: 'v1', IsLatest: false }] }] },
+      undefined,
+      () => ({ Errors: [{ Key: nasty, VersionId: 'v1', Code: 'AccessDenied' }] })
+    );
+
+    await purgeNoncurrentKeyVersions(s3, BUCKET, [nasty], { logger: logger() });
+
+    const message = String(warn.mock.calls[0]![0]);
+    expect(message).toContain('AccessDenied');
+    // The control: the surrounding text still names the failure, so this is
+    // about the KEY being escaped rather than the message being empty.
+    expect(message).not.toContain('\u001b[31m');
+    expect(message).not.toContain('\u0000');
+  });
+
   it('accumulates MULTIPLE reasons for one key', async () => {
     // Nothing gave a key two reasons, so `existing.push` and the `join('; ')`
     // were both dead code.

@@ -276,6 +276,21 @@ assert_state_history_survives() {
   local stack="$1" rows versioning
   versioning="$(aws s3api get-bucket-versioning --bucket "${STATE_BUCKET}" \
     --query 'Status' --output text 2>/dev/null || echo 'ERROR')"
+  # ERROR and Suspended are NOT the same answer, and collapsing them is how a
+  # control deletes itself quietly. 'None'/'Suspended' is a real answer that
+  # makes this assertion meaningless, so skipping is right. 'ERROR' means the
+  # probe could not ASK -- a missing s3:GetBucketVersioning, a throttle, a
+  # transient failure -- and skipping there silently drops the control while
+  # the fixture reports PASS. That is the same standard the next assertion
+  # states in words ("an unverified control is not a control"); it was applied
+  # to the listing and not to the probe guarding it.
+  if [ "${versioning}" = "ERROR" ]; then
+    echo "ASSERTION FAILED: [${stack}] could not read the versioning state of" >&2
+    echo "  s3://${STATE_BUCKET}. The control below is only meaningful on a versioned" >&2
+    echo "  bucket, so an unreadable answer cannot be treated as 'skip' - that would" >&2
+    echo "  drop the control and still report PASS. Grant s3:GetBucketVersioning." >&2
+    exit 1
+  fi
   if [ "${versioning}" != "Enabled" ]; then
     echo "  skip: s3://${STATE_BUCKET} reports versioning '${versioning}', not 'Enabled', so a" >&2
     echo "        deleted object leaves no noncurrent body to assert on. This control needs a" >&2

@@ -1,5 +1,6 @@
 import { ListObjectVersionsCommand, DeleteObjectsCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
+import { displaySafe } from '../utils/display-safe.js';
 
 /**
  * Delete the NONCURRENT versions of a KNOWN SET OF KEYS in the cdkd state
@@ -226,7 +227,14 @@ export async function purgeNoncurrentKeyVersions(
   if (failed.size > 0) {
     const named = [...failed.entries()]
       .slice(0, MAX_NAMED_FAILURES)
-      .map(([key, reasons]) => `${key} (${reasons.join('; ')})`);
+      // `displaySafe` on the KEY, not just on the reasons: the key embeds a
+      // stack name and a region that reached cdkd from an S3 listing or a lock
+      // body, so it is attacker-influenceable text heading for a terminal.
+      // `lock-manager.ts` already sanitizes the same value at its own call
+      // site; without this the shared helper's warning was the one raw path,
+      // and issue #2346 site 5 made it newly reachable at `warn` on the
+      // force-unlock and takeover arms.
+      .map(([key, reasons]) => `${displaySafe(key)} (${reasons.join('; ')})`);
     const elided = failed.size - named.length;
     // WARN rather than debug, and never a throw. What survives is the body of
     // an object cdkd has just reported as deleted; WHICH object is the

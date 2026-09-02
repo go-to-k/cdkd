@@ -602,6 +602,29 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       expect(sent.map((r) => r.name)).not.toContain('ListObjectVersionsCommand');
     });
 
+    it('never lets a PERSISTENTLY unresolvable region throw out of the purge', async () => {
+      // The sibling above resolves on the purge's own attempt, so it proves the
+      // resolution HAPPENS but never that its failure is contained. Without
+      // this, hoisting `await this.ensureClientForBucket()` above
+      // `purgeLockVersions`'s `try` -- a natural "client setup belongs first"
+      // refactor -- survives the whole suite, and then a persistent
+      // GetBucketLocation denial throws out of a `finally` and REPLACES the
+      // caller's error. The never-throw contract names this call and
+      // `ownerParam()` as the pair it covers; only the second half was fenced.
+      rebuildMock.mockImplementation(() =>
+        Promise.reject(new Error('GetBucketLocation denied'))
+      );
+
+      // The delete's own failure is what surfaces -- not the purge's.
+      await expect(manager().forceReleaseLock(STACK, REGION)).rejects.toThrow(
+        'GetBucketLocation denied'
+      );
+
+      // Reported, not thrown, and on the reap path that means `warn`.
+      expect(purgeMessages(warnSpy)).toHaveLength(1);
+      expect(purgeMessages(warnSpy)[0]).toContain('could not be started');
+    });
+
     it('forceReleaseLock purges after its unconditional delete', async () => {
       behaviour.get = (): Promise<unknown> =>
         Promise.resolve({
@@ -764,6 +787,14 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
      *   a computed member NESTED inside another member. Kept as belt-and-braces
      *   and stated rather than fenced, because no test can tell them apart in
      *   any shape this file could plausibly take.
+     * - **CO-LOCATION IS NOT PAIRING**, and this is the widest edge. The walk
+     *   proves a `deleteLock` and a `purgeLockVersions` appear in the SAME
+     *   member; it cannot prove the purge is REACHABLE from the delete. A purge
+     *   moved into a branch the delete can never reach — a sibling `if`, an
+     *   arm that returns first — keeps this green. That gap is covered
+     *   behaviourally instead, by the per-site command-sequence cases above:
+     *   they assert the actual order of commands on the wire, which no
+     *   syntactic walk can. Read the two together, not either alone.
      *
      * Real-file inventory, measured: zero `this` aliases, zero nested classes,
      * zero object-literal methods, zero function expressions.

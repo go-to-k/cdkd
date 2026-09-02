@@ -982,8 +982,13 @@ export class LockManager {
    * survives there may be a secret and they fire on rare paths. `lock.json` is
    * neither: it holds no secret and `'release'` fires at the tail of EVERY
    * mutating command. Inheriting WARN would mean a user on the pre-#2340
-   * four-action IAM policy — who gets a silent clean deploy today — starts
-   * seeing a warning after every single command, about bucket tidiness. So
+   * four-action IAM policy starts seeing a warning after every single command,
+   * about bucket tidiness. Be precise about WHICH user that is: a principal
+   * missing `s3:ListBucketVersions` already gets a warn on every successful
+   * deploy from `deleteRollbackJournal`'s purge, so nothing changes for them.
+   * The one this split protects is the principal who HAS `ListBucketVersions`
+   * but lacks `s3:DeleteObjectVersion` — silent today, and newly noisy without
+   * it. So
    * release-path failures go to `debug` and only the rare `'reap'` paths warn,
    * which is the cost profile `docs/state-management.md` means by "only the
    * cleanup paths that need them".
@@ -994,9 +999,15 @@ export class LockManager {
    * `--stack-concurrency > 1`.
    *
    * NEVER THROWS. The helper guarantees that for itself, but
-   * `ensureClientForBucket()` and `ownerParam()` sit outside it and both reach
-   * AWS (`GetBucketLocation`, `sts:GetCallerIdentity`), so the wrap below is
-   * what makes the contract true — the same reasoning as
+   * `ensureClientForBucket()` and `ownerParam()` sit outside it, so the wrap
+   * below is what makes the contract true. Only `ensureClientForBucket()` is a
+   * known rejector (`GetBucketLocation`); `ownerParam()` is NOT — an earlier
+   * revision claimed it reached STS, and `src/cli/upload-cfn-template.ts`
+   * records that as false, since `resolveExpectedBucketOwner` wraps every
+   * await and degrades to `undefined`. Naming an unproved mechanism is worse
+   * than naming none. The wrap stays because a caller-supplied logger can
+   * throw and because a future edit can add an awaited call here — the same
+   * reasoning as
    * `S3StateBackend.purgeNoncurrentVersions`. It matters more here than there:
    * every call site is a `finally`, and a throw from a `finally` REPLACES the
    * `LockError` the release was raising. Nothing on this path is

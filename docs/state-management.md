@@ -1283,6 +1283,27 @@ Two consequences worth knowing:
   describes -- that section is also where the two grants and the never-throw
   contract are spelled out. Nothing fails either way.
 
+  **The trade that split makes, stated rather than left implicit:** a principal
+  who has `s3:ListBucketVersions` but lacks `s3:DeleteObjectVersion` now gets
+  no routine signal that the chain is still growing, because the release path
+  -- the one that runs on every mutating command -- reports at `debug`. (A
+  principal missing `s3:ListBucketVersions` is already warned on every
+  successful deploy by the rollback journal's own purge, so nothing changes for
+  them.) That is deliberate (a warning per command
+  about a heartbeat record is worse than the growth it reports), but it means
+  the growth is silent for exactly the population that cannot stop it. The
+  fallback is not a lifecycle rule -- see above for why one is not expressible
+  against this key layout -- it is to grant the two actions, at which point the
+  purge simply works. To check whether it is happening, run any mutating
+  command with `--verbose` and look for the purge line, or count the versions
+  directly:
+
+  ```bash
+  aws s3api list-object-versions --bucket <state-bucket> \
+    --prefix "cdkd/<stack>/<region>/lock.json" \
+    --query 'length(Versions[?IsLatest==`false`])'
+  ```
+
   Two things this does NOT do. The CURRENT version is never touched -- the
   purge filters on `IsLatest`, so it can neither delete the live lock nor
   remove the delete marker whose removal would resurrect a stale one. And it is
