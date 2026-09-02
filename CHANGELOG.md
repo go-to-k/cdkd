@@ -1,3 +1,10 @@
+## [0.285.3](https://github.com/go-to-k/cdkd/compare/v0.285.2...v0.285.3) (2026-09-02)
+
+
+### Bug Fixes
+
+* **provisioning:** send a retry-stable ClientToken on EFS CreateAccessPoint ([#2428](https://github.com/go-to-k/cdkd/issues/2428)) ([3464960](https://github.com/go-to-k/cdkd/commit/3464960c384b95f5778f83aad68ce4d334e59bf4))
+
 ## [0.285.2](https://github.com/go-to-k/cdkd/compare/v0.285.1...v0.285.2) (2026-09-02)
 
 
