@@ -1250,7 +1250,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         [
           'ClientToken',
-          'AWS SDK manages this idempotency token internally on CreateAccessPoint; no user-supplied value is honored',
+          'cdkd supplies its own retry-stable ClientToken on CreateAccessPoint (issues #2039 and #2080), so a template-supplied value would be overwritten. The SDK does not own this field either: measured against @aws-sdk/client-efs 3.1018.0, an omitted ClientToken is auto-filled with a FRESH uuid per attempt, which leaves a retried 500 free to mint a second access point, while a caller-supplied value goes on the wire verbatim.',
         ],
       ]),
     },
