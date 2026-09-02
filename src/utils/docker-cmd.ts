@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { getLogger } from './logger.js';
+import { getLogger, isStdoutReservedForPayload } from './logger.js';
 
 /**
  * Shared helpers for invoking the docker-compatible CLI binary across cdkd.
@@ -107,7 +107,28 @@ export async function spawnStreaming(
 
     child.stdout!.on('data', (chunk: Buffer) => {
       stdoutChunks.push(chunk);
-      if (streamLive) process.stdout.write(chunk);
+      // Issue #2410: the child's stdout is DIAGNOSTIC output (pull / build
+      // progress, `docker login`'s `Login Succeeded`, `docker image
+      // inspect`'s JSON) — never the calling command's payload. On a command
+      // that has reserved stdout it must therefore JOIN the logger on
+      // stderr, exactly as `ConsoleLogger.emit` routes its own info lines.
+      //
+      // Without this, `--verbose` alone reopened the hole the reservation
+      // closes: `cdkd local invoke Stack/ImageFn --no-pull --verbose` reaches
+      // `ecr-puller.ts`'s `docker image inspect` (via the `skipPull` branch)
+      // and put a multi-hundred-line inspect array — including the image's
+      // baked-in `Config.Env` — on the payload stream. Found independently by
+      // the code and security reviewers on the go-to-k/cdkd#2410 PR.
+      //
+      // Fixed HERE rather than by passing `streamLive: false` at the two
+      // `ecr-puller.ts` call sites, because that would leave the next
+      // `runDockerStreaming` caller to rediscover it, and because MOVING the
+      // line keeps the `--verbose` diagnostic the flag was asked for. On a
+      // command that reserves nothing this is byte-identical to before.
+      if (streamLive) {
+        if (isStdoutReservedForPayload()) process.stderr.write(chunk);
+        else process.stdout.write(chunk);
+      }
     });
     child.stderr!.on('data', (chunk: Buffer) => {
       stderrChunks.push(chunk);

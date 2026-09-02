@@ -53,9 +53,18 @@ const SPAWN_TIMEOUT_MS = 120_000;
 /** The per-file annotation sweep re-analyzes the whole tree once per file. */
 const SWEEP_TIMEOUT_MS = 120_000;
 /**
- * Every real-tree probe analyzes ~330 files, and the ones that analyze TWICE
- * (baseline plus mutation) crossed vitest's default 5 s in 1 run of 14. A
- * CI-blocking critic that flakes teaches people to re-run rather than read.
+ * Headroom for any case that runs a real-tree `analyze()`, whether it analyzes
+ * ONCE or twice. The measurement that set the number came from the two-analyze
+ * shape — baseline plus mutation, ~330 files each — which crossed vitest's
+ * default 5 s in 1 run of 14; a single analyze is cheaper but rides the same
+ * ~330-file walk, so it is on the same side of a 5 s default under load and
+ * carries the timeout too rather than being left to flake on a busier machine.
+ * A CI-blocking critic that flakes teaches people to re-run rather than read.
+ *
+ * What this constant does NOT cover: the module-level `readSourceTree` below.
+ * It runs at IMPORT time, before any test starts, so no per-test timeout —
+ * this one included — applies to it. A load-time slowdown there is therefore
+ * not something raising this number can absorb.
  */
 const ANALYZE_TIMEOUT_MS = 60_000;
 

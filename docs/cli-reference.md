@@ -1329,11 +1329,18 @@ reach stdout; they are listed under "known residuals" below. As with `--json`, t
 restores the old single-stream view.
 
 ```bash
-cdkd synth > template.yaml 2> progress.log
+cdkd synth > template.yaml 2> progress.log   # see the toYaml caveat below
 cdkd list --long | yq '.[].name'
 cdkd list | while read -r id; do echo "found stack: $id"; done
-cdkd local invoke MyStack/Handler --event e.json | jq .body
+cdkd local invoke MyStack/Handler --event e.json | tail -1 | jq .body
 ```
+
+The `tail -1` on the last line is not decoration: three things on
+`cdkd local invoke` still reach stdout without passing through cdkd's logger,
+so its payload is the LAST stdout line rather than the whole stream. They are
+listed under "known residuals" below, and the same applies to
+`cdkd local invoke-agentcore`. The other three commands need no such
+qualifier.
 
 Three consequences worth stating explicitly:
 
@@ -1369,6 +1376,11 @@ Three consequences worth stating explicitly:
   [#2421](https://github.com/go-to-k/cdkd/issues/2421). Until it is fixed, read
   the per-stack template JSON out of the `--output` assembly directory when you
   need a parser to consume it.
+  `cdkd list --long` / `--show-dependencies` render through the SAME
+  `toYaml`, but their payload is not affected in practice: every value they
+  emit is a stack id, a display path, an account or a region, and none of
+  those can begin with a YAML indicator character. `cdkd synth` is the one
+  surface where arbitrary template values reach the renderer.
 
 `cdkd deploy` and the long-running `cdkd local` servers -- `start-api`,
 `run-task`, `start-service`, `start-agentcore`, `start-alb`,

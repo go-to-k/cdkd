@@ -551,6 +551,18 @@ async function localInvokeAgentCoreCommand(
       // of the same connection. Piped / redirected stdin (non-TTY) stays the
       // one-shot, wire-faithful shape (force it in a TTY with `--ws </dev/null`).
       const interactive = process.stdin.isTTY === true;
+      // Issue #2410: `interactive` answers TWO different questions and only
+      // one of them is about stdin. Reading follow-up frames from stdin is a
+      // stdin concern, so it keeps the check above. Appending `\n` plus the
+      // `> ` prompt is a STDOUT concern -- and stdout is this command's
+      // PAYLOAD stream, so the prompt must not be written when it is
+      // redirected. Gated on stdin alone, `cdkd local invoke-agentcore Agent
+      // --ws > frames.txt` from a terminal appended `> ` after every frame,
+      // and the `| tail -1` this command's own docs prescribe returned `> `
+      // instead of the last frame -- the documented workaround, broken by the
+      // thing it works around. cdk-local's `isInteractive()` requires both
+      // for the same reason.
+      const promptOnStdout = interactive && process.stdout.isTTY === true;
       if (watchActive) {
         // `--watch` wraps the /ws dispatch in a reload-driven loop. The socket
         // is closed cleanly on every reload firing (via the abort signal) and
@@ -581,7 +593,7 @@ async function localInvokeAgentCoreCommand(
             const wsResult = await invokeAgentCoreWs(containerHost, port, event, {
               sessionId,
               timeoutMs: options.timeout,
-              onMessage: wrapWsOnMessage((text) => process.stdout.write(text), interactive),
+              onMessage: wrapWsOnMessage((text) => process.stdout.write(text), promptOnStdout),
               abortSignal,
               ...(authorization && { authorization }),
               ...(frameSource && { frameSource }),
@@ -650,7 +662,7 @@ async function localInvokeAgentCoreCommand(
         const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
           sessionId,
           timeoutMs: options.timeout,
-          onMessage: wrapWsOnMessage((text) => process.stdout.write(text), interactive),
+          onMessage: wrapWsOnMessage((text) => process.stdout.write(text), promptOnStdout),
           ...(authorization && { authorization }),
           ...(frameSource && { frameSource }),
         });
@@ -1952,20 +1964,25 @@ export const WS_REPL_PROMPT = '> ';
  * `/ws` endpoint behaves the same. That's correct on the wire but visually
  * run-on in an interactive terminal — the user's next keystroke concatenates
  * onto the last frame's tail char and they have no signal that the REPL is
- * waiting for input. In interactive mode we append `\n` (unless already
+ * waiting for input. When the prompt is on, we append `\n` (unless already
  * present) and then write a `> ` prompt, so each agent message is presented as
  * its own line and the next input prompt is visible.
  *
- * Non-interactive (piped / CI) is unchanged — the raw stdout shape is what
- * scripts rely on, and the WS-protocol-faithful pass-through stays.
+ * The gate is `promptOnStdout` — stdin a TTY AND stdout a TTY — not stdin
+ * alone (issue [#2410](https://github.com/go-to-k/cdkd/issues/2410)). Reading
+ * follow-up frames from stdin is a stdin question and keeps its own check at
+ * the call site; writing a prompt is a STDOUT question, and stdout is this
+ * command's payload stream. With a REDIRECTED stdout the raw
+ * WS-protocol-faithful pass-through is what a consumer parses, so a terminal
+ * stdin no longer drags a `> ` into it.
  *
  * Exported so a unit test can drive the wrapping without the full WS pipeline.
  */
 export function wrapWsOnMessage(
   sink: (text: string) => void,
-  interactive: boolean
+  promptOnStdout: boolean
 ): (text: string) => void {
-  if (!interactive) return sink;
+  if (!promptOnStdout) return sink;
   return (text) => {
     sink(text.endsWith('\n') ? text : `${text}\n`);
     sink(WS_REPL_PROMPT);

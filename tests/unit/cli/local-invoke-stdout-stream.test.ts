@@ -48,6 +48,7 @@ const mocks = vi.hoisted(() => ({
   resolveHostGatewayExtraHosts: vi.fn(),
   waitForRieReady: vi.fn(),
   invokeRie: vi.fn(),
+  stsSend: vi.fn(),
 }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => {
@@ -86,6 +87,19 @@ vi.mock('../../../src/local/docker-version.js', async (importOriginal) => {
   return { ...actual, resolveHostGatewayExtraHosts: mocks.resolveHostGatewayExtraHosts };
 });
 
+// Only the CLIENT is stubbed; `AssumeRoleCommand` and friends stay REAL, so a
+// factory that forgot an export cannot surface as an `undefined()` call inside
+// the command. `applyRoleArnIfSet` is the only STS caller these cases reach —
+// `local-invoke.ts`'s own `assumeExecutionRole` needs `--assume-role <arn>`
+// plus resolvable state, which no case here supplies.
+vi.mock('@aws-sdk/client-sts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-sts')>();
+  return {
+    ...actual,
+    STSClient: vi.fn().mockImplementation(() => ({ send: mocks.stsSend, destroy: vi.fn() })),
+  };
+});
+
 vi.mock('../../../src/local/rie-client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/local/rie-client.js')>();
   return {
@@ -100,6 +114,8 @@ import { getLogger, releaseStdoutForPayload } from '../../../src/utils/logger.js
 
 const CHATTER = 'Bundling asset LocalStack/EchoHandler/Code/Stage...';
 const PAYLOAD = '{"statusCode":200,"body":"lane2410-local-invoke-response"}';
+const ROLE_ARN = 'arn:aws:iam::111122223333:role/cdkd-local-invoke-stream-reader';
+const ASSUMED_LINE = `Assumed role ${ROLE_ARN}`;
 
 let codeDir: string;
 
@@ -177,7 +193,14 @@ async function runInvoke(args: string[]): Promise<Streams> {
 }
 
 describe('local invoke keeps stdout to the response payload (issue #2410)', () => {
+  let envBefore: Record<string, string | undefined>;
+
   beforeEach(() => {
+    envBefore = {
+      AWS_ACCESS_KEY_ID: process.env['AWS_ACCESS_KEY_ID'],
+      AWS_SECRET_ACCESS_KEY: process.env['AWS_SECRET_ACCESS_KEY'],
+      AWS_SESSION_TOKEN: process.env['AWS_SESSION_TOKEN'],
+    };
     codeDir = mkdtempSync(join(tmpdir(), 'cdkd-lane2410-code-'));
     writeFileSync(join(codeDir, 'index.js'), 'exports.handler = async () => ({});\n');
 
@@ -205,10 +228,22 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
     // today (`local-invoke.ts` reads only `.raw`) but would let a future
     // branch that reads `.payload` get `undefined` and pass silently.
     mocks.invokeRie.mockResolvedValue({ payload: JSON.parse(PAYLOAD), raw: PAYLOAD });
+    mocks.stsSend.mockResolvedValue({
+      Credentials: {
+        AccessKeyId: 'AKIA_LANE2410_TEST',
+        SecretAccessKey: 'secret-lane2410-test',
+        SessionToken: 'token-lane2410-test',
+        Expiration: new Date('2030-01-01T00:00:00.000Z'),
+      },
+    });
   });
 
   afterEach(() => {
     rmSync(codeDir, { recursive: true, force: true });
+    for (const [k, v] of Object.entries(envBefore)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     releaseStdoutForPayload();
     getLogger().setLevel('info');
   });
@@ -237,6 +272,31 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
       expect(stderr).toContain(line);
       expect(stdout).not.toContain(line);
     }
+  });
+
+  /**
+   * `--role-arn` drives REAL production prose end to end: `applyRoleArnIfSet`
+   * (`src/utils/role-arn.ts`) emits `Assumed role ...` at INFO with only STS
+   * mocked. It runs from a DIFFERENT module than the command, and — the point
+   * of the case — from a call site AFTER `reserveStdoutForPayload()` but
+   * before the synth. Without it, a regression that moved the reservation
+   * down to just-before-synth would leave this line on stdout with every
+   * other case in this file green; `cdkd list` and `cdkd synth` each carry
+   * the same case for the same reason, and `cdkd local invoke-agentcore` now
+   * does too.
+   */
+  it('--role-arn moves the real role-assumption notice to stderr, payload untouched', async () => {
+    const { stdout, stderr, error } = await runInvoke([
+      'LocalStack/EchoHandler',
+      '--no-pull',
+      '--role-arn',
+      ROLE_ARN,
+    ]);
+
+    expect(error).toBeUndefined();
+    expect(stdout).toBe(`${PAYLOAD}\n`);
+    expect(stderr).toContain(ASSUMED_LINE);
+    expect(stdout).not.toContain(ASSUMED_LINE);
   });
 
   /**

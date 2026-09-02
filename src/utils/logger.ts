@@ -43,13 +43,15 @@ const colors = {
  * OPT-IN, and deliberately not derived from a `--json` flag inside the
  * logger: nothing changes for a command that does not call
  * {@link reserveStdoutForPayload}. Every `--json` surface keeps its payload
- * stream clean one way or the other, but NOT all by this mechanism: six call
- * this (issue [#2280](https://github.com/go-to-k/cdkd/issues/2280) added them
- * to `cdkd drift`'s original call — `cdkd list`, `cdkd events`, and the four
- * `cdkd state {list,resources,show,info}` subcommands), while `cdkd diff`
- * predates it and demotes the logger to `warn` instead, which SUPPRESSES its
- * info-level lines rather than moving them. Do not read "every `--json`
- * surface" as "every `--json` surface calls this".
+ * stream clean one way or the other, but NOT all by this mechanism, and the
+ * count is easy to state one short: SEVEN call this — `cdkd drift`'s original
+ * call, plus the six issue
+ * [#2280](https://github.com/go-to-k/cdkd/issues/2280) added to it (`cdkd
+ * list`, `cdkd events`, and the four `cdkd state {list,resources,show,info}`
+ * subcommands) — while `cdkd diff` predates the mechanism and demotes the
+ * logger to `warn` instead, which SUPPRESSES its info-level lines rather than
+ * moving them. Do not read "every `--json` surface" as "every `--json`
+ * surface calls this".
  *
  * A `--json` flag is NOT what makes a stream a payload stream, though, and
  * issue [#2410](https://github.com/go-to-k/cdkd/issues/2410) is the four
@@ -87,11 +89,21 @@ export function releaseStdoutForPayload(): void {
 /**
  * Whether {@link reserveStdoutForPayload} is in effect.
  *
- * TEST-ONLY, like {@link releaseStdoutForPayload} and stated for the same
- * reason: there is no production caller, and an exported predicate with none
- * otherwise reads as a seam some command is expected to branch on. Nothing
- * should — the routing decision belongs to {@link ConsoleLogger.emit}, and a
- * caller re-deriving it would be a second place to keep in step.
+ * ONE production caller, and the carve-out is narrow enough to state: a
+ * writer that does NOT go through {@link ConsoleLogger} and therefore cannot
+ * be routed by {@link ConsoleLogger.emit}. Today that is `spawnStreaming` in
+ * `src/utils/docker-cmd.ts`, which mirrors a child process's stdout live
+ * under `--verbose`; issue
+ * [#2410](https://github.com/go-to-k/cdkd/issues/2410) made it join the
+ * logger on stderr while a command holds the reservation.
+ *
+ * That is the ONLY shape this predicate is for. A COMMAND must never branch
+ * on it — a command's own prose already flows through the logger, so
+ * consulting this would be a second copy of a decision `emit` already makes,
+ * and the two would drift. If you are reaching for it from a `commands/`
+ * file, the answer is `reserveStdoutForPayload()` instead.
+ *
+ * Also used by tests, alongside {@link releaseStdoutForPayload}.
  */
 export function isStdoutReservedForPayload(): boolean {
   return stdoutReservedForPayload;
@@ -181,9 +193,10 @@ export class ConsoleLogger implements Logger {
    * [#2410](https://github.com/go-to-k/cdkd/issues/2410)): the stack-output
    * buffer short-circuits ABOVE the reservation check, so a line captured under
    * `runStackBuffered` is replayed by whatever flushes the buffer and never
-   * consults the reservation at all. Unreachable today — `deploy.ts:1156` is the
-   * only caller that opens a buffer, and `deploy` reserves nothing (its stdout
-   * is a human surface) — so the fix would be untestable and would have to guess
+   * consults the reservation at all. Unreachable today — `deploy.ts`'s
+   * `runStackBuffered` call is the only thing that opens a buffer, and `deploy`
+   * reserves nothing (its stdout is a human surface); a bare line number here
+   * would go stale on the next edit to that file without anything noticing — so the fix would be untestable and would have to guess
    * where the flush should route.
    *
    * That rationale survives #2410 unchanged, and it is worth restating WHY,
