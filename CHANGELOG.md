@@ -1,3 +1,10 @@
+## [0.285.8](https://github.com/go-to-k/cdkd/compare/v0.285.7...v0.285.8) (2026-09-02)
+
+
+### Bug Fixes
+
+* **cli:** refuse the nine remaining confirmation prompts on a non-TTY stdin, and reserve state list stdout ([#2456](https://github.com/go-to-k/cdkd/issues/2456)) ([9694baf](https://github.com/go-to-k/cdkd/commit/9694baf2e2023dbb02048e5928872887328812dc))
+
 ## [0.285.7](https://github.com/go-to-k/cdkd/compare/v0.285.6...v0.285.7) (2026-09-02)
 
 
