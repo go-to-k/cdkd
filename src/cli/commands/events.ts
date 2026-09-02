@@ -307,9 +307,8 @@ export async function eventsPruneCommand(
   }
 }
 
-/** Minimal `(y/N)` confirmation prompt. */
 /**
- * The prune confirmation, delegating to the shared guarded helper.
+ * Minimal `(y/N)` prune confirmation, delegating to the shared guarded helper.
  *
  * Exported for unit testing, matching the nine siblings issue #2275 folded —
  * `tests/unit/cli/non-interactive-confirm-guards.test.ts` drives each command's
