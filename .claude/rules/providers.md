@@ -46,11 +46,9 @@ Per-file notes for `src/provisioning/**`: [layout-provisioning.md](layout-provis
 
 ## Custom Resources
 
-Lambda-backed Custom Resources -- the four response shapes and which of them carry
-`NoEcho`, the transient-authz retry and its two budgets, the log-tail diagnostics, and the
-delete fail-fast -- live in
-[provider-custom-resources.md](provider-custom-resources.md), whose `paths:` glob is the
-one file they describe.
+Lambda-backed Custom Resources -- response shapes, `NoEcho`, the transient-authz retry, the
+log-tail diagnostics, the delete fail-fast -- live in
+[provider-custom-resources.md](provider-custom-resources.md).
 
 
 ## An "already exists" error is scoped to the API's NAMESPACE, not to your region

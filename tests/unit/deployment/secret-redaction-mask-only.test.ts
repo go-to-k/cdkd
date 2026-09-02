@@ -58,8 +58,9 @@ describe('mask-only redaction channel (issue #2274)', () => {
     });
 
     it('stops being mask-only once the resolver records a real expression for it', () => {
-      // `isMaskOnlyPlaintext` re-checks the MAP value, not just the side table,
-      // because the resolver writes the map directly.
+      // `isMaskOnlyPlaintext` reads the MAP, and the sentinel value IS the
+      // marker, so an entry the resolver later overwrites with a real
+      // expression earns the substring arm back on the next walk.
       const secrets: RecordedSecretValues = new Map();
       recordMaskOnlyValue(secrets, DYNREF_PLAINTEXT);
       expect(hasMaskOnlyValues(secrets)).toBe(true);

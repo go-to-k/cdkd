@@ -162,18 +162,19 @@ export function clearRecordedSecretExpressions(): void {
  * a wide change with one place per reader to forget. Recording the pair as
  * `plaintext -> SECRET_MASK` means the whole-value arm of
  * {@link redactSecretsForState} substitutes the mask with no code change at
- * all, and every reader is covered by construction. This side table is what
- * lets the two classes still be told apart where they must be.
+ * all, and every reader is covered by construction.
  *
- * WHY A `WeakMap` KEYED BY THE BAG, and not a module-level set: the SCOPE is
- * the safety argument, the same one {@link crossStackAssociations} makes. The
- * deploy engine's `perResourceSecrets` is keyed by LOGICAL ID precisely so one
- * resource's secret cannot rewrite another's coinciding literal, and PR #2415
- * WITHDREW a process-wide positive store after review found that a store keyed
- * on a bare value is itself a cross-stack disclosure under `cdkd deploy --all`
- * (see the note above `expressionSecretIsInferred`; residual issue #2425). A
- * mask channel keyed on a bare plaintext at process scope would meet the
- * identical objection, so it is keyed by the PASS's own bag and dies with it.
+ * THE SENTINEL VALUE **IS** THE MARKER — there is no side table, and an earlier
+ * revision's `WeakMap<RecordedSecretValues, Set<string>>` was removed after a
+ * mutation probe showed the extra conjunct could not be fenced AND pointed the
+ * wrong way. Nothing but {@link recordMaskOnlyValue} ever writes
+ * {@link SECRET_MASK} as a map VALUE (every other writer stores a whole
+ * `{{resolve:...}}` token, and {@link recordCrossStackExpression} refuses
+ * anything else), so the side table could only ever disagree about an entry
+ * some future writer valued `***` by hand — and for THAT entry, withholding the
+ * substring arm is the SAFE answer, which is what the side table would have
+ * denied. Scope is unaffected: the MAP is already per-pass, so a mask cannot
+ * reach another resource's bag any more than an expression can.
  *
  * THE ONE PLACE THE CLASSES MUST DIFFER: the SUBSTRING arm. Substituting an
  * EXPRESSION for a match inside a longer leaf is lossless — the persisted leaf
@@ -192,8 +193,6 @@ export function clearRecordedSecretExpressions(): void {
  * as a value, so a partial mask there costs nothing and closes an embedded
  * disclosure.
  */
-const maskOnlyPlaintexts = new WeakMap<RecordedSecretValues, Set<string>>();
-
 /**
  * Record `plaintext` as MASK-ONLY in `secrets` — persist {@link SECRET_MASK} in
  * its place, with no expression to substitute (issue #2274).
@@ -214,27 +213,17 @@ export function recordMaskOnlyValue(secrets: RecordedSecretValues, plaintext: st
   const existing = secrets.get(plaintext);
   if (existing !== undefined && existing !== SECRET_MASK) return;
   secrets.set(plaintext, SECRET_MASK);
-  let recorded = maskOnlyPlaintexts.get(secrets);
-  if (recorded === undefined) {
-    recorded = new Set<string>();
-    maskOnlyPlaintexts.set(secrets, recorded);
-  }
-  recorded.add(plaintext);
 }
 
 /**
  * Is `plaintext` a MASK-ONLY entry of `secrets`?
  *
- * BOTH halves are checked, and the second is not redundant: a plaintext this
- * module marked as mask-only can later be recorded WITH an expression by the
- * resolver, which writes the map directly. Reading the side table alone would
- * then keep withholding the substring arm from a needle that has earned it.
+ * Read off the MAP, so a plaintext this module marked as mask-only and the
+ * resolver later records WITH an expression stops being one immediately —
+ * which matters, because that entry has earned the substring arm back.
  */
 function isMaskOnlyPlaintext(secrets: RecordedSecretValues, plaintext: string): boolean {
-  return (
-    secrets.get(plaintext) === SECRET_MASK &&
-    maskOnlyPlaintexts.get(secrets)?.has(plaintext) === true
-  );
+  return secrets.get(plaintext) === SECRET_MASK;
 }
 
 /**
@@ -292,7 +281,7 @@ export function recordMaskOnlyValuesIn(value: unknown, secrets: RecordedSecretVa
  * string is either a user's own literal or text this module never wrote, and
  * treating it as a mask would refuse ordinary values. The corresponding limit —
  * a NoEcho value EMBEDDED in a larger leaf keeps its plaintext — is the same
- * one {@link maskOnlyPlaintexts} states, and is tracked separately.
+ * one the mask-only channel note above states, and is tracked separately.
  */
 export function carriesSecretMask(value: unknown): boolean {
   const walk = (node: unknown, depth: number): boolean => {
@@ -309,17 +298,15 @@ export function carriesSecretMask(value: unknown): boolean {
 
 /** Does `secrets` carry any MASK-ONLY entry? Cheap enough to call per walk. */
 export function hasMaskOnlyValues(secrets: RecordedSecretValues): boolean {
-  const recorded = maskOnlyPlaintexts.get(secrets);
-  if (recorded === undefined) return false;
-  for (const plaintext of recorded) {
-    if (secrets.get(plaintext) === SECRET_MASK) return true;
+  for (const expression of secrets.values()) {
+    if (expression === SECRET_MASK) return true;
   }
   return false;
 }
 
 /**
  * The plaintexts the PERSIST path may scan for as SUBSTRINGS — every recorded
- * one except the mask-only class. See {@link maskOnlyPlaintexts} for why the
+ * one except the mask-only class. See the mask-only channel note above for why the
  * mask class is whole-leaf only.
  */
 function substringNeedlesOf(secrets: RecordedSecretValues): string[] {
@@ -334,11 +321,13 @@ function substringNeedlesOf(secrets: RecordedSecretValues): string[] {
  * The EXPRESSIONS a pass recorded — `secrets.values()` minus the mask-only
  * class, whose "expression" is the mask sentinel rather than a reference.
  *
- * Feeding {@link SECRET_MASK} into the candidate set the position passes match
- * against cannot produce a wrong answer today (it is not a dynamic-reference
- * token, so neither `isKnownSecretExpression` nor a skeleton pattern can ever
- * accept it), but a candidate list that is documented as "the expressions this
- * pass recorded" must not silently contain something that is not one.
+ * Removing this filter is an EQUIVALENT MUTANT and no test can red on it —
+ * stated rather than claimed pinned. {@link SECRET_MASK} is not a
+ * dynamic-reference token, so neither `isKnownSecretExpression` nor a skeleton
+ * pattern can ever accept it as a candidate. It is kept because a list
+ * documented as "the expressions this pass recorded" must not silently contain
+ * something that is not one: the day a candidate test stops requiring token
+ * SHAPE, the sentinel would be live in it.
  */
 function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
   const expressions = new Set<string>();
@@ -4196,7 +4185,7 @@ export function redactSecretsForState<T>(
   }
   // `substringNeedlesOf`, not `secrets.keys()`: the MASK-ONLY class (issue
   // #2274) is withheld from this scan and reaches the whole-value arm below
-  // only. See {@link maskOnlyPlaintexts} — an inline `***` cannot be told from
+  // only. See the mask-only channel note above — an inline `***` cannot be told from
   // a user's own literal, so nothing downstream could recognise it and
   // `drift --revert` / the rollback replay would push the corrupted string to
   // AWS. Every EXPRESSION-bearing needle is unaffected, so a bag with no
@@ -4459,7 +4448,7 @@ export function scrubResourceRecord<
  * recognise or re-resolve; this output is a log line, an error message or an
  * event, which no consumer reads back as a value, so a partial mask costs
  * nothing and closes an EMBEDDED disclosure that would otherwise print. See
- * {@link maskOnlyPlaintexts}.
+ * the mask-only channel note above.
  */
 export function maskSecretsInText(text: string, secrets: RecordedSecretValues): string {
   if (secrets.size === 0) return text;

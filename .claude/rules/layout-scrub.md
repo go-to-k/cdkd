@@ -11,8 +11,7 @@ The redaction machinery this command drives: [layout-deployment-secrets.md](layo
 Index of every area: [code-layout.md](code-layout.md).
 
 Split out of `layout-deployment-secrets.md` under issue
-[#2274](https://github.com/go-to-k/cdkd/issues/2274), which four files in the redaction
-closure were paying for. `scrub.ts` still loads BOTH -- it stays in that file's `paths:`.
+[#2274](https://github.com/go-to-k/cdkd/issues/2274). `scrub.ts` stays in that file's `paths:` too.
 
 ## Important Files
 
