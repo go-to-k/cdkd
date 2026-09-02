@@ -28,17 +28,25 @@ lesson that a probe wants exercising in BOTH directions) there, and
 `src/utils/aws-region-resolver.ts` for the fail-OPEN probe traps. Below is only
 what opening the provider will not tell you.
 
-**These guards are SDK-ROUTE-ONLY.** `AWS::S3::Bucket` declares silent-drop
-properties (`AccessControl`, still emitted by CDK's L1 for `accessControl:`), so
-`provider-registry.ts` auto-routes such a bucket to `CloudControlProvider` and
-pins `provisionedBy: 'cc-api'` STICKILY — the type is not in
-`STICKY_CC_MIGRATION_EXEMPT`. On that route `S3BucketProvider.delete` never runs
-at all: no probe, no refusal, no warning, and `CloudControlProvider`'s
-client-region `assertRegionMatch` cannot see a physical id naming a bucket
-elsewhere. One ordinary CDK property gets you there. Tracked as issue
-[#2283](https://github.com/go-to-k/cdkd/issues/2283) and NOT fixed by these
-guards — stated here because a rule file that overstates its coverage is worse
-than one that admits a hole.
+**These guards are SDK-ROUTE-ONLY, and the Cloud Control route has its OWN
+pair.** `AWS::S3::Bucket` declares silent-drop properties (`AccessControl`,
+still emitted by CDK's L1 for `accessControl:`), so `provider-registry.ts`
+auto-routes such a bucket to `CloudControlProvider` and pins
+`provisionedBy: 'cc-api'` STICKILY — the type is not in
+`STICKY_CC_MIGRATION_EXEMPT`. One ordinary CDK property gets you there, and on
+that route `S3BucketProvider.delete` never runs at all. That was issue
+[#2283](https://github.com/go-to-k/cdkd/issues/2283), and it is FIXED (PR
+[#2309](https://github.com/go-to-k/cdkd/issues/2309), extended by
+[#2378](https://github.com/go-to-k/cdkd/issues/2378)) — read
+`confirmDeleteTargetIdentity` and `assertRecordedRegionAgainstClient` in
+`cloud-control-provider.ts`. The one thing to carry across before reading them:
+they answer an INDETERMINATE region in OPPOSITE directions on purpose. The probe
+asks a remote service where a globally unique name lives, so it warns and
+PROCEEDS rather than stranding a role never granted `s3:GetBucketLocation`; the
+comparison is local against a positively recorded region, so it REFUSES. Its
+omission of `ExpectedBucketOwner` is deliberate for the same reason the SDK-side
+guards exist: the hazard is a foreign-account bucket, and passing the parameter
+would turn that collision into a 403 and thence into the proceed arm.
 
 **A guard reporting a failed probe names the error CLASS, never AWS's message,
 and the invariant is per-READER.** That message is not neutral text: on the
