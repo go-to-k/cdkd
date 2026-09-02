@@ -698,6 +698,24 @@ describe('CloudControlProvider.delete -- indeterminate guards are REPORTED (issu
     expect(ccCallNames()).toContain('DeleteResourceCommand');
   });
 
+  it('joins the redacted cause to the next sentence with exactly one period', async () => {
+    // Found by the LIVE run of `s3-lifecycle` phase 0c-ID, not by a unit test:
+    // a REDACTED summary ends in the helper's own `VERBOSE_POINTER` sentence and
+    // already carries a period, so interpolating it before `. S3 bucket names`
+    // printed `for AWS's own message.. S3 bucket names ...` in a user-facing
+    // security warning. The passed-through shape (asserted in the sibling case
+    // below) usually carries NO trailing period, which is why the join strips
+    // and re-adds rather than simply dropping one side.
+    wireBucketLocationError('AccessDenied', 'Access Denied');
+    const provider = new CloudControlProvider();
+
+    await provider.delete('Bucket', BUCKET, S3, undefined, { expectedRegion: 'us-east-1' });
+
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain("message. S3 bucket names are globally unique");
+    expect(warned).not.toContain('..');
+  });
+
   it('reports NO region on record and no client region, as its own distinct reason', async () => {
     clientRegion = undefined;
     const provider = new CloudControlProvider();

@@ -1330,9 +1330,17 @@ export class CloudControlProvider implements ResourceProvider {
       this.logger.debug(
         `s3:GetBucketLocation on ${physicalId} (${logicalId}) failed: ${failure.detail}`
       );
+      // Trailing sentence punctuation is stripped before this clause re-adds
+      // it, because the two `summary` shapes disagree about it: a REDACTED one
+      // ends in the helper's `VERBOSE_POINTER` sentence and already carries a
+      // period, while a passed-through cdkd- or SDK-authored message usually
+      // does not. Interpolating either directly is wrong for the other -- the
+      // live run of `s3-lifecycle` phase 0c-ID printed `for AWS's own
+      // message.. S3 bucket names ...` to a user-facing security warning.
+      const summarySentence = failure.summary.replace(/[.\s]+$/, '');
       this.logger.warn(
         `Could not confirm which region S3 bucket ${physicalId} (${logicalId}) lives in before ` +
-          `deleting it: ${failure.summary}. S3 bucket names are globally unique, so cdkd cannot ` +
+          `deleting it: ${summarySentence}. S3 bucket names are globally unique, so cdkd cannot ` +
           `rule out that this name denotes a bucket in another region. Grant s3:GetBucketLocation ` +
           `on the bucket to enable the check. Proceeding with the delete.`
       );
