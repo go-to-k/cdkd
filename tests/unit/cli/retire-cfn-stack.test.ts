@@ -1,4 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+/**
+ * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
+ * prompt this file drives now REFUSES a non-interactive stdin
+ * (`CdkdError` / `NON_INTERACTIVE_CONFIRM`, from the shared
+ * `confirmOrRefuse` helper) instead of hanging on a `question` an EOF stdin
+ * can never settle. Vitest's stdin is NOT a TTY, so every case that exercises
+ * the PROMPT has to present as interactive; the refusal cases set it back.
+ */
+import { setStdinIsTty } from '../../stdin-tty.js';
 
 const infoSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -205,6 +214,15 @@ const TEMPLATE_ALL_RETAIN = JSON.stringify({
       UpdateReplacePolicy: 'Retain',
     },
   },
+});
+
+let originalIsTTY: boolean | undefined;
+beforeEach(() => {
+  originalIsTTY = process.stdin.isTTY;
+  setStdinIsTty(true);
+});
+afterEach(() => {
+  setStdinIsTty(originalIsTTY);
 });
 
 describe('injectRetainPolicies', () => {
@@ -527,6 +545,42 @@ describe('retireCloudFormationStack', () => {
     });
 
     expect(result).toEqual({ outcome: 'cancelled' });
+    expect(calls.map((c) => c.name)).toEqual(['DescribeStacks', 'GetTemplate']);
+  });
+
+  /**
+   * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the ROUTING
+   * half. `tests/unit/cli/non-interactive-confirm-guards.test.ts` probes this
+   * command's prompt HELPER directly (the `NON_INTERACTIVE_CONFIRM` code, the
+   * refusal wording, the never-settling-question hang fence); what a
+   * helper-level probe cannot see is whether the COMMAND's own call site
+   * still reaches it, or has grown a second `readline.createInterface` of its
+   * own. This case drives the real command path with no confirmation flag and
+   * a non-TTY stdin, and asserts the refusal surfaces with nothing mutated.
+   */
+  it('REFUSES a non-interactive run, naming -y / --yes, before any UpdateStack', async () => {
+    setStdinIsTty(undefined);
+    const { client, calls } = buildCfnClient({
+      DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
+      GetTemplate: { TemplateBody: TEMPLATE_NO_RETAIN },
+    });
+
+    // This entry point is called directly (no `withErrorHandling` in the
+    // way), so the raw error is observable here as well as its message.
+    const error = await retireCloudFormationStack({
+      cfnStackName: 'X',
+      cfnClient: client as never,
+      yes: false,
+      stateBucket: 'test-state-bucket',
+    }).catch((e: unknown) => e);
+
+    expect((error as { code?: string }).code).toBe('NON_INTERACTIVE_CONFIRM');
+    expect((error as Error).message).toContain(
+      'The CloudFormation stack retirement confirmation prompt cannot run'
+    );
+    expect((error as Error).message).toContain('-y / --yes');
+    expect(readlineQuestion).not.toHaveBeenCalled();
+    // Refused after the read-only calls and before any mutation.
     expect(calls.map((c) => c.name)).toEqual(['DescribeStacks', 'GetTemplate']);
   });
 
@@ -1353,13 +1407,19 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
     ).rejects.toThrow(/resourceTree.stackName='WrongName' does not match cfnStackName='Right'/);
   });
 
-  it('drains nested-template uploads when the user cancels at the confirmation prompt', async () => {
-    // Regression for the code-reviewer-flagged leak on PR #564:
-    // when `injectRetainPoliciesRecursive` had already uploaded one or
-    // more transient child-template bodies BEFORE the interactive
-    // confirmation prompt fired, a user `n` answer would return
-    // `outcome: 'cancelled'` without draining the cleanups — leaking
-    // S3 objects under the `cdkd-migrate-tmp/` prefix.
+  /**
+   * A parent whose ONE nested child forces a transient child-template upload
+   * before the confirmation prompt is reached.
+   *
+   * Shared by the two cases below because they differ ONLY in how the
+   * confirmation gate is left — a declined `n` versus a non-interactive
+   * REFUSAL — and that difference is the whole subject. Duplicating the
+   * fixture would let one arm's tree drift from the other's and quietly stop
+   * being a comparison.
+   */
+  function buildNestedUploadFixture(): ReturnType<typeof buildCfnClient> & {
+    tree: CfnStackResourceTree;
+  } {
     const childArn = 'arn:aws:cloudformation:...:stack/Child/uuid';
     const parentBody = JSON.stringify({
       Resources: {
@@ -1392,7 +1452,7 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
         ],
       ]),
     };
-    const { client } = buildCfnClient({
+    const built = buildCfnClient({
       DescribeStacks: { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] },
       // First GetTemplate = parent, second = child. The recursive walk
       // pre-fetches both BEFORE the prompt fires.
@@ -1401,6 +1461,25 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
         return () => ({ TemplateBody: ++n === 1 ? parentBody : childBody });
       })(),
     });
+    return { ...built, tree };
+  }
+
+  /** Every transient upload was reaped: at least one PutObject, all deleted. */
+  function expectUploadsDrained(): void {
+    const puts = s3SendCalls.filter((c) => c.name === 'PutObject');
+    const deletes = s3SendCalls.filter((c) => c.name === 'DeleteObject');
+    expect(puts.length).toBeGreaterThanOrEqual(1);
+    expect(deletes.length).toBe(puts.length);
+  }
+
+  it('drains nested-template uploads when the user cancels at the confirmation prompt', async () => {
+    // Regression for the code-reviewer-flagged leak on PR #564:
+    // when `injectRetainPoliciesRecursive` had already uploaded one or
+    // more transient child-template bodies BEFORE the interactive
+    // confirmation prompt fired, a user `n` answer would return
+    // `outcome: 'cancelled'` without draining the cleanups — leaking
+    // S3 objects under the `cdkd-migrate-tmp/` prefix.
+    const { client, tree } = buildNestedUploadFixture();
     // User declines the prompt.
     readlineQuestion.mockResolvedValue('n');
 
@@ -1415,9 +1494,39 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
     expect(result).toEqual({ outcome: 'cancelled' });
     // Child template was uploaded (PutObject) AND deleted (DeleteObject)
     // — the cancel path must reap the leak before returning.
-    const puts = s3SendCalls.filter((c) => c.name === 'PutObject');
-    const deletes = s3SendCalls.filter((c) => c.name === 'DeleteObject');
-    expect(puts.length).toBeGreaterThanOrEqual(1);
-    expect(deletes.length).toBe(puts.length);
+    expectUploadsDrained();
+  });
+
+  /**
+   * The SAME leak, on the REFUSAL exit rather than the decline exit.
+   *
+   * The decline branch's own drain does not cover this one: issue #2275's
+   * guard THROWS out of `confirmPrompt`, so the `if (!ok)` body never runs,
+   * the recursive walk's `catch` has already been left, and the
+   * post-`UpdateStack` `finally` is further down. Before the fix a non-TTY
+   * `cdkd import --migrate-from-cloudformation` on a nested stack left the
+   * child bodies under `cdkd-migrate-tmp/` in the state bucket forever, with
+   * no command that ever reaps them.
+   *
+   * Deliberately asserts the DRAIN and not merely the refusal — the routing
+   * case above already fences the refusal, and would stay green with the
+   * leak.
+   */
+  it('drains nested-template uploads when the prompt REFUSES a non-interactive stdin', async () => {
+    setStdinIsTty(undefined);
+    const { client, tree } = buildNestedUploadFixture();
+
+    const error = await retireCloudFormationStack({
+      cfnStackName: 'Parent',
+      cfnClient: client as never,
+      yes: false,
+      stateBucket: 'state-bucket',
+      resourceTree: tree,
+    }).catch((e: unknown) => e);
+
+    // The refusal still propagates — the drain must not swallow it.
+    expect((error as { code?: string }).code).toBe('NON_INTERACTIVE_CONFIRM');
+    expect(readlineQuestion).not.toHaveBeenCalled();
+    expectUploadsDrained();
   });
 });

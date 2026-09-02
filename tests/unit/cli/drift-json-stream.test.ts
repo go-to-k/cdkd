@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+/**
+ * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
+ * prompt this file drives now REFUSES a non-interactive stdin
+ * (`CdkdError` / `NON_INTERACTIVE_CONFIRM`, from the shared
+ * `confirmOrRefuse` helper) instead of hanging on a `question` an EOF stdin
+ * can never settle. Vitest's stdin is NOT a TTY, so every case that exercises
+ * the PROMPT has to present as interactive; the refusal cases set it back.
+ */
+import { setStdinIsTty } from '../../stdin-tty.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
 /**
@@ -284,6 +293,15 @@ function driftedState(): { state: StackState; etag: string } {
     Bucket1: resource(BUCKET, { VersioningConfiguration: { Status: 'Enabled' } }),
   });
 }
+
+let originalIsTTY: boolean | undefined;
+beforeEach(() => {
+  originalIsTTY = process.stdin.isTTY;
+  setStdinIsTty(true);
+});
+afterEach(() => {
+  setStdinIsTty(originalIsTTY);
+});
 
 describe('drift --json keeps stdout to the payload (issue #2230)', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
@@ -588,6 +606,68 @@ describe('drift --json keeps stdout to the payload (issue #2230)', () => {
     // consulted rather than constructed and abandoned.
     expect(mockSaveState).toHaveBeenCalledTimes(1);
     expect(() => JSON.parse(stdout)).not.toThrow();
+  });
+
+  /**
+   * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the ROUTING
+   * half. `tests/unit/cli/non-interactive-confirm-guards.test.ts` probes this
+   * command's prompt HELPER directly (the `NON_INTERACTIVE_CONFIRM` code, the
+   * refusal wording, the never-settling-question hang fence); what a
+   * helper-level probe cannot see is whether the COMMAND's own call site
+   * still reaches it, or has grown a second `readline.createInterface` of its
+   * own. This case drives the real command path with no confirmation flag and
+   * a non-TTY stdin, and asserts the refusal surfaces with nothing mutated.
+   */
+  it('REFUSES a non-interactive --accept run and never opens the prompt', async () => {
+    setStdinIsTty(undefined);
+    mockGetState.mockResolvedValue(driftedState());
+    mockRegistryGetProvider.mockReturnValue(DRIFTED_PROVIDER);
+
+    // No `-y` and no `--dry-run`, so the prompt would be reached.
+    const { stderr, error } = await runDrift([...ARGS, '--accept']);
+
+    expect(error).toBeDefined();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const text = stripAnsi(stderr);
+    expect(text).toContain('CdkdError');
+    expect(text).toContain('The cdkd drift confirmation prompt cannot run');
+    expect(text).toContain('-y / --yes');
+    // Refused before the interface exists, and state left alone.
+    expect(mockCreateInterface).not.toHaveBeenCalled();
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The `--revert` twin of the case above, and NOT redundant with it.
+   *
+   * `drift.ts` has TWO prompt call sites — one per mode — and the docs table
+   * row is labelled "`--accept` / `--revert`", so a single `--accept` case
+   * left half of what the row claims unfenced: deleting the guard from the
+   * revert call site alone would keep every other case in this file green.
+   *
+   * `--revert` also has strictly more to lose than `--accept`: it calls
+   * `provider.update` against LIVE AWS, so the refusal is asserted against
+   * the provider as well as against the state write.
+   */
+  it('REFUSES a non-interactive --revert run and never calls provider.update', async () => {
+    setStdinIsTty(undefined);
+    const update = vi.fn();
+    mockGetState.mockResolvedValue(driftedState());
+    mockRegistryGetProvider.mockReturnValue({ ...DRIFTED_PROVIDER, update });
+
+    // No `-y` and no `--dry-run`, so the prompt would be reached.
+    const { stderr, error } = await runDrift([...ARGS, '--revert']);
+
+    expect(error).toBeDefined();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const text = stripAnsi(stderr);
+    expect(text).toContain('CdkdError');
+    expect(text).toContain('The cdkd drift confirmation prompt cannot run');
+    expect(text).toContain('-y / --yes');
+    // Refused before the interface exists — and before AWS was touched.
+    expect(mockCreateInterface).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 
   it('without --json the confirmation prompt stays on stdout', async () => {

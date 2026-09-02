@@ -1,4 +1,3 @@
-import * as readline from 'node:readline/promises';
 import { Command, Option } from 'commander';
 import { GetRoleCommand, GetUserCommand } from '@aws-sdk/client-iam';
 import {
@@ -8,6 +7,7 @@ import {
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import {
   CdkdError,
   PartialFailureError,
@@ -4734,21 +4734,29 @@ async function runWithConcurrency(
 }
 
 /**
- * Ask the operator to confirm a mutation.
+ * `cdkd drift --accept` / `--revert`'s confirmation prompt: ask the operator to
+ * confirm a mutation. Both call sites sit inside an `if (!options.yes)` block,
+ * which is what keeps `confirmOrRefuse`'s non-interactive refusal (issue
+ * #2275) from firing on a `--yes` run.
  *
- * Issue #2230: the prompt is written to `out.stream`, not unconditionally to
- * `process.stdout` — under `--json` that stream carries the payload, and a
- * bare `[y/N] ` spliced into it is the same corruption as a status line.
- * The prompt is still SHOWN; only its stream changes.
+ * Issue #2230 is why this site passes an explicit `output`: the prompt is
+ * written to `out.stream`, not unconditionally to `process.stdout` — under
+ * `--json` that stream carries the payload, and a bare `[y/N] ` spliced into
+ * it is the same corruption as a status line, so the sink is `process.stderr`
+ * there. The prompt is still SHOWN; only its stream changes. See the
+ * `HumanTextSink` doc above for why the STREAM (not a closure) is what gets
+ * handed to `createInterface`.
+ *
+ * Exported for unit testing — internal to the command flow otherwise.
  */
-async function confirmPrompt(prompt: string, out: HumanTextSink): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: out.stream });
-  try {
-    const ans = await rl.question(`${prompt} [y/N] `);
-    return /^y(es)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
+export async function confirmPrompt(prompt: string, out: HumanTextSink): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    output: out.stream,
+    refusal:
+      'The cdkd drift confirmation prompt cannot run in a non-interactive ' +
+      'environment. Pass -y / --yes to confirm, or run the command from a real ' +
+      'terminal.',
+  });
 }
 
 /**

@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+/**
+ * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
+ * prompt this file drives now REFUSES a non-interactive stdin
+ * (`CdkdError` / `NON_INTERACTIVE_CONFIRM`, from the shared
+ * `confirmOrRefuse` helper) instead of hanging on a `question` an EOF stdin
+ * can never settle. Vitest's stdin is NOT a TTY, so every case that exercises
+ * the PROMPT has to present as interactive; the refusal cases set it back.
+ */
+import { setStdinIsTty } from '../../stdin-tty.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
@@ -103,6 +112,15 @@ async function runStateOrphan(args: string[]): Promise<string> {
   }
   return cap.output.join('');
 }
+
+let originalIsTTY: boolean | undefined;
+beforeEach(() => {
+  originalIsTTY = process.stdin.isTTY;
+  setStdinIsTty(true);
+});
+afterEach(() => {
+  setStdinIsTty(originalIsTTY);
+});
 
 describe('cdkd state orphan', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
@@ -261,6 +279,39 @@ describe('cdkd state orphan', () => {
     expect(mockDeleteState).not.toHaveBeenCalledWith('B', 'us-east-1');
     expect(mockForceReleaseLock).toHaveBeenCalledWith('A', 'us-east-1');
     expect(mockForceReleaseLock).not.toHaveBeenCalledWith('B', 'us-east-1');
+  });
+
+
+  /**
+   * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the ROUTING
+   * half. `tests/unit/cli/non-interactive-confirm-guards.test.ts` probes this
+   * command's prompt HELPER directly (the `NON_INTERACTIVE_CONFIRM` code, the
+   * refusal wording, the never-settling-question hang fence); what a
+   * helper-level probe cannot see is whether the COMMAND's own call site
+   * still reaches it, or has grown a second `readline.createInterface` of its
+   * own. This case drives the real command path with no confirmation flag and
+   * a non-TTY stdin, and asserts the refusal surfaces with nothing mutated.
+   */
+  it('REFUSES a non-interactive run, naming -y / --yes and -f / --force', async () => {
+    setStdinIsTty(undefined);
+    mockListStacks.mockResolvedValue([{ stackName: 'MyStack', region: 'us-east-1' }]);
+    mockIsLocked.mockResolvedValue(false);
+
+    await expect(runStateOrphan(['orphan', 'MyStack'])).rejects.toThrow();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    // `formatError` renders `<name>: <message>`, so the name pins that this is
+    // a `CdkdError` rather than a bare `Error` — the shape `gc.ts` and
+    // `bootstrap-destroy.ts` established and the one CI branches on.
+    expect(message).toContain('CdkdError');
+    expect(message).toContain('The cdkd state orphan confirmation prompt cannot run');
+    expect(message).toContain('-y / --yes');
+    expect(message).toContain('-f / --force');
+    // stdin never consulted, and nothing removed.
+    expect(readlineQuestion).not.toHaveBeenCalled();
+    expect(mockDeleteState).not.toHaveBeenCalled();
+    expect(mockForceReleaseLock).not.toHaveBeenCalled();
   });
 
   describe('live-lock warning before the force-release (issue #2171)', () => {

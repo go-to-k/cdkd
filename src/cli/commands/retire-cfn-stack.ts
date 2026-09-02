@@ -1,4 +1,3 @@
-import * as readline from 'node:readline/promises';
 import {
   CloudFormationClient,
   DescribeStacksCommand,
@@ -10,6 +9,7 @@ import {
   waitUntilStackDeleteComplete,
 } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../utils/logger.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import { STABLE_TERMINAL_STATUSES } from '../cfn-stack-states.js';
 import {
   CFN_TEMPLATE_BODY_LIMIT,
@@ -153,6 +153,46 @@ export type RetireCloudFormationOutcome =
   | { outcome: 'no-template-change' };
 
 /**
+ * Best-effort reaper for the transient template bodies this flow uploads to
+ * the state bucket under `cdkd-migrate-tmp/`.
+ *
+ * ONE implementation because {@link retireCloudFormationStack} drains from
+ * four different exits — the recursive walk's `catch`, the confirmation
+ * gate's decline AND its non-interactive refusal, the no-modification fast
+ * path, and the post-`UpdateStack` `finally`. Each used to carry its own copy
+ * of this loop, and the copies were how the refusal exit came to have none at
+ * all: a `throw` from the gate passes every one of the other three.
+ *
+ * Best-effort by design. A leaked transient object costs pennies and lives
+ * under an explicitly-named prefix, while a failed DELETE that propagated
+ * would turn a successful retire into a reported failure. The retire's
+ * success is governed by CloudFormation, not by S3 — so each cleanup's own
+ * error becomes a `warn` naming the prefix to sweep manually.
+ *
+ * `what` / `when` keep the four sites' distinct wording (a caller says
+ * whether these are the parent's own upload or a nested child's, and whether
+ * it is unwinding); the SENTENCE they sit in is shared.
+ */
+async function drainTemplateUploads(
+  cleanups: readonly (() => Promise<void>)[],
+  stateBucket: string,
+  labels: { what: string; when?: string }
+): Promise<void> {
+  const logger = getLogger();
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+    } catch (cleanupErr) {
+      const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+      logger.warn(
+        `Failed to delete ${labels.what} from '${stateBucket}'${labels.when ? ` ${labels.when}` : ''}. ` +
+          `Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. Cause: ${msg}`
+      );
+    }
+  }
+}
+
+/**
  * Retire a CloudFormation stack whose resources have just been adopted into
  * cdkd state. The 4-step procedure is the one AWS recommends for handing
  * over resources between management tools without deleting them:
@@ -258,18 +298,10 @@ export async function retireCloudFormationStack(
       // for the UpdateStack call is unreachable here — `modified` is never
       // assigned, so the `if (modified)` branch + its `finally` never run).
       if (err instanceof RecursiveRetainInjectionError) {
-        for (const cleanup of err.cleanups) {
-          try {
-            await cleanup();
-          } catch (cleanupErr) {
-            const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-            logger.warn(
-              `Failed to delete partial nested-template upload from '${stateBucket}' ` +
-                `during error recovery. Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. ` +
-                `Cause: ${msg}`
-            );
-          }
-        }
+        await drainTemplateUploads(err.cleanups, stateBucket, {
+          what: 'partial nested-template upload',
+          when: 'during error recovery',
+        });
       }
       throw err;
     }
@@ -279,34 +311,41 @@ export async function retireCloudFormationStack(
 
   // ---- Confirmation gate (after we know what we're about to change) ----
   if (!yes) {
-    const ok = await confirmPrompt(
-      `Set DeletionPolicy=Retain and UpdateReplacePolicy=Retain on every resource in ` +
-        `CloudFormation stack '${cfnStackName}', then delete the stack? ` +
-        `AWS resources will NOT be deleted (cdkd state has been written).`
-    );
-    if (!ok) {
-      logger.info('CloudFormation stack retirement cancelled. cdkd state is unaffected.');
-      // The recursive Retain-injection walk may have already uploaded
-      // one or more transient child-template bodies to the cdkd state
-      // bucket BEFORE the user said "no" to this prompt. Drain them
-      // here so a cancelled retire does not leak S3 objects under the
-      // `cdkd-migrate-tmp/` prefix — same best-effort + per-cleanup
-      // error log as the post-UpdateStack `finally` drains below.
-      // Failure mode this fixes: a parent stack with nested children
-      // run with `--migrate-from-cloudformation` interactively (no
-      // `--yes`), user declines, transient child uploads orphaned.
-      for (const cleanup of nestedCleanups) {
-        try {
-          await cleanup();
-        } catch (cleanupErr) {
-          const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-          logger.warn(
-            `Failed to delete temporary nested-template upload from '${stateBucket}' ` +
-              `during cancel cleanup. Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. ` +
-              `Cause: ${msg}`
-          );
-        }
+    // The recursive Retain-injection walk may have already uploaded one or
+    // more transient child-template bodies to the cdkd state bucket BEFORE
+    // this prompt. There are THREE ways out of this gate and only one of them
+    // may keep those objects:
+    //
+    //   proceed  -> keep; the post-UpdateStack `finally` below reaps them.
+    //   decline  -> drain; a cancelled retire must not leak S3 objects under
+    //               the `cdkd-migrate-tmp/` prefix.
+    //   REFUSE   -> drain; `confirmOrRefuse` THROWS on a non-interactive
+    //               stdin (issue #2275), and that throw passes none of this
+    //               function's three other drains — the recursive `catch`
+    //               above has already been left, and the `if (modified)`
+    //               branch with its `finally` is still below.
+    //
+    // The last one is why the drain hangs off a `finally` keyed on `proceed`
+    // rather than living inside the decline branch: a second copy of the
+    // decline branch's loop is the duplication class issue #2275 exists to
+    // remove, and it is exactly the shape that let the refusal path leak.
+    let proceed = false;
+    try {
+      proceed = await confirmPrompt(
+        `Set DeletionPolicy=Retain and UpdateReplacePolicy=Retain on every resource in ` +
+          `CloudFormation stack '${cfnStackName}', then delete the stack? ` +
+          `AWS resources will NOT be deleted (cdkd state has been written).`
+      );
+    } finally {
+      if (!proceed) {
+        await drainTemplateUploads(nestedCleanups, stateBucket, {
+          what: 'temporary nested-template upload',
+          when: 'during cancel cleanup',
+        });
       }
+    }
+    if (!proceed) {
+      logger.info('CloudFormation stack retirement cancelled. cdkd state is unaffected.');
       return { outcome: 'cancelled' };
     }
   }
@@ -321,19 +360,9 @@ export async function retireCloudFormationStack(
     // modified" rule means this branch is unreachable today, but keeping
     // the drain wired in means future ordering changes to the recursive
     // walk cannot silently regress to leaking S3 objects.
-    if (nestedCleanups.length > 0) {
-      for (const cleanup of nestedCleanups) {
-        try {
-          await cleanup();
-        } catch (cleanupErr) {
-          const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-          logger.warn(
-            `Failed to delete temporary nested-template upload from '${stateBucket}'. ` +
-              `Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. Cause: ${msg}`
-          );
-        }
-      }
-    }
+    await drainTemplateUploads(nestedCleanups, stateBucket, {
+      what: 'temporary nested-template upload',
+    });
   } else {
     logger.info(`[2/4] Injected DeletionPolicy=Retain and UpdateReplacePolicy=Retain.`);
     // Pick the UpdateStack input shape based on the modified template's size.
@@ -425,21 +454,13 @@ export async function retireCloudFormationStack(
       // explicitly-named `cdkd-migrate-tmp/` prefix, so a stale object is
       // easy to identify and reap manually. The retire flow's
       // success/failure is governed by CFn, not by S3.
-      const allCleanups: (() => Promise<void>)[] = [
-        ...(s3Cleanup ? [s3Cleanup] : []),
-        ...nestedCleanups,
-      ];
-      for (const cleanup of allCleanups) {
-        try {
-          await cleanup();
-        } catch (cleanupErr) {
-          const msg = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
-          logger.warn(
-            `Failed to delete temporary template upload from '${stateBucket}'. ` +
-              `Clean up manually under prefix '${MIGRATE_TMP_PREFIX}/'. Cause: ${msg}`
-          );
+      await drainTemplateUploads(
+        [...(s3Cleanup ? [s3Cleanup] : []), ...nestedCleanups],
+        stateBucket,
+        {
+          what: 'temporary template upload',
         }
-      }
+      );
     }
   }
 
@@ -906,14 +927,39 @@ async function walkCfnStackTree(
   return { stackName, physicalId, resources, nested };
 }
 
-async function confirmPrompt(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = await rl.question(`${prompt} [y/N] `);
-    return /^y(es)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
+/**
+ * The CloudFormation-stack retirement confirmation prompt, reached from
+ * `cdkd import --migrate-from-cloudformation` and `cdkd migrate
+ * --retire-cfn-stack` (both spell the skip flag `-y` / `--yes`). Its only call
+ * site is inside the `if (!yes)` block above, which is what keeps
+ * `confirmOrRefuse`'s non-interactive refusal (issue #2275) from firing on a
+ * `--yes` run.
+ *
+ * TWO commands reach it, so the refusal NAMES BOTH. Every other site names one
+ * command because it has one; a refusal that named neither would leave a CI
+ * user knowing a flag is missing without knowing which invocation to put it
+ * on, and `confirmOrRefuse`'s own contract is that the refusal is the only
+ * thing that user sees.
+ *
+ * It also states that cdkd state has ALREADY been written. This prompt is the
+ * only one of the nine that fires AFTER its command's state write, so a
+ * refusal here leaves a genuine split brain — cdkd claims the resources while
+ * the CloudFormation stack is still live — and the operator has to know that
+ * before deciding whether to re-run or finish by hand.
+ *
+ * Exported for unit testing — internal to the command flow otherwise.
+ */
+export async function confirmPrompt(prompt: string): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    refusal:
+      'The CloudFormation stack retirement confirmation prompt cannot run in a ' +
+      'non-interactive environment. Pass -y / --yes on whichever command you ran — ' +
+      'cdkd import --migrate-from-cloudformation or cdkd migrate --retire-cfn-stack — ' +
+      'or run it from a real terminal. NOTE cdkd state has already been written: the ' +
+      'resources are recorded in cdkd state while the CloudFormation stack is still ' +
+      'live, so re-run with -y / --yes (or retire the stack by hand) to finish the ' +
+      'migration.',
+  });
 }
 
 /**

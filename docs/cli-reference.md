@@ -1307,17 +1307,28 @@ file (`additionalMetadataFile`) written by current versions.
 ## Output streams: when stdout is a payload
 
 A `--json` flag was never what made a stream a payload stream -- it picks the
-payload's ENCODING. Four commands write a machine-consumable document to stdout
-with no flag involved, and since issue
-[#2410](https://github.com/go-to-k/cdkd/issues/2410) each reserves stdout
+payload's ENCODING. Five commands write a machine-consumable document to stdout
+with no flag involved, and since issues
+[#2410](https://github.com/go-to-k/cdkd/issues/2410) and
+[#2435](https://github.com/go-to-k/cdkd/issues/2435) each reserves stdout
 UNCONDITIONALLY, so their DEFAULT output contract is the one that changed:
 
 | Command | What stdout carries |
 | --- | --- |
 | `cdkd synth` | the CloudFormation template (single stack only -- see below) |
 | `cdkd list` | the stack listing in EVERY mode: one display id per line by default, YAML under `--long` / `--show-dependencies`, JSON under `--json` |
+| `cdkd state list` | the state-record listing: one `Stack (region)` reference per line by default, JSON under `--json` (`--long` / `--tree` are human views swept along -- see below) |
 | `cdkd local invoke` | the function's response payload |
 | `cdkd local invoke-agentcore` | the agent's response (buffered, or streamed frame by frame under SSE / `--ws`) |
+
+**The discriminator is the output's SHAPE, not the flag**: a line-oriented
+RECORD SET is a payload; a formatted human VIEW -- aligned columns, a rendered
+tree, a metadata block -- is not. That is why the other three `cdkd state`
+subcommands with a `--json` mode (`state resources`, `state show`,
+`state info`) keep the `--json` gate: their flagless output is a formatted view
+with no record-set mode behind it, so reserving stdout there would move an
+operator's prose off the stream they are already reading it on for no
+consumer's benefit.
 
 Everything **cdkd's own logger** prints on those commands -- `Synthesizing
 CDK app...`, `cdkd synth`'s `Synthesis complete!` summary block, `cdkd local
@@ -1332,6 +1343,7 @@ restores the old single-stream view.
 cdkd synth > template.yaml 2> progress.log   # see the toYaml caveat below
 cdkd list --long | yq '.[].name'
 cdkd list | while read -r id; do echo "found stack: $id"; done
+cdkd state list | while read -r ref; do echo "found state for: $ref"; done
 cdkd local invoke MyStack/Handler --event e.json | tail -1 | jq .body
 ```
 
@@ -1373,6 +1385,14 @@ Three consequences worth stating explicitly:
   descriptors, and cdkd runs it unconditionally for an image pulled from ECR --
   so it needed no flag at all. While a reservation is held that child's stdout
   is redirected to stderr.
+- **`cdkd state list --long` and `--tree` are formatted views, and they are
+  swept along.** The reservation is taken at command entry, before the mode is
+  known, so those two modes also send cdkd's logger prose to stderr even though
+  their stdout is a human view rather than a record set. That is deliberate and
+  costs nothing: both still write their view to stdout, so only interleaved
+  prose moves -- to stderr, where an operator at a terminal still sees it and
+  where it stops corrupting a redirect to a file. The alternative, a mode-aware
+  condition, is the flag-shaped gating issue #2435 exists to remove.
 - **`cdkd synth`'s stdout is the template, but it is not yet valid YAML for
   every template.** The renderer leaves YAML indicator characters unquoted, so
   a template containing `"*"` -- any IAM policy `Resource` / `Action`, any CORS
@@ -3291,6 +3311,90 @@ answered.
 A stack whose deletes were interrupted keeps its `state.json` and its
 deployment-event history — the events are the post-mortem for the retry, which
 is why `--purge-events` below is skipped on an interrupted run.
+
+## Every other mutating confirmation prompt is interactive-only too
+
+**Upgrade note — this is a behaviour change on nine more prompts** (issue
+[#2275](https://github.com/go-to-k/cdkd/issues/2275)). `rl.question` never
+settles once stdin is at EOF, and EOF delivers no signal, so a command that
+prompted without a non-TTY guard **hung until its own timeout** in CI rather
+than failing. Issue #2259 closed that for the destroy prompts above; these nine
+were the rest of the class:
+
+| Command | Prompt | Flag that avoids it |
+| --- | --- | --- |
+| `cdkd rollback` | `Roll back '<stack>' (<region>)?` | `--force` (or `-y` / `--yes`) |
+| `cdkd state orphan` | `Remove state for <refs> from s3://...?` | `-y` / `--yes`, or `-f` / `--force` |
+| `cdkd state refresh-observed` | `Refresh observedProperties for N stack(s)...?` | `-y` / `--yes` |
+| `cdkd orphan` | `Orphan N resource(s) from cdkd state...?` | `-y` / `--yes`, or `-f` / `--force` |
+| `cdkd import` | `Write state for <stack> with N resource(s)?` | `-y` / `--yes` |
+| `cdkd export` | the rollback-journal override, the migration confirm, and the nested-stack tree-wide confirm | `-y` / `--yes` |
+| `cdkd drift --accept` / `--revert` | `Update cdkd state...?` / `Push cdkd state values back into AWS...?` | `-y` / `--yes` |
+| `cdkd import --migrate-from-cloudformation`, `cdkd migrate --retire-cfn-stack` | `Set DeletionPolicy=Retain ... then delete the stack?` | `-y` / `--yes` |
+| `cdkd state migrate` | `Copy N object(s) from <bucket> -> <bucket>...?` | `-y` / `--yes` |
+
+On a non-TTY stdin each now refuses **before** creating the prompt, throwing
+`CdkdError` with the code `NON_INTERACTIVE_CONFIRM` and exiting **1**. The
+message names the command and the flag that avoids the prompt.
+
+**No partial mutation survives the refusal.** That is the guarantee, and it is
+worth stating precisely rather than as "nothing has happened yet", because for
+two of the nine something already has:
+
+- **A state lock IS held at the prompt on four of them.** `cdkd orphan`,
+  `cdkd import`, `cdkd export` (its migration and nested-tree prompts) and
+  `cdkd rollback` acquire the stack's lock before building the plan they are
+  about to ask you to confirm. Every one of them releases it in a `finally`, so
+  the refusal releases it on the way out and **no lock is leaked** — a re-run
+  with the flag is not blocked by the run that refused. No lock is held at
+  `cdkd drift`'s two prompts or at `cdkd export`'s rollback-journal override
+  (all three acquire *after* the prompt), nor at either `cdkd state` prompt
+  (they only READ lock state), `cdkd state migrate`, or the CloudFormation
+  retirement.
+- **The CloudFormation retirement has already written, in two senses.** cdkd
+  state is written *before* it is reached at all — it is the last step of
+  `cdkd import --migrate-from-cloudformation` / `cdkd migrate
+  --retire-cfn-stack` — so a refusal leaves the resources recorded in cdkd
+  state while the CloudFormation stack is still live. Its refusal message says
+  so, and names both commands. Separately, for a nested stack whose child
+  templates exceed CloudFormation's 51,200-byte inline limit, those child
+  bodies have already been uploaded to `cdkd-migrate-tmp/` in the state bucket
+  by the time the prompt fires; they are **deleted on the refusing path**,
+  exactly as they are when you answer `n`.
+
+Every other prompt refuses after read-only work only — the plan it was about to
+ask you to confirm, and nothing else.
+
+What breaks: a pipeline that answered one of these with
+`printf 'y\n' | cdkd import ...` succeeded before (piped stdin does settle
+`rl.question` when the input ends in a newline) and now exits **1**. Pass the
+flag from the table, which short-circuits above the check and never consults
+stdin at all.
+
+Refusing rather than auto-confirming is uniform here because **every one of the
+nine guards a mutation** — a rollback replay, a state-record removal, an
+observed-property refresh, an orphan, an import, an export-then-delete-state, a
+drift accept/revert, a CloudFormation stack retirement, a state-bucket
+migration. There is no read-only command in the set, so there was no case for
+the `cdkd deploy` treatment. `cdkd deploy`'s asset-storage auto-create prompt
+remains the one deliberate exception (it assumes "yes" on a non-TTY), because a
+deploy is recoverable.
+
+All nine now share ONE implementation — `confirmOrRefuse` in
+`src/cli/commands/confirm-prompt.ts` — so the guard cannot be missed by the
+next prompt added. Each site keeps its own prompt wording and its own refusal
+message; nothing about the interactive experience changed, including the two
+prompts that render `(y/N): ` where the other seven render ` [y/N] `.
+
+**One mutating prompt sits outside that contract, and it is the tenth:
+`cdkd events prune`.** It has carried a non-TTY guard since it shipped, so it
+never hangs and it prunes nothing without a TTY — but it refuses by logging a
+line and returning, which exits **0**. It does not throw, so it produces no
+`NON_INTERACTIVE_CONFIRM` code and no exit 1. **A CI job that branches on exit
+1 to detect "cdkd wanted a confirmation" will not see this one**: check the
+command's output, or pass `--yes` and let the prune run. Aligning it with the
+other nine is a breaking exit-code change on its own, tracked as issue
+[#2454](https://github.com/go-to-k/cdkd/issues/2454).
 
 ## `--purge-events`: also delete deployment-event history on destroy
 

@@ -1955,6 +1955,15 @@ Flat output is preserved as the default so scripts that grep
 (parent destroyed out-of-band, or state hand-deleted) surface at the root
 level — they stay visible rather than vanishing.
 
+**`cdkd state list`'s stdout is a PAYLOAD, with or without `--json`** (issue
+[#2435](https://github.com/go-to-k/cdkd/issues/2435)): the default mode's one
+`Stack (region)` reference per line is exactly what a `while read -r ref` loop
+consumes, so every line cdkd's own logger prints goes to stderr instead. The
+other `state` subcommands with a `--json` mode (`resources`, `show`, `info`)
+keep the `--json` gate, because their flagless output is a formatted human view
+rather than a record set. See
+[Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
+
 Note: `cdkd list` (alias `ls`) lists stacks from the local CDK app via
 synthesis (CDK CLI parity — see README), which is a different question
 from `cdkd state list` (what is registered in the S3 state bucket).

@@ -18,6 +18,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -103,6 +104,29 @@ interface ResourceDetail {
  */
 function formatStackRef(ref: StackStateRef): string {
   return ref.region ? `${ref.stackName} (${ref.region})` : ref.stackName;
+}
+
+/**
+ * {@link formatStackRef} for a sentence a CONFIRMATION PROMPT renders.
+ *
+ * Both halves come from an S3 key segment (or, for a legacy record, a state
+ * body), so both are attacker-influenced in exactly the way issue #2170 round
+ * 4 found for the lock error sixty lines below this helper's callers: a
+ * planted `\n` forged a whole line inside that sentence. A forged line in a
+ * PROMPT is strictly worse than one in an error, because the sentence it
+ * corrupts is the one the operator answers `y` to.
+ *
+ * `asciiOnly` matches the lock error's own call on these same values — a
+ * stack name and an AWS region both have a known charset — and is a no-op on
+ * every ordinary input, so the shipped prompt strings are byte-identical.
+ * `UNRENDERABLE` stands in when sanitising leaves nothing, since an empty
+ * `()` would read as "no region" rather than "a region cdkd will not print".
+ */
+function formatStackRefSafe(ref: StackStateRef): string {
+  const stack = displaySafe(ref.stackName, { asciiOnly: true }) || UNRENDERABLE;
+  return ref.region
+    ? `${stack} (${displaySafe(ref.region, { asciiOnly: true }) || UNRENDERABLE})`
+    : stack;
 }
 
 /**
@@ -274,9 +298,38 @@ async function stateListCommand(options: {
   // it. `setupStateBackend` runs `applyRoleArnIfSet`, whose `Assumed role
   // ...` INFO line lives in `src/utils/role-arn.ts` — a module this file
   // cannot route on its own, which is why the reservation is module-level.
-  if (options.json) {
-    reserveStdoutForPayload();
-  }
+  //
+  // UNCONDITIONAL since issue #2435, where issue #2280 keyed this on
+  // `options.json`. THE DISCRIMINATOR IS THE OUTPUT'S SHAPE, NOT THE FLAG: a
+  // line-oriented RECORD SET is a payload; a formatted human VIEW (aligned
+  // columns, a rendered tree, a metadata block) is not. `--json` picks the
+  // payload's ENCODING — it was never what made stdout a payload stream.
+  //
+  // `state list`'s DEFAULT mode — no flags at all — writes one
+  // `Stack (region)` reference per line, undecorated: the shape
+  // `cdkd state list | while read -r ref` consumes, and the same contract as
+  // `cdkd list`'s default mode, which issue #2410 made unconditionally
+  // reserved. Under the `options.json` gate a default run put the logger's
+  // prose (a `--verbose` DEBUG stack trace, `Assumed role ...`) on the same
+  // stream as the references, and a consumer read those lines as stack
+  // references.
+  //
+  // Taken here, before the mode is known, so `--long` and `--tree` WITHOUT
+  // `--json` are swept along even though their output is a formatted view.
+  // That is deliberate and harmless: both still write their view to stdout
+  // through `process.stdout.write`, so only interleaved logger prose moves —
+  // to stderr, where an operator at a terminal still sees it and where it
+  // stops corrupting a redirect to a file. The alternative, a mode-aware
+  // `if (!(options.tree && !options.json))`, is the flag-shaped gating this
+  // change exists to remove.
+  //
+  // The other three `state` payload sites keep their `--json` gate by that
+  // same discriminator, and unlike `list` they have NO record-set mode behind
+  // the flag: `state resources` pads three columns to widths computed from
+  // the data, `state show` renders `renderTreeWithChildren` /
+  // `renderStateBlock` blocks, and `state info` prints a metadata block. Do
+  // not sweep those in without a consumer that reads them.
+  reserveStdoutForPayload();
 
   const setup = await setupStateBackend(options);
   try {
@@ -1116,22 +1169,20 @@ async function stateOrphanCommand(
 
       // Single confirmation listing all regions being affected.
       if (!options.yes && !options.force) {
-        const targetList = targets.map((t) => formatStackRef(t)).join(', ');
+        // Sanitised, like the lock error above runs on these SAME values
+        // (issue #2170 round 4) — see `formatStackRefSafe`. Both the warning
+        // banner and the question below render this one string, so a forged
+        // line would land in whichever the operator is reading.
+        const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
             `AWS resources will NOT be deleted.\n` +
             `Use 'cdkd destroy ${stackName}' if you want to delete the actual resources.\n\n`
         );
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
-        });
-        const answer = await rl.question(
-          `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/? (y/N): `
+        const ok = await confirmStateOrphanRemoval(
+          `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/?`
         );
-        rl.close();
-        const trimmed = answer.trim().toLowerCase();
-        if (trimmed !== 'y' && trimmed !== 'yes') {
+        if (!ok) {
           logger.info(`Cancelled removal of state for stack: ${stackName}`);
           continue;
         }
@@ -2186,7 +2237,9 @@ async function stateRefreshObservedCommand(
     }
 
     if (!options.yes && !options.dryRun) {
-      const targetList = targets.map(formatStackRef).join(', ');
+      // Sanitised for the same reason as the `state orphan` prompt above: this
+      // file's OTHER confirmation prompt, built from the same S3 key segments.
+      const targetList = targets.map(formatStackRefSafe).join(', ');
       const ok = await confirmRefresh(
         `Refresh observedProperties for ${targets.length} stack(s) (${targetList})?`
       );
@@ -2545,14 +2598,43 @@ async function refreshObservedForStack(
   }
 }
 
-async function confirmRefresh(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = await rl.question(`${prompt} [y/N] `);
-    return /^y(es)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
+/**
+ * `cdkd state orphan`'s confirmation prompt. Its only call site is inside the
+ * `if (!options.yes && !options.force)` block in `stateOrphanCommand`, which
+ * is what keeps `confirmOrRefuse`'s non-interactive refusal (issue #2275)
+ * from firing on a flagged run.
+ *
+ * The `(y/N): ` suffix is preserved verbatim from before issue #2275 folded
+ * the guard in: it is user-visible output, and only this prompt and
+ * `cdkd rollback` ever spelled it that way.
+ *
+ * Exported for unit testing — internal to the state-orphan flow otherwise.
+ */
+export async function confirmStateOrphanRemoval(prompt: string): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    suffix: ' (y/N): ',
+    refusal:
+      'The cdkd state orphan confirmation prompt cannot run in a non-interactive ' +
+      'environment. Pass -y / --yes (or -f / --force) to confirm the removal, or ' +
+      'run the command from a real terminal.',
+  });
+}
+
+/**
+ * `cdkd state refresh-observed`'s confirmation prompt. Its only call site is
+ * inside the `if (!options.yes && !options.dryRun)` block above, which is what
+ * keeps `confirmOrRefuse`'s non-interactive refusal (issue #2275) from firing
+ * on a `--yes` run.
+ *
+ * Exported for unit testing — internal to the refresh-observed flow otherwise.
+ */
+export async function confirmRefresh(prompt: string): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    refusal:
+      'The cdkd state refresh-observed confirmation prompt cannot run in a ' +
+      'non-interactive environment. Pass -y / --yes to confirm the refresh, or run ' +
+      'the command from a real terminal.',
+  });
 }
 
 /**

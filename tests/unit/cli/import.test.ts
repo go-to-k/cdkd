@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+/**
+ * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
+ * prompt this file drives now REFUSES a non-interactive stdin
+ * (`CdkdError` / `NON_INTERACTIVE_CONFIRM`, from the shared
+ * `confirmOrRefuse` helper) instead of hanging on a `question` an EOF stdin
+ * can never settle. Vitest's stdin is NOT a TTY, so every case that exercises
+ * the PROMPT has to present as interactive; the refusal cases set it back.
+ */
+import { setStdinIsTty } from '../../stdin-tty.js';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -254,6 +263,15 @@ function stackInfo(name: string, tmpl: CloudFormationTemplate, region = 'us-east
     region,
   };
 }
+
+let originalIsTTY: boolean | undefined;
+beforeEach(() => {
+  originalIsTTY = process.stdin.isTTY;
+  setStdinIsTty(true);
+});
+afterEach(() => {
+  setStdinIsTty(originalIsTTY);
+});
 
 describe('cdkd import', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
@@ -1089,6 +1107,49 @@ describe('cdkd import', () => {
 
     expect(mockSaveState).not.toHaveBeenCalled();
     expect(infoSpy).toHaveBeenCalledWith('Import cancelled.');
+  });
+
+  /**
+   * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the ROUTING
+   * half. `tests/unit/cli/non-interactive-confirm-guards.test.ts` probes this
+   * command's prompt HELPER directly (the `NON_INTERACTIVE_CONFIRM` code, the
+   * refusal wording, the never-settling-question hang fence); what a
+   * helper-level probe cannot see is whether the COMMAND's own call site
+   * still reaches it, or has grown a second `readline.createInterface` of its
+   * own. This case drives the real command path with no confirmation flag and
+   * a non-TTY stdin, and asserts the refusal surfaces with nothing mutated.
+   */
+  it('REFUSES a non-interactive run, naming -y / --yes', async () => {
+    setStdinIsTty(undefined);
+    const tmpl = template({
+      MyBucket: {
+        Type: 'AWS::S3::Bucket',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+      },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockReturnValue({
+      import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+    });
+
+    await expect(runImport(['import', '--app', 'x'])).rejects.toThrow();
+
+    const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
+    // `formatError` renders `<name>: <message>`, so the name pins that this is
+    // a `CdkdError` rather than a bare `Error` — the shape CI branches on.
+    expect(message).toContain('CdkdError');
+    expect(message).toContain('The cdkd import confirmation prompt cannot run');
+    expect(message).toContain('-y / --yes');
+    expect(readlineQuestion).not.toHaveBeenCalled();
+    expect(mockSaveState).not.toHaveBeenCalled();
+    // The lock is acquired BEFORE this prompt, so the refusal must release it
+    // on the way out -- the guarantee `docs/cli-reference.md` states for all
+    // four commands that hold a lock at their prompt. A stuck lock would block
+    // every other session against this stack, not merely fail this run.
+    expect(mockAcquireLock).toHaveBeenCalledTimes(1);
+    expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
   it('does not write state when zero resources were successfully imported', async () => {

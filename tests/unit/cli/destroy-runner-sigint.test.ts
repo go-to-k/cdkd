@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { setStdinIsTty } from '../../stdin-tty.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { LockManager } from '../../../src/state/lock-manager.js';
@@ -403,20 +404,6 @@ describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => 
   const mockRemoveStack = vi.fn();
 
   let originalIsTTY: boolean | undefined;
-
-  /**
-   * `defineProperty`, not a plain assignment: `process.stdin.isTTY` is typed
-   * `boolean` while its real value is `undefined` whenever stdin is not a
-   * terminal, which is vitest's normal state. Same stub as
-   * `state-destroy-command-sigint.test.ts`.
-   */
-  function setStdinIsTty(value: boolean | undefined): void {
-    Object.defineProperty(process.stdin, 'isTTY', {
-      value,
-      configurable: true,
-      writable: true,
-    });
-  }
 
   function makeConfirmCtx(skipConfirmation: boolean) {
     return {
