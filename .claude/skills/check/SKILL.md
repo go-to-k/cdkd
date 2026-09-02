@@ -39,19 +39,24 @@ Run these sequentially and report results:
    246 test files), not cdkd's 856. `cd`-ing to the right worktree did not help
    and neither did `--config vite.config.ts`; the shell's `pwd` was correct
    throughout. The tells are the `RUN <root>` header — 3 lines above the
-   summary on a clean cdkd run, but far above it here, since the foreign
-   project's output is not stream-fenced by `tests/setup.ts` — and a stray
-   `vp run: cdk-local#test ...` line at the end.
+   summary on a clean cdkd run, but ~1,600 lines above it here (probably
+   because the foreign project's output is not stream-fenced the way
+   cdkd's `tests/setup.ts` fences its own; inferred, not confirmed) — and a
+   stray `vp run: cdk-local#test ...` line at the end.
 
    **The MECHANISM is unconfirmed; do not repeat a guess as fact.** Ruled out
    in this tree: `node_modules/cdk-local` is a pnpm REGISTRY install (store
    symlink, v0.147.7), `pnpm-workspace.yaml` declares no `packages:`, and
    `vite.config.ts` references no sibling project — so it is not a workspace
-   link. The leading suspect is the globally installed `vp` sharing state
-   across invocations: `command -v vp` resolves to `~/.vite-plus/bin/vp`
-   (v0.1.12) rather than the `.mise.toml`-pinned `http:vp` shim, so the binary
-   deciding what to run is not the repo-pinned toolchain. Worth confirming
-   before anyone builds on it.
+   link. **Also ruled out — and this is the second wrong guess, so stop
+   guessing:** the `vp` on PATH is not an unpinned toolchain. `type -a vp`
+   resolves function -> `~/.vite-plus/bin/vp` -> the mise shim, and while that
+   launcher self-reports `vp v0.1.12`, it prints `Local vite-plus: v0.2.5`,
+   matching both `package.json` and `.mise.toml`'s `http:vp` pin. No version
+   mismatch. What remains observable is only that PATH prefers the
+   `~/.vite-plus` launcher over the mise shim; whether that matters here is
+   unknown. Treat the cause as OPEN and reproduce it before acting on any
+   theory.
 
    Whatever the cause, acting on the summary sets the `check` marker (and
    through `requires`, the `verify-pr` one) over a suite that never ran. So
@@ -59,15 +64,28 @@ Run these sequentially and report results:
    suite's own exit code rather than the trailing `grep`'s:
 
    ```bash
-   log=$(mktemp)                       # NOT a fixed path: the documented
+   # Subshell so the `exit`s are safe to paste into an interactive shell and
+   # still give the caller a non-zero status.
+   (
+     log=$(mktemp)                     # NOT a fixed path: the documented
                                        # trigger is concurrent lanes, and a
                                        # shared /tmp/t.log lets one lane read
                                        # another's summary as its own.
-   vp test run > "$log" 2>&1; rc=$?
-   run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')
-   [ "$run_root" = "$(pwd -P)" ] || { echo "WRONG PROJECT -- attests to nothing"; exit 1; }
-   grep -E "Test Files|      Tests |Type Errors" "$log"
-   [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc"; exit 1; }
+     echo "log: $log"                  # print it BEFORE the exits below, or a
+                                       # failing run's output is unrecoverable
+                                       # (each agent Bash call is a new shell).
+     vp test run > "$log" 2>&1; rc=$?
+     # Exactly ONE header. Two projects interleaved into one log would let
+     # `-m1` bind cdkd's header while the summary grep prints both suites';
+     # zero headers means the suite never started. Report the count, since
+     # the two directions have different causes.
+     runs=$(grep -c 'RUN  v' "$log")
+     [ "$runs" = 1 ] || { echo "expected 1 RUN header, found $runs -- attests to nothing; log: $log"; exit 1; }
+     run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')
+     [ "$run_root" = "$(pwd -P)" ] || { echo "WRONG PROJECT ($run_root) -- attests to nothing; log: $log"; exit 1; }
+     grep -E "Test Files|      Tests |Type Errors" "$log"
+     [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc; log: $log"; exit 1; }
+   )
    ```
 
    It is contention-dependent, not sticky — re-running usually lands on the
