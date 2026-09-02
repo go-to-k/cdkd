@@ -2028,10 +2028,20 @@ function redactDriftChanges(
     // whose `stateValue` is the whole array — never equal to the mask, so the
     // live plaintext was printed and `--accept` wrote it back. `secretPaths` is
     // seeded from the same masks by `collectSecretMaskPaths` and reaches the
-    // same conclusion through `positionIsSecret`; both are kept, because the
-    // seed answers for the RESOURCE's bags while this one answers for the
-    // change list actually being redacted (a comparator that starts reporting a
-    // leaf the seed never walked is covered by exactly one of the two).
+    // same conclusion through `positionIsSecret`.
+    //
+    // MEASURED REDUNDANCY, stated rather than claimed pinned. Reverting THIS
+    // predicate alone (to the whole-value equality) leaves the suite green,
+    // because the seed already marks the position; reverting the SEED alone
+    // reds one case (a change whose `stateValue` is an empty list while
+    // `properties` holds the mask under it — no value predicate can see that);
+    // reverting BOTH reds three, `--accept` writing the live plaintext among
+    // them. So the seed is the load-bearing half and this one is
+    // defence-in-depth. It is kept because the two answer about DIFFERENT
+    // objects — the seed about the RESOURCE's bags, this about the change list
+    // actually being redacted — and the day a comparator reports a leaf the
+    // seed never walked, this is what still masks it. Do not "simplify" it back
+    // to `===` on the strength of a green probe.
     //
     // It DOES catch a user whose real property value is literally `***`, and the
     // cost of that is bounded and correct-shaped: the value is reported masked

@@ -2888,6 +2888,47 @@ describe('cdkd drift — a REDACTED (NoEcho custom-resource) baseline (issue #22
     expect(change.awsValue).toBe(SECRET_MASK);
   });
 
+  it('MASKS a POSITION the reported stateValue does not itself carry', async () => {
+    // The half `carriesSecretMask(change.stateValue)` structurally cannot see,
+    // and therefore the case that makes `collectSecretMaskPaths` load-bearing
+    // ON ITS OWN. `observedProperties` is the comparison baseline and holds an
+    // EMPTY list where `properties` holds the masked leaf — a shape a
+    // deploy-time capture produces routinely (the sibling resource that fills
+    // the list had not run yet). The comparator reports a change on
+    // `ContainerDefinitions` whose stateValue is `[]`, so no value predicate
+    // can recognise it, while the AWS side is the whole live subtree with the
+    // plaintext in it.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'td:1',
+          resourceType: ECS_TYPE,
+          properties: {
+            Family: 'app',
+            ContainerDefinitions: [
+              { Name: 'app', Environment: [{ Name: 'TOKEN', Value: SECRET_MASK }] },
+            ],
+          },
+          observedProperties: { Family: 'app', ContainerDefinitions: [] },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => nestedLiveState() });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    expect(output).not.toContain(LIVE);
+    const payload = JSON.parse(output) as Array<{
+      drifted: Array<{ changes: Array<{ path: string; stateValue: unknown; awsValue: unknown }> }>;
+    }>;
+    const change = payload[0]!.drifted[0]!.changes.find((c) => c.path === 'ContainerDefinitions')!;
+    // The state side really is an empty list — the predicate under test has
+    // nothing to match on, which is what makes this case discriminate.
+    expect(change.stateValue).toBe(SECRET_MASK);
+    expect(change.awsValue).toBe(SECRET_MASK);
+  });
+
   it('--accept REFUSES the array-nested position instead of persisting the live value', async () => {
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(makeState({ Task: nestedMaskedResource() }));
