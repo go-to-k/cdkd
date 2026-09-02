@@ -5228,7 +5228,31 @@ export class IntrinsicFunctionResolver {
     context: ResolverContext,
     origin: string,
     sourceKey: string | undefined,
-    producerOutput?: { stackName: string; region: string; outputKey: string }
+    producerOutput?: {
+      stackName: string;
+      region: string;
+      outputKey: string;
+      /**
+       * Set when the read crosses an ACCOUNT boundary (a `RoleArn` on
+       * `Fn::GetStackOutput`). Recovery is then REFUSED rather than served, and
+       * that is a correctness fact rather than caution: the recovery store is
+       * keyed by stack + region + output key with NO account in it, and it only
+       * ever holds plaintexts THIS process masked while deploying with the
+       * AMBIENT credentials. So a same-named stack in the same region -- the
+       * common shape for a `Shared` / `Network` stack replicated per account --
+       * would serve the CONSUMER account's secret to a read that asked for the
+       * PRODUCER account's, and the consumer would then send it to a resource
+       * in the other account.
+       *
+       * The neighbouring `CrossAccountSecretRefusalError` refuses exactly this
+       * confusion for a redacted DYNAMIC REFERENCE, and its reasoning ("a
+       * same-named secret in the consumer account would answer instead")
+       * transfers verbatim. It does not fire here only because
+       * {@link SECRET_MASK} is not a dynamic reference, so that guard's
+       * `carriesDynamicReference` test is false and this path falls through it.
+       */
+      crossAccount?: boolean;
+    }
   ): Promise<unknown> {
     // Issue #2274: the CROSS-STACK twin of `noteAttributeSecrecy`, and it goes
     // HERE because this method is the one choke point every cross-stack read
@@ -5256,7 +5280,7 @@ export class IntrinsicFunctionResolver {
     // carries no resolved value.
     if (carriesSecretMask(value)) {
       const recovered =
-        producerOutput === undefined
+        producerOutput === undefined || producerOutput.crossAccount === true
           ? undefined
           : recoverMaskedOutput(
               producerOutput.stackName,
@@ -6286,8 +6310,11 @@ export class IntrinsicFunctionResolver {
       `Fn::GetStackOutput '${outputName}' (producer ${stackName} / ${region})`,
       sourceKey,
       // Issue #2274: this read is `outputs[outputName]` of that producer's
-      // state, so the coordinate is exact — see the ImportValue arms.
-      { stackName, region, outputKey: outputName }
+      // state, so the coordinate is exact — see the ImportValue arms. A
+      // `RoleArn` makes it cross-ACCOUNT, which the coordinate cannot express,
+      // so recovery is refused there rather than answered from the ambient
+      // account's store.
+      { stackName, region, outputKey: outputName, ...(roleArn ? { crossAccount: true } : {}) }
     );
   }
 
