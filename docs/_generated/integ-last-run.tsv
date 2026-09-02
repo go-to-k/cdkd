@@ -35,7 +35,7 @@ budgets	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders;
 cache-streaming	2026-08-10T04:52:34Z	PASS	527	verify.sh	0810 sweep b4; elasticache-provider re-verify, GetAtt redis endpoint, 0 orph
 cc-api-fallback	2026-08-10T11:50:46Z	PASS	71	verify.sh	0810 P0/P1 sweep b3; silent-drop closed by CC auto-route, clean destroy
 cc-api-fallback-transitions	2026-08-01T10:00:06Z	PASS	123	verify.sh	0801 regression sweep; #634 items 3+4 ok, 0 orphans
-cc-getatt-readback	2026-08-01T10:00:06Z	PASS	90	verify.sh	0801 regression sweep; CC GetAtt read-back ok, 0 orphans
+cc-getatt-readback	2026-09-02T10:32:07Z	PASS	260	verify.sh	2 phases passed; 8 deleted 0 errors, 0 orphans (S3 AccessPoint, not EFS)
 cc-protection-flip	2026-07-31T03:56:21Z	PASS	1250	verify.sh	5 CC types incl. RDS/DocDB GlobalCluster shells (#1315); orph clean
 cc-protection-flip-eks	2026-07-31T04:30:02Z	PASS	2300	verify.sh	EKS blocked-destroy + --remove-protection flip (#1315); orph clean
 ci-cd	2026-08-09T14:25:56Z	PASS	57	verify.sh	issue #1386 nested sub-keys asserted live; rc ok, orph clean
@@ -98,12 +98,12 @@ ec2-vpc	2026-07-26T17:21:15Z	PASS	35	standard	issue 1241 fix verified: explicit 
 ecr	2026-08-10T11:50:46Z	PASS	35	standard	0810 P0/P1 sweep b2; 3 del/0 err, repo gone
 ecr-scanning	2026-08-09T06:01:13Z	PASS	55	verify.sh	#1392 exclusion-filter create + filters-only update + filterType asserts; 2 del/0 err, 0 orphans
 ecs-bluegreen	2026-08-13T15:11:46Z	PASS	250	verify.sh	#1806 merge run; deploy 24, destroy 24/0, orphans clean
-ecs-fargate	2026-08-11T14:31:36Z	PASS	600	verify.sh	final pre-merge run on the rebased tree; route flip + ns retry + rollout poll green; destroy 23/23 clean
+ecs-fargate	2026-09-02T10:40:36Z	PASS	416	verify.sh	go-to-k/cdkd#2080 EFS AccessPoint create+destroy live; 23 deleted 0 errors, 0 orphans
 ecs-schedule-targets	2026-08-08T19:04:46Z	PASS	60	verify.sh	re-run with drift assert after review fixes; clean
 ecs-service-update-props	2026-08-26T08:19:23Z	PASS	107	verify.sh	issue 1861 lane, final run on the merge-ready tree (3rd: rounds 2 and 3 each edited ecs-provider.ts, which is in integ-destroy's hash:diff scope); both #1861 arms green - removal resets to true/{BOUNDED_PERCENT,50}, never-declared out-of-band false/{COUNT,9} survives a Rollback flip inside the block; destroy 15 deleted 0 errors, 0 orphans
 efs-immutable-replacement	2026-08-01T09:51:12Z	PASS	63	verify.sh	0801 regression sweep; createOnly+stateful guard ok, 0 orphans
 efs-lambda	2026-07-26T18:36:31Z	PASS	499	standard	0727b sweep-b4 staleness re-run (rc=0); account clean
-efs-standalone	2026-08-11T08:40:19Z	PASS	300	verify.sh	#1587 NUL fix; destroy 11/0, 0 orphans
+efs-standalone	2026-09-02T11:29:58Z	PASS	163	verify.sh	go-to-k/cdkd#2080 re-run vs final code; AP created+deleted, 11 deleted 0 errors, 0 orphans
 elasticache-replicationgroup-getatt	2026-08-10T04:52:34Z	PASS	595	verify.sh	0810 sweep b4; CC GetAtt PrimaryEndPoint real hostname, 0 orph
 emr-cluster	2026-08-09T04:01:57Z	PASS	700	verify.sh	#1383 top-level+nested+group Configurations and StepProperties asserted; 12 deleted, 0 errors, 0 orphans
 emr-instance-configs	2026-08-09T04:19:21Z	PASS	1250	verify.sh	#1383 standalone-group ConfigurationProperties asserted; destroy clean, 0 orphans

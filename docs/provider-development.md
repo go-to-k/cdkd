@@ -2107,17 +2107,48 @@ Three rules, each of which has a failure mode behind it:
   failure path defeats the mechanism, while NOT releasing after the resource is
   gone can hand a later create the resource it just destroyed — EC2 keeps a
   `RunInstances` token for ~24h.
-- **Check what the API does with a repeat.** Most return the original resource;
-  Route 53 REFUSES a repeated `CallerReference` (`HostedZoneAlreadyExists`), so
-  that provider recovers by looking the zone up by its caller reference and
-  adopting it. A stable token that turns every retry into a hard failure is only
-  half a fix.
+- **Check what the API does with a repeat, and for how long.** Most return the
+  original resource; Route 53 REFUSES a repeated `CallerReference`
+  (`HostedZoneAlreadyExists`), so that provider recovers by looking the zone up
+  by its caller reference and adopting it. EFS is both at once: a
+  `CreateAccessPoint` `ClientToken` either replays, or is refused with
+  `AccessPointAlreadyExists` (which names the surviving `AccessPointId`), so
+  `EFSProvider.createOrAdoptAccessPoint` reads that access point back, confirms
+  BOTH that its `ClientToken` is the one cdkd minted and that it belongs to the
+  file system cdkd asked for, and adopts it. A stable token that turns every
+  retry into a hard failure is only half a fix. Note EFS documents no
+  retirement period for this token -- the "one minute" in the EFS User Guide's
+  "Creation token and idempotency" section is about file-system CREATION
+  tokens -- so do not write a provider whose correctness depends on that
+  duration; see the DERIVATION note in `createAccessPoint`.
+- **Wrap the rethrow when you decline to adopt.** `DeployEngine`'s replacement
+  path classifies a failed create with `isNameCollisionError`, which tests the
+  TOP-LEVEL message for `already exists` / `AlreadyExists` -- exactly what the
+  raw AWS conflict carries. Rethrowing it bare makes the engine read a TOKEN
+  collision as a physical-NAME collision, and under `--replace` fall back to
+  delete-first: deleting the OLD resource and re-creating with the same
+  still-unreleased token. Wrap it, keep the AWS error as `cause`.
+- **Do not assume the SDK's auto-fill is a fix.** A field carrying Smithy's
+  `idempotencyToken` trait is auto-populated when the caller omits it -- with a
+  FRESH value per request, which is the per-attempt derivation the first rule
+  forbids. Measured on `@aws-sdk/client-efs` 3.1018.0: two identical
+  `CreateAccessPoint` sends went out with different UUIDs, and a
+  caller-supplied value went out verbatim.
 
-`EFSProvider`'s `CreationToken` and `FSxFileSystemProvider`'s
+`EFSProvider`'s FILE SYSTEM `CreationToken` and `FSxFileSystemProvider`'s
 `ClientRequestToken` deliberately do NOT use the helper: those APIs enforce token
 uniqueness only among LIVE file systems, so a deterministic hash of the immutable
 create inputs is right there (it also lets the new file system coexist with the
-old one during a replacement).
+old one during a replacement). That reasoning is per-API, not per-provider --
+the same `EFSProvider` DOES take the helper for `CreateAccessPoint`. That choice
+does not rest on knowing how long the token lives, because the process-scoped
+derivation is right under both readings: if the token retires quickly,
+stability across runs buys nothing (no two deploys are that close together on
+one create) while it would put a `--replace` delete-then-create inside the
+replay window of the access point it just deleted; and if it instead binds for
+the access point's lifetime, a deterministic hash is worse still, since any
+re-create with unchanged inputs would collide with the live access point
+instead of creating one.
 
 Where the API has NO token member, the choice is between `disableOuterRetry`
 (which makes the provider single-shot for EVERY transient error, IAM propagation
