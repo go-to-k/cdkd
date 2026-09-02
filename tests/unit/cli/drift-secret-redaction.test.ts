@@ -2664,3 +2664,301 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     });
   });
 });
+
+/**
+ * Issue [#2274](https://github.com/go-to-k/cdkd/issues/2274) — a REDACTED
+ * baseline, which is a different animal from the dynamic-reference cases above.
+ *
+ * A `NoEcho` custom resource's `Data` resolved into a dependent's property is
+ * persisted as {@link SECRET_MASK}: there is no `{{resolve:...}}` expression to
+ * store in its place, so the mask itself is what state holds. `secretPaths`
+ * cannot see such a position — that set is built from dynamic-reference
+ * POSITIONS — so every drift surface had to learn the value-side signal:
+ *
+ *   - the REPORT must not print the live plaintext AWS holds there;
+ *   - `--accept` must not write that plaintext over a deliberate redaction;
+ *   - `--revert` must not push the literal `***` to the live resource, which
+ *     is the issue #1498 / #1501 data-corruption class and strictly worse than
+ *     the disclosure the mask exists to prevent.
+ */
+describe('cdkd drift — a REDACTED (NoEcho custom-resource) baseline (issue #2274)', () => {
+  const LIVE = 'live-noecho-plaintext-2274';
+  const PARAM_TYPE = 'AWS::SSM::Parameter';
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  /** State as the deploy's redaction left it: the mask, and a plain sibling. */
+  function maskedResource(): ResourceState {
+    return {
+      physicalId: '/app/token',
+      resourceType: PARAM_TYPE,
+      properties: { Name: '/app/token', Value: SECRET_MASK, Description: 'from-template' },
+    };
+  }
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    infoSpy.mockReset();
+    resetAccountInfoCache();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  it('MASKS the live plaintext in the report instead of printing it', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: maskedResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/token',
+        Value: LIVE,
+        Description: 'from-template',
+      }),
+    });
+
+    const { output } = await runDrift(['TestStack']);
+
+    expect(output).not.toContain(LIVE);
+    expect(output).toContain('Value');
+  });
+
+  it('--accept REFUSES to write the live plaintext over the redaction', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: maskedResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/token',
+        Value: LIVE,
+        Description: 'from-template',
+      }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    // Either nothing was written at all, or what was written still holds the
+    // mask — never the plaintext. Asserting the ABSENCE of the plaintext is
+    // what makes this independent of whether the run finds anything else to
+    // accept.
+    const written = mockSaveState.mock.calls.map((c) => JSON.stringify(c[2])).join('');
+    expect(written).not.toContain(LIVE);
+  });
+
+  it('--revert PRESERVES the live value instead of pushing the mask', async () => {
+    const update = vi.fn().mockResolvedValue({ physicalId: '/app/token' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: maskedResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/token',
+        Value: LIVE,
+        // A genuine out-of-band edit beside the masked leaf, so the revert has
+        // real work to do and the case is not vacuous.
+        Description: 'edited-in-the-console',
+      }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as Record<string, unknown>;
+    // THE assertion: the literal mask never reaches AWS.
+    expect(sent['Value']).toBe(LIVE);
+    expect(JSON.stringify(sent)).not.toContain(SECRET_MASK);
+    // ...while the sibling IS reverted to the baseline.
+    expect(sent['Description']).toBe('from-template');
+  });
+
+  it('--revert REFUSES the resource when AWS has nothing to preserve there', async () => {
+    // No live value at the masked position, so there is no safe value to send:
+    // the mask would corrupt the resource and dropping the key would delete a
+    // property it may require.
+    const update = vi.fn();
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: maskedResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Name: '/app/token', Description: 'from-template' }),
+      update,
+    });
+
+    await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(
+      errorSpy.mock.calls.some(
+        (c) => typeof c[0] === 'string' && c[0].includes('refused to revert')
+      )
+    ).toBe(true);
+  });
+
+  it('leaves an ORDINARY drifted property untouched (the negative case)', async () => {
+    // Nothing about the mask machinery may change a resource that carries no
+    // mask: the revert still pushes the baseline.
+    const update = vi.fn().mockResolvedValue({ physicalId: '/app/token' });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Param: {
+          physicalId: '/app/token',
+          resourceType: PARAM_TYPE,
+          properties: { Name: '/app/token', Value: 'ordinary', Description: 'from-template' },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/token',
+        Value: LIVE,
+        Description: 'from-template',
+      }),
+      update,
+    });
+
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect((update.mock.calls[0]![3] as Record<string, unknown>)['Value']).toBe('ordinary');
+    // ...and the report prints the live value, because nothing here is secret.
+    expect(output).toContain(LIVE);
+  });
+
+  // --- Review round 2: a mask NESTED UNDER AN ARRAY ------------------------
+  //
+  // `calculateResourceDrift` deliberately does not descend arrays, so a masked
+  // leaf at `ContainerDefinitions[0].Environment[0].Value` surfaces as ONE
+  // change at path `ContainerDefinitions` whose `stateValue` is the WHOLE
+  // ARRAY. Every predicate in `redactDriftChanges` was whole-value equality
+  // against `SECRET_MASK`, which such a value never satisfies — so the early
+  // return fired, nothing was redacted, the report printed the live plaintext,
+  // and `--accept` wrote it into state. The expression class already solves
+  // this by recording POSITIONS at the leaf and matching ANCESTORS
+  // (`drift-secret-redaction.test.ts`'s `Tags[0].Value` case above); these
+  // cases are the mask class's twin of it.
+  const ECS_TYPE = 'AWS::ECS::TaskDefinition';
+
+  function nestedMaskedResource(): ResourceState {
+    return {
+      physicalId: 'td:1',
+      resourceType: ECS_TYPE,
+      properties: {
+        Family: 'app',
+        ContainerDefinitions: [
+          { Name: 'app', Environment: [{ Name: 'TOKEN', Value: SECRET_MASK }] },
+        ],
+      },
+    };
+  }
+
+  function nestedLiveState(): Record<string, unknown> {
+    return {
+      Family: 'app',
+      ContainerDefinitions: [{ Name: 'app', Environment: [{ Name: 'TOKEN', Value: LIVE }] }],
+    };
+  }
+
+  it('MASKS a live plaintext whose baseline mask sits under an ARRAY', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Task: nestedMaskedResource() }));
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => nestedLiveState() });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    // THE assertion. Reverting either half of the fix (the `carriesSecretMask`
+    // disjuncts, or `collectSecretMaskPaths` seeding the positions) puts the
+    // live token in this payload.
+    expect(output).not.toContain(LIVE);
+    const payload = JSON.parse(output) as Array<{
+      drifted: Array<{ changes: Array<{ path: string; awsValue: unknown }> }>;
+    }>;
+    expect(payload[0]!.drifted).toHaveLength(1);
+    const change = payload[0]!.drifted[0]!.changes[0]!;
+    expect(change.path).toBe('ContainerDefinitions');
+    expect(change.awsValue).toBe(SECRET_MASK);
+  });
+
+  it('MASKS a POSITION the reported stateValue does not itself carry', async () => {
+    // The half `carriesSecretMask(change.stateValue)` structurally cannot see,
+    // and therefore the case that makes `collectSecretMaskPaths` load-bearing
+    // ON ITS OWN. `observedProperties` is the comparison baseline and holds an
+    // EMPTY list where `properties` holds the masked leaf — a shape a
+    // deploy-time capture produces routinely (the sibling resource that fills
+    // the list had not run yet). The comparator reports a change on
+    // `ContainerDefinitions` whose stateValue is `[]`, so no value predicate
+    // can recognise it, while the AWS side is the whole live subtree with the
+    // plaintext in it.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'td:1',
+          resourceType: ECS_TYPE,
+          properties: {
+            Family: 'app',
+            ContainerDefinitions: [
+              { Name: 'app', Environment: [{ Name: 'TOKEN', Value: SECRET_MASK }] },
+            ],
+          },
+          observedProperties: { Family: 'app', ContainerDefinitions: [] },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => nestedLiveState() });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    expect(output).not.toContain(LIVE);
+    const payload = JSON.parse(output) as Array<{
+      drifted: Array<{ changes: Array<{ path: string; stateValue: unknown; awsValue: unknown }> }>;
+    }>;
+    const change = payload[0]!.drifted[0]!.changes.find((c) => c.path === 'ContainerDefinitions')!;
+    // The state side really is an empty list — the predicate under test has
+    // nothing to match on, which is what makes this case discriminate.
+    expect(change.stateValue).toBe(SECRET_MASK);
+    expect(change.awsValue).toBe(SECRET_MASK);
+  });
+
+  it('--accept REFUSES the array-nested position instead of persisting the live value', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Task: nestedMaskedResource() }));
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => nestedLiveState() });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    const written = mockSaveState.mock.calls.map((c) => JSON.stringify(c[2])).join('');
+    expect(written).not.toContain(LIVE);
+  });
+
+  it('names the REASON when --accept refuses a masked baseline', async () => {
+    // The refusal arm was behaviour-neutral and its message was in no test, so
+    // it could be deleted or reworded with nothing noticing. The wording is
+    // what a user acts on: it must say cdkd does not know the value, not that
+    // the reference could not be resolved (there is no reference).
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Param: maskedResource() }));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Name: '/app/token',
+        Value: LIVE,
+        Description: 'from-template',
+      }),
+    });
+
+    await runDrift(['TestStack', '--accept', '--yes']);
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('the baseline holds only the redaction mask');
+    expect(warned).not.toContain(LIVE);
+  });
+});

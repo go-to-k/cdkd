@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,11 @@ import {
   isRetryableTransientError,
   RETRYABLE_ERROR_MESSAGE_PATTERNS,
 } from '../../../src/deployment/retryable-errors.js';
+import {
+  SECRET_MASK,
+  clearRecoverableMaskedOutputs,
+  recordRecoverableMaskedOutput,
+} from '../../../src/deployment/secret-redaction.js';
 
 // Mock DeployEngine so create / update don't require a real S3 backend.
 // The mock records every constructor call AND the AsyncLocalStorage
@@ -302,6 +307,8 @@ describe('NestedStackProvider', () => {
       );
       // Outputs flatten to Outputs.<Key> attribute keys for the resolver fast-path.
       expect(result.attributes).toEqual({ 'Outputs.BucketName': 'my-bucket-123' });
+      // ...and an ordinary child declares NOTHING sensitive (issue #2274).
+      expect(result.noEchoAttributeNames).toBeUndefined();
 
       // Child DeployEngine ran exactly once against the derived state key.
       expect(deployCalls.length).toBe(1);
@@ -1394,5 +1401,115 @@ describe('NestedStackProvider', () => {
         expect(rationale.length).toBeGreaterThan(20);
       }
     });
+  });
+});
+
+// Issue #2274 review round 2, blocker 3. `readChildOutputsAsAttributes` reads
+// the child's PERSISTED state, and since #2274 an output that resolved a
+// `NoEcho` custom resource's `Data` is persisted as the redaction mask. Handing
+// the parent `***` makes the FIRST deploy of that parent refuse — a template
+// that deployed before the feature existed. The child was deployed by THIS
+// process moments ago, so the plaintext is still in memory.
+describe('NestedStackProvider - a child output THIS RUN masked (issue #2274)', () => {
+  const REAL = 'child-noecho-plaintext-2274';
+
+  function childTemplateOnDisk(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-nested-noecho-'));
+    const p = join(dir, 'child.nested.template.json');
+    writeFileSync(
+      p,
+      JSON.stringify({
+        AWSTemplateFormatVersion: '2010-09-09',
+        Resources: { Foo: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'b1' } } },
+      })
+    );
+    return p;
+  }
+
+  /** A child whose state carries one MASKED output beside an ordinary one. */
+  function maskedChildContext(): NestedStackProviderContext {
+    const childState = makeChildState({ BucketName: 'my-bucket-123', Token: SECRET_MASK });
+    return makeContext({
+      nestedTemplates: { Child: childTemplateOnDisk() },
+      stateBackend: {
+        getState: vi.fn(async () => ({ state: childState, etag: 'etag-1' })),
+      } as unknown as NestedStackProviderContext['stateBackend'],
+    });
+  }
+
+  beforeEach(() => {
+    clearRecoverableMaskedOutputs();
+  });
+
+  afterEach(() => {
+    clearRecoverableMaskedOutputs();
+  });
+
+  it('RECOVERS the plaintext and names that attribute alone', async () => {
+    recordRecoverableMaskedOutput('Parent~Child', 'us-east-1', 'Token', REAL);
+    const provider = new NestedStackProvider();
+
+    const result = await withNestedStackContext(maskedChildContext(), () =>
+      provider.create('Child', 'AWS::CloudFormation::Stack', {})
+    );
+
+    // The parent's `Fn::GetAtt` gets the REAL value on the wire...
+    expect(result.attributes).toEqual({
+      'Outputs.BucketName': 'my-bucket-123',
+      'Outputs.Token': REAL,
+    });
+    // ...and only THAT attribute is declared sensitive. Whole-bag would mask
+    // the child's ordinary `BucketName` output into the parent's record and
+    // into every parent resource that reads it.
+    expect(result.noEchoAttributeNames).toEqual(['Outputs.Token']);
+  });
+
+  it('leaves the MASK in place when this run did not produce that output', async () => {
+    // A producer deployed by an EARLIER run has no plaintext anywhere cdkd can
+    // read, so the mask is what the parent gets and the resolver refuses the
+    // consumer rather than writing `***` to AWS.
+    const provider = new NestedStackProvider();
+
+    const result = await withNestedStackContext(maskedChildContext(), () =>
+      provider.create('Child', 'AWS::CloudFormation::Stack', {})
+    );
+
+    expect(result.attributes).toEqual({
+      'Outputs.BucketName': 'my-bucket-123',
+      'Outputs.Token': SECRET_MASK,
+    });
+    expect(result.noEchoAttributeNames).toBeUndefined();
+  });
+
+  it('does not answer with ANOTHER stack\'s recovered output', async () => {
+    // The store is keyed by (stack, region, output key). A value-keyed store
+    // would answer here, which is the cross-stack disclosure PR #2415 had to
+    // withdraw.
+    recordRecoverableMaskedOutput('SomeOtherStack', 'us-east-1', 'Token', REAL);
+    const provider = new NestedStackProvider();
+
+    const result = await withNestedStackContext(maskedChildContext(), () =>
+      provider.create('Child', 'AWS::CloudFormation::Stack', {})
+    );
+
+    expect((result.attributes as Record<string, unknown>)['Outputs.Token']).toBe(SECRET_MASK);
+  });
+
+  it('recovers on the UPDATE arm too', async () => {
+    recordRecoverableMaskedOutput('Parent~Child', 'us-east-1', 'Token', REAL);
+    const provider = new NestedStackProvider();
+
+    const result = await withNestedStackContext(maskedChildContext(), () =>
+      provider.update(
+        'Child',
+        'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child',
+        'AWS::CloudFormation::Stack',
+        {},
+        {}
+      )
+    );
+
+    expect((result.attributes as Record<string, unknown>)['Outputs.Token']).toBe(REAL);
+    expect(result.noEchoAttributeNames).toEqual(['Outputs.Token']);
   });
 });

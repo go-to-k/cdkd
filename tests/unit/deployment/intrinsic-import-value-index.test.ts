@@ -7,6 +7,12 @@ import type { ExportIndexStore } from '../../../src/state/export-index-store.js'
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StateImportEntry } from '../../../src/types/state.js';
+import {
+  clearRecoverableMaskedOutputs,
+  recordRecoverableMaskedOutput,
+  redactSecretsForState,
+  type RecordedSecretValues,
+} from '../../../src/deployment/secret-redaction.js';
 
 /**
  * Helper: build a barely-functional ExportIndexStore mock with the
@@ -301,5 +307,111 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
     expect(recorded).toEqual([
       { sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Foo' },
     ]);
+  });
+
+  // Issue #2274: a producer's `state.outputs` entry can hold the redaction
+  // MASK, because that output resolved a `NoEcho` custom resource's `Data`.
+  // The consumer would otherwise import the literal `***` and write it to AWS,
+  // which is the same data-corruption direction `drift --revert` and the
+  // rollback replay refuse. The resolver RECORDS the read (it does not throw —
+  // the diff path must stay stable); the deploy engine reads the bag after
+  // `resolve()` and refuses to provision.
+  describe('a REDACTED producer output', () => {
+    it('records the read, naming the export and the producer', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
+      ]);
+      const redactedAttributeReads: string[] = [];
+
+      const result = await resolver.resolve(
+        { 'Fn::ImportValue': 'Token' },
+        buildContext({ stateBackend: backend, recordedImports: [], redactedAttributeReads })
+      );
+
+      // The value is still RETURNED — refusing here would fail the diff pass,
+      // which resolves the same leaf and must keep reporting NO_CHANGE for an
+      // untouched stack.
+      expect(result).toBe('***');
+      expect(redactedAttributeReads).toHaveLength(1);
+      expect(redactedAttributeReads[0]).toContain("Fn::ImportValue 'Token'");
+      expect(redactedAttributeReads[0]).toContain('Producer');
+    });
+
+    it('records NOTHING for an ordinary producer output (the negative case)', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-east-1', outputs: { Token: 'ordinary-value' } },
+      ]);
+      const redactedAttributeReads: string[] = [];
+
+      const result = await resolver.resolve(
+        { 'Fn::ImportValue': 'Token' },
+        buildContext({ stateBackend: backend, recordedImports: [], redactedAttributeReads })
+      );
+
+      expect(result).toBe('ordinary-value');
+      expect(redactedAttributeReads).toEqual([]);
+    });
+
+    it('RECOVERS the plaintext when THIS RUN masked that producer output', async () => {
+      // Review round 2, blocker 3. The refusal above is right only when the
+      // plaintext is genuinely gone. Under `cdkd deploy --all` the producer was
+      // deployed by THIS process moments ago, so the value behind the mask is
+      // still in memory — and refusing there is a REGRESSION on a template that
+      // deployed before this feature existed.
+      clearRecoverableMaskedOutputs();
+      recordRecoverableMaskedOutput('Producer', 'us-east-1', 'Token', 'in-run-plaintext-2274');
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
+      ]);
+      const redactedAttributeReads: string[] = [];
+      const recordedSecretValues: RecordedSecretValues = new Map();
+
+      const result = await resolver.resolve(
+        { 'Fn::ImportValue': 'Token' },
+        buildContext({
+          stateBackend: backend,
+          recordedImports: [],
+          redactedAttributeReads,
+          recordedSecretValues,
+        })
+      );
+
+      // The consumer gets the REAL value on the wire...
+      expect(result).toBe('in-run-plaintext-2274');
+      // ...nothing is refused...
+      expect(redactedAttributeReads).toEqual([]);
+      // ...and the consumer's OWN record still persists the mask, because the
+      // recovered value is re-registered as a mask-only needle in its bag.
+      // Without this half the recovery would simply re-open the leak.
+      expect(redactSecretsForState({ Value: 'in-run-plaintext-2274' }, recordedSecretValues)).toEqual(
+        { Value: '***' }
+      );
+      clearRecoverableMaskedOutputs();
+    });
+
+    it('does NOT recover a DIFFERENT producer output that happens to be masked', async () => {
+      // The store is keyed by (stack, region, output key), never by the bare
+      // plaintext — the shape PR #2415 had to withdraw. A hit for one
+      // coordinate must not answer for another.
+      clearRecoverableMaskedOutputs();
+      recordRecoverableMaskedOutput('Producer', 'us-east-1', 'Other', 'in-run-plaintext-2274');
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
+      ]);
+      const redactedAttributeReads: string[] = [];
+
+      const result = await resolver.resolve(
+        { 'Fn::ImportValue': 'Token' },
+        buildContext({ stateBackend: backend, recordedImports: [], redactedAttributeReads })
+      );
+
+      expect(result).toBe('***');
+      expect(redactedAttributeReads).toHaveLength(1);
+      clearRecoverableMaskedOutputs();
+    });
   });
 });

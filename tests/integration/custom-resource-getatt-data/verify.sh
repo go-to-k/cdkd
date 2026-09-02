@@ -61,19 +61,27 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EXPECTED_COMPUTED="computed-integ"
 EXPECTED_ANOTHER="another-${REGION}"
 EXPECTED_NUMERIC="42"
+# Issue #2274: the `NoEcho` arm. This literal is what the SECOND handler
+# returns; it must reach AWS verbatim and must NOT appear anywhere in the
+# persisted state blob. Not a credential -- an inert marker, chosen distinctive
+# so the whole-blob grep below is meaningful and cannot collide with the three
+# needles above.
+EXPECTED_NOECHO="noecho-token-integ"
+SECRET_MASK="***"
 
 # SSM parameter names (must match parameterName in the stack, with id=STACK).
 PARAM_PREFIX="/cdkd-integ/cr-getatt-data/${STACK}"
 PARAM_COMPUTED="${PARAM_PREFIX}/computed"
 PARAM_ANOTHER="${PARAM_PREFIX}/another"
 PARAM_NUMERIC="${PARAM_PREFIX}/numeric"
+PARAM_NOECHO="${PARAM_PREFIX}/noecho"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
-LAMBDA_ARN=""
+LAMBDA_ARNS=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -89,7 +97,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   # Best-effort delete of the SSM parameters in case a partial destroy left them.
-  for p in "${PARAM_COMPUTED}" "${PARAM_ANOTHER}" "${PARAM_NUMERIC}"; do
+  for p in "${PARAM_COMPUTED}" "${PARAM_ANOTHER}" "${PARAM_NUMERIC}" "${PARAM_NOECHO}"; do
     aws ssm delete-parameter --region "${REGION}" --name "${p}" >/dev/null 2>&1 || true
   done
   set -eu
@@ -132,8 +140,8 @@ fi
 
 # Resolve the backing Lambda ARN (CDK auto-named) from state so the
 # post-destroy orphan check can target it precisely.
-LAMBDA_ARN=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId] | first // ""')
-echo "    resolved backing Lambda: ${LAMBDA_ARN:-<none>}"
+LAMBDA_ARNS=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId] | join(" ")')
+echo "    resolved backing Lambdas: ${LAMBDA_ARNS:-<none>}"
 
 # Sanity: the CR's resolved ComputedValue should be in state.outputs too
 # (belt-and-suspenders cross-check alongside the on-AWS SSM read below).
@@ -176,6 +184,113 @@ assert_param "${PARAM_COMPUTED}" "${EXPECTED_COMPUTED}" "ComputedValue"
 assert_param "${PARAM_ANOTHER}" "${EXPECTED_ANOTHER}" "Another"
 assert_param "${PARAM_NUMERIC}" "${EXPECTED_NUMERIC}" "NumericValue"
 
+# --- Issue #2274: the `NoEcho` arm ------------------------------------------
+#
+# TWO assertions that must BOTH hold, because the design's whole point is that
+# they pull in opposite directions:
+#
+#   1. AWS holds the REAL token. CloudFormation delivers a `NoEcho` custom
+#      resource's `Data` to a dependent resource in the clear (measured against
+#      real CloudFormation on the issue thread), so masking at CAPTURE would
+#      have written the literal mask onto this live SSM parameter -- a data
+#      corruption strictly worse than the disclosure being fixed.
+#   2. cdkd's persisted state holds the MASK, everywhere: the custom resource's
+#      own `attributes`, the dependent's resolved `properties`, and the outputs
+#      bag an importing stack reads.
+#
+# The negative arm is the three parameters above plus the cleartext state
+# assertions below: a custom resource that sets NO `NoEcho` must keep resolving
+# and persisting in the clear.
+echo "==> Asserting the NoEcho CR Data reached AWS in the CLEAR"
+assert_param "${PARAM_NOECHO}" "${EXPECTED_NOECHO}" "NoEcho Token"
+
+echo "==> Asserting the NoEcho CR Data is MASKED in cdkd state"
+STATE_AFTER=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${STATE_AFTER}" ]; then
+  echo "FAIL: could not re-read the state file for the NoEcho assertions" >&2
+  exit 1
+fi
+
+# 2a. The custom resource's OWN attributes. Selected by the attribute KEY
+# rather than by a logical id, since CDK derives the id from the construct path
+# and a rename would silently make this vacuous.
+NOECHO_ATTR=$(echo "${STATE_AFTER}" | jq -r '[.resources[] | select(.attributes.Token != null) | .attributes.Token] | first // "<absent>"')
+if [ "${NOECHO_ATTR}" != "${SECRET_MASK}" ]; then
+  echo "FAIL: state attributes.Token is '${NOECHO_ATTR}', expected '${SECRET_MASK}'" >&2
+  echo "    => the handler's NoEcho declaration did not reach the redaction (issue #2274)" >&2
+  exit 1
+fi
+echo "    OK: the NoEcho CR attributes.Token is masked in state"
+
+# 2b. The DEPENDENT's resolved properties. This is the half a fix that only
+# masked the custom resource's own record would miss: the SSM parameter that
+# consumed the value carries it too, and `perResourceSecrets` is keyed by
+# logical id, so it needs its own registration.
+NOECHO_PROP=$(echo "${STATE_AFTER}" | jq -r --arg n "${PARAM_NOECHO}" '[.resources[] | select(.properties.Name == $n) | .properties.Value] | first // "<absent>"')
+if [ "${NOECHO_PROP}" != "${SECRET_MASK}" ]; then
+  echo "FAIL: the dependent SSM parameter's state Value is '${NOECHO_PROP}', expected '${SECRET_MASK}'" >&2
+  echo "    => the consumer's resolved property was persisted in the clear (issue #2274)" >&2
+  exit 1
+fi
+echo "    OK: the dependent's state Value is masked"
+
+# 2c. The outputs bag, which is also what an importing stack reads.
+OUT_NOECHO=$(echo "${STATE_AFTER}" | jq -r '.outputs.NoEchoValueResolved // "<absent>"')
+if [ "${OUT_NOECHO}" != "${SECRET_MASK}" ]; then
+  echo "FAIL: state output NoEchoValueResolved is '${OUT_NOECHO}', expected '${SECRET_MASK}'" >&2
+  exit 1
+fi
+echo "    OK: state output NoEchoValueResolved is masked"
+
+# 2d. The WHOLE blob. The three checks above name the routes we know about;
+# this one is what catches a fourth (observedProperties, a nested copy, an
+# events record folded into state) without having to enumerate it.
+if printf '%s' "${STATE_AFTER}" | grep -qF "${EXPECTED_NOECHO}"; then
+  echo "FAIL: the NoEcho token '${EXPECTED_NOECHO}' appears somewhere in the persisted state blob" >&2
+  echo "${STATE_AFTER}" | jq . >&2
+  exit 1
+fi
+echo "    OK: the NoEcho token appears NOWHERE in the state blob"
+
+# 2e. The value cdkd ITSELF SUPPLIED must survive. The handler ECHOES its own
+# `ServiceToken` back inside the same `NoEcho` `Data`, which is what the CDK
+# `Provider` samples encourage. Registering an echoed input as a redaction
+# needle rewrites `properties.ServiceToken` to '***' in the very record
+# `CustomResourceProvider.delete` reads it back from -- and '***' is a TRUTHY
+# STRING that passes both of that method's guards, so the delete would try to
+# invoke a "Lambda" named '***'. Asserted on AWS-shaped data rather than on a
+# fixed literal, because the ARN is CDK-derived.
+echo "==> Asserting the echoed ServiceToken survived the redaction"
+NOECHO_SERVICE_TOKEN=$(echo "${STATE_AFTER}" | jq -r '[.resources[] | select(.attributes.Token != null) | .properties.ServiceToken] | first // "<absent>"')
+case "${NOECHO_SERVICE_TOKEN}" in
+  arn:aws*:lambda:*:function:*)
+    echo "    OK: the NoEcho CR ServiceToken is still an addressable Lambda ARN"
+    ;;
+  *)
+    echo "FAIL: the NoEcho CR's state ServiceToken is '${NOECHO_SERVICE_TOKEN}', expected a Lambda ARN" >&2
+    echo "    => the handler's ECHO of a cdkd-supplied input was registered as a redaction needle" >&2
+    echo "       (issue #2274 review): a masked ServiceToken makes destroy invoke a Lambda named '***'" >&2
+    exit 1
+    ;;
+esac
+
+# --- The NEGATIVE arm, in state -------------------------------------------
+# A custom resource WITHOUT `NoEcho` must be untouched by any of this. The
+# existing assertions cover AWS and `state.outputs`; these cover the two state
+# bags the arm above masks, so a redaction that over-applied would fail here.
+CLEAR_ATTR=$(echo "${STATE_AFTER}" | jq -r '[.resources[] | select(.attributes.ComputedValue != null) | .attributes.ComputedValue] | first // "<absent>"')
+if [ "${CLEAR_ATTR}" != "${EXPECTED_COMPUTED}" ]; then
+  echo "FAIL: the non-NoEcho CR's state attributes.ComputedValue is '${CLEAR_ATTR}', expected '${EXPECTED_COMPUTED}'" >&2
+  echo "    => redaction over-applied to a custom resource that declared no NoEcho" >&2
+  exit 1
+fi
+CLEAR_PROP=$(echo "${STATE_AFTER}" | jq -r --arg n "${PARAM_COMPUTED}" '[.resources[] | select(.properties.Name == $n) | .properties.Value] | first // "<absent>"')
+if [ "${CLEAR_PROP}" != "${EXPECTED_COMPUTED}" ]; then
+  echo "FAIL: the non-NoEcho dependent's state Value is '${CLEAR_PROP}', expected '${EXPECTED_COMPUTED}'" >&2
+  exit 1
+fi
+echo "    OK: the non-NoEcho custom resource and its dependent stay in the clear in state"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -187,14 +302,16 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 # The CR + backing Lambda + the three SSM parameters must all be gone.
-for p in "${PARAM_COMPUTED}" "${PARAM_ANOTHER}" "${PARAM_NUMERIC}"; do
+for p in "${PARAM_COMPUTED}" "${PARAM_ANOTHER}" "${PARAM_NUMERIC}" "${PARAM_NOECHO}"; do
   assert_gone "SSM parameter ${p} still exists after destroy (orphan)" aws ssm get-parameter --region "${REGION}" --name "${p}"
 done
-echo "    OK: all three SSM parameters are gone"
+echo "    OK: all four SSM parameters are gone"
 
-if [ -n "${LAMBDA_ARN}" ]; then
-  assert_gone "backing Lambda ${LAMBDA_ARN} still exists after destroy (orphan)" aws lambda get-function --region "${REGION}" --function-name "${LAMBDA_ARN}"
-  echo "    OK: backing Lambda is gone"
+for arn in ${LAMBDA_ARNS}; do
+  assert_gone "backing Lambda ${arn} still exists after destroy (orphan)" aws lambda get-function --region "${REGION}" --function-name "${arn}"
+done
+if [ -n "${LAMBDA_ARNS}" ]; then
+  echo "    OK: every backing Lambda is gone"
 fi
 
 echo ""

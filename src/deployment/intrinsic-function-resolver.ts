@@ -50,6 +50,10 @@ import {
   isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
   inheritedParameterExpression,
+  clearRecoverableMaskedOutputs,
+  recordMaskOnlyValuesIn,
+  recoverMaskedOutput,
+  carriesSecretMask,
   MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -853,6 +857,59 @@ export interface ResolverContext {
    */
   inheritedSecrets?: RecordedSecretValues;
   /**
+   * Logical ids whose provider declared THIS RUN's `attributes` sensitive —
+   * a Lambda-backed custom resource whose handler answered `NoEcho: true`
+   * (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+   *
+   * Set by the deploy engine from the create / update results it has already
+   * collected this run, so by the time a DEPENDENT resolves, the producer's
+   * entry is present (each resource is provisioned before anything that depends
+   * on it, which is what the DAG guarantees).
+   *
+   * READ-ONLY and never substituted, exactly like {@link inheritedSecrets}:
+   * `resolveGetAtt` still returns the REAL attribute value — that is what
+   * reaches AWS, and CloudFormation delivers it to a dependent in the clear —
+   * and only records the resolved string leaves as MASK-ONLY needles in
+   * {@link recordedSecretValues}, i.e. in the bag belonging to the resource
+   * whose resolution actually consumed the attribute. Recording at RESOLUTION
+   * time rather than pre-seeding every context is what keeps the per-resource
+   * scoping every reader of `perResourceSecrets` assumes — the same rule issue
+   * #2087 forced on the inherited-secrets channel.
+   *
+   * `true` declares the WHOLE attributes bag sensitive (a custom resource's
+   * `NoEcho` response); a SET names the sensitive members only (a nested
+   * stack's `Outputs.<Key>` entries, where the rest of the child's outputs are
+   * ordinary and masking them would degrade unrelated parent resources).
+   */
+  noEchoAttributeResources?: ReadonlyMap<string, true | ReadonlySet<string>>;
+  /**
+   * Bag the resolver pushes `<logicalId>.<attributeName>` into whenever it
+   * serves a PERSISTED attribute that is nothing but {@link SECRET_MASK}
+   * (issue #2274).
+   *
+   * This is the cross-DEPLOY half of the `NoEcho` story, and it exists because
+   * the redaction is not free. Once a `NoEcho` custom resource's `Data` has
+   * been masked into `state.json`, a LATER deploy that does NOT re-invoke the
+   * handler (the resource is `NO_CHANGE`, so CloudFormation semantics say the
+   * handler does not run) reads `***` back out of state — and a dependent
+   * resolving `Fn::GetAtt` against it would otherwise PUSH that literal to AWS.
+   * `state.ts` carries no durable per-attribute `NoEcho` flag to recover from
+   * (issue [#2449](https://github.com/go-to-k/cdkd/issues/2449)), so the mask
+   * itself is the signal.
+   *
+   * The resolver RECORDS; it never throws for this, and the difference decides
+   * whether a stack stays deployable. Every context the deploy engine builds
+   * carries the bag, the DIFF context included, but only the two PROVISIONING
+   * sites read it. A throw inside the diff would be caught by
+   * `resolveBestEffort`, which keeps the raw intrinsic — so the desired side
+   * would stop matching the `***` in state, the resource would look CHANGED on
+   * every run, and the provisioning pass would then fail it. Recording instead
+   * leaves the diff comparing `***` against `***`, i.e. a clean NO_CHANGE, so a
+   * stack nobody has edited keeps deploying and only a dependent that ACTUALLY
+   * has to be written is refused.
+   */
+  redactedAttributeReads?: string[];
+  /**
    * Internal hook used while evaluating the template `Conditions` section.
    * A CFn Condition can reference ANOTHER named condition via
    * `{Condition: OtherName}` inside `Fn::And` / `Fn::Or` / `Fn::Not`
@@ -1444,6 +1501,11 @@ export function resetAccountInfoCache(): void {
   // (issues #1901 / #1916) — keeping them would let a stale verdict decide
   // secret-ness for a reference this call just asked to forget.
   recordedSecretExpressions.clear();
+  // Issue #2274's in-run recovery store shares this lifetime for the same
+  // reason: it holds PLAINTEXT this process masked out of a producer's outputs,
+  // and a test (or a later phase) that asks to forget the account's caches must
+  // not keep serving a value from a run it just discarded.
+  clearRecoverableMaskedOutputs();
   // The issue #2059 cross-stack associations are deliberately NOT cleared here,
   // and need no clearing at all: they are scoped to the resolution pass's own
   // `recordedSecretValues` bag through a `WeakMap`, so they die with it. A
@@ -3173,7 +3235,11 @@ export class IntrinsicFunctionResolver {
           this.logger.debug(
             `Normalized legacy Fn::GetAtt attribute: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, nameServers)}`
           );
-          return nameServers;
+          // Issue #2274 review: this branch ALSO serves a value out of the
+          // PERSISTED `attributes` bag, so it takes the note like the two
+          // below. It shipped without one, which is why this method's doc no
+          // longer claims the pass-through shape makes a skip impossible.
+          return this.noteAttributeSecrecy(logicalId, attributeName, nameServers, context);
         }
         this.logger.debug(
           `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, flatValue)}`
@@ -3230,7 +3296,7 @@ export class IntrinsicFunctionResolver {
             crossStackSourceKey({ 'Fn::GetAtt': getAtt })
           );
         }
-        return flatValue;
+        return this.noteAttributeSecrecy(logicalId, attributeName, flatValue, context);
       }
 
       // Issue #381: nested-path fallback. CC API providers store CFn nested
@@ -3268,7 +3334,14 @@ export class IntrinsicFunctionResolver {
           // writer that stored those outputs as a nested object would need this
           // arm too, or it would ship the literal `{{resolve:...}}` token to AWS
           // — the very defect issue #2055 closed one branch up.
-          return cursor;
+          //
+          // The `NoEcho` note (issue #2274) IS applied here, unlike the
+          // nested-stack arm above, and for the opposite reason: a custom
+          // resource's `Data` is written into `attributes` verbatim, so a
+          // handler answering `{"Data": {"Endpoint": {"Password": "..."}}}`
+          // lands a sensitive leaf on exactly this walk. Serving one branch and
+          // not the other is how a redaction ships half-applied.
+          return this.noteAttributeSecrecy(logicalId, attributeName, cursor, context);
         }
       }
     }
@@ -3322,6 +3395,71 @@ export class IntrinsicFunctionResolver {
     this.logger.debug(
       `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, value)}`
     );
+    return value;
+  }
+
+  /**
+   * Note what SECRECY the attribute just read carries, then hand it back
+   * UNCHANGED (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+   *
+   * Two independent notes, in the two directions a `NoEcho` custom-resource
+   * `Data` value travels, and they are on one function because both are read
+   * off the same value at the same instant:
+   *
+   * 1. **This run's fresh value.** If a provider declared this resource's
+   *    attributes `NoEcho` earlier in THIS deploy, every string leaf becomes a
+   *    MASK-ONLY needle in the CONSUMER's own bag, so the plaintext this
+   *    resolution is about to substitute into the dependent's properties is
+   *    masked when that record is persisted. Registering into
+   *    `context.recordedSecretValues` — the consumer's bag — rather than the
+   *    producer's is what makes it work at all: `perResourceSecrets` is keyed by
+   *    LOGICAL ID, so a needle recorded under the custom resource's own id is
+   *    not in the bag the DEPENDENT's record is scrubbed with.
+   * 2. **A previous run's masked value.** If what came back IS the mask, this
+   *    attribute was redacted into `state.json` by an earlier deploy and cdkd
+   *    cannot recover it (there is no durable `NoEcho` flag and no expression to
+   *    re-resolve — issue #2449). It is recorded as a redacted READ so the
+   *    deploy engine can refuse to push the literal `***` to AWS.
+   *
+   * IT RETURNS THE VALUE, and passing through rather than mutating in place is
+   * the point: a new attribute-serving branch is written as `return
+   * this.noteAttributeSecrecy(...)` by imitation of the two that have it.
+   * `Fn::GetAtt` must keep delivering the REAL value (CloudFormation does,
+   * measured), so this can never rewrite what it is handed.
+   *
+   * IT IS NOT A GUARANTEE, and an earlier revision claimed it was ("impossible
+   * to add a third branch that silently skips the note"). Nothing in the type
+   * system stops a branch returning a value it never passed through here, and
+   * one already did: the Route 53 `NameServers` legacy-shape normalization,
+   * which reads the SAME persisted `attributes` bag and shipped without the
+   * note (it takes it now). The rule the note actually needs is about the
+   * SOURCE of the value — every branch serving one out of a PERSISTED
+   * `attributes` bag must call this — and that is not a shape a compiler can
+   * enforce. `constructGuardedAttribute`'s return is deliberately outside it:
+   * that value is fetched from AWS in this run, not read back from state, so
+   * it can be neither a stale mask nor a value a provider declared `NoEcho`.
+   *
+   * A context supplying NEITHER field — the diff / no-op resolver, `cdkd
+   * scrub`, `cdkd import` — pays two undefined checks and gets its value back.
+   */
+  private noteAttributeSecrecy(
+    logicalId: string,
+    attributeName: string,
+    value: unknown,
+    context: ResolverContext
+  ): unknown {
+    const declared = context.noEchoAttributeResources?.get(logicalId);
+    const attributeIsDeclared =
+      declared === true || (declared !== undefined && declared.has(attributeName));
+    if (attributeIsDeclared && context.recordedSecretValues) {
+      recordMaskOnlyValuesIn(value, context.recordedSecretValues);
+    }
+    if (context.redactedAttributeReads !== undefined && carriesSecretMask(value)) {
+      const read = `${logicalId}.${attributeName}`;
+      if (!context.redactedAttributeReads.includes(read)) {
+        context.redactedAttributeReads.push(read);
+      }
+    }
     return value;
   }
 
@@ -5089,8 +5227,79 @@ export class IntrinsicFunctionResolver {
     producerRegion: string | undefined,
     context: ResolverContext,
     origin: string,
-    sourceKey: string | undefined
+    sourceKey: string | undefined,
+    producerOutput?: {
+      stackName: string;
+      region: string;
+      outputKey: string;
+      /**
+       * Set when the read crosses an ACCOUNT boundary (a `RoleArn` on
+       * `Fn::GetStackOutput`). Recovery is then REFUSED rather than served, and
+       * that is a correctness fact rather than caution: the recovery store is
+       * keyed by stack + region + output key with NO account in it, and it only
+       * ever holds plaintexts THIS process masked while deploying with the
+       * AMBIENT credentials. So a same-named stack in the same region -- the
+       * common shape for a `Shared` / `Network` stack replicated per account --
+       * would serve the CONSUMER account's secret to a read that asked for the
+       * PRODUCER account's, and the consumer would then send it to a resource
+       * in the other account.
+       *
+       * The neighbouring `CrossAccountSecretRefusalError` refuses exactly this
+       * confusion for a redacted DYNAMIC REFERENCE, and its reasoning ("a
+       * same-named secret in the consumer account would answer instead")
+       * transfers verbatim. It does not fire here only because
+       * {@link SECRET_MASK} is not a dynamic reference, so that guard's
+       * `carriesDynamicReference` test is false and this path falls through it.
+       */
+      crossAccount?: boolean;
+    }
   ): Promise<unknown> {
+    // Issue #2274: the CROSS-STACK twin of `noteAttributeSecrecy`, and it goes
+    // HERE because this method is the one choke point every cross-stack read
+    // returns through — `Fn::ImportValue` (both the index and the scan arms),
+    // `Fn::GetStackOutput`, and a nested stack's `Outputs.<Key>`. A producer's
+    // `state.outputs` entry can hold the mask (its own output resolved a
+    // `NoEcho` custom resource's `Data`), and without this a CONSUMER stack
+    // would push the literal `***` to AWS. It runs BEFORE the
+    // `carriesDynamicReference` early return, because the mask is not a
+    // dynamic reference and that return is exactly the path it takes.
+    //
+    // RECOVERY FIRST, refusal only when it fails. When the producer was
+    // deployed by THIS process in THIS run, the plaintext behind the mask is
+    // still in memory (`recoverMaskedOutput`) — which is the whole
+    // `cdkd deploy --all` case, and the case a consumer template that deployed
+    // fine before this feature lands on. Recovering it keeps the wire value
+    // correct and re-registers it as a MASK-ONLY needle in the CONSUMER's own
+    // bag, so the consumer's record still persists `***`. The refusal below is
+    // then narrowed to what it is genuinely for: a producer deployed by an
+    // EARLIER run, whose plaintext no longer exists anywhere cdkd can read.
+    //
+    // `origin` rather than a logical id: it is the caller-built description of
+    // WHICH read this is (`Fn::ImportValue '<name>' (producer <stack> /
+    // <region>)`), which is what a user needs to find the producer, and it
+    // carries no resolved value.
+    if (carriesSecretMask(value)) {
+      const recovered =
+        producerOutput === undefined || producerOutput.crossAccount === true
+          ? undefined
+          : recoverMaskedOutput(
+              producerOutput.stackName,
+              producerOutput.region,
+              producerOutput.outputKey
+            );
+      if (recovered !== undefined) {
+        if (context.recordedSecretValues) {
+          recordMaskOnlyValuesIn(recovered, context.recordedSecretValues);
+        }
+        return recovered;
+      }
+      if (
+        context.redactedAttributeReads !== undefined &&
+        !context.redactedAttributeReads.includes(origin)
+      ) {
+        context.redactedAttributeReads.push(origin);
+      }
+    }
     if (!carriesDynamicReference(value)) return value;
 
     const resolver = this.resolverForProducerRegion(producerRegion);
@@ -5397,7 +5606,17 @@ export class IntrinsicFunctionResolver {
           entry.producerRegion,
           context,
           `Fn::ImportValue '${exportName}' (producer ${entry.producerStack} / ${entry.producerRegion})`,
-          sourceKey
+          sourceKey,
+          // Issue #2274: the coordinate the value was READ from, so an in-run
+          // producer's masked output can be recovered rather than refused. The
+          // exports index is keyed by export name and `state.outputs` aliases
+          // an exported output under that same name, so the export name IS the
+          // output key here.
+          {
+            stackName: entry.producerStack,
+            region: entry.producerRegion,
+            outputKey: exportName,
+          }
         );
       }
     }
@@ -5489,7 +5708,10 @@ export class IntrinsicFunctionResolver {
         found.lookupRegion,
         context,
         `Fn::ImportValue '${exportName}' (producer ${found.refStack} / ${found.lookupRegion})`,
-        sourceKey
+        sourceKey,
+        // Issue #2274 — see the index arm above. Same bag, reached by scanning
+        // state instead of the index, so the same coordinate applies.
+        { stackName: found.refStack, region: found.lookupRegion, outputKey: exportName }
       );
     }
 
@@ -6086,7 +6308,13 @@ export class IntrinsicFunctionResolver {
       region,
       context,
       `Fn::GetStackOutput '${outputName}' (producer ${stackName} / ${region})`,
-      sourceKey
+      sourceKey,
+      // Issue #2274: this read is `outputs[outputName]` of that producer's
+      // state, so the coordinate is exact — see the ImportValue arms. A
+      // `RoleArn` makes it cross-ACCOUNT, which the coordinate cannot express,
+      // so recovery is refused there rather than answered from the ambient
+      // account's store.
+      { stackName, region, outputKey: outputName, ...(roleArn ? { crossAccount: true } : {}) }
     );
   }
 

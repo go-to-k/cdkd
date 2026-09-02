@@ -2622,6 +2622,53 @@ describe('buildImportPlan — nested-stack rows (issue #464 PR B1)', () => {
     },
   } as unknown as AwsClients['cloudFormation'];
 
+  // Issue #2274: a record whose properties hold the REDACTION MASK is not
+  // exportable. `***` is what cdkd persists where a `NoEcho` custom resource's
+  // `Data` was resolved into a property, and there is nothing to re-derive the
+  // real value from -- so an exported template would DECLARE the mask, which
+  // CloudFormation would either refuse at IMPORT (the template must describe
+  // the live resource) or write onto it at the next update.
+  it('BLOCKS a resource whose state holds the redaction mask (issue #2274)', async () => {
+    const state = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Param: { resourceType: 'AWS::SSM::Parameter' } },
+    });
+    state.resources['Param']!.properties = { Name: '/app/token', Value: '***' };
+    const template = {
+      Resources: {
+        Param: { Type: 'AWS::SSM::Parameter', Properties: { Name: '/app/token', Value: 'x' } },
+      },
+    };
+
+    const result = await buildImportPlan(state, template, cfnClientStub, 'Root');
+
+    expect(result.blocked).toHaveLength(1);
+    expect(result.blocked[0]!.logicalId).toBe('Param');
+    expect(result.blocked[0]!.reason).toMatch(/redaction mask/);
+    expect(result.phase1Imports).toEqual([]);
+  });
+
+  it('does NOT block an ordinary resource whose properties carry no mask', async () => {
+    // The negative control: without it the case above would pass just as well
+    // if the guard blocked everything.
+    const state = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: { Param: { resourceType: 'AWS::SSM::Parameter' } },
+    });
+    state.resources['Param']!.properties = { Name: '/app/token', Value: 'ordinary' };
+    const template = {
+      Resources: {
+        Param: { Type: 'AWS::SSM::Parameter', Properties: { Name: '/app/token', Value: 'x' } },
+      },
+    };
+
+    const result = await buildImportPlan(state, template, cfnClientStub, 'Root');
+
+    expect(result.blocked).toEqual([]);
+  });
+
   it('routes AWS::CloudFormation::Stack rows into nestedStackRows[] (not blocked)', async () => {
     const state = makeState({
       stackName: 'Root',

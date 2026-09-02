@@ -55,12 +55,14 @@ import {
   type ResolverContext,
 } from '../../deployment/intrinsic-function-resolver.js';
 import {
+  carriesSecretMask,
   createSecretMasker,
   dynamicReferenceTokens,
   isSingleDynamicReferenceToken as isWholeDynamicReference,
   maskSecretsInError,
   maskSecretsInText,
   MIN_NEEDLE_LENGTH,
+  recordMaskOnlyValue,
   redactSecretsForState,
   SECRET_MASK,
   STATE_SOURCED_READBACK_RULES,
@@ -1266,6 +1268,44 @@ function collectDynamicReferencePaths(value: unknown, into: SecretPathSet, path 
 }
 
 /**
+ * Record the dotted path of every leaf that IS {@link SECRET_MASK} — the
+ * mask-only twin of {@link collectDynamicReferencePaths} (issue
+ * [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+ *
+ * WITHOUT IT A NESTED MASK IS INVISIBLE, and that is a live disclosure rather
+ * than a tidiness gap. `calculateResourceDrift` deliberately does not descend
+ * arrays, so a masked leaf at `ContainerDefinitions.0.Environment.0.Value`
+ * surfaces as ONE change at path `ContainerDefinitions` whose `stateValue` is
+ * the WHOLE ARRAY — never equal to the mask. A whole-value equality test
+ * therefore answers `false`, `secretBearing` stays false, the LIVE plaintext is
+ * printed by the report, and `--accept` writes it into `state.json`, undoing
+ * exactly the redaction this feature exists to perform.
+ *
+ * The expression class already answers this, and answers it this way: paths go
+ * in at the LEAF's own coordinate and {@link isSecretBearingPath} bridges to the
+ * comparator's coarser one by matching ANCESTORS. Seeded off the state bags,
+ * exactly like the offline dynamic-reference seed, because a mask is a fact
+ * about the RECORD and needs no AWS call to see.
+ */
+function collectSecretMaskPaths(value: unknown, into: SecretPathSet, path = ''): void {
+  if (typeof value === 'string') {
+    if (value === SECRET_MASK) into.add(path);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, i) =>
+      collectSecretMaskPaths(item, into, path === '' ? String(i) : `${path}.${i}`)
+    );
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      collectSecretMaskPaths(v, into, path === '' ? k : `${path}.${k}`);
+    }
+  }
+}
+
+/**
  * The drift command's resolvers for ONE stack: the stack's own, plus one pinned
  * sibling per FOREIGN region an ARN-named reference asks for (issue
  * [#2108](https://github.com/go-to-k/cdkd/issues/2108)).
@@ -1833,7 +1873,7 @@ function redactDriftValue(
  * cannot disagree — a `--dry-run` that promises a write the real run refuses is
  * worse than either behaviour on its own.
  *
- * Two refusals, both about a value cdkd could not identify rather than about
+ * Three refusals, all about a value cdkd could not identify rather than about
  * secrecy as such:
  *
  * - A masked VALUE says AWS holds something at a known-secret path that is not
@@ -1843,6 +1883,10 @@ function redactDriftValue(
  *   `setAtPath` would then create a key literally named `***` — and when
  *   `awsValue` is `undefined` it would INSERT that key rather than removing the
  *   real one, so the value check alone does not cover it.
+ * - A masked BASELINE (issue #2274) says the state side itself is the mask —
+ *   a `NoEcho` custom resource's `Data` redacted out of `state.json`. Accepting
+ *   would write the live plaintext over a deliberate redaction, which is the
+ *   opposite of what the mask is for.
  *
  * The path check is what makes the value exemptions safe: `redactDriftValue`
  * lets `undefined` / `null` / a whole expression through unmasked, which is
@@ -1865,6 +1909,22 @@ function acceptRefusalReason(
       'AWS no longer reports it, and accepting an absence DELETES the key — which at or above ' +
       'a secret dynamic reference would erase the reference out of cdkd state. Use --revert to ' +
       'push it back, or re-deploy'
+    );
+  }
+  if (change.stateValue === SECRET_MASK) {
+    // Issue #2274. The BASELINE is the mask, so there is nothing to persist
+    // over it: writing the AWS value would undo a redaction, and writing the
+    // mask would corrupt the baseline into a literal `***`. cdkd cannot recover
+    // the value either, because a `NoEcho` custom-resource `Data` has no
+    // expression to re-resolve and the handler must not be re-invoked just to
+    // read one. A rotation of a dynamic-reference secret reaches this arm too —
+    // there the state side is a plaintext the map could not recognise — so the
+    // wording names the shared fact (cdkd cannot say what belongs here) rather
+    // than asserting one mechanism.
+    return (
+      'cdkd does not know the value that belongs at this position — the baseline holds only the ' +
+      'redaction mask, so accepting would write AWS-held plaintext over a deliberate redaction. ' +
+      'Re-deploy to refresh it'
     );
   }
   return (
@@ -1901,9 +1961,23 @@ function acceptRefusalReason(
 function redactDriftChanges(
   changes: PropertyDrift[],
   secrets: RecordedSecretValues,
-  secretPaths: SecretPathSet
+  secretPaths: SecretPathSet,
+  maskPaths: SecretPathSet
 ): { changes: PropertyDrift[]; maskedPaths: SecretPathSet } {
-  if (secrets.size === 0 && secretPaths.size === 0) {
+  // The third disjunct is issue #2274's, and without it the whole
+  // redacted-baseline arm below is DEAD CODE for its own main population: a
+  // stack whose only sensitive value is a `NoEcho` custom resource's `Data`
+  // has NO dynamic reference anywhere, so both of the first two are empty and
+  // the early return fires before the mask is ever looked at. Measured — the
+  // report printed the live plaintext and `--accept` wrote it back. The scan
+  // is over the change list this call is already walking, and the identity
+  // return is kept for the (dominant) case where nothing is masked.
+  if (
+    secrets.size === 0 &&
+    secretPaths.size === 0 &&
+    maskPaths.size === 0 &&
+    !changes.some((change) => carriesSecretMask(change.stateValue))
+  ) {
     return { changes, maskedPaths: new Set<string>() };
   }
   // The paths whose reported value cdkd could not identify. Returned rather
@@ -1925,9 +1999,58 @@ function redactDriftChanges(
     // Two independent reasons a change is secret-bearing, and they are kept
     // apart because only one of them licenses the DROP below: the POSITION is
     // known to hold a secret, or the property NAME turned out to carry one.
-    const positionIsSecret = isSecretBearingPath(change.path, secretPaths);
+    const positionIsSecret =
+      isSecretBearingPath(change.path, secretPaths) ||
+      // Issue #2274: the mask positions, ancestor-matched exactly like the
+      // dynamic-reference ones. They ride the SAME `positionIsSecret` flag
+      // (which decides masking) and deliberately NOT `secretPaths` itself,
+      // whose EXACT-leaf reading below licenses dropping a change — see the
+      // `maskSecretPaths` note at the seed site.
+      isSecretBearingPath(change.path, maskPaths);
     const nameCarriesSecret = maskedPath !== change.path;
-    const secretBearing = positionIsSecret || nameCarriesSecret;
+    // A THIRD reason, and the one that needs no `secretPaths` entry to fire
+    // (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)): the STATE
+    // side already IS the mask. That happens where a `NoEcho` custom
+    // resource's `Data` was resolved into this property and redacted on the way
+    // into `state.json`. `secretPaths` cannot see it — that set is built from
+    // dynamic-reference POSITIONS, and this value has no reference behind it at
+    // all — so without this the AWS-current side, i.e. the live plaintext,
+    // would be printed verbatim by every drift report and written back into
+    // state by `--accept`. Both are the disclosure the redaction exists to
+    // prevent, arriving through the one command that re-reads the resource.
+    //
+    // WHOLE-LEAF recognition ANYWHERE INSIDE the reported value, via
+    // `secret-redaction.ts`'s own `carriesSecretMask`, not a whole-VALUE
+    // equality. The first cut compared `change.stateValue === SECRET_MASK` and
+    // was DEAD for the commonest shape: `calculateResourceDrift` does not
+    // descend arrays, so a masked leaf under one (`ContainerDefinitions.0.
+    // Environment.0.Value`) is reported as a change on `ContainerDefinitions`
+    // whose `stateValue` is the whole array — never equal to the mask, so the
+    // live plaintext was printed and `--accept` wrote it back. `secretPaths` is
+    // seeded from the same masks by `collectSecretMaskPaths` and reaches the
+    // same conclusion through `positionIsSecret`.
+    //
+    // MEASURED REDUNDANCY, stated rather than claimed pinned. Reverting THIS
+    // predicate alone (to the whole-value equality) leaves the suite green,
+    // because the seed already marks the position; reverting the SEED alone
+    // reds one case (a change whose `stateValue` is an empty list while
+    // `properties` holds the mask under it — no value predicate can see that);
+    // reverting BOTH reds three, `--accept` writing the live plaintext among
+    // them. So the seed is the load-bearing half and this one is
+    // defence-in-depth. It is kept because the two answer about DIFFERENT
+    // objects — the seed about the RESOURCE's bags, this about the change list
+    // actually being redacted — and the day a comparator reports a leaf the
+    // seed never walked, this is what still masks it. Do not "simplify" it back
+    // to `===` on the strength of a green probe.
+    //
+    // It DOES catch a user whose real property value is literally `***`, and the
+    // cost of that is bounded and correct-shaped: the value is reported masked
+    // (which is what it already is) and `--accept` refuses it. There is no
+    // evidence to narrow it further — a durable per-attribute `NoEcho` flag on
+    // the state record is issue #2449 — and the alternative is printing a
+    // secret.
+    const stateValueIsMask = carriesSecretMask(change.stateValue);
+    const secretBearing = positionIsSecret || nameCarriesSecret || stateValueIsMask;
     // EXACT, not the prefix match above. `isSecretBearingPath` deliberately
     // matches ANCESTORS so a drift reported above a secret is masked — but that
     // is the wrong granularity for the drop below, which claims a property
@@ -2281,6 +2404,27 @@ async function runDriftForStack(
         const seededSecretPaths: SecretPathSet = new Set<string>();
         collectDynamicReferencePaths(baseline, seededSecretPaths);
         if (useObserved) collectDynamicReferencePaths(resource.properties ?? {}, seededSecretPaths);
+        // Issue #2274: a REDACTION MASK in the record is a secret-bearing
+        // position too, and it is the one the dynamic-reference seeds above
+        // structurally cannot see — a `NoEcho` custom-resource value has no
+        // `{{resolve:` behind it.
+        //
+        // ITS OWN SET, deliberately, rather than seeded into the two above.
+        // `redactDriftChanges` uses `secretPaths` for TWO different decisions:
+        // an ANCESTOR match that decides masking, and an EXACT-leaf match that
+        // licenses DROPPING a change whose AWS side is absent. The second rule
+        // means "AWS cannot read this position back", which is true of a
+        // write-only credential and false of a mask — so folding the masks in
+        // would silently drop a masked leaf AWS did not report, retiring both
+        // the drift signal and the `--revert` refusal that keeps `***` off the
+        // live resource. This set feeds the masking decision only.
+        //
+        // Computed once and used on BOTH the resolution-succeeded and the
+        // resolution-failed path, because a mask is read off the record with no
+        // AWS call: it is known either way.
+        const maskSecretPaths: SecretPathSet = new Set<string>();
+        collectSecretMaskPaths(baseline, maskSecretPaths);
+        if (useObserved) collectSecretMaskPaths(resource.properties ?? {}, maskSecretPaths);
         const unresolvedTokens = new Set<string>();
         const noteUnresolved = (tokens: string[]): void => {
           for (const token of tokens) unresolvedTokens.add(token);
@@ -2518,7 +2662,8 @@ async function runDriftForStack(
         const reported = redactDriftChanges(
           changes,
           secrets,
-          secretResolutionFailed ? seededSecretPaths : secretPaths
+          secretResolutionFailed ? seededSecretPaths : secretPaths,
+          maskSecretPaths
         );
         // ONE field where issues #1914 / #2108 carried two booleans, and the
         // ordering is what the old `comparisonRefused = secretResolutionFailed`
@@ -3596,6 +3741,107 @@ export function preserveLiveValuesAtUnresolvedTokens(
 }
 
 /**
+ * Keep `cdkd drift --revert` from pushing a REDACTION MASK to AWS (issue
+ * [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+ *
+ * WHY THIS EXISTS AT ALL. A `NoEcho` custom resource's `Data` resolved into a
+ * dependent's property is persisted as {@link SECRET_MASK}, because there is no
+ * expression to store in its place. `--revert` pushes the BASELINE to AWS, so
+ * without this a revert triggered by a SIBLING key would write the literal
+ * `***` onto the live SSM parameter / secret / env var — the issue #1498 /
+ * #1501 data-corruption class, and strictly worse than the disclosure the mask
+ * exists to prevent. Shipping the mask without this guard would trade one for
+ * the other.
+ *
+ * The sibling of {@link preserveLiveValuesAtUnresolvedTokens} and deliberately
+ * a SEPARATE function rather than another branch inside it. That one is gated
+ * on `unresolvedTokens.size > 0` at its call site, and this hazard is decided
+ * by the SEND bag alone — a resource can carry a mask with no unresolved token
+ * anywhere, so folding the two would put this check behind a condition that has
+ * nothing to do with it.
+ *
+ * IT REGISTERS WHAT IT MOVES, exactly as the sibling does, and an earlier
+ * revision's reason for not doing so was wrong: it said "the live value is one
+ * cdkd never resolved and cannot recognise, so there is no needle to record".
+ * The needle is `liveValue -> {@link SECRET_MASK}`, i.e. a MASK-ONLY entry, and
+ * the evidence for it is the position — THE MASKED POSITION IS THE PROOF THE
+ * VALUE IS SECRET, since nothing but this module's own redaction puts a mask at
+ * a leaf. Without the registration this function copies live plaintext into the
+ * send bag and then `collectNarrowedTopLevelKeys` persists that delta into
+ * `observedProperties` against a `secrets` map holding no entry for it — the
+ * same disclosure the mask exists to prevent, arriving through the mechanism
+ * that is supposed to protect it — and the same omission un-masks it in
+ * `maskSecretsInText(err.message, secrets)` and in the masker handed to
+ * `provider.update`.
+ *
+ * `secrets` is therefore MUTATED, which is why it is a parameter rather than
+ * something the caller could omit. `recordMaskOnlyValue` applies its own
+ * refusals (an entry that already carries a real EXPRESSION wins; a plaintext
+ * below the needle floor is not recorded), so this call site states only the
+ * position fact and lets the module decide what is registrable.
+ *
+ * TWO OUTCOMES per masked leaf, and the second is why this returns a report
+ * rather than just a bag:
+ *
+ * - AWS holds a value there -> copy the LIVE value in. The revert then leaves
+ *   that position exactly as AWS has it while still reverting every other
+ *   drifted key, which is the same trade `preserveLiveValuesAtUnresolvedTokens`
+ *   makes.
+ * - AWS holds nothing there (the position could not be aligned, or the key is
+ *   absent live) -> there is no safe value to send, so the path is reported as
+ *   UNPRESERVABLE and the caller refuses the whole resource. Sending the mask
+ *   would be the corruption; dropping the key would delete a property the
+ *   resource may require.
+ *
+ * Array descent is POSITIONAL and bails to "no live value" on any length
+ * mismatch, matching the sibling: a reordered readback cannot be positioned
+ * against, and guessing would put one element's live value at another's index.
+ *
+ * Returns the input bag BY IDENTITY when it holds no mask, so the ordinary
+ * revert is byte-identical and pays one walk.
+ */
+export function preserveLiveValuesAtMaskedLeaves(
+  send: Record<string, unknown>,
+  awsProperties: Record<string, unknown>,
+  secrets: RecordedSecretValues
+): { properties: Record<string, unknown>; unpreservablePaths: string[] } {
+  const unpreservablePaths: string[] = [];
+  let changed = false;
+  const walk = (value: unknown, live: unknown, path: string): unknown => {
+    if (value === SECRET_MASK) {
+      if (live === undefined) {
+        unpreservablePaths.push(path);
+        return value;
+      }
+      changed = true;
+      // REGISTER before returning — see the note above. A non-string live value
+      // is not registrable (the redaction walk matches by string value), and is
+      // the same stated residual the sibling carries: it is still copied,
+      // because sending the mask is worse, and it is unmaskable if a provider
+      // later echoes it back changed.
+      if (typeof live === 'string') recordMaskOnlyValue(secrets, live);
+      return live;
+    }
+    if (Array.isArray(value)) {
+      const liveItems = Array.isArray(live) && live.length === value.length ? live : undefined;
+      return value.map((item, i) => walk(item, liveItems?.[i], `${path}[${i}]`));
+    }
+    if (value !== null && typeof value === 'object') {
+      const liveObject = isPlainRecord(live) ? live : undefined;
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = walk(v, liveObject?.[k], path === '' ? k : `${path}.${k}`);
+      }
+      return out;
+    }
+    return value;
+  };
+  const properties = walk(send, awsProperties, '') as Record<string, unknown>;
+  if (!changed && unpreservablePaths.length === 0) return { properties: send, unpreservablePaths };
+  return { properties, unpreservablePaths };
+}
+
+/**
  * Build the `newProperties` object passed to `provider.update` during
  * `--revert`. Strategy:
  *
@@ -4076,10 +4322,39 @@ async function runRevert(
           // over whatever AWS holds — see the helper for why the "it is already
           // there" premise is false on a CFn-migrated record. Skipped entirely
           // when nothing survived, so the ordinary revert is byte-identical.
-          newProperties =
+          const tokenPreserved =
             unresolvedTokens.size > 0
               ? preserveLiveValuesAtUnresolvedTokens(overlaid, outcome.awsProperties, secrets)
               : overlaid;
+          // Issue #2274: a REDACTION MASK in the baseline must never be written
+          // to AWS either. Run UNCONDITIONALLY, unlike the token pass above:
+          // this hazard is decided by the send bag alone, and `unresolvedTokens`
+          // says nothing about it. The helper returns its input by identity when
+          // there is no mask, so an ordinary revert is unaffected.
+          const maskPreserved = preserveLiveValuesAtMaskedLeaves(
+            tokenPreserved,
+            outcome.awsProperties,
+            secrets
+          );
+          if (maskPreserved.unpreservablePaths.length > 0) {
+            // REFUSE the resource rather than send the mask. `totalUnresolvable`
+            // rather than `totalFailed`, and the message is worded like the
+            // re-resolution refusal one arm down for the same reason: no AWS
+            // call was attempted, and the cause is a value cdkd cannot name —
+            // not an update that failed.
+            totalUnresolvable++;
+            logger.error(
+              `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ` +
+                `refused to revert ${maskPreserved.unpreservablePaths.join(', ')} — the recorded ` +
+                `baseline holds only the redaction mask there (a NoEcho custom-resource value), ` +
+                `and AWS reports nothing to preserve, so cdkd has no value it may write. ` +
+                `Force that custom resource to update (change one of its properties, e.g. a ` +
+                `nonce) and re-deploy, so its handler runs again and supplies the value — an ` +
+                `ordinary re-deploy leaves it unchanged and the mask stays.`
+            );
+            return;
+          }
+          newProperties = maskPreserved.properties;
         } catch (err) {
           // Reachability note (issue #1914 review): this arm is narrower than
           // it looks, and is kept only because it is cheap. A bag so malformed

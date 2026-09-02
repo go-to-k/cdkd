@@ -132,5 +132,78 @@ exports.handler = async (event) => {
       value: cr.getAttString('ComputedValue'),
       description: 'The CR ComputedValue Data attr resolved at synth/deploy time',
     });
+
+    // --- The `NoEcho` arm (issue #2274) ---------------------------------
+    //
+    // A SECOND custom resource whose handler returns the documented
+    // cfn-response `NoEcho: true` beside its `Data`. It is a separate resource
+    // rather than a flag on the one above, because the two arms assert
+    // OPPOSITE things about the same machinery and one fixture has to carry
+    // both: the CR above must keep resolving AND persisting in the clear (the
+    // negative case this fixture already existed for), while this one must
+    // resolve in the clear and persist MASKED.
+    //
+    // The response shape is deliberately the SIMPLE-HANDLER one (no `Status`
+    // field), because that is the shape cdkd re-synthesizes an envelope for —
+    // the delivery path that DROPPED the declaration before #2274 and would
+    // therefore make the whole feature inert here.
+    const noEchoHandler = new lambda.Function(this, 'NoEchoCrHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      timeout: cdk.Duration.seconds(30),
+      code: lambda.Code.fromInline(`
+exports.handler = async (event) => {
+  console.log('NoEcho CR event:', JSON.stringify(event));
+  if (event.RequestType === 'Delete') {
+    return {
+      Status: 'SUCCESS',
+      PhysicalResourceId: event.PhysicalResourceId || 'cr-noecho',
+    };
+  }
+  const seed = (event.ResourceProperties || {}).Seed || 'noseed';
+  return {
+    PhysicalResourceId: 'cr-noecho-' + seed,
+    // NOT a real credential: a fixed, inert literal, so a regression that
+    // leaks it into a state version discloses nothing. It is distinctive so
+    // verify.sh can grep the whole state blob for it.
+    Data: {
+      Token: 'noecho-token-' + seed,
+      // The ECHO the review round asked for: a handler returning its own
+      // input inside a NoEcho response is the shape the CDK \`Provider\`
+      // samples encourage, and it makes \`Data.ServiceTokenEcho\` equal this
+      // resource's own \`ServiceToken\` property. Registering THAT as a
+      // redaction needle would rewrite \`properties.ServiceToken\` to '***'
+      // in the very state record \`CustomResourceProvider.delete\` reads it
+      // back from -- where '***' is a truthy string that passes both of that
+      // method's guards. verify.sh asserts the ServiceToken survives.
+      ServiceTokenEcho: (event.ResourceProperties || {}).ServiceToken,
+    },
+    NoEcho: true,
+  };
+};
+`),
+    });
+
+    const noEchoCr = new cdk.CustomResource(this, 'NoEchoCustomResource', {
+      serviceToken: noEchoHandler.functionArn,
+      properties: { Seed: 'integ' },
+    });
+
+    // The dependent. Its Value must be the REAL token on AWS (CloudFormation
+    // delivers a `NoEcho` custom resource's `Data` to a dependent unmasked —
+    // measured on the issue thread) while cdkd's state record for it holds the
+    // mask. Those two assertions together are the whole point of the arm.
+    new ssm.StringParameter(this, 'NoEchoParam', {
+      parameterName: `${namePrefix}/noecho`,
+      stringValue: noEchoCr.getAttString('Token'),
+    });
+
+    // The output is asserted MASKED in state, which covers the third
+    // persistence route (`state.outputs`, which is also what an importing
+    // stack reads).
+    new cdk.CfnOutput(this, 'NoEchoValueResolved', {
+      value: noEchoCr.getAttString('Token'),
+      description: 'The NoEcho CR Token Data attr — masked in cdkd state, real on AWS',
+    });
   }
 }

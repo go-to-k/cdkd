@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { recordRecoverableMaskedOutput } from '../../../src/deployment/secret-redaction.js';
 
 /**
  * Tests for cross-account `Fn::GetStackOutput` resolution (closes issue #449).
@@ -329,6 +330,61 @@ describe('Fn::GetStackOutput cross-account RoleArn', () => {
     expect(stateClientCfg).toBeDefined();
     expect(stateClientCfg?.credentials?.accessKeyId).toBe('ASIA-xacc');
     expect(stateClientCfg?.credentials?.sessionToken).toBe('xacc-token');
+  });
+
+  it('does NOT serve the ambient account\'s recovered NoEcho plaintext to a cross-account read', async () => {
+    // Issue #2274's in-run recovery store is keyed `stack + region + output`
+    // with NO account in it, and it only ever holds plaintexts THIS process
+    // masked while deploying with the AMBIENT credentials. A stack named
+    // `Producer` in `us-east-1` therefore has the SAME key whichever account it
+    // lives in -- and a `Shared` / `Network` stack replicated per account is the
+    // ordinary shape, not an exotic one.
+    //
+    // Without the `crossAccount` refusal this resolves to CONSUMER-ACCOUNT-SECRET
+    // and the consumer then sends that value to a resource in the OTHER account.
+    // The neighbouring `CrossAccountSecretRefusalError` refuses exactly this
+    // confusion for a redacted dynamic reference; it does not fire here only
+    // because the mask is not a dynamic reference, so this path falls through it.
+    recordRecoverableMaskedOutput('Producer', 'us-east-1', 'Token', 'CONSUMER-ACCOUNT-SECRET');
+
+    mockStsSend.mockResolvedValueOnce({
+      Credentials: {
+        AccessKeyId: 'ASIA-xacc',
+        SecretAccessKey: 'xacc-secret',
+        SessionToken: 'xacc-token',
+        Expiration: new Date('2026-12-31T00:00:00Z'),
+      },
+    });
+    mockS3Send.mockResolvedValueOnce({ LocationConstraint: PRODUCER_BUCKET_REGION });
+    // The PRODUCER account's own state holds the mask -- its deploy masked it
+    // there, in a different account and quite possibly a different run.
+    mockS3Send.mockResolvedValueOnce({
+      Body: bodyOf(happyPathState('Producer', 'us-east-1', { Token: '***' })),
+      ETag: '"abc123"',
+    });
+
+    const resolver = new IntrinsicFunctionResolver('us-east-1');
+    const resolveIt = (): Promise<unknown> =>
+      resolver.resolve(
+        {
+          'Fn::GetStackOutput': {
+            StackName: 'Producer',
+            OutputName: 'Token',
+            Region: 'us-east-1',
+            RoleArn: PRODUCER_ROLE,
+          },
+        },
+        buildContext(),
+      );
+
+    // Whatever it does, it must not be "hand back the ambient account's secret".
+    let served: unknown;
+    try {
+      served = await resolveIt();
+    } catch {
+      served = undefined;
+    }
+    expect(served).not.toBe('CONSUMER-ACCOUNT-SECRET');
   });
 
   it('caches assumed credentials per role across multiple resolves in the same deploy', async () => {

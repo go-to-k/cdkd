@@ -38,6 +38,10 @@ import {
   recordNestedStackParameterExpressions,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
+  carriesSecretMask,
+  recordMaskOnlyValuesIn,
+  recordRecoverableMaskedOutput,
+  wholeStringLeavesOf,
   TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -898,6 +902,29 @@ export class DeployEngine {
    */
   private perResourceSecrets = new Map<string, RecordedSecretValues>();
   /**
+   * Logical ids whose provider declared THIS RUN's `attributes` sensitive
+   * (`ResourceCreateResult.noEchoAttributes` — issue
+   * [#2274](https://github.com/go-to-k/cdkd/issues/2274)). One producer today:
+   * `CustomResourceProvider`, relaying the handler's `NoEcho: true`.
+   *
+   * IN-RUN ONLY, and that is the whole shape of the feature rather than a
+   * shortcut. `NoEcho` arrives on a RESPONSE, so cdkd knows it exactly when the
+   * handler answered — this deploy — and `ResourceState` carries no durable
+   * per-attribute flag to remember it by (a v9 -> v10 schema bump, issue
+   * [#2449](https://github.com/go-to-k/cdkd/issues/2449)). Within the run that
+   * is enough: the DAG provisions the custom resource before anything that
+   * depends on it, so every dependent's resolution sees the entry. Across runs
+   * the persisted `***` is the signal instead — see
+   * `ResolverContext.redactedAttributeReads`.
+   *
+   * Reset per `deploy()`, like `perResourceSecrets`.
+   *
+   * `true` means the WHOLE attributes bag is sensitive (a custom resource's
+   * `NoEcho` response); a SET names the sensitive members only (a nested
+   * stack's `Outputs.<Key>` entries — see `NoEchoAttributesResult`).
+   */
+  private noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
+  /**
    * PER-RESOURCE unresolved TEMPLATE properties, keyed by logicalId (issues
    * #1904 / #1900). The redaction choke point uses this as the POSITION source:
    * wherever the template leaf is a `{{resolve:...}}` string, state persists
@@ -1008,6 +1035,7 @@ export class DeployEngine {
     this.recordedImports = [];
     this.recordedOutputReads = [];
     this.perResourceSecrets = new Map();
+    this.noEchoAttributeResources = new Map();
     this.perResourceTemplateProps = new Map();
     this.outputSecrets = new Map();
     this.outputsTemplateSource = {};
@@ -1111,6 +1139,17 @@ export class DeployEngine {
       // the secrets substituted during ITS OWN resolution — see the
       // `perResourceSecrets` field doc for why per-resource, not session-wide.
       recordedSecretValues,
+      // Issue #2274, and BOTH fields go on EVERY context this method builds —
+      // the diff / no-op one included — rather than only on the provisioning
+      // ones. The first can only ADD mask-only needles to a bag, which is right
+      // wherever that bag ends up redacting something and inert wherever it
+      // does not. The second is a RECORD the resolver writes and only the two
+      // provisioning sites read: putting the bag on the diff context too costs
+      // an array nobody consults, while omitting it would make a future third
+      // provisioning site silently unguarded — the failure direction that
+      // matters here is the one that ships a `***` to AWS.
+      noEchoAttributeResources: this.noEchoAttributeResources,
+      redactedAttributeReads: [],
     };
   }
 
@@ -1176,6 +1215,35 @@ export class DeployEngine {
    * resolving one secret collapsed onto whichever expression was recorded last
    * at all three.
    */
+  /**
+   * Record the plaintext behind every output {@link redactOutputs} just masked,
+   * for the duration of THIS PROCESS (issue #2274).
+   *
+   * Per KEY, comparing the two bags rather than re-deriving from the secrets
+   * map: what matters is whether the persisted value at this key IS a mask that
+   * the resolved value was not, which is exactly "this key's plaintext is about
+   * to become unreadable". A key already carrying `***` before redaction — a
+   * value read back out of a previous run's state — is skipped, because there
+   * is no plaintext behind it to remember.
+   *
+   * Called only from the REAL-DEPLOY outputs pass. The other two `redactOutputs`
+   * callers hand it a bag from a previous generation, where a mask is already
+   * unrecoverable and pretending otherwise would serve a stale value.
+   */
+  private rememberRecoverableMaskedOutputs(
+    stackName: string,
+    resolved: Record<string, unknown>,
+    redacted: Record<string, unknown>
+  ): void {
+    if (resolved === redacted) return;
+    for (const [key, redactedValue] of Object.entries(redacted)) {
+      if (!carriesSecretMask(redactedValue)) continue;
+      const plaintext = resolved[key];
+      if (plaintext === undefined || carriesSecretMask(plaintext)) continue;
+      recordRecoverableMaskedOutput(stackName, this.stackRegion, key, plaintext);
+    }
+  }
+
   private redactOutputs(outputs: Record<string, unknown>): Record<string, unknown> {
     if (this.outputSecrets.size === 0) return outputs;
     // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
@@ -1238,6 +1306,118 @@ export class DeployEngine {
    * same shape — so it is redacted against ITSELF via `scrubResourceRecord`,
    * the same #1900 fallback an UNCHANGED resource takes.
    */
+  /**
+   * Take a provider's `noEchoAttributes` declaration and turn it into REDACTION
+   * (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+   *
+   * TWO registrations, and both are needed because `perResourceSecrets` is
+   * keyed by LOGICAL ID:
+   *
+   * - the values go into the PRODUCER's own bag, which is what
+   *   `scrubResourceRecord` redacts this record's `attributes` with;
+   * - the logical id goes into {@link noEchoAttributeResources}, which every
+   *   later resolution consults, so a DEPENDENT that resolves an `Fn::GetAtt`
+   *   here records the same plaintext into ITS bag and its resolved
+   *   `properties` are masked too. Without the second half the custom resource's
+   *   record would be clean while the SSM parameter that consumed it still held
+   *   the plaintext — a line that cannot be explained to someone who set
+   *   `NoEcho` expecting "not in state".
+   *
+   * Called AFTER the provider returns and BEFORE the state record is built, so
+   * the needles exist by the time anything is persisted. Nothing is masked in
+   * memory: `stateResources[logicalId].attributes` keeps the REAL value, which
+   * is what the resolver serves to dependents in this same run.
+   *
+   * `ownProperties` is the resource's OWN resolved template bag, and passing it
+   * is what stops a handler from masking cdkd's inputs back at it (issue #2274
+   * review). Its whole string leaves are EXCLUDED from the needles: a handler
+   * echoing `event.ResourceProperties` into its `Data` — the shape the CDK
+   * `Provider` samples encourage — makes `Data.X` equal the resource's own
+   * `ServiceToken`, and registering that rewrites `properties.ServiceToken` to
+   * `***` in the record `CustomResourceProvider.delete` reads it back from,
+   * where the mask is a truthy string that passes both of that method's guards.
+   * A value already present in the template is not handler-GENERATED, so
+   * excluding it gives up no secrecy — and where the template value IS a
+   * resolved secret it already carries a real EXPRESSION needle, which
+   * `recordMaskOnlyValue` would refuse to demote anyway.
+   */
+  private registerNoEchoAttributes(
+    logicalId: string,
+    result: {
+      attributes?: Record<string, unknown>;
+      noEchoAttributes?: boolean;
+      noEchoAttributeNames?: readonly string[];
+    },
+    secrets: RecordedSecretValues,
+    ownProperties?: Record<string, unknown>
+  ): void {
+    const attributes = result.attributes;
+    if (attributes === undefined) return;
+    const excluded = ownProperties === undefined ? undefined : wholeStringLeavesOf(ownProperties);
+    if (result.noEchoAttributes === true) {
+      this.noEchoAttributeResources.set(logicalId, true);
+      recordMaskOnlyValuesIn(attributes, secrets, excluded);
+      return;
+    }
+    // The PER-ATTRIBUTE arm. Filtered against the bag actually returned, so a
+    // name the provider declared but did not deliver registers nothing — the
+    // declaration is evidence about a VALUE, and with no value there is no
+    // needle to record.
+    const names = (result.noEchoAttributeNames ?? []).filter((name) => name in attributes);
+    if (names.length === 0) return;
+    this.noEchoAttributeResources.set(logicalId, new Set(names));
+    for (const name of names) recordMaskOnlyValuesIn(attributes[name], secrets, excluded);
+  }
+
+  /**
+   * Refuse to provision a resource whose resolution served a REDACTED attribute
+   * out of a previous deploy's state (issue #2274).
+   *
+   * The unavoidable cost of masking a `NoEcho` custom resource's `Data`: state
+   * then holds `***`, and cdkd cannot get the value back without re-invoking
+   * the handler, which is a SIDE-EFFECTING operation it must not perform just
+   * to fill in a property. Since `ResourceState` carries no durable `NoEcho`
+   * flag (issue #2449), there is not even a way to tell the user which
+   * attribute it was without this record.
+   *
+   * REFUSING IS THE SAFE DIRECTION and the alternative is not "it works": the
+   * literal `***` would be written to the live resource by any provider that
+   * sends its desired bag wholesale (`PutParameter` and every
+   * `Put*Configuration`), which is the issue #1498 / #1501 data-corruption
+   * class. A loud failure naming the remedy is strictly better than a silent
+   * wrong write.
+   *
+   * NARROW BY CONSTRUCTION. The bag is only non-empty when a `Fn::GetAtt`
+   * actually served a masked attribute during THIS resource's resolution, so a
+   * resource whose properties merely happen to contain the string `***` is
+   * untouched — which is why the check is not "does `resolvedProps` hold the
+   * mask". And the diff pass does not consult the bag at all, so an untouched
+   * stack still reports NO_CHANGE and deploys.
+   */
+  private refuseRedactedAttributeReads(
+    logicalId: string,
+    resourceType: string,
+    context: import('./intrinsic-function-resolver.js').ResolverContext
+  ): void {
+    const reads = context.redactedAttributeReads;
+    if (reads === undefined || reads.length === 0) return;
+    throw new ProvisioningError(
+      `Cannot resolve ${reads.join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
+        `redaction mask there, and the value is not recoverable from state. That happens when a ` +
+        `custom resource handler declared its response NoEcho: true — the value is generated by ` +
+        `the handler, so cdkd has nothing to re-derive it from and must not write the literal ` +
+        `mask to AWS. Two remedies: force that custom resource to update (change one of its ` +
+        `properties, e.g. a nonce / version property) so its handler runs again and supplies the ` +
+        `value in this same run; or stop setting NoEcho on that response. If the value comes ` +
+        `from ANOTHER stack, the producer and this stack must deploy in ONE run (cdkd deploy ` +
+        `--all) with the producer's custom resource actually running — re-deploying the producer ` +
+        `by itself does not help, because it re-masks the value on the way into its own state. ` +
+        `See https://github.com/go-to-k/cdkd/issues/2449.`,
+      resourceType,
+      logicalId
+    );
+  }
+
   private redactOperationsForJournal<T extends CompletedOperation | FailedOperation>(
     operations: T[]
   ): T[] {
@@ -2806,7 +2986,18 @@ export class DeployEngine {
       // `this.outputSecrets` with the outputs' own substituted references, and
       // `this.outputsTemplateSource` with the unresolved values that position
       // them (#1910).
+      const resolvedOutputsBeforeRedaction = outputs;
       outputs = this.redactOutputs(outputs);
+      // Issue #2274: remember, FOR THIS PROCESS ONLY, the plaintext behind any
+      // output the redaction just replaced with the mask. Every cross-stack
+      // route — a nested stack's `Outputs.<Key>`, `Fn::ImportValue`,
+      // `Fn::GetStackOutput` — reads the producer's PERSISTED outputs, so
+      // without this the first deploy of a consumer whose producer exports a
+      // `NoEcho` custom-resource value would land on `***` and be refused: a
+      // template that deployed before this feature. See
+      // `recoverableMaskedOutputs` for why the key is a COORDINATE and not a
+      // bare plaintext.
+      this.rememberRecoverableMaskedOutputs(stackName, resolvedOutputsBeforeRedaction, outputs);
     } catch (outputError) {
       await this.persistStateAfterOutputFailure(
         stackName,
@@ -3780,6 +3971,10 @@ export class DeployEngine {
           string,
           unknown
         >;
+        // Issue #2274: before ANY of the resolved bag reaches a provider, refuse
+        // if the resolution had to serve an attribute a previous deploy
+        // redacted. See the helper — the value would be the literal `***`.
+        this.refuseRedactedAttributeReads(logicalId, resourceType, context);
         // Capture the UNRESOLVED bag as the redaction position source (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
         // Named so the provider call below can bind the SAME bag into its
@@ -3849,6 +4044,11 @@ export class DeployEngine {
           createProvider
         );
 
+        // Issue #2274: BEFORE the record is built, so the needles exist by the
+        // time anything is persisted, and before any dependent resolves against
+        // this resource's fresh attributes.
+        this.registerNoEchoAttributes(logicalId, result, createSecrets, resolvedProps);
+
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
         // so that deletion order is correct even without implicit type-based deps
         const dependencies = this.extractAllDependencies(template, logicalId);
@@ -3858,6 +4058,11 @@ export class DeployEngine {
           physicalId: result.physicalId,
           resourceType,
           properties: this.propertiesToRecord(resolvedProps, result),
+          // The REAL attribute values, deliberately: this in-memory record is
+          // what `Fn::GetAtt` serves to dependents in this same run, and
+          // CloudFormation delivers a `NoEcho` custom resource's `Data` to a
+          // dependent in the clear (issue #2274, measured). Masking happens at
+          // the PERSIST choke point, from the needles registered above.
           ...(result.attributes && { attributes: result.attributes }),
           ...(dependencies && dependencies.length > 0 && { dependencies }),
           ...templateAttrs,
@@ -3923,6 +4128,10 @@ export class DeployEngine {
           string,
           unknown
         >;
+        // Issue #2274: the UPDATE twin of the CREATE arm's refusal — same
+        // reason, and needed on BOTH because an existing dependent whose OTHER
+        // properties changed is the commonest way to reach a redacted read.
+        this.refuseRedactedAttributeReads(logicalId, resourceType, context);
         // Same position source on the UPDATE path (#1904).
         this.perResourceTemplateProps.set(logicalId, desiredProps);
         // Issue #2291: for an `AWS::CloudFormation::Stack` row, remember which
@@ -4524,6 +4733,12 @@ export class DeployEngine {
             }
           }
 
+          // Issue #2274: the replacement path re-CREATES, so the fresh create
+          // result carries its own `NoEcho` declaration and must register it —
+          // the create arm's registration is in a different `case` and does not
+          // run here.
+          this.registerNoEchoAttributes(logicalId, createResult, updateSecrets, resolvedProps);
+
           stateResources[logicalId] = {
             physicalId: createResult.physicalId,
             resourceType,
@@ -4787,6 +5002,25 @@ export class DeployEngine {
           // (and absent attributes stay absent).
           const carriedAttributes =
             result.attributes ?? (result.wasReplaced ? undefined : currentResource.attributes);
+
+          // Issue #2274: registered against `carriedAttributes`, not
+          // `result.attributes`, because those are the values that land in the
+          // record — and the whole point of the needles is to redact what is
+          // PERSISTED. The two differ exactly when a provider declared `NoEcho`
+          // and returned no fresh attributes, where the carried-forward set is
+          // what state keeps.
+          this.registerNoEchoAttributes(
+            logicalId,
+            {
+              ...(carriedAttributes && { attributes: carriedAttributes }),
+              ...(result.noEchoAttributes === true && { noEchoAttributes: true }),
+              ...(result.noEchoAttributeNames && {
+                noEchoAttributeNames: result.noEchoAttributeNames,
+              }),
+            },
+            updateSecrets,
+            resolvedProps
+          );
 
           stateResources[logicalId] = {
             physicalId: result.physicalId,

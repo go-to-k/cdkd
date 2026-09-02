@@ -102,6 +102,8 @@ export interface ResourceCreateResult {
   physicalId: string                     // AWS physical ID
   attributes?: Record<string, unknown>   // Attributes for Fn::GetAtt
   effectiveProperties?: Record<string, unknown>  // See below — rarely needed
+  noEchoAttributes?: boolean             // See below — the whole bag is sensitive
+  noEchoAttributeNames?: readonly string[]  // ...or only these keys of it
 }
 
 export interface ResourceUpdateResult {
@@ -109,8 +111,48 @@ export interface ResourceUpdateResult {
   wasReplaced: boolean                   // Whether resource was replaced
   attributes?: Record<string, unknown>   // Attributes after update
   effectiveProperties?: Record<string, unknown>  // See below — rarely needed
+  noEchoAttributes?: boolean             // See below — the whole bag is sensitive
+  noEchoAttributeNames?: readonly string[]  // ...or only these keys of it
 }
 ```
+
+**`noEchoAttributes` — the attributes you are returning are SENSITIVE**
+(issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)). Leave it absent
+and nothing changes. Set it and the deploy engine registers every string value
+in `attributes` as a redaction needle, so `state.json` stores `***` in its
+place — in this resource's own `attributes`, in the resolved `properties` of
+every resource that consumed one through `Fn::GetAtt`, and in `state.outputs`.
+
+Three things about it are decisions rather than accidents, and each is a rule
+for a second producer:
+
+- **`noEchoAttributes` is WHOLE-BAG, and that matches its producer.**
+  `CustomResourceProvider` relays the `NoEcho: true` field of the
+  CloudFormation custom-resource RESPONSE envelope — a property of the
+  response, not of one `Data` member — so declaring one member sensitive would
+  invent a granularity the wire format does not have. Use
+  `noEchoAttributeNames` instead when your bag genuinely MIXES sensitive and
+  ordinary members: `NestedStackProvider` does, because its attributes are a
+  whole child stack's outputs, of which typically one is sensitive. Declaring
+  such a bag whole would mask every unrelated member into this record and into
+  every resource that consumes one — degrading resources that have nothing to
+  do with the secret. A name the returned `attributes` does not carry is
+  ignored.
+- **Do NOT mask the values you return.** They are what `Fn::GetAtt` resolves
+  to, and CloudFormation delivers a `NoEcho` custom resource's `Data` to a
+  dependent resource in the CLEAR (measured against real CloudFormation).
+  Masking at capture would make a template feeding the value into
+  `AWS::SecretsManager::Secret.SecretString` store the literal mask AS the
+  secret. Report the flag; let the engine decide what to write down.
+- **It is per-CALL and not persisted.** A `create()` that reports it and a
+  later `update()` that does not are two honest statements about two
+  responses. `ResourceState` has no durable field for it, which is why cdkd
+  REFUSES rather than guessing when a later deploy has to write a value it can
+  only read back as the mask — see
+  [state-management.md](state-management.md#noecho-custom-resource-responses)
+  for the user-facing consequences, and issue
+  [#2449](https://github.com/go-to-k/cdkd/issues/2449) for the schema bump that
+  would close it.
 
 **`effectiveProperties` — only when you deliberately NARROW what you send**
 (issue [#1591](https://github.com/go-to-k/cdkd/issues/1591)). The deploy engine
@@ -1594,7 +1636,11 @@ implementation. Three details are worth copying:
     is outside that model and is not masked by it, and that residual is
     PERSISTED rather than log-only (a `NoEcho` value quoted inside an AWS error
     reaches `deployments/*.jsonl`; issue
-    [#1998](https://github.com/go-to-k/cdkd/issues/1998)). `delete()` has no
+    [#1998](https://github.com/go-to-k/cdkd/issues/1998)). A DIFFERENT `NoEcho`
+    — the custom-resource RESPONSE field of the same name — IS covered since
+    issue [#2274](https://github.com/go-to-k/cdkd/issues/2274), through
+    `noEchoAttributes` above; the two share only a spelling, so do not read one
+    as closing the other. `delete()` has no
     masker — see `SecretMaskingContext` for why that is a statement about
     providers rather than about the bag, and why you must thread the capability
     BEFORE adding any delete-side log line that names a property value.
