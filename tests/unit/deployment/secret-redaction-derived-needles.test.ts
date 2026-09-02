@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
   redactSecretsForState,
   scrubResourceRecord,
-  recordSecretExpression,
   clearRecordedSecretExpressions,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
@@ -465,6 +464,120 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
 
     expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
     expect(JSON.stringify(out)).not.toContain('decrypted-secure-value');
+  });
+
+  it('does NOT let an INFERRED needle rewrite a SUBSTRING of an unrelated leaf', () => {
+    // THE FOURTH BLOCKER, and the one the issue-#2036 revert widened. A bare
+    // `{{resolve:ssm:` token with no verdict is accepted as secret-bearing on
+    // the #1901 premise — sound for the leaf ITSELF, and NOT a licence to
+    // rewrite every other leaf that merely CONTAINS the value.
+    //
+    // Measured before the fix, with the parameter's value `production`:
+    // `my-production-logs` became `my-{{resolve:ssm:/app/env}}-logs`. If that
+    // parameter is in fact public, the baseline now holds a string AWS never
+    // reported, and `cdkd drift --revert` re-resolves and pushes it — renaming
+    // the live bucket the day the parameter changes. Exactly the failure
+    // `expressionMaySeedANeedle`'s own doc names.
+    //
+    // Issue #2012's own two rows are unaffected: both are WHOLE-VALUE positions,
+    // which is why evidence strength bounds the BLAST RADIUS here rather than
+    // admission.
+    const envExpr = '{{resolve:ssm:/app/env}}';
+    const out = readback(
+      { Env: 'production', Bucket: 'my-production-logs', Copy: 'production' },
+      { Env: envExpr }
+    );
+
+    expect(out['Env']).toBe(envExpr);
+    // WHOLE-VALUE still applies — this is issue #2012's row 6.
+    expect(out['Copy']).toBe(envExpr);
+    // ...the substring does not.
+    expect(out['Bucket']).toBe('my-production-logs');
+  });
+
+  it('DOES let a CERTAIN needle rewrite a substring, because the spelling settles it', () => {
+    // The other side of the split, so the bound above cannot be widened into
+    // "derived needles never rewrite substrings" — that would leave a real
+    // secret's plaintext sitting in an unrelated leaf, the disclosure
+    // direction. `secretsmanager:` says what it is; no inference is involved.
+    const out = readback(
+      { Pw: PLAINTEXT, Args: [`--pw=${PLAINTEXT}`] },
+      { Pw: EXPR }
+    );
+
+    expect(out['Pw']).toBe(EXPR);
+    expect((out['Args'] as string[])[0]).toBe(`--pw=${EXPR}`);
+  });
+
+  it('does NOT let an INFERRED needle overwrite a CERTAIN needle\'s rewrite', () => {
+    // Precedence, when both classes claim the same leaf. `Copy` is EXACTLY the
+    // inferred parameter's value AND it CONTAINS the certain secret, so the
+    // certain scan rewrites the substring first. The inferred whole-value arm
+    // must not then replace the whole leaf and undo that: stronger evidence
+    // wins, and the certain secret's plaintext is what must not survive.
+    //
+    // Without the `scanned === bag` guard the weaker needle takes the leaf, and
+    // nothing else in this file notices.
+    const envExpr = '{{resolve:ssm:/app/env}}';
+    const secret = 'abcd';
+    const out = readback(
+      { Sec: secret, Env: `xx${secret}xx`, Copy: `xx${secret}xx` },
+      { Sec: EXPR, Env: envExpr }
+    );
+
+    expect(out['Sec']).toBe(EXPR);
+    expect(out['Copy']).toBe(`xx${EXPR}xx`);
+    expect(JSON.stringify(out)).not.toContain(`xx${secret}xx`);
+  });
+
+  it('treats `ssm-secure` as CERTAIN, not inferred, so it keeps substring reach', () => {
+    // `expressionSecretIsInferred` excludes the `{{resolve:ssm-secure:` prefix
+    // explicitly, and the exclusion is easy to lose because the prefix list is
+    // shared with `expressionMaySeedANeedle`. Deleting it would silently demote
+    // a definitively-secret spelling to whole-value only.
+    const secureExpr = '{{resolve:ssm-secure:/app/db-password}}';
+    const out = readback(
+      { Tok: 'cfn-resolved-plain', Frame: 'pre-cfn-resolved-plain-post' },
+      { Tok: secureExpr }
+    );
+
+    expect(out['Tok']).toBe(secureExpr);
+    expect(out['Frame']).toBe(`pre-${secureExpr}-post`);
+  });
+
+  it('keeps a WHOLE-TOKEN position\'s expression when its plaintext was POISONED', () => {
+    // The whole-token arm's MARK, which nothing else fences. The merge only
+    // keeps a position pass's answer where the mark tree claims it, so if this
+    // arm stopped marking, the merge would fall back to the SCAN at every
+    // whole-token position. That is usually invisible — the needle rewrites the
+    // leaf to the same expression — but NOT when no needle exists for that
+    // plaintext, and the poisoned case is exactly that.
+    //
+    // Shape: the `:AWSCURRENT` / `:AWSPREVIOUS` rotation window (issue #1904's
+    // own population). Both stages still resolve to the SAME value mid-rotation,
+    // so `learnNeedle` strikes the plaintext out rather than pick a stage. With
+    // no needle and no mark, both leaves would persist the DECRYPTED value —
+    // a disclosure, at positions POSITION had already redacted.
+    // A THIRD, unrelated position that DOES yield a needle is load-bearing in
+    // this fixture, and the first cut of it lacked one: with no needle at all
+    // `deriveReadbackNeedles` returns early, the merge never runs, and the
+    // mutation survives for a reason that has nothing to do with the mark.
+    // Measured — the probe came back SURVIVED until `Real` / `RealCopy` were
+    // added.
+    const cur = '{{resolve:secretsmanager:app/db:SecretString:pw:AWSCURRENT}}';
+    const prev = '{{resolve:secretsmanager:app/db:SecretString:pw:AWSPREVIOUS}}';
+    const shared = 'not-yet-rotated-shared-value';
+
+    const out = readback(
+      { Real: PLAINTEXT, RealCopy: PLAINTEXT, Cur: shared, Prev: shared },
+      { Real: EXPR, Cur: cur, Prev: prev }
+    );
+
+    // The needle that keeps the merge alive still does its own job.
+    expect(out['RealCopy']).toBe(EXPR);
+    expect(out['Cur']).toBe(cur);
+    expect(out['Prev']).toBe(prev);
+    expect(JSON.stringify(out)).not.toContain(shared);
   });
 
   it('does NOT rewrite a leaf the pass DECIDED in favour of the value already there', () => {

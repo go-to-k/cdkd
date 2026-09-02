@@ -127,7 +127,6 @@ export function recordSecretExpression(expression: string): void {
  * verdict going the other way (an ssm parameter that turns out to be a plain
  * `String` / `StringList`, i.e. public config that must stay RESOLVED in
  * state).
- *
  */
 export function forgetSecretExpression(expression: string): void {
   recordedSecretExpressions.delete(expression);
@@ -137,15 +136,6 @@ export function forgetSecretExpression(expression: string): void {
 export function isRecordedSecretExpression(expression: string): boolean {
   return recordedSecretExpressions.has(expression);
 }
-
-/**
- * Has `expression` been PROVEN to resolve to something PUBLIC this process?
- *
- * `false` covers BOTH "never asked" and "asked, and the two answers disagree",
- * which is deliberate: every caller uses this to decide whether it may keep a
- * value AWS returned in the clear, so anything short of an uncontradicted
- * positive must read as "no evidence" and fall back to refusing.
- */
 
 /** Drop every remembered verdict. Paired with the resolver's cache reset. */
 export function clearRecordedSecretExpressions(): void {
@@ -3115,6 +3105,29 @@ function unkeyedArrayPairsByAnchors(bag: readonly unknown[], source: readonly un
 }
 
 /**
+ * Marks a position one of the POSITION passes DECIDED, in the parallel tree
+ * {@link refuseUncertifiedReadbackPositions} builds when asked to `mark`.
+ *
+ * A SENTINEL rather than a value comparison, and that distinction was a
+ * security blocker on PR #2415. {@link preferPositionDecisions} first inferred
+ * "not decided" from `refused === bag`, which cannot tell an UNDECIDED position
+ * from one the pass decided IN FAVOUR of the value already there. Two shapes
+ * hit it, both fabricating a baseline `cdkd drift --revert` then pushes:
+ *
+ * - the resolver's unsupported-service arm leaves an `{{resolve:ssm-secure:`
+ *   token LITERAL, so AWS echoes it back and the source leaf EQUALS the bag
+ *   leaf. The string arm returns `source` — a decision — and the equality made
+ *   it look like no decision at all. (A BARE such token takes the whole-token
+ *   arm and one embedded in text takes the mixed-leaf arm; both decide, and
+ *   both were misread.)
+ * - the empty-map arm that deliberately KEEPS a leaf returns `bag` by design.
+ *
+ * A symbol cannot be produced by any walk of JSON, so no readback value can
+ * impersonate it.
+ */
+const POSITION_DECIDED = Symbol('position decided by a position pass');
+
+/**
  * The (plaintext -> expression) pairs a LEARN pass has established, plus the
  * plaintexts it refuses to speak for.
  *
@@ -3128,30 +3141,15 @@ function unkeyedArrayPairsByAnchors(bag: readonly unknown[], source: readonly un
  * plaintext learned twice with two expressions is therefore struck out for the
  * rest of the record and the residual stays a refusal.
  */
-/**
- * Marks a position one of the POSITION passes DECIDED, in the parallel tree
- * {@link refuseUncertifiedReadbackPositions} builds when asked to `mark`.
- *
- * A SENTINEL rather than a value comparison, and that distinction was a
- * security blocker on PR #2415. {@link preferPositionDecisions} first inferred
- * "not decided" from `refused === bag`, which cannot tell an UNDECIDED position
- * from one the pass decided IN FAVOUR of the value already there. Two shapes
- * hit it, both fabricating a baseline `cdkd drift --revert` then pushes:
- *
- * - the resolver's unsupported-service arm leaves an `{{resolve:ssm-secure:`
- *   token LITERAL, so AWS echoes it back and the source leaf EQUALS the bag
- *   leaf. The mixed-leaf arm returns `source` — a decision — and the equality
- *   made it look like no decision at all.
- * - the empty-map arm that deliberately KEEPS a leaf returns `bag` by design.
- *
- * A symbol cannot be produced by any walk of JSON, so no readback value can
- * impersonate it.
- */
-const POSITION_DECIDED = Symbol('position decided by a position pass');
 
 interface DerivedNeedleCollector {
   readonly needles: Map<string, string>;
   readonly poisoned: Set<string>;
+  /**
+   * Plaintexts whose secret-ness is INFERRED rather than spelled, so they may
+   * only ever rewrite a WHOLE leaf — see {@link expressionSecretIsInferred}.
+   */
+  readonly inferred: Set<string>;
 }
 
 /**
@@ -3175,6 +3173,10 @@ function learnNeedle(
 ): void {
   if (plaintext.length < MIN_NEEDLE_LENGTH) return;
   if (collector.poisoned.has(plaintext)) return;
+  // Recorded BEFORE the duplicate / poison arms, and unconditionally: a
+  // plaintext both an inferred and a certain expression claim keeps the
+  // narrower blast radius, which is the conservative direction.
+  if (expressionSecretIsInferred(expression)) collector.inferred.add(plaintext);
   const already = collector.needles.get(plaintext);
   if (already === undefined) {
     collector.needles.set(plaintext, expression);
@@ -3211,7 +3213,7 @@ const SECRET_BEARING_REFERENCE_PREFIXES = [
  * leaf in the record that equals it, so a wrong answer here is a false
  * redaction with a blast radius rather than a mislabelled leaf.
  *
- * Three classes, and each was measured rather than reasoned about:
+ * Two classes, and each was measured rather than reasoned about:
  *
  * - a NON-SECRET SERVICE. `isSingleDynamicReferenceToken` accepts any
  *   `{{resolve:<anything>}}` spelling, and the resolver's unsupported-service
@@ -3221,21 +3223,52 @@ const SECRET_BEARING_REFERENCE_PREFIXES = [
  *   pins exactly this for its sibling registration path
  *   (`{{resolve:notaservice:/x}}`), and this predicate is what keeps the two
  *   commands answering it the same way.
- * - a PROVEN-PUBLIC `ssm` parameter (issue #2036's store). Its resolved value
- *   is ordinary config — a region, an environment name, a host — and a short
- *   one occurring inside an unrelated string would rewrite `my-prod-bucket`
- *   into `my-{{resolve:ssm:/env}}-bucket`. That is the false redaction the
- *   resolver's verdict store warns about, and this is the one place on the
- *   readback path where the answer is actually knowable.
- * - a plain `ssm` reference with NO verdict either way is ACCEPTED, on the same
+ * - a plain `ssm` reference is ACCEPTED, on the same
  *   #1901 premise the whole-token arm one level up already acts on: a public
  *   `String` / `StringList` parameter is persisted RESOLVED, so a
  *   `{{resolve:ssm:` token SURVIVING in a persisted state bag is a
  *   `SecureString` by construction. Requiring a recorded verdict instead would
  *   make the needle unavailable on `cdkd state refresh-observed`, whose process
  *   resolves nothing and therefore records nothing — i.e. it would fail exactly
- *   where issue #2012 is reported.
+ *   where issue #2012 is reported. A PROVEN-public verdict would refine this,
+ *   and issue #2036's store was to supply one; PR #2415 withdrew it as a
+ *   cross-region disclosure, so a genuinely public parameter's resolved value
+ *   CAN still seed a needle here. Bounded by the per-record scope and by
+ *   {@link MIN_NEEDLE_LENGTH}, and visible as over-redaction rather than as a
+ *   leak.
  */
+/**
+ * Is this expression's secret-ness INFERRED rather than spelled?
+ *
+ * `secretsmanager:` and `ssm-secure:` say what they are, and a RECORDED verdict
+ * is a real `GetParameter` answer. A bare `{{resolve:ssm:` token with no verdict
+ * is neither: it is accepted as secret-bearing on the #1901 premise (a public
+ * `String` is persisted RESOLVED, so a token SURVIVING in a state bag is a
+ * `SecureString`), which is sound for the leaf itself and NOT sound as a licence
+ * to rewrite every other leaf that merely CONTAINS the value.
+ *
+ * The difference is a `--revert` WRITE. Measured on this module: a bare `ssm`
+ * token whose value is `production` turned `my-production-logs` into
+ * `my-{{resolve:ssm:/app/env}}-logs`, exactly the failure
+ * {@link expressionMaySeedANeedle}'s own doc names — and if that parameter is in
+ * fact public, the baseline now holds a value AWS never reported, which `cdkd
+ * drift --revert` re-resolves and pushes, renaming the live bucket the day the
+ * parameter changes.
+ *
+ * So evidence strength decides BLAST RADIUS, not admission: an inferred needle
+ * still closes issue #2012's two rows, because both are WHOLE-VALUE positions
+ * (an unpaired element and an observed key both hold the plaintext and nothing
+ * else). Only the substring arm is withheld. Issue #2036's withdrawn verdict
+ * store is what would promote these to certain; until it returns, scoped by
+ * region and account, this is the honest bound.
+ */
+function expressionSecretIsInferred(expression: string): boolean {
+  if (isRecordedSecretExpression(expression)) return false;
+  return !SECRET_BEARING_REFERENCE_PREFIXES.some(
+    (prefix) => prefix !== '{{resolve:ssm:' && expression.startsWith(prefix)
+  );
+}
+
 function expressionMaySeedANeedle(expression: string): boolean {
   return (
     isRecordedSecretExpression(expression) ||
@@ -3343,13 +3376,18 @@ function learnMixedLeafNeedle(
  * Read the mark tree one level down. It has the SAME shape as `refused` by
  * construction (one function, one set of inputs), but this stays defensive: a
  * missing level yields `undefined`, which reads as "not decided" and therefore
- * lets the scan act — the same answer the pre-mark code gave, so a shape
- * surprise cannot silently start SUPPRESSING redaction.
+ * lets the scan act. That is the same answer the pre-mark code gave, so a shape
+ * surprise cannot silently start SUPPRESSING redaction — but it fails toward
+ * SCANNING, which is the fabrication direction the mark tree exists to stop.
+ * Both are stated because neither default is free; the shapes are identical by
+ * construction (one function, one set of inputs), so this arm is a backstop
+ * rather than a policy.
  */
 function asChild(marks: unknown, key: string): unknown {
   return isPlainObject(marks) && hasPlainPrototype(marks) ? marks[key] : undefined;
 }
 
+/** The array-arm twin of {@link asChild}; same fail-open, same reason. */
 function asIndex(marks: unknown, index: number): unknown {
   return Array.isArray(marks) ? marks[index] : undefined;
 }
@@ -3403,7 +3441,11 @@ function asIndex(marks: unknown, index: number): unknown {
  * newly extending #2427 to the EMPTY-map path, where the unchanged-resource
  * `drainObservedCaptures` baseline lives and where `cdkd drift --revert` pushes
  * the result to the live resource. With the guard a non-plain leaf falls
- * through to `refused`, which the position passes returned by identity.
+ * through to `refused`. That is the position passes' own answer — usually the
+ * bag by identity, though NOT universally: their object arm has no prototype
+ * guard of its own, so a non-plain leaf whose source subtree carries a
+ * reference is already flattened one function earlier. Same defect as issue
+ * #2427, one layer up, and out of this lane's scope.
  *
  * The net effect is byte-identical to the FIRST ordering on every input where
  * the un-certification did not fire — which is the whole point: it keeps that
@@ -3413,7 +3455,8 @@ function preferPositionDecisions(
   scanned: unknown,
   refused: unknown,
   bag: unknown,
-  marks: unknown
+  marks: unknown,
+  inferred: RecordedSecretValues
 ): unknown {
   // `hasPlainPrototype`, and it is load-bearing rather than tidy:
   // {@link isPlainObject} admits ANY non-null non-array object, a `Date`
@@ -3430,7 +3473,7 @@ function preferPositionDecisions(
   ) {
     const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const [k, v] of Object.entries(refused)) {
-      out[k] = preferPositionDecisions(scanned[k], v, bag[k], asChild(marks, k));
+      out[k] = preferPositionDecisions(scanned[k], v, bag[k], asChild(marks, k), inferred);
     }
     return out;
   }
@@ -3442,13 +3485,18 @@ function preferPositionDecisions(
     scanned.length === bag.length
   ) {
     return refused.map((item, i) =>
-      preferPositionDecisions(scanned[i], item, bag[i], asIndex(marks, i))
+      preferPositionDecisions(scanned[i], item, bag[i], asIndex(marks, i), inferred)
     );
   }
   // The scan owns a STRING leaf no position pass decided. `marks` answers the
   // second half exactly; `refused === bag` used to, and could not distinguish a
   // decision that AGREED with the bag — see {@link POSITION_DECIDED}.
-  return typeof bag === 'string' && marks !== POSITION_DECIDED ? scanned : refused;
+  if (typeof bag !== 'string' || marks === POSITION_DECIDED) return refused;
+  // `scanned` carries the CERTAIN needles at full strength. An INFERRED one may
+  // only take a leaf WHOLE, so it applies here and only where the certain scan
+  // left the leaf alone — see {@link expressionSecretIsInferred} for why the
+  // substring arm is withheld from it.
+  return scanned === bag ? (inferred.get(bag) ?? scanned) : scanned;
 }
 
 /**
@@ -3509,16 +3557,31 @@ function preferPositionDecisions(
  * Returns `secrets` BY IDENTITY when nothing is learned, so the no-secret path
  * stays byte-identical down to object identity.
  */
+/**
+ * The learned pairs, split by how strong the evidence for each one is.
+ *
+ * `certain` gets the full value scan (whole-value AND substring); `inferred`
+ * gets a WHOLE-VALUE rewrite only. See {@link expressionSecretIsInferred}.
+ */
+interface DerivedNeedles {
+  readonly certain: RecordedSecretValues;
+  readonly inferred: RecordedSecretValues;
+}
+
 function deriveReadbackNeedles(
   bag: unknown,
   source: unknown,
   secrets: RecordedSecretValues,
   rules: PathSourceRules
-): RecordedSecretValues {
-  if (!isReadbackProjectedFromState(rules)) return secrets;
-  if (secrets.size > 0) return secrets;
-  if (!subtreeHasDynamicReference(source)) return secrets;
-  const collector: DerivedNeedleCollector = { needles: new Map(), poisoned: new Set() };
+): DerivedNeedles | undefined {
+  if (!isReadbackProjectedFromState(rules)) return undefined;
+  if (secrets.size > 0) return undefined;
+  if (!subtreeHasDynamicReference(source)) return undefined;
+  const collector: DerivedNeedleCollector = {
+    needles: new Map(),
+    poisoned: new Set(),
+    inferred: new Set(),
+  };
   // The LEARN pass. Its return value is discarded — it runs for the pairs its
   // certified positions establish, and it is the same function that decides
   // those positions on the substituting pass, so the two can never disagree
@@ -3526,7 +3589,13 @@ function deriveReadbackNeedles(
   // after the position passes those very positions hold the EXPRESSION, so the
   // plaintext half of every pair would be gone.
   refuseUncertifiedReadbackPositions(bag, source, secrets, collector);
-  return collector.needles.size > 0 ? collector.needles : secrets;
+  if (collector.needles.size === 0) return undefined;
+  const certain = new Map<string, string>();
+  const inferred = new Map<string, string>();
+  for (const [plaintext, expression] of collector.needles) {
+    (collector.inferred.has(plaintext) ? inferred : certain).set(plaintext, expression);
+  }
+  return { certain, inferred };
 }
 
 /**
@@ -3870,7 +3939,7 @@ export function redactSecretsForState<T>(
     // rewritten onto its source expression no longer carries the plaintext the
     // pairing is made of.
     const derived = deriveReadbackNeedles(bag, source, secrets, rules);
-    if (derived === secrets) return refused as T;
+    if (derived === undefined) return refused as T;
     // Scanned over the RAW bag, then merged so the passes above win wherever
     // they DECIDED a position — see {@link preferPositionDecisions} for the two
     // fabricated-baseline shapes the naive orderings produce. Scanning `bag`
@@ -3880,7 +3949,13 @@ export function redactSecretsForState<T>(
     // POSITION_DECIDED wherever it decides. Cheap (in-memory, no needles, no
     // learning) and exact, because it IS the pass rather than a mirror of it.
     const marks = refuseUncertifiedReadbackPositions(positioned, source, secrets, undefined, true);
-    return preferPositionDecisions(redactSecretsForState(bag, derived), refused, bag, marks) as T;
+    return preferPositionDecisions(
+      redactSecretsForState(bag, derived.certain),
+      refused,
+      bag,
+      marks,
+      derived.inferred
+    ) as T;
   }
   const regex = buildNeedleRegex(secrets.keys());
   // Even below the needle threshold, a NON-EMPTY whole-value match must still be

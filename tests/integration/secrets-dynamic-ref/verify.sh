@@ -1715,12 +1715,14 @@ F3_OBSERVED=$(printf '%s' "${F3_STATE}" \
 # refusal below -- cannot leave the stamp behind either, and the `rm -f` of this
 # phase's temp files sits on that same path.
 #
-# THREE paths can still leave the stamp live, and naming them beats implying
-# there is one: the `refresh-observed` call aborting under `set -e`, the
-# `state show` / `jq` reads above doing the same, and this block's OWN `exit 1`
-# when the restore does not verify. All three are bounded by the EXIT trap,
-# which destroys the stack and its state; none is bounded by anything else, so
-# do not move assertions back above this block.
+# Several paths can still leave the stamp live, and saying so beats implying
+# there is one: every command between the stamp and the upload below aborts the
+# script under `set -e` -- the `refresh-observed` call, the `state show` / `jq`
+# reads, this block's own `aws s3 cp` and `jq`, and its `exit 1` when the
+# restore does not verify. Counting them is not the point and an earlier
+# revision that said THREE was already wrong; what bounds them all is the EXIT
+# trap, which destroys the stack and its state. Nothing else does, so do not
+# move assertions back above this block.
 #
 # Done from the bag read at the TOP of this phase rather than by un-stamping, so
 # a jq slip cannot leave a subtly different value behind, and asserted, because
@@ -1779,7 +1781,7 @@ elif [ "${F3_SSM}" = "${EXPECTED_SECURE_EXPR}" ]; then
   residual_fail=1
 else
   echo "FAIL: SSM_VALUE should be '${EXPECTED_PUBLIC_EXPR}', got $(mask "${F3_SSM}")" >&2
-  echo "      (pinned by the unit case 'propagates a PUBLIC needle by VALUE once its own source carries the expression')" >&2
+  echo "      (pinned by the unit case 'propagates a NO-VERDICT ssm needle by VALUE once its own source carries the expression')" >&2
   residual_fail=1
 fi
 # The SecureString half must be unaffected by any of this.
