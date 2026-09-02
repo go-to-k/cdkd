@@ -12,7 +12,7 @@ import {
   stateOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import {
@@ -233,6 +233,21 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // Issue #2410: on `cdkd local invoke`, stdout MEANS "the function's
+  // response payload" (the single `process.stdout.write(result.raw)` at the
+  // end of the run). Reserved UNCONDITIONALLY and at command entry — there is
+  // no `--json` flag to key off, and every status line below (`Target: ...`,
+  // `Starting container ...`, plus the synth chatter `app-executor.ts`
+  // re-emits at INFO) precedes the payload on the same stream otherwise, so
+  // `cdkd local invoke MyStack/Fn | jq` corrupts on a DEFAULT run. `sam local
+  // invoke` routes its status lines to stderr for exactly this reason.
+  //
+  // Lines are MOVED, not suppressed. NOT fixed by this: the CONTAINER's own
+  // stdout, which `streamLogs` (`src/local/docker-runner.ts`) pipes straight
+  // into ours — a different mechanism the reservation cannot reach. Tracked
+  // as [#2419](https://github.com/go-to-k/cdkd/issues/2419).
+  reserveStdoutForPayload();
 
   warnIfDeprecatedRegion(options);
   // Issue #1795: fold `--region` ONCE, at the boundary, so every downstream

@@ -115,16 +115,23 @@ async function listCommand(
     logger.setLevel('debug');
   }
 
-  // Issue #2280: claim stdout for the payload BEFORE anything can print on
-  // it. The worst offender needs no flags at all: `app-executor.ts` re-emits
-  // the CDK app's stderr (bundling progress, warnings) at INFO on a DEFAULT
-  // run, so `cdkd list --long --json` corrupts whenever the app writes to
-  // stderr. Lines are MOVED to stderr, not suppressed (the `diff.ts`
-  // level-demotion alternative): bundling warnings are still information an
-  // operator wants to see.
-  if (options.json) {
-    reserveStdoutForPayload();
-  }
+  // Claim stdout for the payload BEFORE anything can print on it. The worst
+  // offender needs no flags at all: `app-executor.ts` re-emits the CDK app's
+  // stderr (bundling progress, warnings) at INFO on a DEFAULT run, so
+  // `cdkd list` corrupts whenever the app writes to stderr. Lines are MOVED
+  // to stderr, not suppressed (the `diff.ts` level-demotion alternative):
+  // bundling warnings are still information an operator wants to see.
+  //
+  // UNCONDITIONAL since issue #2410, where issue #2280 keyed this on
+  // `options.json`. EVERY `cdkd list` mode writes a machine-consumable
+  // document to stdout, not just the `--json` spellings: `--long` /
+  // `--show-dependencies` emit YAML through `emitStructured`, and the default
+  // mode emits one display id per line — the shape a shell loop reads. The
+  // `--json` flag selects the payload's ENCODING; it was never what made
+  // stdout a payload stream, so keying the reservation on it left the other
+  // three modes corruptible by exactly the chatter the comment above
+  // describes.
+  reserveStdoutForPayload();
 
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
   // the rest of the pipeline working as before.

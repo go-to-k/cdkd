@@ -45,9 +45,19 @@ const colors = {
  * {@link reserveStdoutForPayload}. Every `--json` surface does (issue
  * [#2280](https://github.com/go-to-k/cdkd/issues/2280) added the remaining
  * six to `cdkd drift`'s original call: `cdkd list`, `cdkd events`, and the
- * four `cdkd state {list,resources,show,info}` subcommands); a command
- * without a `--json` mode never calls it, so no human-facing output
- * contract moves.
+ * four `cdkd state {list,resources,show,info}` subcommands).
+ *
+ * A `--json` flag is NOT what makes a stream a payload stream, though, and
+ * issue [#2410](https://github.com/go-to-k/cdkd/issues/2410) is the four
+ * commands where it is not involved at all: `cdkd synth` (the template),
+ * `cdkd list` in EVERY mode (the YAML and the one-id-per-line spellings, not
+ * just `--json`), `cdkd local invoke` (the function response) and
+ * `cdkd local invoke-agentcore` (the agent response). Those call it
+ * UNCONDITIONALLY at command entry, so for them the DEFAULT human output
+ * contract is the one that moved — deliberately, and documented per command
+ * in `docs/cli-reference.md`. What has NOT changed is that the decision stays
+ * with the command: a command whose stdout is a human surface (`cdkd deploy`,
+ * `cdkd local start-api`, `cdkd local run-task`) still never calls this.
  */
 let stdoutReservedForPayload = false;
 
@@ -159,18 +169,29 @@ export class ConsoleLogger implements Logger {
    *
    * `warn` / `error` already go to stderr via `console.warn` / `console.error`.
    * `info` / `debug` go to stdout — and JOIN them on stderr while
-   * {@link stdoutReservedForPayload} is set, so a `--json` payload is the only
-   * thing on stdout.
+   * {@link stdoutReservedForPayload} is set, so the reserving command's payload
+   * is the only thing on stdout.
    *
-   * KNOWN GAP, latent and deliberately not restructured (issue
-   * [#2230](https://github.com/go-to-k/cdkd/issues/2230)): the stack-output
+   * KNOWN GAP, latent and deliberately not restructured (issues
+   * [#2230](https://github.com/go-to-k/cdkd/issues/2230) and
+   * [#2410](https://github.com/go-to-k/cdkd/issues/2410)): the stack-output
    * buffer short-circuits ABOVE the reservation check, so a line captured under
    * `runStackBuffered` is replayed by whatever flushes the buffer and never
-   * consults the reservation at all. Unreachable today — `deploy.ts` is the only
-   * caller that opens a buffer and it has no `--json` mode — so the fix would be
-   * untestable and would have to guess where the flush should route. It becomes
-   * REAL the moment a `--json` command runs work inside `runStackBuffered`;
-   * whoever does that must route the flush, not just call
+   * consults the reservation at all. Unreachable today — `deploy.ts:1156` is the
+   * only caller that opens a buffer, and `deploy` reserves nothing (its stdout
+   * is a human surface) — so the fix would be untestable and would have to guess
+   * where the flush should route.
+   *
+   * That rationale survives #2410 unchanged, and it is worth restating WHY,
+   * because #2410 widened the reserving population from a `--json`-only set to
+   * one that includes commands with no flag at all. The four it added —
+   * `cdkd synth`, `cdkd list`, `cdkd local invoke`,
+   * `cdkd local invoke-agentcore` — run NO work inside `runStackBuffered`:
+   * buffering exists for the parallel multi-stack deploy path, which none of
+   * them enters. So the gap stays latent, and the condition for it becoming
+   * REAL is unchanged in substance but wider in reach: it is no longer "a
+   * `--json` command runs work inside `runStackBuffered`" but "ANY reserving
+   * command does". Whoever does that must route the flush, not just call
    * {@link reserveStdoutForPayload}.
    */
   private emit(level: LogLevel, formatted: string): void {

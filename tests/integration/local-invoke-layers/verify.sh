@@ -89,9 +89,10 @@ echo "${RESULT_2}" | grep -q '"counter":"count=42"' || {
 }
 
 # Test 3 — startup banner mentions the 3 layer mounts. Combines
-# stdout + stderr (cdkd's `logger.info` writes to stdout via
-# `console.info`; we just want to verify the layer-count line appears
-# somewhere in the cdkd output) so users know the layer wiring fired.
+# stdout + stderr (since issue go-to-k/cdkd#2410 cdkd's `logger.info` on
+# `local invoke` writes to STDERR, stdout being reserved for the response
+# payload; we just want to verify the layer-count line appears somewhere in
+# the cdkd output) so users know the layer wiring fired.
 echo "==> [3/4] Verifying cdkd logs the layer count"
 LOG_OUTPUT=$(${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1)
 echo "${LOG_OUTPUT}" | grep -q 'Mounting 3 Lambda layers at /opt' || {

@@ -501,6 +501,37 @@ silently skipped (never an error). The same applies to `cdkd local run-task`
 container runs, and — inherited from cdk-local's ECS service emulator engine —
 to `cdkd local start-service` / `cdkd local start-alb`.
 
+### `local invoke` / `local invoke-agentcore` output streams
+
+**stdout carries the response payload and nothing cdkd prints.** Since issue
+[#2410](https://github.com/go-to-k/cdkd/issues/2410) both commands reserve
+stdout unconditionally, so every cdkd status line -- `Synthesizing CDK
+app...`, `Target: ...`, `Starting container ...`, layer / image resolution
+notices, `--verbose` debug output -- goes to **stderr**, the way
+`sam local invoke` has always done it. The lines are moved, not suppressed:
+a terminal shows what it always did, and `2>&1` restores the old
+single-stream view.
+
+```bash
+cdkd local invoke MyStack/Handler --event event.json | jq .body
+cdkd local invoke-agentcore MyStack/Agent > response.json 2> progress.log
+```
+
+**One thing on that stream is not cdkd's**: the container's own stdout is
+piped straight through, so the Lambda runtime emulator's `START` / `END` /
+`REPORT` lines and anything the handler prints still land on stdout ahead of
+the response. That is a raw child-process pipe the reservation cannot reach
+(issue [#2419](https://github.com/go-to-k/cdkd/issues/2419)); until it is
+fixed, take the LAST line for a handler that logs:
+
+```bash
+cdkd local invoke MyStack/Handler --no-pull | tail -1 | jq .
+```
+
+`local start-api`, `local run-task` and `local start-service` are unaffected --
+their stdout is a human surface (route table, prefixed container logs), not a
+payload.
+
 ### `local invoke` exit codes
 
 - `0` — RIE answered, regardless of whether the handler returned a

@@ -1304,6 +1304,65 @@ layouts are supported: the inline `manifest.json` `metadata` field written
 by older aws-cdk-lib versions and the `<artifactId>.metadata.json` side
 file (`additionalMetadataFile`) written by current versions.
 
+## Output streams: when stdout is a payload
+
+A `--json` flag was never what made a stream a payload stream -- it picks the
+payload's ENCODING. Four commands write a machine-consumable document to stdout
+with no flag involved, and since issue
+[#2410](https://github.com/go-to-k/cdkd/issues/2410) each reserves stdout
+UNCONDITIONALLY, so their DEFAULT output contract is the one that changed:
+
+| Command | What stdout carries |
+| --- | --- |
+| `cdkd synth` | the CloudFormation template (single stack only -- see below) |
+| `cdkd list` | the stack listing in EVERY mode: one display id per line by default, YAML under `--long` / `--show-dependencies`, JSON under `--json` |
+| `cdkd local invoke` | the function's response payload |
+| `cdkd local invoke-agentcore` | the agent's response (buffered, or streamed frame by frame under SSE / `--ws`) |
+
+Everything else those commands print -- `Synthesizing CDK app...`, `cdkd
+synth`'s `Synthesis complete!` summary block, `cdkd local invoke`'s `Target:
+...` / `Starting container ...` lines, the CDK app's re-emitted stderr, and
+`--verbose` debug output -- goes to **stderr**. As with `--json`, the lines are
+**moved, not suppressed**: a terminal shows what it always did, and `2>&1`
+restores the old single-stream view.
+
+```bash
+cdkd synth > template.yaml 2> progress.log
+cdkd list --long | yq '.[].name'
+cdkd list | while read -r id; do echo "found stack: $id"; done
+cdkd local invoke MyStack/Handler --event e.json | jq .body
+```
+
+Three consequences worth stating explicitly:
+
+- **`cdkd synth` on a MULTI-stack app writes nothing to stdout.** The template
+  is emitted only when the app has exactly one stack (matching `cdk synth`), so
+  with several stacks stdout is empty and the whole summary goes to stderr.
+  stdout on `cdkd synth` is the template or it is nothing; the summary is never
+  a payload. Use `--output <dir>` and read the per-stack template files from the
+  assembly directory to get every stack's template.
+- **The container's own output is NOT affected.** `cdkd local invoke` /
+  `cdkd local invoke-agentcore` stream the Lambda / agent container's stdout
+  straight through to yours, which the reservation cannot reach (it is a raw
+  child-process pipe, not a cdkd log line). A handler that prints -- including
+  the runtime emulator's `START` / `END` / `REPORT` lines -- therefore still
+  lands on stdout ahead of the response; take the LAST line
+  (`cdkd local invoke ... | tail -1 | jq`) until issue
+  [#2419](https://github.com/go-to-k/cdkd/issues/2419) is fixed.
+- **`cdkd synth`'s stdout is the template, but it is not yet valid YAML for
+  every template.** The renderer leaves YAML indicator characters unquoted, so
+  a template containing `"*"` -- any IAM policy `Resource` / `Action`, any CORS
+  rule -- emits a bare `- *` that a YAML parser rejects. Reserving stdout does
+  not change that; it is issue
+  [#2421](https://github.com/go-to-k/cdkd/issues/2421). Until it is fixed, read
+  the per-stack template JSON out of the `--output` assembly directory when you
+  need a parser to consume it.
+
+`cdkd deploy`, `cdkd local start-api`, `cdkd local run-task` and
+`cdkd local start-service` are deliberately NOT in this set: their stdout is a
+human surface (the deploy banner and progress, the route table, task output),
+not a payload, so nothing about them moved.
+
 ## `--region` / `AWS_REGION` (every command)
 
 **A region is folded to its canonical lower-case spelling before it reaches an
@@ -2590,6 +2649,9 @@ their `--verbose` debug output, the `Assumed role ...` notice from
 is in effect (issue [#2280](https://github.com/go-to-k/cdkd/issues/2280)).
 `cdkd diff --json` predates the mechanism and instead demotes the logger to
 `warn`, which suppresses rather than moves its info-level lines.
+
+Four further commands reserve stdout with no flag at all -- see
+[Output streams: when stdout is a payload](#output-streams-when-stdout-is-a-payload).
 
 `--json` output shape:
 

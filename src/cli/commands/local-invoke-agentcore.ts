@@ -11,7 +11,7 @@ import {
   stateOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
@@ -240,6 +240,23 @@ async function localInvokeAgentCoreCommand(
 ): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
+
+  // Issue #2410: on `cdkd local invoke-agentcore`, stdout MEANS "the agent's
+  // response" — the terminal emitters (`emitResult` / `emitMcpResult` /
+  // `emitA2aResult` / `emitWsResult`) plus the streamed SSE / WebSocket chunk
+  // sinks, which write the body incrementally as it arrives. Reserved
+  // UNCONDITIONALLY and at command entry, for the same reason as
+  // `local-invoke.ts`: there is no `--json` flag to key off, and the status
+  // prose (`Target: ...`, image resolution, container startup, plus the synth
+  // chatter `app-executor.ts` re-emits at INFO) otherwise interleaves with a
+  // streamed body on the same stream — worse here than on a buffered payload,
+  // because a prose line can land BETWEEN two frames of one document.
+  //
+  // Lines are MOVED, not suppressed. NOT fixed by this: the CONTAINER's own
+  // stdout, which `streamLogs` (`src/local/docker-runner.ts`) pipes straight
+  // into ours — a different mechanism the reservation cannot reach. Tracked
+  // as [#2419](https://github.com/go-to-k/cdkd/issues/2419).
+  reserveStdoutForPayload();
 
   warnIfDeprecatedRegion(options);
 

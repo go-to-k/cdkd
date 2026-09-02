@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { parse as parseYaml } from 'yaml';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 /**
@@ -8,6 +9,18 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
  * `src/synthesis/app-executor.ts` re-emits the CDK app's stderr (bundling
  * progress, warnings) at `logger.info` on a DEFAULT run, so any CDK app that
  * prints to stderr corrupts the payload with no `--verbose` involved.
+ *
+ * Issue [#2410](https://github.com/go-to-k/cdkd/issues/2410) then made the
+ * reservation UNCONDITIONAL, because `--json` was never what made this a
+ * payload stream: it selects the ENCODING, while `--long` /
+ * `--show-dependencies` emit the same structured document as YAML and the
+ * default mode emits one display id per line — the shape a shell loop reads.
+ * All three were corruptible by exactly the chatter above. The cases below
+ * are therefore split: the `--json` ones fence #2280's contract, the YAML and
+ * default-mode ones fence #2410's, and the last one is the OVER-TIGHTENING
+ * control that replaces #2280's now-obsolete "no flag ⇒ prose stays on
+ * stdout" negative control. The FILENAME still says `json` because #2280's
+ * changelog entry names it; the subject is `cdkd list`'s stdout in every mode.
  *
  * THE LOGGER IS DELIBERATELY NOT MOCKED IN THIS FILE (unlike
  * `tests/unit/cli/list.test.ts`): the defect is which `console` method
@@ -112,7 +125,7 @@ const CHATTER = 'Bundling asset MyStack/MyFunction/Code/Stage...';
 const ROLE_ARN = 'arn:aws:iam::111122223333:role/cdkd-json-stream-reader';
 const ASSUMED_LINE = `Assumed role ${ROLE_ARN}`;
 
-describe('list --json keeps stdout to the payload (issue #2280)', () => {
+describe('list keeps stdout to the payload in every mode (issues #2280, #2410)', () => {
   let envBefore: Record<string, string | undefined>;
 
   beforeEach(() => {
@@ -186,25 +199,97 @@ describe('list --json keeps stdout to the payload (issue #2280)', () => {
   });
 
   /**
-   * The other direction: the reservation is scoped to `--json`. The
-   * discriminating assertion is the CHATTER one — the synth prose goes
-   * through `logger.info`, so an over-tightened fix that reserves
-   * unconditionally would move it to stderr and red this case. The human
-   * rows themselves are direct `process.stdout.write` calls the reservation
-   * never touches; their assertion pins the default output contract but
-   * cannot discriminate on its own.
+   * Issue #2410, the YAML spelling of the same structured payload: `--long`
+   * with no `--json`. Under #2280's `options.json` gate this case put the
+   * chatter on stdout, in the middle of a YAML document.
    */
-  it('list WITHOUT --json keeps its human rows AND its logger prose on stdout', async () => {
+  it('--long WITHOUT --json leaves stdout a single YAML document (issue #2410)', async () => {
     mockSynthesize.mockImplementation(async () => {
       getLogger().child('AppExecutor').info(CHATTER);
       return { stacks: [makeStack({ stackName: 'MyStack' })] };
     });
 
+    const { stdout, stderr, error } = await runList(['--long']);
+
+    expect(error).toBeUndefined();
+    // `account` reads back as a NUMBER: `toYaml` emits the all-digit string
+    // unquoted and YAML's implicit typing resolves it. That is pre-existing
+    // behavior of the YAML mode (the `--json` case above keeps the string) and
+    // is asserted as-found rather than worked around — parsing at all is the
+    // point, and a prose line inside the document would make it throw.
+    expect(parseYaml(stdout)).toEqual([
+      {
+        id: 'MyStack',
+        name: 'MyStack',
+        environment: { account: 111111111111, region: 'us-east-1' },
+      },
+    ]);
+
+    expect(stderr).toContain(CHATTER);
+    expect(stdout).not.toContain(CHATTER);
+  });
+
+  /**
+   * Issue #2410, the default mode: one display id per line. No flags at all,
+   * which is what made this the worst spelling of the class — a shell loop
+   * over `cdkd list` read the bundling chatter as a stack name.
+   */
+  it('default mode leaves stdout to the display ids alone (issue #2410)', async () => {
+    mockSynthesize.mockImplementation(async () => {
+      getLogger().child('AppExecutor').info(CHATTER);
+      return {
+        stacks: [makeStack({ stackName: 'MyStack' }), makeStack({ stackName: 'OtherStack' })],
+      };
+    });
+
     const { stdout, stderr, error } = await runList([]);
 
     expect(error).toBeUndefined();
-    expect(stdout).toContain('MyStack');
-    expect(stdout).toContain(CHATTER);
-    expect(stderr).not.toContain(CHATTER);
+    // Byte-exact: the payload is the id list and nothing else, in dependency
+    // order. `toContain` would pass with the chatter appended.
+    expect(stdout).toBe('MyStack\nOtherStack\n');
+
+    expect(stderr).toContain(CHATTER);
+    expect(stdout).not.toContain(CHATTER);
+  });
+
+  /**
+   * The OVER-TIGHTENING control, replacing #2280's "no `--json` ⇒ prose stays
+   * on stdout" case (which #2410 deliberately made false). Two independent
+   * things would red it:
+   *  - the PAYLOAD being routed off stdout too, or partly leaking onto
+   *    stderr — pinned by the byte-exact `toBe` plus the `not.toContain` on
+   *    the other stream;
+   *  - a diagnostic being DUPLICATED onto both streams — pinned by the
+   *    exactly-once count.
+   *
+   * Two writers are exercised because they reach the streams by different
+   * mechanisms and only one of them goes through the code under test: the
+   * warn runs `ConsoleLogger.emit`'s `level === 'warn'` arm while the
+   * reservation is active, and `warnIfDeprecatedRegion` (`src/cli/options.ts`)
+   * is a DIRECT `process.stderr.write` that the reservation must leave
+   * untouched.
+   */
+  it('warnings land on stderr exactly once and never on stdout, payload untouched', async () => {
+    const WARN_LINE = 'lane2410-list-warn-control';
+    mockSynthesize.mockImplementation(async () => {
+      getLogger().child('AppExecutor').warn(WARN_LINE);
+      return { stacks: [makeStack({ stackName: 'MyStack' })] };
+    });
+
+    const { stdout, stderr, error } = await runList(['--region', 'us-east-1']);
+
+    expect(error).toBeUndefined();
+
+    // Payload still on stdout, byte-exact, and no part of it on stderr.
+    expect(stdout).toBe('MyStack\n');
+    expect(stderr).not.toContain('MyStack');
+
+    expect(stderr.split(WARN_LINE).length - 1).toBe(1);
+    expect(stdout).not.toContain(WARN_LINE);
+
+    const deprecationNeedle = '--region is deprecated';
+    expect(stderr.split(deprecationNeedle).length - 1).toBe(1);
+    expect(stdout).not.toContain(deprecationNeedle);
   });
 });
