@@ -80,6 +80,8 @@ import {
   dynamicReferenceTokens,
   maskSecretsInText,
   recordNestedStackParameterExpressions,
+  carriesSecretMask,
+  SECRET_MASK,
   STATE_DERIVED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -953,6 +955,48 @@ async function resolveReplayProps(
 }
 
 /**
+ * Refuse to REPLAY a bag whose recorded baseline holds a REDACTION MASK (issue
+ * [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+ *
+ * The rollback twin of `drift --revert`'s
+ * `preserveLiveValuesAtMaskedLeaves`, and it exists for the same reason: a
+ * `NoEcho` custom resource's `Data` resolved into a dependent's property is
+ * persisted as {@link SECRET_MASK}, because there is no expression to store in
+ * its place — and this executor replays a persisted bag straight to
+ * `provider.update()` / `create()`. Without a guard the literal `***` would be
+ * written onto the live resource, which is the issue #1498 / #1501
+ * data-corruption class.
+ *
+ * IT REFUSES rather than substituting, and that is the difference from the
+ * drift twin. `--revert` holds an AWS-current readback beside the baseline, so
+ * it can leave the position exactly as AWS has it; a replay holds no readback
+ * at all — `previousState.properties` IS its only source — so there is nothing
+ * to fall back to. Failing the ONE op with an actionable message is strictly
+ * better than writing a value cdkd knows is wrong, and the per-op failure
+ * accounting this file already has is what carries it.
+ *
+ * CALLED ON THE WRITTEN SIDE ONLY. Each revert arm resolves two bags; the other
+ * one becomes the provider's `previousProperties`, where a mask is harmless (a
+ * patch provider comparing `***` against the desired value simply sees a
+ * change, which is the correct conclusion — the live value is not what state
+ * records). Refusing there would block rollbacks that have no problem.
+ */
+function refuseMaskedReplayBaseline(
+  props: Record<string, unknown> | undefined,
+  logicalId: string
+): void {
+  if (props === undefined || !carriesSecretMask(props)) return;
+  throw new CdkdError(
+    `Cannot roll ${logicalId} back: its recorded baseline holds the redaction mask ` +
+      `('${SECRET_MASK}') where a NoEcho custom-resource value was resolved, so cdkd would ` +
+      `write that literal to the live resource. Restore the property with 'cdkd deploy' — the ` +
+      `custom resource's handler re-runs there and supplies the real value. See ` +
+      `https://github.com/go-to-k/cdkd/issues/2449.`,
+    'ROLLBACK_REDACTED_BASELINE'
+  );
+}
+
+/**
  * The region classifier and its helpers moved to
  * `./secret-region-classification.js` for issue
  * [#2134](https://github.com/go-to-k/cdkd/issues/2134): the resolver needs the
@@ -1743,6 +1787,9 @@ async function replaySingle(
         // rebuilt state record below AND to mask every log site downstream.
         const resolvedPrevProps =
           (await resolveReplayProps(prev.properties, resolver, secrets, ctx, op.logicalId)) ?? {};
+        // Issue #2274: this bag is about to be CREATED with. Refuse before the
+        // AWS call rather than after, so nothing is half-applied.
+        refuseMaskedReplayBaseline(resolvedPrevProps, op.logicalId);
         // Issue #2291: a nested-stack row replayed here hands the CHILD engine
         // this same `secrets` bag (`withCurrentResourceSecrets` binds it around
         // the provider call below, and `NestedStackProvider` seeds the child
@@ -2165,6 +2212,10 @@ async function replaySingle(
           ctx,
           op.logicalId
         );
+        // Issue #2274: the DESIRED side only — that is the bag `update()`
+        // writes. `currentProps` below becomes `previousProperties`, where a
+        // mask is harmless.
+        refuseMaskedReplayBaseline(desiredProps, op.logicalId);
         const currentProps = await resolveReplayProps(
           current.properties,
           resolver,
@@ -2590,6 +2641,9 @@ export async function replayFailedOperations(
             ctx,
             op.logicalId
           );
+          // Issue #2274: the `--revert-failed` twin of the `revert` arm's
+          // refusal. Desired side only, same reason.
+          refuseMaskedReplayBaseline(desiredProps, op.logicalId);
           const attemptedProps = await resolveReplayProps(
             op.attemptedProperties ?? current.properties,
             resolver,

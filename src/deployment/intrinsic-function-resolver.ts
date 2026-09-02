@@ -50,6 +50,8 @@ import {
   isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
   inheritedParameterExpression,
+  recordMaskOnlyValuesIn,
+  carriesSecretMask,
   MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -852,6 +854,54 @@ export interface ResolverContext {
    * A reader MUST NOT enumerate or log its KEYS — they are secret plaintext.
    */
   inheritedSecrets?: RecordedSecretValues;
+  /**
+   * Logical ids whose provider declared THIS RUN's `attributes` sensitive —
+   * a Lambda-backed custom resource whose handler answered `NoEcho: true`
+   * (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+   *
+   * Set by the deploy engine from the create / update results it has already
+   * collected this run, so by the time a DEPENDENT resolves, the producer's
+   * entry is present (each resource is provisioned before anything that depends
+   * on it, which is what the DAG guarantees).
+   *
+   * READ-ONLY and never substituted, exactly like {@link inheritedSecrets}:
+   * `resolveGetAtt` still returns the REAL attribute value — that is what
+   * reaches AWS, and CloudFormation delivers it to a dependent in the clear —
+   * and only records the resolved string leaves as MASK-ONLY needles in
+   * {@link recordedSecretValues}, i.e. in the bag belonging to the resource
+   * whose resolution actually consumed the attribute. Recording at RESOLUTION
+   * time rather than pre-seeding every context is what keeps the per-resource
+   * scoping every reader of `perResourceSecrets` assumes — the same rule issue
+   * #2087 forced on the inherited-secrets channel.
+   */
+  noEchoAttributeResources?: ReadonlySet<string>;
+  /**
+   * Bag the resolver pushes `<logicalId>.<attributeName>` into whenever it
+   * serves a PERSISTED attribute that is nothing but {@link SECRET_MASK}
+   * (issue #2274).
+   *
+   * This is the cross-DEPLOY half of the `NoEcho` story, and it exists because
+   * the redaction is not free. Once a `NoEcho` custom resource's `Data` has
+   * been masked into `state.json`, a LATER deploy that does NOT re-invoke the
+   * handler (the resource is `NO_CHANGE`, so CloudFormation semantics say the
+   * handler does not run) reads `***` back out of state — and a dependent
+   * resolving `Fn::GetAtt` against it would otherwise PUSH that literal to AWS.
+   * `state.ts` carries no durable per-attribute `NoEcho` flag to recover from
+   * (issue [#2449](https://github.com/go-to-k/cdkd/issues/2449)), so the mask
+   * itself is the signal.
+   *
+   * The resolver RECORDS; it never throws for this, and the difference decides
+   * whether a stack stays deployable. Every context the deploy engine builds
+   * carries the bag, the DIFF context included, but only the two PROVISIONING
+   * sites read it. A throw inside the diff would be caught by
+   * `resolveBestEffort`, which keeps the raw intrinsic — so the desired side
+   * would stop matching the `***` in state, the resource would look CHANGED on
+   * every run, and the provisioning pass would then fail it. Recording instead
+   * leaves the diff comparing `***` against `***`, i.e. a clean NO_CHANGE, so a
+   * stack nobody has edited keeps deploying and only a dependent that ACTUALLY
+   * has to be written is refused.
+   */
+  redactedAttributeReads?: string[];
   /**
    * Internal hook used while evaluating the template `Conditions` section.
    * A CFn Condition can reference ANOTHER named condition via
@@ -3230,7 +3280,7 @@ export class IntrinsicFunctionResolver {
             crossStackSourceKey({ 'Fn::GetAtt': getAtt })
           );
         }
-        return flatValue;
+        return this.noteAttributeSecrecy(logicalId, attributeName, flatValue, context);
       }
 
       // Issue #381: nested-path fallback. CC API providers store CFn nested
@@ -3268,7 +3318,14 @@ export class IntrinsicFunctionResolver {
           // writer that stored those outputs as a nested object would need this
           // arm too, or it would ship the literal `{{resolve:...}}` token to AWS
           // — the very defect issue #2055 closed one branch up.
-          return cursor;
+          //
+          // The `NoEcho` note (issue #2274) IS applied here, unlike the
+          // nested-stack arm above, and for the opposite reason: a custom
+          // resource's `Data` is written into `attributes` verbatim, so a
+          // handler answering `{"Data": {"Endpoint": {"Password": "..."}}}`
+          // lands a sensitive leaf on exactly this walk. Serving one branch and
+          // not the other is how a redaction ships half-applied.
+          return this.noteAttributeSecrecy(logicalId, attributeName, cursor, context);
         }
       }
     }
@@ -3322,6 +3379,57 @@ export class IntrinsicFunctionResolver {
     this.logger.debug(
       `Resolved Fn::GetAtt: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, value)}`
     );
+    return value;
+  }
+
+  /**
+   * Note what SECRECY the attribute just read carries, then hand it back
+   * UNCHANGED (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+   *
+   * Two independent notes, in the two directions a `NoEcho` custom-resource
+   * `Data` value travels, and they are on one function because both are read
+   * off the same value at the same instant:
+   *
+   * 1. **This run's fresh value.** If a provider declared this resource's
+   *    attributes `NoEcho` earlier in THIS deploy, every string leaf becomes a
+   *    MASK-ONLY needle in the CONSUMER's own bag, so the plaintext this
+   *    resolution is about to substitute into the dependent's properties is
+   *    masked when that record is persisted. Registering into
+   *    `context.recordedSecretValues` — the consumer's bag — rather than the
+   *    producer's is what makes it work at all: `perResourceSecrets` is keyed by
+   *    LOGICAL ID, so a needle recorded under the custom resource's own id is
+   *    not in the bag the DEPENDENT's record is scrubbed with.
+   * 2. **A previous run's masked value.** If what came back IS the mask, this
+   *    attribute was redacted into `state.json` by an earlier deploy and cdkd
+   *    cannot recover it (there is no durable `NoEcho` flag and no expression to
+   *    re-resolve — issue #2449). It is recorded as a redacted READ so the
+   *    deploy engine can refuse to push the literal `***` to AWS.
+   *
+   * IT RETURNS THE VALUE, and passing through rather than mutating in place is
+   * the point: the caller's `return` is what makes it impossible to add a third
+   * attribute-serving branch that silently skips the note — a branch that
+   * forgets this call does not compile to the same shape as the two that have
+   * it. `Fn::GetAtt` must keep delivering the REAL value (CloudFormation does,
+   * measured), so this can never rewrite what it is handed.
+   *
+   * A context supplying NEITHER field — the diff / no-op resolver, `cdkd
+   * scrub`, `cdkd import` — pays two undefined checks and gets its value back.
+   */
+  private noteAttributeSecrecy(
+    logicalId: string,
+    attributeName: string,
+    value: unknown,
+    context: ResolverContext
+  ): unknown {
+    if (context.noEchoAttributeResources?.has(logicalId) === true && context.recordedSecretValues) {
+      recordMaskOnlyValuesIn(value, context.recordedSecretValues);
+    }
+    if (context.redactedAttributeReads !== undefined && carriesSecretMask(value)) {
+      const read = `${logicalId}.${attributeName}`;
+      if (!context.redactedAttributeReads.includes(read)) {
+        context.redactedAttributeReads.push(read);
+      }
+    }
     return value;
   }
 
@@ -5091,6 +5199,25 @@ export class IntrinsicFunctionResolver {
     origin: string,
     sourceKey: string | undefined
   ): Promise<unknown> {
+    // Issue #2274: the CROSS-STACK twin of `noteAttributeSecrecy`, and it goes
+    // HERE because this method is the one choke point every cross-stack read
+    // returns through — `Fn::ImportValue` (both the index and the scan arms),
+    // `Fn::GetStackOutput`, and a nested stack's `Outputs.<Key>`. A producer's
+    // `state.outputs` entry can hold the mask (its own output resolved a
+    // `NoEcho` custom resource's `Data`), and without this a CONSUMER stack
+    // would push the literal `***` to AWS. It runs BEFORE the
+    // `carriesDynamicReference` early return, because the mask is not a
+    // dynamic reference and that return is exactly the path it takes.
+    //
+    // `origin` rather than a logical id: it is the caller-built description of
+    // WHICH read this is (`Fn::ImportValue '<name>' (producer <stack> /
+    // <region>)`), which is what a user needs to find the producer, and it
+    // carries no resolved value.
+    if (context.redactedAttributeReads !== undefined && carriesSecretMask(value)) {
+      if (!context.redactedAttributeReads.includes(origin)) {
+        context.redactedAttributeReads.push(origin);
+      }
+    }
     if (!carriesDynamicReference(value)) return value;
 
     const resolver = this.resolverForProducerRegion(producerRegion);

@@ -111,9 +111,52 @@ export interface EffectivePropertiesResult {
 }
 
 /**
+ * The provider's declaration that the `attributes` it is returning are
+ * SENSITIVE and must not be persisted in the clear (issue
+ * [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+ *
+ * ONE producer today: `CustomResourceProvider`, relaying the documented
+ * `NoEcho: true` field of the CloudFormation custom-resource RESPONSE envelope,
+ * by which a handler declares its own `Data` sensitive. cdkd declared that
+ * field and read it nowhere, so a handler-GENERATED secret was persisted
+ * verbatim into `state.json`.
+ *
+ * WHOLE-BAG, not per attribute, because `NoEcho` is a property of the RESPONSE:
+ * a handler declares the response sensitive, not one member of its `Data`. A
+ * per-attribute shape would be inventing a granularity the wire format does not
+ * have.
+ *
+ * WHAT THE ENGINE DOES WITH IT, and what it deliberately does NOT do. It
+ * registers each returned string leaf as a MASK-ONLY redaction needle
+ * (`recordMaskOnlyValue`) for this resource and for every dependent that
+ * resolves an `Fn::GetAtt` against it, so `state.json` stores `***`. It does
+ * NOT mask at CAPTURE: `Fn::GetAtt` keeps resolving to the REAL value, because
+ * CloudFormation delivers the plaintext to a dependent resource (measured
+ * against real CloudFormation on the issue thread — the AWS doc sentence about
+ * asterisks describes the DISPLAY channel, not the wire). Masking at capture
+ * would make a template feeding this `Data` into
+ * `AWS::SecretsManager::Secret.SecretString` store the literal mask AS the
+ * secret.
+ *
+ * NOT PERSISTED. There is no per-attribute `NoEcho` on `ResourceState`, so this
+ * declaration lives for one deploy only; a LATER deploy that does not re-invoke
+ * the handler has no flag, which is why the persisted `attributes` carry the
+ * mask itself as the signal. Giving state a durable flag is a v9 -> v10 schema
+ * bump with its own migration integ and is tracked by issue
+ * [#2449](https://github.com/go-to-k/cdkd/issues/2449).
+ */
+export interface NoEchoAttributesResult {
+  /**
+   * `true` when every member of `attributes` is sensitive. Absent means "not
+   * sensitive", so no provider needs to change.
+   */
+  noEchoAttributes?: boolean;
+}
+
+/**
  * Resource creation result
  */
-export interface ResourceCreateResult extends EffectivePropertiesResult {
+export interface ResourceCreateResult extends EffectivePropertiesResult, NoEchoAttributesResult {
   /** Physical resource ID */
   physicalId: string;
   /** Resource attributes for Fn::GetAtt resolution */
@@ -124,7 +167,7 @@ export interface ResourceCreateResult extends EffectivePropertiesResult {
  * The data half of {@link ResourceUpdateResult}, split out only so the outcome
  * can be a discriminated union intersected onto it.
  */
-interface ResourceUpdateResultBase extends EffectivePropertiesResult {
+interface ResourceUpdateResultBase extends EffectivePropertiesResult, NoEchoAttributesResult {
   /** Physical resource ID (may be different if resource was replaced) */
   physicalId: string;
   /** Whether the resource was replaced (new physical ID) */

@@ -80,11 +80,14 @@ well, scoped to that exact key so a concurrent deploy's live placeholder under
 the same shared prefix is never touched.
 
 **This is not the whole account of where that value lives.** A handler-minted
-secret returned in `Data` is also persisted into the resource's `attributes` in
-`state.json`, which is a separate object with a separate lifetime and is NOT
-addressed here — see issue
-[#2274](https://github.com/go-to-k/cdkd/issues/2274). Purging the response
-sidecar closes the sidecar; treat the state file as still carrying the value.
+secret returned in `Data` also flows into `state.json` — into the custom
+resource's own `attributes`, and into the resolved `properties` of every
+resource that consumed it through `Fn::GetAtt`. That is a separate object with
+a separate lifetime, and purging the response sidecar does nothing for it.
+Since issue [#2274](https://github.com/go-to-k/cdkd/issues/2274) a handler can
+opt those values out of the state file, by declaring the response sensitive —
+see [`NoEcho` custom-resource responses](#noecho-custom-resource-responses)
+below. Without that declaration the state file still carries the value.
 
 That purge is conditional on `s3:ListBucketVersions` and
 `s3:DeleteObjectVersion` on the state bucket — as is every other
@@ -742,6 +745,67 @@ immediately after each create/update so it includes AWS-side defaults
 the user did not template. The `cdkd drift` comparator prefers
 `observedProperties` as its baseline for richer detection; resources
 without it fall back to `properties` (the pre-`version: 3` behavior).
+
+#### `NoEcho` custom-resource responses
+
+A Lambda-backed custom resource's handler can declare its response `Data`
+sensitive by setting the documented `NoEcho: true` field on the cfn-response
+envelope. Since issue
+[#2274](https://github.com/go-to-k/cdkd/issues/2274) cdkd honours it: every
+string value in that `Data` is stored as `***` instead of the value itself —
+in the custom resource's own `attributes`, in the resolved `properties` and
+`observedProperties` of every resource that consumed it through `Fn::GetAtt`,
+and in `state.outputs`.
+
+```js
+// in the handler
+return {
+  PhysicalResourceId: id,
+  Data: { Token: mintedToken },
+  NoEcho: true,          // <- this is the whole opt-in
+};
+```
+
+**AWS still gets the real value.** CloudFormation delivers a `NoEcho` custom
+resource's `Data` to a dependent resource in the clear, and cdkd matches that:
+`Fn::GetAtt` resolves to the real value and the dependent is created with it.
+Only what cdkd WRITES DOWN changes. (This is worth stating because the AWS
+documentation's "masked with asterisks" sentence describes the display channel;
+masking at resolution time would make a template feeding such a value into
+`AWS::SecretsManager::Secret.SecretString` store the literal `***` as the
+secret.)
+
+**There is a cost, and it is not hidden from you.** cdkd has nothing to
+re-derive the value from — a handler-generated value has no
+`{{resolve:...}}` reference behind it — so once the mask is in state, cdkd will
+not invent a value for it:
+
+- A LATER deploy in which the custom resource is UNCHANGED does not re-invoke
+  the handler (CloudFormation semantics), so the only thing `Fn::GetAtt` can
+  read is the mask. If some resource actually has to be written in that deploy
+  using that attribute, cdkd REFUSES it rather than sending `***` to AWS, and
+  names the remedy: change one of the custom resource's properties (a nonce or
+  version property is the usual way) so its handler runs again in the same
+  deploy. A deploy that does not have to write the value is unaffected.
+- `cdkd drift` reports the position but masks the live value, and `--accept`
+  refuses to write that value into the baseline (accepting would undo the
+  redaction). `cdkd drift --revert` leaves the position exactly as AWS has it
+  rather than pushing the mask; when AWS reports nothing there, it refuses the
+  resource.
+- `cdkd rollback` refuses to replay a recorded baseline holding the mask, for
+  the same reason. Re-deploy to restore the property.
+
+Giving the state file a durable per-attribute `NoEcho` flag — which would let a
+later deploy know WHY the mask is there rather than inferring it from the value
+— is a schema bump tracked by issue
+[#2449](https://github.com/go-to-k/cdkd/issues/2449).
+
+**Known bound.** The mask replaces a WHOLE stored value. A template that
+EMBEDS the attribute inside a longer string (`Fn::Sub` / `Fn::Join` around the
+`Fn::GetAtt`) persists that string with the value still in it, because an
+inline `***` would be indistinguishable from a literal `***` and nothing
+downstream could recognise it — see issue
+[#2453](https://github.com/go-to-k/cdkd/issues/2453).
 
 #### physicalId Format
 

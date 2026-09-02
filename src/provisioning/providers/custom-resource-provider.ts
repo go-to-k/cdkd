@@ -234,6 +234,18 @@ interface CfnCustomResourceResponse {
 interface CustomResourceResponsePayload {
   PhysicalResourceId?: string;
   Data?: Record<string, unknown>;
+  /**
+   * The same `NoEcho` a full cfn-response envelope carries (issue
+   * [#2274](https://github.com/go-to-k/cdkd/issues/2274)). A simple handler
+   * returns a BARE object rather than a cfn-response document, and cdkd
+   * synthesizes the envelope for it below — so without this field the
+   * declaration was dropped for the whole simple-handler delivery shape, which
+   * is the one the CDK `custom_resources` sample handlers and this repo's own
+   * `custom-resource-getatt-data` fixture use. Declared explicitly even though
+   * the index signature would admit it, so the copy below cannot read as
+   * incidental.
+   */
+  NoEcho?: boolean;
   [key: string]: unknown;
 }
 
@@ -1278,7 +1290,18 @@ export class CustomResourceProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully created custom resource ${logicalId}: ${physicalId}`);
 
-      return { physicalId, attributes };
+      // Issue #2274: relay the handler's own `NoEcho` declaration to the deploy
+      // engine, which turns it into MASK-ONLY redaction needles so the
+      // generated value never reaches `state.json`. NOT masked here: the
+      // attributes returned from this method are what `Fn::GetAtt` resolves
+      // to, and CloudFormation delivers that value to a dependent resource in
+      // the CLEAR (measured on the issue thread against real CFn). Masking at
+      // capture would store the literal mask as the dependent's real property.
+      return {
+        physicalId,
+        attributes,
+        ...(cfnResponse.NoEcho === true && { noEchoAttributes: true }),
+      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -1360,7 +1383,16 @@ export class CustomResourceProvider implements ResourceProvider {
         `Successfully updated custom resource ${logicalId}: ${newPhysicalId}${wasReplaced ? ' (replaced)' : ''}`
       );
 
-      return { physicalId: newPhysicalId, wasReplaced, attributes };
+      // Issue #2274: see `create()` — same relay, same reason for not masking
+      // here. `NoEcho` is per RESPONSE, so a handler that sets it on Create and
+      // omits it on Update genuinely declares this response public; that is the
+      // handler's contract to keep, and cdkd reports what it was told.
+      return {
+        physicalId: newPhysicalId,
+        wasReplaced,
+        attributes,
+        ...(cfnResponse.NoEcho === true && { noEchoAttributes: true }),
+      };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw new ProvisioningError(
@@ -2303,6 +2335,24 @@ export class CustomResourceProvider implements ResourceProvider {
         }
         if (payload.Data) {
           result.Data = payload.Data;
+        }
+        // Issue #2274: carry `NoEcho` across the synthesis. This arm builds a
+        // NEW envelope from two named fields, so anything the handler declared
+        // beside them was silently dropped — and `NoEcho` is the one field
+        // whose loss is a DISCLOSURE rather than a missing convenience: the
+        // handler said its `Data` is sensitive and cdkd persisted it in the
+        // clear. The other two delivery shapes (a full cfn-response in the
+        // direct payload, and the S3 / ResponseURL envelope through
+        // `parseCfnResponseBody`) cast the whole object and never lost it, so
+        // this was a per-shape hole rather than a missing feature.
+        //
+        // `=== true` rather than a truthiness copy: the payload is UNTRUSTED
+        // handler output, so a `NoEcho: "false"` string must not be read as a
+        // declaration. Erring the other way would be safe here (it only masks
+        // more) but the envelope field is a boolean and the two readers of this
+        // result treat it as one.
+        if (payload.NoEcho === true) {
+          result.NoEcho = true;
         }
         return result;
       }

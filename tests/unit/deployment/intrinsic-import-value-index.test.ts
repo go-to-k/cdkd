@@ -302,4 +302,50 @@ describe('IntrinsicFunctionResolver - Fn::ImportValue index path', () => {
       { sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: 'Foo' },
     ]);
   });
+
+  // Issue #2274: a producer's `state.outputs` entry can hold the redaction
+  // MASK, because that output resolved a `NoEcho` custom resource's `Data`.
+  // The consumer would otherwise import the literal `***` and write it to AWS,
+  // which is the same data-corruption direction `drift --revert` and the
+  // rollback replay refuse. The resolver RECORDS the read (it does not throw —
+  // the diff path must stay stable); the deploy engine reads the bag after
+  // `resolve()` and refuses to provision.
+  describe('a REDACTED producer output', () => {
+    it('records the read, naming the export and the producer', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-east-1', outputs: { Token: '***' } },
+      ]);
+      const redactedAttributeReads: string[] = [];
+
+      const result = await resolver.resolve(
+        { 'Fn::ImportValue': 'Token' },
+        buildContext({ stateBackend: backend, recordedImports: [], redactedAttributeReads })
+      );
+
+      // The value is still RETURNED — refusing here would fail the diff pass,
+      // which resolves the same leaf and must keep reporting NO_CHANGE for an
+      // untouched stack.
+      expect(result).toBe('***');
+      expect(redactedAttributeReads).toHaveLength(1);
+      expect(redactedAttributeReads[0]).toContain("Fn::ImportValue 'Token'");
+      expect(redactedAttributeReads[0]).toContain('Producer');
+    });
+
+    it('records NOTHING for an ordinary producer output (the negative case)', async () => {
+      const resolver = new IntrinsicFunctionResolver('us-east-1');
+      const backend = mockBackend([
+        { stackName: 'Producer', region: 'us-east-1', outputs: { Token: 'ordinary-value' } },
+      ]);
+      const redactedAttributeReads: string[] = [];
+
+      const result = await resolver.resolve(
+        { 'Fn::ImportValue': 'Token' },
+        buildContext({ stateBackend: backend, recordedImports: [], redactedAttributeReads })
+      );
+
+      expect(result).toBe('ordinary-value');
+      expect(redactedAttributeReads).toEqual([]);
+    });
+  });
 });

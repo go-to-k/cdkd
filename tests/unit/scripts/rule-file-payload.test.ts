@@ -222,9 +222,11 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['layout-local.md', 45],
   ['layout-misc.md', 30],
   ['layout-provisioning.md', 92],
+  ['layout-scrub.md', 1], // literal list: EXACT, see below
   ['layout-scripts.md', 38],
   ['layout-utils.md', 19],
   ['provider-aws-response-reads.md', 65],
+  ['provider-custom-resources.md', 1], // literal list: EXACT, see below
   ['provider-delete-path.md', 65],
   ['provider-diff-record-folds.md', 65],
   ['provider-masking.md', 65],
@@ -253,7 +255,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // provisioning row sits under `providers/**` and so is unaffected by exactly
   // the widening the budgets exist to catch. The 20-odd shared helpers under
   // `src/provisioning/*.ts` are the population that regression would hit.
-  ['src/provisioning/region-check.ts', 83_000, 120_000],
+  // 83_000 -> 78_000: issue #2274 moved the 20 KB `## Custom Resources`
+  // section out of `providers.md` (glob `src/provisioning/**`) into
+  // `provider-custom-resources.md`, whose glob names the ONE file it
+  // describes. Every `src/provisioning/**` path lost those bytes; none of
+  // them but the custom-resource provider needed them.
+  ['src/provisioning/region-check.ts', 78_000, 120_000],
   ['src/deployment/deploy-engine.ts', 43_000, 80_000],
   ['src/cli/commands/deploy.ts', 41_000, 80_000],
   ['src/local/docker-runner.ts', 60_000, 100_000],
@@ -268,12 +275,22 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // is its measured payload rounded out by roughly a tenth in each direction.
   ['src/deployment/secret-redaction.ts', 89_000, 112_000],   // measured 101,396
   ['src/cli/commands/scrub.ts', 88_000, 110_000],            // measured 100,029
+  // Issue #2274 split `provider-custom-resources.md` out of `providers.md`
+  // (whose glob is `src/provisioning/**`, so every provider paid for the
+  // Custom Resource notes) -- and that satellite's glob names exactly ONE
+  // file, which no other budgeted path matches, so without this row it sits
+  // under no budget and could go dark or grow unnoticed.
+  ['src/provisioning/providers/custom-resource-provider.ts', 225_000, 290_000],
   ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured  99,178
   ['src/cli/commands/import.ts', 63_000, 80_000],            // measured  72,035
   ['src/utils/ip-protocol.ts', 83_000, 105_000],             // measured  95,005
   ['src/provisioning/cloud-control-provider.ts', 83_000, 105_000], // measured 94,925
-  ['src/state/s3-state-backend.ts', 43_000, 55_000],         // measured  48,864
-  ['src/types/state.ts', 43_000, 55_000],                    // measured  48,864
+  // 55_000 -> 57_000 (both rows): `code-layout.md` gained an index row for
+  // `layout-scrub.md` (issue #2274), and that file is in EVERY payload, so a
+  // cap with 100 B of headroom fails for a reason unrelated to the path it
+  // names -- the same argument that moved the `rule-file-payload.test.ts` row.
+  ['src/state/s3-state-backend.ts', 43_000, 57_000],         // measured  48,864
+  ['src/types/state.ts', 43_000, 57_000],                    // measured  48,864
   ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
@@ -336,7 +353,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // was covered only by prose, in the `region-check.ts` row's claim to speak
   // for "the 20-odd shared helpers" -- it does not, because that row's payload
   // is 52,459 B lighter.
-  ['src/provisioning/masked-retry-logger.ts', 129_000, 162_000], // measured 147,384
+  ['src/provisioning/masked-retry-logger.ts', 122_000, 162_000], // measured 147,384
   ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
   ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  37,183
   ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
@@ -478,7 +495,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 38; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 40; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
