@@ -113,6 +113,19 @@
 #                      times with the unit suite green through two of them, so
 #                      it gets a live arm of its own. The consumer is named
 #                      ALONE, never --all. Restored before any assertion runs.
+#  9b. SCRUB        — issue #2163: the same refusal as 9, reached through the
+#      REFUSES A       producer's TAKEN-branch Fn::If export (secret expression
+#      SEEDED Fn::If   in the SELECTED arm). Both of that export's state keys
+#      EXPORT          are seeded back to the bare plaintext, and scrubbing the
+#                      consumer must refuse with the `declared` verdict naming
+#                      THAT export. The untaken-arm control (step 2's premise)
+#                      alone cannot tell a NARROWING of the refusal from a
+#                      REMOVAL of it. #2163 measured this exact shape declining
+#                      against real AWS while the unit suite refused correctly,
+#                      so on any unexpected outcome the step re-runs scrub with
+#                      --verbose and prints the per-arm decline lines PR #2268
+#                      added — one run names the arm. Restored before any
+#                      assertion runs.
 #  10. RE-EXPORT    — the #2146 pair, on the stack at the END of the chain,
 #      CHAIN           scrubbed ALONE. (a) with every stack healthy, scrub must
 #                      RESOLVE through the re-export and rewrite the plaintext
@@ -212,6 +225,16 @@ CHAIN_PARAMETER_NAME="/cdkd-integ/cross-stack-secret-import/chained-secret"
 CONDITIONAL_EXPORT_NAME="CdkdCrossStackConditionalSecret"
 CONDITIONAL_OUTPUT="CrossStackConditionalSecretOutput"
 CONDITIONAL_PLAIN_VALUE="crossstack-conditional-plain-branch"
+# The producer's TAKEN-branch conditional export (issue
+# [#2163](https://github.com/go-to-k/cdkd/issues/2163)): the mirror of the
+# export above, with the secret expression in the SELECTED (false) arm, so the
+# deployed value is the resolved secret and the stored value is the redacted
+# expression. Mirrors `lib/shared.ts`; `crossstack` vocabulary per the naming
+# rule, and the decoy arm must stay expression-free or a both-arms scan would
+# satisfy the arm for the wrong reason.
+TAKEN_CONDITIONAL_EXPORT_NAME="CdkdCrossStackConditionalTakenSecret"
+TAKEN_CONDITIONAL_OUTPUT="CrossStackConditionalTakenSecretOutput"
+TAKEN_CONDITIONAL_DECOY_VALUE="crossstack-conditional-decoy-branch"
 
 PRODUCER_STATE_KEY="cdkd/${PRODUCER}/${REGION}/state.json"
 CONSUMER_STATE_KEY="cdkd/${CONSUMER}/${REGION}/state.json"
@@ -475,9 +498,11 @@ assert_no_plaintext "the producer's persisted outputs bag" "${PRODUCER_OUTPUTS}"
 # evaluation, not of the run's environment.
 #
 # Checked on BOTH keys cdkd writes for an exported output -- the export ALIAS
-# and the logical output id -- because the pre-pass matches an export by either
-# spelling, so a wrong value under only one of them would still reach the
-# verdict.
+# and the logical output id. On this fixture's v9 record the alias is the only
+# key `resolveImportValue` may bind (`importableOutputKeys`, issue #2193), so
+# the alias is what the verdict is reached through; the output-id twin is
+# checked so the two spellings cannot silently diverge (a pre-v9 record, where
+# every key is bindable, would read either).
 for cond_key in "${CONDITIONAL_EXPORT_NAME}" "${CONDITIONAL_OUTPUT}"; do
   COND_STORED=$(printf '%s' "${PRODUCER_STATE_JSON}" \
     | jq -r --arg k "${cond_key}" '.state.outputs[$k] // empty')
@@ -487,6 +512,40 @@ for cond_key in "${CONDITIONAL_EXPORT_NAME}" "${CONDITIONAL_OUTPUT}"; do
   fi
 done
 pass "the conditional export stored its UNTAKEN branch ('${CONDITIONAL_PLAIN_VALUE}'), so the issue 2150 arm is armed"
+
+# --- Issue #2163 PREMISE: the TAKEN-branch conditional export stored the ----
+# --- EXPRESSION -------------------------------------------------------------
+#
+# The mirror premise. The second conditional export's SELECTED (false) arm IS
+# the secret expression, so a correct deploy resolves it and stores it REDACTED
+# — exactly like the direct password export. Step 10b seeds these keys back to
+# the bare plaintext and compares against the pre-seed value captured here,
+# the same coupling step 10 has with STATE_EXPORT_VALUE. Without an expression
+# stored here the taken-branch arm is inert in the silent direction: the seed
+# would not be the pre-#1899 shape, and the refusal under test could not be
+# attributed to the Fn::If selection.
+#
+# Both keys, for the reason the untaken check gives: on this v9 record the
+# ALIAS is the only key `resolveImportValue` may bind (`importableOutputKeys`,
+# issue #2193) and therefore the one the discriminator re-reads; the output-id
+# twin is checked so the two spellings cannot silently diverge.
+STATE_TAKEN_EXPORT_VALUE=$(printf '%s' "${PRODUCER_STATE_JSON}" \
+  | jq -r --arg k "${TAKEN_CONDITIONAL_EXPORT_NAME}" '.state.outputs[$k] // empty')
+case "${STATE_TAKEN_EXPORT_VALUE}" in
+  '{{resolve:secretsmanager:'*)
+    pass "producer state.outputs[${TAKEN_CONDITIONAL_EXPORT_NAME}] kept the expression: ${STATE_TAKEN_EXPORT_VALUE}"
+    ;;
+  *)
+    diag "producer output keys: $(printf '%s' "${PRODUCER_STATE_JSON}" | jq -c '.state.outputs | keys')"
+    fail "producer state.outputs[${TAKEN_CONDITIONAL_EXPORT_NAME}] is NOT the {{resolve:...}} expression - the issue 2163 arm is INERT: the deploy did not select (or did not redact) the taken secret arm, so step 10b's seed would not be the pre-#1899 shape"
+    ;;
+esac
+STATE_TAKEN_OUTPUT_VALUE=$(printf '%s' "${PRODUCER_STATE_JSON}" \
+  | jq -r --arg k "${TAKEN_CONDITIONAL_OUTPUT}" '.state.outputs[$k] // empty')
+if [ "${STATE_TAKEN_OUTPUT_VALUE}" != "${STATE_TAKEN_EXPORT_VALUE}" ]; then
+  fail "producer state.outputs[${TAKEN_CONDITIONAL_OUTPUT}] (length ${#STATE_TAKEN_OUTPUT_VALUE}) differs from its export alias - the two spellings must carry ONE value or step 10b's per-key seed checks would disagree about the pre-seed shape"
+fi
+pass "the taken-branch conditional export stored the EXPRESSION under both keys, so the issue 2163 arm is armed"
 
 # ...and the TEMPLATE really does carry the secret expression in the arm the
 # deployment did NOT take. Without this the premise above is also satisfied by a
@@ -499,13 +558,18 @@ pass "the conditional export stored its UNTAKEN branch ('${CONDITIONAL_PLAIN_VAL
 # exported, so this subprocess synthesizes the same app the deploy did.
 COND_SYNTH_DIR=$(mktemp -d)
 CDK_OUTDIR="${COND_SYNTH_DIR}" node bin/app.ts >/dev/null
-COND_TEMPLATE_VALUE=$(node -e '
+COND_ARMS_JSON=$(node -e '
 const fs = require("fs");
 const t = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-const v = t.Outputs?.[process.argv[2]]?.Value;
-process.stdout.write(JSON.stringify(v?.["Fn::If"]?.[1] ?? null));
-' "${COND_SYNTH_DIR}/${PRODUCER}.template.json" "${CONDITIONAL_OUTPUT}")
+const arm = (o, i) => t.Outputs?.[o]?.Value?.["Fn::If"]?.[i] ?? null;
+process.stdout.write(JSON.stringify({
+  untakenTrue: arm(process.argv[2], 1),
+  takenTrue: arm(process.argv[3], 1),
+  takenFalse: arm(process.argv[3], 2),
+}));
+' "${COND_SYNTH_DIR}/${PRODUCER}.template.json" "${CONDITIONAL_OUTPUT}" "${TAKEN_CONDITIONAL_OUTPUT}")
 rm -rf "${COND_SYNTH_DIR}"
+COND_TEMPLATE_VALUE=$(printf '%s' "${COND_ARMS_JSON}" | jq -c '.untakenTrue')
 case "${COND_TEMPLATE_VALUE}" in
   '"{{resolve:secretsmanager:'*)
     pass "the conditional export's UNTAKEN arm carries a secret expression, which is what the old literal scan saw"
@@ -514,6 +578,25 @@ case "${COND_TEMPLATE_VALUE}" in
     fail "the conditional export's Fn::If ifTrue arm is ${COND_TEMPLATE_VALUE}, not a {{resolve:secretsmanager:...}} expression - the issue 2150 arm is INERT: there is nothing for a both-arms scan to have found"
     ;;
 esac
+# The TAKEN export's arms, in BOTH directions (issue #2163). The SELECTED
+# (false) arm must carry the expression — that is what makes the `declared`
+# verdict correct and the step-10b refusal attributable to the Fn::If
+# selection — and the UNTAKEN (true) arm must be the plain decoy, or a scan
+# that still saw both arms would satisfy the arm for the wrong reason.
+TAKEN_TEMPLATE_FALSE=$(printf '%s' "${COND_ARMS_JSON}" | jq -c '.takenFalse')
+case "${TAKEN_TEMPLATE_FALSE}" in
+  '"{{resolve:secretsmanager:'*)
+    pass "the taken export's SELECTED (false) arm carries the secret expression"
+    ;;
+  *)
+    fail "the taken export's Fn::If ifFalse arm is ${TAKEN_TEMPLATE_FALSE}, not a {{resolve:secretsmanager:...}} expression - the issue 2163 arm is INERT: the selected branch declares no expression, so the verdict under test could never be 'declared'"
+    ;;
+esac
+TAKEN_TEMPLATE_TRUE=$(printf '%s' "${COND_ARMS_JSON}" | jq -r '.takenTrue // empty')
+if [ "${TAKEN_TEMPLATE_TRUE}" != "${TAKEN_CONDITIONAL_DECOY_VALUE}" ]; then
+  fail "the taken export's Fn::If ifTrue arm is not the plain decoy '${TAKEN_CONDITIONAL_DECOY_VALUE}' (got: ${TAKEN_TEMPLATE_TRUE}) - an expression there would let a both-arms scan verdict this export secret-bearing off the WRONG arm, and step 10b would pass without exercising the branch selection"
+fi
+pass "the taken export's UNTAKEN (true) arm is the plain decoy"
 
 INDEX_BODY=$(aws s3 cp "s3://${STATE_BUCKET}/${INDEX_KEY}" -)
 INDEX_VALUE=$(printf '%s' "${INDEX_BODY}" \
@@ -551,25 +634,45 @@ if [ "${LIVE_VALUE}" != "${EXPECTED_PLAINTEXT}" ]; then
 fi
 pass "the live SSM parameter carries the RESOLVED secret and no {{resolve: token"
 
-# The issue #2150 read, live. The conditional export reaches AWS through this
-# parameter's DESCRIPTION rather than a second resource, so that arm moves none
-# of the resource counts the steps below assert -- see `lib/consumer-stack.ts`.
-# Asserting it here proves the read happened at all: the pre-pass walks the whole
-# Properties bag, so a `Description` that came back without the branch value
-# would mean `resolveImportValue` never ran for that export and the verdict under
-# test was never reached.
+# The issue #2150 and #2163 reads, live. Both conditional exports reach AWS
+# through this parameter's DESCRIPTION rather than extra resources, so neither
+# arm moves the resource counts the steps below assert -- see
+# `lib/consumer-stack.ts`. Asserting them here proves each read happened at
+# all: the pre-pass walks the whole Properties bag, so a `Description` that
+# came back without a branch value would mean `resolveImportValue` never ran
+# for that export and the verdict under test was never reached.
+#
+# Failures route the raw description through `diag`, never a bare echo: the
+# taken-branch read makes the RESOLVED SECRET part of this string by design,
+# and `diag` is what withholds it when present.
 LIVE_DESCRIPTION=$(aws ssm describe-parameters \
   --parameter-filters "Key=Name,Values=${PARAMETER_NAME}" \
   --region "${REGION}" --query 'Parameters[0].Description' --output text)
 case "${LIVE_DESCRIPTION}" in
-  *"${CONDITIONAL_PLAIN_VALUE}")
+  *'{{resolve:'*)
+    fail "the live parameter description holds a LITERAL dynamic-reference token - a conditional export shipped an unresolved expression to AWS"
+    ;;
+esac
+case "${LIVE_DESCRIPTION}" in
+  *"${CONDITIONAL_PLAIN_VALUE}"*)
     pass "the live parameter description carries the conditional export's untaken-branch value, so that cross-stack read really resolved"
     ;;
-  *'{{resolve:'*)
-    fail "the live parameter description holds a LITERAL dynamic-reference token - the conditional export shipped an unresolved expression to AWS"
+  *)
+    diag "${LIVE_DESCRIPTION}"
+    fail "the live parameter description does not carry '${CONDITIONAL_PLAIN_VALUE}' - the issue 2150 cross-stack read did not resolve, so nothing below exercises that verdict"
+    ;;
+esac
+# The TAKEN-branch read (issue #2163): the description must END with the
+# resolved secret. This is the premise the step-10b refusal rides — a
+# description without it means the read the refusal is attributed to never
+# demonstrably happened.
+case "${LIVE_DESCRIPTION}" in
+  *"${EXPECTED_PLAINTEXT}")
+    pass "the live parameter description ends with the taken-branch export's RESOLVED secret, so the issue 2163 read really resolved"
     ;;
   *)
-    fail "the live parameter description does not end with '${CONDITIONAL_PLAIN_VALUE}' (got: ${LIVE_DESCRIPTION}) - the issue 2150 cross-stack read did not resolve, so nothing below exercises that verdict"
+    diag "${LIVE_DESCRIPTION}"
+    fail "the live parameter description does not end with the resolved taken-branch value (description length ${#LIVE_DESCRIPTION}) - the issue 2163 cross-stack read did not resolve, so step 10b would refuse (or pass) for an unrelated reason"
     ;;
 esac
 
@@ -1247,6 +1350,201 @@ assert_no_plaintext "the consumer's persisted state file after the refusal" "${P
 PRE_REFUSE_CONSUMER_RAW=""
 POST_REFUSE_CONSUMER_RAW=""
 pass "the consumer's state.json is byte-identical across the refusal and still carries no plaintext"
+
+
+echo ""
+echo "==> Step 10b (assertion 9b - THE Fn::If TAKEN-BRANCH REFUSAL, issue #2163): a seeded CONDITIONAL export refuses too"
+# Step 10's refusal, reached through an `Fn::If` (issue
+# [#2163](https://github.com/go-to-k/cdkd/issues/2163)). The producer's
+# taken-branch conditional export declares the secret expression in the arm
+# `selectTakenConditionalBranches` SELECTS, so once its stored value is seeded
+# back to the bare plaintext the pre-pass must reach the same
+# `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` refusal as step 10 — with the
+# `declared` verdict naming THIS export, raised from the Description read.
+#
+# WHY IT IS A SEPARATE PHASE rather than a second key in step 10's seed. It is
+# the negative control the #2150 arm cannot supply: the untaken-branch premise
+# (step 2) proves scrub does not refuse over an arm the deploy never took, but
+# a branch selection that stopped seeing `Fn::If` outputs ENTIRELY passes that
+# just as well — only a taken-branch seed that still REFUSES can tell the
+# narrowing from a removal. And it is the shape issue #2163 measured DECLINING
+# against real AWS (exit 0, "No plaintext secrets found") while the unit suite
+# refused correctly — four instrumentation-free runs could not name the
+# declining arm, which is why the diagnostic re-run below exists.
+#
+# THE DIAGNOSTIC RE-RUN. PR #2268 made every declining arm of the pre-pass's
+# `readOne` name itself at debug level. While the seed is still in place (the
+# restore heals the condition, so afterwards is too late), scrub is re-run with
+# --verbose and the per-arm classification lines are captured. They are printed
+# only on a failure, and only through `diag` — the lines carry no values by
+# design (#2133 / #2268 masked them), and `diag` withholds the text anyway if
+# the plaintext somehow reaches it. The primary run stays verbose-free: at
+# --verbose the resolver's debug lines can legitimately carry a resolved value
+# scrub has no needle for (the seeded plaintext is a bare string to it), so
+# `assert_no_plaintext` over a verbose capture would fail on the diagnosis
+# rather than on the contract.
+#
+# Same discipline as step 10 otherwise: seed on the PRODUCER only, consumer
+# alone (never --all), backup in a shell variable, restore BEFORE any
+# assertion, purge the seeded noncurrent versions immediately.
+PRODUCER_STATE_BACKUP=$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" -)
+# BOTH keys cdkd writes for the export — the alias and the output id — seeded.
+# On this v9 record the ALIAS is the only key `resolveImportValue` may bind
+# (`importableOutputKeys`, issue #2193) and therefore the one the discriminator
+# re-reads; the output-id twin is seeded so the two spellings cannot silently
+# diverge across the seed/restore round-trip. Each is required to hold the
+# expression step 2 captured first, so the seed provably flips
+# expression -> plaintext.
+for taken_key in "${TAKEN_CONDITIONAL_EXPORT_NAME}" "${TAKEN_CONDITIONAL_OUTPUT}"; do
+  PRE_SEED_TAKEN=$(printf '%s' "${PRODUCER_STATE_BACKUP}" \
+    | jq -r --arg k "${taken_key}" '.outputs[$k] // empty')
+  if [ "${PRE_SEED_TAKEN}" != "${STATE_TAKEN_EXPORT_VALUE}" ]; then
+    fail "the producer's state.outputs[${taken_key}] is not the expression step 2 recorded (length ${#PRE_SEED_TAKEN}) — the seed below would not be the pre-#1899 shape and this phase would test nothing"
+  fi
+done
+PRODUCER_SEEDED=$(printf '%s' "${PRODUCER_STATE_BACKUP}" \
+  | jq --arg k1 "${TAKEN_CONDITIONAL_EXPORT_NAME}" --arg k2 "${TAKEN_CONDITIONAL_OUTPUT}" \
+       --arg plain "${EXPECTED_PLAINTEXT}" '.outputs[$k1] = $plain | .outputs[$k2] = $plain')
+printf '%s' "${PRODUCER_SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}"
+PRODUCER_SEEDED=""
+# Read back THROUGH cdkd on both keys, exactly as steps 7 and 10 do: the
+# premise is that `cdkd scrub` sees a plaintext there, and only a read through
+# the same path can say so.
+for taken_key in "${TAKEN_CONDITIONAL_EXPORT_NAME}" "${TAKEN_CONDITIONAL_OUTPUT}"; do
+  SEEDED_TAKEN=$(node "${LOCAL_DIST}" state show "${PRODUCER}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json \
+    | jq -r --arg k "${taken_key}" '.state.outputs[$k] // empty')
+  if [ "${SEEDED_TAKEN}" != "${EXPECTED_PLAINTEXT}" ]; then
+    # Never printed: on the failure this guards it is either the expression
+    # (seed lost) or some other resolved value.
+    fail "the producer's persisted state.outputs[${taken_key}] is not the seeded plaintext (length ${#SEEDED_TAKEN}) — the read below would return an expression and the refusal under test could not fire"
+  fi
+done
+pass "the producer's taken-branch conditional export now holds the BARE PLAINTEXT under both keys, as a pre-#1899 binary left it"
+
+# Captured BEFORE the scrub so "the consumer's record was not rewritten" can be
+# stated as a byte comparison rather than as a re-parse of one field.
+TAKEN_PRE_CONSUMER_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" -)
+set +e
+TAKEN_REFUSE_OUT=$(node "${LOCAL_DIST}" scrub "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+TAKEN_REFUSE_RC=$?
+# The diagnostic re-run, while the seed is still in place (see the phase
+# comment). Refusals write nothing, and an unexpected clean run finds no
+# needle in the consumer's healthy record, so neither outcome mutates state.
+TAKEN_DIAG_LINES=$(node "${LOCAL_DIST}" scrub "${CONSUMER}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose 2>&1 \
+  | grep -E "Scrub of ${CONSUMER}:|Resolved Fn::ImportValue")
+set -e
+if [ -z "${TAKEN_DIAG_LINES}" ]; then
+  # Neutral on purpose: an empty capture means either the pre-pass never
+  # classified this read OR the diagnostic re-run itself failed — the two are
+  # indistinguishable from here, and asserting the first would misdirect the
+  # reader on a transient re-run failure.
+  TAKEN_DIAG_LINES="(no per-arm classification line and no Resolved Fn::ImportValue line was captured from the --verbose re-run)"
+fi
+# Restore FIRST, assert second — a failed assertion here must not leave the
+# producer's export holding a plaintext for the teardown below to destroy from.
+printf '%s' "${PRODUCER_STATE_BACKUP}" | aws s3 cp - "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}"
+PRODUCER_STATE_BACKUP=""
+RESTORED_TAKEN_EXPORT=$(aws s3 cp "s3://${STATE_BUCKET}/${PRODUCER_STATE_KEY}" - \
+  | jq -r --arg k "${TAKEN_CONDITIONAL_EXPORT_NAME}" '.outputs[$k] // empty')
+if [ "${RESTORED_TAKEN_EXPORT}" != "${STATE_TAKEN_EXPORT_VALUE}" ]; then
+  fail "the producer's state was NOT restored (its ${TAKEN_CONDITIONAL_EXPORT_NAME} output reads back as a value of length ${#RESTORED_TAKEN_EXPORT}) — a later phase would inherit the seeded plaintext and the teardown could not destroy the producer"
+fi
+pass "the producer's state was restored before any assertion ran"
+
+# VERSION COVERAGE for the seed: same shape and same reasoning as step 10 —
+# the seed wrote NONCURRENT versions of the producer's state.json carrying this
+# run's plaintext in the outputs bag, so purge them now, and the terminal
+# `s3_purge_prefix_versions ... all` + `s3_assert_versions_swept` pair below is
+# what proves nothing survives on the producer side.
+s3_purge_key_versions "${STATE_BUCKET}" "${PRODUCER_STATE_KEY}" noncurrent || true
+
+assert_no_plaintext "'cdkd scrub' taken-branch refusal output" "${TAKEN_REFUSE_OUT}"
+# THE DISCRIMINATOR, half one: rc CAPTURED and compared to 2 SPECIFICALLY, for
+# step 10's reasons. A 0 here is the exact live divergence issue #2163
+# measured: the read returned the seeded bare string, one of `readOne`'s
+# declining arms fired instead of the refusal, and the stack was reported
+# clean over a producer that still holds the plaintext.
+if [ "${TAKEN_REFUSE_RC}" -ne 2 ]; then
+  diag "${TAKEN_REFUSE_OUT}"
+  diag "per-arm classification (from the --verbose re-run): ${TAKEN_DIAG_LINES}"
+  fail "'cdkd scrub ${CONSUMER}' exited ${TAKEN_REFUSE_RC} with the taken-branch conditional export seeded to PLAINTEXT (expected 2) — the issue #2163 live divergence: the diag lines above name which arm declined the read"
+fi
+# THE DISCRIMINATOR, half two: WHICH refusal — same disjoint-wording pair as
+# step 10, plus the export name, which is what separates this phase from step
+# 10 itself (its refusal names ${EXPORT_NAME}; a refusal here naming that
+# export would mean the password read regressed, not that the Fn::If selection
+# works).
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "resolved the Fn::ImportValue in resource"; then
+  if printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "${CONSUMER}"; then
+    diag "${TAKEN_REFUSE_OUT}"
+    diag "per-arm classification (from the --verbose re-run): ${TAKEN_DIAG_LINES}"
+    fail "'cdkd scrub ${CONSUMER}' exited 2 but never said it RESOLVED the Fn::ImportValue — the exit code came from somewhere other than the unscrubbed-producer branch, or that refusal's wording drifted and this grep is now blind"
+  fi
+  fail "'cdkd scrub ${CONSUMER}' printed neither the refusal wording nor the stack name — the output was not captured at all"
+fi
+if printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "could not resolve the Fn::ImportValue in resource"; then
+  diag "${TAKEN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused with step 9's UNRESOLVABLE-read message instead — the producer's state is readable here, so this phase would be a duplicate of step 9 rather than a test of the taken-branch refusal"
+fi
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "to a PLAINTEXT value: the producer stack '${PRODUCER}'"; then
+  diag "${TAKEN_REFUSE_OUT}"
+  diag "per-arm classification (from the --verbose re-run): ${TAKEN_DIAG_LINES}"
+  fail "'cdkd scrub ${CONSUMER}' refused without naming '${PRODUCER}' as the producer holding the plaintext"
+fi
+# The `declared` verdict for THE TAKEN EXPORT: only reached when an output of
+# the producer's template matched THIS key AND its SELECTED branch carries the
+# expression — i.e. `selectTakenConditionalBranches` kept the false arm. The
+# `widened` verdict spells itself differently, so this grep also fences the
+# key-matching half, exactly as step 10's does for the password export.
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "declares '${TAKEN_CONDITIONAL_EXPORT_NAME}' from a {{resolve:...}} expression"; then
+  diag "${TAKEN_REFUSE_OUT}"
+  diag "per-arm classification (from the --verbose re-run): ${TAKEN_DIAG_LINES}"
+  fail "'cdkd scrub ${CONSUMER}' refused without the 'declared' verdict for ${TAKEN_CONDITIONAL_EXPORT_NAME} — either the refusal fired over a different export or the producer template match fell back to the widened all-outputs scan"
+fi
+# The refusing read is the DESCRIPTION's, the position the arm places it in —
+# not the bare `Value` import (whose producer value is healthy here).
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "at Description['Fn::Join']"; then
+  diag "${TAKEN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused from somewhere other than the Description's Fn::Join — the refusal is not attributable to the taken-branch conditional read this phase seeds for"
+fi
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "'cdkd scrub ${PRODUCER}'"; then
+  diag "${TAKEN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused without naming the remedy 'cdkd scrub ${PRODUCER}'"
+fi
+if ! printf '%s' "${TAKEN_REFUSE_OUT}" | grep -qF "1 stack(s) could not be scrubbed: ${CONSUMER}"; then
+  diag "${TAKEN_REFUSE_OUT}"
+  fail "'cdkd scrub ${CONSUMER}' refused without naming the stack in its summary"
+fi
+pass "scrub refused with rc=2, the 'declared' verdict for ${TAKEN_CONDITIONAL_EXPORT_NAME}, and the refusal came from the Description read"
+
+# SECONDARY NET, stated as such, mirroring step 10: neither is the
+# discriminator — the rc plus the refusal wording above is what says this
+# branch was entered.
+case "${TAKEN_REFUSE_OUT}" in
+  *"No plaintext secrets found in ${CONSUMER}"*)
+    diag "${TAKEN_REFUSE_OUT}"
+    fail "'cdkd scrub ${CONSUMER}' reported the stack clean while refusing — the summary and the refusal contradict each other"
+    ;;
+esac
+case "${TAKEN_REFUSE_OUT}" in
+  *'Scrubbed '*)
+    diag "${TAKEN_REFUSE_OUT}"
+    fail "'cdkd scrub ${CONSUMER}' claims it rewrote a record while refusing — there is no expression to write, which is the whole reason this branch refuses"
+    ;;
+esac
+TAKEN_POST_CONSUMER_RAW=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" -)
+if [ "${TAKEN_POST_CONSUMER_RAW}" != "${TAKEN_PRE_CONSUMER_RAW}" ]; then
+  # The document is NOT echoed: on the failure this guards, the difference is
+  # whatever scrub decided to write into a secret-bearing leaf.
+  fail "the consumer's state.json changed across a REFUSED scrub — the refusal must write nothing, and fabricating a value into an imported secret's leaf is the #1934 break class this branch exists to avoid"
+fi
+assert_no_plaintext "the consumer's persisted state file after the taken-branch refusal" "${TAKEN_POST_CONSUMER_RAW}"
+TAKEN_PRE_CONSUMER_RAW=""
+TAKEN_POST_CONSUMER_RAW=""
+pass "the consumer's state.json is byte-identical across the taken-branch refusal and still carries no plaintext"
 
 
 echo ""

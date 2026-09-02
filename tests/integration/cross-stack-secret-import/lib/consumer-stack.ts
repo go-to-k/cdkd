@@ -6,6 +6,7 @@ import {
   EXPORT_NAME,
   PARAMETER_NAME,
   REEXPORT_NAME,
+  TAKEN_CONDITIONAL_EXPORT_NAME,
 } from './shared.ts';
 
 /**
@@ -47,10 +48,20 @@ export class ConsumerStack extends cdk.Stack {
       // `declared` off the UNTAKEN arm and refused the whole scrub with
       // `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT`, so step 8 -- which has nothing
       // to do with conditionals -- was the step that could no longer run.
+      //
+      // The SECOND import (issue #2163) is the other polarity: the taken-branch
+      // conditional export, whose SELECTED arm declares the secret expression.
+      // The deployed description therefore ENDS with the resolved secret, which
+      // is what proves this read really happens -- and once `verify.sh` seeds
+      // that export's stored value back to plaintext, this is the read that
+      // must refuse the scrub. Same Description placement, same reason: no new
+      // resource record, so none of the step counts move.
       description: cdk.Fn.join('', [
         'Imported from the producer via Fn::ImportValue (issue 1934). Conditional ' +
           'export (issue 2150) resolved to: ',
         cdk.Fn.importValue(CONDITIONAL_EXPORT_NAME),
+        ' Taken conditional export (issue 2163) resolved to: ',
+        cdk.Fn.importValue(TAKEN_CONDITIONAL_EXPORT_NAME),
       ]),
     });
 
