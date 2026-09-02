@@ -31,32 +31,52 @@ Run these sequentially and report results:
    Read the summary line, not just the exit code: a run that reports no `Test Files` count did not run.
 
    **And check WHICH PROJECT the summary belongs to — the summary line cannot
-   tell you.** `vp` is installed globally (`~/.vite-plus/`) and drives a task
-   graph spanning linked workspace projects; cdkd depends on `cdk-local`, which
-   in the Orca layout is a sibling worktree with its own vitest. Measured
-   2026-09-02 with several sessions running suites at once: three consecutive
-   `vp test run` invocations from cdkd's worktree printed
+   tell you.** Measured 2026-09-02 with several sessions running suites at once:
+   three consecutive `vp test run` invocations from cdkd's worktree printed
    `Test Files 246 passed (246) / Tests 4410 passed (4410) / Type Errors no
-   errors` — **cdk-local's suite**, not cdkd's 855 files. `cd`-ing to the right
-   worktree did not help and neither did `--config vite.config.ts`; the shell's
-   `pwd` was correct throughout. The only tells are the `RUN <root>` header
-   hundreds of lines earlier and a stray `vp run: cdk-local#test ...` line at
-   the end. Acting on it sets the `check` marker (and through `requires`, the
-   `verify-pr` one) over a suite that never ran — the real run, once obtained,
-   had 2 failures. So assert the root in the same command that produces the
-   verdict, rather than reading the summary alone:
+   errors` — the suite of a **cdk-local worktree**
+   (`/Users/goto/pc/github/cdk-local/.claude/worktrees/...`, which has exactly
+   246 test files), not cdkd's 856. `cd`-ing to the right worktree did not help
+   and neither did `--config vite.config.ts`; the shell's `pwd` was correct
+   throughout. The tells are the `RUN <root>` header — 3 lines above the
+   summary on a clean cdkd run, but far above it here, since the foreign
+   project's output is not stream-fenced by `tests/setup.ts` — and a stray
+   `vp run: cdk-local#test ...` line at the end.
+
+   **The MECHANISM is unconfirmed; do not repeat a guess as fact.** Ruled out
+   in this tree: `node_modules/cdk-local` is a pnpm REGISTRY install (store
+   symlink, v0.147.7), `pnpm-workspace.yaml` declares no `packages:`, and
+   `vite.config.ts` references no sibling project — so it is not a workspace
+   link. The leading suspect is the globally installed `vp` sharing state
+   across invocations: `command -v vp` resolves to `~/.vite-plus/bin/vp`
+   (v0.1.12) rather than the `.mise.toml`-pinned `http:vp` shim, so the binary
+   deciding what to run is not the repo-pinned toolchain. Worth confirming
+   before anyone builds on it.
+
+   Whatever the cause, acting on the summary sets the `check` marker (and
+   through `requires`, the `verify-pr` one) over a suite that never ran. So
+   assert the root in the same command that produces the verdict, and read the
+   suite's own exit code rather than the trailing `grep`'s:
 
    ```bash
-   vp test run > /tmp/t.log 2>&1; rc=$?
-   run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" /tmp/t.log | sed 's/^RUN  v[0-9.]* //')
+   log=$(mktemp)                       # NOT a fixed path: the documented
+                                       # trigger is concurrent lanes, and a
+                                       # shared /tmp/t.log lets one lane read
+                                       # another's summary as its own.
+   vp test run > "$log" 2>&1; rc=$?
+   run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')
    [ "$run_root" = "$(pwd -P)" ] || { echo "WRONG PROJECT -- attests to nothing"; exit 1; }
-   grep -E "Test Files|      Tests |Type Errors" /tmp/t.log
+   grep -E "Test Files|      Tests |Type Errors" "$log"
+   [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc"; exit 1; }
    ```
 
    It is contention-dependent, not sticky — re-running usually lands on the
-   right project — and a single-FILE run (`vp test run tests/unit/<x>.test.ts`)
-   reported the right project every time in the same window, so that is the
-   reliable form while other lanes are busy.
+   right project. A single-FILE run (`vp test run tests/unit/<x>.test.ts`)
+   reported the right project every time in the same window, so it is a useful
+   way to confirm which project you are addressing while other lanes are busy —
+   **but it does NOT substitute for this step.** The marker still requires a
+   full-suite run that passed AND was rooted here; if the full suite cannot be
+   obtained, say so rather than setting the marker on a narrower run.
 
 ## Output
 
