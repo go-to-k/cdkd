@@ -1766,17 +1766,49 @@ it while reporting success (issue
 `S3BucketProvider.assertExistingBucketRegion` is the create-side twin of
 `assertRegionMatch`. It reads the bucket's region from the
 `x-amz-bucket-region` header on the 409 itself — no extra call, no extra IAM —
-and falls back to `GetBucketLocation`. Note the delete-side helper is a no-op
+and falls back to `GetBucketLocation`. Note `assertRegionMatch` is a no-op
 without `expectedRegion` while this one always has a region to compare against:
 the create knows where it is deploying.
+
+**There are FOUR of these guards, not two, and `assertRegionMatch` is only the
+generic one.** The two above are the SDK route; the Cloud Control route has its
+own pair, because a bucket declaring a silent-drop property (`AccessControl`) is
+auto-routed there and `S3BucketProvider.delete` never runs at all (issue
+[#2283](https://github.com/go-to-k/cdkd/issues/2283), fixed in
+[#2309](https://github.com/go-to-k/cdkd/issues/2309)):
+
+| Guard | Route / phase | On an INDETERMINATE answer |
+| --- | --- | --- |
+| `S3BucketProvider.assertExistingBucketRegion` | SDK, create | refuses |
+| `assertRegionMatch` (`src/provisioning/region-check.ts`) | generic, delete; update only where a provider opts in (`S3BucketProvider` alone today) | no-op without `expectedRegion` |
+| `CloudControlProvider.confirmDeleteTargetIdentity` | CC, delete, per-type (S3 today) | **warns and PROCEEDS** |
+| `CloudControlProvider.assertRecordedRegionAgainstClient` | CC, delete + update | **refuses** |
+
+The last two sit in the same file and answer indeterminacy in OPPOSITE
+directions, which is deliberate rather than an inconsistency. The probe asks a
+REMOTE service where a globally unique name lives, so a least-privilege role
+never granted `s3:GetBucketLocation` would be stranded by a refusal; the
+comparison is LOCAL and free against a region the caller positively recorded, so
+a client that cannot say where it points cannot be shown to point there. Two
+further details of the probe are decisions, not oversights: it is keyed on a
+per-type set rather than being generic, and it deliberately omits
+`ExpectedBucketOwner` — the opposite of the convention `state.ts` and
+`aws-region-resolver.ts` follow — because the hazard is a name resolving to a
+bucket in ANOTHER ACCOUNT, and the guard has to hear that foreign answer to
+refuse. Passing the parameter would turn every cross-account collision into a
+403, i.e. into the indeterminate arm, i.e. into warn-and-proceed.
 
 Deliberately NOT `HeadBucket`, which 301s cross-region and which SDK v3 turns
 into a synthetic `UnknownError` (`src/utils/aws-region-resolver.ts` records the
 mechanism), and deliberately not that module's `resolveBucketRegion`, which
 never throws and returns a fallback region — wiring it here would turn a
-fail-closed guard into a fail-open one. See `.claude/rules/providers.md` for
-the full rule, including the two legacy `GetBucketLocation` spellings the fold
-must absorb and why the refusal is `markNonRetryable`.
+fail-closed guard into a fail-open one. See
+`.claude/rules/provider-resource-identity.md` for the full rule, including the
+two legacy `GetBucketLocation` spellings the fold must absorb and why the
+refusal is `markNonRetryable`. (`.claude/rules/providers.md` is a routing index
+now — the rules corpus was split under its byte ceiling in issue
+[#2310](https://github.com/go-to-k/cdkd/issues/2310) — so it points on rather
+than carrying the rule itself.)
 
 That guard is scoped to the `BucketAlreadyOwnedByYou` catch on the CREATE path,
 which leaves two neighbouring routes to the wrong bucket that it cannot see —
@@ -1786,8 +1818,8 @@ before the guard existed (issue
 [#2245](https://github.com/go-to-k/cdkd/issues/2245)). `S3BucketProvider` now
 also pre-flights the bucket NAME before `CreateBucket` when the target region is
 `us-east-1`, and shares one `assertStateBucketRegion` between `update()` and
-`delete()`. `.claude/rules/providers.md` carries the mechanism and the three
-rules worth reusing: the pre-flight informs the partial-create CLEANUP GATE only
+`delete()`. `.claude/rules/provider-resource-identity.md` carries the mechanism
+and the three rules worth reusing: the pre-flight informs the partial-create CLEANUP GATE only
 and never replaces `CreateBucket` (the ownership oracle), an unanswered probe is
 kept distinct from a confirmed absence, and the state-record guard PROCEEDS on
 both rather than stranding every update and destroy for a least-privilege role.
