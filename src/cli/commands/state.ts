@@ -107,6 +107,29 @@ function formatStackRef(ref: StackStateRef): string {
 }
 
 /**
+ * {@link formatStackRef} for a sentence a CONFIRMATION PROMPT renders.
+ *
+ * Both halves come from an S3 key segment (or, for a legacy record, a state
+ * body), so both are attacker-influenced in exactly the way issue #2170 round
+ * 4 found for the lock error sixty lines below this helper's callers: a
+ * planted `\n` forged a whole line inside that sentence. A forged line in a
+ * PROMPT is strictly worse than one in an error, because the sentence it
+ * corrupts is the one the operator answers `y` to.
+ *
+ * `asciiOnly` matches the lock error's own call on these same values — a
+ * stack name and an AWS region both have a known charset — and is a no-op on
+ * every ordinary input, so the shipped prompt strings are byte-identical.
+ * `UNRENDERABLE` stands in when sanitising leaves nothing, since an empty
+ * `()` would read as "no region" rather than "a region cdkd will not print".
+ */
+function formatStackRefSafe(ref: StackStateRef): string {
+  const stack = displaySafe(ref.stackName, { asciiOnly: true }) || UNRENDERABLE;
+  return ref.region
+    ? `${stack} (${displaySafe(ref.region, { asciiOnly: true }) || UNRENDERABLE})`
+    : stack;
+}
+
+/**
  * Resolve a stack name + optional region flag against the `listStacks` index
  * built up front. When a name resolves to multiple regions and the caller
  * didn't pin one, surface a clear error listing the candidates so the user
@@ -1146,7 +1169,11 @@ async function stateOrphanCommand(
 
       // Single confirmation listing all regions being affected.
       if (!options.yes && !options.force) {
-        const targetList = targets.map((t) => formatStackRef(t)).join(', ');
+        // Sanitised, like the lock error above runs on these SAME values
+        // (issue #2170 round 4) — see `formatStackRefSafe`. Both the warning
+        // banner and the question below render this one string, so a forged
+        // line would land in whichever the operator is reading.
+        const targetList = targets.map((t) => formatStackRefSafe(t)).join(', ');
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
             `AWS resources will NOT be deleted.\n` +
@@ -2210,7 +2237,9 @@ async function stateRefreshObservedCommand(
     }
 
     if (!options.yes && !options.dryRun) {
-      const targetList = targets.map(formatStackRef).join(', ');
+      // Sanitised for the same reason as the `state orphan` prompt above: this
+      // file's OTHER confirmation prompt, built from the same S3 key segments.
+      const targetList = targets.map(formatStackRefSafe).join(', ');
       const ok = await confirmRefresh(
         `Refresh observedProperties for ${targets.length} stack(s) (${targetList})?`
       );

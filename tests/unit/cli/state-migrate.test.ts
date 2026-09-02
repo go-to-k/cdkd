@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+/**
+ * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
+ * prompt this file drives now REFUSES a non-interactive stdin
+ * (`CdkdError` / `NON_INTERACTIVE_CONFIRM`, from the shared
+ * `confirmOrRefuse` helper) instead of hanging on a `question` an EOF stdin
+ * can never settle. Vitest's stdin is NOT a TTY, so every case that exercises
+ * the PROMPT has to present as interactive; the refusal cases set it back.
+ */
+import { setStdinIsTty } from '../../stdin-tty.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
@@ -113,28 +122,6 @@ function planS3(plan: Record<string, Array<() => unknown>>): void {
     const result = handlers[idx]!();
     if (result instanceof Error) throw result;
     return Promise.resolve(result);
-  });
-}
-
-/**
- * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275): the confirmation
- * prompt this file drives now REFUSES a non-interactive stdin
- * (`CdkdError` / `NON_INTERACTIVE_CONFIRM`, from the shared
- * `confirmOrRefuse` helper) instead of hanging on a `question` an EOF stdin
- * can never settle. Vitest's stdin is NOT a TTY, so every case that exercises
- * the PROMPT has to present as interactive; the refusal cases set it back.
- * Same stub as `state-destroy.test.ts` / `gc.test.ts` /
- * `prefix-migration-check.test.ts`.
- *
- * `defineProperty`, not a plain assignment: `process.stdin.isTTY` is typed
- * `boolean` while the saved original is `boolean | undefined` (it is absent
- * when stdin is not a TTY).
- */
-function setStdinIsTty(value: boolean | undefined): void {
-  Object.defineProperty(process.stdin, 'isTTY', {
-    value,
-    configurable: true,
-    writable: true,
   });
 }
 
@@ -269,6 +256,25 @@ describe('cdkd state migrate', () => {
     expect(message).toContain('The cdkd state migrate confirmation prompt cannot run');
     expect(message).toContain('-y / --yes');
     expect(readlineQuestion).not.toHaveBeenCalled();
+
+    // NOTHING MUTATED — the assertion every other routing case carries and
+    // this one lacked. `planS3` throws on an unplanned command, so the run
+    // rejects EITHER way; without this the case would pass on a copy that
+    // threw "Unexpected S3 command: CopyObjectCommand" just as happily as on
+    // the refusal. Named WRITE verbs rather than a call count, so the case
+    // survives the read side growing another probe.
+    const sent = s3SendImpl.mock.calls.map((c) => c[0]?.constructor.name);
+    for (const write of [
+      'CopyObjectCommand',
+      'CreateBucketCommand',
+      'DeleteBucketCommand',
+      'DeleteObjectsCommand',
+      'PutBucketEncryptionCommand',
+      'PutBucketPolicyCommand',
+      'PutBucketVersioningCommand',
+    ]) {
+      expect(sent, `the refusal sent ${write}`).not.toContain(write);
+    }
   });
 
   it('refuses when source and destination resolve to the same bucket', async () => {

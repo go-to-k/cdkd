@@ -3335,10 +3335,35 @@ were the rest of the class:
 
 On a non-TTY stdin each now refuses **before** creating the prompt, throwing
 `CdkdError` with the code `NON_INTERACTIVE_CONFIRM` and exiting **1**. The
-message names the command and the flag that avoids the prompt. Nothing is
-written, deleted or locked on the refusing path — the refusal sits where the
-prompt was, after any read-only work the command had already done to build the
-plan it was about to ask you to confirm.
+message names the command and the flag that avoids the prompt.
+
+**No partial mutation survives the refusal.** That is the guarantee, and it is
+worth stating precisely rather than as "nothing has happened yet", because for
+two of the nine something already has:
+
+- **A state lock IS held at the prompt on four of them.** `cdkd orphan`,
+  `cdkd import`, `cdkd export` (its migration and nested-tree prompts) and
+  `cdkd rollback` acquire the stack's lock before building the plan they are
+  about to ask you to confirm. Every one of them releases it in a `finally`, so
+  the refusal releases it on the way out and **no lock is leaked** — a re-run
+  with the flag is not blocked by the run that refused. No lock is held at
+  `cdkd drift`'s two prompts or at `cdkd export`'s rollback-journal override
+  (all three acquire *after* the prompt), nor at either `cdkd state` prompt
+  (they only READ lock state), `cdkd state migrate`, or the CloudFormation
+  retirement.
+- **The CloudFormation retirement has already written, in two senses.** cdkd
+  state is written *before* it is reached at all — it is the last step of
+  `cdkd import --migrate-from-cloudformation` / `cdkd migrate
+  --retire-cfn-stack` — so a refusal leaves the resources recorded in cdkd
+  state while the CloudFormation stack is still live. Its refusal message says
+  so, and names both commands. Separately, for a nested stack whose child
+  templates exceed CloudFormation's 51,200-byte inline limit, those child
+  bodies have already been uploaded to `cdkd-migrate-tmp/` in the state bucket
+  by the time the prompt fires; they are **deleted on the refusing path**,
+  exactly as they are when you answer `n`.
+
+Every other prompt refuses after read-only work only — the plan it was about to
+ask you to confirm, and nothing else.
 
 What breaks: a pipeline that answered one of these with
 `printf 'y\n' | cdkd import ...` succeeded before (piped stdin does settle
@@ -3360,6 +3385,16 @@ All nine now share ONE implementation — `confirmOrRefuse` in
 next prompt added. Each site keeps its own prompt wording and its own refusal
 message; nothing about the interactive experience changed, including the two
 prompts that render `(y/N): ` where the other seven render ` [y/N] `.
+
+**One mutating prompt sits outside that contract, and it is the tenth:
+`cdkd events prune`.** It has carried a non-TTY guard since it shipped, so it
+never hangs and it prunes nothing without a TTY — but it refuses by logging a
+line and returning, which exits **0**. It does not throw, so it produces no
+`NON_INTERACTIVE_CONFIRM` code and no exit 1. **A CI job that branches on exit
+1 to detect "cdkd wanted a confirmation" will not see this one**: check the
+command's output, or pass `--yes` and let the prune run. Aligning it with the
+other nine is a breaking exit-code change on its own, tracked as issue
+[#2454](https://github.com/go-to-k/cdkd/issues/2454).
 
 ## `--purge-events`: also delete deployment-event history on destroy
 

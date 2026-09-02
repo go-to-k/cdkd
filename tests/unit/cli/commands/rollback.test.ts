@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { setStdinIsTty } from '../../../stdin-tty.js';
 
 vi.mock('../../../../src/utils/logger.js', () => {
   const l = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), setLevel: vi.fn(), child: () => l };
@@ -45,6 +46,19 @@ vi.mock('../../../../src/cli/commands/deployment-events-run.js', () => ({
   startRunRecorder: () => ({ record: vi.fn(), finalize: vi.fn().mockResolvedValue(undefined) }),
 }));
 
+// readline: this file drives `rollbackCommand`'s confirmation prompt, which
+// every other case in it skips via `force: true`. Mocked so the TTY control
+// below can answer it, and so a REGRESSION (the guard removed from
+// `confirmOrRefuse`) reds the refusal case by CONSTRUCTING an interface
+// rather than hanging. The hang itself is fenced against REAL readline in
+// `tests/unit/cli/non-interactive-confirm-guards.test.ts`.
+const readlineQuestion = vi.hoisted(() => vi.fn<(p: string) => Promise<string>>());
+const readlineClose = vi.hoisted(() => vi.fn());
+const createInterfaceMock = vi.hoisted(() =>
+  vi.fn(() => ({ question: readlineQuestion, close: readlineClose }))
+);
+vi.mock('node:readline/promises', () => ({ createInterface: createInterfaceMock }));
+
 const setupMock = vi.fn();
 vi.mock('../../../../src/cli/commands/state.js', async () => {
   const actual = await vi.importActual<typeof import('../../../../src/cli/commands/state.js')>(
@@ -57,7 +71,7 @@ vi.mock('../../../../src/cli/commands/state.js', async () => {
 });
 
 import { rollbackCommand } from '../../../../src/cli/commands/rollback.js';
-import { PartialFailureError } from '../../../../src/utils/error-handler.js';
+import { CdkdError, PartialFailureError } from '../../../../src/utils/error-handler.js';
 
 interface FakeBackend {
   listStacks: ReturnType<typeof vi.fn>;
@@ -103,8 +117,120 @@ function installSetup(backend: Partial<FakeBackend>): FakeBackend {
 
 const baseOpts = { statePrefix: 'cdkd', verbose: false, force: true };
 
+/** A journal + state pair with ONE replayable CREATE, enough to reach the prompt. */
+function installOneCreateSegment(): FakeBackend {
+  const createOp = {
+    logicalId: 'Bucket',
+    changeType: 'CREATE',
+    resourceType: 'AWS::S3::Bucket',
+    physicalId: 'phys-Bucket',
+  };
+  return installSetup({
+    listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+    getState: vi.fn().mockResolvedValue({
+      state: {
+        version: 8,
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {
+          Bucket: {
+            physicalId: 'phys-Bucket',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        lastModified: 1,
+      },
+      etag: 'e0',
+    }),
+    loadRollbackJournal: vi.fn().mockResolvedValue({
+      journalVersion: 1,
+      stackName: 'S',
+      region: 'us-east-1',
+      segments: [
+        { timestamp: 1, reason: 'no-rollback-failure', initialDeploy: false, operations: [createOp] },
+      ],
+    }),
+  });
+}
+
 describe('rollbackCommand', () => {
-  beforeEach(() => vi.clearAllMocks());
+  let originalIsTTY: boolean | undefined;
+  beforeEach(() => {
+    originalIsTTY = process.stdin.isTTY;
+    vi.clearAllMocks();
+  });
+  afterEach(() => setStdinIsTty(originalIsTTY));
+
+  /**
+   * Issue [#2275](https://github.com/go-to-k/cdkd/issues/2275), the ROUTING
+   * half — the ONE site that had none.
+   *
+   * `tests/unit/cli/non-interactive-confirm-guards.test.ts` probes this
+   * command's prompt HELPER directly; what a helper-level probe cannot see is
+   * whether the COMMAND's own call site still reaches it. Every OTHER case in
+   * this file (and in `tests/unit/cli/rollback-lock-release-ordering.test.ts`)
+   * hardcodes `force: true` via `baseOpts`, so `skipConfirmation` is true and
+   * the prompt is never reached by any of them — the guard could be deleted
+   * from `rollback.ts` and both suites would stay green.
+   *
+   * `force: false, yes: false` is what makes the gate live. The pair below is
+   * a two-sided fence: this one asserts the refusal happens BEFORE an
+   * interface exists, and the TTY control asserts the site is still reached
+   * with its shipped `(y/N): ` suffix — so neither a deleted guard nor a
+   * guard that refuses unconditionally survives both.
+   */
+  it('REFUSES a non-interactive run when neither --force nor --yes is passed', async () => {
+    setStdinIsTty(undefined);
+    const backend = installOneCreateSegment();
+
+    const err = await rollbackCommand('S', {
+      ...baseOpts,
+      force: false,
+      yes: false,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(CdkdError);
+    expect((err as CdkdError).code).toBe('NON_INTERACTIVE_CONFIRM');
+    expect((err as Error).message).toContain('The cdkd rollback confirmation prompt cannot run');
+    expect((err as Error).message).toContain('--force');
+    expect((err as Error).message).toContain('-y / --yes');
+    // Refused BEFORE the interface exists, which is the whole point: there is
+    // no window in which a never-settling question could be awaited.
+    expect(createInterfaceMock).not.toHaveBeenCalled();
+    expect(readlineQuestion).not.toHaveBeenCalled();
+    // Nothing replayed, nothing persisted, journal untouched.
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    expect(replayProvider.update).not.toHaveBeenCalled();
+    expect(backend.saveState).not.toHaveBeenCalled();
+    expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+    expect(backend.deleteState).not.toHaveBeenCalled();
+  });
+
+  it('still PROMPTS on a TTY, with its shipped (y/N): suffix, and a decline stops it', async () => {
+    // The other half of the fence. Without it a guard that refused
+    // unconditionally — or a call site deleted outright — would satisfy the
+    // case above while breaking every interactive run. It also pins the
+    // SUFFIX, which is user-visible output only this site and
+    // `cdkd state orphan` spell as `(y/N): `.
+    setStdinIsTty(true);
+    readlineQuestion.mockResolvedValue('n');
+    const backend = installOneCreateSegment();
+
+    await expect(
+      rollbackCommand('S', { ...baseOpts, force: false, yes: false })
+    ).resolves.toBeUndefined();
+
+    expect(readlineQuestion).toHaveBeenCalledTimes(1);
+    expect(readlineQuestion).toHaveBeenCalledWith("Roll back 'S' (us-east-1)? (y/N): ");
+    // A decline is a different outcome from a refusal, reached through the
+    // same code: the command returns cleanly and replays nothing.
+    expect(replayProvider.delete).not.toHaveBeenCalled();
+    expect(backend.popRollbackJournalSegment).not.toHaveBeenCalled();
+  });
 
   it('no arg + no journals → returns without error', async () => {
     installSetup({ listRawKeys: vi.fn().mockResolvedValue([]) });

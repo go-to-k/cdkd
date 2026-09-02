@@ -19,6 +19,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { setStdinIsTty } from '../../../stdin-tty.js';
 
 const readlineQuestion = vi.hoisted(() => vi.fn<(prompt: string) => Promise<string>>());
 const readlineClose = vi.hoisted(() => vi.fn());
@@ -44,20 +45,6 @@ const { promptYesNo, confirmOrRefuse, DEFAULT_CONFIRM_SUFFIX } = await import(
   '../../../../src/cli/commands/confirm-prompt.js'
 );
 const { CdkdError } = await import('../../../../src/utils/error-handler.js');
-
-/**
- * `defineProperty`, not a plain assignment: `process.stdin.isTTY` is typed
- * `boolean` while the saved original is `boolean | undefined` (it is ABSENT
- * when stdin is not a TTY, which is vitest's normal state). Same helper shape
- * as `destroy-runner-sigint.test.ts` / `prefix-migration-check.test.ts`.
- */
-function setStdinIsTty(value: boolean | undefined): void {
-  Object.defineProperty(process.stdin, 'isTTY', {
-    value,
-    configurable: true,
-    writable: true,
-  });
-}
 
 let originalIsTTY: boolean | undefined;
 

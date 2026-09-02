@@ -40,6 +40,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { setStdinIsTty } from '../../stdin-tty.js';
 
 const readlineQuestion = vi.hoisted(() => vi.fn<(prompt: string) => Promise<string>>());
 const readlineClose = vi.hoisted(() => vi.fn());
@@ -66,19 +67,6 @@ import { confirmPrompt as exportConfirm } from '../../../src/cli/commands/export
 import { confirmPrompt as driftConfirm } from '../../../src/cli/commands/drift.js';
 import { confirmPrompt as retireConfirm } from '../../../src/cli/commands/retire-cfn-stack.js';
 import { confirmPrompt as stateMigrateConfirm } from '../../../src/cli/commands/state-migrate.js';
-
-/**
- * `defineProperty`, not a plain assignment: `process.stdin.isTTY` is typed
- * `boolean` while the saved original is `boolean | undefined` (it is absent
- * when stdin is not a TTY, which is vitest's normal state).
- */
-function setStdinIsTty(value: boolean | undefined): void {
-  Object.defineProperty(process.stdin, 'isTTY', {
-    value,
-    configurable: true,
-    writable: true,
-  });
-}
 
 /** The `HumanTextSink` shape `drift.ts`'s prompt takes. */
 const DRIFT_SINK = { write: (): void => {}, stream: process.stderr };
@@ -146,7 +134,19 @@ const SITES: readonly Site[] = [
     command: 'cdkd import --migrate-from-cloudformation (CFn stack retirement)',
     call: retireConfirm,
     rendered: 'Proceed? [y/N] ',
-    names: ['CloudFormation stack retirement', '-y / --yes'],
+    // The only site reachable from TWO commands, so its refusal must name
+    // BOTH: a CI user who has just been told a flag is missing still has to
+    // know which invocation to put it on. It is also the only one that fires
+    // AFTER its command's state write, so the refusal states that too —
+    // `confirmOrRefuse`'s contract is that the refusal is the only thing that
+    // user sees.
+    names: [
+      'CloudFormation stack retirement',
+      '-y / --yes',
+      'cdkd import --migrate-from-cloudformation',
+      'cdkd migrate --retire-cfn-stack',
+      'cdkd state has already been written',
+    ],
   },
   {
     command: 'cdkd state migrate',

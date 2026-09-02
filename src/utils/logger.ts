@@ -51,21 +51,29 @@ const colors = {
  * subcommands) — while `cdkd diff` predates the mechanism and demotes the
  * logger to `warn` instead, which SUPPRESSES its info-level lines rather than
  * moving them. Do not read "every `--json` surface" as "every `--json`
- * surface calls this".
+ * surface calls this". Of those seven, TWO no longer consult `--json` at all
+ * — see the next paragraph, which owns them.
  *
  * A `--json` flag is NOT what makes a stream a payload stream, though, and
- * issue [#2410](https://github.com/go-to-k/cdkd/issues/2410) is the four
- * commands where it is not involved at all: `cdkd synth` (the template),
- * `cdkd list` in EVERY mode (the YAML and the one-id-per-line spellings, not
- * just `--json`), `cdkd local invoke` (the function response) and
- * `cdkd local invoke-agentcore` (the agent response). NOTE `cdkd list`
- * appears in BOTH paragraphs and is one call site, not two: issue
- * go-to-k/cdkd#2280 added it under `--json` and issue go-to-k/cdkd#2410 made
- * that same call unconditional. Ten commands call this in total, not eleven.
- * Those four call it
+ * issue [#2410](https://github.com/go-to-k/cdkd/issues/2410) plus issue
+ * [#2435](https://github.com/go-to-k/cdkd/issues/2435) are the FIVE commands
+ * where it is not involved at all: `cdkd synth` (the template), `cdkd list`
+ * in EVERY mode (the YAML and the one-id-per-line spellings, not just
+ * `--json`), `cdkd state list` in EVERY mode (the one-`Stack (region)`-
+ * per-line spelling as much as `--json`; `--long` / `--tree` are formatted
+ * views swept along, since the reservation is taken before the mode is
+ * known), `cdkd local invoke` (the function response) and `cdkd local
+ * invoke-agentcore` (the agent response). NOTE `cdkd list` AND `cdkd state
+ * list` each appear in BOTH paragraphs and are ONE call site apiece, not two:
+ * go-to-k/cdkd#2280 added both under `--json`, and go-to-k/cdkd#2410 /
+ * go-to-k/cdkd#2435 respectively made those same calls unconditional. Ten
+ * commands call this in total, not twelve. Those five call it
  * UNCONDITIONALLY at command entry, so for them the DEFAULT human output
  * contract is the one that moved — deliberately, and documented per command
- * in `docs/cli-reference.md`. What has NOT changed is that the decision stays
+ * in `docs/cli-reference.md`. The OTHER three `cdkd state` subcommands keep
+ * the `--json` gate on the discriminator that page states: their flagless
+ * output is a formatted human VIEW with no record-set mode behind it, not a
+ * line-oriented RECORD SET. What has NOT changed is that the decision stays
  * with the command: a command whose stdout is a human surface (`cdkd deploy`,
  * `cdkd local start-api`, `cdkd local run-task`) still never calls this.
  */
@@ -217,7 +225,9 @@ export class ConsoleLogger implements Logger {
    * because #2410 widened the reserving population from a `--json`-only set to
    * one that includes commands with no flag at all. The four it added —
    * `cdkd synth`, `cdkd list`, `cdkd local invoke`,
-   * `cdkd local invoke-agentcore` — run NO work inside `runStackBuffered`:
+   * `cdkd local invoke-agentcore` — and the fifth issue
+   * [#2435](https://github.com/go-to-k/cdkd/issues/2435) then added,
+   * `cdkd state list`, run NO work inside `runStackBuffered`:
    * buffering exists for the parallel multi-stack deploy path, which none of
    * them enters. So the gap stays latent, and the condition for it becoming
    * REAL is unchanged in substance but wider in reach: it is no longer "a

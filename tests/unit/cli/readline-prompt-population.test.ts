@@ -25,44 +25,76 @@ import { dirname, join, relative, sep } from 'node:path';
  * that keep their own inline guard), and each guarded command's own suite.
  * This file only fences the POPULATION.
  *
- * CALIBRATION, measured 2026-09-02 against the pre-fix tree (`origin/main`
+ * CALIBRATION, measured 2026-09-03 against the pre-fix tree (`origin/main`
  * @ 4f34f8c1) with the same regex: **19 sites across 17 files** — exactly the
  * 19 `createInterface` calls a `grep -rn createInterface src/` finds there,
  * including all nine unguarded ones the issue enumerates. After the fold:
  * **11 sites across 10 files**, i.e. the nine removed and one added
- * (`confirm-prompt.ts` grew its second export). The regex is
- * CONSTRUCTION-SHAPED rather than a bare `createInterface` needle, which is
- * what keeps `drift.ts`'s JSDoc prose about `readline.createInterface` from
- * counting as a site without this file having to strip comments — a stripper
- * being the fragile part of every scanner fence this repo has written.
+ * (`confirm-prompt.ts` grew its second export).
  *
- * The three alternatives were probed against the spellings a future
- * contributor would plausibly write, not just against the one that was
- * removed (2026-09-02). CAUGHT: `const rl = readline.createInterface(`,
+ * The pattern is a CALL-shaped needle with a COMMENT-LINE exclusion rather
+ * than a comment STRIPPER — a stripper being the fragile part of every
+ * scanner fence this repo has written. It refuses a line whose first
+ * non-blank characters are `*` or `//`, which is what keeps `drift.ts`'s and
+ * `confirm-prompt.ts`'s prose about `createInterface` from counting as sites.
+ *
+ * PROBED 2026-09-03, one line per spelling, against the spellings a future
+ * contributor would plausibly write rather than only the one that was removed.
+ * CAUGHT (11 of 12 non-prose shapes): `const rl = readline.createInterface(`,
  * `const rl = createInterface(` (bare named import), `let rl = ...`,
  * `const rl = await ...` (`migrate-command.ts`'s `await import` two-step),
  * `const rl=...` with no spaces, `const { question, close } = ...`
- * (destructured), and a bare statement-position `readline.createInterface(...)`
- * with no assignment at all. MISSED, deliberately: the two JSDoc prose lines
- * in `drift.ts` and a `//` comment naming `createInterface(...)`. The
- * destructured and bare-call arms were added BECAUSE the first cut missed
- * them — an assignment-only pattern is the spelling the defect happened to
- * use, not the spelling the next one will.
+ * (destructured), a bare statement-position call with no assignment,
+ * `rl = readline.createInterface(` (re-assignment to an outer `let`),
+ * `return readline.createInterface(` (factory return),
+ * `this.rl = readline.createInterface(` (field assignment),
+ * `readline.promises.createInterface(` (reachable off a plain `node:readline`
+ * import), a ternary arm, and an object-literal property value. The last five
+ * were the ones an earlier assignment-shaped pattern MISSED — an
+ * assignment-only pattern is the spelling the defect happened to use, not the
+ * spelling the next one will.
+ *
+ * NOT CAUGHT, and this is a real hole rather than a deliberate one: an ALIASED
+ * import — `import { createInterface as ask } from 'node:readline/promises'`,
+ * or the `await import` twin `const { createInterface: ask } = await
+ * import(...)` — puts NO occurrence of the string `createInterface` at the
+ * call site, so it evades any needle spelled on that name, this one included.
+ * The same hole covers any other rebinding (`const ask = readline
+ * .createInterface;`). Nothing here can close it short of parsing the module
+ * and following the binding, which is the AST-shaped fence this file
+ * deliberately is not; what this file CAN do is say so, because a fence whose
+ * comment overstates its own coverage is worse than a narrower honest one.
+ * DELIBERATELY not caught, by contrast: prose on a `*` or `//` line, and any
+ * `createInterface(` inside a string literal (which would count as a site —
+ * accepted, since no such literal exists and a spurious entry is the safe
+ * direction).
  *
  * Widening it changed neither count (19 pre-fix, 11 post-fix), which is the
- * check that the extra arms did not buy false positives.
+ * check that the extra reach did not buy false positives.
  */
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const SRC_ROOT = join(REPO_ROOT, 'src');
 
 /**
- * The shape a readline interface is CONSTRUCTED in: an assignment to a name, a
- * destructuring assignment, or a bare call in statement position. See the
- * calibration note above for the spellings each arm was probed against.
+ * A CALL to `createInterface`, however the result is (or is not) bound, on a
+ * line that is not a comment.
+ *
+ * Reading it left to right: `^(?![ \t]*(?:\*|\/\/))` drops JSDoc and `//`
+ * lines; `.*?` allows any prefix, which is what makes the binding form
+ * irrelevant (`const rl =`, `rl =`, `this.rl =`, `return`, a ternary arm, an
+ * object-literal value, or nothing at all); `(?<![\w.$])(?:\w+\.)*` accepts a
+ * member chain of any depth (`readline.`, `readline.promises.`, none) while
+ * the lookbehind stops it starting mid-identifier, so a hypothetical
+ * `myCreateInterface(` is not a match.
+ *
+ * `m` (not `s`) so `.` cannot cross lines and `^` means line-start; one match
+ * per line at most, which is exactly the granularity the counts below assume.
+ *
+ * See the calibration note above for every spelling this was probed against,
+ * INCLUDING the aliased-import one it cannot see.
  */
-const CREATE_INTERFACE =
-  /(?:\b(?:const|let|var)\s+(?:\w+|\{[^}]*\})\s*=\s*|^[ \t]*)(?:await\s+)?(?:\w+\.)?createInterface\s*\(/gm;
+const CREATE_INTERFACE = /^(?![ \t]*(?:\*|\/\/)).*?(?<![\w.$])(?:\w+\.)*createInterface\s*\(/gm;
 
 /**
  * `path -> { sites, why }`. The COUNT is part of the contract, not just the

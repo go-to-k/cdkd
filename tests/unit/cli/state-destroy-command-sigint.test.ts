@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { setStdinIsTty } from '../../stdin-tty.js';
 import type { StackState } from '../../../src/types/state.js';
 import type { StackStateRef } from '../../../src/state/s3-state-backend.js';
 
@@ -228,14 +229,6 @@ const originalIsTty = process.stdin.isTTY;
 /** Everything `handleError` routed to `logger.error`, as plain strings. */
 function errorLines(): string[] {
   return loggerMocks.error.mock.calls.map((c) => String(c[0]));
-}
-
-function setStdinIsTty(value: boolean | undefined): void {
-  Object.defineProperty(process.stdin, 'isTTY', {
-    value,
-    configurable: true,
-    writable: true,
-  });
 }
 
 describe('cdkd state destroy --all: a Ctrl-C the runner never reported stops the run (issue #2117)', () => {
