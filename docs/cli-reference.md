@@ -1319,10 +1319,12 @@ UNCONDITIONALLY, so their DEFAULT output contract is the one that changed:
 | `cdkd local invoke` | the function's response payload |
 | `cdkd local invoke-agentcore` | the agent's response (buffered, or streamed frame by frame under SSE / `--ws`) |
 
-Everything else those commands print -- `Synthesizing CDK app...`, `cdkd
-synth`'s `Synthesis complete!` summary block, `cdkd local invoke`'s `Target:
-...` / `Starting container ...` lines, the CDK app's re-emitted stderr, and
-`--verbose` debug output -- goes to **stderr**. As with `--json`, the lines are
+Everything **cdkd's own logger** prints on those commands -- `Synthesizing
+CDK app...`, `cdkd synth`'s `Synthesis complete!` summary block, `cdkd local
+invoke`'s `Target: ...` / `Starting container ...` lines, the CDK app's
+re-emitted stderr, and its `--verbose` debug output -- goes to **stderr**.
+Three things on the two `cdkd local` commands are NOT cdkd's logger and still
+reach stdout; they are listed under "known residuals" below. As with `--json`, the lines are
 **moved, not suppressed**: a terminal shows what it always did, and `2>&1`
 restores the old single-stream view.
 
@@ -1341,14 +1343,24 @@ Three consequences worth stating explicitly:
   stdout on `cdkd synth` is the template or it is nothing; the summary is never
   a payload. Use `--output <dir>` and read the per-stack template files from the
   assembly directory to get every stack's template.
-- **The container's own output is NOT affected.** `cdkd local invoke` /
-  `cdkd local invoke-agentcore` stream the Lambda / agent container's stdout
-  straight through to yours, which the reservation cannot reach (it is a raw
-  child-process pipe, not a cdkd log line). A handler that prints -- including
-  the runtime emulator's `START` / `END` / `REPORT` lines -- therefore still
-  lands on stdout ahead of the response; take the LAST line
-  (`cdkd local invoke ... | tail -1 | jq`) until issue
-  [#2419](https://github.com/go-to-k/cdkd/issues/2419) is fixed.
+- **Known residuals on `cdkd local invoke` / `invoke-agentcore`: three things
+  still reach stdout**, because none of them passes through cdkd's logger.
+  **Until they are fixed, take the LAST line**
+  (`cdkd local invoke ... | tail -1 | jq`), which is what cdkd's own integ
+  fixtures do:
+  1. **The container's own stdout**, piped through by `streamLogs`. The Lambda
+     runtime emulator puts `START` / `END` / `REPORT` *and* every handler log
+     line -- `console.error` included -- on the container's stdout, so any
+     handler that prints lands ahead of the response
+     ([#2419](https://github.com/go-to-k/cdkd/issues/2419)).
+  2. **`docker pull` progress**, which runs in foreground mode
+     (`stdio: 'inherit'`) under `--verbose`, and **unconditionally** for an
+     image pulled from ECR (same issue).
+  3. **cdk-local's own logger.** cdkd reuses cdk-local for the container-image
+     build path, and cdk-local has a SEPARATE logger with no reservation
+     concept, so `Building container image (platform=...)` and `Skipping
+     docker build ...` print on stdout for a container-image Lambda
+     ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
 - **`cdkd synth`'s stdout is the template, but it is not yet valid YAML for
   every template.** The renderer leaves YAML indicator characters unquoted, so
   a template containing `"*"` -- any IAM policy `Resource` / `Action`, any CORS
@@ -1358,10 +1370,11 @@ Three consequences worth stating explicitly:
   the per-stack template JSON out of the `--output` assembly directory when you
   need a parser to consume it.
 
-`cdkd deploy`, `cdkd local start-api`, `cdkd local run-task` and
-`cdkd local start-service` are deliberately NOT in this set: their stdout is a
-human surface (the deploy banner and progress, the route table, task output),
-not a payload, so nothing about them moved.
+`cdkd deploy` and the long-running `cdkd local` servers -- `start-api`,
+`run-task`, `start-service`, `start-agentcore`, `start-alb`,
+`start-cloudfront` -- are deliberately NOT in this set: their stdout is a
+human surface (the deploy banner and progress, the route table, task output,
+prefixed container logs), not a payload, so nothing about them moved.
 
 ## `--region` / `AWS_REGION` (every command)
 
@@ -2635,22 +2648,26 @@ streams separately to keep both:
 cdkd drift MyStack --json --accept --yes > report.json 2> progress.log
 ```
 
-Without `--json` nothing moves — the human modes keep printing to stdout as
-before. Before issue [#2230](https://github.com/go-to-k/cdkd/issues/2230) these
-lines shared stdout with the payload, so a `--json --accept` run produced a
-document a parser rejected while looking correct on screen.
+Without `--json` nothing moves **on `cdkd drift`** — its human modes keep
+printing to stdout as before. Before issue
+[#2230](https://github.com/go-to-k/cdkd/issues/2230) these lines shared stdout
+with the payload, so a `--json --accept` run produced a document a parser
+rejected while looking correct on screen.
 
 The same contract holds for **every `--json` surface**, not just `drift`:
-`cdkd list --json`, `cdkd events --json` (and its `--format json` alias), and
-the four `cdkd state {list,resources,show,info} --json` subcommands route
-their `--verbose` debug output, the `Assumed role ...` notice from
-`--role-arn` / `CDKD_ROLE_ARN` runs, and the CDK app's re-emitted stderr
-(bundling progress during `cdkd list`'s synth) to **stderr** while `--json`
-is in effect (issue [#2280](https://github.com/go-to-k/cdkd/issues/2280)).
+`cdkd events --json` (and its `--format json` alias) and the four
+`cdkd state {list,resources,show,info} --json` subcommands route their
+`--verbose` debug output and the `Assumed role ...` notice from
+`--role-arn` / `CDKD_ROLE_ARN` runs to **stderr** while `--json` is in effect
+(issue [#2280](https://github.com/go-to-k/cdkd/issues/2280)).
 `cdkd diff --json` predates the mechanism and instead demotes the logger to
 `warn`, which suppresses rather than moves its info-level lines.
 
-Four further commands reserve stdout with no flag at all -- see
+**`cdkd list` is no longer in that list, because its reservation is no longer
+conditional**: since issue
+[#2410](https://github.com/go-to-k/cdkd/issues/2410) it reserves stdout in
+EVERY mode, `--json` or not, along with `cdkd synth`, `cdkd local invoke` and
+`cdkd local invoke-agentcore` -- see
 [Output streams: when stdout is a payload](#output-streams-when-stdout-is-a-payload).
 
 `--json` output shape:

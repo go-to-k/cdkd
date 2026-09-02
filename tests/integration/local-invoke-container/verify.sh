@@ -77,12 +77,17 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 
 # Test 4 — --no-build (closes #233): the previous tests already built the
 # image under the deterministic local tag, so a 4th invocation with
-# --no-build should skip the rebuild and reuse the cached tag. Since
-# issue go-to-k/cdkd#2410 cdkd's logger output on `local invoke` goes to
-# STDERR (stdout is reserved for the response payload), so we capture combined
-# stdout+stderr to inspect the build-vs-skip log lines, and rely on
-# the JSON response always being on the LAST stdout line for the
-# greeting check.
+# --no-build should skip the rebuild and reuse the cached tag. We capture
+# combined stdout+stderr to inspect the build-vs-skip log lines, and rely on
+# the JSON response always being on the LAST stdout line for the greeting
+# check. Note WHICH stream each of those is, because the two halves differ
+# since issue go-to-k/cdkd#2410: cdkd's OWN logger now writes to stderr
+# (stdout is reserved for the response payload), but the two lines grepped
+# below -- `Skipping docker build` / `Building container image` -- come from
+# CDK-LOCAL's logger via the `buildContainerImage` shim, which has its own
+# module state and no reservation, so they are still on STDOUT
+# (go-to-k/cdkd#2429). The combined capture is what makes this test
+# indifferent to that split.
 echo "==> [4/4] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
 COMBINED_4=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}"' EXIT

@@ -42,10 +42,14 @@ const colors = {
  *
  * OPT-IN, and deliberately not derived from a `--json` flag inside the
  * logger: nothing changes for a command that does not call
- * {@link reserveStdoutForPayload}. Every `--json` surface does (issue
- * [#2280](https://github.com/go-to-k/cdkd/issues/2280) added the remaining
- * six to `cdkd drift`'s original call: `cdkd list`, `cdkd events`, and the
- * four `cdkd state {list,resources,show,info}` subcommands).
+ * {@link reserveStdoutForPayload}. Every `--json` surface keeps its payload
+ * stream clean one way or the other, but NOT all by this mechanism: six call
+ * this (issue [#2280](https://github.com/go-to-k/cdkd/issues/2280) added them
+ * to `cdkd drift`'s original call — `cdkd list`, `cdkd events`, and the four
+ * `cdkd state {list,resources,show,info}` subcommands), while `cdkd diff`
+ * predates it and demotes the logger to `warn` instead, which SUPPRESSES its
+ * info-level lines rather than moving them. Do not read "every `--json`
+ * surface" as "every `--json` surface calls this".
  *
  * A `--json` flag is NOT what makes a stream a payload stream, though, and
  * issue [#2410](https://github.com/go-to-k/cdkd/issues/2410) is the four

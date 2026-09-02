@@ -199,7 +199,12 @@ describe('local invoke keeps stdout to the response payload (issue #2410)', () =
     mocks.removeContainer.mockResolvedValue(undefined);
     mocks.resolveHostGatewayExtraHosts.mockResolvedValue([]);
     mocks.waitForRieReady.mockResolvedValue(undefined);
-    mocks.invokeRie.mockResolvedValue({ raw: PAYLOAD, status: 200 });
+    // Shape matches the REAL `InvokeResult` (`src/local/rie-client.ts`):
+    // `{ payload, raw }`. An earlier cut returned `{ raw, status }` — `status`
+    // does not exist on that type and `payload` was missing, which is inert
+    // today (`local-invoke.ts` reads only `.raw`) but would let a future
+    // branch that reads `.payload` get `undefined` and pass silently.
+    mocks.invokeRie.mockResolvedValue({ payload: JSON.parse(PAYLOAD), raw: PAYLOAD });
   });
 
   afterEach(() => {

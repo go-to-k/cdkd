@@ -503,30 +503,41 @@ to `cdkd local start-service` / `cdkd local start-alb`.
 
 ### `local invoke` / `local invoke-agentcore` output streams
 
-**stdout carries the response payload and nothing cdkd prints.** Since issue
+**Everything cdkd's own logger prints goes to stderr.** Since issue
 [#2410](https://github.com/go-to-k/cdkd/issues/2410) both commands reserve
 stdout unconditionally, so every cdkd status line -- `Synthesizing CDK
-app...`, `Target: ...`, `Starting container ...`, layer / image resolution
-notices, `--verbose` debug output -- goes to **stderr**, the way
+app...`, `Target: ...`, `Starting container ...`, layer resolution notices,
+and cdkd's `--verbose` debug output -- goes to **stderr**, the way
 `sam local invoke` has always done it. The lines are moved, not suppressed:
 a terminal shows what it always did, and `2>&1` restores the old
 single-stream view.
 
+**But stdout is not yet payload-only, so pipe through `tail -1`.** Three
+things still reach it, none of them routed by cdkd's logger:
+
+1. **The container's own stdout**, piped through by `streamLogs`. The Lambda
+   runtime emulator puts `START` / `END` / `REPORT` *and* every handler log
+   line on the container's stdout -- `console.error` included, which is
+   measured rather than assumed -- so any handler that prints lands ahead of
+   the response ([#2419](https://github.com/go-to-k/cdkd/issues/2419)).
+2. **`docker pull` progress**, run in foreground mode (`stdio: 'inherit'`)
+   under `--verbose`, and **unconditionally** for an image pulled from ECR
+   (same issue).
+3. **cdk-local's own logger.** The container-image build path is reused from
+   cdk-local, which has a separate logger with no reservation concept, so
+   `Building container image (platform=...)` and `Skipping docker build ...`
+   print on stdout for a container-image Lambda
+   ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
+
 ```bash
-cdkd local invoke MyStack/Handler --event event.json | jq .body
-cdkd local invoke-agentcore MyStack/Agent > response.json 2> progress.log
+# Safe today: the response payload is always the LAST line on stdout.
+cdkd local invoke MyStack/Handler --event event.json | tail -1 | jq .body
+cdkd local invoke-agentcore MyStack/Agent 2> progress.log | tail -1
 ```
 
-**One thing on that stream is not cdkd's**: the container's own stdout is
-piped straight through, so the Lambda runtime emulator's `START` / `END` /
-`REPORT` lines and anything the handler prints still land on stdout ahead of
-the response. That is a raw child-process pipe the reservation cannot reach
-(issue [#2419](https://github.com/go-to-k/cdkd/issues/2419)); until it is
-fixed, take the LAST line for a handler that logs:
-
-```bash
-cdkd local invoke MyStack/Handler --no-pull | tail -1 | jq .
-```
+A ZIP-code Lambda whose handler prints nothing hits none of the three, so
+`cdkd local invoke MyStack/Handler | jq` does work there -- it is just not a
+guarantee cdkd can make yet for every target.
 
 `local start-api`, `local run-task` and `local start-service` are unaffected --
 their stdout is a human surface (route table, prefixed container logs), not a

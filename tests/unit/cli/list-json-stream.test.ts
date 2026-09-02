@@ -254,6 +254,29 @@ describe('list keeps stdout to the payload in every mode (issues #2280, #2410)',
   });
 
   /**
+   * Issue #2410, the THIRD structured mode: `--show-dependencies` without
+   * `--long`. It takes a different branch in `listCommand` from the `--long`
+   * case above (its own `emitStructured` call with `DependencyRecord`s), and
+   * it is one of the three modes this command's reservation comment and the
+   * docs table both name — so leaving it unfenced would let a future change
+   * re-gate the reservation on `options.long` with every other case green.
+   */
+  it('--show-dependencies WITHOUT --long leaves stdout a single YAML document', async () => {
+    mockSynthesize.mockImplementation(async () => {
+      getLogger().child('AppExecutor').info(CHATTER);
+      return { stacks: [makeStack({ stackName: 'MyStack' })] };
+    });
+
+    const { stdout, stderr, error } = await runList(['--show-dependencies']);
+
+    expect(error).toBeUndefined();
+    expect(parseYaml(stdout)).toEqual([{ id: 'MyStack', dependencies: [] }]);
+
+    expect(stderr).toContain(CHATTER);
+    expect(stdout).not.toContain(CHATTER);
+  });
+
+  /**
    * The OVER-TIGHTENING control, replacing #2280's "no `--json` ⇒ prose stays
    * on stdout" case (which #2410 deliberately made false). Two independent
    * things would red it:

@@ -62,6 +62,7 @@ import {
   emitResult,
   emitMcpResult,
   emitA2aResult,
+  emitWsResult,
 } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import {
   getLogger,
@@ -194,6 +195,35 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
 
     expect(error).toBeUndefined();
     expect(stdout).toBe(`${httpRaw}\n${mcpRaw}\n${a2aRaw}\n`);
+    expect(stderr).toBe('');
+  });
+
+  /**
+   * The FOURTH exported emitter, and the streamed shape generally. `--ws` and
+   * SSE write the body incrementally through chunk sinks and then call
+   * `emitWsResult` / `emitResult({ streamed: true })`, which write only the
+   * terminating newline. Both the suite header and `docs/cli-reference.md`
+   * state that streamed frames are stdout payload, so this is the case that
+   * makes that claim testable rather than asserted — without it, routing the
+   * chunk sinks to stderr reds nothing.
+   */
+  it('the streamed shapes write their frames and terminator to stdout', async () => {
+    const frame1 = '{"token":"lane2410-frame-1"}';
+    const frame2 = '{"token":"lane2410-frame-2"}';
+
+    const { stdout, stderr, error } = await capture(() => {
+      reserveStdoutForPayload();
+      // Models the `onChunk` / `onMessage` sinks, which are plain
+      // `process.stdout.write(text)` closures in the command.
+      process.stdout.write(frame1);
+      process.stdout.write(frame2);
+      emitWsResult({ frames: 2 } as Parameters<typeof emitWsResult>[0]);
+      emitResult({ raw: '', status: 200, streamed: true } as Parameters<typeof emitResult>[0]);
+    });
+
+    expect(error).toBeUndefined();
+    // Both frames, in order, plus one terminator newline per emitter.
+    expect(stdout).toBe(`${frame1}${frame2}\n\n`);
     expect(stderr).toBe('');
   });
 

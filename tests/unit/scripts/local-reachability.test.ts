@@ -171,7 +171,7 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
       );
       expect(source).not.toMatch(/^export (async )?function /m);
     }
-  });
+  }, ANALYZE_TIMEOUT_MS);
 
   it('does not resurrect a symbol through a TYPE-only import binding', () => {
     // The `refs` set holds NAMES, not resolved bindings, so a value-position
