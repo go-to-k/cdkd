@@ -316,7 +316,9 @@ describe('work-issues launch-mode probe', () => {
     // equality subsumes it.
     const PRESCRIBED = [
       "git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'",
-      '[ -z "$(git status --porcelain)" ] \\',
+      'DIRTY=$(git status --porcelain)',
+      "[ -z \"$DIRTY\" ] || echo 'dirty -> commit or stash first, then re-run this block'",
+      '[ -z "$DIRTY" ] \\',
       '&& git switch --no-guess <LAUNCH_BRANCH> \\',
       '&& git branch -D <each branch this run created>',
       'git branch --show-current',
@@ -550,10 +552,21 @@ describe('work-issues launch-mode probe', () => {
       // an injected `git -C "<LANE_TREE>" branch -D <LAUNCH_BRANCH>` there pass
       // green (measured). The set of files that MENTION the command is wider
       // than the set that DEFINES it, and it is the mention that misleads.
+      // A carve-out for prose that WARNS AGAINST the very command it names.
+      // Without it the scan forbids the skill from documenting its own hazard --
+      // "Never `git reset --hard` while `LAUNCH_BRANCH` is checked out" reads as
+      // a violation -- which is a fence that blocks the correct edit. Scoped to a
+      // NEGATION in the same sentence, the same shape the fast-forward polarity
+      // check uses, so it cannot be satisfied by an approving mention.
+      const FORBIDS = /\b(never|do not|don't|must not|cannot|no verb may|forbidden)\b/i;
       const hits = skillDocs()
-        .map((doc) => ({ doc, hit: MOVING.exec(read(doc))?.[0] }))
-        .filter((r) => r.hit)
-        .map((r) => `${r.doc}: ${r.hit}`);
+        .flatMap((doc) =>
+          read(doc)
+            .replace(/\s*\n\s*/g, ' ')
+            .split(/(?<=\.)\s+/)
+            .filter((sent) => MOVING.test(sent) && !FORBIDS.test(sent))
+            .map((sent) => `${doc}: ${MOVING.exec(sent)?.[0]}`)
+        );
       expect(
         hits,
         `A skill doc aims a branch-moving verb at LAUNCH_BRANCH. That branch is the outer ` +
