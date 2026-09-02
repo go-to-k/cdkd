@@ -1440,6 +1440,378 @@ gate_unquote() {
   printf '%s' "$p"
 }
 
+# gate_tokens <text>
+#
+# One shell token per line, with a QUOTED span kept WHOLE: `switch "my branch"`
+# yields two tokens, not three. Callers unquote with `gate_unquote` when they
+# want the bare value.
+#
+# It exists so a gate that must PARSE an argument list does not have to match
+# `GATE_EMBEDDING_TOKEN` itself. Matching it in a hook is the go-to-k/cdkd#2200
+# coupling: the hook reads a positional `${BASH_REMATCH[N]}` out of a pattern
+# built from a SHARED constant, so widening that constant shifts the index and
+# silently re-opens the gate. `unresolved-target-class.test.sh` fence 4 refuses
+# that shape by name; the sanctioned answer is to pass the pattern to a helper,
+# which is this. `gate_verb_rest` gives the same guarantee for the verb prefix.
+#
+# No `set -f` dance around the loop, unlike `gate_pr_selector`'s: that function
+# feeds its tokens to `set --`, which word-splits and globs. This one only ever
+# prints `"${BASH_REMATCH[1]}"`, and `[[ =~ ]]` does not glob, so a stray `*` in
+# the text has nothing to expand against.
+gate_tokens() {
+  local rest="$1"
+  while [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; do
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    rest="${BASH_REMATCH[4]}"
+    [ -n "$rest" ] || break
+  done
+  # TRUNCATION IS REPORTED, not swallowed. An UNBALANCED quote cannot be split
+  # into words at all: `"[^"]*"` needs its closing quote and the bare-run
+  # alternative excludes quote characters, so the pattern stops dead at the
+  # opening one. Measured before this line existed: `gate_tokens "a'unbalanced"`
+  # printed NOTHING and returned 0, and `gate_tokens "-b agent's-branch"`
+  # printed only `-b` -- so a caller parsing an option grammar saw a command
+  # with no arguments and allowed it. Silence is the one answer that is wrong
+  # here; a caller can now refuse, or fall back to a coarser scan, but it can no
+  # longer mistake a truncation for a short command line.
+  [ -z "${rest//[[:space:]]/}" ]
+}
+
+# gate_word_is_literal <word>
+#
+# 0 when this shell WORD provably reaches the command as exactly the text it
+# already carries; 1 when it does not, OR when this function cannot prove that
+# it does. It is the SHELL-side twin of `main-tree-branch-gate.sh`'s "AN
+# INCOMPLETE PARSE MAY NOT ALLOW": that gate refuses to relax a verdict on a GIT
+# OPTION it cannot resolve, and this refuses to hand it a WORD whose expansion
+# it cannot see.
+#
+# THE DEFAULT IS INVERTED, and that is the whole of this function. `gate_argv`
+# below used to ENUMERATE the words the shell owns -- a redirection, a trailing
+# `&`, a `#` comment -- and pass everything else through as an argument. Three
+# rounds of fixes each added another spelling to that list, and each time the
+# next round found the spelling still missing. Measured, in all three repos,
+# with a branch that exists locally and the payload cwd set to the main tree:
+#
+#   git checkout <branch> $EMPTY            rc=0, want 2   HEAD MOVED
+#   git checkout <branch> ${EMPTY}          rc=0, want 2   HEAD MOVED
+#   git checkout <branch> {fd}>/dev/null    rc=0, want 2   HEAD MOVED
+#   git checkout <branch> {fd}<f.txt        rc=0, want 2   HEAD MOVED
+#
+# An empty expansion VANISHES, so the gate counted a positional git never
+# receives; bash's fd-variable redirection is a word git never receives at all.
+# Both turned `git checkout <branch> <word>` into a two-positional FILE RESTORE
+# and PASSED a command that really moves HEAD.
+#
+# So the question here is not "is this word one of the shell forms I know?" but
+# "is every character in it one I can prove the shell leaves alone?".
+#
+# HOW A SHAPE NOBODY HAS THOUGHT OF LANDS ON REFUSE. Every shell construct is
+# SPELLED, and spelled with characters. `GATE_INERT_CHARS` is a CLOSED list of
+# characters that trigger no shell processing at all, so a construct built from
+# anything else -- a syntax added to a future bash, one this file's author never
+# met, one nobody has written down -- necessarily contains a character outside
+# that list, and is refused without anyone having had to think of it. The only
+# way a new construct could pass is by being spelled ENTIRELY in inert
+# characters, which is a contradiction in terms: an inert character is one the
+# shell does not act on. The list, not the construct catalogue, is therefore the
+# thing to audit, and every member carries the reason it is inert.
+#
+# THE INERT SET, one character at a time. `A-Z a-z 0-9` need no argument.
+#
+#   _ - . / :   no shell meaning in any position. A leading `-` only makes the
+#               word look like a flag, which is git's business, not the shell's.
+#   @ +         special only as the extglob prefixes `@(...)` / `+(...)`, which
+#               need `(`, and `(` is NOT inert.
+#   ^           special only inside a `[^...]` bracket expression, which needs
+#               `[`, and `[` is NOT inert. (History's `^old^new` is line-initial
+#               and interactive-only.) `HEAD^` needs it.
+#   %           special only as a JOB SPEC, and only as an argument to `jobs` /
+#               `kill` / `fg` / `bg` -- never to `git`.
+#   ,           special only inside a brace expansion, which needs `{`, and `{`
+#               is NOT inert.
+#   =           an assignment only in the COMMAND-word position, and every word
+#               asked about here is an argument, past the verb. It must be here:
+#               `--create=feat` is an ordinary long option.
+#   #           a comment only as the FIRST character of a word, which is
+#               rejected explicitly below. `has#hash` is a legal branch name and
+#               the shell passes it through untouched.
+#
+# WHAT IS DELIBERATELY OUT, so the cost is visible rather than guessed. `$` and
+# a backtick (an expansion this cannot see). `\` (an escape). `*` `?` `[` `]`
+# (pathname expansion -- and under `nullglob` a non-matching pattern expands to
+# NO words, the vanishing case again). `{` `}` (brace expansion, and the
+# fd-variable redirection prefix `{fd}>`). `~` (tilde expansion). `!` (history
+# expansion: off in a non-interactive shell, but this cannot see which shell it
+# is). Every shell METACHARACTER -- `| & ; ( ) < >` and whitespace -- which the
+# segmenter and tokenizer normally consume, so one arriving here is by
+# definition unaccounted for. Two exclusions are strictly OVER-strict: `a~b` and
+# `feat!` are literal to bash and this refuses them anyway. Over-strict means
+# BLOCK, which is the direction this gate exists to fail in.
+#
+# QUOTING IS TRACKED, because it is what makes the punctuation above reachable.
+# A word may EMBED quoted spans rather than BE one (see GATE_EMBEDDING_TOKEN),
+# so the walk carries a quote state:
+#   - inside a SINGLE-quoted span every character is literal, so nothing is
+#     refused there;
+#   - inside a DOUBLE-quoted span only `$`, a backtick and `\` stay active, so
+#     only those three are refused;
+#   - outside quotes the inert list decides.
+# That is what keeps `git checkout -b 'feat$x'` an ordinary branch creation --
+# a literal `$` in a branch name still behaves -- while an unquoted `$EMPTY` is
+# refused.
+#
+# A word whose quote is still open at the end is refused too: it cannot be split
+# into shell words at all, which is the same thing `gate_tokens` reports.
+#
+# WHAT THIS DOES NOT DECIDE: whether the word is an ARGUMENT. A redirection is
+# spelled with `>` and would be refused here, yet it is perfectly accounted for
+# -- `gate_argv` recognises it and drops it BEFORE asking this. Recognising a
+# shell construct positively and proving a word literal are two different jobs,
+# and only the second one has to fail closed.
+GATE_INERT_CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-./:@+%,^=#'
+# The same set as a GLOB CLASS, so a whole SPAN is decided in one operation
+# rather than one character at a time. That is not a micro-optimisation: a hook
+# runs on EVERY Bash tool call, and a per-character walk here is quadratic,
+# because `${s:i:1}` in a UTF-8 locale walks to offset `i` every time. Measured
+# on this machine (bash 5.3.9, en_US.UTF-8), an index-only loop over a string:
+# 1 000 chars 0.010 s, 4 000 chars 0.043 s, 16 000 chars 0.478 s -- 16x the
+# input for 48x the time. The chunked form below is 0.032 s at 16 000.
+#
+# `-` is LAST and `^` is not first, which is what keeps both LITERAL inside a
+# bracket expression; `!` negates.
+GATE_NOT_INERT_GLOB='*[!A-Za-z0-9_./:@+%,^=#-]*'
+# Active inside a DOUBLE-quoted span: an expansion, a command substitution, an
+# escape. Written with `$'...'` so the backslash and the backtick survive.
+GATE_DQ_ACTIVE_GLOB=$'*[\\\\$\140]*'
+GATE_QUOTE_CLASS=$'["\047]'
+GATE_SQ=$'\047'
+# The characters that end a scanning chunk. `$'[\\\\"\047#]'` yields `[\\"'#]`,
+# and that doubling is load-bearing: `[\"'#]` does NOT contain a backslash --
+# there the backslash escapes the quote and the class silently loses it.
+# Verified in BOTH bash 3.2.57 and 5.3.9 against `ab\cd`, `ab"cd`, `ab'cd`,
+# `abc#d` and `abcd`.
+GATE_CHUNK_STOP=$'[\\\\"\047#]'
+GATE_CHUNK_STOP_DQ=$'[\\\\"]'
+
+gate_word_is_literal() {
+  local w="$1" rest="$1" chunk q=""
+  [ -n "$w" ] || return 1
+  # A word STARTING with `#` opens a comment: the shell discards it and every
+  # word after it, so it reaches the command as nothing at all.
+  case "$w" in '#'*) return 1 ;; esac
+  # The walk advances by SPANS, not characters: everything up to the next quote
+  # character is tested with one glob, so the number of iterations is the number
+  # of quote characters in the word rather than its length.
+  while [ -n "$rest" ]; do
+    if [ -z "$q" ]; then
+      chunk="${rest%%$GATE_QUOTE_CLASS*}"
+      case "$chunk" in $GATE_NOT_INERT_GLOB) return 1 ;; esac
+      [ "$chunk" = "$rest" ] && break
+      rest="${rest#"$chunk"}"
+      q="${rest%"${rest#?}"}"
+      rest="${rest#?}"
+    elif [ "$q" = "$GATE_SQ" ]; then
+      # Inside a SINGLE-quoted span every character is literal, so there is
+      # nothing to test -- only the closer to find.
+      chunk="${rest%%$GATE_SQ*}"
+      [ "$chunk" = "$rest" ] && break
+      rest="${rest#"$chunk"}"
+      rest="${rest#?}"
+      q=""
+    else
+      chunk="${rest%%\"*}"
+      case "$chunk" in $GATE_DQ_ACTIVE_GLOB) return 1 ;; esac
+      [ "$chunk" = "$rest" ] && break
+      rest="${rest#"$chunk"}"
+      rest="${rest#?}"
+      q=""
+    fi
+  done
+  # A quote still open means the word cannot be split into shell words at all.
+  [ -z "$q" ]
+}
+
+# gate_strip_comment <text>
+#
+# <text> truncated at the first `#` that opens a shell COMMENT -- one at a WORD
+# START (the beginning of the text, or after a space or tab) and outside any
+# quoted span. Prints the text unchanged when there is none.
+#
+# WHY IT RUNS BEFORE THE SPLIT, which is the bug it fixes. `gate_argv` used to
+# ask `gate_tokens` to split the WHOLE text and refuse on an unbalanced quote,
+# then drop the comment inside the walk. An apostrophe INSIDE the comment is
+# therefore weighed as a quote, so
+#
+#   git checkout main # don't switch lanes
+#
+# came back as a truncation and the gate blocked it -- measured rc=2 against a
+# command that leaves HEAD exactly where it was ("Already on 'main'"). The
+# comment justifying that order claimed "the text is a shell syntax error in the
+# first place, so nothing legitimate is lost". That claim is FALSE and is not
+# repeated: `bash -n "git checkout main # don't switch lanes"` reports VALID
+# syntax, because the apostrophe is inside a comment and bash never sees it as a
+# quote either. Cutting the comment first makes this file agree with the shell.
+#
+# The unbalanced-quote refusal it is often confused with survives untouched:
+# `-b agent's-branch` has no comment to cut, so the text reaches `gate_tokens`
+# whole and is still refused.
+#
+# THE SECOND PASS is `gate_segments_raw`'s `ignore_q` trick, for the same reason
+# and with the same shape. If the first walk reaches the end with a quote still
+# open, that character may not have been a quote at all, so the walk is redone
+# with it literal and a comment is looked for again. `'unbalanced # x` then cuts
+# to `'unbalanced `, which `gate_tokens` still refuses -- correctly: bash calls
+# that one "unexpected EOF while looking for matching `''".
+GATE_COMMENT_CUT=""
+GATE_COMMENT_OPENQ=""
+_gate_comment_cut() {
+  local s="$1" iq="$2" rest="$1" pos=0 chunk c q="" prev=" "
+  GATE_COMMENT_CUT="$s"
+  GATE_COMMENT_OPENQ=""
+  # A text with NO `#` anywhere can carry no comment, and that is the shape
+  # essentially every command has. Returning here keeps the walk below off the
+  # hot path entirely -- measured, 16 000 characters go from 0.92 s to 0.002 s.
+  case "$s" in *'#'*) ;; *) return 0 ;; esac
+  # SPANS, not characters, for the reason recorded on GATE_NOT_INERT_GLOB above:
+  # a per-character walk is quadratic here. Each iteration jumps to the next
+  # quote / backslash / `#`, so the iteration count is the number of those
+  # characters rather than the length of the text. Only the CUT OFFSET is
+  # tracked; the text is sliced once, at the end.
+  while [ -n "$rest" ]; do
+    if [ -z "$q" ]; then
+      chunk="${rest%%$GATE_CHUNK_STOP*}"
+    elif [ "$q" = "$GATE_SQ" ]; then
+      chunk="${rest%%$GATE_SQ*}"
+    else
+      chunk="${rest%%$GATE_CHUNK_STOP_DQ*}"
+    fi
+    [ "$chunk" = "$rest" ] && break
+    if [ -n "$chunk" ]; then
+      prev="${chunk#"${chunk%?}"}"
+      pos=$((pos + ${#chunk}))
+      rest="${rest#"$chunk"}"
+    fi
+    c="${rest%"${rest#?}"}"
+    if [ -z "$q" ]; then
+      case "$c" in
+        # An escaped character outside quotes is LITERAL, `\#` included. The
+        # slice is `${rest:2}` rather than `${rest#??}`: with ONE character left
+        # the `##` form matches nothing, leaves `rest` unchanged, and the loop
+        # never terminates.
+        '\') pos=$((pos + 2)); rest="${rest:2}"; prev=x; continue ;;
+        '#') case "$prev" in
+               ' '|'	') GATE_COMMENT_CUT="${s:0:pos}"; return 0 ;;
+             esac ;;
+        '"') [ "$c" = "$iq" ] || q="$c" ;;
+        *) [ "$c" = "$GATE_SQ" ] && { [ "$c" = "$iq" ] || q="$c"; } ;;
+      esac
+    else
+      if [ "$c" = '\' ] && [ "$q" = '"' ]; then
+        pos=$((pos + 2)); rest="${rest:2}"; prev=x; continue
+      fi
+      [ "$c" = "$q" ] && q=""
+    fi
+    prev="$c"
+    pos=$((pos + 1))
+    rest="${rest#?}"
+  done
+  GATE_COMMENT_CUT="$s"
+  GATE_COMMENT_OPENQ="$q"
+  [ -z "$q" ]
+}
+
+gate_strip_comment() {
+  if _gate_comment_cut "$1" ""; then
+    printf '%s' "$GATE_COMMENT_CUT"
+    return 0
+  fi
+  _gate_comment_cut "$1" "$GATE_COMMENT_OPENQ"
+  printf '%s' "$GATE_COMMENT_CUT"
+  return 0
+}
+
+# gate_argv <text>
+#
+# The ARGV a shell would hand the command, one token per line: the SHELL's own
+# words are dropped -- a comment and everything after it, a redirection and,
+# when it is not glued, its target. Returns 1 having printed nothing when the
+# text cannot be split into words at all (the `gate_tokens` truncation), so a
+# caller can refuse rather than parse a fragment.
+#
+# WHY THIS IS A SEPARATE FUNCTION FROM `gate_tokens`, and why an option parse
+# must call THIS one. A gate that reads an option grammar is reading ARGV -- the
+# vector the command itself receives -- and a shell WORD is not an ARGUMENT.
+# `2>/dev/null`, `>`, `/dev/null` and `# switch lane` are all words, and git
+# never sees any of them. Measured against the gate that first parsed
+# `gate_tokens` output directly, with a branch that existed locally:
+#
+#   git checkout <branch> 2>/dev/null      rc=0, want 2
+#   git checkout <branch> >/dev/null 2>&1  rc=0, want 2
+#   git checkout <branch> # switch lane    rc=0, want 2
+#
+# -- every one a command that really moves HEAD, waved through because the extra
+# WORDS were counted as extra ARGUMENTS and the command therefore read as a file
+# restore. Callers that genuinely want the shell's words (a `-C` scan, a heredoc
+# probe) keep `gate_tokens`; callers that want git's argv use this.
+#
+# WHAT IT DOES NOT PROMISE, stated because an earlier revision's silence here is
+# the defect round 4 fixed: a line printed by this function is a shell WORD that
+# is not a redirection and not a comment. It is NOT a promise that the word
+# reaches the command as the text printed. `$EMPTY` is printed and reaches the
+# command as NOTHING; `{fd}>/dev/null` is printed and reaches it as nothing
+# either. A caller that COUNTS these words, or compares one against a name, must
+# put every word through `gate_word_is_literal` and refuse to relax its verdict
+# on a word that fails -- which is exactly what `main-tree-branch-gate.sh` does
+# with `parse_certain`. Enumerating more shell forms HERE is the losing move; it
+# was tried three times.
+#
+# The comment strip is deliberately NOT in `gate_segments`: that splitter feeds
+# every gate in this library, and widening it is a change to all of them. Here
+# the effect is bounded to callers that asked for argv.
+GATE_REDIR_TOKEN='^([0-9]*(>>|>[|]|>&|>|<<<|<<-|<<|<&|<)|&>>|&>)(.*)$'
+
+gate_argv() {
+  local words tok want_target=0 text
+  # The comment goes FIRST, before the split, so an apostrophe inside one is
+  # never weighed as a quote (see `gate_strip_comment`). That also makes the
+  # in-loop `'#'*` arm this function used to carry unreachable, so it is gone
+  # rather than left as a second spelling of the same rule.
+  text=$(gate_strip_comment "$1")
+  words=$(gate_tokens "$text") || return 1
+  while IFS= read -r tok; do
+    # `gate_tokens` never emits an empty token (its pattern needs one character
+    # at least), so the single blank line a `printf` of empty output produces is
+    # the only thing this skips.
+    [ -n "$tok" ] || continue
+    if [ "$want_target" -eq 1 ]; then
+      # The spaced target of the redirection operator just seen (`> /dev/null`).
+      # It is dropped WITHOUT asking `gate_word_is_literal`, deliberately: a
+      # redirection target is never an argument whatever it expands to. An empty
+      # expansion there makes bash refuse the command outright ("ambiguous
+      # redirect"), and a multi-word one is the same error -- neither can put a
+      # word into argv.
+      want_target=0
+      continue
+    fi
+    # A bare `&`. On the GATE's path this is dead -- `gate_segments_raw` has
+    # already split on it -- and it is kept because a DIRECT caller (this
+    # library's own suite, a future gate parsing a raw fragment) still meets it.
+    # Labelled rather than removed so the next reader does not re-derive that.
+    [ "$tok" = '&' ] && continue
+    if [[ "$tok" =~ $GATE_REDIR_TOKEN ]]; then
+      # `2>&1` and `>/dev/null` carry their target GLUED; a bare `>` or `2>`
+      # takes the next word as its target.
+      [ -n "${BASH_REMATCH[3]}" ] || want_target=1
+      continue
+    fi
+    printf '%s\n' "$tok"
+  done <<EOF
+$words
+EOF
+  return 0
+}
+
 # gate_expand_tilde <token>
 # A `~` reaches a hook as a literal character: it reads the command TEXT, and no
 # shell has expanded anything. Expand a LEADING `~/` only, which is the one form
