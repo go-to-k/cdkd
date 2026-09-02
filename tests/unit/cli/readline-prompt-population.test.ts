@@ -20,7 +20,7 @@ import { dirname, join, relative, sep } from 'node:path';
  *
  * WHAT THIS DOES NOT PROVE: that a listed site is correctly guarded. The
  * per-site behaviour is fenced in
- * `tests/unit/cli/non-interactive-confirm-guards.test.ts` (the nine folded
+ * `tests/unit/cli/non-interactive-confirm-guards.test.ts` (the TEN folded
  * sites), `destroy-runner-sigint.test.ts` + `state-destroy.test.ts` (the two
  * that keep their own inline guard), and each guarded command's own suite.
  * This file only fences the POPULATION.
@@ -28,9 +28,18 @@ import { dirname, join, relative, sep } from 'node:path';
  * CALIBRATION, measured 2026-09-03 against the pre-fix tree (`origin/main`
  * @ 4f34f8c1) with the same regex: **19 sites across 17 files** — exactly the
  * 19 `createInterface` calls a `grep -rn createInterface src/` finds there,
- * including all nine unguarded ones the issue enumerates. After the fold:
- * **11 sites across 10 files**, i.e. the nine removed and one added
- * (`confirm-prompt.ts` grew its second export).
+ * including all nine unguarded ones the issue enumerates. After issue #2275's
+ * fold: **11 sites across 10 files**, i.e. the nine removed and one added
+ * (`confirm-prompt.ts` grew its second export). Issue
+ * [#2454](https://github.com/go-to-k/cdkd/issues/2454) then folded a TENTH —
+ * `events.ts`'s prune confirmation, which was guarded at its CALLER rather
+ * than in the helper and so refused with exit 0 — leaving **10 sites across 9
+ * files**, the count this file asserts.
+ *
+ * That count is asserted rather than described for the reason the #2454 fold
+ * demonstrated on this very comment: closing a member falsifies the sentence
+ * that COUNTS the set, and the sentence lives outside the diff that removed
+ * the member. The assertion below fails; a stale paragraph does not.
  *
  * The pattern is a CALL-shaped needle with a COMMENT-LINE exclusion rather
  * than a comment STRIPPER — a stripper being the fragile part of every
@@ -145,12 +154,6 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
     sites: 1,
     why: 'Pre-existing guarded prompt (`process.stdin.isTTY`, throws LocalMigrateError).',
   },
-  'src/cli/commands/events.ts': {
-    sites: 1,
-    why:
-      'Guarded by its SOLE caller, which tests `process.stdin.isTTY` before ' +
-      'calling it (`events.ts` prune confirmation).',
-  },
   'src/cli/commands/local-invoke-agentcore.ts': {
     sites: 1,
     why:
@@ -221,8 +224,8 @@ describe('readline interface population (issue #2275)', () => {
     // deleting rows from the table would keep a derived comparison green.
     // 11 = the post-fold measurement in the file header.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(11);
-    expect(Object.keys(EXPECTED)).toHaveLength(10);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(10);
+    expect(Object.keys(EXPECTED)).toHaveLength(9);
   });
 
   it('none of the seven fully-folded files constructs an interface any more', () => {

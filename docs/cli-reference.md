@@ -3369,6 +3369,7 @@ were the rest of the class:
 | `cdkd drift --accept` / `--revert` | `Update cdkd state...?` / `Push cdkd state values back into AWS...?` | `-y` / `--yes` |
 | `cdkd import --migrate-from-cloudformation`, `cdkd migrate --retire-cfn-stack` | `Set DeletionPolicy=Retain ... then delete the stack?` | `-y` / `--yes` |
 | `cdkd state migrate` | `Copy N object(s) from <bucket> -> <bucket>...?` | `-y` / `--yes` |
+| `cdkd events prune` (the tenth, issue [#2454](https://github.com/go-to-k/cdkd/issues/2454)) | `Prune deployment-event history for <stack> (<region>): <scope>?` | `-y` / `--yes` |
 
 On a non-TTY stdin each now refuses **before** creating the prompt, throwing
 `CdkdError` with the code `NON_INTERACTIVE_CONFIRM` and exiting **1**. The
@@ -3417,21 +3418,27 @@ the `cdkd deploy` treatment. `cdkd deploy`'s asset-storage auto-create prompt
 remains the one deliberate exception (it assumes "yes" on a non-TTY), because a
 deploy is recoverable.
 
-All nine now share ONE implementation — `confirmOrRefuse` in
-`src/cli/commands/confirm-prompt.ts` — so the guard cannot be missed by the
-next prompt added. Each site keeps its own prompt wording and its own refusal
+All TEN now share ONE implementation — `confirmOrRefuse` in
+`src/cli/commands/confirm-prompt.ts` — nine folded here and `cdkd events
+prune` folded by issue
+[#2454](https://github.com/go-to-k/cdkd/issues/2454) below, so the guard
+cannot be missed by the next prompt added. Each site keeps its own prompt wording and its own refusal
 message; nothing about the interactive experience changed, including the two
 prompts that render `(y/N): ` where the other seven render ` [y/N] `.
 
-**One mutating prompt sits outside that contract, and it is the tenth:
-`cdkd events prune`.** It has carried a non-TTY guard since it shipped, so it
-never hangs and it prunes nothing without a TTY — but it refuses by logging a
-line and returning, which exits **0**. It does not throw, so it produces no
-`NON_INTERACTIVE_CONFIRM` code and no exit 1. **A CI job that branches on exit
-1 to detect "cdkd wanted a confirmation" will not see this one**: check the
-command's output, or pass `--yes` and let the prune run. Aligning it with the
-other nine is a breaking exit-code change on its own, tracked as issue
-[#2454](https://github.com/go-to-k/cdkd/issues/2454).
+**`cdkd events prune` was the tenth, and it now follows the same contract**
+(issue [#2454](https://github.com/go-to-k/cdkd/issues/2454)). It had carried a
+non-TTY guard since it shipped, so it never hung and it pruned nothing without
+a TTY — but the guard sat at its CALLER rather than in a helper, and it refused
+by logging a line and returning, which exits **0**. A CI job branching on exit
+1 to detect "cdkd wanted a confirmation" could not see it, and could not tell
+"cdkd refused" from "cdkd pruned nothing". It now throws
+`NON_INTERACTIVE_CONFIRM` and exits 1 like the other nine, and its own copy of
+the byte-identical helper — the last one — is gone.
+
+**BREAKING for `cdkd events prune` specifically**: a non-interactive run
+without `--yes` used to exit 0 and is now exit 1. Nothing was pruned in either
+case, so the remedy is the same as for the other nine — pass `-y` / `--yes`.
 
 ## `--purge-events`: also delete deployment-event history on destroy
 

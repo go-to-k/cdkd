@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { CdkdError } from '../../../../src/utils/error-handler.js';
+import { setStdinIsTty } from '../../../stdin-tty.js';
 
 // --- Module mocks (declared before importing the command under test) ---
 
@@ -242,17 +244,23 @@ describe('cdkd events prune command', () => {
   });
 
   it('refuses to prune without --yes on a non-interactive terminal (no hang)', async () => {
+    // Issue #2454 changed the SHAPE of this refusal, not whether it refuses.
+    // It used to log a line and RETURN, i.e. exit 0 — so a CI job could not
+    // tell "cdkd refused" from "cdkd pruned nothing". It now throws the same
+    // `NON_INTERACTIVE_CONFIRM` the nine prompts of issue #2275 throw, which
+    // `withErrorHandling` renders as exit 1. This case is the one that pinned
+    // the old contract, so it is the one that has to state the new one.
     seedJsonlRuns('us-east-1', [id(0), id(1)]);
-    const prev = process.stdin.isTTY;
-    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
-    try {
-      await eventsPruneCommand('MyStack', { keep: 1 }); // no yes, non-TTY
-    } finally {
-      Object.defineProperty(process.stdin, 'isTTY', { value: prev, configurable: true });
-    }
-    // Nothing deleted; clear hint emitted.
+    setStdinIsTty(false);
+    const err = await eventsPruneCommand('MyStack', { keep: 1 }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(CdkdError);
+    expect((err as CdkdError).code).toBe('NON_INTERACTIVE_CONFIRM');
+    expect((err as Error).message).toContain('cdkd events prune');
+    expect((err as Error).message).toContain('-y / --yes');
+    // The refusal still deletes nothing — the half that did NOT change.
     expect(objects.has(`cdkd/MyStack/us-east-1/deployments/${id(0)}.jsonl`)).toBe(true);
-    expect(logLines.join('\n')).toMatch(/Refusing to prune.*Re-run with --yes/s);
+    expect(objects.has(`cdkd/MyStack/us-east-1/deployments/${id(1)}.jsonl`)).toBe(true);
   });
 
   it('--all on an index-only store removes the index and reports it accurately', async () => {

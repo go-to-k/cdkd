@@ -1,4 +1,3 @@
-import * as readline from 'node:readline/promises';
 import { Command, Option } from 'commander';
 import {
   commonOptions,
@@ -9,6 +8,7 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
+import { confirmOrRefuse } from './confirm-prompt.js';
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -262,19 +262,14 @@ export async function eventsPruneCommand(
             : `runs beyond the newest ${DEPLOYMENT_EVENTS_MAX_INDEX_RUNS}`;
 
     if (options.yes !== true) {
-      // On a non-interactive stdin (CI, piped) the readline prompt cannot be
-      // answered and could hang or mis-default — mirror `cdkd destroy` and
-      // refuse rather than prompt, pointing the user at --yes. Nothing is
-      // deleted in this path.
-      if (!process.stdin.isTTY) {
-        logger.info(
-          gray(
-            `Refusing to prune deployment-event history for ${stackName} (${targetRegion}) ` +
-              `without confirmation on a non-interactive terminal. Re-run with --yes to proceed.`
-          )
-        );
-        return;
-      }
+      // Issue #2454: this used to guard the prompt HERE, with its own `isTTY`
+      // check that logged a refusal and RETURNED — so a non-interactive run
+      // exited 0, and a CI job could not tell "cdkd refused" from "cdkd pruned
+      // nothing". It now goes through the same `confirmOrRefuse` as the nine
+      // prompts issue #2275 folded, which throws `NON_INTERACTIVE_CONFIRM` and
+      // exits 1. That also removes the TENTH copy of the byte-identical
+      // helper this file still carried — the duplication that let #2259's fix
+      // miss nine sites in the first place.
       const ok = await confirmPrompt(
         `Prune deployment-event history for ${cyan(stackName)} ${gray(`(${targetRegion})`)}: ${scope}?`
       );
@@ -312,15 +307,21 @@ export async function eventsPruneCommand(
   }
 }
 
-/** Minimal `(y/N)` confirmation prompt. */
-async function confirmPrompt(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = await rl.question(`${prompt} [y/N] `);
-    return /^y(es)?$/i.test(ans.trim());
-  } finally {
-    rl.close();
-  }
+/**
+ * Minimal `(y/N)` prune confirmation, delegating to the shared guarded helper.
+ *
+ * Exported for unit testing, matching the nine siblings issue #2275 folded —
+ * `tests/unit/cli/non-interactive-confirm-guards.test.ts` drives each command's
+ * wrapper directly, which is how the refusal wording and the never-settling
+ * hang fence are checked per site.
+ */
+export async function confirmPrompt(prompt: string): Promise<boolean> {
+  return confirmOrRefuse(prompt, {
+    refusal:
+      'The cdkd events prune confirmation prompt cannot run in a non-interactive ' +
+      'environment. Pass -y / --yes to confirm the prune, or run the command from a ' +
+      'real terminal. Nothing has been deleted.',
+  });
 }
 
 /** Human-readable run listing (newest first). */

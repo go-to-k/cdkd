@@ -67,6 +67,7 @@ import { confirmPrompt as exportConfirm } from '../../../src/cli/commands/export
 import { confirmPrompt as driftConfirm } from '../../../src/cli/commands/drift.js';
 import { confirmPrompt as retireConfirm } from '../../../src/cli/commands/retire-cfn-stack.js';
 import { confirmPrompt as stateMigrateConfirm } from '../../../src/cli/commands/state-migrate.js';
+import { confirmPrompt as eventsPruneConfirm } from '../../../src/cli/commands/events.js';
 
 /** The `HumanTextSink` shape `drift.ts`'s prompt takes. */
 const DRIFT_SINK = { write: (): void => {}, stream: process.stderr };
@@ -154,6 +155,18 @@ const SITES: readonly Site[] = [
     rendered: 'Proceed? [y/N] ',
     names: ['cdkd state migrate', '-y / --yes'],
   },
+  // The TENTH, folded by issue #2454 rather than #2275. It was already
+  // guarded — at its CALLER, not in a helper — so it never hung; what it did
+  // was refuse with `logger.info` and RETURN, i.e. exit 0, leaving a CI job
+  // unable to tell "cdkd refused" from "cdkd pruned nothing". Folding it here
+  // gives it the same exit-1 contract as the nine and removes the last copy
+  // of the byte-identical helper.
+  {
+    command: 'cdkd events prune',
+    call: eventsPruneConfirm,
+    rendered: 'Proceed? [y/N] ',
+    names: ['cdkd events prune', '-y / --yes', 'Nothing has been deleted'],
+  },
 ];
 
 let originalIsTTY: boolean | undefined;
@@ -172,8 +185,8 @@ describe('every mutating confirmation prompt refuses a non-interactive stdin (is
     // A floor written as a LITERAL, so a row silently dropped from `SITES`
     // reds this rather than shrinking both sides of a derived comparison
     // together. Nine sites, eight modules: `state.ts` holds two.
-    expect(SITES).toHaveLength(9);
-    expect(new Set(SITES.map((s) => s.command)).size).toBe(9);
+    expect(SITES).toHaveLength(10);
+    expect(new Set(SITES.map((s) => s.command)).size).toBe(10);
   });
 
   it.each(SITES.map((s) => [s.command, s] as const))(
