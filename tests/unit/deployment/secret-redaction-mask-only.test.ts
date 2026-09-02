@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   SECRET_MASK,
   carriesSecretMask,
-  hasMaskOnlyValues,
   maskSecretsInText,
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
@@ -39,7 +38,7 @@ describe('mask-only redaction channel (issue #2274)', () => {
       recordMaskOnlyValue(secrets, '');
 
       expect(secrets.size).toBe(0);
-      expect(hasMaskOnlyValues(secrets)).toBe(false);
+      expect(secrets.get(NOECHO)).toBeUndefined();
       expect(redactSecretsForState({ Value: '' }, secrets)).toEqual({ Value: '' });
     });
 
@@ -51,7 +50,6 @@ describe('mask-only redaction channel (issue #2274)', () => {
       recordMaskOnlyValue(secrets, DYNREF_PLAINTEXT);
 
       expect(secrets.get(DYNREF_PLAINTEXT)).toBe(DYNREF_EXPR);
-      expect(hasMaskOnlyValues(secrets)).toBe(false);
       expect(redactSecretsForState({ Value: DYNREF_PLAINTEXT }, secrets)).toEqual({
         Value: DYNREF_EXPR,
       });
@@ -63,10 +61,9 @@ describe('mask-only redaction channel (issue #2274)', () => {
       // expression earns the substring arm back on the next walk.
       const secrets: RecordedSecretValues = new Map();
       recordMaskOnlyValue(secrets, DYNREF_PLAINTEXT);
-      expect(hasMaskOnlyValues(secrets)).toBe(true);
+      expect(secrets.get(DYNREF_PLAINTEXT)).toBe(SECRET_MASK);
 
       secrets.set(DYNREF_PLAINTEXT, DYNREF_EXPR);
-      expect(hasMaskOnlyValues(secrets)).toBe(false);
       // ...and the substring arm is handed back: the plaintext embedded in a
       // longer leaf is rewritten onto its expression again.
       expect(redactSecretsForState({ Url: `https://${DYNREF_PLAINTEXT}/x` }, secrets)).toEqual({

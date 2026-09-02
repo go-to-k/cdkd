@@ -296,14 +296,6 @@ export function carriesSecretMask(value: unknown): boolean {
   return walk(value, 0);
 }
 
-/** Does `secrets` carry any MASK-ONLY entry? Cheap enough to call per walk. */
-export function hasMaskOnlyValues(secrets: RecordedSecretValues): boolean {
-  for (const expression of secrets.values()) {
-    if (expression === SECRET_MASK) return true;
-  }
-  return false;
-}
-
 /**
  * The plaintexts the PERSIST path may scan for as SUBSTRINGS — every recorded
  * one except the mask-only class. See the mask-only channel note above for why the

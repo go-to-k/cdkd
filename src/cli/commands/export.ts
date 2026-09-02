@@ -69,6 +69,7 @@ import {
   stringifyCfnTemplate,
   type TemplateFormat,
 } from '../yaml-cfn.js';
+import { carriesSecretMask } from '../../deployment/secret-redaction.js';
 
 interface ExportOptions {
   app?: string;
@@ -3875,6 +3876,28 @@ export async function buildImportPlan(
         logicalId,
         resourceType,
         reason: 'no entry in cdkd state (resource is in template but was not deployed by cdkd)',
+      });
+      continue;
+    }
+
+    // Issue #2274: a record whose properties hold the REDACTION MASK cannot be
+    // handed to CloudFormation. `***` is what cdkd persists where a `NoEcho`
+    // custom resource's `Data` was resolved into a property, and there is
+    // nothing to re-derive the real value from — so the exported template would
+    // declare the literal mask, which CFn would either refuse at IMPORT (the
+    // template must describe the live resource) or WRITE onto it at the next
+    // update. Blocked per resource, like every other unexportable shape here,
+    // so the rest of the stack still reports.
+    if (carriesSecretMask(stateEntry.properties)) {
+      blocked.push({
+        logicalId,
+        resourceType,
+        reason:
+          "cdkd state holds only the redaction mask ('***') for at least one property — a " +
+          'NoEcho custom-resource value cdkd cannot re-derive. Re-deploy with the custom ' +
+          'resource forced to update (change one of its properties) so its handler supplies ' +
+          'the value, or stop setting NoEcho on that response, then export again. ' +
+          'See https://github.com/go-to-k/cdkd/issues/2274.',
       });
       continue;
     }

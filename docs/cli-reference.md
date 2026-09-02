@@ -4194,7 +4194,12 @@ cdkd export                                       # auto-detect single-stack app
    `(logicalId, physicalId, resourceType)` map.
 3. Refuse if a CFn stack with the destination name already exists, or
    if any template resource is in the **blocked** set (template
-   resources without a cdkd state entry; or `AWS::CloudFormation::Stack`
+   resources without a cdkd state entry; resources whose recorded
+   properties hold the redaction mask `***`, i.e. a `NoEcho`
+   custom-resource value cdkd cannot re-derive — issue
+   [#2274](https://github.com/go-to-k/cdkd/issues/2274), re-deploy with
+   that custom resource forced to update, then export again; or
+   `AWS::CloudFormation::Stack`
    rows whose parent cdkd state has no matching nested-stack entry). Lambda-backed Custom Resources (`Custom::*` AND
    `AWS::CloudFormation::CustomResource` — the latter is what
    `new cdk.CustomResource(...)` synthesizes when no `resourceType` is
