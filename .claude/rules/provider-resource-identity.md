@@ -48,6 +48,20 @@ omission of `ExpectedBucketOwner` is deliberate for the same reason the SDK-side
 guards exist: the hazard is a foreign-account bucket, and passing the parameter
 would turn that collision into a 403 and thence into the proceed arm.
 
+Since issue [#2301](https://github.com/go-to-k/cdkd/issues/2301) item 3 the
+proceed arm is no longer silent after the run: `confirmDeleteTargetIdentity`
+RETURNS an `IndeterminateGuard`, `delete()` carries it out on
+`ResourceDeleteResult.indeterminateGuards`, and the destroy runner persists a
+`RESOURCE_GUARD_INDETERMINATE` event plus an `N unverified` summary count. That
+is what makes proceeding defensible rather than merely convenient — the attack
+these guards exist to catch works by DENYING the probe, so an outcome visible
+only as a `logger.warn` left a destroy that had NOT confirmed its target
+indistinguishable, afterwards, from one that had. Anything added to the proceed
+arm must report through that channel; see
+[delete-outcome.md](delete-outcome.md) for the write/read pair and
+[provider-delete-path.md](provider-delete-path.md) for what a provider owes when
+it reports one.
+
 **A guard reporting a failed probe names the error CLASS, never AWS's message,
 and the invariant is per-READER.** That message is not neutral text: on the
 population these guards exist for — a bucket policy denying the probe — S3

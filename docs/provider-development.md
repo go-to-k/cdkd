@@ -1888,6 +1888,49 @@ preserve state and fail the destroy for no reason. The `--purge-events` flag
 and the run-level `RUN_FINISHED` result both treat a skip as a failed run, so a
 new producer changes user-visible exit behavior — decide deliberately.
 
+### Reporting a PRE-FLIGHT GUARD that could not answer
+
+A guard that runs before the delete and cannot reach a verdict is a THIRD thing,
+and it is neither a skip nor a failure: the delete still goes ahead, so the
+outcome is normally `'deleted'` (a delete that ALSO could not be addressed keeps
+`'skipped'` — the two are independent), and what needs reporting is that a
+safety check was not enforced. Issue [#2301](https://github.com/go-to-k/cdkd/issues/2301) added
+`indeterminateGuards` to `ResourceDeleteResult` for it:
+
+```typescript
+import { withIndeterminateGuard } from '../../deployment/delete-outcome.js';
+
+const guard = await this.confirmSomething(...); // IndeterminateGuard | undefined
+// ...perform the delete...
+return withIndeterminateGuard(undefined, guard);
+```
+
+`withIndeterminateGuard` returns its input unchanged when `guard` is
+`undefined`, so the ordinary path keeps returning the back-compat `void`, and it
+preserves a `'skipped'` outcome and its `reason` when both facts hold at once.
+
+Two rules apply, both because the value is PERSISTED:
+
+- **Proceed, do not refuse.** These arms exist for probes a least-privilege
+  caller may not be allowed to make. Refusing on an unanswerable probe strands
+  every operator who never granted the permission; the durable record is what
+  makes proceeding acceptable rather than silent.
+- **Name the GUARD, not the API or the type.** `guard` is a stable
+  machine-readable id (`cc-delete-region-identity`, not
+  `s3-getbucketlocation`) that lands in `deployments/*.jsonl` and is therefore a
+  user contract; a future guard reuses the same event type with its own id
+  rather than minting a second one. `reason` is the human half, and distinct
+  causes get distinct text even when they reach the same proceed-anyway
+  outcome, because the remedies differ.
+
+The destroy runner then emits a `RESOURCE_GUARD_INDETERMINATE` event ALONGSIDE
+the resource's own outcome row (never instead of it), counts it into the destroy
+summary's `N unverified` suffix, and prints an aggregate warning. It moves no
+outcome counter and does not change the exit code. Note that the deploy engine
+and the rollback executor still DISCARD the field
+([#2422](https://github.com/go-to-k/cdkd/issues/2422)), so a guard reported from
+a delete on those paths is not yet recorded anywhere.
+
 **A provider that recurses into another destroy propagates the child's
 result.** `NestedStackProvider.delete` returns `{ outcome: 'skipped' }` when the
 child runner reports `skippedCount > 0` OR `interrupted`; without that the

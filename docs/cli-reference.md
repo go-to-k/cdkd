@@ -3851,6 +3851,24 @@ It is deliberately distinct from the neighbouring outcomes:
 | **skipped** | **may still exist** | **KEPT** | `N skipped`, exit `2` |
 | failed | may still exist | kept | `N errors`, exit `2` |
 
+`N unverified` is a FIFTH figure on the same summary line and deliberately not
+a row in that table (issue
+[#2301](https://github.com/go-to-k/cdkd/issues/2301)). It is not an outcome:
+the resource was deleted and its record dropped exactly as the `deleted` row
+says. What it counts is **pre-flight safety guards that ran, could not reach a
+verdict, and were therefore not enforced** — cdkd proceeded anyway, which is
+correct (refusing on an unanswerable probe would strand every least-privilege
+destroy) but must not be invisible afterwards, since the attack such a guard
+exists to catch works by DENYING the permission the probe needs. So it moves no
+other counter, forces no state preservation and does **not** change the exit
+code: a destroy showing `1 unverified` and `0 errors` exits `0`. It appears on
+every summary arm and only when non-zero, so a run with no suppressed guard
+prints exactly what it always did. A warning beneath the line names the
+resources; the durable half is a `RESOURCE_GUARD_INDETERMINATE` event, which
+outlives the run — see
+[docs/deployment-events.md](deployment-events.md). `cdkd state destroy` prints
+the same figure but records no events at all.
+
 The state record is kept on purpose: without it you would have neither
 the AWS resource deleted nor an id to go and delete it with. To finish
 the destroy, repair whatever the per-resource warning names — the

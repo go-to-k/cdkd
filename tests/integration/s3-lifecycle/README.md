@@ -78,6 +78,31 @@ failed against real S3).
      a state record that claims this one. cdkd must refuse — asserted on the
      refusal text naming both regions **and** on the bucket still being there
      afterwards, which is the half that distinguishes fixed from broken.
+   - **Arm ID** (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)
+     item 3): the third outcome, and the one the attack produces — the probe
+     cannot ANSWER. A bucket policy on the target denies
+     `s3:GetBucketLocation`, which is what anyone holding `s3:PutBucketPolicy`
+     on it can set. cdkd must PROCEED (refusing would strand every
+     least-privilege destroy) **and** leave a durable trace: the arm asserts on
+     the `RESOURCE_GUARD_INDETERMINATE` row inside the persisted
+     `deployments/{runId}.jsonl` OBJECT, not on console text, because console
+     output not surviving the run IS the defect. It also asserts the row sits
+     ALONGSIDE the resource's `RESOURCE_SUCCEEDED` rather than replacing it.
+     The stack holds **two** cc-api-routed buckets and only one is denied, so
+     the guard rows' exact membership is the in-run control: the contract is "a
+     row for the resource whose probe was denied, and for no other", and a
+     one-resource stack yields one row under either reading — it would look
+     fenced while discriminating nothing.
+     Two things about it are decisions: it drives `cdkd destroy` rather than
+     `cdkd state destroy` (the latter threads no event recorder, so it writes
+     no events at all — issue
+     [#2423](https://github.com/go-to-k/cdkd/issues/2423)), which is why it
+     runs from a scratch directory with no `cdk.json` so the CLI falls back to
+     its state-based stack list; and the delete still succeeding under the deny
+     was MEASURED, not assumed — `cloudformation describe-type --type-name
+     AWS::S3::Bucket` (us-east-1, 2026-09-02) lists `s3:GetBucketLocation` in
+     none of the five handlers, and `delete` needs only `s3:DeleteBucket` +
+     `s3:ListBucket`.
 
 1. **Deploy** the bucket with a V1 prefix rule (`archive`, `logs/`) + a scope-less
    abort rule (`abort-mpu`). Assert both rules reached AWS, **none** carries a

@@ -52,7 +52,7 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   The AWS resource is kept ON PURPOSE and the state record is dropped.
  * - `RESOURCE_SKIPPED` — a skip where cdkd could NOT address the resource
  *   (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)). Emitted by
- *   `cdkd destroy` / `cdkd state destroy` AND, since issue
+ *   `cdkd destroy` AND, since issue
  *   [#1762](https://github.com/go-to-k/cdkd/issues/1762), by the `cdkd deploy`
  *   DELETE branch for a resource removed from the template.
  *   Since issue [#1819](https://github.com/go-to-k/cdkd/issues/1819) it is ALSO
@@ -73,6 +73,39 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   AWS resource is NOT intended, and the state record is KEPT so the orphan
  *   stays traceable. Distinct from `RESOURCE_FAILED` because nothing FAILED —
  *   hence no error metadata; the cause is in `reason`.
+ * - `RESOURCE_GUARD_INDETERMINATE` — a PRE-FLIGHT SAFETY GUARD ran on this
+ *   resource, could NOT reach a verdict, and was therefore not enforced
+ *   (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)). cdkd
+ *   PROCEEDED, so this row says nothing about whether the operation
+ *   succeeded — it sits ALONGSIDE the resource's own
+ *   `RESOURCE_SUCCEEDED` / `RESOURCE_SKIPPED` row rather
+ *   than replacing it, exactly as issue
+ *   [#1819](https://github.com/go-to-k/cdkd/issues/1819)'s partial-UPDATE
+ *   `RESOURCE_SKIPPED` does, and for the same reason: the two rows answer
+ *   different questions. `guard` names which guard; `reason` says why it
+ *   could not answer. Carries no `error` — nothing FAILED, and a probe that
+ *   was DENIED is the case this event exists for.
+ *
+ *   This is the durable half of a guard whose ephemeral half is a
+ *   `logger.warn`. The attack model is what makes the durability
+ *   load-bearing: a guard is disabled by DENYING the probe it depends on
+ *   (`s3:GetBucketLocation` in a bucket policy, settable by anyone holding
+ *   `s3:PutBucketPolicy` on the target), and console output does not survive
+ *   the run — so a destroy that proceeded WITHOUT confirming its target used
+ *   to be indistinguishable, afterwards, from one that confirmed it.
+ *
+ *   Deliberately NOT `RESOURCE_SKIPPED`: that type's invariant is "the
+ *   resource this row names was NOT destroyed", which is FALSE here (the
+ *   resource was deleted). Deliberately not `RESOURCE_SUCCEEDED` either,
+ *   which carries no `reason`.
+ *
+ *   NOT `RESOURCE_FAILED`, and that is a reachability fact rather than a
+ *   preference: a guard is reported by RETURNING it on
+ *   `ResourceDeleteResult`, so a delete that THROWS carries nothing back and
+ *   the destroy runner's emit — which sits inside the `try` — never runs. A
+ *   failed delete therefore cannot have a companion guard row today. Do not
+ *   restate the pairing as covering all three outcomes; an earlier revision
+ *   of this block did, and it described an unreachable state.
  * - `ROLLBACK_*` — deploy-failure rollback phase (started / per-resource
  *   outcome / finished).
  */
@@ -84,6 +117,7 @@ export type DeploymentEventType =
   | 'RESOURCE_FAILED'
   | 'RESOURCE_RETAINED'
   | 'RESOURCE_SKIPPED'
+  | 'RESOURCE_GUARD_INDETERMINATE'
   | 'ROLLBACK_STARTED'
   | 'ROLLBACK_RESOURCE_SUCCEEDED'
   | 'ROLLBACK_RESOURCE_FAILED'
@@ -179,13 +213,29 @@ export interface DeploymentEvent {
     skipped?: number;
   };
   /**
-   * `RESOURCE_SKIPPED`: one line saying why cdkd could not address the
-   * resource (issue [#1752](https://github.com/go-to-k/cdkd/issues/1752)) —
-   * the same short text rendered inline on the per-resource status line of
-   * whichever command skipped it (destroy, or a deploy template-DELETE). The events
-   * store IS the durable post-mortem, so a bare `RESOURCE_SKIPPED` with no
-   * cause is close to useless there. Metadata only: it is provider-authored
-   * prose about the IDENTIFIER, never resource properties.
+   * `RESOURCE_GUARD_INDETERMINATE` only: the id of the guard that could not
+   * reach a verdict (issue
+   * [#2301](https://github.com/go-to-k/cdkd/issues/2301)) — e.g.
+   * `cc-delete-region-identity`. Machine-readable and stable, so a future
+   * guard reuses this event type with its own id rather than minting a
+   * second one; `reason` carries the human half.
+   */
+  guard?: string;
+  /**
+   * One line of provider-authored prose. Metadata only: it is about the
+   * IDENTIFIER or the probe, never resource properties.
+   *
+   * `RESOURCE_SKIPPED`: why cdkd could not address the resource (issue
+   * [#1752](https://github.com/go-to-k/cdkd/issues/1752)) — the same short
+   * text rendered inline on the per-resource status line of whichever command
+   * skipped it (destroy, or a deploy template-DELETE). The events store IS the
+   * durable post-mortem, so a bare `RESOURCE_SKIPPED` with no cause is close
+   * to useless there.
+   *
+   * `RESOURCE_GUARD_INDETERMINATE`: why the guard named by `guard` could not
+   * answer (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)) —
+   * likewise the whole value of the row, since the outcome ("proceeded
+   * anyway") is implied by the event type.
    */
   reason?: string;
   /** Failure events: extracted error metadata (never properties). */

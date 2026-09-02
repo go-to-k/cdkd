@@ -909,6 +909,16 @@ address that resource, issued no AWS call, and therefore left it in place —
 so the state record is deliberately KEPT rather than dropped. See
 [docs/cli-reference.md](docs/cli-reference.md#skipped-resources-on-destroy-issue-1752).
 
+One figure on that line does **not** mean exit `2`: `N unverified` (issue
+[#2301](https://github.com/go-to-k/cdkd/issues/2301)). It counts pre-flight
+safety guards that ran, could not reach a verdict, and were therefore not
+enforced — cdkd proceeded, and the resource really was deleted, so
+`(1 deleted, 1 unverified, 0 errors)` exits `0`. It is there because such a
+guard is disabled by DENYING the permission its probe needs, and the warning
+cdkd prints does not survive the run; the durable half is a
+`RESOURCE_GUARD_INDETERMINATE` event
+([docs/deployment-events.md](docs/deployment-events.md)).
+
 `cdkd deploy` exits `2` for the same class of outcome (issue
 [#1960](https://github.com/go-to-k/cdkd/issues/1960)) — it finished, nothing
 failed, and yet a resource cdkd was responsible for may still be alive in AWS:

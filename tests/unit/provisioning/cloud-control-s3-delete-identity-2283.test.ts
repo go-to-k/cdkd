@@ -17,10 +17,21 @@ const mockS3Send = vi.fn();
 let clientRegion: string | undefined = 'us-east-1';
 let clientRegionRejects = false;
 
-const resolveClientRegion = (): Promise<string | undefined> =>
-  clientRegionRejects
-    ? Promise.reject(new Error('Region is missing'))
-    : Promise.resolve(clientRegion);
+const resolveClientRegion = (): Promise<string | undefined> => {
+  if (!clientRegionRejects) return Promise.resolve(clientRegion);
+  // AWS-AUTHORED, for the same reason `wireBucketLocationError` is: this arm
+  // also runs its cause through `describeAwsFailure`, and a bare `Error` takes
+  // the PASS-THROUGH branch, so the redaction here had no coverage at all and a
+  // regression in it would have shipped unnoticed. The message is the shape a
+  // credential-chain failure really carries -- naming the caller -- so the
+  // fence below is testing the property rather than a placeholder.
+  const error = new Error(
+    'User: arn:aws:sts::123456789012:assumed-role/ProdDeployRole/ci-run-4711 is not authorized to perform: sts:GetCallerIdentity'
+  );
+  error.name = 'AccessDenied';
+  Object.assign(error, { $metadata: { httpStatusCode: 403, attempts: 1 }, $fault: 'client' });
+  return Promise.reject(error);
+};
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -81,7 +92,9 @@ import {
   CloudControlProvider,
   requiresCcDeleteIdentityCheck,
   isNotFoundMessage,
+  CC_DELETE_REGION_IDENTITY_GUARD,
 } from '../../../src/provisioning/cloud-control-provider.js';
+import { deleteIndeterminateGuards } from '../../../src/deployment/delete-outcome.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 // Typed against the REAL entry (rather than structurally) so a field added to
 // `CcProtectionEntry` cannot leave this injection silently diverged from what
@@ -141,6 +154,21 @@ function wireBucketLocationError(name: string, message: string): void {
   mockS3Send.mockImplementation(() => {
     const error = new Error(message);
     error.name = name;
+    // `$metadata` is what makes this double an AWS-AUTHORED failure, and it is
+    // load-bearing rather than decoration: `describeAwsFailure` keys the issue
+    // #2302 redaction on exactly these marker fields, which every
+    // `@aws-sdk/*` error carries through `@smithy/smithy-client`'s
+    // `ServiceException` and nothing under `src/` ever sets. Without it the
+    // double is a cdkd-authored `Error`, the redaction correctly declines to
+    // fire, and a test asserting the REDACTED text fails against production
+    // code that is right -- or worse, a test asserting the RAW text passes
+    // while production redacts. Measured 2026-09-02: this helper had no
+    // `$metadata`, so the first version of the redaction fence read as a
+    // product bug.
+    Object.assign(error, {
+      $metadata: { httpStatusCode: name === 'NoSuchBucket' ? 404 : 403, attempts: 1 },
+      $fault: 'client',
+    });
     return Promise.reject(error);
   });
 }
@@ -453,7 +481,12 @@ describe('CloudControlProvider.delete -- S3 bucket identity confirmation (issue 
     expect(mockWarn).toHaveBeenCalledTimes(1);
     const warned = String(mockWarn.mock.calls[0]?.[0]);
     expect(warned).toContain(BUCKET);
-    expect(warned).toContain('s3:GetBucketLocation');
+    // NOT `toContain('s3:GetBucketLocation')`: the warn carries a STATIC
+    // `Grant s3:GetBucketLocation on the bucket` remedy clause, so that needle
+    // is satisfied whatever error was wired and discriminates nothing. The
+    // error CLASS is the part that varies with the cause.
+    expect(warned).toContain('AccessDenied');
+    expect(warned).not.toContain('arn:aws:sts::');
   });
 
   it('treats an ABSENT bucket as absent, not as indeterminate: no warn, delete proceeds', async () => {
@@ -609,5 +642,209 @@ describe('CloudControlProvider.delete -- control types keep their existing route
 
     expect(ccCallNames()).toContain('DeleteResourceCommand');
     expect(mockS3Send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Issue #2301 item 3 -- the three indeterminate arms above PROCEED, which is
+ * correct (refusing would strand a least-privilege destroy). What was missing
+ * is that they proceeded leaving nothing but a `logger.warn` behind, so the
+ * suppression did not survive the run. `delete()` now returns the verdict on
+ * `ResourceDeleteResult.indeterminateGuards`, which the destroy runner
+ * persists as a `RESOURCE_GUARD_INDETERMINATE` event.
+ *
+ * These cases assert the RETURN VALUE specifically -- the console warn is
+ * already covered above, and it is exactly the surface the issue says is not
+ * enough.
+ */
+describe('CloudControlProvider.delete -- indeterminate guards are REPORTED (issue #2301)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clientRegion = 'us-east-1';
+    clientRegionRejects = false;
+    injectedS3ProtectionEntry = undefined;
+    wireCloudControl();
+  });
+
+  it('reports the DENIED probe by ERROR CLASS, never AWS\'s own wording', async () => {
+    // The motivating attack: an `s3:GetBucketLocation` Deny in the target's own
+    // bucket policy, settable by anyone holding `s3:PutBucketPolicy` on it.
+    //
+    // The wire message is the REAL shape S3 returns for that population, and it
+    // names the caller. Since issue #2301 item 3 this `reason` is PERSISTED to
+    // `deployments/{runId}.jsonl`, which `cdkd destroy` does not sweep -- so
+    // interpolating AWS's text would write the destroying principal's account
+    // id, role and session name into a durable artifact, at a moment the
+    // ATTACKER picks. Issue #2302's split is what prevents that; this case is
+    // its fence on the Cloud-Control-routed twin.
+    wireBucketLocationError(
+      'AccessDenied',
+      'User: arn:aws:sts::123456789012:assumed-role/ProdDeployRole/ci-run-4711 is not authorized to perform: s3:GetBucketLocation'
+    );
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete('Bucket', BUCKET, S3, undefined, {
+      expectedRegion: 'us-east-1',
+    });
+
+    const guards = deleteIndeterminateGuards(result);
+    expect(guards).toEqual([
+      {
+        guard: CC_DELETE_REGION_IDENTITY_GUARD,
+        reason: `s3:GetBucketLocation on ${BUCKET} could not be answered: AccessDenied. Re-run with --verbose for AWS's own message.`,
+      },
+    ]);
+    // The property, asserted directly rather than implied by the equality
+    // above: no fragment of the caller's identity survives into the persisted
+    // value. An equality alone would still pass if a later edit widened the
+    // message and someone updated the expected string to match.
+    const persisted = JSON.stringify(guards);
+    for (const secret of [
+      '123456789012',
+      'assumed-role',
+      'ProdDeployRole',
+      'ci-run-4711',
+      'arn:aws:sts::',
+    ]) {
+      expect(persisted).not.toContain(secret);
+    }
+    // Still a DELETE: the guard is a qualifier on a completed delete, not an
+    // outcome of its own, so the runner must keep counting it as deleted.
+    expect(result).toMatchObject({ outcome: 'deleted' });
+    expect(ccCallNames()).toContain('DeleteResourceCommand');
+  });
+
+  it('joins the redacted cause to the next sentence with exactly one period', async () => {
+    // Found by the LIVE run of `s3-lifecycle` phase 0c-ID, not by a unit test:
+    // a REDACTED summary ends in the helper's own `VERBOSE_POINTER` sentence and
+    // already carries a period, so interpolating it before `. S3 bucket names`
+    // printed `for AWS's own message.. S3 bucket names ...` in a user-facing
+    // security warning. The passed-through shape (asserted in the sibling case
+    // below) usually carries NO trailing period, which is why the join strips
+    // and re-adds rather than simply dropping one side.
+    wireBucketLocationError('AccessDenied', 'Access Denied');
+    const provider = new CloudControlProvider();
+
+    await provider.delete('Bucket', BUCKET, S3, undefined, { expectedRegion: 'us-east-1' });
+
+    const warned = mockWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain("message. S3 bucket names are globally unique");
+    expect(warned).not.toContain('..');
+  });
+
+  it('reports NO region on record and no client region, as its own distinct reason', async () => {
+    clientRegion = undefined;
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete('Bucket', BUCKET, S3);
+
+    expect(deleteIndeterminateGuards(result)).toEqual([
+      {
+        guard: CC_DELETE_REGION_IDENTITY_GUARD,
+        reason: 'neither the stack state nor the AWS client reports a region',
+      },
+    ]);
+  });
+
+  it('distinguishes a REJECTING region chain from one that simply reported nothing', async () => {
+    // These two arms fall THROUGH to the same warn, so before #2301 a client
+    // whose SDK region chain threw was reported as one that was never asked.
+    // The remedies differ -- fix the credential chain / pass --region, versus
+    // repair the state record -- so the durable record has to tell them apart.
+    clientRegionRejects = true;
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete('Bucket', BUCKET, S3);
+
+    const guards = deleteIndeterminateGuards(result);
+    expect(guards).toHaveLength(1);
+    expect(guards[0]!.guard).toBe(CC_DELETE_REGION_IDENTITY_GUARD);
+    expect(guards[0]!.reason).toContain("the AWS client's region could not be resolved");
+    // The cause is the REDACTED class, not AWS's sentence: this arm runs its
+    // error through `describeAwsFailure` too, and its `reason` is persisted to
+    // `deployments/*.jsonl` exactly like the probe arm's. The double is an
+    // AWS-authored credential-chain failure naming the caller, so the two
+    // assertions together fence the property rather than the wording.
+    expect(guards[0]!.reason).toContain('AccessDenied');
+    expect(guards[0]!.reason).not.toContain('arn:aws:sts::');
+    expect(guards[0]!.reason).not.toContain('assumed-role');
+    // ...and the terminal says the same thing, so the durable record and the
+    // console cannot disagree about which of the two happened.
+    expect(String(mockWarn.mock.calls[0]?.[0])).toContain(
+      "the AWS client's region could not be resolved"
+    );
+  });
+
+  it('carries the guard through the idempotent NotFound arm too', async () => {
+    // A denied probe followed by a `NotFound` delete is exactly the sequence a
+    // poisoned record produces when the name really does denote something
+    // elsewhere, so this is the last place the verdict could be dropped.
+    wireBucketLocationError('AccessDenied', 'Access Denied');
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'DeleteResourceCommand') {
+        const error = new Error('Resource of type AWS::S3::Bucket was not found');
+        error.name = 'ResourceNotFoundException';
+        return Promise.reject(error);
+      }
+      return Promise.resolve({});
+    });
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete('Bucket', BUCKET, S3, undefined, {
+      expectedRegion: 'us-east-1',
+    });
+
+    expect(deleteIndeterminateGuards(result)).toHaveLength(1);
+  });
+
+  it('reports NOTHING on a CONFIRMED bucket -- the negative control', async () => {
+    // Without this, a guard arm that fired unconditionally would satisfy every
+    // assertion above while making the persisted row meaningless. The
+    // back-compat `void` return is asserted specifically: the hot path must
+    // not start allocating a result object for the ~130 `void` providers'
+    // sake.
+    wireBucketLocation('us-east-1');
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete('Bucket', BUCKET, S3, undefined, {
+      expectedRegion: 'us-east-1',
+    });
+
+    expect(result).toBeUndefined();
+    expect(deleteIndeterminateGuards(result)).toEqual([]);
+  });
+
+  it('reports NOTHING for an ABSENT bucket, which is a verdict and not an indeterminacy', async () => {
+    wireBucketLocationError('NoSuchBucket', 'The specified bucket does not exist');
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete('Bucket', BUCKET, S3, undefined, {
+      expectedRegion: 'us-east-1',
+    });
+
+    expect(result).toBeUndefined();
+  });
+
+  it('reports NOTHING for an unguarded type, which never runs the probe at all', async () => {
+    const provider = new CloudControlProvider();
+
+    const result = await provider.delete('Queue', 'some-queue', 'AWS::SQS::Queue', undefined, {
+      expectedRegion: 'us-east-1',
+    });
+
+    expect(result).toBeUndefined();
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  it('still REFUSES a foreign-region bucket -- an answered probe is not indeterminate', async () => {
+    // The other direction of the same fence: adding a proceed-with-a-record arm
+    // must not have widened the set of inputs that proceed.
+    wireBucketLocation('us-west-2');
+    const provider = new CloudControlProvider();
+
+    await expect(
+      provider.delete('Bucket', BUCKET, S3, undefined, { expectedRegion: 'us-east-1' })
+    ).rejects.toThrow(/Refusing to delete S3 bucket/);
+    expect(ccCallNames()).not.toContain('DeleteResourceCommand');
   });
 });
