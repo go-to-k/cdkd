@@ -1,3 +1,10 @@
+## [0.285.6](https://github.com/go-to-k/cdkd/compare/v0.285.5...v0.285.6) (2026-09-02)
+
+
+### Bug Fixes
+
+* **cli:** reserve stdout for the payload on the four flagless payload commands ([#2441](https://github.com/go-to-k/cdkd/issues/2441)) ([4f34f8c](https://github.com/go-to-k/cdkd/commit/4f34f8c125d9c29dc56f25f99585956a7ab5412c))
+
 ## [0.285.5](https://github.com/go-to-k/cdkd/compare/v0.285.4...v0.285.5) (2026-09-02)
 
 
