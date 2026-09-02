@@ -10,7 +10,7 @@ import {
   parseContextOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { bold, green } from '../../utils/colors.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { foldRegionOption } from '../region-options.js';
@@ -57,6 +57,29 @@ async function synthCommand(options: {
   if (options.verbose) {
     logger.setLevel('debug');
   }
+
+  // Issue #2410: on `cdkd synth`, stdout MEANS "the CloudFormation template"
+  // and nothing else — matching `cdk synth`, which prints only the template
+  // there and routes every log line to stderr. Unlike the issue-#2280 sites
+  // this reservation is UNCONDITIONAL: the payload has no `--json` flag to
+  // key off, so the default output contract itself moves. Claimed before the
+  // `Synthesizing CDK app...` line below and before synthesis runs at all —
+  // `app-executor.ts` re-emits the CDK app's stderr (bundling progress,
+  // warnings) at INFO, so a DEFAULT run put prose inside the document with no
+  // `--verbose` involved. NOT sufficient on its own for `cdkd synth | yq`:
+  // `toYaml` still leaves YAML indicator characters unquoted, so a template
+  // containing `"*"` emits a bare `- *` a parser rejects — a serializer
+  // defect, tracked as
+  // [#2421](https://github.com/go-to-k/cdkd/issues/2421).
+  //
+  // Accepted consequence, stated because it is a real behavior change rather
+  // than an oversight: in the MULTI-stack case nothing at all is written to
+  // stdout (the template is emitted only for a single stack, below) and the
+  // whole `Synthesis complete!` summary block goes to stderr. stdout on
+  // `synth` is the template or it is empty; the summary is never a payload.
+  // Lines are MOVED, not suppressed — a terminal shows exactly what it did
+  // before, and `2>&1` restores the old single-stream view.
+  reserveStdoutForPayload();
 
   // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
   // the rest of the pipeline working as before.

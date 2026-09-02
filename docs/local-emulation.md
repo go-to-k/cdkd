@@ -501,6 +501,51 @@ silently skipped (never an error). The same applies to `cdkd local run-task`
 container runs, and — inherited from cdk-local's ECS service emulator engine —
 to `cdkd local start-service` / `cdkd local start-alb`.
 
+### `local invoke` / `local invoke-agentcore` output streams
+
+**Everything cdkd's own logger prints goes to stderr.** Since issue
+[#2410](https://github.com/go-to-k/cdkd/issues/2410) both commands reserve
+stdout unconditionally, so every cdkd status line -- `Synthesizing CDK
+app...`, `Target: ...`, `Starting container ...`, layer resolution notices,
+and cdkd's `--verbose` debug output -- goes to **stderr**, the way
+`sam local invoke` has always done it. The lines are moved, not suppressed:
+a terminal shows what it always did, and `2>&1` restores the old
+single-stream view.
+
+**But stdout is not yet payload-only, so pipe through `tail -1`.** Two
+things still reach it, neither routed by cdkd's logger:
+
+1. **The container's own stdout**, piped through by `streamLogs`. The Lambda
+   runtime emulator puts `START` / `END` / `REPORT` *and* every handler log
+   line on the container's stdout -- `console.error` included, which is
+   measured rather than assumed -- so any handler that prints lands ahead of
+   the response ([#2419](https://github.com/go-to-k/cdkd/issues/2419)).
+2. **cdk-local's own logger.** The container-image build path is reused from
+   cdk-local, which has a separate logger with no reservation concept, so
+   `Building container image (platform=...)` and `Skipping docker build ...`
+   print on stdout for a container-image Lambda
+   ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
+
+A third used to be listed here and is now closed: `docker pull` progress
+reached stdout because `runDockerForeground` passes `stdio: 'inherit'`, and
+`cdkd` runs it unconditionally for an ECR image, so it needed no flag at all.
+While a command holds the reservation that child's fd 1 is now redirected to
+fd 2. go-to-k/cdkd#2419's remaining scope is `streamLogs` alone.
+
+```bash
+# Safe today: the response payload is always the LAST line on stdout.
+cdkd local invoke MyStack/Handler --event event.json | tail -1 | jq .body
+cdkd local invoke-agentcore MyStack/Agent 2> progress.log | tail -1
+```
+
+A ZIP-code Lambda whose handler prints nothing hits neither, so
+`cdkd local invoke MyStack/Handler | jq` does work there -- it is just not a
+guarantee cdkd can make yet for every target.
+
+`local start-api`, `local run-task` and `local start-service` are unaffected --
+their stdout is a human surface (route table, prefixed container logs), not a
+payload.
+
 ### `local invoke` exit codes
 
 - `0` — RIE answered, regardless of whether the handler returned a
@@ -1696,7 +1741,7 @@ Same shape as `cdkd local invoke`: accepts a CDK display path (`MyStack/MyAgent`
 | `MCP` | Model Context Protocol streamable HTTP | 8000 | Session handshake (`initialize` -> `notifications/initialized`) + one JSON-RPC request: defaults to `tools/list` when `--event` is omitted; otherwise `--event` is the JSON-RPC request body. |
 | `A2A` | Agent-to-Agent JSON-RPC at `POST /` | 9000 | Defaults to `agent/getAgentCard` when `--event` is omitted; otherwise `--event` is the JSON-RPC request body. |
 | `AGUI` | AGUI JSON-RPC streaming | 8800 | Streams the agent's response frames. |
-| `--ws` (HTTP only) | Bidirectional `/ws` WebSocket on the HTTP container | 8080 | First frame = `--event` body. In a TTY, auto-enters a REPL — each typed stdin line is a follow-up frame until Ctrl-D / close; piped / non-TTY stdin stays one-shot (only the `--event` frame is sent). |
+| `--ws` (HTTP only) | Bidirectional `/ws` WebSocket on the HTTP container | 8080 | First frame = `--event` body. Auto-enters a REPL when **stdin** is a TTY — each typed stdin line is a follow-up frame until Ctrl-D / close; piped / non-TTY stdin stays one-shot (only the `--event` frame is sent). The `> ` prompt additionally requires **stdout** to be a TTY, so a redirected stdout keeps the raw frame stream. |
 
 ### Inbound JWT auth (`customJwtAuthorizer`)
 
@@ -1719,7 +1764,7 @@ Same shape as `cdkd local invoke`. The container receives the developer's AWS cr
 - `--session-id <id>` — value of the AgentCore session-id header (auto-generated when omitted).
 - `--jwt <bearer-token>` — verified + forwarded when the runtime declares `customJwtAuthorizer`.
 - `--timeout <ms>` — per-request timeout (default 120000 / 120s).
-- `--ws` — bidirectional `/ws` WebSocket mode (HTTP protocol only). Auto-detects a TTY: an interactive terminal enters a multi-turn REPL (each stdin line is sent as a follow-up frame until Ctrl-D / agent close), while piped / redirected / CI stdin stays a wire-faithful one-shot (force one-shot in a TTY with `--ws </dev/null`).
+- `--ws` — bidirectional `/ws` WebSocket mode (HTTP protocol only). Auto-detects a TTY, and the two halves read DIFFERENT streams (issue [#2410](https://github.com/go-to-k/cdkd/issues/2410)). Whether the REPL runs depends on **stdin**: an interactive terminal enters a multi-turn REPL (each stdin line is sent as a follow-up frame until Ctrl-D / agent close), while piped / redirected / CI stdin stays a wire-faithful one-shot (force one-shot in a TTY with `--ws </dev/null`). Whether the `> ` prompt is written depends on **stdout**, because that is the payload stream: with stdout redirected the frames stay raw and unprompted even from a terminal, so `--ws > frames.txt` and `--ws | tail -1` mean what they look like.
 - `--watch` — re-synth + reload the agent container on CDK source edits (follows [cdk-local#270](https://github.com/go-to-k/cdk-local/pull/270)). See [Hot reload (`--watch`)](#hot-reload---watch-1) below. Off by default. Supported on the HTTP / AGUI protocols; a no-op WARN for MCP / A2A (their single shot runs once and exits).
 - `--sigv4` — sign `/invocations` with SigV4 (for SigV4-protected runtimes).
 - `--from-state` / `--from-cfn-stack [name]` / `--state-bucket` / `--state-prefix` / `--stack-region` — state-source flags.

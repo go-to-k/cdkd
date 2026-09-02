@@ -164,8 +164,15 @@ export interface DockerRunOptions {
  * Pull the image. No-op when `skipPull` is true.
  *
  * In verbose mode (`--verbose` / global log level `debug`), streams the
- * full `docker pull` progress to stdout so the user sees per-layer
- * downloads. In the default compact mode the call is silent (cached
+ * full `docker pull` progress live so the user sees per-layer downloads.
+ * NOT necessarily to stdout: on a command holding a payload reservation --
+ * which `cdkd local invoke` and `cdkd local invoke-agentcore` both do, and
+ * both reach this function -- the child's fd 1 is redirected to stderr by
+ * `spawnForeground` (`src/utils/docker-cmd.ts`, issue
+ * [#2410](https://github.com/go-to-k/cdkd/issues/2410)), so the progress
+ * lands there instead. Do not build on the fd-1 assumption; that is the one
+ * this file's own leak was made of. In the default compact mode the call is
+ * silent (cached
  * images are the common case; a fresh pull still shows progress only
  * via `--verbose`). Errors are always surfaced: the captured stderr is
  * folded into the thrown `DockerRunnerError` message.

@@ -42,12 +42,32 @@ const colors = {
  *
  * OPT-IN, and deliberately not derived from a `--json` flag inside the
  * logger: nothing changes for a command that does not call
- * {@link reserveStdoutForPayload}. Every `--json` surface does (issue
- * [#2280](https://github.com/go-to-k/cdkd/issues/2280) added the remaining
- * six to `cdkd drift`'s original call: `cdkd list`, `cdkd events`, and the
- * four `cdkd state {list,resources,show,info}` subcommands); a command
- * without a `--json` mode never calls it, so no human-facing output
- * contract moves.
+ * {@link reserveStdoutForPayload}. Every `--json` surface keeps its payload
+ * stream clean one way or the other, but NOT all by this mechanism, and the
+ * count is easy to state one short: SEVEN call this — `cdkd drift`'s original
+ * call, plus the six issue
+ * [#2280](https://github.com/go-to-k/cdkd/issues/2280) added to it (`cdkd
+ * list`, `cdkd events`, and the four `cdkd state {list,resources,show,info}`
+ * subcommands) — while `cdkd diff` predates the mechanism and demotes the
+ * logger to `warn` instead, which SUPPRESSES its info-level lines rather than
+ * moving them. Do not read "every `--json` surface" as "every `--json`
+ * surface calls this".
+ *
+ * A `--json` flag is NOT what makes a stream a payload stream, though, and
+ * issue [#2410](https://github.com/go-to-k/cdkd/issues/2410) is the four
+ * commands where it is not involved at all: `cdkd synth` (the template),
+ * `cdkd list` in EVERY mode (the YAML and the one-id-per-line spellings, not
+ * just `--json`), `cdkd local invoke` (the function response) and
+ * `cdkd local invoke-agentcore` (the agent response). NOTE `cdkd list`
+ * appears in BOTH paragraphs and is one call site, not two: issue
+ * go-to-k/cdkd#2280 added it under `--json` and issue go-to-k/cdkd#2410 made
+ * that same call unconditional. Ten commands call this in total, not eleven.
+ * Those four call it
+ * UNCONDITIONALLY at command entry, so for them the DEFAULT human output
+ * contract is the one that moved — deliberately, and documented per command
+ * in `docs/cli-reference.md`. What has NOT changed is that the decision stays
+ * with the command: a command whose stdout is a human surface (`cdkd deploy`,
+ * `cdkd local start-api`, `cdkd local run-task`) still never calls this.
  */
 let stdoutReservedForPayload = false;
 
@@ -73,11 +93,30 @@ export function releaseStdoutForPayload(): void {
 /**
  * Whether {@link reserveStdoutForPayload} is in effect.
  *
- * TEST-ONLY, like {@link releaseStdoutForPayload} and stated for the same
- * reason: there is no production caller, and an exported predicate with none
- * otherwise reads as a seam some command is expected to branch on. Nothing
- * should — the routing decision belongs to {@link ConsoleLogger.emit}, and a
- * caller re-deriving it would be a second place to keep in step.
+ * Production callers exist, and the carve-out is narrow enough to state: a
+ * writer that does NOT go through {@link ConsoleLogger} and therefore cannot
+ * be routed by {@link ConsoleLogger.emit}. Today both live in
+ * `src/utils/docker-cmd.ts` — `spawnStreaming`, which mirrors a child's
+ * stdout live under `--verbose`, and `spawnForeground`, which hands the
+ * child our fd 1 outright. Issue
+ * [#2410](https://github.com/go-to-k/cdkd/issues/2410) routed both to stderr
+ * while a command holds the reservation.
+ *
+ * The class is NOT closed, and saying so is the point: `streamLogs` in
+ * `src/local/docker-runner.ts` is a third member — it pipes the CONTAINER's
+ * stdout into ours on `cdkd local invoke` — and is deliberately NOT
+ * converted, because unlike docker's own diagnostics a container's stdout
+ * may BE what the user wants on that stream. That needs a per-caller
+ * contract decision and a real-Docker integ round, tracked as
+ * [#2419](https://github.com/go-to-k/cdkd/issues/2419).
+ *
+ * That is the ONLY shape this predicate is for. A COMMAND must never branch
+ * on it — a command's own prose already flows through the logger, so
+ * consulting this would be a second copy of a decision `emit` already makes,
+ * and the two would drift. If you are reaching for it from a `commands/`
+ * file, the answer is `reserveStdoutForPayload()` instead.
+ *
+ * Also used by tests, alongside {@link releaseStdoutForPayload}.
  */
 export function isStdoutReservedForPayload(): boolean {
   return stdoutReservedForPayload;
@@ -159,18 +198,31 @@ export class ConsoleLogger implements Logger {
    *
    * `warn` / `error` already go to stderr via `console.warn` / `console.error`.
    * `info` / `debug` go to stdout — and JOIN them on stderr while
-   * {@link stdoutReservedForPayload} is set, so a `--json` payload is the only
-   * thing on stdout.
+   * {@link stdoutReservedForPayload} is set, so the reserving command's payload
+   * is the only thing on stdout.
    *
-   * KNOWN GAP, latent and deliberately not restructured (issue
-   * [#2230](https://github.com/go-to-k/cdkd/issues/2230)): the stack-output
+   * KNOWN GAP, latent and deliberately not restructured (issues
+   * [#2230](https://github.com/go-to-k/cdkd/issues/2230) and
+   * [#2410](https://github.com/go-to-k/cdkd/issues/2410)): the stack-output
    * buffer short-circuits ABOVE the reservation check, so a line captured under
    * `runStackBuffered` is replayed by whatever flushes the buffer and never
-   * consults the reservation at all. Unreachable today — `deploy.ts` is the only
-   * caller that opens a buffer and it has no `--json` mode — so the fix would be
-   * untestable and would have to guess where the flush should route. It becomes
-   * REAL the moment a `--json` command runs work inside `runStackBuffered`;
-   * whoever does that must route the flush, not just call
+   * consults the reservation at all. Unreachable today — `deploy.ts`'s
+   * `runStackBuffered` call is the only thing that opens a buffer, and `deploy`
+   * reserves nothing (its stdout is a human surface). A bare line number here
+   * would go stale on the next edit to that file with nothing noticing, so it
+   * is named by symbol instead. Because the path is unreachable, a fix would
+   * be untestable and would have to guess where the flush should route.
+   *
+   * That rationale survives #2410 unchanged, and it is worth restating WHY,
+   * because #2410 widened the reserving population from a `--json`-only set to
+   * one that includes commands with no flag at all. The four it added —
+   * `cdkd synth`, `cdkd list`, `cdkd local invoke`,
+   * `cdkd local invoke-agentcore` — run NO work inside `runStackBuffered`:
+   * buffering exists for the parallel multi-stack deploy path, which none of
+   * them enters. So the gap stays latent, and the condition for it becoming
+   * REAL is unchanged in substance but wider in reach: it is no longer "a
+   * `--json` command runs work inside `runStackBuffered`" but "ANY reserving
+   * command does". Whoever does that must route the flush, not just call
    * {@link reserveStdoutForPayload}.
    */
   private emit(level: LogLevel, formatted: string): void {
