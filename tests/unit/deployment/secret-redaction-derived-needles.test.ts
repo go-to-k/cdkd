@@ -3,8 +3,6 @@ import {
   redactSecretsForState,
   scrubResourceRecord,
   recordSecretExpression,
-  forgetSecretExpression,
-  isProvenPublicExpression,
   clearRecordedSecretExpressions,
   STATE_SOURCED_READBACK_RULES,
   STATE_SOURCED_CROSS_GENERATION_RULES,
@@ -178,22 +176,6 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
     expect(out['LEVEL']).toBe('ordinary-live-value');
   });
 
-  it('does NOT learn from a PROVEN-PUBLIC ssm parameter', () => {
-    // The false redaction the resolver's verdict store warns about: a public
-    // parameter holding `prod-region-1` would turn `my-prod-region-1-bucket`
-    // into `my-{{resolve:ssm:/app/public-host}}-bucket`, a change the desired
-    // side never mirrors, i.e. a perpetual spurious UPDATE.
-    forgetSecretExpression(PUBLIC_SSM);
-    expect(isProvenPublicExpression(PUBLIC_SSM)).toBe(true);
-
-    const out = readback(
-      { Host: 'public-host-value', Sibling: 'a-public-host-value-suffix' },
-      { Host: PUBLIC_SSM }
-    );
-
-    expect(out['Sibling']).toBe('a-public-host-value-suffix');
-  });
-
   it('DOES learn from a plain ssm token with no verdict either way', () => {
     // The #1901 premise the whole-token arm already acts on: a public `String`
     // parameter is persisted RESOLVED, so a `{{resolve:ssm:` token SURVIVING in
@@ -336,8 +318,10 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
     // rather than a closure. NO VERDICT is the load-bearing word and the title
     // used to say PUBLIC, which overstated it: on this path nothing was
     // resolved, so the spelling is all the code has and `PUBLIC_SSM` is
-    // byte-indistinguishable from `SECURE_SSM` here. The sibling case below is
-    // what pins the difference a real verdict makes.
+    // byte-indistinguishable from `SECURE_SSM` here. Telling the two apart needs
+    // a verdict store; PR #2415 drafted one and WITHDREW it (issue #2036 stays
+    // open) because a process-global one un-redacts a `SecureString` of the same
+    // name in another region.
     //
     // A parameter cdkd HAS read is persisted RESOLVED (#1901), so a source that
     // carries the reference at all is the `cdkd import` warn-path shape — the
@@ -358,48 +342,56 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
     expect(out['Plain']).toBe(PUBLIC_SSM);
   });
 
-  it('propagates NOTHING once that same reference is PROVEN public', () => {
-    // The other half, and the reason the case above had to be renamed. With a
-    // definitive public verdict the mixed leaf is KEPT (issue #2036's closure),
-    // so the `return source` arm never runs and no needle is learned at all —
-    // the resolved value stays put at BOTH positions. Same fixture, same two
-    // leaves, opposite answers, and the only difference is the verdict.
-    forgetSecretExpression(PUBLIC_SSM);
-
+  it('keeps a readback `Date` a Date instead of rebuilding it as an empty object', () => {
+    // A provider readback carries real `Date` instances (`LastModified`,
+    // `CreationDate`, ...), and `observedProperties` is where they land. The
+    // value scan's object walk rebuilds through `hasPlainPrototype` and turns
+    // one into `{}` -- issue #2427, pre-existing on the POPULATED-map paths.
+    //
+    // This case fences the EMPTY-map path against inheriting it. The merge's
+    // object arm runs before its leaf rule and `isPlainObject` admits a `Date`
+    // (`Object.entries(new Date())` is `[]`), so without the `hasPlainPrototype`
+    // guard the merge FLATTENED the Date itself, while a comment two screens up
+    // claimed the leaf rule prevented exactly that. Measured, not reasoned:
+    // `LastModified` came back `{}`.
+    //
+    // A `{}` here is a permanent phantom drift at a field the provider really
+    // sends, and `cdkd drift --revert` pushes the baseline, so it is a wrong
+    // WRITE rather than a cosmetic one.
+    const lastModified = new Date('2026-01-01T00:00:00Z');
     const out = readback(
-      { Url: 'pre-public-host-post', Plain: 'public-host' },
-      { Url: `pre-${PUBLIC_SSM}-post`, Plain: 'public-host' }
+      { Password: PLAINTEXT, Copy: PLAINTEXT, LastModified: lastModified },
+      { Password: EXPR }
     );
 
-    expect(out['Url']).toBe('pre-public-host-post');
-    expect(out['Plain']).toBe('public-host');
+    // The needle still does its job at the positionless key...
+    expect(out['Copy']).toBe(EXPR);
+    // ...and the Date is untouched, by identity.
+    expect(out['LastModified']).toBe(lastModified);
+    expect(out['LastModified']).toBeInstanceOf(Date);
   });
 
-  it("re-redacts a KEPT public leaf when a SIBLING's needle matches inside it", () => {
-    // WHERE THE TWO HALVES OF THIS PR MEET, and the answer is deliberate rather
-    // than incidental. `mixedLeafMayCarryPublicReference` KEEPS `Url` (issue
-    // #2036's closure: the parameter is proven public, so AWS's resolved value
-    // is the right thing to persist) — and then a needle learned from the
-    // SIBLING `Other` matches INSIDE it, because the secret's resolved value
-    // happens to be the same string.
-    //
-    // The needle wins, and that is the correct direction: the alternative is
-    // leaving a known secret's PLAINTEXT sitting in `state.json` because it
-    // arrived at a leaf the pass had already decided to keep. It is also not a
-    // fabricated baseline — `cdkd drift --revert` re-resolves the expression
-    // back to that same value, so nothing wrong is pushed.
-    //
-    // Unchanged by the pass REORDER: the old order produced this too. The case
-    // exists because nothing pinned it, so the interaction was a guess.
-    forgetSecretExpression(PUBLIC_SSM);
-
+  it('keeps a `Date` inside an ARRAY element too, which reaches the leaf by another route', () => {
+    // The array arm of the merge reaches the same leaf rule by a different
+    // route than the object arm, so the prototype guard needs its own case
+    // here — the sibling case above only exercises the object arm. Shape is the
+    // one AWS actually returns: a tag / config list whose elements carry a
+    // provider-managed timestamp.
+    const stamped = new Date('2026-01-01T00:00:00Z');
     const out = readback(
-      { Url: 'pre-shared-value-post', Other: 'shared-value' },
-      { Url: `pre-${PUBLIC_SSM}-post`, Other: EXPR }
+      {
+        Entries: [{ Name: 'DB', Value: PLAINTEXT, LastUpdated: stamped }],
+        Copy: PLAINTEXT,
+      },
+      { Entries: [{ Name: 'DB', Value: EXPR }] }
     );
 
-    expect(out['Other']).toBe(EXPR);
-    expect(out['Url']).toBe(`pre-${EXPR}-post`);
+    const entry = (out['Entries'] as Array<Record<string, unknown>>)[0]!;
+    expect(entry['Value']).toBe(EXPR);
+    expect(entry['LastUpdated']).toBe(stamped);
+    expect(entry['LastUpdated']).toBeInstanceOf(Date);
+    // ...and the needle still reaches the positionless sibling.
+    expect(out['Copy']).toBe(EXPR);
   });
 
   it('does NOT rewrite a LITERAL inside a leaf the position pass took from SOURCE', () => {
@@ -473,6 +465,29 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
 
     expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
     expect(JSON.stringify(out)).not.toContain('decrypted-secure-value');
+  });
+
+  it('does NOT rewrite a leaf the pass DECIDED in favour of the value already there', () => {
+    // THE THIRD ORDERING BLOCKER, and the reason the merge asks a MARK TREE
+    // instead of comparing values. The resolver's unsupported-service arm leaves
+    // an `{{resolve:ssm-secure:` token LITERAL, so AWS echoes it back and the
+    // SOURCE leaf equals the BAG leaf. The mixed-leaf arm still DECIDES that
+    // position (it returns `source`) — but `refused === bag` read the equality
+    // as "nobody decided this", handed the leaf to the scan, and a needle in its
+    // frame produced
+    // `postgres://{{resolve:ssm:/app/db-user}}:{{resolve:ssm-secure:...}}@...`:
+    // a reference the template never had at that offset, which `cdkd drift
+    // --revert` re-resolves and pushes to the live resource.
+    //
+    // Every assertion here holds on `origin/main` as well — a NON-REGRESSION
+    // fence, like its sibling below.
+    const userExpr = '{{resolve:ssm:/app/db-user}}';
+    const pwExpr = '{{resolve:ssm-secure:/app/db-pw}}';
+    const conn = `postgres://appuser:${pwExpr}@db.internal:5432/app`;
+    const out = readback({ DB_USER: 'appuser', DB_URL: conn }, { DB_USER: userExpr, DB_URL: conn });
+
+    expect(out['DB_USER']).toBe(userExpr);
+    expect(out['DB_URL']).toBe(conn);
   });
 
   it('does NOT un-certify a pairing whose ANCHOR embeds a learned plaintext', () => {
@@ -594,149 +609,3 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
   });
 });
 
-/**
- * THE PROVEN-PUBLIC VERDICT STORE — issue
- * [#2036](https://github.com/go-to-k/cdkd/issues/2036).
- *
- * `mixedLeafMayCarryPublicReference` used to read ABSENCE from the secret
- * verdict store as "public", which on the empty-map readback paths (where
- * nothing is ever resolved, so nothing can ever be recorded) persisted the
- * DECRYPTED `SecureString`. Issue #1926 fixed that by refusing to read absence
- * at all there, at the price of OVER-redacting a genuinely public parameter.
- *
- * The closure is evidence rather than inference: the resolver's own
- * `pinSecretVerdict` retraction already carries a DEFINITIVE public verdict
- * (`GetParameter` returned a non-`SecureString` `Type`), and it now records
- * that fact positively instead of only deleting a memo. No lookup is added.
- */
-describe('secret-redaction - proven-public verdicts (issue #2036)', () => {
-  beforeEach(() => clearRecordedSecretExpressions());
-  afterEach(() => clearRecordedSecretExpressions());
-
-  it('KEEPS a PROVEN-PUBLIC ssm mixed leaf resolved on the EMPTY-map path', () => {
-    // The over-redaction issue #2036 records, closed. Before this, the leaf
-    // took the source expression, so `observedProperties` held an expression
-    // where AWS holds a literal — a baseline that stops matching the moment the
-    // parameter becomes unreadable, and a `--revert` that writes the token.
-    forgetSecretExpression(PUBLIC_SSM);
-
-    const out = readback({ Url: 'pre-public-host-post' }, { Url: `pre-${PUBLIC_SSM}-post` });
-
-    expect(out['Url']).toBe('pre-public-host-post');
-  });
-
-  it('still REFUSES an ssm mixed leaf with NO verdict on the EMPTY-map path', () => {
-    // Absence is still not evidence. This is the population issue #1926's fix
-    // exists for and it is unchanged: `cdkd state refresh-observed` against a
-    // stack this process never deployed records nothing at all.
-    const out = readback({ Url: 'pre-decrypted-post' }, { Url: `pre-${SECURE_SSM}-post` });
-
-    expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
-  });
-
-  it('still REFUSES a leaf whose ssm reference was RECORDED as secret', () => {
-    recordSecretExpression(SECURE_SSM);
-
-    const out = readback({ Url: 'pre-decrypted-post' }, { Url: `pre-${SECURE_SSM}-post` });
-
-    expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
-  });
-
-  it('POISONS a spelling recorded PUBLIC and then SECRET, in that order', () => {
-    // The store is keyed by the bare expression STRING, which carries no region
-    // and no account, so one `cdkd deploy --all` can legitimately see the same
-    // spelling as a `String` in one region and a `SecureString` in another. A
-    // stale SECRET verdict can only over-redact; a stale PUBLIC one would keep
-    // the plaintext, so a disagreement must never resolve to "public".
-    forgetSecretExpression(SECURE_SSM);
-    recordSecretExpression(SECURE_SSM);
-    expect(isProvenPublicExpression(SECURE_SSM)).toBe(false);
-
-    const out = readback({ Url: 'pre-decrypted-post' }, { Url: `pre-${SECURE_SSM}-post` });
-
-    expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
-  });
-
-  it('POISONS a spelling recorded SECRET and then PUBLIC, in that order too', () => {
-    // The other order. Both must poison, or the outcome depends on which region
-    // a `--stack-concurrency 4` run happened to resolve first.
-    recordSecretExpression(SECURE_SSM);
-    forgetSecretExpression(SECURE_SSM);
-    expect(isProvenPublicExpression(SECURE_SSM)).toBe(false);
-
-    const out = readback({ Url: 'pre-decrypted-post' }, { Url: `pre-${SECURE_SSM}-post` });
-
-    expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
-  });
-
-  it('stays PUBLIC when the same public verdict is recorded twice', () => {
-    // A repeated resolution of the same public parameter is the NORM, not a
-    // disagreement — poisoning on it would make the fix inert after the second
-    // resource in a stack.
-    forgetSecretExpression(PUBLIC_SSM);
-    forgetSecretExpression(PUBLIC_SSM);
-
-    expect(isProvenPublicExpression(PUBLIC_SSM)).toBe(true);
-  });
-
-  it('requires EVERY reference in the leaf to be proven public, not just one', () => {
-    // Keeping the bag here keeps it UNSCANNED: with an empty map `redactByPath`
-    // value-scanned nothing, so one proven-public token must not license
-    // keeping its neighbour's plaintext. The populated-map arm can afford
-    // `some` because the scan already ran there.
-    forgetSecretExpression(PUBLIC_SSM);
-
-    const out = readback(
-      { Url: `host=public-host-value;pw=${PLAINTEXT}` },
-      { Url: `host=${PUBLIC_SSM};pw=${EXPR}` }
-    );
-
-    expect(out['Url']).toBe(`host=${PUBLIC_SSM};pw=${EXPR}`);
-    expect(JSON.stringify(out)).not.toContain(PLAINTEXT);
-  });
-
-  it('refuses a leaf with a STRAY opener and no complete token', () => {
-    // `isDynamicReferenceString` is a SUBSTRING test for `{{resolve:`, so this
-    // leaf reaches the arm with ZERO complete tokens. An `every` over an empty
-    // list is vacuously true, which would keep the readback value on the
-    // strength of no evidence at all.
-    const stray = 'prefix {{resolve: unterminated';
-    const out = readback({ Url: 'whatever-aws-returned' }, { Url: stray });
-
-    expect(out['Url']).toBe(stray);
-  });
-
-  it('clears BOTH stores on reset', () => {
-    // The reset is paired with the resolver's cache reset. Leaving the PUBLIC
-    // half behind would let the next phase inherit a stale verdict in the one
-    // direction that can un-redact.
-    forgetSecretExpression(PUBLIC_SSM);
-    clearRecordedSecretExpressions();
-
-    expect(isProvenPublicExpression(PUBLIC_SSM)).toBe(false);
-  });
-
-  it('stays POISONED when the SAME public verdict is re-recorded after a secret one', () => {
-    // `forgetSecretExpression`'s CONFLICTING-preserving disjunct. The first
-    // `forget` contradicts a recorded SECRET and poisons the spelling; the
-    // second no longer contradicts anything (the secret entry is already gone),
-    // so without the disjunct it would overwrite the poison with a clean
-    // `true`. That DE-POISONS a spelling the process has seen both ways, and
-    // `mixedLeafMayCarryPublicReference` would then keep a decrypted
-    // `SecureString` in the readback.
-    //
-    // A second `GetParameter` for the same expression is ordinary: one resolver
-    // per stack, and `cdkd deploy` resolves the same reference again for the
-    // next resource that uses it.
-    recordSecretExpression(SECURE_SSM);
-    forgetSecretExpression(SECURE_SSM);
-    forgetSecretExpression(SECURE_SSM);
-
-    expect(isProvenPublicExpression(SECURE_SSM)).toBe(false);
-
-    // ...and the refusal that verdict drives still holds end to end.
-    const out = readback({ Url: 'pre-decrypted-secure-value-post' }, { Url: `pre-${SECURE_SSM}-post` });
-
-    expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
-  });
-});

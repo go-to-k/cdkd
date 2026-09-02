@@ -143,13 +143,14 @@ EXPECTED_DB_URL_EXPR="postgres://app-svc:{{resolve:ssm:${SECURE_PARAM_NAME}}}@db
 # The SecureString reference as a WHOLE token, which is what SSM_SECURE_VALUE
 # and SSM_SECURE_COPY must both hold in state (issues #1901 / #2012).
 EXPECTED_SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
-# The PUBLIC mixed leaf (issue #2036), in BOTH of its forms. The RESOLVED one is
-# what state holds wherever the POSITION SOURCE carries no reference — which is
-# every path reachable from a template-declared leaf, since a public ssm `String`
-# is persisted resolved (issue #1901). The EXPRESSION one is what the documented
-# residual produces once the source DOES carry the reference, the `cdkd import`
-# warn-path shape Phase 1f3 stamps. Pinning both means the fixture states which
-# input configuration gets which answer rather than accepting either.
+# The PUBLIC mixed leaf (issue #2036, still OPEN), in BOTH of its forms. The
+# RESOLVED one is what state holds wherever the POSITION SOURCE carries no
+# reference — which is every path reachable from a template-declared leaf, since
+# a public ssm `String` is persisted resolved (issue #1901). The EXPRESSION one
+# is the OVER-redaction #2036 records, produced once the source DOES carry the
+# reference: the `cdkd import` warn-path shape Phase 1f3 stamps. Pinning both
+# means the fixture states which input configuration gets which answer rather
+# than accepting either.
 EXPECTED_PUBLIC_URL="https://${EXPECTED_SSM}.${REGION}.example.internal"
 EXPECTED_PUBLIC_URL_EXPR="https://{{resolve:ssm:${PARAM_NAME}}}.${REGION}.example.internal"
 
@@ -1621,7 +1622,7 @@ if [ "${orphan_fail}" -ne 0 ]; then
   exit 1
 fi
 
-# --- Phase 1f3: the #2036 RESIDUAL, on a source that actually carries it ---
+# --- Phase 1f3: the #2036 RESIDUAL (still OPEN), on a source that carries it ---
 # Issue [#2036](https://github.com/go-to-k/cdkd/issues/2036) records an
 # OVER-redaction: a MIXED leaf embedding a PUBLIC ssm reference, refused on the
 # empty-map readback paths because absence from the verdict store is not
@@ -1642,19 +1643,20 @@ fi
 #
 # WHICH ARM CARRIES THE DISCRIMINATION, stated because the phase this one
 # replaces got exactly this wrong. The residual assertion below is a PIN, not a
-# discriminator: `origin/main` refuses this leaf too, by the older rule
-# (`secrets.size === 0` -> refuse) rather than by the new one (no PROVEN-public
-# verdict -> refuse), so it answers the same. Keeping it is still worth the
-# lines -- it is falsifiable by any future over-reach that starts substituting
-# here -- but it is not what earns the phase its runtime. The arm that DOES
-# discriminate is the BLAST-RADIUS one: on `main` `SSM_VALUE` stays
+# discriminator: `origin/main` refuses this leaf too, and so does this branch --
+# issue #2036 stays OPEN, so the refusal rule is unchanged. Keeping the pin is
+# still worth the lines (it is falsifiable by any future over-reach that starts
+# substituting here), but it is not what earns the phase its runtime. The arm
+# that DOES discriminate is the BLAST-RADIUS one: on `main` `SSM_VALUE` stays
 # `cdkd-known-ssm-value`, and on this branch it takes its own parameter's
 # expression, because only this branch derives a needle from the refused leaf.
 #
-# The issue #2036 CLOSURE (a PROVEN-public verdict admitting the resolved value)
-# has no arm anywhere in this fixture, and cannot get one here: reaching it needs
-# an expression-bearing `properties` AND an in-process `GetParameter` verdict at
-# once. Tracked as issue #2425.
+# WHY #2036 IS STILL OPEN, since this phase is the closest thing to its arm: a
+# PROVEN-public verdict store WOULD admit the resolved value here, and PR #2415
+# drafted one and WITHDREW it. Keyed on the bare expression and living for the
+# whole process, it un-redacts a same-named `SecureString` in another region on
+# a `cdkd deploy --all` -- measured, and the un-redacting direction. A revival
+# must key the verdict by SCOPE (region + account) at the READ side.
 #
 # A SEPARATE phase rather than a fold into 1f2, and the reason is measurable:
 # once PUBLIC_URL's source carries the expression, `learnMixedLeafNeedle` learns
@@ -1710,9 +1712,15 @@ F3_OBSERVED=$(printf '%s' "${F3_STATE}" \
 # deploy must not see the stamped expression: it would read the resource as
 # CHANGED and issue an UPDATE that phase is not expecting. Restoring here rather
 # than after the assertions means an assertion failure -- or the empty-bag
-# refusal below -- cannot leave the stamp behind either. The only path that can
-# now is the `refresh-observed` call itself aborting under `set -e`, and the
-# exit trap destroys the stack in that case anyway.
+# refusal below -- cannot leave the stamp behind either, and the `rm -f` of this
+# phase's temp files sits on that same path.
+#
+# THREE paths can still leave the stamp live, and naming them beats implying
+# there is one: the `refresh-observed` call aborting under `set -e`, the
+# `state show` / `jq` reads above doing the same, and this block's OWN `exit 1`
+# when the restore does not verify. All three are bounded by the EXIT trap,
+# which destroys the stack and its state; none is bounded by anything else, so
+# do not move assertions back above this block.
 #
 # Done from the bag read at the TOP of this phase rather than by un-stamping, so
 # a jq slip cannot leave a subtly different value behind, and asserted, because
@@ -1748,7 +1756,7 @@ residual_fail=0
 # path that cannot tell the two apart.
 F3_PUBLIC_URL=$(printf '%s' "${F3_OBSERVED}" | jq -r '.PUBLIC_URL // empty')
 if [ "${F3_PUBLIC_URL}" = "${EXPECTED_PUBLIC_URL_EXPR}" ]; then
-  echo "    OK: observed PUBLIC_URL took the expression (#2036's residual — a PIN, same on main)"
+  echo "    OK: observed PUBLIC_URL took the expression (#2036 residual, still open — a PIN, same on main)"
 else
   echo "FAIL: observed PUBLIC_URL should be '${EXPECTED_PUBLIC_URL_EXPR}', got $(mask "${F3_PUBLIC_URL}")" >&2
   residual_fail=1
@@ -1907,25 +1915,21 @@ fi
 # CONTROL 3: the mixed leaf carrying a PUBLIC ssm reference keeps AWS's value.
 #
 # LABELLED AS A SANITY CONTROL, NOT AS ISSUE #2036 COVERAGE, and the distinction
-# was measured: this arm passes IDENTICALLY on `origin/main`, so it discriminates
-# nothing about the verdict store. An earlier revision claimed it as the #2036
-# closure and said the failure form "means the public verdict was not consulted".
-# Both were wrong for the same upstream reason Phase 1f's arm was: `properties`
-# holds PUBLIC_URL RESOLVED (issue #1901), so the POSITION SOURCE carries no
-# reference, `refuseUncertifiedReadbackPositions` never reaches its mixed-leaf
-# arm, and the readback passes through whatever the verdict store says.
+# was measured: this arm passes IDENTICALLY on `origin/main`. An earlier revision
+# claimed it as the #2036 closure and said the failure form "means the public
+# verdict was not consulted". Both were wrong for the same upstream reason Phase
+# 1f's arm was: `properties` holds PUBLIC_URL RESOLVED (issue #1901), so the
+# POSITION SOURCE carries no reference, `refuseUncertifiedReadbackPositions`
+# never reaches its mixed-leaf arm, and the readback passes straight through.
 #
 # What it DOES still catch is a mask/drop regression at a leaf whose correct
 # answer is the plaintext, on the DEPLOY path rather than the command path —
 # worth keeping, worth not overselling.
 #
 # The #2036 residual direction is exercised in Phase 1f3, on a stamped source
-# that genuinely carries the expression. The CLOSURE direction (a proven-public
-# verdict admitting the resolved value) is fenced by the unit suite in
-# `tests/unit/deployment/secret-redaction-derived-needles.test.ts`; its
-# end-to-end site is `cdkd drift --revert` / `--accept`, the process that has
-# BOTH an expression-bearing baseline and in-process `GetParameter` verdicts,
-# and building that arm is tracked as follow-up rather than done here.
+# that genuinely carries the expression. There is no CLOSURE direction to fence:
+# issue #2036 is still OPEN -- see Phase 1f3's header for the scope defect that
+# withdrew the fix.
 G_PUBLIC_URL=$(printf '%s' "${G_OBSERVED}" | jq -r '.PUBLIC_URL // empty')
 if [ "${G_PUBLIC_URL}" = "${EXPECTED_PUBLIC_URL}" ]; then
   echo "    OK: re-captured PUBLIC_URL kept the RESOLVED public value (sanity control, not #2036 coverage)"

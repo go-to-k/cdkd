@@ -70,7 +70,7 @@ so the table is indexed by what that leaf holds, not by which command ran:
 | `SSM_VALUE` (public `String`, whole token) | the resolved value | resolved |
 | `DB_URL` (SecureString inside text) | the expression | expression |
 | `PUBLIC_URL` (public `String` inside text) | the resolved value (issue [#1901](https://github.com/go-to-k/cdkd/issues/1901)) | resolved — the mixed-leaf arm is never consulted |
-| `PUBLIC_URL`, with the expression STAMPED into `properties` (Phase 1f3) | the expression | expression (the residual, issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) |
+| `PUBLIC_URL`, with the expression STAMPED into `properties` (Phase 1f3) | the expression | expression (the OPEN over-redaction, issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) |
 
 The last two rows are the same leaf, and the pair is the correction this fixture
 had to make: a public ssm `String` is persisted RESOLVED by construction, so on
@@ -84,18 +84,19 @@ the expression, which in the wild only `cdkd import`'s warn path produces, so
 
 **Which arm of Phase 1f3 actually discriminates**, stated because the arms it
 replaced did not: the residual assertion is a PIN — `main` refuses that leaf too,
-by the older `secrets.size === 0` rule rather than by the absent PROVEN-public
-verdict, so it answers the same. What earns the phase its runtime is the
-BLAST-RADIUS assertion beside it: on `main` `SSM_VALUE` stays
-`cdkd-known-ssm-value`, and only a tree that derives needles rewrites it onto its
-own parameter's expression.
+and so does this branch, since issue
+[#2036](https://github.com/go-to-k/cdkd/issues/2036) is still OPEN. What earns
+the phase its runtime is the BLAST-RADIUS assertion beside it: on `main`
+`SSM_VALUE` stays `cdkd-known-ssm-value`, and only a tree that derives needles
+rewrites it onto its own parameter's expression.
 
-The `#2036` CLOSURE direction — a PROVEN-public verdict admitting the resolved
-value — is fenced by the unit suite; it has no arm anywhere in this fixture and
-cannot get one from a stamped `properties` alone, because reaching it needs an
-expression-bearing baseline AND an in-process `GetParameter` verdict at the same
-time. Its end-to-end site is `cdkd drift --revert` / `--accept`, tracked as
-issue [#2425](https://github.com/go-to-k/cdkd/issues/2425).
+`#2036` is NOT closed here. A store of PROVEN-public verdicts would admit the
+resolved value at that leaf, and PR #2415 drafted one and withdrew it: keyed on
+the bare expression and living for the whole process, it un-redacts a same-named
+`SecureString` in another region on a `cdkd deploy --all`. A revival has to key
+the verdict by SCOPE (region + account) at the read side; the end-to-end arm for
+it is tracked as issue
+[#2425](https://github.com/go-to-k/cdkd/issues/2425).
 
 Phase 1f2 covers issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)'s
 last residual row: it deletes `SSM_SECURE_COPY` from the record's persisted
