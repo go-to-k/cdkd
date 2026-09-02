@@ -1,3 +1,10 @@
+## [0.285.10](https://github.com/go-to-k/cdkd/compare/v0.285.9...v0.285.10) (2026-09-02)
+
+
+### Bug Fixes
+
+* **cli:** fold the tenth prompt, so cdkd events prune refuses with exit 1 ([#2463](https://github.com/go-to-k/cdkd/issues/2463)) ([28acd78](https://github.com/go-to-k/cdkd/commit/28acd789e2e71fdfb669de2d017b4bcf542f4e9b))
+
 ## [0.285.9](https://github.com/go-to-k/cdkd/compare/v0.285.8...v0.285.9) (2026-09-02)
 
 
