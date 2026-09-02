@@ -52,6 +52,7 @@ const mocks = vi.hoisted(() => ({
   waitForAgentCorePing: vi.fn(),
   invokeAgentCore: vi.fn(),
   invokeAgentCoreWs: vi.fn(),
+  runAgentCoreWatchLoop: vi.fn(),
   stsSend: vi.fn(),
 }));
 
@@ -93,6 +94,20 @@ vi.mock('../../../src/local/agentcore-client.js', async (importOriginal) => {
 vi.mock('../../../src/local/agentcore-ws-client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/local/agentcore-ws-client.js')>();
   return { ...actual, invokeAgentCoreWs: mocks.invokeAgentCoreWs };
+});
+
+// Only the LOOP is stubbed. `--watch` wraps the same `/ws` dispatch in a
+// reload-driven loop, and the closure the loop calls back
+// (`invokeOnce`) is a SECOND, independent call site of the two gates under
+// test — it builds its own `frameSource` and passes its own
+// `wrapWsOnMessage(..., promptOnStdout)`. Driving the real loop would stand up
+// a chokidar watcher and a classifier for no gain; stubbing it to run exactly
+// one iteration puts the command's own `invokeOnce` closure under test while
+// `softReloadAgentContainer` and the rest of the module stay real.
+vi.mock('../../../src/local/invoke-agentcore-watch-loop.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/local/invoke-agentcore-watch-loop.js')>();
+  return { ...actual, runAgentCoreWatchLoop: mocks.runAgentCoreWatchLoop };
 });
 
 // Only the CLIENT is stubbed; `AssumeRoleCommand` and friends stay REAL, so a
@@ -270,6 +285,24 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       streamed: false,
     });
     mocks.invokeAgentCoreWs.mockResolvedValue({ frames: 0 });
+    // One iteration, then return — the shape a `--watch` session takes when
+    // the agent closes with no reload pending.
+    mocks.runAgentCoreWatchLoop.mockImplementation(
+      async (args: {
+        hostPort: number;
+        invokeOnce: (a: {
+          hostPort: number;
+          abortSignal: AbortSignal;
+          firstIteration: boolean;
+        }) => Promise<unknown>;
+      }) => {
+        await args.invokeOnce({
+          hostPort: args.hostPort,
+          abortSignal: new AbortController().signal,
+          firstIteration: true,
+        });
+      }
+    );
     mocks.stsSend.mockResolvedValue({
       Credentials: {
         AccessKeyId: 'AKIA_LANE2410_TEST',
@@ -480,67 +513,107 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
   });
 
   /**
-   * `--ws`'s `> ` REPL prompt is gated on `promptOnStdout` — stdin a TTY AND
-   * stdout a TTY — and the second half is issue #2410's. Gated on stdin
-   * alone, as it was, `cdkd local invoke-agentcore Agent --ws > frames.txt`
-   * FROM A TERMINAL appended `\n> ` after every frame, so the `| tail -1`
-   * this command's own docs prescribe returned `> ` instead of the last
-   * frame: the documented workaround, broken by the thing it works around.
+   * The `--ws` gate table. Issue #2410 SPLIT one boolean into two, and this
+   * table exists to hold both halves apart, at both of the command's `--ws`
+   * call sites.
    *
-   * All FOUR combinations are driven, because only one of them differs
-   * between the two gates and a table missing it proves nothing. They run
-   * through the COMMAND rather than through `wrapWsOnMessage` directly (which
-   * `tests/unit/cli/local-invoke-agentcore-pure-helpers.test.ts` already
-   * covers as a boolean): the expression `interactive && process.stdout.isTTY
-   * === true` lives in the command, so passing the boolean in by hand would
-   * mirror the gate rather than fence it. `invokeAgentCoreWs` is mocked at
-   * the module boundary and calls back the `onMessage` the command actually
-   * handed it.
+   * WHAT WAS SPLIT. `interactive` (`process.stdin.isTTY`) used to answer two
+   * different questions. Reading follow-up frames from stdin is a STDIN
+   * concern and still uses it; appending `\n` plus the `> ` REPL prompt is a
+   * STDOUT concern, and stdout is this command's PAYLOAD stream, so it moved
+   * to `promptOnStdout` = stdin a TTY AND stdout a TTY. Gated on stdin alone,
+   * `cdkd local invoke-agentcore Agent --ws > frames.txt` FROM A TERMINAL
+   * appended `\n> ` after every frame, so the `| tail -1` this command's own
+   * docs prescribe returned `> ` instead of the last frame: the documented
+   * workaround, broken by the thing it works around.
+   *
+   * SO EACH CASE ASSERTS BOTH HALVES, and they disagree in exactly one of the
+   * four TTY combinations — a terminal stdin with a redirected stdout, where
+   * the frame source must still be wired and the prompt must not be written.
+   * A table asserting only the prompt is satisfied by collapsing the split the
+   * OTHER way (`frameSource = promptOnStdout ? ... : undefined`), which is the
+   * over-tightening this command must not ship: it would silently drop the
+   * REPL for a terminal user redirecting the payload to a file.
+   *
+   * AND EACH IS DRIVEN AT BOTH CALL SITES. `--watch` wraps the same dispatch
+   * in a reload loop whose `invokeOnce` closure builds its OWN `frameSource`
+   * and passes its OWN `wrapWsOnMessage(..., promptOnStdout)`; the two sites
+   * are separate expressions that can drift apart, and with only the plain
+   * site driven, reverting the watch site's `promptOnStdout` to `interactive`
+   * reds nothing. `runAgentCoreWatchLoop` is stubbed to run one iteration
+   * (see its `vi.mock` above), so the `--watch` rows enter the loop's callback
+   * for real.
+   *
+   * All of it runs through the COMMAND rather than through `wrapWsOnMessage`
+   * directly (which `tests/unit/cli/local-invoke-agentcore-pure-helpers.test.ts`
+   * already covers as a boolean): the gate expressions live in the command, so
+   * passing the booleans in by hand would mirror them rather than fence them.
+   * `invokeAgentCoreWs` is mocked at the module boundary and calls back the
+   * `onMessage` the command actually handed it.
    */
   describe.each([
-    { stdinTty: true, stdoutTty: true, prompt: true },
+    { watch: false, stdinTty: true, stdoutTty: true, prompt: true },
     // The regression: a terminal stdin with a REDIRECTED stdout.
-    { stdinTty: true, stdoutTty: false, prompt: false },
-    { stdinTty: false, stdoutTty: true, prompt: false },
-    { stdinTty: false, stdoutTty: false, prompt: false },
-  ])('--ws with stdin TTY=$stdinTty, stdout TTY=$stdoutTty', ({ stdinTty, stdoutTty, prompt }) => {
-    const FRAME = '{"token":"lane2410-ws-frame"}';
+    { watch: false, stdinTty: true, stdoutTty: false, prompt: false },
+    { watch: false, stdinTty: false, stdoutTty: true, prompt: false },
+    { watch: false, stdinTty: false, stdoutTty: false, prompt: false },
+    // The same four through the `--watch` loop's `invokeOnce` closure.
+    { watch: true, stdinTty: true, stdoutTty: true, prompt: true },
+    { watch: true, stdinTty: true, stdoutTty: false, prompt: false },
+    { watch: true, stdinTty: false, stdoutTty: true, prompt: false },
+    { watch: true, stdinTty: false, stdoutTty: false, prompt: false },
+  ])(
+    '--ws --watch=$watch with stdin TTY=$stdinTty, stdout TTY=$stdoutTty',
+    ({ watch, stdinTty, stdoutTty, prompt }) => {
+      const FRAME = '{"token":"lane2410-ws-frame"}';
 
-    const title = `writes the raw frame to stdout and ${
-      prompt ? 'appends' : 'does NOT append'
-    } the REPL prompt`;
+      const title =
+        `writes the raw frame to stdout, ${prompt ? 'appends' : 'does NOT append'} the ` +
+        `REPL prompt, and ${stdinTty ? 'wires' : 'omits'} the stdin frame source`;
 
-    it(title, async () => {
-      process.stdin.isTTY = stdinTty;
-      process.stdout.isTTY = stdoutTty;
-      mocks.invokeAgentCoreWs.mockImplementation(
-        async (
-          _host: string,
-          _port: number,
-          _event: unknown,
-          options: { onMessage: (text: string) => void }
-        ) => {
-          options.onMessage(FRAME);
-          return { frames: 1 };
-        }
-      );
+      it(title, async () => {
+        process.stdin.isTTY = stdinTty;
+        process.stdout.isTTY = stdoutTty;
+        let wsOptions: object | undefined;
+        mocks.invokeAgentCoreWs.mockImplementation(
+          async (
+            _host: string,
+            _port: number,
+            _event: unknown,
+            options: { onMessage: (text: string) => void }
+          ) => {
+            wsOptions = options;
+            options.onMessage(FRAME);
+            return { frames: 1 };
+          }
+        );
 
-      const { stdout, stderr, error } = await runAgentCore([
-        'AgentStack:EchoAgent',
-        '--no-pull',
-        '--ws',
-      ]);
+        const { stdout, stderr, error } = await runAgentCore([
+          'AgentStack:EchoAgent',
+          '--no-pull',
+          '--ws',
+          ...(watch ? ['--watch'] : []),
+        ]);
 
-      expect(error).toBeUndefined();
-      // `emitWsResult` writes the lone stream terminator after the frames in
-      // both shapes; only the `\n> ` in between is the prompt.
-      expect(stdout).toBe(prompt ? `${FRAME}\n${WS_REPL_PROMPT}\n` : `${FRAME}\n`);
-      // Whatever the prompt does, the payload contract holds: the frame is on
-      // stdout and the command's prose is not.
-      expect(stderr).toContain('Target: AgentStack/EchoAgent');
-      expect(stdout).not.toContain('Target: AgentStack/EchoAgent');
-    });
-  });
+        expect(error).toBeUndefined();
+        // `emitWsResult` writes the lone stream terminator after the frames in
+        // both shapes; only the `\n> ` in between is the prompt.
+        expect(stdout).toBe(prompt ? `${FRAME}\n${WS_REPL_PROMPT}\n` : `${FRAME}\n`);
+        // Whatever the prompt does, the payload contract holds: the frame is on
+        // stdout and the command's prose is not.
+        expect(stderr).toContain('Target: AgentStack/EchoAgent');
+        expect(stdout).not.toContain('Target: AgentStack/EchoAgent');
+
+        // The STDIN half of the split, which the prompt assertion above cannot
+        // see. `frameSource` is spread in conditionally, so its presence IS
+        // the decision: absent means no REPL, and it must track stdin ALONE.
+        // Asserted defined first, so a `--watch` wiring that never reached the
+        // WS client could not satisfy the `in` check vacuously.
+        expect(wsOptions).toBeDefined();
+        expect('frameSource' in (wsOptions as object)).toBe(stdinTty);
+      });
+    }
+  );
 
   /**
    * The OVER-TIGHTENING control: `emitResult`'s own HTTP >= 400 `logger.warn`

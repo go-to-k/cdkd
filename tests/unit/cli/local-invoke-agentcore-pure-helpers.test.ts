@@ -161,18 +161,29 @@ describe('buildA2aRequest (`--event` -> A2A JSON-RPC request)', () => {
   });
 });
 
-describe('wrapWsOnMessage (`--ws` auto-TTY REPL output wrapping)', () => {
-  it('passes through unchanged when non-interactive (piped / CI)', () => {
+/**
+ * `wrapWsOnMessage`'s second argument is `promptOnStdout`, NOT "interactive":
+ * issue [#2410](https://github.com/go-to-k/cdkd/issues/2410) split the two.
+ * It is `stdin.isTTY && stdout.isTTY`, so `false` covers a piped / CI run AND
+ * the case the split exists for -- a terminal stdin with a REDIRECTED stdout,
+ * where reading follow-up frames from stdin is still right but writing a `> `
+ * prompt onto the payload stream is not. The command-level table in
+ * `tests/unit/cli/local-invoke-agentcore-stdout-stream.test.ts` drives all
+ * four TTY combinations through the real gate expression; these cases fence
+ * the wrapper as a pure boolean function.
+ */
+describe('wrapWsOnMessage (`--ws` REPL output wrapping, gated on promptOnStdout)', () => {
+  it('passes through unchanged when the prompt is off (piped stdout, or non-TTY stdin)', () => {
     const sink = vi.fn();
     const wrapped = wrapWsOnMessage(sink, false);
-    // Same function identity — no allocation / wrapping when non-interactive.
+    // Same function identity — no allocation / wrapping when the prompt is off.
     expect(wrapped).toBe(sink);
     wrapped('frame-1');
     wrapped('frame-2\n');
     expect(sink.mock.calls).toEqual([['frame-1'], ['frame-2\n']]);
   });
 
-  it('appends a newline (when missing) then writes the prompt in interactive mode', () => {
+  it('appends a newline (when missing) then writes the prompt when the prompt is on', () => {
     const sink = vi.fn();
     const wrapped = wrapWsOnMessage(sink, true);
     wrapped('hello');

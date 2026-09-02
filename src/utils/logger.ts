@@ -89,13 +89,22 @@ export function releaseStdoutForPayload(): void {
 /**
  * Whether {@link reserveStdoutForPayload} is in effect.
  *
- * ONE production caller, and the carve-out is narrow enough to state: a
+ * Production callers exist, and the carve-out is narrow enough to state: a
  * writer that does NOT go through {@link ConsoleLogger} and therefore cannot
- * be routed by {@link ConsoleLogger.emit}. Today that is `spawnStreaming` in
- * `src/utils/docker-cmd.ts`, which mirrors a child process's stdout live
- * under `--verbose`; issue
- * [#2410](https://github.com/go-to-k/cdkd/issues/2410) made it join the
- * logger on stderr while a command holds the reservation.
+ * be routed by {@link ConsoleLogger.emit}. Today both live in
+ * `src/utils/docker-cmd.ts` — `spawnStreaming`, which mirrors a child's
+ * stdout live under `--verbose`, and `spawnForeground`, which hands the
+ * child our fd 1 outright. Issue
+ * [#2410](https://github.com/go-to-k/cdkd/issues/2410) routed both to stderr
+ * while a command holds the reservation.
+ *
+ * The class is NOT closed, and saying so is the point: `streamLogs` in
+ * `src/local/docker-runner.ts` is a third member — it pipes the CONTAINER's
+ * stdout into ours on `cdkd local invoke` — and is deliberately NOT
+ * converted, because unlike docker's own diagnostics a container's stdout
+ * may BE what the user wants on that stream. That needs a per-caller
+ * contract decision and a real-Docker integ round, tracked as
+ * [#2419](https://github.com/go-to-k/cdkd/issues/2419).
  *
  * That is the ONLY shape this predicate is for. A COMMAND must never branch
  * on it — a command's own prose already flows through the logger, so
@@ -195,9 +204,10 @@ export class ConsoleLogger implements Logger {
    * `runStackBuffered` is replayed by whatever flushes the buffer and never
    * consults the reservation at all. Unreachable today — `deploy.ts`'s
    * `runStackBuffered` call is the only thing that opens a buffer, and `deploy`
-   * reserves nothing (its stdout is a human surface); a bare line number here
-   * would go stale on the next edit to that file without anything noticing — so the fix would be untestable and would have to guess
-   * where the flush should route.
+   * reserves nothing (its stdout is a human surface). A bare line number here
+   * would go stale on the next edit to that file with nothing noticing, so it
+   * is named by symbol. The fix would therefore be untestable, and would have
+   * to guess where the flush should route.
    *
    * That rationale survives #2410 unchanged, and it is worth restating WHY,
    * because #2410 widened the reserving population from a `--json`-only set to

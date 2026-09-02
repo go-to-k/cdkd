@@ -17,8 +17,13 @@ import { getLogger, isStdoutReservedForPayload } from './logger.js';
  * Output handling: stdout/stderr are collected in memory unconditionally so
  * `runDockerStreaming` can return them to the caller for error wrapping.
  * When the logger is at debug level (i.e. the user passed `--verbose`),
- * the chunks are ALSO mirrored to `process.stdout` / `process.stderr` so
- * the user sees live build progress.
+ * the chunks are ALSO mirrored live so the user sees build progress —
+ * stderr always to `process.stderr`, and stdout to `process.stdout` EXCEPT
+ * while a command holds a payload reservation
+ * ({@link isStdoutReservedForPayload}), where it joins the logger on stderr
+ * so a child's diagnostics cannot land in the payload
+ * ([#2410](https://github.com/go-to-k/cdkd/issues/2410)). The same
+ * reservation redirects `spawnForeground`'s inherited fd 1 to fd 2.
  */
 
 /**
@@ -56,10 +61,18 @@ export interface RunDockerOptions {
   /** When set, written to stdin (used by `docker login --password-stdin`). */
   input?: string;
   /**
-   * When true, mirror stdout/stderr chunks to `process.stdout` / `process.stderr`
-   * as they arrive. Useful for `docker pull` / `docker build` where live
-   * progress is desirable. Defaults to "true when the logger is at debug
-   * level" — matches the existing `--verbose` UX.
+   * When true, mirror stdout/stderr chunks live as they arrive. Useful for
+   * `docker pull` / `docker build` where progress is desirable. Defaults to
+   * "true when the logger is at debug level" — matches the existing
+   * `--verbose` UX.
+   *
+   * WHICH STREAM the mirror uses is not yours to choose: stderr chunks always
+   * go to `process.stderr`, and stdout chunks go to `process.stdout` only
+   * while no command holds a payload reservation. Under one they go to
+   * stderr instead ([#2410](https://github.com/go-to-k/cdkd/issues/2410)), so
+   * do NOT add a caller on a reserving command in the belief that this option
+   * puts the child's output on fd 1. The captured `SpawnResult` is
+   * unaffected either way — read that, not the stream.
    */
   streamLive?: boolean;
 }
@@ -107,9 +120,13 @@ export async function spawnStreaming(
 
     child.stdout!.on('data', (chunk: Buffer) => {
       stdoutChunks.push(chunk);
-      // Issue #2410: the child's stdout is DIAGNOSTIC output (pull / build
-      // progress, `docker login`'s `Login Succeeded`, `docker image
-      // inspect`'s JSON) — never the calling command's payload. On a command
+      // Issue #2410: on the DOCKER callers the child's stdout is diagnostic
+      // output (pull / build progress, `docker login`'s `Login Succeeded`,
+      // `docker image inspect`'s JSON), never the calling command's payload.
+      // `docker-build.ts`'s `executable` source mode does treat it as data,
+      // but it reads the captured `SpawnResult.stdout` rather than the live
+      // mirror, and its callers (`local run-task`, `publish-assets`) reserve
+      // nothing — so routing the mirror is safe for it too. On a command
       // that has reserved stdout it must therefore JOIN the logger on
       // stderr, exactly as `ConsoleLogger.emit` routes its own info lines.
       //
@@ -243,7 +260,20 @@ export async function spawnForeground(
     const child = spawn(cmd, args, {
       cwd: options.cwd,
       env,
-      stdio: 'inherit',
+      // Issue #2410, second half. `'inherit'` on fd 1 hands the child OUR
+      // stdout, and on a command holding a payload reservation that is the
+      // payload stream. This path is worse than the `spawnStreaming` one
+      // fixed alongside it, not better: `src/local/ecr-puller.ts` runs
+      // `runDockerForeground(['pull', ...])` UNCONDITIONALLY, so
+      // `cdkd local invoke Stack/ImageFn > out.json` put `docker pull`
+      // progress into the payload with no `--verbose` and no flag at all.
+      //
+      // fd 1 is redirected to OUR fd 2 rather than piped, so the child keeps
+      // writing to a real terminal file descriptor and its progress bars
+      // still animate — a pipe would make docker fall back to plain lines.
+      // stderr and stdin stay inherited, and a command that reserves nothing
+      // gets the original `'inherit'` on all three.
+      stdio: isStdoutReservedForPayload() ? ['inherit', 2, 'inherit'] : 'inherit',
     });
     child.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') {
