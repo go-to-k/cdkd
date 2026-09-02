@@ -712,7 +712,15 @@ CC_ID_OUT="$(cd "${CC_ARM_ID_WORKDIR}" && env -u CDKD_APP node "${LOCAL_DIST}" d
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose 2>&1)"
 CC_ID_RC=$?
 set -e
-printf '%s\n' "${CC_ID_OUT}"
+# ECHOED with the caller's identity masked. `--verbose` turns on the `debug`
+# line that carries AWS's own message, and for this arm that message is the
+# `AccessDenied` naming `arn:aws:sts::<account>:assumed-role/<role>/<session>`.
+# That is CORRECT behaviour -- issue #2302 routes AWS's wording to `debug`
+# precisely so it stays available -- but this transcript gets pasted into PR
+# bodies and issue comments, so the run should not be the thing that publishes
+# it. Only the ECHO is masked; `CC_ID_FLAT` below is built from the RAW output,
+# so every assertion still reads what cdkd actually printed.
+printf '%s\n' "${CC_ID_OUT}" | sed -E 's#arn:aws:sts::[0-9]+:assumed-role/[^ ]*#arn:aws:sts::<account>:assumed-role/<masked>#g'
 
 if [ "${CC_ID_RC}" -ne 0 ]; then
   echo "FAIL phase 0c-ID: the destroy did NOT proceed (rc=${CC_ID_RC}). A guard that cannot answer must warn and continue -- refusing here strands every least-privilege destroy. If the error names s3:GetBucketLocation as an AWS-side denial rather than a cdkd warning, the Cloud Control delete handler now needs that permission and this arm's suppression has to be redesigned." >&2
@@ -791,6 +799,31 @@ case "${CC_ID_GUARD_REASON}" in
   *"s3:GetBucketLocation"*) : ;;
   *)
     echo "FAIL phase 0c-ID: guard event's reason does not name the denied probe: ${CC_ID_GUARD_REASON}" >&2
+    exit 1
+    ;;
+esac
+
+# ...and the reason must NOT carry the CALLER. This is the only place the REAL
+# S3 wording is ever observed: the unit fence asserts the same property against
+# a synthetic double, which shares its premise with the production code it is
+# fencing. S3 words an `AccessDenied` on this probe as
+# `User: arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized
+# to perform: ...`, and since issue #2301 item 3 this value is PERSISTED to
+# `deployments/*.jsonl`, which `cdkd destroy` does not sweep -- so a regression
+# in `describeAwsFailure`'s redaction would write the destroying principal's
+# identity into a durable artifact, at a moment the ATTACKER picks. A live
+# needle is what makes that property fenced rather than assumed.
+case "${CC_ID_GUARD_REASON}" in
+  *"assumed-role"*|*"arn:aws:sts::"*|*"is not authorized to perform"*)
+    echo "FAIL phase 0c-ID: the PERSISTED reason carries caller identity -- the issue #2302 redaction regressed: ${CC_ID_GUARD_REASON}" >&2
+    exit 1
+    ;;
+esac
+# The redaction keeps the error CLASS, which is the half an operator acts on.
+case "${CC_ID_GUARD_REASON}" in
+  *"AccessDenied"*) : ;;
+  *)
+    echo "FAIL phase 0c-ID: reason names neither the caller (good) nor the error class (bad) -- redaction dropped the actionable half: ${CC_ID_GUARD_REASON}" >&2
     exit 1
     ;;
 esac

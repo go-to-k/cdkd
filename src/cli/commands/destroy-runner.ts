@@ -1785,11 +1785,21 @@ export async function runDestroyForStack(
       // call) and so writes no `deployments/` object at all. Telling that
       // caller to go read entries nothing wrote sends them to an empty command
       // and reads as cdkd having lost the record -- worse than saying less.
-      // What replaces it names the only durable surface that verb HAS.
+      //
+      // The absent-recorder text is CALLER-AGNOSTIC, and that is the correction
+      // rather than the wording: TWO callers thread no recorder, not one.
+      // `cdkd state destroy` is the obvious one (go-to-k/cdkd#2423), but
+      // `NestedStackProvider.delete` also drives this runner for a child stack
+      // with no recorder in its context -- under ANY verb, `cdkd destroy`
+      // included. Naming `state destroy` here would tell someone already
+      // running `cdkd destroy` to re-run it, which changes nothing for them.
+      // The runner cannot tell the two apart from `ctx` today, so it states the
+      // FACT it can observe (this run recorded none) and cites both causes.
       const durablePointer =
         ctx.eventRecorder === undefined
-          ? `This summary is the only record: 'cdkd state destroy' writes no deployment events ` +
-            `(go-to-k/cdkd#2423), so re-run through 'cdkd destroy' if you need the durable entry.`
+          ? `This summary is the only record: this run wrote no deployment events, either ` +
+            `because it is a 'cdkd state destroy' (go-to-k/cdkd#2423) or because it is a ` +
+            `nested-stack child, neither of which threads an event recorder.`
           : `Run 'cdkd events ${stackName}' for the RESOURCE_GUARD_INDETERMINATE entries, which ` +
             `name the check and the reason and survive the run.`;
       logger.warn(

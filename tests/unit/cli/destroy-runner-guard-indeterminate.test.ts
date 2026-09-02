@@ -300,7 +300,12 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     // restatements.
     const warned = allWarn();
     expect(warned).not.toContain('cdkd events TestStack');
-    expect(warned).toContain('writes no deployment events');
+    expect(warned).toContain('this run wrote no deployment events');
+    // CALLER-AGNOSTIC on purpose: `cdkd state destroy` is not the only caller
+    // threading no recorder -- `NestedStackProvider.delete` drives this runner
+    // for a child stack with none, under ANY verb. Naming `state destroy` alone
+    // would tell someone already running `cdkd destroy` to re-run it.
+    expect(warned).toContain('nested-stack child');
     expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
   });
 

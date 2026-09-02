@@ -17,10 +17,21 @@ const mockS3Send = vi.fn();
 let clientRegion: string | undefined = 'us-east-1';
 let clientRegionRejects = false;
 
-const resolveClientRegion = (): Promise<string | undefined> =>
-  clientRegionRejects
-    ? Promise.reject(new Error('Region is missing'))
-    : Promise.resolve(clientRegion);
+const resolveClientRegion = (): Promise<string | undefined> => {
+  if (!clientRegionRejects) return Promise.resolve(clientRegion);
+  // AWS-AUTHORED, for the same reason `wireBucketLocationError` is: this arm
+  // also runs its cause through `describeAwsFailure`, and a bare `Error` takes
+  // the PASS-THROUGH branch, so the redaction here had no coverage at all and a
+  // regression in it would have shipped unnoticed. The message is the shape a
+  // credential-chain failure really carries -- naming the caller -- so the
+  // fence below is testing the property rather than a placeholder.
+  const error = new Error(
+    'User: arn:aws:sts::123456789012:assumed-role/ProdDeployRole/ci-run-4711 is not authorized to perform: sts:GetCallerIdentity'
+  );
+  error.name = 'AccessDenied';
+  Object.assign(error, { $metadata: { httpStatusCode: 403, attempts: 1 }, $fault: 'client' });
+  return Promise.reject(error);
+};
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -470,7 +481,12 @@ describe('CloudControlProvider.delete -- S3 bucket identity confirmation (issue 
     expect(mockWarn).toHaveBeenCalledTimes(1);
     const warned = String(mockWarn.mock.calls[0]?.[0]);
     expect(warned).toContain(BUCKET);
-    expect(warned).toContain('s3:GetBucketLocation');
+    // NOT `toContain('s3:GetBucketLocation')`: the warn carries a STATIC
+    // `Grant s3:GetBucketLocation on the bucket` remedy clause, so that needle
+    // is satisfied whatever error was wired and discriminates nothing. The
+    // error CLASS is the part that varies with the cause.
+    expect(warned).toContain('AccessDenied');
+    expect(warned).not.toContain('arn:aws:sts::');
   });
 
   it('treats an ABSENT bucket as absent, not as indeterminate: no warn, delete proceeds', async () => {
@@ -744,7 +760,14 @@ describe('CloudControlProvider.delete -- indeterminate guards are REPORTED (issu
     expect(guards).toHaveLength(1);
     expect(guards[0]!.guard).toBe(CC_DELETE_REGION_IDENTITY_GUARD);
     expect(guards[0]!.reason).toContain("the AWS client's region could not be resolved");
-    expect(guards[0]!.reason).toContain('Region is missing');
+    // The cause is the REDACTED class, not AWS's sentence: this arm runs its
+    // error through `describeAwsFailure` too, and its `reason` is persisted to
+    // `deployments/*.jsonl` exactly like the probe arm's. The double is an
+    // AWS-authored credential-chain failure naming the caller, so the two
+    // assertions together fence the property rather than the wording.
+    expect(guards[0]!.reason).toContain('AccessDenied');
+    expect(guards[0]!.reason).not.toContain('arn:aws:sts::');
+    expect(guards[0]!.reason).not.toContain('assumed-role');
     // ...and the terminal says the same thing, so the durable record and the
     // console cannot disagree about which of the two happened.
     expect(String(mockWarn.mock.calls[0]?.[0])).toContain(

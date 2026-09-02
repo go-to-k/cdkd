@@ -1277,9 +1277,17 @@ export class CloudControlProvider implements ResourceProvider {
           ? `neither the stack state nor the AWS client reports a region`
           : `the stack state records no region and the AWS client's region could not be ` +
             `resolved: ${clientRegionError}`;
+      // The persisted `reason` above keeps its cause VERBATIM -- it ends the
+      // string, so its own trailing period is correct -- while the warn strips
+      // it, because the warn appends another sentence. Exactly the split the
+      // probe arm below uses, and the reason this arm needs it too:
+      // `clientRegionError` is a `describeAwsFailure` summary, so its REDACTED
+      // shape already ends in the helper's own sentence and would render
+      // `own message.. Proceeding with the delete.` The sibling commit fixed
+      // only the arm the live run happened to exercise.
       this.logger.warn(
         `Could not confirm that ${resourceType} ${physicalId} (${logicalId}) is the resource ` +
-          `this destroy targets: ${reason}. Proceeding with the delete.`
+          `this destroy targets: ${reason.replace(/[.\s]+$/, '')}. Proceeding with the delete.`
       );
       return { guard: CC_DELETE_REGION_IDENTITY_GUARD, reason };
     }
