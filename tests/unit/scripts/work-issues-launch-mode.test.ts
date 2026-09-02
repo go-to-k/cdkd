@@ -184,7 +184,20 @@ export function commandLines(block: string): string[] {
       const c = line[i]!;
       if (quote) {
         if (c === quote) quote = null;
-      } else if (c === '"' || c === "'") {
+      } else if (c === '"') {
+        quote = c;
+      } else if (c === "'" && /(^|[\s=(])'/.test(line.slice(Math.max(0, i - 1), i + 1))) {
+        // A single quote OPENS a string only where a string can START -- at the
+        // line's beginning or after whitespace / `=` / `(`. Treating every `'`
+        // as an opener makes an APOSTROPHE INSIDE A WORD ("the tool's branch")
+        // open a string that never closes, so every `#` after it looks quoted
+        // and the trailing comment is never stripped. The caller then compares
+        // the comment-bearing line against the prescribed command and reports a
+        // mismatch for an edit that was fine -- a false FAILURE, which is the
+        // expensive direction for a fence nobody expects to be wrong.
+        // Found on the go-to-k/cdk-local#651 sibling lane, whose copy of this
+        // helper had the same defect (go-to-k/cdkd#2432 shipped it here).
+        // A double quote needs no such rule: `"` does not appear inside words.
         quote = c;
       } else if (c === '#' && i > 0 && /\s/.test(line[i - 1]!)) {
         return line.slice(0, i);
@@ -471,6 +484,36 @@ describe('work-issues launch-mode probe', () => {
     // branches again in the same tree) or never restores at all.
     expect(read(join('references', 'ship.md'))).toMatch(/runs LAST, not per-lane/);
     expect(read(join('references', 'retro.md'))).toMatch(/LAST step of the whole run/);
+  });
+
+  describe('commandLines() -- the helper every block fence reads through', () => {
+    // Direct tests, because until now this helper was exercised only INCIDENTALLY
+    // by whatever the two fenced blocks happened to contain. That is enough to
+    // notice it crashing and not enough to notice it mis-parsing: a helper that
+    // silently keeps a trailing comment makes the ordered-equality fence above
+    // report a mismatch for an edit that was correct, and the failure names the
+    // BLOCK rather than the parser.
+    it.each([
+      ['git status --porcelain   # plain trailing comment', 'git status --porcelain'],
+      // The regression: an apostrophe inside a word is not a string opener.
+      ["echo the tool's name   # a real comment", "echo the tool's name"],
+      // ...while a real single-quoted string still hides a `#`.
+      ["git commit -m 'closes #651'", "git commit -m 'closes #651'"],
+      ['git commit -m "closes #651"', 'git commit -m "closes #651"'],
+      ["git branch --list '<your prefix>*'   # trailing", "git branch --list '<your prefix>*'"],
+      ['git switch --no-guess <LAUNCH_BRANCH>', 'git switch --no-guess <LAUNCH_BRANCH>'],
+      // `#` needs preceding whitespace to start a comment, or `refs/heads/#1`
+      // style arguments would be truncated.
+      ['git show-ref --verify refs/heads/x#y', 'git show-ref --verify refs/heads/x#y'],
+    ])('parses %j', (line, expected) => {
+      expect(commandLines(line)).toEqual([expected]);
+    });
+
+    it('drops blank lines and whole-line comments', () => {
+      expect(commandLines('# a heading\n\ngit status --porcelain\n')).toEqual([
+        'git status --porcelain',
+      ]);
+    });
   });
 
   describe('the withdrawn fast-forward cannot come back anywhere', () => {
