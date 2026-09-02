@@ -30,6 +30,72 @@ Run these sequentially and report results:
    The gap used to be 260x, and closing it is what the `cache: false` change bought. While the `test` task still cached, `vp run test` gave the child a TTY, so vitest switched to its per-file reporter with console interception on: **1,981 lines / 171 KB** for a green run. It could also exit 0 having run NOTHING, when the cache encoder overflowed while serialising the task's inputs (`Cache lookup failed: Encoded sequence length exceeded preallocation limit`, no `Test Files` line, rc=0). Both are gone with the cache; `vp test run` never had either.
    Read the summary line, not just the exit code: a run that reports no `Test Files` count did not run.
 
+   **And check WHICH PROJECT the summary belongs to — the summary line cannot
+   tell you.** Measured 2026-09-02 with several sessions running suites at once:
+   three consecutive `vp test run` invocations from cdkd's worktree printed
+   `Test Files 246 passed (246) / Tests 4410 passed (4410) / Type Errors no
+   errors` — the suite of a **cdk-local worktree**
+   (`/Users/goto/pc/github/cdk-local/.claude/worktrees/...`, which has exactly
+   246 test files), not cdkd's 856. `cd`-ing to the right worktree did not help
+   and neither did `--config vite.config.ts`; the shell's `pwd` was correct
+   throughout. The tells are the `RUN <root>` header — 3 lines above the
+   summary on a clean cdkd run, but ~1,600 lines above it here (probably
+   because the foreign project's output is not stream-fenced the way
+   cdkd's `tests/setup.ts` fences its own; inferred, not confirmed) — and a
+   stray `vp run: cdk-local#test ...` line at the end.
+
+   **The MECHANISM is unconfirmed; do not repeat a guess as fact.** Ruled out
+   in this tree: `node_modules/cdk-local` is a pnpm REGISTRY install (store
+   symlink, v0.147.7), `pnpm-workspace.yaml` declares no `packages:`, and
+   `vite.config.ts` references no sibling project — so it is not a workspace
+   link. **Also ruled out — and this is the second wrong guess, so stop
+   guessing:** the `vp` on PATH is not an unpinned toolchain. `type -a vp`
+   resolves function -> `~/.vite-plus/bin/vp` -> the mise shim, and while that
+   launcher self-reports `vp v0.1.12`, it prints `Local vite-plus: v0.2.5`,
+   matching both `package.json` and `.mise.toml`'s `http:vp` pin. No version
+   mismatch. What remains observable is only that PATH prefers the
+   `~/.vite-plus` launcher over the mise shim; whether that matters here is
+   unknown. Treat the cause as OPEN and reproduce it before acting on any
+   theory.
+
+   Whatever the cause, acting on the summary sets the `check` marker (and
+   through `requires`, the `verify-pr` one) over a suite that never ran. So
+   assert the root in the same command that produces the verdict, and read the
+   suite's own exit code rather than the trailing `grep`'s:
+
+   ```bash
+   # Subshell so the `exit`s are safe to paste into an interactive shell and
+   # still give the caller a non-zero status.
+   (
+     log=$(mktemp)                     # NOT a fixed path: the documented
+                                       # trigger is concurrent lanes, and a
+                                       # shared /tmp/t.log lets one lane read
+                                       # another's summary as its own.
+     echo "log: $log"                  # print it BEFORE the exits below, or a
+                                       # failing run's output is unrecoverable
+                                       # (each agent Bash call is a new shell).
+     vp test run > "$log" 2>&1; rc=$?
+     # Exactly ONE header. Two projects interleaved into one log would let
+     # `-m1` bind cdkd's header while the summary grep prints both suites';
+     # zero headers means the suite never started. Report the count, since
+     # the two directions have different causes.
+     runs=$(grep -c 'RUN  v' "$log")
+     [ "$runs" = 1 ] || { echo "expected 1 RUN header, found $runs -- attests to nothing; log: $log"; exit 1; }
+     run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')
+     [ "$run_root" = "$(pwd -P)" ] || { echo "WRONG PROJECT ($run_root) -- attests to nothing; log: $log"; exit 1; }
+     grep -E "Test Files|      Tests |Type Errors" "$log"
+     [ "$rc" = 0 ] || { echo "SUITE FAILED rc=$rc; log: $log"; exit 1; }
+   )
+   ```
+
+   It is contention-dependent, not sticky — re-running usually lands on the
+   right project. A single-FILE run (`vp test run tests/unit/<x>.test.ts`)
+   reported the right project every time in the same window, so it is a useful
+   way to confirm which project you are addressing while other lanes are busy —
+   **but it does NOT substitute for this step.** The marker still requires a
+   full-suite run that passed AND was rooted here; if the full suite cannot be
+   obtained, say so rather than setting the marker on a narrower run.
+
 ## Output
 
 Report as a table:
