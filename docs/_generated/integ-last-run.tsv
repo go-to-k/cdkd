@@ -169,17 +169,17 @@ launchtemplate-asg-inplace	2026-08-19T23:10:58Z	PASS	87	verify.sh	issue 1997 mas
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 local-ecs-service-connect	2026-07-26T20:40:20Z	PASS	23	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
-local-invoke	2026-08-26T15:43:49Z	PASS	31	verify.sh	final round on go-to-k/cdkd#2278; HOST_ARCHITECTURE fix holds, 6/6 invokes, sweep empty incl. exited
-local-invoke-agentcore	2026-08-24T17:29:58Z	FAIL	10	verify.sh	FIXTURE STALENESS, not a cdkd defect: aws-cdk-lib 2.244.0 dropped the aws-bedrockagentcore L2 constructs the fixture imports (the L1 Cfn* exports remain; the L2s Runtime / AgentCoreRuntime / AgentRuntimeArtifact it imports are gone), so it dies at synth before any assertion. Tracked in issue 2191
+local-invoke	2026-09-02T12:38:17Z	PASS	32	verify.sh	PR 2441 (issue 2410) integ-local gate; 6/6 invokes, rc 0; docker sweep empty on ps -a + task nets + svc nets
+local-invoke-agentcore	2026-09-02T12:42:20Z	PASS	134	verify.sh	PR 2441 (issue 2410) — first PASS since the 0824 FAIL. Issue 2191's aws-cdk-lib L2 drop is reverted upstream (resolved 2.267.0 exports Runtime / AgentCoreRuntime / AgentRuntimeArtifact again); fixture unchanged since 1102. 21/21; docker sweep empty on ps -a + both network filters
 local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
-local-invoke-container	2026-08-13T14:36:45Z	PASS	-	verify.sh	issue 1792/1793 no-regression check only (fixture exercises the plain lower-case ECR host); 4/4 container invokes, docker sweep clean
+local-invoke-container	2026-09-02T12:38:17Z	PASS	49	verify.sh	PR 2441 (issue 2410); 4/4. Also used as the live check of the cdk-local second-logger claim: with streams split, stdout carried Building container image + START/END/REPORT + the payload as the LAST line, stderr carried every cdkd logger line (issues 2429 / 2419)
 local-invoke-dotnet	2026-07-26T20:35:19Z	PASS	58	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-from-cfn-stack	2026-07-26T21:13:17Z	PASS	94	verify.sh	re-run post review fixes; install-guard exercised via fresh node_modules direct run (rc=0); clean
 local-invoke-from-cfn-stack-multi-stack	2026-07-26T21:13:17Z	PASS	113	verify.sh	re-run post review fixes; docker + account + CFn clean
 local-invoke-from-state	2026-08-26T03:18:49Z	PASS	79	verify.sh	PR #2194 integ-local gate (local-state-loader in scope); Docker + real-AWS from-state, 0 err 0 orphans
 local-invoke-java	2026-07-26T20:29:11Z	PASS	36	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
-local-invoke-layers	2026-08-27T05:00:40Z	PASS	18	verify.sh	issue 2143 lane, 4th run. Re-run not because this lane changed: origin PR 2296 edited tests/integration/local-run-task-from-state/verify.sh, which is inside integ-local's include, and that gate is hash:files so a peer's already-gated change invalidates it. This lane's three in-scope files are byte-identical across the round. 4/4; docker sweep (ps -a + both network filters) empty.
+local-invoke-layers	2026-09-02T12:38:17Z	PASS	36	verify.sh	PR 2441 (issue 2410); 4/4 incl. the partition-mismatched layer ARN refusal. Its verify.sh comment was corrected in this PR (cdkd logger now on stderr; the grepped build lines are cdk-local's and stay on stdout)
 local-invoke-provided	2026-07-26T20:29:11Z	PASS	32	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
 local-invoke-python	2026-07-26T20:22:00Z	PASS	23	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
 local-invoke-ruby	2026-07-26T20:22:00Z	PASS	33	verify.sh	0727b sweep-L3 staleness re-run (rc=0); docker + account clean
