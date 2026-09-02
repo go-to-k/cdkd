@@ -9,20 +9,44 @@ the session accountable for the lane — and the claim's `<ref>` names the branc
 holds. Everything else in this section is unchanged.
 
 **IN-PLACE runs name the tree they are STANDING IN**
-(`references/launch-mode.md`): the `<ref>` is the branch already checked out
-here plus the `LANE_TREE` the probe recorded. Read the BRANCH out of git rather
-than composing a name — `git -C "<LANE_TREE>" branch --show-current` — and take
-the TREE from the opening report rather than re-deriving it with
-`git rev-parse --show-toplevel`, whose answer follows a cwd that may have
-silently reset to the main checkout. Nothing new will be created, and a claim
-pointing at a worktree that never appears is exactly what §9's owner probes
-misread.
+(`references/launch-mode.md`): the `<ref>` is the branch §5 will create plus the
+`LANE_TREE` the probe recorded. Take the TREE from the opening report rather than
+re-deriving it with `git rev-parse --show-toplevel`, whose answer follows a cwd
+that may have silently reset to the main checkout. No WORKTREE will be created,
+and a claim pointing at a worktree that never appears is exactly what §9's owner
+probes misread.
 
-**An empty branch name means the tree is DETACHED, not that the claim is
-blocked.** The branch is created in §5, after this stage — so write "the branch
-§5 will create in `<LANE_TREE>`" and post the claim on time. A claim delayed
-until a branch exists is a claim posted after the first edit, which is the one
-thing this stage forbids. Such a run claims ONE issue (§3), not a set.
+**Do NOT claim `LAUNCH_BRANCH` — the branch checked out here right now is the
+OUTER TOOL's, not this run's** (`references/launch-mode.md`: "a branch to PUT
+BACK, never one to commit to"). So the name is COMPOSED here rather than read out
+of git with `git branch --show-current`, and it does not exist yet: §5 creates it,
+after this stage. Write "the branch §5 will create in `<LANE_TREE>`" and post the
+claim on time. A claim delayed until the branch exists is a claim posted after the
+first edit, which is the one thing this stage forbids. Such a run's lanes are
+SERIAL (§3): claiming only the top candidate is fine, and so is claiming a whole
+set — but a claimed set must mark every lane after the first `QUEUED`, because a
+reader has to tell a lane that is RUNNING from one that is merely spoken for.
+
+```bash
+# The QUEUED form, posted up front with the rest of the set.
+gh issue comment <n> --body "QUEUED behind #<the lane running first> in \
+<LANE_TREE> — this session will start it only after that lane merges. Not \
+started: no branch exists yet and no file is held. If you want this issue, take \
+it and say so here; I will stand down."
+```
+
+And when the run ends before reaching one, **stand it down rather than leaving
+the claim standing** — a QUEUED claim that outlives its session is the stale
+lock §9 makes a mechanical step of releasing. Say it is unclaimed, and carry the
+four classification fields so the next session inherits the triage instead of
+redoing it:
+
+```bash
+gh issue comment <n> --body "Standing this down UNCLAIMED — the session that \
+queued it ended first. Session-fit: next (not this session) — <reason>. \
+Severity: <v> — <what stays broken>. Effort: <v> — <cycle>. Estimate: <t> — \
+<what eats it>."
+```
 
 For EACH issue you will start:
 

@@ -159,15 +159,22 @@ Then fix it:
    re-implement it here, for the same single-source reason as above.
    MAIN-CHECKOUT: `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`.
    IN-PLACE (this hunt was launched from inside a worktree already — an Orca/ADE
-   workspace, a stray `cd`): create nothing. Work on the branch checked out
-   there and leave that tree standing for whoever made it, because nesting a
-   worktree inside one dies with the outer workspace and takes its uncommitted
-   work (go-to-k/cdkd#2390). That is the ONLY launch-mode arm this skill needs,
-   and the divergence from `/work-issues` is deliberate rather than an omission:
-   this skill has no worktree-REMOVAL step to guard — "Cleanup is
-   non-negotiable" below tracks deployed AWS stacks, not trees — and no
-   post-merge `git checkout main`, so the other IN-PLACE consequences have
-   nothing here to apply to.
+   workspace, a stray `cd`): create no WORKTREE, because nesting one inside
+   another dies with the outer workspace and takes its uncommitted work
+   (go-to-k/cdkd#2390) — but DO take a branch, in place, off `origin/main`:
+   `git fetch origin && git switch -c <branch> origin/main`. Record what
+   `git branch --show-current` said BEFORE that switch, and at the end switch
+   back to it as-is and delete only the branch you made. Never commit onto the
+   branch the tree was handed to you on: this skill opens and merges PRs, and
+   `gh pr merge --delete-branch` deletes the branch the PR was opened from, so a
+   hunt that worked directly on the outer tool's branch would delete it on the
+   way out (go-to-k/cdkd#2417; `.claude/skills/work-issues/references/ship.md`
+   §9 carries the full restore arm and its detach fallback). The remaining
+   divergence from `/work-issues` is deliberate rather than an omission: this
+   skill has no worktree-REMOVAL step to guard — "Cleanup is non-negotiable"
+   below tracks deployed AWS stacks, not trees — and no post-merge
+   `git checkout main`, so those IN-PLACE consequences have nothing here to
+   apply to.
 3. **Add a unit test that fails without the fix and passes with it.** This is
    mandatory, not optional — a bug found by integ MUST leave behind a unit test
    that pins the corrected behavior, so the regression can never come back

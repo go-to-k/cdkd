@@ -77,6 +77,139 @@ const ARM_BEARING: Record<string, string[]> = {
   [join('references', 'gotchas.md')]: ['IN-PLACE'],
 };
 
+/**
+ * Files carrying an arm of the LAUNCH_BRANCH contract (go-to-k/cdkd#2417): the
+ * probe records the branch the outer tool handed the tree over on, section 5
+ * refuses to commit onto it, and section 9 puts it back AS-IS at the very end.
+ * Separate from ARM_BEARING because the mode words survive deleting the restore
+ * — a file can still say IN-PLACE everywhere while the one step that makes the
+ * mode leave no trace is gone, which is what the byte floors also cannot see.
+ */
+const LAUNCH_BRANCH_BEARING: Array<{ doc: string; arm: string; pattern: RegExp }> = [
+  // Each row pins ONE arm, not the token. A bare `.toContain('LAUNCH_BRANCH')`
+  // was measured VACUOUS in 4 of 7 files: `launch-mode.md` mentions the token
+  // 11 times and `ship.md` 6, so deleting the lane-dispatch arm, the "PUT BACK"
+  // paragraph, consequence rows 4/6/9, or ship.md's restore fence ALL stayed
+  // green. A presence check can only catch deleting a file's LAST mention,
+  // which is the one failure nobody makes.
+  {
+    doc: 'SKILL.md',
+    arm: 'the opening report states LAUNCH_BRANCH with the other probe values',
+    pattern: /MAIN_CHECKOUT`\s*and\s*\n?`LAUNCH_BRANCH`/,
+  },
+  {
+    doc: 'SKILL.md',
+    arm: 'lane dispatches carry LAUNCH_BRANCH (without it a lane cannot restore)',
+    pattern: /MAIN_CHECKOUT` \/ `LAUNCH_BRANCH`/,
+  },
+  {
+    doc: LAUNCH_MODE_DOC,
+    arm: 'the "a branch to PUT BACK, never one to commit to" rule',
+    pattern: /PUT\s*\n?BACK, never one to commit to/,
+  },
+  {
+    doc: LAUNCH_MODE_DOC,
+    arm: 'consequence row: branch in place, never commit onto LAUNCH_BRANCH',
+    pattern: /^\|.*never commit onto `LAUNCH_BRANCH`.*\|$/m,
+  },
+  {
+    doc: LAUNCH_MODE_DOC,
+    arm: 'consequence row: switch back as-is',
+    pattern: /^\|.*`LAUNCH_BRANCH`\s*\*\*as-is\*\*.*\|$/m,
+  },
+  {
+    doc: join('references', 'claim.md'),
+    arm: 'do NOT claim LAUNCH_BRANCH',
+    pattern: /Do NOT claim `LAUNCH_BRANCH`/,
+  },
+  {
+    doc: join('references', 'ship.md'),
+    arm: 'the AS-IS restore rationale',
+    pattern: /AS-IS is the whole rule/,
+  },
+  {
+    doc: join('references', 'ship.md'),
+    arm: 'the restore runs LAST, not per-lane',
+    pattern: /runs LAST, not per-lane/,
+  },
+  {
+    doc: join('references', 'retro.md'),
+    // retro.md HARD-WRAPS the command across a newline, so a copy of ship.md's
+    // single-line regex silently misses it -- the reason this is a pattern per
+    // row rather than one shared regex.
+    arm: 'section 10-d runs section 9\'s IN-PLACE cleanup arm as the last step',
+    pattern: /git switch\s*\n?\s*--no-guess <LAUNCH_BRANCH> && git branch -D/,
+  },
+  {
+    doc: join('references', 'gotchas.md'),
+    arm: 'the Stop-hook bullet points at the restore instead of the detach',
+    pattern: /LEAVING the lane branch/,
+  },
+  {
+    doc: join('references', 'implement.md'),
+    arm: 'section 5 branches in place ALWAYS rather than conditionally',
+    pattern: /ALWAYS, and WITHOUT leaving the tree/,
+  },
+];
+
+/** Every fenced ```bash block of a markdown file, in order. */
+export function bashBlocks(markdown: string): string[] {
+  const out: string[] = [];
+  const lines = markdown.split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (start === -1) {
+      if (/^```bash\s*$/.test(lines[i]!)) start = i + 1;
+    } else if (/^```\s*$/.test(lines[i]!)) {
+      out.push(lines.slice(start, i).join('\n'));
+      start = -1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Command lines of a block: blanks and whole-line comments dropped, a trailing
+ * `# ...` comment stripped.
+ *
+ * The strip is quote-aware. An unconditional `/\s+#.*$/` truncates a legitimate
+ * `git commit -m "closes #2417"` mid-string, and the caller then reports the
+ * MUTILATED text as an unrecognised command -- a confusing failure for an edit
+ * that was fine.
+ */
+export function commandLines(block: string): string[] {
+  const stripComment = (line: string): string => {
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i]!;
+      if (quote) {
+        if (c === quote) quote = null;
+      } else if (c === '"' || c === "'") {
+        quote = c;
+      } else if (c === '#' && i > 0 && /\s/.test(line[i - 1]!)) {
+        return line.slice(0, i);
+      }
+    }
+    return line;
+  };
+  return block
+    .split('\n')
+    .map((l) => stripComment(l).trim())
+    .filter((l) => l.length > 0 && !l.startsWith('#'));
+}
+
+/**
+ * `git` plus any GLOBAL options before the verb. `git -C "<LANE_TREE>" ...` is
+ * this skill's OWN spelling (gates-and-pr.md uses it throughout), so a pattern
+ * anchored on a literal `git branch` / `git switch` walks straight past the most
+ * likely way a bad line would actually be written. Measured on the
+ * go-to-k/cdk-local#651 sibling, whose equivalent scans were added in the same
+ * commit that closed this hole elsewhere and reopened it here:
+ * `git -C "<LANE_TREE>" branch -D <LAUNCH_BRANCH>` survived green. Module-scope
+ * so every scan in this file is built from ONE spelling of it.
+ */
+const GIT = String.raw`git(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir=\S+|--work-tree=\S+))*\s+`;
+
 /** The first fenced ```bash block of a markdown file. */
 export function firstBashBlock(markdown: string): string | null {
   const lines = markdown.split('\n');
@@ -126,6 +259,339 @@ describe('work-issues launch-mode probe', () => {
     });
   }
 
+  for (const { doc, arm, pattern } of LAUNCH_BRANCH_BEARING) {
+    it(`${doc} still carries its arm: ${arm}`, () => {
+      expect(
+        read(doc),
+        `${doc} no longer carries the arm "${arm}" (${pattern}). Deleting it breaks the ` +
+          `restore contract even though the file may still MENTION LAUNCH_BRANCH ` +
+          `elsewhere -- which is exactly why this asserts the arm and not the token. ` +
+          `If the arm MOVED, update its row in LAUNCH_BRANCH_BEARING.`
+      ).toMatch(pattern);
+    });
+  }
+
+  describe('section 9 restores LAUNCH_BRANCH as-is rather than moving it', () => {
+    // The spec was CORRECTED mid-filing: an early draft fast-forwarded the branch
+    // to origin/main first, and that clause is WITHDRAWN -- the branch is the
+    // outer tool's artifact and this run puts it back untouched.
+    //
+    // The first version of this guard was a single-line blacklist over the WHOLE
+    // FILE (`not.toMatch(/git (pull|rebase|merge|fetch)[^\n]*<LAUNCH_BRANCH>/)`).
+    // Measured against real re-introductions, it missed nearly all of them: a
+    // `git merge --ff-only origin/main` or `git pull --ff-only` on the NEXT line
+    // (the regex cannot cross a newline), `git reset --hard` and `git update-ref`
+    // (absent from the alternation), and -- worst -- `git branch -D
+    // <LAUNCH_BRANCH>`, which DELETES the outer tool's branch, the single most
+    // damaging thing this contract exists to prevent. It also fired on PROSE
+    // quoting the withdrawn clause, i.e. backwards.
+    //
+    // So the guard is now a WHITELIST scoped to the restore's own fenced block:
+    // the block is extracted, and every command line in it must be one of the
+    // four the recipe prescribes. Anything added is a failure by default, which
+    // is the right polarity for a recipe this small and this dangerous.
+    const shipBlocks = bashBlocks(read(join('references', 'ship.md')));
+    const restore = shipBlocks.find((b) => /^\s*(?:&&\s*)?git switch --no-guess <LAUNCH_BRANCH>/m.test(b));
+    const fallback = shipBlocks.find((b) => /--detach origin\/main/.test(b));
+
+    // The EXACT command sequence, in order. An `ALLOWED`-set check alone is an
+    // UPPER bound: it forbids additions but permits deletions and reordering,
+    // so the three things the review round before this one fixed --
+    // `git status` running FIRST, the delete being PLURAL, and the closing
+    // check existing at all -- were each silently re-revertible. Measured: four
+    // separate mutations of ship.md stayed GREEN under the set check. Ordered
+    // equality subsumes it.
+    const PRESCRIBED = [
+      "git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'",
+      '[ -z "$(git status --porcelain)" ] \\',
+      '&& git switch --no-guess <LAUNCH_BRANCH> \\',
+      '&& git branch -D <each branch this run created>',
+      'git branch --show-current',
+      "git branch --list '<your prefix>*'",
+    ];
+    // The fallback gets its own ordered equality: without one, adding
+    // `&& git reset --hard origin/main` to it was measured as passing every
+    // assertion, because the blacklist only fires on lines naming LAUNCH_BRANCH
+    // and the fallback deliberately names none.
+    const PRESCRIBED_FALLBACK = [
+      'git fetch origin \\',
+      '&& git switch --detach origin/main \\',
+      '&& git branch -D <each branch this run created>',
+    ];
+
+    it('exactly one block matches each selector -- no decoy copy', () => {
+      // `.find()` takes the FIRST match, so a "for reference, the canonical
+      // restore is:" block placed ABOVE the real one lets the real one be
+      // gutted unnoticed. Same single-copy discipline the probe token gets.
+      const restores = shipBlocks.filter((b) => /^\s*(?:&&\s*)?git switch --no-guess <LAUNCH_BRANCH>/m.test(b));
+      const fallbacks = shipBlocks.filter((b) => /--detach origin\/main/.test(b));
+      expect(restores, 'references/ship.md must carry EXACTLY ONE restore block').toHaveLength(1);
+      expect(fallbacks, 'references/ship.md must carry EXACTLY ONE detach fallback block').toHaveLength(1);
+    });
+
+    it('the restore block is exactly the prescribed sequence, in order', () => {
+      expect(
+        commandLines(restore!),
+        `references/ship.md's IN-PLACE restore block no longer matches the prescribed ` +
+          `sequence. Every line is load-bearing, and so are the ORDER and the CHAINING. ` +
+          `(1) \`show-ref\` decides which ARM applies, so it runs before either is taken. ` +
+          `(2) \`[ -z "$(git status --porcelain)" ]\` gates the rest, because \`git switch\` ` +
+          `carries uncommitted changes ACROSS -- checking AFTER the switch reports a clean ` +
+          `tree only because the dirt moved with you, onto the outer tool's branch. It is a ` +
+          `TEST rather than a bare command, since \`--porcelain\` exits 0 either way, and it ` +
+          `is CHAINED because a reader copies a line, not its intent. ` +
+          `(3) The switch and the delete stay \`&&\`-chained: unchained, a FAILED switch ` +
+          `still runs the -D, which git refuses only for the CHECKED-OUT branch -- so every ` +
+          `other branch this run created, the section 10-d retro branch included, is deleted ` +
+          `while the tree stays on the lane branch it was meant to leave. ` +
+          `(4) The delete is PLURAL, and the closing \`--list\` check is the IN-PLACE twin ` +
+          `of the MAIN-CHECKOUT arm's. ` +
+          `Anything that MOVES LAUNCH_BRANCH (pull / merge / rebase / reset) re-introduces ` +
+          `the withdrawn fast-forward clause; anything that DELETES it destroys the outer ` +
+          `tool's branch.`
+      ).toEqual(PRESCRIBED);
+    });
+
+    it('never deletes or moves LAUNCH_BRANCH itself, in either block', () => {
+      for (const [name, block] of [['restore', restore!], ['fallback', fallback!]] as const) {
+        for (const raw of commandLines(block)) {
+          // Strip a leading `&&` / `||`: this contract's own recipes are CHAINED,
+          // so an anchored `^git` was blind to `&& git branch -D <LAUNCH_BRANCH>`
+          // -- the single worst edit -- and to `&& git push --force`.
+          const line = raw.replace(/^(&&|\|\|)\s*/, '');
+          expect(
+            line,
+            `references/ship.md's ${name} block line \`${line}\` targets LAUNCH_BRANCH with a ` +
+              `destructive or history-moving verb.`
+            // `(\s|$)` rather than `\b`: a word boundary also matches the hyphen
+            // in `git merge-base --is-ancestor`, a READ that moves nothing, so
+            // `\b` would block a correct future edit.
+          ).not.toMatch(
+            /^git (branch -D|branch -d|branch --force|branch -f|switch -C|checkout -B|symbolic-ref|pull|merge|rebase|reset|push|update-ref|fetch)(\s|$).*LAUNCH_BRANCH/
+          );
+        }
+      }
+    });
+
+    it("the fallback never names LAUNCH_BRANCH, and still deletes this run's branches", () => {
+      // The fallback fires precisely when LAUNCH_BRANCH is empty or dangling, so
+      // it must not hand the name to ANY command -- the empty-argument class of
+      // bug this skill documents elsewhere. The existence probe that chooses
+      // between the two arms now lives in the RESTORE block, above the decision,
+      // so nothing legitimate is left to name it here.
+      expect(
+        fallback!,
+        `references/ship.md's fallback block names LAUNCH_BRANCH. That value is empty or ` +
+          `dangling on every path that reaches this block; the probe that reads it belongs ` +
+          `in the restore block, before the arm is chosen.`
+      ).not.toContain('LAUNCH_BRANCH');
+      expect(fallback!, 'the fallback must still be the DETACH arm').toContain('--detach origin/main');
+      expect(commandLines(fallback!), 'the fallback block is not its prescribed sequence').toEqual(
+        PRESCRIBED_FALLBACK
+      );
+    });
+
+    it('both blocks CHAIN their commands, so a failed step cannot run the next', () => {
+      // Unchained, a FAILED switch still runs the -D. git refuses to delete only
+      // the CHECKED-OUT branch, so every other branch this run created -- the
+      // section 10-d retro branch among them -- is destroyed while the tree stays
+      // on the lane branch it was supposed to leave: strictly worse than not
+      // cleaning up, since the tree looks half-restored and the branch that would
+      // let you retry is gone. The fallback carries a second instance: an
+      // unchained `switch --detach` after a failed `fetch` detaches at a STALE
+      // origin/main. Found on the go-to-k/cdk-local#651 sibling lane.
+      for (const [name, block] of [['restore', restore!], ['fallback', fallback!]] as const) {
+        const cmds = commandLines(block);
+        const del = cmds.findIndex((l) => l.includes('git branch -D'));
+        expect(del, `references/ship.md's ${name} block has no branch delete`).toBeGreaterThan(0);
+        expect(
+          // Must START with `&&`. A bare trailing `\` continuation was measured
+          // as satisfying the old form while carrying NO `&&` at all.
+          cmds[del]!.startsWith('&&'),
+          `references/ship.md's ${name} block runs \`${cmds[del]}\` UNCHAINED. Chain it to the ` +
+            `switch above with \`&&\`: on a failed switch the delete otherwise still destroys ` +
+            `every branch that is not checked out.`
+        ).toBe(true);
+      }
+    });
+
+    it('the fallback states the CONDITION that selects it, not just that it exists', () => {
+      // Measured on the go-to-k/cdk-local#651 sibling: deleting this gate left every
+      // other assertion green, so the fallback read as an alternative a run could
+      // take whenever it liked -- and detaching by preference is the end state
+      // this whole section removes.
+      expect(
+        read(join('references', 'ship.md')),
+        `references/ship.md no longer says WHEN the detach fallback applies. Without the ` +
+          `"empty at probe time / branch is now gone" gate it reads as a free choice, and ` +
+          `a run that takes it by preference leaves the outer tool's workspace detached.`
+      ).toMatch(/empty at probe time[\s\S]{0,120}gone/);
+    });
+
+    it('the fallback is labelled mutually exclusive with the restore', () => {
+      // Every other paired arm in ship.md carries this label; running both
+      // leaves the tree detached, which is the end state this section removes.
+      expect(
+        read(join('references', 'ship.md')),
+        `references/ship.md's detach fallback is missing the "never both" exclusivity label ` +
+          `that its other paired MAIN-CHECKOUT / IN-PLACE blocks carry.`
+      ).toMatch(/Fallback — run THIS block INSTEAD of the one above, never both/);
+    });
+  });
+
+  it('section 5 branches in place UNCONDITIONALLY, with the old condition gone', () => {
+    // Contract point (c): the lane never commits onto LAUNCH_BRANCH. Prose-only
+    // until now. The condition this replaced is pinned NEGATIVELY because its
+    // survival is the actual regression -- an agent reading "if the branch here
+    // is detached, or its PR has already merged" branches only sometimes, and
+    // the other times commits onto the outer tool's branch.
+    const implement = read(join('references', 'implement.md'));
+    expect(
+      implement,
+      `references/implement.md has reverted to branching CONDITIONALLY. The condition was ` +
+        `withdrawn in go-to-k/cdkd#2417: gh pr merge --delete-branch deletes the remote of ` +
+        `whatever branch the PR was opened from, so a lane that commits onto LAUNCH_BRANCH ` +
+        `deletes the outer tool's branch on its way out.`
+    ).not.toMatch(/If the branch here is detached, or its PR has already merged/);
+    // The same condition RE-WORDED is the likelier regression than the exact
+    // sentence returning; measured, "this only matters when the branch here is
+    // detached or when its PR has already merged" passed the pin above.
+    expect(
+      implement,
+      `references/implement.md re-introduces the withdrawn condition in different words. ` +
+        `Branching in place is UNCONDITIONAL: a lane that branches only sometimes commits ` +
+        `onto the outer tool's branch the rest of the time.`
+    ).not.toMatch(/(only |just )?(matters|applies|needed|necessary)[^.\n]{0,60}(detached|already merged)/i);
+    expect(implement).toMatch(/git fetch origin && git switch -c <branch> origin\/main/);
+  });
+
+  it('the restore is ordered LAST, and both files that own the ordering say so', () => {
+    // Contract point (e). section 9 defers it and section 10-d performs it; if either
+    // half drops its statement the run either restores too early (and 10-d
+    // branches again in the same tree) or never restores at all.
+    expect(read(join('references', 'ship.md'))).toMatch(/runs LAST, not per-lane/);
+    expect(read(join('references', 'retro.md'))).toMatch(/LAST step of the whole run/);
+  });
+
+  describe('the withdrawn fast-forward cannot come back anywhere', () => {
+    // The block-scoped fences above only see the ONE restore recipe. Measured,
+    // four realistic re-introductions passed every one of them: the
+    // fast-forward as its OWN fenced block; as a trailing COMMENT inside the
+    // restore block (commandLines strips comments); as PROSE beside an intact
+    // "AS-IS is the whole rule" paragraph, leaving the file self-contradicting;
+    // and in retro.md's section 10-d command, which no block-level fence reads.
+    // That matters more here than for ordinary code, because the consumer is an
+    // agent that reads comments and prose AS INSTRUCTIONS. So this pair of
+    // assertions is corpus-wide over the three files that own the contract.
+    const OWNERS = [
+      join('references', 'ship.md'),
+      join('references', 'retro.md'),
+      LAUNCH_MODE_DOC,
+    ];
+
+    /** Verbs that MOVE, DELETE or RE-CREATE a branch, as opposed to reading one. */
+    const MOVING = new RegExp(
+      GIT +
+        String.raw`(?:branch\s+(?:--force|-f|-D|-d|-m|-M|--delete|--move)|switch\s+(?:-c|-C)|checkout\s+(?:-b|-B)|symbolic-ref|update-ref|pull|merge|rebase|reset|push|fetch\s+[^\n]*:)[^\n]*LAUNCH_BRANCH`
+    );
+    // DELETE and RENAME belong here, not just "move". Measured on the previous
+    // revision: `git branch -D <LAUNCH_BRANCH>` -- the edit this contract exists
+    // to prevent, and which the commit adding this fence called "the single
+    // worst" -- passed, because the block-scoped blacklist sees only the two
+    // selected blocks and this corpus fence covered only history-moving verbs.
+    // A third fenced block carrying that one line was caught by NOTHING.
+
+    it('NO doc in the skill aims a branch-moving verb at LAUNCH_BRANCH, in ANY context', () => {
+      // Scanned over EVERY doc, not just the three that own the contract:
+      // `gotchas.md` states the restore too, and scoping this to the owners let
+      // an injected `git -C "<LANE_TREE>" branch -D <LAUNCH_BRANCH>` there pass
+      // green (measured). The set of files that MENTION the command is wider
+      // than the set that DEFINES it, and it is the mention that misleads.
+      const hits = skillDocs()
+        .map((doc) => ({ doc, hit: MOVING.exec(read(doc))?.[0] }))
+        .filter((r) => r.hit)
+        .map((r) => `${r.doc}: ${r.hit}`);
+      expect(
+        hits,
+        `A skill doc aims a branch-moving verb at LAUNCH_BRANCH. That branch is the outer ` +
+          `tool's and this run restores it AS-IS: no verb may move, delete, re-create or ` +
+          `force it -- not in a fenced block, not in a comment, not in prose. The ` +
+          `block-scoped fences cannot see this; they read one recipe.`
+      ).toEqual([]);
+    });
+
+    for (const doc of OWNERS) {
+      it(`${doc} still SAYS the restore is as-is (the polarity check needs a subject)`, () => {
+        // Non-vacuity guard. The check below filters lines and asserts the
+        // result is empty, so a file with NO mention of fast-forwarding passes
+        // it trivially -- and that is not hypothetical: the commit that first
+        // added the check also deleted retro.md's "no pull, no rebase, no
+        // fast-forward", leaving the new fence with nothing to see, in the same
+        // diff. Pin that the subject exists before judging its polarity.
+        expect(
+          read(doc),
+          `${doc} no longer states the AS-IS rule at all, so the polarity assertion below ` +
+            `has no subject and would pass vacuously. Every file that owns part of this ` +
+            `contract must SAY the restore does not fast-forward.`
+        ).toMatch(/no pull, no rebase, no fast-forward/);
+      });
+
+      it(`${doc} mentions fast-forwarding LAUNCH_BRANCH only to FORBID it`, () => {
+        // The withdrawal narrative legitimately puts the two near each other, so
+        // this asserts POLARITY rather than absence. Two things are load-bearing:
+        //
+        // SENTENCES, not lines -- these files are hard-wrapped at ~80 columns, so
+        // a sentence's negation routinely sits on a different line from its verb.
+        //
+        // Explicit WITHDRAWAL markers, not any negation word. Measured: the
+        // generic form passed `Fast-forward LAUNCH_BRANCH to origin/main so the
+        // branch is not left stale.` -- a negation of staleness, not of the
+        // fast-forward. The marker set below cannot be satisfied by an unrelated
+        // "not" elsewhere in the sentence.
+        const WITHDRAWN = /\b(withdrawn|forbid\w*|never|no pull, no rebase, no fast-forward)\b/i;
+        const offenders = read(doc)
+          .replace(/\s*\n\s*/g, ' ')
+          .split(/(?<=\.)\s+/)
+          .filter((sent) => /fast-forward/i.test(sent) && /LAUNCH_BRANCH/.test(sent))
+          .filter((sent) => !WITHDRAWN.test(sent));
+        expect(
+          offenders,
+          `${doc} pairs "fast-forward" with LAUNCH_BRANCH in a line that does not negate it. ` +
+            `The clause was WITHDRAWN (go-to-k/cdkd#2417): restoring the branch is the point, ` +
+            `and a fast-forward is an edit to somebody else's artifact.`
+        ).toEqual([]);
+      });
+    }
+  });
+
+  it('no site anywhere in .claude/** switches to LAUNCH_BRANCH without --no-guess', () => {
+    // Repo-wide, not per-file: the restore command is STATED in several places
+    // (ship.md's recipe, retro.md's section 10-d which actually fires it, and
+    // gotchas.md's Stop-hook entry), and a `--no-guess`-less copy at ANY of them
+    // is a copy that re-creates the outer tool's branch from `origin` and
+    // reports success. Measured on the go-to-k/cdk-local#651 sibling, whose port
+    // of this fix caught exactly that at two sites the scope had missed --
+    // including the one that executes.
+    const offenders: string[] = [];
+    for (const doc of skillDocs()) {
+      read(doc)
+        .replace(/\s*\n\s*/g, ' ')
+        .split(/(?<=\.)\s+/)
+        .filter((sent) =>
+          new RegExp(GIT + String.raw`switch\s+(?!--no-guess|--detach)[^\n]{0,40}LAUNCH_BRANCH`).test(sent)
+        )
+        .forEach((sent) => offenders.push(`${doc}: ${sent.slice(0, 100)}`));
+    }
+    expect(
+      offenders,
+      `A copy of the restore command switches to LAUNCH_BRANCH without --no-guess. Plain ` +
+        `\`git switch <name>\` DWIMs: with the branch gone locally but present on origin it ` +
+        `CREATES it from the remote, exits 0 and sets tracking -- re-creating the outer ` +
+        `tool's branch at origin's tip, on exactly the path that should have fallen through ` +
+        `to the detach fallback.`
+    ).toEqual([]);
+  });
+
   describe('the probe, executed', () => {
     /**
      * Runs the doc's OWN fenced probe -- extracted, not re-typed -- against a
@@ -140,6 +606,7 @@ describe('work-issues launch-mode probe', () => {
       expect(block!).toContain(PROBE_TOKEN);
       expect(block!).toContain('MAIN-CHECKOUT');
       expect(block!).toContain('IN-PLACE');
+      expect(block!).toContain('LAUNCH_BRANCH');
     });
 
     it('answers MAIN-CHECKOUT in a main checkout and IN-PLACE in a linked worktree', () => {
@@ -154,7 +621,9 @@ describe('work-issues launch-mode probe', () => {
         const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
         const git = (args: string[], cwd = tmp) =>
           execFileSync('git', args, { cwd, env, encoding: 'utf8' });
-        git(['init', '-q', main]);
+        // Explicit initial branch: the probe's LAUNCH_BRANCH assertion below must
+        // not depend on whichever default this git build compiles in.
+        git(['init', '-q', '-b', 'probe-main', main]);
         git(['-C', main, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init']);
         git(['-C', main, 'worktree', 'add', '-q', lane, '-b', 'lane-branch']);
 
@@ -170,17 +639,40 @@ describe('work-issues launch-mode probe', () => {
           );
 
         const fromMain = run(main);
+        // The key SET, in order. Without this a stray line -- a debug echo, a
+        // fifth value someone added -- parses into the map unnoticed, and a
+        // non-`=` line becomes a garbage key while all four value assertions
+        // below still pass. Order-pinning also fences the printf's field list
+        // against being reordered out of step with its arguments.
+        expect(Object.keys(fromMain)).toEqual(['MODE', 'LANE_TREE', 'MAIN_CHECKOUT', 'LAUNCH_BRANCH']);
         expect(fromMain.MODE).toBe('MAIN-CHECKOUT');
         expect(fromMain.LANE_TREE).toBe(main);
         expect(fromMain.MAIN_CHECKOUT).toBe(main);
+        expect(fromMain.LAUNCH_BRANCH).toBe('probe-main');
 
         const fromLane = run(lane);
+        expect(Object.keys(fromLane)).toEqual(['MODE', 'LANE_TREE', 'MAIN_CHECKOUT', 'LAUNCH_BRANCH']);
         expect(fromLane.MODE).toBe('IN-PLACE');
+        // The value section 9 puts back. Read at probe time and NEVER re-derived:
+        // section 5 switches this tree onto the lane's own branch, after which
+        // `git branch --show-current` answers with that one instead.
+        expect(fromLane.LAUNCH_BRANCH).toBe('lane-branch');
         // The two values differing IS the mode, and MAIN_CHECKOUT must point at
         // the OTHER tree -- that is the value section 2's collision scan needs
         // and the one a `pwd`- or `--show-toplevel`-derived probe gets wrong.
         expect(fromLane.LANE_TREE).toBe(lane);
         expect(fromLane.MAIN_CHECKOUT).toBe(main);
+
+        // Launched DETACHED: LAUNCH_BRANCH is empty, and that is an ANSWER, not a
+        // failure -- it is what selects section 9's detach fallback over the
+        // restore. The mode verdict must be unaffected, since a detached worktree
+        // is still a worktree.
+        git(['-C', lane, 'switch', '--detach', 'HEAD']);
+        const fromDetachedLane = run(lane);
+        expect(Object.keys(fromDetachedLane)).toEqual(['MODE', 'LANE_TREE', 'MAIN_CHECKOUT', 'LAUNCH_BRANCH']);
+        expect(fromDetachedLane.MODE).toBe('IN-PLACE');
+        expect(fromDetachedLane.LANE_TREE).toBe(lane);
+        expect(fromDetachedLane.LAUNCH_BRANCH).toBe('');
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }

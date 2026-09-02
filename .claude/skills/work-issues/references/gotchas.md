@@ -96,13 +96,33 @@
   branch is ahead of `origin/main`, and this repo SQUASH-merges, so a merged
   branch reads as ahead forever; because the launch worktree IS the session's,
   the warning arrives as `additionalContext` — "remove its worktree and delete
-  the branch" — which SKILL.md "Launch mode" forbids here. Expected, not a
+  the branch" — whose FIRST half SKILL.md "Launch mode" forbids here. The
+  second half is now prescribed: the lane branch does get deleted, just after
+  the restore below rather than while you are standing on it. Expected, not a
   defect: confirm the PR is MERGED (`gh pr view <N> --json state`) and say so in
-  the wrap. The tree is only clearable from inside by leaving the branch —
-  `git switch --detach origin/main`, since the hook skips a detached worktree
-  (`git branch --show-current` is empty) and `main` itself is checked out in the
-  main checkout — and whether to do that belongs to the tool that owns the
-  workspace, not to this run.
+  the wrap. The tree is only clearable from inside by LEAVING the lane branch,
+  which is what §9's IN-PLACE arm does as the run's last step: `git switch
+  --no-guess <LAUNCH_BRANCH> && git branch -D` the lane branch — the branch the
+  probe recorded, restored as-is, with `--no-guess` so a branch that survives
+  only on `origin` fails here instead of being re-created from the remote. That silences the hook for the same reason
+  its own suggestion would — provided `LAUNCH_BRANCH` carries no commits of its
+  own, the ordinary case for a workspace branch the tool cut from `main` (§9 has
+  the `git rev-list --count` check and what to do when it is non-zero) — without
+  removing a tree this run does not own. `git switch --detach
+  origin/main` silences it too, since the hook skips a worktree whose
+  `git branch --show-current` is empty, and WAS this appendix's recommendation
+  until 2026-09-02 — but it leaves the outer tool displaying a detached
+  workspace it had created on a branch, which the maintainer flagged. Detach is
+  now the fallback for a run that was launched detached, not the default
+  (go-to-k/cdkd#2417).
+- **A usage-limit interruption does not have to end the run: leave yourself a
+  one-shot checkpoint at the reset time.** The 2026-09-02 run was cut off
+  mid-lane by the 5-hour window and resumed itself at the reset instant from an
+  in-session one-shot cron, finishing the lane it was in. Worth doing because
+  the alternative is not "resume later" but "re-derive later" — an interrupted
+  lane's context (which claims are posted, which gate cycles are already paid)
+  is exactly what §10-a says does not survive. Schedule it when the limit is
+  ANNOUNCED, not when it bites (go-to-k/cdkd#2417).
 
 ## Important existing rules this skill leans on
 

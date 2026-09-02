@@ -35,8 +35,9 @@ relative `.claude/worktrees/<w>` paths resolve to nothing and the scan reports
 an empty board, which reads as "no competing agents". In the PARENT because
 stages 0–3 are delegated to a read-only subagent whose return payload carries
 no git state, so an answer computed there never reaches the party that runs
-`git worktree add`. State all three printed values — `MODE`, which is
-`MAIN-CHECKOUT` or `IN-PLACE`, plus `LANE_TREE` and `MAIN_CHECKOUT` — in the
+`git worktree add`. State all four printed values — `MODE`, which is
+`MAIN-CHECKOUT` or `IN-PLACE`, plus `LANE_TREE`, `MAIN_CHECKOUT` and
+`LAUNCH_BRANCH` (the branch §9 puts back; empty if launched detached) — in the
 opening report, the first message you write after running the probe and before
 any lane starts, and pass them into the triage dispatch and every lane dispatch. That report is their only recorded copy,
 and the anchors further down ("STOP unless this is the tree you meant to
@@ -69,20 +70,19 @@ that proved them.
   this repo, and return ONLY the candidate table — per issue: number, title,
   target files, rank + the rule that decided it, collision evidence
   (worktrees / branches / claims found), and any premise-check findings. Hand
-  it `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` from the probe: §2's worktree
+  it the probe's four values: §2's worktree
   scan needs the absolute main checkout, and a read-only subagent cannot
   return git state the parent does not already hold. The raw backlog listing
   and issue bodies stay out of the parent context.
 - **Claim (stage 4): the PARENT, never a subagent** — the claim is the lock,
   so it names the session accountable for the lane; it also names the lane
-  branch/worktree the dispatched subagent will create (§4), or, IN-PLACE, the
-  branch already checked out here.
+  branch/worktree the dispatched subagent will create (§4) — IN-PLACE too,
+  where that branch does not exist yet and is NEVER `LAUNCH_BRANCH`.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, the stage files to
   read at stage entry (`references/{implement,filing,gates-and-pr,verify}.md`),
-  and the probe's `MODE` / `LANE_TREE` / `MAIN_CHECKOUT`. The lane creates its
-  own worktree
-  per §5 — or works in place — implements, runs `/check` +
+  and the probe's `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` / `LAUNCH_BRANCH`. The
+  lane creates its own worktree per §5 — or works in place — implements, runs `/check` +
   `/check-docs`, opens the PR, dispatches its review tier (a lane may spawn
   reviewer subagents), addresses findings, and drives CI to green — then
   STOPS at merge-ready and reports back: PR number, HEAD sha, markers set,
@@ -108,7 +108,7 @@ the user wants to watch); the stage files apply unchanged either way.
 
 | Stage | File (read at entry) | What it covers |
 |---|---|---|
-| Before 0. Launch mode | `references/launch-mode.md` | The probe (the ONLY copy), reading its three values, why the parent runs it before stage 0, and the table mapping every IN-PLACE consequence to its stage |
+| Before 0. Launch mode | `references/launch-mode.md` | The probe (the ONLY copy), reading its four values, why the parent runs it before stage 0, and the table mapping every IN-PLACE consequence to its stage |
 | 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, never download/run third-party content, defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`) |
 | 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their clone-locality blind spot, the contested cross-cutting file list (the ONLY copy — `tests/unit/scripts/cross-cutting-list-sync.test.ts` fences it against the gates) |

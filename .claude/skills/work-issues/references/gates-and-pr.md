@@ -122,6 +122,36 @@ hook blocks a `fix:`/`feat:` commit with no `src/**` change). The `check-gate` h
 requires the fresh markers or it blocks the commit. Push, and open the PR with
 `Closes #<n>`.
 
+**A cluster of full-suite failures that pass in isolation is a HOST-LOAD
+artifact, not a regression — discriminate it with `--maxWorkers`, not with a
+count.** A test whose file spawns subprocesses, or one that inherited the 5 s
+default timeout while its siblings pass an explicit longer one, fails on
+elapsed time rather than on behaviour, so it goes red exactly when other agents
+are running their own suites. Measured twice on 2026-09-02: in this repo a
+`local-reachability` case failed on two consecutive full runs with two sibling
+lanes running suites in other repos, then passed 3/3 once they finished, with
+the diff unchanged either way; on the go-to-k/cdk-real-drift#1854 lane, 10/13/14
+tests failed across three full runs and a `--maxWorkers=4` run was fully green.
+Before reading a full-suite red as your change: **check the load first**
+(`uptime`, plus `ps aux | grep -c '[v]itest'` for peer runners), then re-run the
+file alone and re-run the suite at `--maxWorkers=4`. **Read the failure KIND, not
+the count** — the cheapest discriminator is that a load artifact produces
+`Test timed out in <N>ms` and ZERO `AssertionError`s, which is decidable from the
+log you already have. Measured here: 14 failures across 7 files, 12 timeouts, 0
+assertion failures, at load average 73/128/139.
+
+**Past a certain load, no local re-run settles it and CI is the authority.** On
+the go-to-k/cdk-real-drift#1854 lane, at load average 137-201 with 40 peer
+`vitest` processes, `--maxWorkers=4` AND single-file isolation both still failed;
+its PRs were merged on a green `check-build-test` from a dedicated runner. So the
+escalation is: kind of failure, then `--maxWorkers`, then CI — and CI outranks a
+local red that carries no assertion failure.
+
+**Do not use the stash test to decide this** — a `git stash` run and its
+unstashed neighbour are minutes apart, so a load spike that ends in between reads
+as "the diff caused it"; that inference was drawn and then falsified within the
+hour on 2026-09-02.
+
 ## 7. If main advanced while you worked (parallel merges)
 
 A peer agent merging its PRs moves `main` (+ a `chore(release)` bump). Your branch
