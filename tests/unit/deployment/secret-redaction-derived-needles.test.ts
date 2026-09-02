@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 import {
   redactSecretsForState,
+  recordSecretExpression,
   scrubResourceRecord,
   clearRecordedSecretExpressions,
   STATE_SOURCED_READBACK_RULES,
@@ -528,6 +529,31 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
     expect(out['Sec']).toBe(EXPR);
     expect(out['Copy']).toBe(`xx${EXPR}xx`);
     expect(JSON.stringify(out)).not.toContain(`xx${secret}xx`);
+  });
+
+  it('does NOT let a RECORDED verdict promote a bare ssm token to CERTAIN', () => {
+    // The round-5 finding, and the same region blindness this PR withdrew issue
+    // #2036's public store for. `recordedSecretExpressions` is keyed on the bare
+    // expression and lives for the whole process, so on a `cdkd deploy --all` a
+    // verdict pinned where the parameter is a `SecureString` is inherited where
+    // it is a plain `String` -- and `skipDynamicReferences` skips the lookup on
+    // a `true` verdict, so the second region never retracts it.
+    //
+    // Admission may inherit that verdict (it can only over-redact the leaf
+    // itself). BLAST RADIUS may not: with the substring arm it splices the
+    // expression into an unrelated literal that `cdkd drift --revert`
+    // re-resolves and pushes. So a verdict widens nothing -- only SPELLING does.
+    recordSecretExpression('{{resolve:ssm:/app/env}}');
+
+    const out = readback(
+      { Env: 'production', Bucket: 'my-production-logs', Copy: 'production' },
+      { Env: '{{resolve:ssm:/app/env}}' }
+    );
+
+    // Still ADMITTED as a needle -- whole-value reach is unaffected.
+    expect(out['Copy']).toBe('{{resolve:ssm:/app/env}}');
+    // ...and still NOT promoted to the substring arm.
+    expect(out['Bucket']).toBe('my-production-logs');
   });
 
   it('treats `ssm-secure` as CERTAIN, not inferred, so it keeps substring reach', () => {

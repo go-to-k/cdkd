@@ -3141,7 +3141,6 @@ const POSITION_DECIDED = Symbol('position decided by a position pass');
  * plaintext learned twice with two expressions is therefore struck out for the
  * rest of the record and the residual stays a refusal.
  */
-
 interface DerivedNeedleCollector {
   readonly needles: Map<string, string>;
   readonly poisoned: Set<string>;
@@ -3173,9 +3172,14 @@ function learnNeedle(
 ): void {
   if (plaintext.length < MIN_NEEDLE_LENGTH) return;
   if (collector.poisoned.has(plaintext)) return;
-  // Recorded BEFORE the duplicate / poison arms, and unconditionally: a
-  // plaintext both an inferred and a certain expression claim keeps the
-  // narrower blast radius, which is the conservative direction.
+  // Recorded unconditionally, and its POSITION here is not load-bearing:
+  // {@link expressionSecretIsInferred} is a pure function of the expression, so
+  // a plaintext two DIFFERENT expressions claim is POISONED by the arms below
+  // rather than narrowed, and one claimed twice by the SAME expression gets the
+  // same class both times. An earlier revision of this comment claimed the early
+  // placement made a both-classes plaintext keep the narrower radius; measured,
+  // that case does not exist — and believing it would license deleting the
+  // poison arm.
   if (expressionSecretIsInferred(expression)) collector.inferred.add(plaintext);
   const already = collector.needles.get(plaintext);
   if (already === undefined) {
@@ -3202,6 +3206,64 @@ const SECRET_BEARING_REFERENCE_PREFIXES = [
   '{{resolve:ssm-secure:',
   '{{resolve:ssm:',
 ] as const;
+
+/**
+ * The prefixes whose SPELLING settles secret-ness, with no lookup and no
+ * inference — the subset of {@link SECRET_BEARING_REFERENCE_PREFIXES} that
+ * {@link expressionSecretIsInferred} treats as certain.
+ *
+ * An ALLOWLIST rather than "the admission list minus `{{resolve:ssm:`", and the
+ * difference is what happens to the NEXT entry someone adds. Subtracting makes a
+ * new prefix default to CERTAIN, i.e. to the WIDER blast radius, which is the
+ * wrong direction to fail in; listing makes it default to inferred until someone
+ * deliberately promotes it.
+ */
+const SPELLED_SECRET_REFERENCE_PREFIXES = [
+  '{{resolve:secretsmanager:',
+  '{{resolve:ssm-secure:',
+] as const;
+
+/**
+ * Is this expression's secret-ness INFERRED rather than spelled?
+ *
+ * SPELLING, and ONLY spelling. `secretsmanager:` and `ssm-secure:` say what they
+ * are, in a way that is true in every region and every account. A bare
+ * `{{resolve:ssm:` token is not: it is accepted as secret-bearing on the #1901
+ * premise (a public `String` is persisted RESOLVED, so a token SURVIVING in a
+ * state bag is a `SecureString`), which is sound for the leaf itself and NOT
+ * sound as a licence to rewrite every other leaf that merely CONTAINS the value.
+ *
+ * A RECORDED verdict deliberately does NOT promote one, even though it is a real
+ * `GetParameter` answer. {@link recordedSecretExpressions} is keyed on the bare
+ * expression and lives for the whole process, so on a `cdkd deploy --all` a
+ * verdict pinned where the parameter is a `SecureString` is inherited where it
+ * is a plain `String` — and the `skipDynamicReferences` diff path skips the
+ * lookup on a `true` verdict, so the second region never retracts it. That is
+ * the SAME region blindness this PR withdrew issue #2036's public store for; a
+ * secret-direction verdict is safe to inherit for ADMISSION (it can only
+ * over-redact a leaf) and is not safe for BLAST RADIUS. The cost of ignoring it
+ * here is the substring arm for a verdict-backed, same-region ssm
+ * `SecureString` on the empty-map path — a strict subset of the population the
+ * no-verdict case already concedes, and in the same direction.
+ *
+ * The difference is a `--revert` WRITE. Measured on this module: a bare `ssm`
+ * token whose value is `production` turned `my-production-logs` into
+ * `my-{{resolve:ssm:/app/env}}-logs`, exactly the failure
+ * {@link expressionMaySeedANeedle}'s own doc names — and if that parameter is in
+ * fact public, the baseline now holds a value AWS never reported, which `cdkd
+ * drift --revert` re-resolves and pushes, renaming the live bucket the day the
+ * parameter changes.
+ *
+ * So evidence strength decides BLAST RADIUS, not admission: an inferred needle
+ * still closes issue #2012's two rows, because both are WHOLE-VALUE positions
+ * (an unpaired element and an observed key both hold the plaintext and nothing
+ * else). Only the substring arm is withheld. Issue #2036's withdrawn verdict
+ * store is what would promote these to certain; until it returns, scoped by
+ * region and account, this is the honest bound.
+ */
+function expressionSecretIsInferred(expression: string): boolean {
+  return !SPELLED_SECRET_REFERENCE_PREFIXES.some((prefix) => expression.startsWith(prefix));
+}
 
 /**
  * May this expression's resolved value be used as a REDACTION NEEDLE?
@@ -3237,38 +3299,6 @@ const SECRET_BEARING_REFERENCE_PREFIXES = [
  *   {@link MIN_NEEDLE_LENGTH}, and visible as over-redaction rather than as a
  *   leak.
  */
-/**
- * Is this expression's secret-ness INFERRED rather than spelled?
- *
- * `secretsmanager:` and `ssm-secure:` say what they are, and a RECORDED verdict
- * is a real `GetParameter` answer. A bare `{{resolve:ssm:` token with no verdict
- * is neither: it is accepted as secret-bearing on the #1901 premise (a public
- * `String` is persisted RESOLVED, so a token SURVIVING in a state bag is a
- * `SecureString`), which is sound for the leaf itself and NOT sound as a licence
- * to rewrite every other leaf that merely CONTAINS the value.
- *
- * The difference is a `--revert` WRITE. Measured on this module: a bare `ssm`
- * token whose value is `production` turned `my-production-logs` into
- * `my-{{resolve:ssm:/app/env}}-logs`, exactly the failure
- * {@link expressionMaySeedANeedle}'s own doc names — and if that parameter is in
- * fact public, the baseline now holds a value AWS never reported, which `cdkd
- * drift --revert` re-resolves and pushes, renaming the live bucket the day the
- * parameter changes.
- *
- * So evidence strength decides BLAST RADIUS, not admission: an inferred needle
- * still closes issue #2012's two rows, because both are WHOLE-VALUE positions
- * (an unpaired element and an observed key both hold the plaintext and nothing
- * else). Only the substring arm is withheld. Issue #2036's withdrawn verdict
- * store is what would promote these to certain; until it returns, scoped by
- * region and account, this is the honest bound.
- */
-function expressionSecretIsInferred(expression: string): boolean {
-  if (isRecordedSecretExpression(expression)) return false;
-  return !SECRET_BEARING_REFERENCE_PREFIXES.some(
-    (prefix) => prefix !== '{{resolve:ssm:' && expression.startsWith(prefix)
-  );
-}
-
 function expressionMaySeedANeedle(expression: string): boolean {
   return (
     isRecordedSecretExpression(expression) ||
@@ -3500,6 +3530,17 @@ function preferPositionDecisions(
 }
 
 /**
+ * The learned pairs, split by how strong the evidence for each one is.
+ *
+ * `certain` gets the full value scan (whole-value AND substring); `inferred`
+ * gets a WHOLE-VALUE rewrite only. See {@link expressionSecretIsInferred}.
+ */
+interface DerivedNeedles {
+  readonly certain: RecordedSecretValues;
+  readonly inferred: RecordedSecretValues;
+}
+
+/**
  * DERIVED NEEDLES (issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)):
  * the secrets map an empty-map readback path can build from its OWN two bags,
  * with no resolution, no AWS call and no new permission.
@@ -3554,20 +3595,10 @@ function preferPositionDecisions(
  * inside a leaf they took from SOURCE (a fabricated baseline). The merge is what
  * makes "a derived needle can only ADD rewrites" literally true.
  *
- * Returns `secrets` BY IDENTITY when nothing is learned, so the no-secret path
- * stays byte-identical down to object identity.
+ * Returns `undefined` when nothing is learned, so the no-secret path skips the
+ * scan and the merge entirely and stays byte-identical to the position passes'
+ * own output.
  */
-/**
- * The learned pairs, split by how strong the evidence for each one is.
- *
- * `certain` gets the full value scan (whole-value AND substring); `inferred`
- * gets a WHOLE-VALUE rewrite only. See {@link expressionSecretIsInferred}.
- */
-interface DerivedNeedles {
-  readonly certain: RecordedSecretValues;
-  readonly inferred: RecordedSecretValues;
-}
-
 function deriveReadbackNeedles(
   bag: unknown,
   source: unknown,
