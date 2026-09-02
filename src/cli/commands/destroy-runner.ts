@@ -275,8 +275,23 @@ export interface DestroyRunnerResult {
    * half is the `RESOURCE_GUARD_INDETERMINATE` events; this counter is the
    * summary half.
    *
-   * STATED LIMIT, measured rather than assumed: a guard suppressed inside a
-   * NESTED-STACK CHILD is invisible here. `NestedStackProvider.delete` drives
+   * STATED LIMITS, measured rather than assumed. Three, and the first two are
+   * about this counter never being reached at all:
+   *
+   * A guard is reported by RETURNING it, so a delete that THROWS after an
+   * unanswerable probe emits no row and increments nothing — the loop that
+   * reads it sits inside the `try`. Unreachable through
+   * `CloudControlProvider` today (its `NotFound` arm returns rather than
+   * throwing, and every other throw is a genuine failure), but it is why the
+   * event is documented as accompanying a SUCCEEDED or SKIPPED row and not a
+   * `RESOURCE_FAILED` one.
+   *
+   * `cdkd deploy` drops it entirely: the deploy engine's `provider.delete`
+   * sites consume `deleteSkipReason` and never read `indeterminateGuards`, so
+   * the same guard suppressed on a template-DELETE / replacement / recreate
+   * branch leaves no durable trace. Filed as go-to-k/cdkd#2422.
+   *
+   * And a guard suppressed inside a NESTED-STACK CHILD is invisible here. `NestedStackProvider.delete` drives
    * `runDestroyForStack` for the child with a context carrying no
    * `eventRecorder` (see its argument list), so the child records no events at
    * all, and it reports only counts upward — this counter has no channel to
@@ -1765,14 +1780,24 @@ export async function runDestroyForStack(
       // per-resource warns that said it have already scrolled past on any
       // stack of size. Names the resources and points at the durable record,
       // which is the whole point of issue #2301: the events OUTLIVE the run.
+      // The pointer at `cdkd events` is GATED on a recorder existing, because
+      // `cdkd state destroy` threads none (`state.ts`, the `runDestroyForStack`
+      // call) and so writes no `deployments/` object at all. Telling that
+      // caller to go read entries nothing wrote sends them to an empty command
+      // and reads as cdkd having lost the record -- worse than saying less.
+      // What replaces it names the only durable surface that verb HAS.
+      const durablePointer =
+        ctx.eventRecorder === undefined
+          ? `This summary is the only record: 'cdkd state destroy' writes no deployment events ` +
+            `(go-to-k/cdkd#2423), so re-run through 'cdkd destroy' if you need the durable entry.`
+          : `Run 'cdkd events ${stackName}' for the RESOURCE_GUARD_INDETERMINATE entries, which ` +
+            `name the check and the reason and survive the run.`;
       logger.warn(
         `\n${yellow('⚠')} ${result.guardIndeterminateCount} pre-flight safety check(s) could NOT ` +
           `be completed during this destroy and cdkd proceeded anyway: ` +
           `${[...guardIndeterminateTargets].join(', ')}. ` +
           `A check can be suppressed by DENYING the permission it needs, so treat this as ` +
-          `unconfirmed rather than benign. Run 'cdkd events ${stackName}' for the ` +
-          `RESOURCE_GUARD_INDETERMINATE entries, which name the check and the reason and ` +
-          `survive the run.`
+          `unconfirmed rather than benign. ${durablePointer}`
       );
     }
     if (!preserveState) {

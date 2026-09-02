@@ -39,6 +39,7 @@ import { markNonRetryable } from '../deployment/retryable-errors.js';
 // registry -> provider ring: `delete-outcome.ts` is a documented LEAF whose only
 // imports are types, so a new edge INTO it cannot close a cycle.
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './region-check.js';
@@ -1252,10 +1253,15 @@ export class CloudControlProvider implements ResourceProvider {
         // otherwise have run -- that would make this guard fail closed on one
         // input while failing open on every other undeterminable one. The
         // warn immediately below is the visible outcome.
-        clientRegionError = error instanceof Error ? error.message : String(error);
+        // Issue #2302's split, applied BEFORE the value can reach a durable
+        // record. `summary` is the half safe to persist; `detail` is AWS's own
+        // wording and goes to `debug` only. A cdkd- or SDK-authored failure
+        // passes through unreduced, which is the point of the narrow rule.
+        const clientRegionFailure = describeAwsFailure(error);
+        clientRegionError = clientRegionFailure.summary;
         this.logger.debug(
           `Could not resolve the Cloud Control client region while confirming ${physicalId}: ` +
-            `${clientRegionError}`
+            `${clientRegionFailure.detail}`
         );
         expectedRegion = undefined;
       }
@@ -1304,16 +1310,35 @@ export class CloudControlProvider implements ResourceProvider {
         );
         return undefined;
       }
-      const cause = error instanceof Error ? error.message : String(error);
+      // NEVER AWS's own message here, in either half (issue
+      // [#2302](https://github.com/go-to-k/cdkd/issues/2302)). The headline
+      // population for this arm is a bucket policy DENYING
+      // `s3:GetBucketLocation`, and S3 words that `AccessDenied` as `User:
+      // arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized
+      // to perform: ...` -- so interpolating it writes the destroying
+      // principal's account id, role name and session name to the terminal AND,
+      // since issue #2301 item 3, into `deployments/{runId}.jsonl`, which
+      // `cdkd destroy` deliberately does not sweep. Making the guard DURABLE
+      // must not make the caller durable: the attacker sets the policy, so they
+      // choose when that record is written. The SDK-routed twin of this guard
+      // reached the same answer at `s3-bucket-provider.ts`'s `probeFailedCause`.
+      // Both halves are emitted, per that helper's contract -- the class in the
+      // persisted `reason`, AWS's wording at `debug`, because the wording is
+      // what separates a missing IAM grant from a bucket-policy `Deny` and that
+      // distinction is the operator's next action.
+      const failure = describeAwsFailure(error);
+      this.logger.debug(
+        `s3:GetBucketLocation on ${physicalId} (${logicalId}) failed: ${failure.detail}`
+      );
       this.logger.warn(
         `Could not confirm which region S3 bucket ${physicalId} (${logicalId}) lives in before ` +
-          `deleting it: ${cause}. S3 bucket names are globally unique, so cdkd cannot rule out ` +
-          `that this name denotes a bucket in another region. Grant s3:GetBucketLocation on the ` +
-          `bucket to enable the check. Proceeding with the delete.`
+          `deleting it: ${failure.summary}. S3 bucket names are globally unique, so cdkd cannot ` +
+          `rule out that this name denotes a bucket in another region. Grant s3:GetBucketLocation ` +
+          `on the bucket to enable the check. Proceeding with the delete.`
       );
       return {
         guard: CC_DELETE_REGION_IDENTITY_GUARD,
-        reason: `s3:GetBucketLocation on ${physicalId} could not be answered: ${cause}`,
+        reason: `s3:GetBucketLocation on ${physicalId} could not be answered: ${failure.summary}`,
       };
     }
 

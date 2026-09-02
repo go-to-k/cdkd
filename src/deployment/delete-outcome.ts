@@ -126,10 +126,20 @@ export function withIndeterminateGuard(
   // too, and a non-array here is not recoverable data — it is dropped.
   const existing = Array.isArray(result?.indeterminateGuards) ? result.indeterminateGuards : [];
   const indeterminateGuards = [...existing, guard];
+  // SPREAD, not a field-by-field rebuild. Naming `outcome` and `reason`
+  // explicitly would silently drop any field a later revision adds to either
+  // arm -- the same hazard the no-guard early return above avoids by returning
+  // `result` itself by identity. The spread keeps the two paths consistent:
+  // whatever the delegate reported survives, and only `indeterminateGuards` is
+  // overwritten.
   if (result && result.outcome === 'skipped') {
-    return { outcome: 'skipped', reason: result.reason, indeterminateGuards };
+    return { ...result, indeterminateGuards };
   }
-  return { outcome: 'deleted', indeterminateGuards };
+  // `result` is `void` or the `'deleted'` arm here. Spreading it covers the
+  // arm's future fields; the literal `outcome` after it is what turns the
+  // back-compat `void` return into an explicit `'deleted'`, which is the whole
+  // reason this branch exists.
+  return { ...(result ?? {}), outcome: 'deleted', indeterminateGuards };
 }
 
 /**

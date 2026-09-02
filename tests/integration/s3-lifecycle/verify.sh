@@ -703,8 +703,13 @@ set +e
 # hand-planted stack is not in, and the arm fails on "No matching stacks found"
 # for a reason that has nothing to do with what it tests. Same idiom as the
 # `env -u CDKD_TEST_UPDATE` deploys later in this file.
+# `--verbose`: the CONFIRMED arm of the guard logs at `debug`, and asserting on
+# it is the only positive evidence that the control bucket's probe actually RAN.
+# Without it the control is "no guard row for CcArmBucketClean", which a probe
+# that was never issued satisfies just as well as one that answered -- the same
+# absence-proves-nothing trap the count assertion fell into.
 CC_ID_OUT="$(cd "${CC_ARM_ID_WORKDIR}" && env -u CDKD_APP node "${LOCAL_DIST}" destroy "${CC_ARM_STACK_ID}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose 2>&1)"
 CC_ID_RC=$?
 set -e
 printf '%s\n' "${CC_ID_OUT}"
@@ -805,6 +810,15 @@ esac
 # `tests/unit/cli/destroy-runner-guard-indeterminate.test.ts`, but a provider
 # that reports a guard on every delete is a PRODUCER-side failure the runner
 # tests cannot see, since they feed the runner its delete results directly.)
+# POSITIVE evidence that the control's probe ran and ANSWERED. Paired with the
+# membership assertion below: that one proves no row was emitted for the clean
+# bucket, this one proves the guard was actually exercised on it, and only the
+# two together distinguish "the guard answered" from "the guard never ran".
+if ! printf '%s' "${CC_ID_FLAT}" | grep -qF -- "Confirmed S3 bucket ${CC_ARM_ID_CLEAN_BUCKET}"; then
+  echo "FAIL phase 0c-ID control: no 'Confirmed S3 bucket ${CC_ARM_ID_CLEAN_BUCKET}' line -- the control bucket's identity probe never ran, so its lack of a guard row proves nothing." >&2
+  exit 1
+fi
+
 CC_ID_GUARD_LOGICALS="$(cc_id_jq '[.[] | select(.eventType == "RESOURCE_GUARD_INDETERMINATE") | .logicalId] | sort | join(",")')"
 if [ "${CC_ID_GUARD_LOGICALS}" != "CcArmBucket" ]; then
   echo "FAIL phase 0c-ID control: guard rows name [${CC_ID_GUARD_LOGICALS}], expected exactly [CcArmBucket]. A row for CcArmBucketClean means the event fires regardless of the guard's verdict, not because the probe was denied." >&2

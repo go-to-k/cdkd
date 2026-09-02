@@ -143,6 +143,21 @@ function wireBucketLocationError(name: string, message: string): void {
   mockS3Send.mockImplementation(() => {
     const error = new Error(message);
     error.name = name;
+    // `$metadata` is what makes this double an AWS-AUTHORED failure, and it is
+    // load-bearing rather than decoration: `describeAwsFailure` keys the issue
+    // #2302 redaction on exactly these marker fields, which every
+    // `@aws-sdk/*` error carries through `@smithy/smithy-client`'s
+    // `ServiceException` and nothing under `src/` ever sets. Without it the
+    // double is a cdkd-authored `Error`, the redaction correctly declines to
+    // fire, and a test asserting the REDACTED text fails against production
+    // code that is right -- or worse, a test asserting the RAW text passes
+    // while production redacts. Measured 2026-09-02: this helper had no
+    // `$metadata`, so the first version of the redaction fence read as a
+    // product bug.
+    Object.assign(error, {
+      $metadata: { httpStatusCode: name === 'NoSuchBucket' ? 404 : 403, attempts: 1 },
+      $fault: 'client',
+    });
     return Promise.reject(error);
   });
 }
@@ -635,12 +650,20 @@ describe('CloudControlProvider.delete -- indeterminate guards are REPORTED (issu
     wireCloudControl();
   });
 
-  it('reports the DENIED probe, naming the guard and the wire cause', async () => {
+  it('reports the DENIED probe by ERROR CLASS, never AWS\'s own wording', async () => {
     // The motivating attack: an `s3:GetBucketLocation` Deny in the target's own
     // bucket policy, settable by anyone holding `s3:PutBucketPolicy` on it.
+    //
+    // The wire message is the REAL shape S3 returns for that population, and it
+    // names the caller. Since issue #2301 item 3 this `reason` is PERSISTED to
+    // `deployments/{runId}.jsonl`, which `cdkd destroy` does not sweep -- so
+    // interpolating AWS's text would write the destroying principal's account
+    // id, role and session name into a durable artifact, at a moment the
+    // ATTACKER picks. Issue #2302's split is what prevents that; this case is
+    // its fence on the Cloud-Control-routed twin.
     wireBucketLocationError(
       'AccessDenied',
-      'User is not authorized to perform: s3:GetBucketLocation'
+      'User: arn:aws:sts::123456789012:assumed-role/ProdDeployRole/ci-run-4711 is not authorized to perform: s3:GetBucketLocation'
     );
     const provider = new CloudControlProvider();
 
@@ -648,12 +671,27 @@ describe('CloudControlProvider.delete -- indeterminate guards are REPORTED (issu
       expectedRegion: 'us-east-1',
     });
 
-    expect(deleteIndeterminateGuards(result)).toEqual([
+    const guards = deleteIndeterminateGuards(result);
+    expect(guards).toEqual([
       {
         guard: CC_DELETE_REGION_IDENTITY_GUARD,
-        reason: `s3:GetBucketLocation on ${BUCKET} could not be answered: User is not authorized to perform: s3:GetBucketLocation`,
+        reason: `s3:GetBucketLocation on ${BUCKET} could not be answered: AccessDenied. Re-run with --verbose for AWS's own message.`,
       },
     ]);
+    // The property, asserted directly rather than implied by the equality
+    // above: no fragment of the caller's identity survives into the persisted
+    // value. An equality alone would still pass if a later edit widened the
+    // message and someone updated the expected string to match.
+    const persisted = JSON.stringify(guards);
+    for (const secret of [
+      '123456789012',
+      'assumed-role',
+      'ProdDeployRole',
+      'ci-run-4711',
+      'arn:aws:sts::',
+    ]) {
+      expect(persisted).not.toContain(secret);
+    }
     // Still a DELETE: the guard is a qualifier on a completed delete, not an
     // outcome of its own, so the runner must keep counting it as deleted.
     expect(result).toMatchObject({ outcome: 'deleted' });

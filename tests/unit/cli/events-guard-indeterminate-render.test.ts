@@ -42,7 +42,7 @@ describe('printRunEvents renders the guard row (issue #2301)', () => {
 
   it('renders the guard id as a column and the reason on its own line', () => {
     infoSpy.mockReset();
-    printRunEvents('run-1', 'MyStack', 'us-east-1', [
+    printRunEvents('MyStack', 'us-east-1', 'run-1', [
       {
         timestamp: '2026-09-02T00:00:00Z',
         eventType: 'RESOURCE_GUARD_INDETERMINATE',
@@ -71,7 +71,7 @@ describe('printRunEvents renders the guard row (issue #2301)', () => {
     // column that means nothing, and this is also what keeps the pre-#2301
     // rendering byte-identical.
     infoSpy.mockReset();
-    printRunEvents('run-1', 'MyStack', 'us-east-1', [
+    printRunEvents('MyStack', 'us-east-1', 'run-1', [
       {
         timestamp: '2026-09-02T00:00:00Z',
         eventType: 'RESOURCE_SUCCEEDED',

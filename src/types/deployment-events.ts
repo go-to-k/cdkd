@@ -78,7 +78,7 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)). cdkd
  *   PROCEEDED, so this row says nothing about whether the operation
  *   succeeded — it sits ALONGSIDE the resource's own
- *   `RESOURCE_SUCCEEDED` / `RESOURCE_SKIPPED` / `RESOURCE_FAILED` row rather
+ *   `RESOURCE_SUCCEEDED` / `RESOURCE_SKIPPED` row rather
  *   than replacing it, exactly as issue
  *   [#1819](https://github.com/go-to-k/cdkd/issues/1819)'s partial-UPDATE
  *   `RESOURCE_SKIPPED` does, and for the same reason: the two rows answer
@@ -98,6 +98,14 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   resource this row names was NOT destroyed", which is FALSE here (the
  *   resource was deleted). Deliberately not `RESOURCE_SUCCEEDED` either,
  *   which carries no `reason`.
+ *
+ *   NOT `RESOURCE_FAILED`, and that is a reachability fact rather than a
+ *   preference: a guard is reported by RETURNING it on
+ *   `ResourceDeleteResult`, so a delete that THROWS carries nothing back and
+ *   the destroy runner's emit — which sits inside the `try` — never runs. A
+ *   failed delete therefore cannot have a companion guard row today. Do not
+ *   restate the pairing as covering all three outcomes; an earlier revision
+ *   of this block did, and it described an unreachable state.
  * - `ROLLBACK_*` — deploy-failure rollback phase (started / per-resource
  *   outcome / finished).
  */

@@ -541,7 +541,7 @@ const CORPUS_FILE_COUNT = 38; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  110,697 B. No `code-layout.md` index row was added: at 261
                               //  reached files a ~186 B row took three OTHER budget rows over
                               //  their caps, so the pointer in layout-deployment.md is the only
-                              //  entry point. That makes 37.
+                              //  entry point. That makes 38.
 const CORPUS_BYTES_MIN = 917_000;   // measured 951,706 B -- 34,706 B of slack.
                                     // 899_000 -> 917_000 (2026-09-02), re-measured with the same
                                     // ~34 KB of slack the previous bound was set with. The comment

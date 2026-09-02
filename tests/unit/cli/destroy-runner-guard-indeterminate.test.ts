@@ -291,6 +291,43 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     expect(result.guardIndeterminateCount).toBe(1);
     expect(recorded).toHaveLength(0);
     expect(allInfo()).toContain('1 unverified');
+
+    // ...and the warning must NOT send this caller to `cdkd events`. Nothing
+    // wrote a `deployments/` object on this path, so that pointer lands on an
+    // empty command and reads as cdkd having LOST the record -- worse than
+    // saying less. The recorder-present twin above asserts the opposite
+    // polarity, which is what makes this pair a discrimination rather than two
+    // restatements.
+    const warned = allWarn();
+    expect(warned).not.toContain('cdkd events TestStack');
+    expect(warned).toContain('writes no deployment events');
+    expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
+  });
+
+  it('renders the count on the PARTIALLY-destroyed arm too, not only the clean one', async () => {
+    // The suffix is interpolated into four different summary templates and only
+    // the clean-destroy arm was asserted, so a typo in any of the other three
+    // would ship silently. This is the arm an operator is most likely to be
+    // reading closely -- something already went wrong -- and it is exactly
+    // where a suppressed guard must not be the thing that got dropped.
+    mockProviderDelete
+      .mockResolvedValueOnce({ outcome: 'deleted', indeterminateGuards: [GUARD] })
+      .mockRejectedValueOnce(new Error('AccessDenied'));
+
+    const result = await runDestroyForStack(
+      'TestStack',
+      makeState({ Bucket: res(), Other: res({ physicalId: 'other-bucket' }) }),
+      makeCtx()
+    );
+
+    expect(result.guardIndeterminateCount).toBe(1);
+    expect(result.errorCount).toBe(1);
+    const summary = allWarn();
+    expect(summary).toContain('partially destroyed');
+    expect(summary).toContain('1 unverified');
+    // Orthogonality, on the arm where it is easiest to get wrong: the guard
+    // neither became an error nor absorbed one.
+    expect(summary).toContain('1 errors');
   });
 
   it('DROPS a malformed guard entry rather than counting an unactionable row', async () => {
