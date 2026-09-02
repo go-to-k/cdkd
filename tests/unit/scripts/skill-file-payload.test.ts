@@ -119,9 +119,9 @@ const MEASURED: Record<string, { corpusBytes: number; largest: { file: string; b
   // against work-issues' numbers -- permanently red, with a message naming the
   // wrong file.
   'work-issues': {
-    corpusBytes: 244_747,
+    corpusBytes: 249_677,
     largest: { file: 'implement.md', bytes: 48_340 },
-    runnerUp: { file: 'verify.md', bytes: 45_623 },
+    runnerUp: { file: 'verify.md', bytes: 46_945 },
   },
 };
 
@@ -137,30 +137,47 @@ const MIN_REFERENCE_FILES = 6;
 // number is the pre-merge one). The inputs are in MEASURED below and asserted,
 // so only the REASONING lives here: the floor must clear `corpus - largest`,
 // and also `corpus - runnerUp` for the day the two swap places (they have
-// swapped once already). 203_000 clears them by ~6.6k and ~3.9k -- the pair the
-// 180_000 it replaces was sized to hold -- is strictly TIGHTER than that value
-// (no upper bound is touched), and leaves ~41 KB of narrative compression
+// swapped once already). 206_000 clears them by ~4.7k and ~3.3k -- the pair the
+// 203_000 it replaces was sized to hold -- is strictly TIGHTER than that value
+// (no upper bound is touched), and leaves ~44 KB of narrative compression
 // headroom below it.
 //
-// The EITHER-LARGEST margin is the one that erodes, and this run is why the
-// warning is here rather than in a commit message: it grew SEVEN non-leader
-// stage files, which moves `corpus - runnerUp` up without moving the leader at
-// all, and the floor had to be re-derived FOUR times inside one change as
-// successive review rounds landed. If you are adding to a stage file that is
+// The EITHER-LARGEST margin is the one that erodes, and the go-to-k/cdkd#2417
+// run is why the warning is here rather than in a commit message: it grew SEVEN
+// non-leader stage files, which moves `corpus - runnerUp` up without moving the
+// leader at all, and the floor had to be re-derived FOUR times inside one change
+// as successive review rounds landed. If you are adding to a stage file that is
 // not the largest, expect to re-derive this line -- and MEASURED will tell you
 // so rather than letting it slide.
 //
+// Which HALF a growth spends is not intuitive, and the retro of the
+// go-to-k/cdkd#2410 / go-to-k/cdkd#2275 run got it wrong in this very comment
+// before a reviewer re-derived it. Growing the RUNNER-UP moves `corpus` and
+// `runnerUp` by the same amount, so it leaves `corpus - runnerUp` UNCHANGED and
+// spends only the binding (largest-side) margin; the either-largest margin is
+// spent by growth in every OTHER file. That run added 1,322 B to verify.md and
+// 3,608 B across launch-mode / retro / ship, and it is the SECOND number that
+// moved the either-largest margin -- from 3,876 B under the old 203_000 floor
+// to 268 B -- and forced this raise.
+//
+// The two leaders are now 1,395 B apart -- less than that run's single 1,322 B
+// edit to the runner-up -- so "the day the two swap places" is one ordinary
+// stage-file edit away, not hypothetical. MEASURED names both files, so a swap
+// reds it rather than passing quietly.
+//
 // What this floor does NOT catch, stated plainly because the comment used to
 // imply otherwise: gutting a NON-largest stage file. Deleting the whole of
-// triage.md (38,974 B) would leave 205,773 B -- which the CURRENT floor happens to
-// catch, by where it landed rather than by design; a smaller file gutted the
-// same way still slips through. A byte floor
+// triage.md (38,974 B) would leave 210,703 B, which the CURRENT floor does NOT
+// catch. Earlier revisions of this comment recorded that it DID, "by where it
+// landed rather than by design" -- and that coincidence has now expired exactly
+// as predicted, the corpus having grown past it. A smaller file gutted the same
+// way was never caught either. A byte floor
 // cannot see that, and raising it until it could would forbid legitimate
 // compression. The per-file guards are elsewhere and are about CONTENT rather
 // than size: work-issues-skill-refs.test.ts pins the document COUNT, and
 // work-issues-launch-mode.test.ts pins that each arm-bearing stage file still
 // names the mode it branches on and that the probe still exists exactly once.
-const MIN_REFERENCE_CORPUS_BYTES = 203_000;
+const MIN_REFERENCE_CORPUS_BYTES = 206_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

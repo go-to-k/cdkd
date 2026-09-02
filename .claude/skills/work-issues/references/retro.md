@@ -83,6 +83,17 @@ FALSE when the state resolves (2026-08-26: a fifth-review-round deferral reason
 survived into the wrap after that PR merged). Keeping a `next` alive on an
 expired reason is not protected by classify-once.
 
+**When a hit CONTRADICTS the body's own reason, the BODY is the stale side, not
+the check.** A reason asserting NO FILE OVERLAP is a claim about a MOVING
+target — the lane keeps editing after the reason is written, and nothing
+re-reads it. Measured 2026-09-02: go-to-k/cdkd#2440 was deferred on
+"`src/local/docker-runner.ts` has no overlap with this session's lanes
+(go-to-k/cdkd#2410 changed no line of it)", and go-to-k/cdkd#2410's merged PR
+changed that file `+9/-2`. So prefer a reason the lane cannot falsify by
+carrying on (what the work NEEDS: a new fixture, an upstream release, a
+maintainer call), correct the issue when this check catches one, and judge the
+item on whatever survives.
+
 Then split the filed count by what the section 5 window did with each finding —
 the aggregate cannot tell the two apart and they mean opposite things:
 
