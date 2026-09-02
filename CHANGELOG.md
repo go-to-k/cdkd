@@ -1,3 +1,10 @@
+## [0.285.5](https://github.com/go-to-k/cdkd/compare/v0.285.4...v0.285.5) (2026-09-02)
+
+
+### Bug Fixes
+
+* **provisioning:** persist a pre-flight guard that could not reach a verdict, so a suppressed check survives the run ([#2443](https://github.com/go-to-k/cdkd/issues/2443)) ([0b9cddf](https://github.com/go-to-k/cdkd/commit/0b9cddf583533d3b1e24fb0d1103c521d897ba04))
+
 ## [0.285.4](https://github.com/go-to-k/cdkd/compare/v0.285.3...v0.285.4) (2026-09-02)
 
 
