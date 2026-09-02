@@ -144,10 +144,12 @@ EXPECTED_DB_URL_EXPR="postgres://app-svc:{{resolve:ssm:${SECURE_PARAM_NAME}}}@db
 # and SSM_SECURE_COPY must both hold in state (issues #1901 / #2012).
 EXPECTED_SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
 # The PUBLIC mixed leaf (issue #2036), in BOTH of its forms. The RESOLVED one is
-# what state must hold wherever the parameter's type has been established this
-# process; the EXPRESSION one is what the documented residual still produces on
-# `cdkd state refresh-observed`, which resolves nothing. Pinning both means the
-# fixture states which path gets which answer rather than accepting either.
+# what state holds wherever the POSITION SOURCE carries no reference — which is
+# every path reachable from a template-declared leaf, since a public ssm `String`
+# is persisted resolved (issue #1901). The EXPRESSION one is what the documented
+# residual produces once the source DOES carry the reference, the `cdkd import`
+# warn-path shape Phase 1f3 stamps. Pinning both means the fixture states which
+# input configuration gets which answer rather than accepting either.
 EXPECTED_PUBLIC_URL="https://${EXPECTED_SSM}.${REGION}.example.internal"
 EXPECTED_PUBLIC_URL_EXPR="https://{{resolve:ssm:${PARAM_NAME}}}.${REGION}.example.internal"
 
@@ -356,10 +358,11 @@ check_equals "SSM_SECURE_VALUE (ssm:<name> SecureString param, decrypted)" \
 # what makes the plaintext arrive in `observedProperties` at all.
 check_equals "SSM_SECURE_COPY (second reference to the same SecureString)" \
   "${ENV_SSM_SECURE_COPY}" "${EXPECTED_SECURE}"
-# The PREMISE of the #2036 arms in Phases 1f / 1g, for the same reason. Both
-# phases compare the persisted value against the RESOLVED one, so if the public
-# reference never resolved on the way to AWS the comparison would be about a
-# value that does not exist.
+# The PREMISE of the PUBLIC_URL arms in Phases 1f / 1f3 / 1g, for the same
+# reason. Each compares the persisted value against the RESOLVED one (or, in
+# 1f3, against the expression that replaced it), so if the public reference
+# never resolved on the way to AWS the comparison would be about a value that
+# does not exist.
 check_equals "PUBLIC_URL (Fn::Join embedding a PUBLIC ssm String)" \
   "${ENV_PUBLIC_URL}" "${EXPECTED_PUBLIC_URL}"
 
@@ -1410,18 +1413,34 @@ else
   echo "FAIL: observed SSM_VALUE should be the resolved '${EXPECTED_SSM}', got $(mask "${RO_SSM}")" >&2
   refresh_fail=1
 fi
-# The PUBLIC mixed leaf on the path with NO evidence (issue #2036's documented
-# RESIDUAL, pinned rather than left implicit). `cdkd state refresh-observed`
-# neither synthesizes nor resolves, so no `GetParameter` ran in this process and
-# the verdict store holds nothing about this parameter — absence is still not
-# evidence, so the leaf is refused and the expression wins. That is the
-# over-redaction #2036 records: visible, recoverable, and not a disclosure. The
-# closure lives on the paths that DO have a verdict, which Phase 1g asserts.
+# The PUBLIC mixed leaf, and what this arm can HONESTLY assert about it — which
+# is NOT issue #2036's residual, though an earlier revision of this phase said
+# so and FAILED on both fixed code and `main` (PR #2415's pre-merge run, rc=1 at
+# exactly this line).
+#
+# The reason is one step upstream of the redaction: `properties` holds this key
+# RESOLVED. A public ssm `String` is persisted resolved by construction (issue
+# #1901 — otherwise every parameter-backed property is a perpetual spurious
+# UPDATE), and the `Fn::Join` around it declines the skeleton pass, so the
+# POSITION SOURCE for PUBLIC_URL carries no reference at all.
+# `refuseUncertifiedReadbackPositions` never reaches its mixed-leaf arm here:
+# `isDynamicReferenceString(source)` is false and the readback value passes
+# straight through. The verdict store is not consulted either way.
+#
+# #2036's residual is real, but it needs a source that CARRIES the expression,
+# which in the wild only `cdkd import`'s warn path produces. Phase 1f3 stamps
+# exactly that shape and asserts the residual there, on a premise that holds.
+#
+# This arm is a PREMISE PIN, not a discriminator: `origin/main` answers the same,
+# for the same reason. It is kept because it is falsifiable by a FUTURE
+# over-reach — a blanket needle, or a pairing rule that starts substituting at a
+# non-reference source leaf — and because the premise it states is the one two
+# earlier arms got wrong.
 RO_PUBLIC_URL=$(printf '%s' "${RO_OBSERVED}" | jq -r '.PUBLIC_URL // empty')
-if [ "${RO_PUBLIC_URL}" = "${EXPECTED_PUBLIC_URL_EXPR}" ]; then
-  echo "    OK: observed PUBLIC_URL took the expression (no verdict on this path — #2036's residual)"
+if [ "${RO_PUBLIC_URL}" = "${EXPECTED_PUBLIC_URL}" ]; then
+  echo "    OK: observed PUBLIC_URL kept the resolved value (premise pin; its source carries no expression)"
 else
-  echo "FAIL: observed PUBLIC_URL should be '${EXPECTED_PUBLIC_URL_EXPR}', got $(mask "${RO_PUBLIC_URL}")" >&2
+  echo "FAIL: observed PUBLIC_URL should be '${EXPECTED_PUBLIC_URL}', got $(mask "${RO_PUBLIC_URL}")" >&2
   refresh_fail=1
 fi
 # Both whole-token SecureString references, each on its OWN expression. They
@@ -1602,6 +1621,180 @@ if [ "${orphan_fail}" -ne 0 ]; then
   exit 1
 fi
 
+# --- Phase 1f3: the #2036 RESIDUAL, on a source that actually carries it ---
+# Issue [#2036](https://github.com/go-to-k/cdkd/issues/2036) records an
+# OVER-redaction: a MIXED leaf embedding a PUBLIC ssm reference, refused on the
+# empty-map readback paths because absence from the verdict store is not
+# evidence of anything. Phase 1f used to claim this shape, and could not have:
+# `properties` holds PUBLIC_URL RESOLVED (issue #1901), so its position source
+# carries no reference and the mixed-leaf arm is never consulted. The arm failed
+# on fixed code AND on `main`, which is the signature of a false premise rather
+# than a regression.
+#
+# HOW THE SHAPE IS PRODUCED. A public ssm EXPRESSION survives in `properties`
+# only where something wrote it there without resolving: `cdkd import`'s warn
+# path, which records the template leaf verbatim. It is unreachable from a
+# template-declared leaf on the deploy path, because a properties-borne
+# expression makes the resource read as CHANGED and the next UPDATE rewrites it
+# resolved. So the fixture stamps it, the same S3 write/restore idiom Phases 1f
+# and 1f2 already use, and for the same reason: no command edits this field in
+# place, which is the point.
+#
+# WHICH ARM CARRIES THE DISCRIMINATION, stated because the phase this one
+# replaces got exactly this wrong. The residual assertion below is a PIN, not a
+# discriminator: `origin/main` refuses this leaf too, by the older rule
+# (`secrets.size === 0` -> refuse) rather than by the new one (no PROVEN-public
+# verdict -> refuse), so it answers the same. Keeping it is still worth the
+# lines -- it is falsifiable by any future over-reach that starts substituting
+# here -- but it is not what earns the phase its runtime. The arm that DOES
+# discriminate is the BLAST-RADIUS one: on `main` `SSM_VALUE` stays
+# `cdkd-known-ssm-value`, and on this branch it takes its own parameter's
+# expression, because only this branch derives a needle from the refused leaf.
+#
+# The issue #2036 CLOSURE (a PROVEN-public verdict admitting the resolved value)
+# has no arm anywhere in this fixture, and cannot get one here: reaching it needs
+# an expression-bearing `properties` AND an in-process `GetParameter` verdict at
+# once. Tracked as issue #2425.
+#
+# A SEPARATE phase rather than a fold into 1f2, and the reason is measurable:
+# once PUBLIC_URL's source carries the expression, `learnMixedLeafNeedle` learns
+# `<resolved param value> -> {{resolve:ssm:<name>}}` from it, and the value scan
+# then rewrites SSM_VALUE — which holds that same resolved value — onto the same
+# expression. That is correct (it is the SAME parameter, so nothing is
+# misattributed) but it would destroy Phase 1f2's `SSM_VALUE was not dragged
+# along` control, which separates a value-keyed needle from a blanket rewrite.
+# The two shapes are therefore exercised on their own records.
+echo "==> Phase 1f3: refresh-observed refuses a PUBLIC mixed leaf with no verdict (issue #2036 residual)"
+
+F3_BEFORE=$(mktemp)
+F3_STAMPED=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${F3_BEFORE}" --quiet
+F3_LID=$(jq -r '.resources | to_entries[]
+                  | select(.value.resourceType=="AWS::Lambda::Function")
+                  | .key' "${F3_BEFORE}" | head -1)
+if [ -z "${F3_LID}" ]; then
+  echo "FAIL: no AWS::Lambda::Function record in state — Phase 1f3 cannot run" >&2
+  exit 1
+fi
+# ASSERT the pre-stamp value is the RESOLVED one. This is the phase's own
+# premise stated as a check rather than a comment: if `properties` already held
+# the expression, the stamp would be a no-op and the assertion below would pass
+# without this phase having perturbed anything.
+F3_PRE=$(jq -r --arg lid "${F3_LID}" \
+  '.resources[$lid].properties.Environment.Variables.PUBLIC_URL // empty' "${F3_BEFORE}")
+if [ "${F3_PRE}" != "${EXPECTED_PUBLIC_URL}" ]; then
+  echo "FAIL: properties PUBLIC_URL should start RESOLVED as '${EXPECTED_PUBLIC_URL}', got $(mask "${F3_PRE}")" >&2
+  echo "      (Phase 1f3 stamps the expression OVER the resolved value; without that start it proves nothing)" >&2
+  exit 1
+fi
+jq --arg lid "${F3_LID}" --arg expr "${EXPECTED_PUBLIC_URL_EXPR}" \
+  '.resources[$lid].properties.Environment.Variables.PUBLIC_URL = $expr' \
+  "${F3_BEFORE}" > "${F3_STAMPED}"
+if ! grep -qF "${EXPECTED_PUBLIC_URL_EXPR}" "${F3_STAMPED}"; then
+  echo "FAIL: the PUBLIC_URL expression stamp produced no expression — jq path expression is wrong" >&2
+  exit 1
+fi
+aws s3 cp "${F3_STAMPED}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+
+node "${LOCAL_DIST}" state refresh-observed "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+F3_STATE=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+F3_OBSERVED=$(printf '%s' "${F3_STATE}" \
+  | jq -c --arg lid "${F3_LID}" '.state.resources[$lid].observedProperties.Environment.Variables')
+
+# RESTORE `properties` FIRST, before a single assertion runs. Phase 1g's plain
+# deploy must not see the stamped expression: it would read the resource as
+# CHANGED and issue an UPDATE that phase is not expecting. Restoring here rather
+# than after the assertions means an assertion failure -- or the empty-bag
+# refusal below -- cannot leave the stamp behind either. The only path that can
+# now is the `refresh-observed` call itself aborting under `set -e`, and the
+# exit trap destroys the stack in that case anyway.
+#
+# Done from the bag read at the TOP of this phase rather than by un-stamping, so
+# a jq slip cannot leave a subtly different value behind, and asserted, because
+# a silent restore failure is what would make Phase 1g deploy an unexpected
+# UPDATE.
+F3_AFTER=$(mktemp)
+F3_FINAL=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${F3_AFTER}" --quiet
+jq --arg lid "${F3_LID}" --slurpfile before "${F3_BEFORE}" \
+  '.resources[$lid].properties = $before[0].resources[$lid].properties' \
+  "${F3_AFTER}" > "${F3_FINAL}"
+F3_RESTORED=$(jq -r --arg lid "${F3_LID}" \
+  '.resources[$lid].properties.Environment.Variables.PUBLIC_URL // empty' "${F3_FINAL}")
+if [ "${F3_RESTORED}" != "${EXPECTED_PUBLIC_URL}" ]; then
+  echo "FAIL: could not restore the RESOLVED PUBLIC_URL into the position source" >&2
+  exit 1
+fi
+aws s3 cp "${F3_FINAL}" "s3://${STATE_BUCKET}/${STATE_KEY}" --quiet
+rm -f "${F3_BEFORE}" "${F3_STAMPED}" "${F3_AFTER}" "${F3_FINAL}"
+
+if [ -z "${F3_OBSERVED}" ] || [ "${F3_OBSERVED}" = "null" ]; then
+  echo "FAIL: refresh-observed wrote no observed Environment.Variables for ${F3_LID}" >&2
+  exit 1
+fi
+
+residual_fail=0
+# THE RESIDUAL, as a PIN (it answers the same on `origin/main` — see the header).
+# `cdkd state refresh-observed` neither synthesizes nor resolves, so no
+# `GetParameter` ran in this process and the verdict store holds nothing about
+# this parameter. Absence is not evidence, the leaf is refused, and the
+# expression wins over the value AWS holds. Visible, recoverable, and NOT a
+# disclosure — the price of never persisting a decrypted `SecureString` on a
+# path that cannot tell the two apart.
+F3_PUBLIC_URL=$(printf '%s' "${F3_OBSERVED}" | jq -r '.PUBLIC_URL // empty')
+if [ "${F3_PUBLIC_URL}" = "${EXPECTED_PUBLIC_URL_EXPR}" ]; then
+  echo "    OK: observed PUBLIC_URL took the expression (#2036's residual — a PIN, same on main)"
+else
+  echo "FAIL: observed PUBLIC_URL should be '${EXPECTED_PUBLIC_URL_EXPR}', got $(mask "${F3_PUBLIC_URL}")" >&2
+  residual_fail=1
+fi
+# THE NEEDLE'S BLAST RADIUS — and THE ARM THAT DISCRIMINATES in this phase.
+# `origin/main` leaves this leaf as `cdkd-known-ssm-value`; only a tree that
+# derives needles rewrites it. Refusing
+# the leaf also LEARNS from it (`learnMixedLeafNeedle`), so every other leaf
+# holding that same resolved value takes the same expression — here SSM_VALUE,
+# which references the very same parameter. Nothing is misattributed, and the
+# next `cdkd drift` re-resolves it, but the propagation is real and a future
+# change that narrows it should have to edit this line rather than discover it
+# in the field.
+EXPECTED_PUBLIC_EXPR="{{resolve:ssm:${PARAM_NAME}}}"
+F3_SSM=$(printf '%s' "${F3_OBSERVED}" | jq -r '.SSM_VALUE // empty')
+if [ "${F3_SSM}" = "${EXPECTED_PUBLIC_EXPR}" ]; then
+  echo "    OK: SSM_VALUE took its OWN parameter's expression by value (the needle's blast radius)"
+elif [ "${F3_SSM}" = "${EXPECTED_SECURE_EXPR}" ]; then
+  echo "FAIL: SSM_VALUE took the SecureString expression — the needle was MISATTRIBUTED across parameters" >&2
+  residual_fail=1
+else
+  echo "FAIL: SSM_VALUE should be '${EXPECTED_PUBLIC_EXPR}', got $(mask "${F3_SSM}")" >&2
+  echo "      (pinned by the unit case 'propagates a PUBLIC needle by VALUE once its own source carries the expression')" >&2
+  residual_fail=1
+fi
+# The SecureString half must be unaffected by any of this.
+F3_SECURE=$(printf '%s' "${F3_OBSERVED}" | jq -r '.SSM_SECURE_VALUE // empty')
+if [ "${F3_SECURE}" = "${EXPECTED_SECURE_EXPR}" ]; then
+  echo "    OK: SSM_SECURE_VALUE still holds its own expression"
+else
+  echo "FAIL: SSM_SECURE_VALUE should be '${EXPECTED_SECURE_EXPR}', got $(mask "${F3_SECURE}")" >&2
+  residual_fail=1
+fi
+# WHOLE-DOCUMENT: over-redacting a public leaf may never come with a disclosure.
+if printf '%s' "${F3_STATE}" | grep -qF "${EXPECTED_SECURE}"; then
+  echo "FAIL: the decrypted SecureString survived the #2036 residual phase (#1926)" >&2
+  residual_fail=1
+else
+  echo "    OK: the decrypted SecureString is absent from the WHOLE state document"
+fi
+
+if [ "${residual_fail}" -ne 0 ]; then
+  echo "FAIL: issue #2036 residual assertions failed" >&2
+  exit 1
+fi
+
 # --- Phase 1g: the DEFAULT `cdkd deploy` path redacts a MIXED leaf (#1926 review) ---
 # Phase 1f drives the command; this drives the path that matters more. The
 # refusal was hoisted into `secret-redaction.ts` precisely because the leak is
@@ -1711,26 +1904,33 @@ else
   deploy_redaction_fail=1
 fi
 
-# CONTROL 3, and the arm issue #2036 is filed for: a PUBLIC ssm reference inside
-# a MIXED leaf. The whole-token SSM_VALUE above cannot stand in for it — the
-# whole-token arm has always kept a public value, while the MIXED arm split on
-# whether a secrets map exists and, with none, substituted the expression over
-# the value AWS holds.
+# CONTROL 3: the mixed leaf carrying a PUBLIC ssm reference keeps AWS's value.
 #
-# This resource is UNCHANGED by this deploy, so its per-resource map IS empty —
-# what changed is that the resolver's own `GetParameter` for this parameter,
-# which the no-op comparison path still performs, now RECORDS the definitive
-# public verdict instead of only retracting a memo. So the leaf keeps the
-# resolved value, and the drift baseline matches AWS again.
+# LABELLED AS A SANITY CONTROL, NOT AS ISSUE #2036 COVERAGE, and the distinction
+# was measured: this arm passes IDENTICALLY on `origin/main`, so it discriminates
+# nothing about the verdict store. An earlier revision claimed it as the #2036
+# closure and said the failure form "means the public verdict was not consulted".
+# Both were wrong for the same upstream reason Phase 1f's arm was: `properties`
+# holds PUBLIC_URL RESOLVED (issue #1901), so the POSITION SOURCE carries no
+# reference, `refuseUncertifiedReadbackPositions` never reaches its mixed-leaf
+# arm, and the readback passes through whatever the verdict store says.
 #
-# The pair with Phase 1f is the point: same leaf, same empty map, different
-# answer, because one path has evidence and the other does not.
+# What it DOES still catch is a mask/drop regression at a leaf whose correct
+# answer is the plaintext, on the DEPLOY path rather than the command path —
+# worth keeping, worth not overselling.
+#
+# The #2036 residual direction is exercised in Phase 1f3, on a stamped source
+# that genuinely carries the expression. The CLOSURE direction (a proven-public
+# verdict admitting the resolved value) is fenced by the unit suite in
+# `tests/unit/deployment/secret-redaction-derived-needles.test.ts`; its
+# end-to-end site is `cdkd drift --revert` / `--accept`, the process that has
+# BOTH an expression-bearing baseline and in-process `GetParameter` verdicts,
+# and building that arm is tracked as follow-up rather than done here.
 G_PUBLIC_URL=$(printf '%s' "${G_OBSERVED}" | jq -r '.PUBLIC_URL // empty')
 if [ "${G_PUBLIC_URL}" = "${EXPECTED_PUBLIC_URL}" ]; then
-  echo "    OK: re-captured PUBLIC_URL kept the RESOLVED public value (#2036)"
+  echo "    OK: re-captured PUBLIC_URL kept the RESOLVED public value (sanity control, not #2036 coverage)"
 else
   echo "FAIL: re-captured PUBLIC_URL should be '${EXPECTED_PUBLIC_URL}', got $(mask "${G_PUBLIC_URL}")" >&2
-  echo "      (the expression form '${EXPECTED_PUBLIC_URL_EXPR}' means the public verdict was not consulted)" >&2
   deploy_redaction_fail=1
 fi
 

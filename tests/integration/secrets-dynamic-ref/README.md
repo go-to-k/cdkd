@@ -60,21 +60,42 @@ covers the optional-trailing-field grammar.
    all gone.
 
 Phases 1d-1g additionally pin the STATE-REDACTION contract, which is where the
-GHSA-p5qg-v9gv-hc7w follow-ups land. The interesting property is that the same
-leaf gets different answers on different paths, and the fixture states which:
+GHSA-p5qg-v9gv-hc7w follow-ups land. What decides each answer is the POSITION
+SOURCE — the record's own `properties` leaf the readback is aligned against —
+so the table is indexed by what that leaf holds, not by which command ran:
 
-| leaf | `cdkd state refresh-observed` (Phase 1f) | plain `cdkd deploy` (Phase 1g) |
+| leaf | what `properties` holds | what state ends up with |
 | --- | --- | --- |
-| `SSM_SECURE_VALUE` (SecureString, whole token) | expression | expression |
-| `SSM_VALUE` (public `String`, whole token) | resolved | resolved |
-| `DB_URL` (SecureString inside text) | expression | expression |
-| `PUBLIC_URL` (public `String` inside text) | expression (residual, issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) | **resolved** |
+| `SSM_SECURE_VALUE` (SecureString, whole token) | the expression | expression |
+| `SSM_VALUE` (public `String`, whole token) | the resolved value | resolved |
+| `DB_URL` (SecureString inside text) | the expression | expression |
+| `PUBLIC_URL` (public `String` inside text) | the resolved value (issue [#1901](https://github.com/go-to-k/cdkd/issues/1901)) | resolved — the mixed-leaf arm is never consulted |
+| `PUBLIC_URL`, with the expression STAMPED into `properties` (Phase 1f3) | the expression | expression (the residual, issue [#2036](https://github.com/go-to-k/cdkd/issues/2036)) |
 
-`PUBLIC_URL` is the only row that differs, and the difference is the point:
-the deploy's own comparison pass performs a `GetParameter` and RECORDS the
-parameter's public type, while `refresh-observed` resolves nothing and has no
-verdict to consult — so it keeps refusing, which over-redacts but discloses
-nothing.
+The last two rows are the same leaf, and the pair is the correction this fixture
+had to make: a public ssm `String` is persisted RESOLVED by construction, so on
+every path reachable from a template-declared leaf the source carries no
+reference at all and there is nothing to refuse. An earlier revision asserted
+the residual on Phase 1f and on Phase 1g's CONTROL 3, and neither could hold —
+the first failed on fixed code AND on `main`, the second passed identically on
+`main` (zero discrimination). Reaching the residual needs a source that CARRIES
+the expression, which in the wild only `cdkd import`'s warn path produces, so
+**Phase 1f3** stamps that shape deliberately and asserts it there.
+
+**Which arm of Phase 1f3 actually discriminates**, stated because the arms it
+replaced did not: the residual assertion is a PIN — `main` refuses that leaf too,
+by the older `secrets.size === 0` rule rather than by the absent PROVEN-public
+verdict, so it answers the same. What earns the phase its runtime is the
+BLAST-RADIUS assertion beside it: on `main` `SSM_VALUE` stays
+`cdkd-known-ssm-value`, and only a tree that derives needles rewrites it onto its
+own parameter's expression.
+
+The `#2036` CLOSURE direction — a PROVEN-public verdict admitting the resolved
+value — is fenced by the unit suite; it has no arm anywhere in this fixture and
+cannot get one from a stamped `properties` alone, because reaching it needs an
+expression-bearing baseline AND an in-process `GetParameter` verdict at the same
+time. Its end-to-end site is `cdkd drift --revert` / `--accept`, tracked as
+issue [#2425](https://github.com/go-to-k/cdkd/issues/2425).
 
 Phase 1f2 covers issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)'s
 last residual row: it deletes `SSM_SECURE_COPY` from the record's persisted
@@ -82,7 +103,10 @@ last residual row: it deletes `SSM_SECURE_COPY` from the record's persisted
 the observed bag, and refreshes. The key now has no position source at all, so
 only a needle DERIVED from the certified sibling can redact it; the phase
 restores `properties` afterwards so the later phases start where Phase 1f left
-them.
+them. Phase 1f3 keeps its own record for the same reason in reverse: once
+`PUBLIC_URL`'s source carries a reference, the needle learned from it also
+rewrites `SSM_VALUE` (the same parameter, same resolved value), which would
+destroy Phase 1f2's "not dragged along" control.
 
 **Security:** secret-derived values are never printed; assertions mask them
 (`xx***(len=N)`). Only PASS/FAIL plus a masked snippet appears in the log.

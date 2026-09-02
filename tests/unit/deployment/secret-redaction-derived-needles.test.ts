@@ -331,6 +331,113 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
     expect(JSON.stringify(scrubbed)).not.toContain(PLAINTEXT);
   });
 
+  it('propagates a NO-VERDICT ssm needle by VALUE once its own source carries the expression', () => {
+    // The integ Phase 1f3 shape, at unit scale, and it pins a BLAST RADIUS
+    // rather than a closure. NO VERDICT is the load-bearing word and the title
+    // used to say PUBLIC, which overstated it: on this path nothing was
+    // resolved, so the spelling is all the code has and `PUBLIC_SSM` is
+    // byte-indistinguishable from `SECURE_SSM` here. The sibling case below is
+    // what pins the difference a real verdict makes.
+    //
+    // A parameter cdkd HAS read is persisted RESOLVED (#1901), so a source that
+    // carries the reference at all is the `cdkd import` warn-path shape — the
+    // record of a parameter cdkd could NOT read.
+    //
+    // Once the source does carry it: the mixed leaf is refused,
+    // `learnMixedLeafNeedle` learns `public-host -> PUBLIC_SSM` from it, and the
+    // value scan rewrites the WHOLE-VALUE leaf holding that same plaintext.
+    // Nothing is misattributed — it is the SAME parameter — but the propagation
+    // is real, and a change that narrows it has to edit this line rather than
+    // surface in the field.
+    const out = readback(
+      { Url: 'pre-public-host-post', Plain: 'public-host' },
+      { Url: `pre-${PUBLIC_SSM}-post`, Plain: 'public-host' }
+    );
+
+    expect(out['Url']).toBe(`pre-${PUBLIC_SSM}-post`);
+    expect(out['Plain']).toBe(PUBLIC_SSM);
+  });
+
+  it('propagates NOTHING once that same reference is PROVEN public', () => {
+    // The other half, and the reason the case above had to be renamed. With a
+    // definitive public verdict the mixed leaf is KEPT (issue #2036's closure),
+    // so the `return source` arm never runs and no needle is learned at all —
+    // the resolved value stays put at BOTH positions. Same fixture, same two
+    // leaves, opposite answers, and the only difference is the verdict.
+    forgetSecretExpression(PUBLIC_SSM);
+
+    const out = readback(
+      { Url: 'pre-public-host-post', Plain: 'public-host' },
+      { Url: `pre-${PUBLIC_SSM}-post`, Plain: 'public-host' }
+    );
+
+    expect(out['Url']).toBe('pre-public-host-post');
+    expect(out['Plain']).toBe('public-host');
+  });
+
+  it("re-redacts a KEPT public leaf when a SIBLING's needle matches inside it", () => {
+    // WHERE THE TWO HALVES OF THIS PR MEET, and the answer is deliberate rather
+    // than incidental. `mixedLeafMayCarryPublicReference` KEEPS `Url` (issue
+    // #2036's closure: the parameter is proven public, so AWS's resolved value
+    // is the right thing to persist) — and then a needle learned from the
+    // SIBLING `Other` matches INSIDE it, because the secret's resolved value
+    // happens to be the same string.
+    //
+    // The needle wins, and that is the correct direction: the alternative is
+    // leaving a known secret's PLAINTEXT sitting in `state.json` because it
+    // arrived at a leaf the pass had already decided to keep. It is also not a
+    // fabricated baseline — `cdkd drift --revert` re-resolves the expression
+    // back to that same value, so nothing wrong is pushed.
+    //
+    // Unchanged by the pass REORDER: the old order produced this too. The case
+    // exists because nothing pinned it, so the interaction was a guess.
+    forgetSecretExpression(PUBLIC_SSM);
+
+    const out = readback(
+      { Url: 'pre-shared-value-post', Other: 'shared-value' },
+      { Url: `pre-${PUBLIC_SSM}-post`, Other: EXPR }
+    );
+
+    expect(out['Other']).toBe(EXPR);
+    expect(out['Url']).toBe(`pre-${EXPR}-post`);
+  });
+
+  it('does NOT rewrite a LITERAL inside a leaf the position pass took from SOURCE', () => {
+    // THE SECOND ORDERING BLOCKER, the mirror of the one above and found by the
+    // same review. With the scan running last and unrestricted, it saw leaves
+    // whose content came from the SOURCE rather than from AWS — and a needle
+    // occurring in such a leaf's literal FRAME was replaced, writing a reference
+    // the template never had at that offset.
+    //
+    // Here `appuser` is BOTH the resolved value of a whole-token position and a
+    // hardcoded literal inside the connection string's frame (an ordinary CDK
+    // shape: the username is exposed through SSM and also joined into the URL).
+    // The unrestricted scan produced
+    // `postgres://{{resolve:ssm:/app/db-user}}:{{resolve:secretsmanager:...}}@…`
+    // — a FABRICATED baseline, which `cdkd drift --revert` re-resolves and
+    // pushes, so the day that parameter changes the revert writes a different
+    // user onto the live resource.
+    //
+    // Every assertion here also holds on `origin/main`: this is a
+    // NON-REGRESSION fence, not new behavior.
+    const userExpr = '{{resolve:ssm:/app/db-user}}';
+    const urlSource = `postgres://appuser:${EXPR}@db.internal/app`;
+    const out = readback(
+      {
+        Environment: {
+          DB_USER: 'appuser',
+          DB_URL: 'postgres://appuser:hunter2secret@db.internal/app',
+        },
+      },
+      { Environment: { DB_USER: userExpr, DB_URL: urlSource } }
+    );
+
+    const env = out['Environment'] as Record<string, unknown>;
+    expect(env['DB_USER']).toBe(userExpr);
+    expect(env['DB_URL']).toBe(urlSource);
+    expect(JSON.stringify(out)).not.toContain('hunter2secret');
+  });
+
   it('does NOT let a DERIVED map be read as evidence that a pass resolved this bag', () => {
     // THE ONE INTERACTION THAT COULD TURN THIS FIX INTO A DISCLOSURE.
     // `mixedLeafMayCarryPublicReference` splits on whether a secrets map
@@ -366,6 +473,124 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
 
     expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
     expect(JSON.stringify(out)).not.toContain('decrypted-secure-value');
+  });
+
+  it('does NOT un-certify a pairing whose ANCHOR embeds a learned plaintext', () => {
+    // THE PASS-ORDERING BLOCKER, found by PR #2415's security review and fixed
+    // by running BOTH position passes before the derived-needle value scan.
+    //
+    // The first revision derived the needles and handed them to `redactByPath`
+    // FIRST. The value scan then rewrote the array's FRAME literal at index 0 —
+    // which happens to embed the plaintext learned from `Token` — and
+    // `unkeyedArrayPairsByAnchors`, re-run against that SCANNED bag, found the
+    // anchor no longer deep-equal to its source. The WHOLE array refused, and
+    // the connection string at index 1 persisted in FULL PLAINTEXT. That leaf
+    // is unreachable by any needle (`learnMixedLeafNeedle` declines at two
+    // spans), so POSITION is the only thing that ever redacted it — making this
+    // a REGRESSION of shipped redaction, in the GHSA-p5qg-v9gv-hc7w direction,
+    // introduced by a fix for the opposite direction.
+    //
+    // Under the shipped order a derived needle can only ADD rewrites to the
+    // position passes' output, so the two cannot interact this way at all.
+    const ANCHOR_SECRET = 'SECRETVALUE123';
+    const ANCHOR_EXPR = '{{resolve:secretsmanager:app/anchor:SecretString:value}}';
+    const USER_EXPR = '{{resolve:secretsmanager:app/db:SecretString:username}}';
+    const connectionSource = `postgres://${USER_EXPR}:${EXPR}@h/db`;
+    const frame = `frame-${ANCHOR_SECRET}-x`;
+
+    const out = readback(
+      {
+        Token: ANCHOR_SECRET,
+        Args: [frame, 'postgres://admin:hunter2secret@h/db', '--flag'],
+      },
+      { Token: ANCHOR_EXPR, Args: [frame, connectionSource, '--flag'] }
+    );
+
+    const args = out['Args'] as string[];
+    // POSITION did its job: the anchors still corroborate, so the unscannable
+    // two-reference leaf takes its source expression.
+    expect(args[1]).toBe(connectionSource);
+    // ...and the derived needle still reaches the anchor, one step LATER.
+    expect(args[0]).toBe(`frame-${ANCHOR_EXPR}-x`);
+    expect(args[2]).toBe('--flag');
+    expect(out['Token']).toBe(ANCHOR_EXPR);
+    expect(JSON.stringify(out)).not.toContain('hunter2secret');
+    expect(JSON.stringify(out)).not.toContain(ANCHOR_SECRET);
+  });
+
+  it('keeps a plaintext POISONED once struck, even if a later position re-pairs it', () => {
+    // `learnNeedle`'s poisoned re-check, which the first revision could lose
+    // with every suite green. `A` learns the pair, `B` contradicts it (the
+    // issue #1910 collapse: an `:AWSCURRENT` / `:AWSPREVIOUS` pair mid-rotation
+    // resolving to one value), and `C` re-states `A`'s pairing. Without the
+    // re-check the plaintext is no longer a KEY of the map by then, so `C`
+    // re-arms the needle and the positionless `Copy` takes an expression the
+    // record itself has already shown to be ambiguous — `--revert` and
+    // `resolveReplayProps` both re-resolve it against the live resource.
+    const out = readback(
+      { A: PLAINTEXT, B: PLAINTEXT, C: PLAINTEXT, Copy: PLAINTEXT },
+      { A: EXPR, B: EXPR_B, C: EXPR }
+    );
+
+    expect(out['A']).toBe(EXPR);
+    expect(out['B']).toBe(EXPR_B);
+    expect(out['C']).toBe(EXPR);
+    expect(out['Copy']).toBe(PLAINTEXT);
+  });
+
+  it('keeps the needle when two certified positions state the SAME pair', () => {
+    // The other half of the poisoning rule: agreement is not a contradiction.
+    // `learnNeedle`'s `already === expression` early return is what says so,
+    // and mutating it into the poisoning branch stays green without this case —
+    // a record whose secret simply appears at two certified positions (the
+    // ordinary shape) would silently lose its needle, and the positionless
+    // `Copy` would keep the decrypted value. A SILENT under-redaction.
+    const out = readback({ A: PLAINTEXT, B: PLAINTEXT, Copy: PLAINTEXT }, { A: EXPR, B: EXPR });
+
+    expect(out['A']).toBe(EXPR);
+    expect(out['B']).toBe(EXPR);
+    expect(out['Copy']).toBe(EXPR);
+  });
+
+  it('seeds a needle from an `ssm-secure` token, which no other prefix covers', () => {
+    // `SECRET_BEARING_REFERENCE_PREFIXES` spells `{{resolve:ssm-secure:`
+    // separately from `{{resolve:ssm:` because the two are DISJOINT tests:
+    // `'{{resolve:ssm-secure:'.startsWith('{{resolve:ssm:')` is FALSE (the next
+    // character is `-`). Delete that entry and this shape silently stops
+    // yielding a needle.
+    //
+    // The shape is the `cdkd import --migrate-from-cloudformation` one: the
+    // template spells `ssm-secure`, CloudFormation resolved it SERVER-side, and
+    // the record therefore holds the decrypted value beside an unresolved
+    // token. The resolver never saw it, so no verdict exists to fall back on.
+    const secureExpr = '{{resolve:ssm-secure:/app/db-password}}';
+    const out = readback(
+      { Tok: 'cfn-resolved-plain', Extra: 'cfn-resolved-plain' },
+      { Tok: secureExpr }
+    );
+
+    expect(out['Tok']).toBe(secureExpr);
+    expect(out['Extra']).toBe(secureExpr);
+  });
+
+  it('does NOT learn a plaintext slice that is ITSELF a complete token', () => {
+    // The symmetry `learnWholeTokenNeedle` already had and the mixed-leaf arm
+    // lacked (PR #2415 security review). The frame matches, so the slice is
+    // extracted — and the slice is a whole `{{resolve:...}}` token, i.e. an
+    // already-redacted record rather than a plaintext. Pairing it would put a
+    // reference STRING in the needle set, which the value scan then has to keep
+    // stepping over.
+    const inner = '{{resolve:secretsmanager:app/inner:SecretString:pw}}';
+    const out = readback(
+      { Url: `pre-${inner}-post`, Copy: inner },
+      { Url: `pre-${EXPR}-post` }
+    );
+
+    // The position pass still substitutes its own leaf, as it always did.
+    expect(out['Url']).toBe(`pre-${EXPR}-post`);
+    // Nothing was learned, so the positionless copy is untouched — NOT rewritten
+    // onto `EXPR`, which is a reference this record does not carry there.
+    expect(out['Copy']).toBe(inner);
   });
 });
 
@@ -489,5 +714,29 @@ describe('secret-redaction - proven-public verdicts (issue #2036)', () => {
     clearRecordedSecretExpressions();
 
     expect(isProvenPublicExpression(PUBLIC_SSM)).toBe(false);
+  });
+
+  it('stays POISONED when the SAME public verdict is re-recorded after a secret one', () => {
+    // `forgetSecretExpression`'s CONFLICTING-preserving disjunct. The first
+    // `forget` contradicts a recorded SECRET and poisons the spelling; the
+    // second no longer contradicts anything (the secret entry is already gone),
+    // so without the disjunct it would overwrite the poison with a clean
+    // `true`. That DE-POISONS a spelling the process has seen both ways, and
+    // `mixedLeafMayCarryPublicReference` would then keep a decrypted
+    // `SecureString` in the readback.
+    //
+    // A second `GetParameter` for the same expression is ordinary: one resolver
+    // per stack, and `cdkd deploy` resolves the same reference again for the
+    // next resource that uses it.
+    recordSecretExpression(SECURE_SSM);
+    forgetSecretExpression(SECURE_SSM);
+    forgetSecretExpression(SECURE_SSM);
+
+    expect(isProvenPublicExpression(SECURE_SSM)).toBe(false);
+
+    // ...and the refusal that verdict drives still holds end to end.
+    const out = readback({ Url: 'pre-decrypted-secure-value-post' }, { Url: `pre-${SECURE_SSM}-post` });
+
+    expect(out['Url']).toBe(`pre-${SECURE_SSM}-post`);
   });
 });

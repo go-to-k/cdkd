@@ -3630,8 +3630,9 @@ have — and a secret can land in one of them (a copied environment variable, an
 entry AWS added). Those positions have no template leaf to match against, so
 before this they kept the resolved plaintext. cdkd now takes the plaintext it
 learned at a position it COULD match — the same secret's own leaf, elsewhere in
-the same record — and replaces every other occurrence of that value in that
-record with the same reference. Nothing is fetched and no extra permission is
+the same record — and replaces the remaining occurrences of that value in that
+record with the same reference. Positions the template already accounted for keep
+the answer the template gave them, so this only ever ADDS a replacement. Nothing is fetched and no extra permission is
 needed: the value comes out of the readback cdkd already has. A value that is
 NOT one of those secrets is left exactly as AWS reported it, so the baseline
 still describes the live resource.
@@ -3643,11 +3644,18 @@ and cdkd decides that from the parameter's TYPE rather than from the spelling.
 Where the reference sits INSIDE surrounding text and cdkd had not looked the
 parameter up on that code path, it used to assume the worst and store the
 reference — so the baseline held `https://{{resolve:ssm:/app/host}}/v1` where
-AWS holds `https://prod.example.com/v1`. `cdkd deploy` and `cdkd drift` now
-reuse the parameter type they already read during the run, so a public
-parameter keeps its resolved value. `cdkd state refresh-observed` looks nothing
-up at all, so on that command such a value is still replaced by the reference —
-wrong, but safe, and corrected by the next deploy.
+AWS holds `https://prod.example.com/v1`. `cdkd drift --revert` and `cdkd drift
+--accept` now reuse the parameter type they already read during the run, so a
+public parameter keeps its resolved value where they rewrite the baseline.
+`cdkd state refresh-observed` looks nothing up at all, so on that command such
+a value is still replaced by the reference — wrong, but safe, and corrected the
+next time a command that DOES read the parameter rewrites the baseline.
+
+This only ever applies where the stored template leaf is itself the unresolved
+reference, which is what `cdkd import` records for a parameter it could not
+read. On an ordinary `cdkd deploy` the leaf is stored RESOLVED (otherwise every
+parameter-backed property would show as a permanent pending change), and a
+resolved leaf is compared as-is — there is nothing to be cautious about.
 
 **Known limitation.** Two paths do not yet inherit this redaction, both because
 they resolve a reference through a context that does not record secrets:

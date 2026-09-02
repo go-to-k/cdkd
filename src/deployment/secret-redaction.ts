@@ -3225,9 +3225,16 @@ interface DerivedNeedleCollector {
 /**
  * Record one (plaintext -> expression) pair, or strike the plaintext out.
  *
- * Below {@link MIN_NEEDLE_LENGTH} nothing is recorded, matching
- * {@link buildNeedleRegex}, which would drop the needle anyway — done here as
- * well so the collector never holds a pair no scan can act on.
+ * Below {@link MIN_NEEDLE_LENGTH} nothing is recorded, and this floor DECIDES
+ * rather than mirrors. {@link buildNeedleRegex} applies the same threshold, so
+ * a short needle is dropped from the SUBSTRING arm either way — but the value
+ * scan's other arm is a WHOLE-VALUE lookup (`secrets.get(leaf)`) that matches
+ * at ANY length, so without this line a two-character derived plaintext would
+ * still rewrite every leaf equal to it. That is the false redaction with a
+ * blast radius {@link expressionMaySeedANeedle} exists to bound, arriving by
+ * length instead of by provenance: a public config value of `us` or `dev` is
+ * exactly the kind of short plaintext a readback carries in a dozen unrelated
+ * fields.
  */
 function learnNeedle(
   collector: DerivedNeedleCollector,
@@ -3387,7 +3394,86 @@ function learnMixedLeafNeedle(
   const suffix = source.slice(span.end);
   if (bag.length <= prefix.length + suffix.length) return;
   if (!bag.startsWith(prefix) || !bag.endsWith(suffix)) return;
-  learnNeedle(collector, bag.slice(prefix.length, bag.length - suffix.length), token);
+  const plaintext = bag.slice(prefix.length, bag.length - suffix.length);
+  // The same refusal {@link learnWholeTokenNeedle} makes, for the same reason
+  // and at the only other place a plaintext enters the collector: a slice that
+  // is ITSELF a complete `{{resolve:...}}` token is not a plaintext, it is an
+  // already-redacted record (a re-scrub, a second `refresh-observed`), and
+  // pairing it would put a reference string in the needle set. Today this is an
+  // identity rewrite at worst — the slice is the token, so the pair maps the
+  // expression onto itself — but the guard is what keeps that a property of the
+  // INPUTS rather than a coincidence, and it is stated here because the
+  // asymmetry with the whole-token arm was the security review's finding.
+  if (isSingleDynamicReferenceToken(plaintext)) return;
+  learnNeedle(collector, plaintext, token);
+}
+
+/**
+ * Merge the DERIVED-needle value scan back over the two POSITION passes, so the
+ * scan can only ever ADD a rewrite and never EDIT one.
+ *
+ * WHY THIS EXISTS AT ALL. Issue #2012's fix has been through both orderings and
+ * each has its own way of turning a redaction fix into a fabricated baseline —
+ * the two are mirror images, which is why the answer is a merge rather than a
+ * third choice of order:
+ *
+ * - SCAN FIRST (the first revision): a needle rewrites a frame LITERAL that
+ *   happens to embed a learned plaintext, {@link unkeyedArrayPairsByAnchors} is
+ *   then re-run against the SCANNED bag, the anchor no longer deep-equals its
+ *   source, the whole array refuses, and a sibling MIXED leaf that position
+ *   ALREADY redacted persists in plaintext. Under-redaction.
+ * - SCAN LAST, unrestricted (the second): the scan now runs over leaves whose
+ *   content came from the SOURCE. A needle occurring in the literal FRAME of a
+ *   source-taken mixed leaf is replaced, so
+ *   `postgres://appuser:{{resolve:secretsmanager:...}}@h/db` becomes
+ *   `postgres://{{resolve:ssm:/app/db-user}}:{{resolve:...}}@h/db` when
+ *   `appuser` is also some whole-token position's resolved value — a reference
+ *   the template never had at that offset. `cdkd drift --revert` re-resolves the
+ *   baseline before pushing it, so once that parameter's value changes the
+ *   revert writes a DIFFERENT user to the live resource. Fabricated baseline,
+ *   which is the bar {@link refuseUncertifiedReadbackPositions} refuses to break
+ *   at its own bottom.
+ *
+ * THE RULE. A position the passes DECIDED is theirs; a position they left alone
+ * belongs to the scan. Expressed as a walk over their OUTPUT rather than as a
+ * second copy of their pairing logic, because a mirror of `identityKeyFor` /
+ * `unkeyedArrayPairsByAnchors` would drift from the original and a needle
+ * applied at a MIS-paired position is a false redaction everywhere it matches.
+ * The shapes line up position-for-position for free: neither pass adds a key,
+ * an element, or a scalar-over-container, so `refused` is `bag`'s own shape with
+ * some leaves replaced.
+ *
+ * `typeof bag === 'string'` at the leaf, and it does two jobs. A derived needle
+ * can only ever rewrite a STRING, so for every other leaf the two answers agree
+ * and taking `refused` is free. It is ALSO what keeps a non-plain leaf intact:
+ * the scan's own walk rebuilds objects through {@link hasPlainPrototype}, which
+ * turns a `Date` the provider readback carries (`LastModified`) into `{}`. That
+ * flattening predates this module's derived needles on the POPULATED-map path;
+ * this line stops issue #2012 from making it reachable on the EMPTY-map path
+ * too, where the unchanged-resource `drainObservedCaptures` baseline lives.
+ *
+ * The net effect is byte-identical to the FIRST ordering on every input where
+ * the un-certification did not fire — which is the whole point: it keeps that
+ * ordering's intent and drops only its defect.
+ */
+function preferPositionDecisions(scanned: unknown, refused: unknown, bag: unknown): unknown {
+  if (isPlainObject(bag) && isPlainObject(refused) && isPlainObject(scanned)) {
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(refused)) {
+      out[k] = preferPositionDecisions(scanned[k], v, bag[k]);
+    }
+    return out;
+  }
+  if (
+    Array.isArray(bag) &&
+    Array.isArray(refused) &&
+    Array.isArray(scanned) &&
+    refused.length === bag.length &&
+    scanned.length === bag.length
+  ) {
+    return refused.map((item, i) => preferPositionDecisions(scanned[i], item, bag[i]));
+  }
+  return typeof bag === 'string' && refused === bag ? scanned : refused;
 }
 
 /**
@@ -3435,6 +3521,17 @@ function learnMixedLeafNeedle(
  *   the deploy path, so one resource's secret can never rewrite another's
  *   coinciding literal.
  *
+ * WHERE THE RESULT IS APPLIED, and this is a SEQUENCING claim rather than a
+ * scoping one: the returned map is handed to a plain VALUE pass over the OUTPUT
+ * of both position passes ({@link redactByPath} then
+ * {@link refuseUncertifiedReadbackPositions}), never to either of them. The
+ * first revision fed it to `redactByPath` FIRST, and a needle could then rewrite
+ * a frame LITERAL that happened to contain the learned plaintext, after which
+ * the anchor pairing re-run against the scanned bag no longer matched and a
+ * sibling MIXED leaf the shipped code redacts BY POSITION persisted in
+ * plaintext. Running last means a derived needle can only ADD rewrites — see
+ * the ordering comment in {@link redactSecretsForState}.
+ *
  * Returns `secrets` BY IDENTITY when nothing is learned, so the no-secret path
  * stays byte-identical down to object identity.
  */
@@ -3449,8 +3546,11 @@ function deriveReadbackNeedles(
   if (!subtreeHasDynamicReference(source)) return secrets;
   const collector: DerivedNeedleCollector = { needles: new Map(), poisoned: new Set() };
   // The LEARN pass. Its return value is discarded — it runs for the pairs its
-  // certified positions establish, and it is the same function that will do the
-  // substituting, so the two can never disagree about what "certified" means.
+  // certified positions establish, and it is the same function that decides
+  // those positions on the substituting pass, so the two can never disagree
+  // about what "certified" means. It reads the RAW `bag` for the same reason:
+  // after the position passes those very positions hold the EXPRESSION, so the
+  // plaintext half of every pair would be gone.
   refuseUncertifiedReadbackPositions(bag, source, secrets, collector);
   return collector.needles.size > 0 ? collector.needles : secrets;
 }
@@ -3621,11 +3721,13 @@ function refuseUncertifiedReadbackPositions(
       out[k] = Object.hasOwn(source, k)
         ? refuseUncertifiedReadbackPositions(v, source[k], secrets, learn)
         : // No source leaf here, so this pass has nothing to substitute. It is
-          // no longer a residual: `redactByPath` has already value-scanned this
-          // position with the DERIVED needles, so a plaintext certified
-          // elsewhere in the record was rewritten before this walk ran (issue
-          // #2012). What arrives here is either that rewrite or a value no
-          // needle matched, and both are kept as-is.
+          // no longer a residual, but the closure happens AFTER this walk rather
+          // than before it: `redactSecretsForState` runs the DERIVED-needle
+          // value scan over this pass's OUTPUT (issue #2012), so a plaintext
+          // certified elsewhere in the record is rewritten one step later. What
+          // this walk hands on is therefore the raw value, and the scan decides
+          // it. The order is deliberate and is argued at the call site — a scan
+          // running FIRST can rewrite an anchor and UN-CERTIFY a pairing.
           v;
     }
     return out;
@@ -3710,19 +3812,26 @@ export function redactSecretsForState<T>(
   // because it was never resolved this deploy (issue #1900).
   if (secrets.size === 0 && source === undefined) return bag;
   if (source !== undefined) {
-    // DERIVED NEEDLES (issue #2012). On an empty-map readback path the value
-    // scan has nothing to look for, which is why the two positionless shapes
-    // kept their plaintext. This gives it needles taken from the record's OWN
-    // certified positions — see {@link deriveReadbackNeedles}. Every other
-    // caller gets `secrets` back by identity, so nothing else changes.
-    const positionSecrets = deriveReadbackNeedles(bag, source, secrets, rules);
-    const positioned = redactByPath(
-      bag,
-      source,
-      positionSecrets,
-      rules,
-      new Set(positionSecrets.values())
-    );
+    // BOTH POSITION PASSES FIRST, over the UNTOUCHED bag, and the ORDER here is
+    // load-bearing rather than stylistic. `secrets` is EMPTY by construction on
+    // every path {@link isReadbackProjectedFromState} selects, so
+    // `redactByPath`'s value arms are no-ops and this pair is byte-identical to
+    // the shipped pipeline; the DERIVED needles then run LAST, as a plain value
+    // pass over its OUTPUT (below), where they can only ADD rewrites.
+    //
+    // The first revision of issue #2012's fix fed the derived map into
+    // `redactByPath` BEFORE this refusal pass, and PR #2415's security review
+    // probed the regression: the value scan can rewrite a frame LITERAL that
+    // happens to contain a learned plaintext (a coinciding anchor — exactly this
+    // issue's population), after which `unkeyedArrayPairsByAnchors` re-runs
+    // against the SCANNED bag, the rewritten anchor no longer deep-equals its
+    // source, the WHOLE array refuses, and a sibling MIXED leaf that the shipped
+    // code redacts BY POSITION persists in full plaintext. A derived needle
+    // could therefore UN-CERTIFY a pairing — a regression of shipped redaction,
+    // in the GHSA-p5qg-v9gv-hc7w disclosure direction. Running the scan after
+    // both position passes makes that unreachable by construction.
+    const positioned = redactByPath(bag, source, secrets, rules, new Set(secrets.values()));
+    if (!isReadbackProjectedFromState(rules)) return positioned as T;
     // The path pass certifies a WHOLE-TOKEN source leaf and nothing else, so on
     // the readback paths — where the map can be empty and the value scan is a
     // no-op — a MIXED leaf or an unpairable array still held plaintext. Every
@@ -3738,7 +3847,7 @@ export function redactSecretsForState<T>(
     // stated here because two earlier revisions of this comment listed scrub as
     // an inheritor, which the gate contradicts one screen away.
     //
-    // `secrets`, NOT `positionSecrets`, and this is the one line where the
+    // `secrets`, NOT the derived map, and this is the one line where the
     // distinction can turn a fix into a disclosure. The refusal pass reads its
     // map for exactly one decision — {@link mixedLeafMayCarryPublicReference} —
     // and that predicate SPLITS on whether a map exists: a non-empty map means
@@ -3748,12 +3857,29 @@ export function redactSecretsForState<T>(
     // nothing could have been recorded — so handing it over would read every
     // `{{resolve:ssm:` mixed leaf as public and persist the decrypted
     // `SecureString`. That is the regression the `secrets-dynamic-ref` integ
-    // caught before #1926 shipped, reachable again through a new door.
-    return (
-      isReadbackProjectedFromState(rules)
-        ? refuseUncertifiedReadbackPositions(positioned, source, secrets)
-        : positioned
-    ) as T;
+    // caught before #1926 shipped, reachable again through a new door. The
+    // reorder above does not soften it: the derived map still never reaches
+    // this call.
+    const refused = refuseUncertifiedReadbackPositions(positioned, source, secrets);
+    // DERIVED NEEDLES (issue #2012), applied STRICTLY AFTER both position
+    // passes. On an empty-map readback path the value scan has nothing to look
+    // for, which is why the two positionless shapes kept their plaintext. This
+    // gives it needles taken from the record's OWN certified positions — see
+    // {@link deriveReadbackNeedles}. Every other caller gets `secrets` back by
+    // identity, so nothing else changes.
+    //
+    // The LEARN pass reads `bag`, the RAW readback, not `refused`: it needs the
+    // pre-substitution values, since a position the refusal pass has already
+    // rewritten onto its source expression no longer carries the plaintext the
+    // pairing is made of.
+    const derived = deriveReadbackNeedles(bag, source, secrets, rules);
+    if (derived === secrets) return refused as T;
+    // Scanned over the RAW bag, then merged so the passes above win wherever
+    // they DECIDED a position — see {@link preferPositionDecisions} for the two
+    // fabricated-baseline shapes the naive orderings produce. Scanning `bag`
+    // rather than `refused` also means the scan never sees a persisted
+    // expression, so it cannot splice a needle into one.
+    return preferPositionDecisions(redactSecretsForState(bag, derived), refused, bag) as T;
   }
   const regex = buildNeedleRegex(secrets.keys());
   // Even below the needle threshold, a NON-EMPTY whole-value match must still be
