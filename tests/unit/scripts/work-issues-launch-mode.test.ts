@@ -570,7 +570,17 @@ describe('work-issues launch-mode probe', () => {
       // `git branch -f <LAUNCH_BRANCH> origin/main` added to a launch-mode.md
       // block was NOT caught. The restore and fallback blocks are covered by
       // their ordered equality; every OTHER block in every OTHER file was not.
-      const FORBIDS = /\b(never|do not|don't|must not|cannot|no verb may|forbidden)\b/i;
+      // The carve-out is a NEGATION IMMEDIATELY BEFORE the command, not a marker
+      // loose in the surrounding text. Measured on the go-to-k/cdk-local#651
+      // sibling, whose round-3 version allowed the marker anywhere in the clause:
+      // eleven PRESCRIPTIVE sentences its previous form had flagged became exempt,
+      // including the composite mutant's own
+      // `git branch --force <LAUNCH_BRANCH> origin/main`. The same held here with a
+      // narrower set -- "Clean up with `git branch -D <LAUNCH_BRANCH>` -- you
+      // cannot leave it dangling" spent the exemption on a `cannot` that negated
+      // something else entirely. A word in the neighbourhood is not a prohibition;
+      // a word in FRONT of the verb is.
+      const FORBIDS = /\b(never|do not|don't|must not|no verb may)\b[^.\n]{0,24}$/i;
       const fenced = /^[ \t]*```[\s\S]*?^[ \t]*```/gm;
       const hits = skillDocs().flatMap((doc) => {
         const text = read(doc);
@@ -578,12 +588,21 @@ describe('work-issues launch-mode probe', () => {
           .flatMap((block) => block.split('\n'))
           .filter((line) => MOVING.test(line))
           .map((line) => `${doc} [code]: ${MOVING.exec(line)?.[0]}`);
+        // Windows are bounded by PARAGRAPHS and by TABLE ROWS as well as by
+        // sentences. A markdown table contains no sentence-ending period, so
+        // splitting on `.` alone makes an entire table one window and lets any
+        // row's wording carve every other row -- the same over-joining that made
+        // a whole fenced block inherit one exemption (go-to-k/cdkd#2448).
         const inProse = text
           .replace(fenced, '')
-          .replace(/\s*\n\s*/g, ' ')
-          .split(/(?<=\.)\s+/)
-          .filter((sent) => MOVING.test(sent) && !FORBIDS.test(sent))
-          .map((sent) => `${doc} [prose]: ${MOVING.exec(sent)?.[0]}`);
+          .split(/\n{2,}|(?=^[ \t]*\|)|(?<=\|[ \t]*)$/m)
+          .flatMap((para) => para.replace(/\s*\n\s*/g, ' ').split(/(?<=\.)\s+/))
+          .flatMap((win) => {
+            const hit = MOVING.exec(win);
+            if (!hit) return [];
+            // Adjacency: does a prohibition sit immediately in front of THIS match?
+            return FORBIDS.test(win.slice(0, hit.index)) ? [] : [`${doc} [prose]: ${hit[0]}`];
+          });
         return [...inCode, ...inProse];
       });
       expect(

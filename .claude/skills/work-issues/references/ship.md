@@ -386,6 +386,11 @@ branch was already a lane before this run touched it: restore it anyway (it is
 still not yours to move) and say so in the wrap, because the warning you then see
 is about the outer tool's work, not yours.
 
+Concretely, and stated so the fence has prose to permit: never `git pull` into
+`<LAUNCH_BRANCH>`, never `git merge --ff-only origin/main` onto it, never
+`git rebase <LAUNCH_BRANCH>`, and never `git branch -D <LAUNCH_BRANCH>`. The
+branch is not yours to move, and it is not yours to remove.
+
 **AS-IS is the whole rule: RESTORE, never ADJUST.** The first draft of this step
 fast-forwarded `LAUNCH_BRANCH` to `origin/main` on the way back, so it would not
 be left "stale"; that clause is WITHDRAWN. The tree and the branch are the outer
