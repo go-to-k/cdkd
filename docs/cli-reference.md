@@ -3622,6 +3622,21 @@ AWS — a credential rotation that silently never happens, invisible to
 covers the drift baseline: `observedProperties` keeps the reference AWS was
 last seen holding, so `cdkd drift --revert` cannot push an undeployed one.
 
+**A value AWS reports at a position your template does not name is redacted
+too** (issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)). The drift
+baseline in `observedProperties` is whatever AWS returned, so it routinely
+carries fields the template never set and list elements the template does not
+have — and a secret can land in one of them (a copied environment variable, an
+entry AWS added). Those positions have no template leaf to match against, so
+before this they kept the resolved plaintext. cdkd now takes the plaintext it
+learned at a position it COULD match — the same secret's own leaf, elsewhere in
+the same record — and replaces the remaining occurrences of that value in that
+record with the same reference. Positions the template already accounted for keep
+the answer the template gave them, so this only ever ADDS a replacement. Nothing is fetched and no extra permission is
+needed: the value comes out of the readback cdkd already has. A value that is
+NOT one of those secrets is left exactly as AWS reported it, so the baseline
+still describes the live resource.
+
 **Known limitation.** Two paths do not yet inherit this redaction, both because
 they resolve a reference through a context that does not record secrets:
 

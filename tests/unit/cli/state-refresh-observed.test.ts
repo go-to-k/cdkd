@@ -629,11 +629,26 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
     expect(JSON.stringify(observed)).not.toContain(SECRET_PLAINTEXT);
   });
 
-  it('RESIDUAL (issue #2012): an UNPAIRED element beside a paired one keeps its plaintext', async () => {
-    // The security review's case. The paired element IS redacted — that half
-    // works — while the element the record has no counterpart for is returned
-    // untouched, because dropping it would remove an element AWS genuinely
-    // reported and `--revert` would then strip it from the live resource.
+  it('CLOSED (issue #2012): an UNPAIRED element beside a paired one is redacted BY VALUE', async () => {
+    // The security review's case, and the first of the two rows the DERIVED
+    // NEEDLE closes. It used to keep its plaintext: `DB` pairs by `Name` and is
+    // redacted, while `DB_COPY` has no counterpart in the record, so the walk
+    // has no source leaf to take and — with an empty secrets map — the value
+    // scan it falls back to had no needles.
+    //
+    // It never lacked a VALUE. Certifying `DB` IS the assertion that
+    // `hunter2-decrypted` is that expression's resolved form, so the same
+    // assertion, read back out, is a needle. `DB_COPY` then matches it and
+    // takes the same expression.
+    //
+    // The FLIP is deliberate and is the point of the change: this assertion
+    // said `SECRET_PLAINTEXT` before, and a decrypted secret sitting in
+    // `observedProperties` on the path a plain `cdkd deploy` reaches is the
+    // GHSA class this lane exists to end.
+    //
+    // The ELEMENT is still not dropped or invented — only the leaf's value
+    // changes — which is the property `--revert` depends on: AWS reported two
+    // entries and the baseline still has two.
     const observed = await refreshWith(
       { Environment: [{ Name: 'DB', Value: SECRET_EXPR }] },
       {
@@ -646,36 +661,34 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
     expect(observed).toEqual({
       Environment: [
         { Name: 'DB', Value: SECRET_EXPR },
-        { Name: 'DB_COPY', Value: SECRET_PLAINTEXT },
+        { Name: 'DB_COPY', Value: SECRET_EXPR },
       ],
     });
+    expect(JSON.stringify(observed)).not.toContain(SECRET_PLAINTEXT);
   });
 
-  it('RESIDUAL (issue #2012): the UNPAIRED row stays open where the two arms DISAGREE', async () => {
-    // The case above cannot carry the "still open" claim on its own, though the
-    // reason is narrower than an earlier version of this comment said. It
-    // claimed the two arms produce the SAME output there, which is measurably
-    // FALSE: forcing `identityKeyFor` to `undefined` reds it, because the
-    // lengths differ (1 against 2) so the anchor arm refuses the whole array
-    // and `DB` keeps its plaintext, where the identity arm redacts it.
+  it('does NOT over-redact an AWS-added element holding an UNRELATED literal', async () => {
+    // The complement of the case above, and it is what stops the derived needle
+    // from becoming a blanket rewrite. `DB` pairs by `Name` and IS redacted, so
+    // a needle EXISTS for this record; `EXTRA` is an element the record has no
+    // counterpart for, exactly like `DB_COPY` — but its value is not the
+    // learned plaintext, so it is left alone.
     //
-    // What it genuinely cannot show is the UNPAIRED half. Index counts alone
-    // decide that fixture, so it says nothing about whether an element with no
-    // counterpart would be anchored if the array were length-matched -- which
-    // is the actual residual, and what the fixture below is length-matched to
-    // isolate.
+    // Its assertion is UNCHANGED by issue #2012's fix, which is the claim being
+    // made: the needle discriminates on VALUE, so a positionless element is
+    // redacted when it holds the secret and untouched when it does not. A fix
+    // that redacted every unpaired element would red this case, and that fix is
+    // the FABRICATION the #1915 fences already rejected once.
     //
-    // Here the lengths MATCH, and the two arms give different answers:
+    // The fixture is also length-matched on purpose, and that was its original
+    // job: it separates the identity arm from the anchor arm, which answer
+    // differently here.
     //
     //  - identity (what actually runs): `DB` pairs by `Name` and IS redacted;
-    //    `EXTRA` has no counterpart in the record and keeps its plaintext.
+    //    `EXTRA` has no counterpart in the record.
     //  - anchors (what must NOT run): index 1's anchor is `GONE` against
     //    `EXTRA`, so the positions do not corroborate and the WHOLE array is
     //    refused — `DB` would keep its plaintext too.
-    //
-    // Asserting `DB` redacted AND `EXTRA` untouched therefore pins both halves
-    // at once: the identity arm still wins where it can answer, and the
-    // leftover element is still a residual rather than something anchored.
     const observed = await refreshWith(
       {
         Environment: [
@@ -699,24 +712,36 @@ describe('cdkd state refresh-observed — secret redaction (issue #1926)', () =>
     });
   });
 
-  it('RESIDUAL (issue #2012): an observed KEY the source does not carry stays open INSIDE the anchor arm', async () => {
+  it('CLOSED (issue #2012): an observed KEY the source does not carry, INSIDE the anchor arm', async () => {
     // The other surviving row, put where the anchor arm can actually reach it.
     // Its usual shape is a top-level object, which the arm never sees (it is
     // arrays-only), so that fixture proves nothing about this claim.
     //
-    // Nested in a keyless array the arm DOES see it, and refuses: the bag
-    // element carries an `Extra` key the record does not, so the key sets
-    // differ and condition (a) fails. Both leaves keep their plaintext — the
-    // row is not closed from this direction either, and the reason is the same
-    // key-set rule that refuses to invent a field AWS never reported.
+    // Nested in a keyless array, this used to refuse TWICE OVER and both
+    // refusals had to go for the row to close:
+    //
+    //  - `anchorsCorroboratePairing` compared key COUNTS, so the bag element's
+    //    AWS-added `Extra` refused the whole element and `Val` kept its
+    //    plaintext as well. It now requires only that every SOURCE key is
+    //    present, which is the direction that guards fabrication; an extra bag
+    //    key can neither be overwritten nor invented, because the walk maps
+    //    over the BAG and takes a source leaf only where the source HAS one.
+    //  - `Extra` itself has no source leaf, so nothing could be substituted for
+    //    it. The DERIVED NEEDLE learned from `Val` — now that the element pairs
+    //    — is what reaches it, by value rather than by position.
+    //
+    // Both flips are deliberate. What is NOT relaxed is the other direction: a
+    // SOURCE key missing from the bag still refuses, and
+    // `secret-redaction-anchor-pairing.test.ts`'s two ROW 4 cases pin it.
     const observed = await refreshWith(
       { Fields: [{ Field: 'pw', Val: SECRET_EXPR }] },
       { Fields: [{ Field: 'pw', Val: SECRET_PLAINTEXT, Extra: SECRET_PLAINTEXT }] }
     );
 
     expect(observed).toEqual({
-      Fields: [{ Field: 'pw', Val: SECRET_PLAINTEXT, Extra: SECRET_PLAINTEXT }],
+      Fields: [{ Field: 'pw', Val: SECRET_EXPR, Extra: SECRET_EXPR }],
     });
+    expect(JSON.stringify(observed)).not.toContain(SECRET_PLAINTEXT);
   });
 
   it('descends per identity-keyed element, reaching BOTH a MIXED leaf and an anchored array', async () => {

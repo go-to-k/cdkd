@@ -2696,22 +2696,35 @@ function dynamicReferenceSpans(value: string): Array<{ start: number; end: numbe
  * a MIXED leaf than to a whole token on the identical source, and that
  * inconsistency is what persisted a decrypted secret.
  *
- * ACCEPTED CONSEQUENCE, recorded rather than papered over: on the empty-map
- * paths a genuinely PUBLIC ssm mixed leaf is now OVER-redacted, so the baseline
- * no longer matches AWS and `cdkd drift` reports a phantom on it. That is
- * reachable only through the one documented hole in the premise above — `cdkd
- * import`'s warn path, which can leave a public expression in state. The trade
- * is deliberate and asymmetric: under-redaction persists a decrypted secret,
- * which is a disclosure and is what this lane exists to prevent, while
- * over-redaction is visible, recoverable and discloses nothing. Closing it
- * properly needs a real TYPE classification on these paths, which is issue
- * [#2012](https://github.com/go-to-k/cdkd/issues/2012)'s mechanism; the
- * over-redaction itself is tracked as issue
- * [#2036](https://github.com/go-to-k/cdkd/issues/2036).
+ * NOT CLOSED here. Issue
+ * [#2036](https://github.com/go-to-k/cdkd/issues/2036) tracks the price this
+ * refusal pays: a genuinely PUBLIC ssm mixed leaf is OVER-redacted on the
+ * empty-map paths, so the baseline no longer matches AWS. Giving the empty-map
+ * path POSITIVE evidence (a store of PROVEN-public verdicts, which the
+ * resolver's own `pinSecretVerdict` retraction already computes) was drafted in
+ * PR #2415 and WITHDRAWN there: such a store is keyed on the bare expression
+ * and lives for the whole process, so on a `cdkd deploy --all` spanning regions
+ * a verdict recorded where the parameter is a plain `String` un-redacts a
+ * SecureString of the same name in another region — measured, and the
+ * un-redacting direction, which is worse than the over-redaction it fixes. Any
+ * revival must key the verdict by SCOPE (region + account) at the READ side.
  *
- * `tests/integration/secrets-dynamic-ref` is the end-to-end proof on BOTH
- * paths, and it is the only place the empty-map defect surfaced: Phase 1g
- * covers the populated-map deploy and Phase 1f the empty-map command.
+ * The residual is therefore the whole population an empty map describes, which
+ * is the state issue #2036 records. Refusing is still the right way to be wrong
+ * here: under-redaction persists a decrypted secret, a disclosure and the thing
+ * this lane exists to prevent, while over-redaction is visible, recoverable and
+ * discloses nothing.
+ *
+ * `tests/integration/secrets-dynamic-ref` is the end-to-end proof, and it is
+ * the only place the empty-map defect surfaced — every unit assertion passed.
+ * Three of its phases pin a DIFFERENT map state for the same two leaves, which
+ * is what makes the split observable rather than asserted: Phase 1 is the
+ * populated-map deploy (the resource is being created), Phase 1g the EMPTY-map
+ * deploy (the resource is UNCHANGED, so it has no per-resource map but the
+ * resolver has still classified the parameter this run), and Phase 1f the
+ * empty-map command, which classifies nothing and therefore still refuses. An
+ * earlier revision of this sentence called Phase 1g the populated-map case,
+ * which is the opposite of what that phase is built to reach.
  */
 function mixedLeafMayCarryPublicReference(source: string, secrets: RecordedSecretValues): boolean {
   // NO MAP, NO EVIDENCE — so this cannot answer, and it must not pretend to.
@@ -2891,7 +2904,9 @@ function anchorSignature(source: unknown): string {
  *
  * Two conditions, both required:
  *
- * 1. the key sets (objects) or index counts (arrays) match, and
+ * 1. every SOURCE key is present in the bag (objects) or the index counts match
+ *    (arrays) — see the object arm for why containment rather than equality,
+ *    and which of the two directions is the fabrication guard, and
  * 2. every position whose SOURCE carries no dynamic reference is deep-equal on
  *    both sides -- the *anchors*.
  *
@@ -2952,8 +2967,36 @@ function anchorsCorroboratePairing(
   if (isDynamicReferenceString(source)) return typeof bag === 'string';
   if (isPlainObject(source)) {
     if (!isPlainObject(bag)) return false;
+    // CONTAINMENT, not equality: every SOURCE key must be present and must
+    // corroborate, while a key only the BAG carries is allowed (issue #2036 /
+    // #2012's row 6). The two directions are not symmetric and only one of them
+    // was ever load-bearing:
+    //
+    //  - a source key the bag LACKS still refuses, on `Object.hasOwn` below.
+    //    That is the fabrication direction — it is how an AWS-reported
+    //    `[{Value:'x'}]` was stopped from becoming `[{Name:'db', Value:<expr>}]`
+    //    — and nothing here relaxes it.
+    //  - a bag key the source lacks used to refuse too, on a key-COUNT
+    //    comparison. It bought nothing: the caller's walk maps over the BAG's
+    //    keys and takes a source leaf only where `Object.hasOwn(source, k)`, so
+    //    an extra bag key can neither be overwritten nor fabricated. What it
+    //    cost was the whole element — an AWS readback ROUTINELY adds fields
+    //    (`Arn`, `LastModified`, a defaulted flag), so one such field refused
+    //    the pairing and every secret INSIDE that element kept its plaintext.
+    //
+    // The corroboration argument is unchanged by the relaxation, which is the
+    // part worth checking rather than asserting. Rule 1's anchors are the
+    // positions the SOURCE spells without a reference; an extra bag key is not
+    // one of them, so it neither adds nor removes an anchor. Rule 3's
+    // {@link anchorSignature} is computed on SOURCE elements alone, so
+    // distinguishability is untouched. A permutation is still refused by the
+    // anchors it breaks.
+    //
+    // Do NOT weaken this into "skip a missing bag key": that is a different
+    // edit, it removes the fabrication guard, and it is the one the issue #2012
+    // review measured as re-opening the false redaction that killed the first
+    // attempt at these rows.
     const sourceKeys = Object.keys(source);
-    if (sourceKeys.length !== Object.keys(bag).length) return false;
     return sourceKeys.every(
       (k) => Object.hasOwn(bag, k) && anchorsCorroboratePairing(bag[k], source[k], anchors)
     );
@@ -3062,6 +3105,531 @@ function unkeyedArrayPairsByAnchors(bag: readonly unknown[], source: readonly un
 }
 
 /**
+ * Marks a position one of the POSITION passes DECIDED, in the parallel tree
+ * {@link refuseUncertifiedReadbackPositions} builds when asked to `mark`.
+ *
+ * A SENTINEL rather than a value comparison, and that distinction was a
+ * security blocker on PR #2415. {@link preferPositionDecisions} first inferred
+ * "not decided" from `refused === bag`, which cannot tell an UNDECIDED position
+ * from one the pass decided IN FAVOUR of the value already there. Two shapes
+ * hit it, both fabricating a baseline `cdkd drift --revert` then pushes:
+ *
+ * - the resolver's unsupported-service arm leaves an `{{resolve:ssm-secure:`
+ *   token LITERAL, so AWS echoes it back and the source leaf EQUALS the bag
+ *   leaf. The string arm returns `source` — a decision — and the equality made
+ *   it look like no decision at all. (A BARE such token takes the whole-token
+ *   arm and one embedded in text takes the mixed-leaf arm; both decide, and
+ *   both were misread.)
+ * - the empty-map arm that deliberately KEEPS a leaf returns `bag` by design.
+ *
+ * A symbol cannot be produced by any walk of JSON, so no readback value can
+ * impersonate it.
+ */
+const POSITION_DECIDED = Symbol('position decided by a position pass');
+
+/**
+ * The (plaintext -> expression) pairs a LEARN pass has established, plus the
+ * plaintexts it refuses to speak for.
+ *
+ * `poisoned` is not bookkeeping — it is the {@link recordedSecretExpressions}
+ * collapse (issue #1910) arriving through this door. The map is keyed by the
+ * resolved PLAINTEXT, so two expressions that resolve to the same value would
+ * silently keep the last one learned and every OTHER occurrence of that value
+ * in the record would take a SIBLING's expression. `cdkd drift --revert` and
+ * `resolveReplayProps` both re-resolve a persisted expression against the live
+ * resource, so that is a wrong-reference write, not a cosmetic mislabel. A
+ * plaintext learned twice with two expressions is therefore struck out for the
+ * rest of the record and the residual stays a refusal.
+ */
+interface DerivedNeedleCollector {
+  readonly needles: Map<string, string>;
+  readonly poisoned: Set<string>;
+  /**
+   * Plaintexts whose secret-ness is INFERRED rather than spelled, so they may
+   * only ever rewrite a WHOLE leaf — see {@link expressionSecretIsInferred}.
+   */
+  readonly inferred: Set<string>;
+}
+
+/**
+ * Record one (plaintext -> expression) pair, or strike the plaintext out.
+ *
+ * Below {@link MIN_NEEDLE_LENGTH} nothing is recorded, and this floor DECIDES
+ * rather than mirrors. {@link buildNeedleRegex} applies the same threshold, so
+ * a short needle is dropped from the SUBSTRING arm either way — but the value
+ * scan's other arm is a WHOLE-VALUE lookup (`secrets.get(leaf)`) that matches
+ * at ANY length, so without this line a two-character derived plaintext would
+ * still rewrite every leaf equal to it. That is the false redaction with a
+ * blast radius {@link expressionMaySeedANeedle} exists to bound, arriving by
+ * length instead of by provenance: a public config value of `us` or `dev` is
+ * exactly the kind of short plaintext a readback carries in a dozen unrelated
+ * fields.
+ */
+function learnNeedle(
+  collector: DerivedNeedleCollector,
+  plaintext: string,
+  expression: string
+): void {
+  if (plaintext.length < MIN_NEEDLE_LENGTH) return;
+  if (collector.poisoned.has(plaintext)) return;
+  // Recorded unconditionally, and its POSITION here is not load-bearing:
+  // {@link expressionSecretIsInferred} is a pure function of the expression, so
+  // a plaintext two DIFFERENT expressions claim is POISONED by the arms below
+  // rather than narrowed, and one claimed twice by the SAME expression gets the
+  // same class both times. An earlier revision of this comment claimed the early
+  // placement made a both-classes plaintext keep the narrower radius; measured,
+  // that case does not exist — and believing it would license deleting the
+  // poison arm.
+  if (expressionSecretIsInferred(expression)) collector.inferred.add(plaintext);
+  const already = collector.needles.get(plaintext);
+  if (already === undefined) {
+    collector.needles.set(plaintext, expression);
+    return;
+  }
+  if (already === expression) return;
+  collector.needles.delete(plaintext);
+  collector.poisoned.add(plaintext);
+}
+
+/**
+ * The `{{resolve:<service>:` prefixes whose resolved value IS a secret,
+ * whatever the parameter or secret is called.
+ *
+ * `ssm` is in the list and `ssm-secure` is spelled separately, because
+ * `startsWith('{{resolve:ssm:')` is FALSE for `{{resolve:ssm-secure:` — the
+ * next character is `-`. The two are disjoint tests, not one with a prefix
+ * relationship, which is the trap `mixedLeafMayCarryPublicReference`'s own
+ * comment already records from the other direction.
+ */
+const SECRET_BEARING_REFERENCE_PREFIXES = [
+  '{{resolve:secretsmanager:',
+  '{{resolve:ssm-secure:',
+  '{{resolve:ssm:',
+] as const;
+
+/**
+ * The prefixes whose SPELLING settles secret-ness, with no lookup and no
+ * inference — the subset of {@link SECRET_BEARING_REFERENCE_PREFIXES} that
+ * {@link expressionSecretIsInferred} treats as certain.
+ *
+ * An ALLOWLIST rather than "the admission list minus `{{resolve:ssm:`", and the
+ * difference is what happens to the NEXT entry someone adds. Subtracting makes a
+ * new prefix default to CERTAIN, i.e. to the WIDER blast radius, which is the
+ * wrong direction to fail in; listing makes it default to inferred until someone
+ * deliberately promotes it.
+ */
+const SPELLED_SECRET_REFERENCE_PREFIXES = [
+  '{{resolve:secretsmanager:',
+  '{{resolve:ssm-secure:',
+] as const;
+
+/**
+ * Is this expression's secret-ness INFERRED rather than spelled?
+ *
+ * SPELLING, and ONLY spelling. `secretsmanager:` and `ssm-secure:` say what they
+ * are, in a way that is true in every region and every account. A bare
+ * `{{resolve:ssm:` token is not: it is accepted as secret-bearing on the #1901
+ * premise (a public `String` is persisted RESOLVED, so a token SURVIVING in a
+ * state bag is a `SecureString`), which is sound for the leaf itself and NOT
+ * sound as a licence to rewrite every other leaf that merely CONTAINS the value.
+ *
+ * A RECORDED verdict deliberately does NOT promote one, even though it is a real
+ * `GetParameter` answer. {@link recordedSecretExpressions} is keyed on the bare
+ * expression and lives for the whole process, so on a `cdkd deploy --all` a
+ * verdict pinned where the parameter is a `SecureString` is inherited where it
+ * is a plain `String` — and the `skipDynamicReferences` diff path skips the
+ * lookup on a `true` verdict, so the second region never retracts it. That is
+ * the SAME region blindness this PR withdrew issue #2036's public store for; a
+ * secret-direction verdict is safe to inherit for ADMISSION (it can only
+ * over-redact a leaf) and is not safe for BLAST RADIUS. The cost of ignoring it
+ * here is the substring arm for a verdict-backed, same-region ssm
+ * `SecureString` on the empty-map path — a strict subset of the population the
+ * no-verdict case already concedes, and in the same direction.
+ *
+ * The difference is a `--revert` WRITE. Measured on this module: a bare `ssm`
+ * token whose value is `production` turned `my-production-logs` into
+ * `my-{{resolve:ssm:/app/env}}-logs`, exactly the failure
+ * {@link expressionMaySeedANeedle}'s own doc names — and if that parameter is in
+ * fact public, the baseline now holds a value AWS never reported, which `cdkd
+ * drift --revert` re-resolves and pushes, renaming the live bucket the day the
+ * parameter changes.
+ *
+ * So evidence strength decides BLAST RADIUS, not admission: an inferred needle
+ * still closes issue #2012's two rows, because both are WHOLE-VALUE positions
+ * (an unpaired element and an observed key both hold the plaintext and nothing
+ * else). Only the substring arm is withheld. Issue #2036's withdrawn verdict
+ * store is what would promote these to certain; until it returns, scoped by
+ * region and account, this is the honest bound.
+ */
+function expressionSecretIsInferred(expression: string): boolean {
+  return !SPELLED_SECRET_REFERENCE_PREFIXES.some((prefix) => expression.startsWith(prefix));
+}
+
+/**
+ * May this expression's resolved value be used as a REDACTION NEEDLE?
+ *
+ * A stricter question than "may this expression be persisted at this position",
+ * which is what `trustAnyExpression` answers, and the difference is the whole
+ * reason this predicate exists. Persisting a source leaf VERBATIM is bounded to
+ * that one position; promoting the value it replaced to a needle rewrites EVERY
+ * leaf in the record that equals it, so a wrong answer here is a false
+ * redaction with a blast radius rather than a mislabelled leaf.
+ *
+ * Two classes, and each was measured rather than reasoned about:
+ *
+ * - a NON-SECRET SERVICE. `isSingleDynamicReferenceToken` accepts any
+ *   `{{resolve:<anything>}}` spelling, and the resolver's unsupported-service
+ *   arm WARNS and returns the literal — so AWS holds the token text itself and
+ *   the leaf beside it is ordinary data. `cdkd drift`'s own
+ *   `--revert does not register a live value for a look-alike spelling` case
+ *   pins exactly this for its sibling registration path
+ *   (`{{resolve:notaservice:/x}}`), and this predicate is what keeps the two
+ *   commands answering it the same way.
+ * - a plain `ssm` reference is ACCEPTED, on the same
+ *   #1901 premise the whole-token arm one level up already acts on: a public
+ *   `String` / `StringList` parameter is persisted RESOLVED, so a
+ *   `{{resolve:ssm:` token SURVIVING in a persisted state bag is a
+ *   `SecureString` by construction. Requiring a recorded verdict instead would
+ *   make the needle unavailable on `cdkd state refresh-observed`, whose process
+ *   resolves nothing and therefore records nothing — i.e. it would fail exactly
+ *   where issue #2012 is reported. A PROVEN-public verdict would refine this,
+ *   and issue #2036's store was to supply one; PR #2415 withdrew it as a
+ *   cross-region disclosure, so a genuinely public parameter's resolved value
+ *   CAN still seed a needle here. Bounded by the per-record scope and by
+ *   {@link MIN_NEEDLE_LENGTH}, and visible as over-redaction rather than as a
+ *   leak.
+ */
+function expressionMaySeedANeedle(expression: string): boolean {
+  return (
+    isRecordedSecretExpression(expression) ||
+    SECRET_BEARING_REFERENCE_PREFIXES.some((prefix) => expression.startsWith(prefix))
+  );
+}
+
+/**
+ * Learn from a position whose SOURCE is a WHOLE `{{resolve:...}}` token.
+ *
+ * This is the strongest needle available on a readback path, and it asserts
+ * nothing the walk was not already asserting: the caller is about to persist
+ * `expression` OVER `bag` at this very position, which is the claim that `bag`
+ * is that expression's resolved value. Reading the same claim back out as a
+ * needle is free.
+ *
+ * TWO refusals, both narrow and both necessary:
+ *
+ * - a bag leaf that is ITSELF a complete token is not a plaintext at all. It is
+ *   a record that was already redacted (a re-scrub, a second
+ *   `refresh-observed`), and pairing it with itself would put a `{{resolve:...}}`
+ *   string in the needle set, where the value scan's own token guard would then
+ *   have to keep stepping over it.
+ * - a token that does not name a SECRET-BEARING reference at all — see
+ *   {@link expressionMaySeedANeedle}.
+ */
+function learnWholeTokenNeedle(
+  collector: DerivedNeedleCollector,
+  bag: string,
+  source: string
+): void {
+  if (isSingleDynamicReferenceToken(bag)) return;
+  if (!expressionMaySeedANeedle(source)) return;
+  learnNeedle(collector, bag, source);
+}
+
+/**
+ * Learn from a MIXED leaf — a reference embedded in surrounding text, which
+ * this module calls the DOMINANT CDK shape (an `Fn::Join` around
+ * `secret.secretValueFromJson(...)`).
+ *
+ * The caller is about to persist `source` over `bag`, i.e. it has already
+ * decided the two are the same leaf one resolution apart. Extracting the
+ * plaintext is then arithmetic rather than inference, PROVIDED the extraction
+ * is unambiguous, which is what the guards below establish:
+ *
+ * - EXACTLY ONE span. With two references the text between them cannot be
+ *   split between the two resolved values without guessing. This one is
+ *   CONSERVATIVE rather than a correctness guard, and saying so is what stops
+ *   the next reader treating it as load-bearing: with two RESOLVED references
+ *   the frame check below refuses independently, because the computed SUFFIX
+ *   would then contain a whole `{{resolve:...}}` token and a resolved readback
+ *   cannot end with one. The shape it genuinely decides is a second reference
+ *   that survives LITERALLY in the readback — the resolver's
+ *   unsupported-service arm (`ssm-secure:`) produces exactly that — where the
+ *   extraction would in fact be right and is declined anyway. Measured: a
+ *   both-resolved fixture leaves this line unfenced.
+ * - the source's literal PREFIX and SUFFIX must both be present at the ends of
+ *   the bag. That is what proves the leaf really is this source resolved; AWS
+ *   normalising any of the surrounding text refuses instead of yielding a
+ *   needle sliced at the wrong offsets.
+ * - the two must not overlap, and something must remain between them.
+ *
+ * Anchoring at the ENDS rather than searching is deliberate: a secret whose own
+ * text repeats the suffix (`abc@h` inside `postgres://u:abc@h@h`) still slices
+ * correctly, while an `indexOf` scan would cut it short.
+ */
+function learnMixedLeafNeedle(
+  collector: DerivedNeedleCollector,
+  bag: string,
+  source: string
+): void {
+  const spans = dynamicReferenceSpans(source);
+  if (spans.length !== 1) return;
+  const [span] = spans as [{ start: number; end: number }];
+  // The TOKEN, never the whole leaf. The needle's replacement is what gets
+  // written wherever the plaintext is found NEXT, and those positions carry
+  // only the secret — an AWS-added field holding the bare password, say. Pairing
+  // it with the surrounding `postgres://u:...@h` frame would write a whole
+  // connection string over a field AWS reported as a password: fabricated
+  // baseline content, which `--revert` then pushes to the live resource. Pinned
+  // by `learns from a MIXED leaf, which is the DOMINANT CDK shape`, which
+  // measured exactly that output before this line said `token`.
+  const token = source.slice(span.start, span.end);
+  if (!expressionMaySeedANeedle(token)) return;
+  const prefix = source.slice(0, span.start);
+  const suffix = source.slice(span.end);
+  if (bag.length <= prefix.length + suffix.length) return;
+  if (!bag.startsWith(prefix) || !bag.endsWith(suffix)) return;
+  const plaintext = bag.slice(prefix.length, bag.length - suffix.length);
+  // The same refusal {@link learnWholeTokenNeedle} makes, for the same reason
+  // and at the only other place a plaintext enters the collector: a slice that
+  // is ITSELF a complete `{{resolve:...}}` token is not a plaintext, it is an
+  // already-redacted record (a re-scrub, a second `refresh-observed`), and
+  // pairing it would put a reference string in the needle set. Today this is an
+  // identity rewrite at worst — the slice is the token, so the pair maps the
+  // expression onto itself — but the guard is what keeps that a property of the
+  // INPUTS rather than a coincidence, and it is stated here because the
+  // asymmetry with the whole-token arm was the security review's finding.
+  if (isSingleDynamicReferenceToken(plaintext)) return;
+  learnNeedle(collector, plaintext, token);
+}
+
+/**
+ * Read the mark tree one level down. It has the SAME shape as `refused` by
+ * construction (one function, one set of inputs), but this stays defensive: a
+ * missing level yields `undefined`, which reads as "not decided" and therefore
+ * lets the scan act. That is the same answer the pre-mark code gave, so a shape
+ * surprise cannot silently start SUPPRESSING redaction — but it fails toward
+ * SCANNING, which is the fabrication direction the mark tree exists to stop.
+ * Both are stated because neither default is free; the shapes are identical by
+ * construction (one function, one set of inputs), so this arm is a backstop
+ * rather than a policy.
+ */
+function asChild(marks: unknown, key: string): unknown {
+  return isPlainObject(marks) && hasPlainPrototype(marks) ? marks[key] : undefined;
+}
+
+/** The array-arm twin of {@link asChild}; same fail-open, same reason. */
+function asIndex(marks: unknown, index: number): unknown {
+  return Array.isArray(marks) ? marks[index] : undefined;
+}
+
+/**
+ * Merge the DERIVED-needle value scan back over the two POSITION passes, so the
+ * scan can only ever ADD a rewrite and never EDIT one.
+ *
+ * WHY THIS EXISTS AT ALL. Issue #2012's fix has been through both orderings and
+ * each has its own way of turning a redaction fix into a fabricated baseline —
+ * the two are mirror images, which is why the answer is a merge rather than a
+ * third choice of order:
+ *
+ * - SCAN FIRST (the first revision): a needle rewrites a frame LITERAL that
+ *   happens to embed a learned plaintext, {@link unkeyedArrayPairsByAnchors} is
+ *   then re-run against the SCANNED bag, the anchor no longer deep-equals its
+ *   source, the whole array refuses, and a sibling MIXED leaf that position
+ *   ALREADY redacted persists in plaintext. Under-redaction.
+ * - SCAN LAST, unrestricted (the second): the scan now runs over leaves whose
+ *   content came from the SOURCE. A needle occurring in the literal FRAME of a
+ *   source-taken mixed leaf is replaced, so
+ *   `postgres://appuser:{{resolve:secretsmanager:...}}@h/db` becomes
+ *   `postgres://{{resolve:ssm:/app/db-user}}:{{resolve:...}}@h/db` when
+ *   `appuser` is also some whole-token position's resolved value — a reference
+ *   the template never had at that offset. `cdkd drift --revert` re-resolves the
+ *   baseline before pushing it, so once that parameter's value changes the
+ *   revert writes a DIFFERENT user to the live resource. Fabricated baseline,
+ *   which is the bar {@link refuseUncertifiedReadbackPositions} refuses to break
+ *   at its own bottom.
+ *
+ * THE RULE. A position the passes DECIDED is theirs; a position they left alone
+ * belongs to the scan. Expressed as a walk over their OUTPUT rather than as a
+ * second copy of their pairing logic, because a mirror of `identityKeyFor` /
+ * `unkeyedArrayPairsByAnchors` would drift from the original and a needle
+ * applied at a MIS-paired position is a false redaction everywhere it matches.
+ * The shapes line up position-for-position for free: neither pass adds a key,
+ * an element, or a scalar-over-container, so `refused` is `bag`'s own shape with
+ * some leaves replaced.
+ *
+ * `typeof bag === 'string'` at the leaf: a derived needle can only ever rewrite
+ * a STRING, so for every other leaf the two answers agree and taking `refused`
+ * is free.
+ *
+ * KEEPING A NON-PLAIN LEAF INTACT takes the prototype guard on the object arm,
+ * NOT that leaf rule, and an earlier revision of this comment claimed the
+ * opposite — measured wrong. The scan's own walk rebuilds objects and turns a
+ * `Date` the provider readback carries (`LastModified`) into `{}`; that
+ * flattening predates this module's derived needles on the POPULATED-map path
+ * (issue #2427). The object arm runs FIRST here and `isPlainObject` admits a
+ * `Date`, so without `hasPlainPrototype` this walk did the flattening ITSELF —
+ * newly extending #2427 to the EMPTY-map path, where the unchanged-resource
+ * `drainObservedCaptures` baseline lives and where `cdkd drift --revert` pushes
+ * the result to the live resource. With the guard a non-plain leaf falls
+ * through to `refused`. That is the position passes' own answer — usually the
+ * bag by identity, though NOT universally: their object arm has no prototype
+ * guard of its own, so a non-plain leaf whose source subtree carries a
+ * reference is already flattened one function earlier. Same defect as issue
+ * #2427, one layer up, and out of this lane's scope.
+ *
+ * The net effect is byte-identical to the FIRST ordering on every input where
+ * the un-certification did not fire — which is the whole point: it keeps that
+ * ordering's intent and drops only its defect.
+ */
+function preferPositionDecisions(
+  scanned: unknown,
+  refused: unknown,
+  bag: unknown,
+  marks: unknown,
+  inferred: RecordedSecretValues
+): unknown {
+  // `hasPlainPrototype`, and it is load-bearing rather than tidy:
+  // {@link isPlainObject} admits ANY non-null non-array object, a `Date`
+  // included, and `Object.entries(new Date())` is `[]` — so without this the
+  // object arm rebuilt a readback `Date` as an empty object BEFORE the leaf
+  // rule below could keep it, which is the very corruption the leaf rule is
+  // documented as preventing. Measured on this tree: a bag of
+  // `{A, Copy, LastModified: Date}` came back with `LastModified: {}`.
+  if (
+    isPlainObject(bag) &&
+    hasPlainPrototype(bag) &&
+    isPlainObject(refused) &&
+    isPlainObject(scanned)
+  ) {
+    const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(refused)) {
+      out[k] = preferPositionDecisions(scanned[k], v, bag[k], asChild(marks, k), inferred);
+    }
+    return out;
+  }
+  if (
+    Array.isArray(bag) &&
+    Array.isArray(refused) &&
+    Array.isArray(scanned) &&
+    refused.length === bag.length &&
+    scanned.length === bag.length
+  ) {
+    return refused.map((item, i) =>
+      preferPositionDecisions(scanned[i], item, bag[i], asIndex(marks, i), inferred)
+    );
+  }
+  // The scan owns a STRING leaf no position pass decided. `marks` answers the
+  // second half exactly; `refused === bag` used to, and could not distinguish a
+  // decision that AGREED with the bag — see {@link POSITION_DECIDED}.
+  if (typeof bag !== 'string' || marks === POSITION_DECIDED) return refused;
+  // `scanned` carries the CERTAIN needles at full strength. An INFERRED one may
+  // only take a leaf WHOLE, so it applies here and only where the certain scan
+  // left the leaf alone — see {@link expressionSecretIsInferred} for why the
+  // substring arm is withheld from it.
+  return scanned === bag ? (inferred.get(bag) ?? scanned) : scanned;
+}
+
+/**
+ * The learned pairs, split by how strong the evidence for each one is.
+ *
+ * `certain` gets the full value scan (whole-value AND substring); `inferred`
+ * gets a WHOLE-VALUE rewrite only. See {@link expressionSecretIsInferred}.
+ */
+interface DerivedNeedles {
+  readonly certain: RecordedSecretValues;
+  readonly inferred: RecordedSecretValues;
+}
+
+/**
+ * DERIVED NEEDLES (issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)):
+ * the secrets map an empty-map readback path can build from its OWN two bags,
+ * with no resolution, no AWS call and no new permission.
+ *
+ * THE PROBLEM THIS ANSWERS. On the readback paths the secrets map is empty by
+ * construction (nothing was resolved), so the value scan has no needles and
+ * POSITION is the only mechanism. Two shapes have no position to argue from and
+ * kept their plaintext: an UNPAIRED array element beside a paired one, and an
+ * observed KEY the source does not carry. Both are places {@link redactByPath}
+ * ALREADY delegates to the value scan — it is the scan that had nothing to say.
+ *
+ * WHAT MAKES A NEEDLE AVAILABLE WITHOUT FETCHING. The same record almost always
+ * carries the same secret at a position the pass DOES certify: the paired
+ * sibling, the key the source does carry. Certifying such a position IS the
+ * assertion that AWS's value there is that expression's resolved form — the
+ * pass acts on it by persisting the expression over it. Reading that assertion
+ * back out gives a plaintext, and a plaintext is exactly what the value scan
+ * was missing. Issue #2012's own direction was to RESOLVE the record's
+ * expressions to get one, which would have made `cdkd state refresh-observed`
+ * and every deploy's observed capture FETCH secrets: a new IAM requirement, a
+ * new failure mode and a new place plaintext lives. None of that is needed —
+ * AWS already handed us the plaintext, in the very bag being redacted.
+ *
+ * `redactByPath`'s own comment argued the opposite direction and was right
+ * about it: seeding the scan from the SOURCE's expressions cannot work, because
+ * a scan needs PLAINTEXT needles. This seeds it from the BAG's values, which is
+ * the half that exists.
+ *
+ * SCOPE, and why each bound is where it is:
+ *
+ * - ONLY the readback-projected rules. Every other caller either has a real map
+ *   or has a source of a different generation, where a value learned from one
+ *   generation must not rewrite the other.
+ * - ONLY when the map is EMPTY, and this bound is load-bearing for a reason
+ *   that is not obvious: {@link crossStackAssociations} and
+ *   {@link nestedStackParameterExpressions} are `WeakMap`s keyed by the
+ *   RecordedSecretValues INSTANCE, so handing the pipeline a different Map
+ *   object would silently lose every association that pass recorded. With an
+ *   empty map there are none to lose (an association is only ever recorded for
+ *   a plaintext that map holds).
+ * - the pairs are scoped to ONE record, exactly as `perResourceSecrets` is on
+ *   the deploy path, so one resource's secret can never rewrite another's
+ *   coinciding literal.
+ *
+ * WHERE THE RESULT IS APPLIED, and this is a SEQUENCING claim rather than a
+ * scoping one: the returned map is handed to a plain VALUE pass over the RAW
+ * bag, whose result is then MERGED over the output of both position passes by
+ * {@link preferPositionDecisions}. It reaches neither position pass. Both naive
+ * orderings are wrong and that function's doc has the measurements: scanning
+ * FIRST lets a needle rewrite a frame LITERAL and un-certify an anchor pairing
+ * (under-redaction), scanning LAST over their output lets one rewrite a literal
+ * inside a leaf they took from SOURCE (a fabricated baseline). The merge is what
+ * makes "a derived needle can only ADD rewrites" literally true.
+ *
+ * Returns `undefined` when nothing is learned, so the no-secret path skips the
+ * scan and the merge entirely and stays byte-identical to the position passes'
+ * own output.
+ */
+function deriveReadbackNeedles(
+  bag: unknown,
+  source: unknown,
+  secrets: RecordedSecretValues,
+  rules: PathSourceRules
+): DerivedNeedles | undefined {
+  if (!isReadbackProjectedFromState(rules)) return undefined;
+  if (secrets.size > 0) return undefined;
+  if (!subtreeHasDynamicReference(source)) return undefined;
+  const collector: DerivedNeedleCollector = {
+    needles: new Map(),
+    poisoned: new Set(),
+    inferred: new Set(),
+  };
+  // The LEARN pass. Its return value is discarded — it runs for the pairs its
+  // certified positions establish, and it is the same function that decides
+  // those positions on the substituting pass, so the two can never disagree
+  // about what "certified" means. It reads the RAW `bag` for the same reason:
+  // after the position passes those very positions hold the EXPRESSION, so the
+  // plaintext half of every pair would be gone.
+  refuseUncertifiedReadbackPositions(bag, source, secrets, collector);
+  if (collector.needles.size === 0) return undefined;
+  const certain = new Map<string, string>();
+  const inferred = new Map<string, string>();
+  for (const [plaintext, expression] of collector.needles) {
+    (collector.inferred.has(plaintext) ? inferred : certain).set(plaintext, expression);
+  }
+  return { certain, inferred };
+}
+
+/**
  * Refuse to persist a readback leaf the path pass could not CERTIFY, at any
  * position the STATE source proves is secret-bearing (issue #1926 review).
  *
@@ -3146,20 +3714,45 @@ function unkeyedArrayPairsByAnchors(bag: readonly unknown[], source: readonly un
  * --revert` pushes the BASELINE to AWS, so a masked baseline would write the
  * literal `***` onto the live resource (the issue #1498 / #1501 class).
  *
- * KNOWN RESIDUAL, the last row: an observed KEY the source object does not
- * carry has no source leaf to take and no needle to match. It is NOT refused
- * the way an unpaired array ELEMENT is, and the asymmetry is deliberate rather
- * than an oversight — an extra array element is a PEER of the secret-bearing
- * ones (another `Environment` entry), so suspicion is warranted and extras are
- * rare, while an extra object KEY is a different FIELD entirely (`Runtime`,
- * `FunctionArn`, `LastModified`) and is the NORM in an AWS readback. Refusing
- * those would empty the drift baseline of every secret-bearing resource.
- * Tracked as issue [#2012](https://github.com/go-to-k/cdkd/issues/2012).
+ * The last two rows were the RESIDUAL and are closed by DERIVED NEEDLES (issue
+ * #2012) — see {@link deriveReadbackNeedles}. Neither has a position to argue
+ * from: an unpaired array element and an observed KEY the source does not carry
+ * are both positions with no source leaf to take. What they never lacked was a
+ * VALUE — the same plaintext usually sits at a position this pass DOES certify,
+ * and certifying it is already an assertion that the value is that expression's
+ * resolved form. Reading that assertion back out as a needle turns the value
+ * scan on for the rest of the record without resolving anything.
+ *
+ * The extra-KEY asymmetry stays as it was and is worth restating, because the
+ * needle does not replace it: an extra array element is a PEER of the
+ * secret-bearing ones (another `Environment` entry), while an extra object KEY
+ * is a different FIELD entirely (`Runtime`, `FunctionArn`, `LastModified`) and
+ * is the NORM in an AWS readback. Refusing those wholesale would empty the
+ * drift baseline of every secret-bearing resource, which is why they are
+ * value-scanned rather than refused.
+ *
+ * `learn` is the LEARN PASS's collector and is `undefined` on the substituting
+ * pass. It changes NO verdict — every branch below decides exactly what it
+ * decided before — it only records the (plaintext, expression) pairs the
+ * certified positions establish. Deriving them through this function rather
+ * than a second walk is deliberate: the pairing rules (identity keys, anchor
+ * corroboration, the refusals) are subtle enough that a mirror of them would
+ * drift, and a needle learned from a MIS-paired position is a false redaction
+ * everywhere it then matches.
  */
 function refuseUncertifiedReadbackPositions(
   bag: unknown,
   source: unknown,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  learn?: DerivedNeedleCollector,
+  // MARK MODE. Returns the same SHAPE with {@link POSITION_DECIDED} at every
+  // position this pass decides, and the bag's own value everywhere else, so
+  // {@link preferPositionDecisions} can ask "was this decided?" instead of
+  // guessing from value equality. Running the real function rather than a
+  // mirror of it is the point: the pairing rules (identity keys, anchor
+  // corroboration, the refusals) decide which positions EXIST, and a second
+  // copy of them would drift.
+  mark?: boolean
 ): unknown {
   // The string arm, and BOTH of its guards were added after review measured
   // what their absence did.
@@ -3184,11 +3777,28 @@ function refuseUncertifiedReadbackPositions(
   if (isDynamicReferenceString(source) && typeof bag === 'string') {
     // A WHOLE token: `redactByPath` already decided this leaf, and returning
     // the source agrees with it.
-    if (isSingleDynamicReferenceToken(source)) return source;
+    if (isSingleDynamicReferenceToken(source)) {
+      // ...and the bag it replaces is that expression's resolved value, exactly
+      // and with nothing inferred. That is the strongest needle available here.
+      if (learn) learnWholeTokenNeedle(learn, bag, source);
+      return mark ? POSITION_DECIDED : source;
+    }
     // A MIXED leaf embedding something that may be PUBLIC config: keep the
-    // resolved value AWS actually holds. See the predicate's own doc.
-    if (mixedLeafMayCarryPublicReference(source, secrets)) return bag;
-    return source;
+    // resolved value AWS actually holds. See the predicate's own doc. KEEPING
+    // is a decision like any other, which is why it marks.
+    //
+    // NO TEST FENCES THAT MARK, and the reason is structural rather than a gap:
+    // the merge only runs when the map is EMPTY ({@link deriveReadbackNeedles}
+    // returns `secrets` by identity otherwise), and with an empty map the
+    // predicate above is constant `false`. So this arm and the mark tree cannot
+    // both be live today. It is written correctly anyway because issue #2036's
+    // withdrawn verdict store is what makes the predicate non-constant there,
+    // and whoever revives it must not also have to rediscover this line.
+    if (mixedLeafMayCarryPublicReference(source, secrets)) {
+      return mark ? POSITION_DECIDED : bag;
+    }
+    if (learn) learnMixedLeafNeedle(learn, bag, source);
+    return mark ? POSITION_DECIDED : source;
   }
   // Nothing to protect in this subtree — return the bag by identity, which is
   // what keeps an ordinary readback (and any AWS-added element in it) intact.
@@ -3202,8 +3812,15 @@ function refuseUncertifiedReadbackPositions(
       // prototype hit would produce the same output. Consistency is the whole
       // claim being made here.
       out[k] = Object.hasOwn(source, k)
-        ? refuseUncertifiedReadbackPositions(v, source[k], secrets)
-        : // The residual documented above: no source leaf, no needle.
+        ? refuseUncertifiedReadbackPositions(v, source[k], secrets, learn, mark)
+        : // No source leaf here, so this pass has nothing to substitute. It is
+          // no longer a residual, but the closure happens OUTSIDE this walk:
+          // `redactSecretsForState` scans the RAW bag with the DERIVED needles
+          // and {@link preferPositionDecisions} merges that result in wherever
+          // neither position pass changed a leaf (issue #2012) — which is
+          // exactly this position. What this walk hands on is therefore the raw
+          // value, and the merged scan decides it. Neither naive ORDER works;
+          // the reasons are measured on `preferPositionDecisions`.
           v;
     }
     return out;
@@ -3244,7 +3861,9 @@ function refuseUncertifiedReadbackPositions(
       // are the review's, not the original formulation's, and the shapes that
       // forced them are named on `unkeyedArrayPairsByAnchors`.
       if (!unkeyedArrayPairsByAnchors(bag, source)) return bag;
-      return bag.map((item, i) => refuseUncertifiedReadbackPositions(item, source[i], secrets));
+      return bag.map((item, i) =>
+        refuseUncertifiedReadbackPositions(item, source[i], secrets, learn, mark)
+      );
     }
     const sourceByIdentity = new Map<string, unknown>();
     for (const item of source) {
@@ -3254,7 +3873,7 @@ function refuseUncertifiedReadbackPositions(
       const partner = sourceByIdentity.get((item as Record<string, unknown>)[key] as string);
       return partner === undefined
         ? item
-        : refuseUncertifiedReadbackPositions(item, partner, secrets);
+        : refuseUncertifiedReadbackPositions(item, partner, secrets, learn, mark);
     });
   }
   // Shapes diverged (a scalar where the source has a container, or the reverse)
@@ -3286,7 +3905,30 @@ export function redactSecretsForState<T>(
   // because it was never resolved this deploy (issue #1900).
   if (secrets.size === 0 && source === undefined) return bag;
   if (source !== undefined) {
+    // BOTH POSITION PASSES FIRST, over the UNTOUCHED bag. `secrets` is EMPTY by
+    // construction on every path {@link isReadbackProjectedFromState} selects,
+    // so `redactByPath`'s value arms are no-ops and this pair is byte-identical
+    // to the shipped pipeline. The DERIVED needles are then scanned over the RAW
+    // bag and MERGED over this pair's output by
+    // {@link preferPositionDecisions} — NOT run "after" it, which is a
+    // distinction PR #2415 paid for twice.
+    //
+    // The first revision fed the derived map into `redactByPath` BEFORE the
+    // refusal pass, and the security review probed the regression: the value
+    // scan can rewrite a frame LITERAL that happens to contain a learned
+    // plaintext (a coinciding anchor — exactly this issue's population), after
+    // which `unkeyedArrayPairsByAnchors` re-runs against the SCANNED bag, the
+    // rewritten anchor no longer deep-equals its source, the WHOLE array
+    // refuses, and a sibling MIXED leaf that the shipped code redacts BY
+    // POSITION persists in full plaintext. A derived needle could therefore
+    // UN-CERTIFY a pairing — a regression of shipped redaction, in the
+    // GHSA-p5qg-v9gv-hc7w disclosure direction.
+    //
+    // The second revision simply ran the scan LAST over their output, which is
+    // the MIRROR defect — see {@link preferPositionDecisions}, where both are
+    // measured and the merge that ends them is argued.
     const positioned = redactByPath(bag, source, secrets, rules, new Set(secrets.values()));
+    if (!isReadbackProjectedFromState(rules)) return positioned as T;
     // The path pass certifies a WHOLE-TOKEN source leaf and nothing else, so on
     // the readback paths — where the map can be empty and the value scan is a
     // no-op — a MIXED leaf or an unpairable array still held plaintext. Every
@@ -3301,10 +3943,49 @@ export function redactSecretsForState<T>(
     // already repositioned `properties` onto TODAY's template — and it is
     // stated here because two earlier revisions of this comment listed scrub as
     // an inheritor, which the gate contradicts one screen away.
-    return (
-      isReadbackProjectedFromState(rules)
-        ? refuseUncertifiedReadbackPositions(positioned, source, secrets)
-        : positioned
+    //
+    // `secrets`, NOT the derived map, and this is the one line where the
+    // distinction can turn a fix into a disclosure. The refusal pass reads its
+    // map for exactly one decision — {@link mixedLeafMayCarryPublicReference} —
+    // and that predicate SPLITS on whether a map exists: a non-empty map means
+    // "a resolution pass ran, so absence from the verdict store is evidence of
+    // a PUBLIC parameter, keep the resolved value". A DERIVED map satisfies
+    // `size > 0` while proving nothing of the kind — nothing was resolved and
+    // nothing could have been recorded — so handing it over would read every
+    // `{{resolve:ssm:` mixed leaf as public and persist the decrypted
+    // `SecureString`. That is the regression the `secrets-dynamic-ref` integ
+    // caught before #1926 shipped, reachable again through a new door. Neither
+    // the merge nor anything above softens it: the derived map still never
+    // reaches this call.
+    const refused = refuseUncertifiedReadbackPositions(positioned, source, secrets);
+    // DERIVED NEEDLES (issue #2012), scanned over the RAW bag and MERGED over
+    // the two passes above. On an empty-map readback path the value scan has
+    // nothing to look for, which is why the two positionless shapes kept their
+    // plaintext. This gives it needles taken from the record's OWN certified
+    // positions — see {@link deriveReadbackNeedles}. Every other caller gets
+    // `secrets` back by identity, so nothing else changes.
+    //
+    // The LEARN pass reads `bag`, the RAW readback, not `refused`: it needs the
+    // pre-substitution values, since a position the refusal pass has already
+    // rewritten onto its source expression no longer carries the plaintext the
+    // pairing is made of.
+    const derived = deriveReadbackNeedles(bag, source, secrets, rules);
+    if (derived === undefined) return refused as T;
+    // Scanned over the RAW bag, then merged so the passes above win wherever
+    // they DECIDED a position — see {@link preferPositionDecisions} for the two
+    // fabricated-baseline shapes the naive orderings produce. Scanning `bag`
+    // rather than `refused` also means the scan never sees a persisted
+    // expression, so it cannot splice a needle into one.
+    // The MARK pass: the same walk again, over the same inputs, returning
+    // POSITION_DECIDED wherever it decides. Cheap (in-memory, no needles, no
+    // learning) and exact, because it IS the pass rather than a mirror of it.
+    const marks = refuseUncertifiedReadbackPositions(positioned, source, secrets, undefined, true);
+    return preferPositionDecisions(
+      redactSecretsForState(bag, derived.certain),
+      refused,
+      bag,
+      marks,
+      derived.inferred
     ) as T;
   }
   const regex = buildNeedleRegex(secrets.keys());

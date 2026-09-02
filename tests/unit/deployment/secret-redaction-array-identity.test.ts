@@ -1055,16 +1055,16 @@ describe('secret-redaction - readback refusal (issue #1926)', () => {
     expect(JSON.stringify(scrubbed)).not.toContain(PLAINTEXT);
   });
 
-  it('RESIDUAL (issue #2012): an observed KEY the source does not carry keeps its plaintext', () => {
-    // Row 4 of the module's per-shape table, pinned like rows 1-3 are. There is
-    // no source leaf to position against and no needle to match, so the value
-    // is persisted as-is. It is NOT closed by refusing every unpaired key: an
-    // extra key is the NORM in an AWS readback (`FunctionName`, `MemorySize`,
-    // `LastModified`), so refusing them would empty the drift baseline of every
-    // secret-bearing resource.
+  it('CLOSED (issue #2012): an observed KEY the source does not carry is redacted BY VALUE', () => {
+    // Row 4 of the module's per-shape table, and the flip is on purpose — the
+    // previous revision of this case asserted `PLAINTEXT` and said so.
     //
-    // A residual we chose to ship is pinned as deliberately as one we fixed —
-    // a future fix has to flip this assertion on purpose.
+    // There is still no source leaf to position against, and the key is still
+    // NOT refused: an extra key is the NORM in an AWS readback (`FunctionName`,
+    // `MemorySize`, `LastModified`), so refusing them would empty the drift
+    // baseline of every secret-bearing resource. What changed is that the value
+    // scan this position already fell back to now HAS a needle — learned from
+    // `Password`, the sibling the source does carry.
     const out = redactSecretsForState(
       { Password: PLAINTEXT, MasterPassword: PLAINTEXT },
       new Map<string, string>(),
@@ -1073,7 +1073,24 @@ describe('secret-redaction - readback refusal (issue #1926)', () => {
     ) as Record<string, unknown>;
 
     expect(out['Password']).toBe(EXPR);
-    expect(out['MasterPassword']).toBe(PLAINTEXT);
+    expect(out['MasterPassword']).toBe(EXPR);
+    expect(JSON.stringify(out)).not.toContain(PLAINTEXT);
+  });
+
+  it('leaves an observed KEY holding an UNRELATED value alone', () => {
+    // The discriminating half of the case above. A derived needle rewrites a
+    // positionless leaf only when its VALUE is the learned plaintext; an
+    // ordinary AWS-reported field keeps what AWS reported, so the drift
+    // baseline is not emptied and `--revert` still pushes the real value.
+    const out = redactSecretsForState(
+      { Password: PLAINTEXT, MemorySize: 'one-thousand-and-twenty-four' },
+      new Map<string, string>(),
+      { Password: EXPR },
+      STATE_SOURCED_READBACK_RULES
+    ) as Record<string, unknown>;
+
+    expect(out['Password']).toBe(EXPR);
+    expect(out['MemorySize']).toBe('one-thousand-and-twenty-four');
   });
 
   it('keeps an own `__proto__` key as DATA in the VALUE-SCAN walk too', () => {
