@@ -315,6 +315,17 @@ use). Fenced by `tests/unit/scripts/integ-single-exit-trap.test.ts`. Carry the
 shape past `trap`: before adding to any single-slot registration — a signal
 handler, a callback field, an `EXIT` hook — count what is already there.
 
+**COMMIT the round's real fixes BEFORE running any mutation probe.** A probe
+deliberately breaks the tree, so an interruption mid-probe (a session limit, a
+crash) leaves deliberate breakage and unfinished fixes in ONE undifferentiated
+dirty tree. Measured 2026-09-02 on the go-to-k/cdk-real-drift#1841 lane: the
+lane subagent died at the 5-hour session limit mid-probe with 9 dirty files,
+and the resuming session had to read the full diff to establish that none of
+it was probe wreckage before it could commit. With a pre-probe commit the
+separator is just `git diff` — anything unstaged after a probe is the probe's
+(mirrored from go-to-k/cdk-real-drift#1853; go-to-k/cdkd#2416 is this repo's
+filing).
+
 **A mutation probe proves a test discriminates only if it changes the value
 the test READS.** Four vacuous tests shipped across three lanes on 2026-08-19,
 all one shape: the assertion targeted an observable the BROKEN code also
