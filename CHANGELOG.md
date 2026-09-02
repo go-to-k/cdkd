@@ -1,3 +1,10 @@
+## [0.285.7](https://github.com/go-to-k/cdkd/compare/v0.285.6...v0.285.7) (2026-09-02)
+
+
+### Bug Fixes
+
+* **state:** purge lock.json noncurrent versions wherever cdkd deletes the lock ([#2450](https://github.com/go-to-k/cdkd/issues/2450)) ([3121059](https://github.com/go-to-k/cdkd/commit/31210598cfa35c7d37989240d5517300e47ab972))
+
 ## [0.285.6](https://github.com/go-to-k/cdkd/compare/v0.285.5...v0.285.6) (2026-09-02)
 
 
