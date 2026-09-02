@@ -274,7 +274,15 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // is asserted below rather than left as a claim -- and the number beside each
   // is its measured payload rounded out by roughly a tenth in each direction.
   ['src/deployment/secret-redaction.ts', 89_000, 112_000],   // measured 101,842
-  ['src/cli/commands/scrub.ts', 88_000, 110_000],            // measured 100,029
+  ['src/cli/commands/scrub.ts', 88_000, 118_000],            // measured 112,141 (see below)
+  // 110,000 -> 118,000 (issue go-to-k/cdkd#2274). This path loads BOTH
+  // `layout-deployment-secrets.md` and the new `layout-scrub.md` satellite, so the
+  // split that satellite performed did not reduce THIS path -- it reduced every
+  // OTHER path under the redaction glob, which is what the split was for. Dropping
+  // `scrub.ts` from the redaction file's `paths:` was tried and REVERTED: that file
+  // still documents `cdkd scrub --all`'s own behaviour against the redaction
+  // internals (the cross-region cache-key defect among them), so narrowing the glob
+  // is the under-loading this fence's own message warns about rather than a saving.
   // Issue #2274 split `provider-custom-resources.md` out of `providers.md`
   // (whose glob is `src/provisioning/**`, so every provider paid for the
   // Custom Resource notes) -- and that satellite's glob names exactly ONE
