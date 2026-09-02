@@ -69,13 +69,39 @@ value exists to name (what to put back) is gone. MAIN-CHECKOUT records it and
 does nothing with it: the run never leaves the main checkout, so §9's restore
 arm does not fire there.
 
-**IN-PLACE, `LAUNCH_BRANCH` is a branch to PUT BACK, never one to commit to.**
-§5 branches in place off `origin/main` instead of committing onto it, and the
-reason is not tidiness: `gh pr merge --delete-branch` (§9) deletes the REMOTE
-branch the PR was opened from, so a lane that worked directly on the outer
-tool's branch would delete the outer tool's branch on the way out — a far
-heavier interference than the detached HEAD this whole rule exists to avoid.
-The lane owns its own branch and deletes only that one.
+**IN-PLACE, `LAUNCH_BRANCH` is a branch to PUT BACK, never one to commit to —
+and never one to RENAME.** §5 branches in place off `origin/main` instead of
+committing onto it, and the reason is not tidiness: `gh pr merge
+--delete-branch` (§9) deletes the REMOTE branch the PR was opened from, so a
+lane that worked directly on the outer tool's branch would delete the outer
+tool's branch on the way out — a far heavier interference than the detached HEAD
+this whole rule exists to avoid. The lane owns its own branch and deletes only
+that one.
+
+**A RENAME is the trap, because it looks like taking a lane branch and is
+cheaper than one** — no fetch, no switch, the tree does not move — and it
+DESTROYS the restore target rather than borrowing it: `git branch -m` leaves the
+old name nowhere, local or remote, so §9's `show-ref` finds nothing and the run
+falls through to the detach fallback, the end state ship.md withdrew the same
+day for being visible-surprising in the outer tool's UI. Measured 2026-09-02:
+SIX workspaces renamed their launch branch away between 15:31 and 15:38 local —
+this run's `go-to-k/hawkfish` at 15:34 among them, and three of the six were
+renamed a SECOND time within the next thirteen minutes. A habit, not a slip.
+Only `git switch -c <lane> origin/main` gets you the lane branch.
+
+**The outer tool renames too, so `show-ref` before the restore is mandatory
+rather than defensive** — Orca derives a workspace branch name from a session's
+FIRST PROMPT and can rename a tree out from under a recorded value
+(go-to-k/cdkd#2413). Recovery either way is the reflog, which records the old
+name and the sha it pointed at:
+
+```bash
+git reflog --all --date=iso | grep -i 'Branch: renamed'   # the old name + its sha
+git branch <LAUNCH_BRANCH> <that sha>                     # re-create, then §9 restores
+```
+
+Run that BEFORE §9's `git branch -D <lane>`: a branch's own reflog is deleted
+with the branch, so after the delete the rename survives only in HEAD's copy.
 
 **The guard on the first line is not decoration.** Outside a work tree every
 `git rev-parse` fails and each substitution collapses to the empty string, so

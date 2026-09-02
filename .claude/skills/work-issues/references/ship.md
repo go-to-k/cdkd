@@ -129,6 +129,29 @@ returned **18** that day — the check was vacuous. Take the phrase from YOUR
 entry's own subject and prove it absent from main's copy before counting. The
 third line re-checks the paragraph above.
 
+**A GENERATED file in a conflict is REGENERATED, never hand-merged.** Resolve
+it however lets the generator run, then re-run the generator and commit ITS
+output — a hand-merge produces a file matching NEITHER side, which the staleness
+guard rejects with a diff nobody wrote and no generator can explain. Measured
+2026-09-02 on go-to-k/cdkd#2441: `docs/cli-flag-coverage.md` conflicted on a
+parallel-lane rebase, and resolve-to-upstream + regenerate was the only clean
+answer.
+
+**Take upstream's side whole only when the generator DERIVES the file from the
+tree**, which is the usual case (the coverage matrices, the flag matrix) and the
+one where your side carries no information the regenerate cannot recompute. The
+integ ledger is the exception, and the paragraph below is about exactly that:
+its rows record real-AWS RUNS, so upstream-whole would silently drop this lane's
+own row — there it is keep-both, then normalize.
+
+**And know what the generator's INPUT actually is — it is wider than the
+artifact suggests.** The same PR went red having added no flag and touched no
+CLI option declaration: adding a `cdkd list --verbose` assertion to
+`tests/integration/local-invoke/verify.sh` was enough, because the FIXTURE TREE
+is an input to `docs/_generated/cli-flag-coverage.json` alongside
+`src/cli/options.ts`. Regenerate in the same commit as the fixture edit, or CI
+reports the staleness two steps away from its cause.
+
 **The integ ledger is the OTHER generated file a parallel-lane rebase merges,
 and it fails in a different shape:** keeping both sides yields two rows for
 the SAME test, which `docs/_generated/integ-last-run.tsv`'s one-row-per-test

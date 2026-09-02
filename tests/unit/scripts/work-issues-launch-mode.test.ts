@@ -108,6 +108,21 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; arm: string; pattern: RegExp }
     pattern: /PUT\s*\n?BACK, never one to commit to/,
   },
   {
+    // Its own row rather than a widening of the pattern above: a RENAME
+    // satisfies "never one to commit to" -- nothing is committed onto the outer
+    // tool's branch -- while destroying the restore target outright, so the two
+    // arms fail independently and deleting one must not stay covered by the
+    // other. Measured 2026-09-02: SIX workspaces renamed their launch branch
+    // away inside SEVEN minutes, one of them the tree that wrote this row.
+    doc: LAUNCH_MODE_DOC,
+    arm: 'the "never one to RENAME" rule (a rename leaves nothing for section 9 to restore)',
+    // `\s+` rather than literal spaces, matching the sibling row's `\s*\n?`:
+    // the phrase currently sits at column 5 of a 77-char wrapped line, so a
+    // few characters added to the clause before it would reflow the wrap
+    // THROUGH the phrase and red this fence on an edit that changed nothing.
+    pattern: /never\s+one\s+to\s+RENAME/,
+  },
+  {
     doc: LAUNCH_MODE_DOC,
     arm: 'consequence row: branch in place, never commit onto LAUNCH_BRANCH',
     pattern: /^\|.*never commit onto `LAUNCH_BRANCH`.*\|$/m,

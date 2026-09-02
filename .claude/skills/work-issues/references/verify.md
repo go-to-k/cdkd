@@ -103,6 +103,29 @@ probes it, and build the arm that does before quoting a zero.
   real cost was quadratic on large input). Confirm the probe reaches the
   added code, as §5 requires of a mutation probe.
 
+**A round's fix that CLOSES a member falsifies every sentence that COUNTS the
+set — the direction nobody checks, because the fix itself is CORRECT.** Prose is
+a reader too (bullet above) and the one whose staleness a diff cannot show: the
+member LEAVES in the diff, while the counter that still includes it sits in a
+file the diff never touches. Measured four times in ONE run (2026-09-02,
+go-to-k/cdkd#2410 / go-to-k/cdkd#2275): closing `spawnStreaming` left six sites
+saying "THREE mechanisms still reach stdout"; closing `spawnForeground` made the
+corrected count wrong again; `logger.ts`'s caller registry said "four" once
+`state list` became the fifth; and `docs/cli-reference.md` said "nothing is
+locked on the refusing path" while four commands hold a lock there. A REVIEWER
+caught every one and the author none. A fence's own comment is the same surface,
+and its coverage claim is TESTABLE: one asserting it missed only PROSE missed
+five CODE spellings, among them an aliased import that no needle on the name can
+reach by construction.
+
+```bash
+# The counters sit OUTSIDE the diff, which is why re-reading the diff misses them.
+grep -rn "<the set's noun, then its cardinal>" src/ docs/ .claude/
+```
+
+NAME the member you closed where the count lives; a silent renumber is what
+makes the next reader re-file it.
+
 **Run the integ LAST — after the final edit to any gate-scoped file, not after
 the final edit you happened to think of.** Review nits landing in gate scope
 stale the marker: 2026-08-25 cost two real-AWS re-runs (go-to-k/cdkd#2189, a
