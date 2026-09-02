@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { displaySafe } from '../../../src/utils/display-safe.js';
 import {
   purgeNoncurrentKeyVersions,
   type NoncurrentVersionPurgeOptions,
@@ -415,6 +416,135 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
     expect(message).toContain('s3:DeleteObjectVersion');
   });
 
+  it('treats a per-key NoSuchVersion as SUCCESS, not as a failure (issue #2346)', async () => {
+    // The version named is already gone, which is the outcome this function
+    // exists to produce -- reporting it would tell a blameless user to grant
+    // IAM they already hold. Reachable since issue #2346 site 5 put a purge on
+    // the LOCK key: a reaper taking over an expired lock and the original
+    // owner waking up to release it legitimately purge the same key at once,
+    // and the loser of that race sees this for rows the winner removed.
+    const s3 = stub(
+      {
+        [KEY_A]: [
+          {
+            Versions: [
+              { Key: KEY_A, VersionId: 'v1', IsLatest: false },
+              { Key: KEY_A, VersionId: 'v2', IsLatest: false },
+            ],
+          },
+        ],
+      },
+      undefined,
+      () => ({
+        Errors: [
+          { Key: KEY_A, VersionId: 'v1', Code: 'NoSuchVersion', Message: 'The specified version does not exist.' },
+          { Key: KEY_A, VersionId: 'v2', Code: 'NoSuchVersion', Message: 'The specified version does not exist.' },
+        ],
+      })
+    );
+
+    await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+    // The discriminator is SILENCE. Before the carve-out this warned about
+    // `1 key(s)` naming `NoSuchVersion`, which is the message the amendment
+    // removes -- so asserting merely that the delete was attempted would pass
+    // either way.
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('a NoSuchVersion alongside a REAL failure still warns about the real one', async () => {
+    // The carve-out must not swallow the batch. `failed` is keyed by KEY, so a
+    // per-entry `continue` that also dropped the sibling entry would leave the
+    // whole key unreported -- the silence this module exists to remove.
+    const s3 = stub(
+      {
+        [KEY_A]: [
+          {
+            Versions: [
+              { Key: KEY_A, VersionId: 'v1', IsLatest: false },
+              { Key: KEY_A, VersionId: 'v2', IsLatest: false },
+            ],
+          },
+        ],
+      },
+      undefined,
+      () => ({
+        Errors: [
+          { Key: KEY_A, VersionId: 'v1', Code: 'NoSuchVersion' },
+          { Key: KEY_A, VersionId: 'v2', Code: 'AccessDenied', Message: 'Access Denied' },
+        ],
+      })
+    );
+
+    await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0]![0]);
+    expect(message).toContain('AccessDenied');
+    expect(message).toContain('v2');
+    // ...and says nothing about the tolerated one, which would send the reader
+    // hunting a version that is already in the state they wanted.
+    expect(message).not.toContain('NoSuchVersion');
+    expect(message).not.toContain('v1');
+  });
+
+  it('tolerates NoSuchVersion per KEY, not per batch, under a covering listPrefix', async () => {
+    // The carve-out is a `continue` inside a loop over a batch that can span
+    // SEVERAL keys, and `failed` is keyed by KEY. A skip that dropped the rest
+    // of the batch — or that bucketed by batch rather than by entry — would
+    // silence a real failure on a DIFFERENT key. Only the covering-prefix mode
+    // puts two keys in one `DeleteObjects` call, so this is the shape that can
+    // see it.
+    const PREFIX = 'custom-resource-responses/';
+    const s3 = stub(
+      {
+        [PREFIX]: [
+          {
+            Versions: [
+              { Key: KEY_A, VersionId: 'a1', IsLatest: false },
+              { Key: KEY_B, VersionId: 'b1', IsLatest: false },
+            ],
+          },
+        ],
+      },
+      undefined,
+      () => ({
+        Errors: [
+          { Key: KEY_A, VersionId: 'a1', Code: 'NoSuchVersion' },
+          { Key: KEY_B, VersionId: 'b1', Code: 'AccessDenied', Message: 'Access Denied' },
+        ],
+      })
+    );
+
+    await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A, KEY_B], {
+      listPrefix: PREFIX,
+      logger: logger(),
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0]![0]);
+    // ONE key, and it is B — not two, and not zero.
+    expect(message).toContain('1 key(s)');
+    expect(message).toContain(KEY_B);
+    expect(message).not.toContain(KEY_A);
+  });
+
+  it('a NoSuchKey is NOT tolerated — only NoSuchVersion is (issue #2346)', async () => {
+    // Deliberately not widened to every 404-shaped code. `NoSuchKey` says the
+    // listing and the delete disagree about the KEY itself, which is a
+    // different claim and worth a warning.
+    const s3 = stub(
+      { [KEY_A]: [{ Versions: [{ Key: KEY_A, VersionId: 'v1', IsLatest: false }] }] },
+      undefined,
+      () => ({ Errors: [{ Key: KEY_A, VersionId: 'v1', Code: 'NoSuchKey' }] })
+    );
+
+    await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('NoSuchKey');
+  });
+
   it('a PARTIAL failure across keys warns for the failures only', async () => {
     const PREFIX = 'custom-resource-responses/';
     const s3 = stub(
@@ -775,6 +905,41 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
     const atSeven = String(warn.mock.calls[0]![0]);
     expect(atSeven).toContain('7 key(s)');
     expect(atSeven).toContain('(and 2 more)');
+  });
+
+  it('SANITIZES the key it names, which is attacker-influenceable text', async () => {
+    // The key embeds a stack name and a region that reached cdkd from an S3
+    // listing or a lock body, and this warning is the helper's only output. It
+    // was the one raw path: `lock-manager.ts` sanitizes the same value at its
+    // own call site, so the wrapper's message was safe while the helper's was
+    // not -- and issue #2346 site 5 made this one newly reachable at `warn` on
+    // the force-unlock and takeover arms.
+    const nasty = 'cdkd/ev\u0000il\u001b[31m/us-east-1/lock.json';
+    const s3 = stub(
+      { [nasty]: [{ Versions: [{ Key: nasty, VersionId: 'v1', IsLatest: false }] }] },
+      undefined,
+      () => ({
+        Errors: [
+          { Key: nasty, VersionId: 'v1', Code: 'AccessDenied\u001b[0m', Message: 'de\u0000nied' },
+        ],
+      })
+    );
+
+    await purgeNoncurrentKeyVersions(s3, BUCKET, [nasty], { logger: logger() });
+
+    const message = String(warn.mock.calls[0]![0]);
+    // The EXACT sanitized rendering, not two negative literals: `not.toContain`
+    // pairs also pass when the sanitizer returns '' or strips one escape and
+    // leaves another, so they fence far less than they appear to.
+    // The REASON is AWS-supplied text too, so it must be sanitized alongside the
+    // key. Asserting only a clean reason cannot tell whole-entry sanitization
+    // from key-only -- the two render identically when the reason has nothing
+    // to escape, and the weaker form passed until this fixture made the reason
+    // dirty as well.
+    expect(message).toContain(displaySafe(`${nasty} (version v1: AccessDenied\u001b[0m - de\u0000nied)`));
+    // ...and the raw forms really are gone.
+    expect(message).not.toContain('\u001b[31m');
+    expect(message).not.toContain('\u0000');
   });
 
   it('accumulates MULTIPLE reasons for one key', async () => {

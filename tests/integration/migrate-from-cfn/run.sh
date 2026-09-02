@@ -223,27 +223,104 @@ assert_migrate_tmp_versions_purged() {
     echo "  ok: no transient upload for this stack (inline TemplateBody), 0 markers and 0 noncurrent added"
   fi
 
-  # NEGATIVE CONTROL. Everything above is equally satisfied by a purge that
-  # fired on the WHOLE state bucket, which would be a different and worse bug:
-  # issue #2346 deliberately leaves `state.json` alone (its noncurrent versions
-  # ARE the state-recovery capability versioning exists for) and deliberately
-  # leaves `lock.json` alone (site 5). By this point the migrate has taken and
-  # released the stack lock at least once, so this prefix's history cannot be
-  # legitimately empty.
-  local ctrl
-  if ! ctrl="$(s3_version_rows "cdkd/${stack}/${REGION}/" noncurrent)"; then
-    echo "ASSERTION FAILED: [${stack}] could not list noncurrent versions under the state prefix." >&2
-    echo "  Without this control the assertion above cannot be told apart from a purge-everything bug." >&2
+  # THE NEGATIVE CONTROL USED TO LIVE HERE AND HAS MOVED, deliberately, to
+  # `assert_state_history_survives` after the destroy. Recording why, because
+  # the obvious move -- keep a weaker floor at this point -- is the one that
+  # produces a green and meaningless fixture.
+  #
+  # It asserted `noncurrent >= 1` under `cdkd/${stack}/${REGION}/`, and until
+  # issue #2346 site 5 that held because `lock.json`'s renewal chain was never
+  # purged. It cannot hold now: `cdkd import` calls `saveState` ONCE for the
+  # top-level stack -- one CURRENT version, zero noncurrent -- and the lock key
+  # is down to its current delete marker with zero noncurrent by the time this
+  # runs. On a residue-free prefix it is 0 and FAILS; on a re-run it passes only
+  # on the PREVIOUS run's destroy marker, which is about nothing this run did.
+  #
+  # Weakening it to `all >= 1` was tried and rejected: `assert_state_present`
+  # already ran a `head-object` on `state.json` a few lines above, so `all >= 1`
+  # is IMPLIED by an assertion that has already passed, and a purge deleting
+  # that current version would have failed the earlier one first. A floor that
+  # cannot be the first thing to fail is not a control.
+  #
+  # Nothing at THIS point can discriminate, and that is a fact about the moment
+  # rather than a gap: the prefix holds no noncurrent rows yet, so a purge with
+  # a widened prefix would have nothing here to take. The control therefore has
+  # to run where this fixture actually creates history -- after the destroy.
+}
+
+# assert_state_history_survives <stack>
+#
+# THE negative control for `assert_migrate_tmp_versions_purged`'s claim above,
+# taken AFTER `cdkd destroy` because that is the first moment this run
+# guarantees a noncurrent row: `deleteState` is issue #2346 sites 1-3, a bare
+# `DeleteObject` with no purge, so it leaves a delete marker CURRENT and the
+# imported state body NONCURRENT and still readable. That is deliberate --
+# those versions are the recovery capability versioning exists for -- and this
+# asserts the deliberate part rather than assuming it. A purge that fired on
+# the whole state bucket, which is the bug the migrate-tmp assertion cannot
+# tell itself apart from, would take exactly these rows.
+#
+# Scoped to the `state.json` KEY rather than to the stack prefix: `lock.json`
+# and the rollback journal contribute their own rows, and a floor over the
+# prefix would be satisfiable by them instead of by the key this is about.
+#
+# IT IS THIS FILE'S ONLY ABSOLUTE FLOOR -- its siblings are deltas -- so it is
+# also the one assertion here that depends on bucket VERSIONING being on. The
+# probe below is not defensive clutter: `cdkd bootstrap` enables versioning,
+# but this fixture accepts the legacy `cdkd-state-<acct>-<region>` bucket that
+# predates that, and on such a bucket a bare `DeleteObject` removes the body
+# outright. Without the probe this would fail post-destroy while BLAMING a
+# purge -- a false report of the exact bug it exists to detect, which is worse
+# than no control at all.
+assert_state_history_survives() {
+  local stack="$1" rows versioning
+  # `--region` like every other s3api call in this file, and stderr CAPTURED
+  # rather than discarded: now that ERROR is fatal, the message has to name the
+  # real cause instead of guessing at one. Its own text used to assert a missing
+  # grant, which is only one of the three things that reach this arm.
+  local probe_err
+  probe_err="$(mktemp)"
+  versioning="$(aws s3api get-bucket-versioning --bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --query 'Status' --output text 2>"${probe_err}" || echo 'ERROR')"
+  # ERROR and Suspended are NOT the same answer, and collapsing them is how a
+  # control deletes itself quietly. 'None'/'Suspended' is a real answer that
+  # makes this assertion meaningless, so skipping is right. 'ERROR' means the
+  # probe could not ASK -- a missing s3:GetBucketVersioning, a throttle, a
+  # transient failure -- and skipping there silently drops the control while
+  # the fixture reports PASS. That is the same standard the next assertion
+  # states in words ("an unverified control is not a control"); it was applied
+  # to the listing and not to the probe guarding it.
+  if [ "${versioning}" = "ERROR" ]; then
+    echo "ASSERTION FAILED: [${stack}] could not read the versioning state of" >&2
+    echo "  s3://${STATE_BUCKET}. The control below is only meaningful on a versioned" >&2
+    echo "  bucket, so an unreadable answer cannot be treated as 'skip' - that would" >&2
+    echo "  drop the control and still report PASS. AWS said:" >&2
+    sed 's/^/    /' "${probe_err}" >&2
+    rm -f "${probe_err}"
     exit 1
   fi
-  if [ "${ctrl}" -lt 1 ]; then
-    echo "ASSERTION FAILED: [${stack}] cdkd/${stack}/${REGION}/ has ${ctrl} noncurrent version(s)" >&2
-    echo "  after a migrate that took and released the stack lock. Either the purge is running on" >&2
-    echo "  keys issue #2346 excludes, or the lock is no longer written per acquisition - both make" >&2
-    echo "  the migrate-tmp assertion above meaningless." >&2
+  rm -f "${probe_err}"
+  if [ "${versioning}" != "Enabled" ]; then
+    echo "  skip: s3://${STATE_BUCKET} reports versioning '${versioning}', not 'Enabled', so a" >&2
+    echo "        deleted object leaves no noncurrent body to assert on. This control needs a" >&2
+    echo "        versioned state bucket - the one 'cdkd bootstrap' creates." >&2
+    return 0
+  fi
+  if ! rows="$(s3_version_rows "cdkd/${stack}/${REGION}/state.json" noncurrent)"; then
+    echo "ASSERTION FAILED: [${stack}] could not list noncurrent versions of the state key." >&2
+    echo "  An unverified control is not a control - failing rather than assuming." >&2
     exit 1
   fi
-  echo "  ok: ${ctrl} noncurrent version(s) survive under cdkd/${stack}/${REGION}/, as sites 1-3 and 5 intend"
+  if [ "${rows}" -lt 1 ]; then
+    echo "ASSERTION FAILED: [${stack}] cdkd/${stack}/${REGION}/state.json has ${rows} noncurrent" >&2
+    echo "  version(s) after the destroy. The destroy delete-markers the key, so the imported body" >&2
+    echo "  must survive underneath it - issue #2346 sites 1-3 are held open precisely so state" >&2
+    echo "  history remains recoverable. Zero here means something purged it." >&2
+    echo "  Inspect with:" >&2
+    echo "    aws s3api list-object-versions --bucket ${STATE_BUCKET} --prefix cdkd/${stack}/${REGION}/state.json" >&2
+    exit 1
+  fi
+  echo "  ok: ${rows} noncurrent state.json version(s) survive the destroy, as sites 1-3 intend"
 }
 
 run_one() {
@@ -321,6 +398,7 @@ run_one() {
 
   log "[${stack}] post-destroy assertions"
   assert_state_absent "${stack}"
+  assert_state_history_survives "${stack}"
 }
 
 # Build cdkd before each run so the test always exercises the worktree's

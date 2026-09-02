@@ -741,11 +741,14 @@ issued a `list-object-versions` or a `delete-object --version-id`.
 it. `rollback-journal.json` stores `failedOperations[].attemptedProperties` —
 the properties of the failed write, verbatim — and four measured versions of
 `CdkdDeletionPolicySnapshotHeavyExample`'s journal carried a literal
-`"MasterUserPassword"`. `lock.json` accumulates fastest (452 versions on one
-key) and `deployments/**` is not delete-markered by `cdkd destroy` at all, so
-its objects survive as CURRENT ones. A per-key sweep of `state.json` is the
-natural first instinct, it is what a manual remediation actually did, and it
-left the journal behind. `s3_stack_prefix` + `s3_purge_prefix_versions` covers
+`"MasterUserPassword"`. `lock.json` USED to accumulate fastest (452 versions on
+one key) and still leaves a CURRENT delete marker per stack — since issue
+[#2346](https://github.com/go-to-k/cdkd/issues/2346) site 5 cdkd purges the
+lock key's own noncurrent versions on release, so what survives is that marker
+plus whatever a crashed run left un-reaped. `deployments/**` is not
+delete-markered by `cdkd destroy` at all, so its objects survive as CURRENT
+ones. A per-key sweep of `state.json` is the natural first instinct, it is what
+a manual remediation actually did, and it left the journal behind. `s3_stack_prefix` + `s3_purge_prefix_versions` covers
 all four. (Blind spot: a nested-stack child at `cdkd/<Parent>~<Child>/<region>/`
 is a SIBLING prefix, not a descendant, so ONE `s3_stack_prefix` call does not
 reach it. `nested-stack-secret` is in the swept set, builds a real

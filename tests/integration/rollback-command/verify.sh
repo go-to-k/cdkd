@@ -110,10 +110,10 @@ fi
 
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
-# The NEGATIVE CONTROL for the journal version arm below: a state-bucket key
-# issue #2346 deliberately does NOT purge (site 5 -- `lock.json` carries no
-# secret and sits on the hot path of every command, so the recorded remedy is a
-# bucket lifecycle rule, not code).
+# The lock key. Since issue #2346 site 5 this is a POSITIVE subject rather than
+# a negative control: cdkd purges its noncurrent versions on every release, and
+# step 4b3 asserts that. The negative control moved to `state.json` (sites 1-3,
+# whose history IS the state-recovery capability) -- see step 4b2.
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
 INIT_STATE_KEY="cdkd/${INIT_STACK}/${REGION}/state.json"
 INIT_JOURNAL_KEY="cdkd/${INIT_STACK}/${REGION}/rollback-journal.json"
@@ -337,24 +337,64 @@ echo "[verify]   ok: journal key down to 1 row (the current delete marker), 0 no
 
 # NEGATIVE CONTROL. Every assertion above is also satisfied by a purge that
 # fired on EVERYTHING in the state bucket, which would be a different and worse
-# bug -- issue #2346 deliberately leaves `state.json` alone (its noncurrent
-# versions ARE the recovery capability) and deliberately leaves `lock.json`
-# alone (site 5). `lock.json` is the sharper control of the two because this
-# fixture has by now run several acquire/release cycles against it, so its
-# history is guaranteed non-empty rather than merely likely.
-echo "[verify] step 4b2: negative control - lock.json history must SURVIVE"
-if ! LOCK_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${LOCK_KEY}" noncurrent)"; then
-  echo "[verify] FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${LOCK_KEY}." >&2
+# bug. The control is `state.json`: issue #2346 deliberately leaves it alone
+# (sites 1-3), because its noncurrent versions ARE the state-recovery
+# capability versioning is enabled for, and it is documented as never-purged in
+# three places -- so it is the key most likely to break LOUDLY if a future
+# purge over-reaches. By this point the fixture has deployed twice and rolled
+# back once, so its history is guaranteed non-empty rather than merely likely.
+#
+# THIS CONTROL USED TO BE `lock.json`, AND HAD TO MOVE. Site 5 now purges the
+# lock key on every release, so `LOCK_NONCURRENT >= 1` stopped discriminating
+# -- and worse, it would have kept PASSING on accumulated delete markers from
+# an un-reaped crash while its comment ("as site 5 intends") became false: a
+# fixture that is green and meaningless. Step 4b3 below asserts the NEW lock
+# invariant instead, so the pair still fences both directions.
+echo "[verify] step 4b2: negative control - state.json history must SURVIVE"
+if ! STATE_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${STATE_KEY}" noncurrent)"; then
+  echo "[verify] FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${STATE_KEY}." >&2
   echo "         Without this count the step 4b1 assertion cannot be told apart from a purge-everything bug." >&2
   exit 1
 fi
-if [ "${LOCK_NONCURRENT}" -lt 1 ]; then
-  echo "[verify] FAIL: lock.json has ${LOCK_NONCURRENT} noncurrent version(s) after three acquire/release" >&2
-  echo "         cycles. Either the purge is running on keys issue #2346 excludes, or the lock is no longer" >&2
-  echo "         being written per acquisition - both make step 4b1's result meaningless." >&2
+if [ "${STATE_NONCURRENT}" -lt 1 ]; then
+  echo "[verify] FAIL: state.json has ${STATE_NONCURRENT} noncurrent version(s) after two deploys and a" >&2
+  echo "         rollback. Either a purge is running on keys issue #2346 sites 1-3 exclude - which would" >&2
+  echo "         destroy the state-recovery capability - or state is no longer written per deploy. Both" >&2
+  echo "         make step 4b1's result meaningless." >&2
   exit 1
 fi
-echo "[verify]   ok: ${LOCK_NONCURRENT} noncurrent lock.json version(s) survive, as site 5 intends"
+echo "[verify]   ok: ${STATE_NONCURRENT} noncurrent state.json version(s) survive, as sites 1-3 intend"
+
+# POSITIVE assertion for issue #2346 SITE 5, the twin of step 4b1. The last
+# cdkd command was `cdkd rollback`, which released the lock, so the key must be
+# down to exactly one row -- the CURRENT delete marker that release wrote,
+# which the purge can never remove because it filters on `IsLatest`.
+#
+# `all == 1` rather than "nothing survives", for the same reason step 4b1 gives:
+# an absence is also what a run that never acquired a lock shows. Expected rows:
+#
+#   fixed    [DM_latest]                                  -> all 1, noncurrent 0
+#   reverted [DM_latest, acquire body, N renewal bodies,
+#             the previous commands' delete markers]      -> all >= 3
+echo "[verify] step 4b3: assert the LOCK key's noncurrent versions were purged (issue #2346 site 5)"
+if ! LOCK_ALL="$(s3_count_key_versions "${STATE_BUCKET}" "${LOCK_KEY}" all)"; then
+  echo "[verify] FAIL: could not list object versions for s3://${STATE_BUCKET}/${LOCK_KEY}." >&2
+  echo "         An unverified purge is not a verified purge - failing rather than assuming." >&2
+  exit 1
+fi
+if ! LOCK_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${LOCK_KEY}" noncurrent)"; then
+  echo "[verify] FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${LOCK_KEY}." >&2
+  exit 1
+fi
+if [ "${LOCK_ALL}" -ne 1 ] || [ "${LOCK_NONCURRENT}" -ne 0 ]; then
+  echo "[verify] FAIL: after two deploys and a rollback the lock key holds ${LOCK_ALL} row(s)" >&2
+  echo "         (${LOCK_NONCURRENT} noncurrent); expected exactly 1 row, the current delete marker the" >&2
+  echo "         last release wrote, and 0 noncurrent. Before issue #2346 site 5 this key was the" >&2
+  echo "         fastest-growing object in the bucket (452 versions measured on one key). Inspect with:" >&2
+  echo "           aws s3api list-object-versions --bucket ${STATE_BUCKET} --prefix ${LOCK_KEY}" >&2
+  exit 1
+fi
+echo "[verify]   ok: lock key down to 1 row (the current delete marker), 0 noncurrent (issue #2346 site 5)"
 
 echo "[verify] step 4c: assert cdkd events recorded a rollback run = SUCCEEDED"
 EVENTS_JSON="$(${CLI} events "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --format json 2>&1)"

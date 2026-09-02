@@ -725,21 +725,60 @@ echo "    OK: marker key down to 1 row (the current delete marker), 0 noncurrent
 
 # NEGATIVE CONTROL: a state-bucket key issue #2346 deliberately does NOT purge
 # must keep its history, or the assertion above is equally satisfied by a
-# purge-everything bug. `lock.json` is site 5, left unfixed on purpose, and by
-# this point the fixture has run several acquire/release cycles against it.
-LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
-if ! LOCK_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${LOCK_KEY}" noncurrent)"; then
-  echo "FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${LOCK_KEY}." >&2
+# purge-everything bug. `state.json` is sites 1-3, left unfixed ON PURPOSE --
+# its noncurrent versions ARE the state-recovery capability versioning is
+# enabled for -- and it is documented as never-purged in three places, so it is
+# the key most likely to break LOUDLY if a future purge over-reaches. This
+# fixture deployed and destroyed the stack, so its history is guaranteed
+# non-empty rather than merely likely (`cdkd destroy` delete-markers the key;
+# the bodies underneath stay).
+#
+# THIS CONTROL USED TO BE `lock.json`, AND HAD TO MOVE. Site 5 now purges the
+# lock key on every release, so `LOCK_NONCURRENT >= 1` stopped discriminating
+# -- and worse, it would have kept PASSING on accumulated delete markers from
+# an un-reaped crash while its comment ("as site 5 intends") became false: a
+# fixture that is green and meaningless. The lock invariant is asserted below
+# instead, so the pair still fences both directions.
+if ! STATE_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${STATE_KEY}" noncurrent)"; then
+  echo "FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${STATE_KEY}." >&2
   echo "      Without this count the marker assertion cannot be told apart from a purge-everything bug." >&2
   exit 1
 fi
-if [ "${LOCK_NONCURRENT}" -lt 1 ]; then
-  echo "FAIL: lock.json has ${LOCK_NONCURRENT} noncurrent version(s) after this fixture's deploy +" >&2
-  echo "      destroy cycles. Either the purge is running on keys issue #2346 excludes, or the lock is" >&2
-  echo "      no longer written per acquisition - both make the marker assertion meaningless." >&2
+if [ "${STATE_NONCURRENT}" -lt 1 ]; then
+  echo "FAIL: state.json has ${STATE_NONCURRENT} noncurrent version(s) after this fixture's deploy +" >&2
+  echo "      destroy cycle. Either a purge is running on keys issue #2346 sites 1-3 exclude - which" >&2
+  echo "      would destroy the state-recovery capability - or state is no longer written per deploy." >&2
+  echo "      Both make the marker assertion meaningless." >&2
   exit 1
 fi
-echo "    OK: ${LOCK_NONCURRENT} noncurrent lock.json version(s) survive, as site 5 intends"
+echo "    OK: ${STATE_NONCURRENT} noncurrent state.json version(s) survive, as sites 1-3 intend"
+
+# POSITIVE assertion for issue #2346 SITE 5, the twin of the marker arm above.
+# The last stack-scoped cdkd command was `cdkd destroy`, which released the
+# lock, so the key must be down to exactly one row -- the CURRENT delete marker
+# that release wrote, which the purge can never remove because it filters on
+# `IsLatest`. `all == 1` rather than "nothing survives", for the same reason the
+# marker arm gives: an absence is also what a run that never acquired a lock
+# shows. Reverted, the acquire body and every renewal body survive alongside it.
+LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
+if ! LOCK_ALL="$(s3_count_key_versions "${STATE_BUCKET}" "${LOCK_KEY}" all)"; then
+  echo "FAIL: could not list object versions for s3://${STATE_BUCKET}/${LOCK_KEY}." >&2
+  echo "      An unverified purge is not a verified purge - failing rather than assuming." >&2
+  exit 1
+fi
+if ! LOCK_NONCURRENT="$(s3_count_key_versions "${STATE_BUCKET}" "${LOCK_KEY}" noncurrent)"; then
+  echo "FAIL: could not list noncurrent versions for s3://${STATE_BUCKET}/${LOCK_KEY}." >&2
+  exit 1
+fi
+if [ "${LOCK_ALL}" -ne 1 ] || [ "${LOCK_NONCURRENT}" -ne 0 ]; then
+  echo "FAIL: after this fixture's deploy + destroy cycle the lock key holds ${LOCK_ALL} row(s)" >&2
+  echo "      (${LOCK_NONCURRENT} noncurrent); expected exactly 1 row, the current delete marker the" >&2
+  echo "      last release wrote, and 0 noncurrent. Before issue #2346 site 5 this key was the" >&2
+  echo "      fastest-growing object in the bucket (452 versions measured on one key). Inspect with:" >&2
+  echo "        aws s3api list-object-versions --bucket ${STATE_BUCKET} --prefix ${LOCK_KEY}" >&2
+  exit 1
+fi
+echo "    OK: lock key down to 1 row (the current delete marker), 0 noncurrent (issue #2346 site 5)"
 echo "    OK: custom bucket gone, custom repo gone, marker gone — zero residue (teardown driven by an UPPER-cased --region, issue #1995)"
 
 echo "[verify] PASS — custom-named asset storage bootstrap, publish-to-custom-bucket, gc dry-run/delete precision (incl. the ECR and S3 case-varied host arms and the bucket-name-exactness control), and marker-driven teardown all verified"

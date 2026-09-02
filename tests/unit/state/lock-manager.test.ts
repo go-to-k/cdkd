@@ -70,7 +70,22 @@ function makeFakeClient(region: string): {
   };
 } {
   return {
-    send: vi.fn(),
+    // Unprimed calls keep answering `undefined`, exactly as a bare `vi.fn()`
+    // did, with ONE exception. Since issue #2346 site 5 every `deleteLock`
+    // is followed by a `ListObjectVersions` on the lock key, and an unprimed
+    // `undefined` there makes the purge blow up on `resp.Versions` — a
+    // failure the helper swallows into a warning, so the suite would stay
+    // green while running the error path on every delete. Answering an EMPTY
+    // listing keeps the added round trip an honest no-op: the purge finds
+    // nothing stale, issues no `DeleteObjects`, and warns about nothing. The
+    // purge's own behaviour is fenced in
+    // `tests/unit/state/lock-noncurrent-version-purge.test.ts`, not here.
+    send: vi.fn((command: unknown) => {
+      if ((command as { constructor: { name: string } }).constructor.name === 'ListObjectVersionsCommand') {
+        return Promise.resolve({ IsTruncated: false });
+      }
+      return undefined;
+    }),
     config: {
       region: () => Promise.resolve(region),
       credentials: () =>
@@ -235,8 +250,23 @@ describe('LockManager', () => {
       const result = await lockManager.acquireLock('test-stack', 'us-east-1', 'new-user');
 
       expect(result).toBe(true);
-      // Verify 4 S3 calls: PutObject(fail), GetObject, DeleteObject, PutObject(success)
-      expect(s3Client.send).toHaveBeenCalledTimes(4);
+      // Verify 5 S3 calls: PutObject(fail), GetObject, DeleteObject,
+      // PutObject(success), ListObjectVersions. The last one is issue #2346
+      // site 5's reap-path purge, and its POSITION is the assertion that
+      // matters: it must come AFTER the re-acquisition PUT, never between the
+      // delete and the retry, or it widens the takeover contention window.
+      expect(s3Client.send).toHaveBeenCalledTimes(5);
+      expect(
+        s3Client.send.mock.calls.map(
+          (c: unknown[]) => (c[0] as { constructor: { name: string } }).constructor.name
+        )
+      ).toEqual([
+        'PutObjectCommand',
+        'GetObjectCommand',
+        'DeleteObjectCommand',
+        'PutObjectCommand',
+        'ListObjectVersionsCommand',
+      ]);
     });
 
     it('should return false if another process acquires lock during expired lock cleanup', async () => {
@@ -469,8 +499,8 @@ describe('LockManager', () => {
 
       await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
-      // Should have called GetObject + DeleteObject
-      expect(s3Client.send).toHaveBeenCalledTimes(2);
+      // GetObject + DeleteObject + the issue #2346 site 5 purge listing.
+      expect(s3Client.send).toHaveBeenCalledTimes(3);
     });
 
     it('deletes a lock whose body cdkd cannot read (issue #2170)', async () => {
@@ -510,7 +540,8 @@ describe('LockManager', () => {
 
       await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
-      expect(s3Client.send).toHaveBeenCalledTimes(2);
+      // GetObject + DeleteObject + the issue #2346 site 5 purge listing.
+      expect(s3Client.send).toHaveBeenCalledTimes(3);
     });
 
     it('still issues the DELETE when no lock exists (issue #2170)', async () => {
@@ -524,8 +555,9 @@ describe('LockManager', () => {
       // meant a lock.json holding `42` could never be force-released while it
       // still failed every acquire. A DELETE against a key that is genuinely
       // absent is an idempotent no-op, which is the cheaper side to be wrong on
-      // for a command the user ran explicitly.
-      expect(s3Client.send).toHaveBeenCalledTimes(2);
+      // for a command the user ran explicitly. The third call is the issue
+      // #2346 site 5 purge listing, which follows every `deleteLock`.
+      expect(s3Client.send).toHaveBeenCalledTimes(3);
     });
   });
 

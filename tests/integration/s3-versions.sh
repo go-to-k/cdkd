@@ -271,8 +271,13 @@ _s3v_delete_rows() {
 #                          four versions carrying a literal
 #                          `"MasterUserPassword": "Cdkdcf2f..."`. A per-key
 #                          sweep of state.json leaves every one of them.
-#   lock.json              no secret, but it accumulates faster than anything
-#                          else (452 versions on one key)
+#   lock.json              no secret. It USED to accumulate faster than
+#                          anything else (452 versions on one key); since
+#                          issue #2346 site 5 cdkd purges its own noncurrent
+#                          versions on release, so what a fixture finds now is
+#                          the CURRENT delete marker plus whatever a crashed
+#                          run left un-reaped - still invisible to a key list
+#                          that names state.json
 #   deployments/**         the event store; sampled clean of plaintext, and its
 #                          objects are NOT delete-markered by `cdkd destroy`,
 #                          so they survive as CURRENT objects

@@ -1,5 +1,6 @@
 import { ListObjectVersionsCommand, DeleteObjectsCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
+import { displaySafe } from '../utils/display-safe.js';
 
 /**
  * Delete the NONCURRENT versions of a KNOWN SET OF KEYS in the cdkd state
@@ -226,7 +227,16 @@ export async function purgeNoncurrentKeyVersions(
   if (failed.size > 0) {
     const named = [...failed.entries()]
       .slice(0, MAX_NAMED_FAILURES)
-      .map(([key, reasons]) => `${key} (${reasons.join('; ')})`);
+      // Sanitized WHOLE, key and reasons alike. The key embeds a stack name and
+      // a region that reached cdkd from an S3 listing or a lock body; the
+      // reasons carry AWS-supplied text (`err.Message`, the SDK's error string,
+      // a `VersionId`). Neither is cdkd-authored, both end up on a terminal, and
+      // sanitizing only the key would leave half of this line raw while a
+      // comment claimed it was covered. `lock-manager.ts` already sanitizes the
+      // key at its own call site; without this the shared helper's warning was
+      // the one raw path, and issue #2346 site 5 made it newly reachable at
+      // `warn` on the force-unlock and takeover arms.
+      .map(([key, reasons]) => displaySafe(`${key} (${reasons.join('; ')})`));
     const elided = failed.size - named.length;
     // WARN rather than debug, and never a throw. What survives is the body of
     // an object cdkd has just reported as deleted; WHICH object is the
@@ -340,6 +350,29 @@ async function purgeUnderPrefix(
         // empty `Errors` is the success signal and a populated one is a
         // partial failure the call itself reported as overall success.
         for (const err of deleted.Errors ?? []) {
+          // `NoSuchVersion` is the OUTCOME WE WANTED, reported as an error.
+          // The version named is already gone, so the key is in exactly the
+          // state this function exists to produce, and counting it as a
+          // failure tells a blameless user to grant IAM they already hold.
+          //
+          // It is reachable rather than theoretical since issue #2346 site 5
+          // put a purge on the LOCK key: two actors legitimately purge the
+          // same lock concurrently -- a reaper taking over an expired lock and
+          // the original owner waking up to release it -- and whichever loses
+          // the race sees this code for rows the winner has already removed.
+          // Deliberately NOT widened to `NoSuchKey` or to a general
+          // 404-shaped bucket: those say the LISTING and the delete disagree
+          // about the key itself, which is a different claim and one worth a
+          // warning.
+          //
+          // What makes the carve-out safe rather than merely convenient is
+          // that every `(Key, VersionId)` handed to `DeleteObjects` came from
+          // the `ListObjectVersions` walk directly above -- this function never
+          // synthesises an id. So `NoSuchVersion` cannot mean "we asked about
+          // the wrong object"; it can only mean the row we listed stopped
+          // existing between the listing and the delete, which is the state we
+          // were trying to reach.
+          if (err.Code === 'NoSuchVersion') continue;
           const reason =
             `version ${err.VersionId ?? '<unknown>'}: ${err.Code ?? 'Error'}` +
             (err.Message ? ` - ${err.Message}` : '');
