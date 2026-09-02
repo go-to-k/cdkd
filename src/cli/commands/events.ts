@@ -371,6 +371,11 @@ export function printRunEvents(
       parts.push(`${e.logicalId}${e.resourceType ? ` (${e.resourceType})` : ''}`);
     }
     if (e.operation) parts.push(gray(e.operation));
+    // Issue #2301: WHICH guard could not answer. On its own column rather than
+    // folded into the reason line below, because it is the stable
+    // machine-readable half — a reader grepping their event history for one
+    // guard is grepping this, while `reason` is prose that varies per cause.
+    if (e.guard) parts.push(gray(`guard=${e.guard}`));
     if (e.provisionedBy) parts.push(gray(`[${e.provisionedBy}]`));
     if (e.command) parts.push(gray(e.command));
     if (e.region) parts.push(gray(e.region));
@@ -396,6 +401,12 @@ export function printRunEvents(
     // Issue #1752: a RESOURCE_SKIPPED event's whole value is WHY cdkd could not
     // address the resource. Rendered on its own line, mirroring the error block
     // below, because the reason is a sentence rather than a column.
+    //
+    // Issue #2301 shares this line for `RESOURCE_GUARD_INDETERMINATE`, whose
+    // `reason` is likewise the whole value of the row: the OUTCOME (cdkd
+    // proceeded) is already carried by the event type, so the only thing left
+    // to say is why the guard could not answer. Keyed off the FIELD, not off a
+    // type list, so a third `reason`-bearing type renders without an edit here.
     if (e.reason) {
       logger.info(`      ${yellow(e.reason)}`);
     }
@@ -423,6 +434,12 @@ export function colorizeEventType(eventType: DeploymentEvent['eventType']): stri
   // which is the opposite case: keeping that resource is what the user ASKED
   // for via `DeletionPolicy: Retain`, so it stays informational.
   if (eventType === 'RESOURCE_SKIPPED') return yellow(eventType);
+  // Issue #2301: a suppressed pre-flight guard is a WARNING, for the same
+  // reason as the line above — cdkd proceeded without the protection, so the
+  // outcome is unconfirmed rather than merely informational. Without this arm
+  // it would fall to the default `cyan` (it ends in neither `FAILED` nor
+  // `SUCCEEDED`), reading exactly like a routine lifecycle token.
+  if (eventType === 'RESOURCE_GUARD_INDETERMINATE') return yellow(eventType);
   if (eventType.startsWith('ROLLBACK')) return yellow(eventType);
   return cyan(eventType);
 }

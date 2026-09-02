@@ -23,6 +23,7 @@ export type {
   ResourceUpdateResult,
   ResourceUpdateOutcome,
   ResourceDeleteResult,
+  IndeterminateGuard,
 } from './types/resource.js';
 export type {
   CdkdConfig,

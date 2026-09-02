@@ -2,7 +2,11 @@ import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green, red, yellow } from '../../utils/colors.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
-import { deleteSkipReason, UNSPECIFIED_SKIP_REASON } from '../../deployment/delete-outcome.js';
+import {
+  deleteIndeterminateGuards,
+  deleteSkipReason,
+  UNSPECIFIED_SKIP_REASON,
+} from '../../deployment/delete-outcome.js';
 import { getLiveRenderer } from '../../utils/live-renderer.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
 import {
@@ -177,12 +181,14 @@ export interface DestroyRunnerContext {
    * When supplied, the runner emits one RESOURCE_STARTED /
    * RESOURCE_SUCCEEDED / RESOURCE_FAILED / RESOURCE_RETAINED /
    * RESOURCE_SKIPPED event per
-   * resource it deletes (operation always DELETE). `record()` is
-   * synchronous and never throws. The CALLER (`cdkd destroy` /
-   * `cdkd state destroy`) owns the RUN_STARTED / RUN_FINISHED events and
-   * `finalize()`s the recorder. When `undefined` the runner behaves
-   * exactly as before #808 (events are a no-op). Error + metadata only —
-   * never resource properties.
+   * resource it deletes (operation always DELETE), plus zero or more
+   * RESOURCE_GUARD_INDETERMINATE events ALONGSIDE that outcome (issue
+   * [#2301](https://github.com/go-to-k/cdkd/issues/2301)). `record()` is
+   * synchronous and never throws. The CALLER (`cdkd destroy`) owns the
+   * RUN_STARTED / RUN_FINISHED events and `finalize()`s the recorder. When
+   * `undefined` the runner behaves exactly as before #808 (events are a
+   * no-op) — which is what `cdkd state destroy` gets today, since it passes
+   * no recorder at all. Error + metadata only — never resource properties.
    */
   eventRecorder?: DeploymentEventRecorder;
 }
@@ -249,6 +255,36 @@ export interface DestroyRunnerResult {
    * same contract `errorCount > 0` / `interrupted` already carry.
    */
   skippedCount: number;
+  /**
+   * Number of PRE-FLIGHT SAFETY GUARDS that ran during this destroy, could
+   * NOT reach a verdict, and were therefore not enforced — cdkd proceeded
+   * anyway (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)).
+   * Counted per GUARD, not per resource: one resource can in principle trip
+   * more than one, and the number a reader wants is how many checks were
+   * suppressed.
+   *
+   * Orthogonal to every counter above, and to the run's outcome. A guard that
+   * could not answer says nothing about whether the resource was deleted, so
+   * this NEVER moves `deletedCount` / `skippedCount` / `errorCount`, never
+   * forces state preservation, and never changes the exit code. It exists
+   * because the ephemeral `logger.warn` a provider emits is not evidence
+   * after the run: the attack these guards exist to catch works by DENYING
+   * the probe (an `s3:GetBucketLocation` `Deny` in a bucket policy), so a
+   * destroy that proceeded WITHOUT confirming its target must not be
+   * indistinguishable, afterwards, from one that confirmed it. The durable
+   * half is the `RESOURCE_GUARD_INDETERMINATE` events; this counter is the
+   * summary half.
+   *
+   * STATED LIMIT, measured rather than assumed: a guard suppressed inside a
+   * NESTED-STACK CHILD is invisible here. `NestedStackProvider.delete` drives
+   * `runDestroyForStack` for the child with a context carrying no
+   * `eventRecorder` (see its argument list), so the child records no events at
+   * all, and it reports only counts upward — this counter has no channel to
+   * roll up through. That is the same pre-existing shape `RESOURCE_SKIPPED`
+   * has on that path, not a regression introduced here; closing it is
+   * go-to-k/cdkd#2422's class of work.
+   */
+  guardIndeterminateCount: number;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
   errorCount: number;
   /**
@@ -417,9 +453,14 @@ export async function runDestroyForStack(
     deletedCount: 0,
     retainedCount: 0,
     skippedCount: 0,
+    guardIndeterminateCount: 0,
     errorCount: 0,
     interrupted: false,
   };
+  // Issue #2301: the logical ids whose delete proceeded with a guard that
+  // could not answer. Named in the aggregate warning so the operator can go
+  // straight to `cdkd events` for the reason rather than scrolling back.
+  const guardIndeterminateTargets = new Set<string>();
 
   const resourceCount = Object.keys(state.resources).length;
   // Region is load-bearing on the new state-key layout (PR 1). Fall back to
@@ -1434,6 +1475,43 @@ export async function runDestroyForStack(
 
           renderer.removeTask(logicalId);
 
+          // Issue #2301 item 3: a PRE-FLIGHT SAFETY GUARD that ran and could
+          // not reach a verdict. Recorded BEFORE the outcome branch below, so
+          // it applies to every outcome the branch can take — the guard runs
+          // ahead of the delete and its verdict does not depend on how the
+          // delete ended.
+          //
+          // ADDITIONAL to the resource's own RESOURCE_SUCCEEDED /
+          // RESOURCE_SKIPPED row, never a replacement for it, which is the
+          // shape issue #1819's partial-UPDATE skip already established. The
+          // alternative (emit this INSTEAD of RESOURCE_SUCCEEDED) was rejected
+          // on two grounds: it would delete the only per-resource success
+          // signal existing consumers read, leaving a RESOURCE_STARTED with no
+          // terminal row for that logical id; and `counts.deleted` on
+          // RUN_FINISHED is driven by `deletedCount`, which this deliberately
+          // does not touch, so the run summary would then name a deleted
+          // resource whose event stream never says it was deleted.
+          for (const guard of deleteIndeterminateGuards(deleteResult)) {
+            result.guardIndeterminateCount++;
+            guardIndeterminateTargets.add(logicalId);
+            ctx.eventRecorder?.record({
+              eventType: 'RESOURCE_GUARD_INDETERMINATE',
+              stackName,
+              operation: 'DELETE',
+              logicalId,
+              resourceType: resource.resourceType,
+              ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+              ...(resource.physicalId && { physicalId: resource.physicalId }),
+              guard: guard.guard,
+              reason: guard.reason,
+              // No `durationMs`, unlike the sibling rows: the guard ran BEFORE
+              // the delete, so `Date.now() - resourceStartedAt` here would be
+              // the DELETE's elapsed time wearing the guard's label. `timestamp`
+              // already orders the row, and a field whose value means something
+              // other than what its name says is worse than an absent one.
+            });
+          }
+
           // Issue #1752: a provider that could not ADDRESS the resource issued
           // no AWS call, so the resource may still be alive. Print a distinct
           // line, count it separately, and — critically — do NOT drop the
@@ -1670,13 +1748,40 @@ export async function runDestroyForStack(
     // summary line (and the scripts / tests that grep it) is byte-identical on
     // a run with no skips.
     const skippedSuffix = result.skippedCount > 0 ? `, ${yellow(result.skippedCount)} skipped` : '';
+    // Issue #2301: rendered on EVERY arm below, the clean-destroy one included
+    // — which is the arm that matters most here. A suppressed guard does not
+    // preserve state and does not fail the run, so a destroy that proceeded
+    // without confirming its target reaches the `✓ Stack X destroyed` line;
+    // that line is the summary an operator actually reads, and before this it
+    // was byte-identical to a fully-confirmed destroy. Only rendered when
+    // non-zero, so every existing summary line (and every script grepping one)
+    // is unchanged on a run with no suppressed guard.
+    const guardSuffix =
+      result.guardIndeterminateCount > 0
+        ? `, ${yellow(result.guardIndeterminateCount)} unverified`
+        : '';
+    if (result.guardIndeterminateCount > 0) {
+      // The counter alone does not say what "unverified" means, and the
+      // per-resource warns that said it have already scrolled past on any
+      // stack of size. Names the resources and points at the durable record,
+      // which is the whole point of issue #2301: the events OUTLIVE the run.
+      logger.warn(
+        `\n${yellow('⚠')} ${result.guardIndeterminateCount} pre-flight safety check(s) could NOT ` +
+          `be completed during this destroy and cdkd proceeded anyway: ` +
+          `${[...guardIndeterminateTargets].join(', ')}. ` +
+          `A check can be suppressed by DENYING the permission it needs, so treat this as ` +
+          `unconfirmed rather than benign. Run 'cdkd events ${stackName}' for the ` +
+          `RESOURCE_GUARD_INDETERMINATE entries, which name the check and the reason and ` +
+          `survive the run.`
+      );
+    }
     if (!preserveState) {
       logger.info(
-        `\n${green('✓')} ${bold(`Stack ${stackName} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}, ${result.errorCount} errors)`
+        `\n${green('✓')} ${bold(`Stack ${stackName} destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${guardSuffix}, ${result.errorCount} errors)`
       );
     } else if (result.interrupted && result.errorCount === 0) {
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${result.errorCount} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${stackName} destroy interrupted`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to finish.`
       );
     } else if (result.errorCount === 0) {
@@ -1687,7 +1792,7 @@ export async function runDestroyForStack(
       const showHint = hintFor('cdkd state show', targets);
       const orphanHint = hintFor('cdkd state orphan', targets);
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${result.errorCount} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${result.errorCount} errors). ` +
           `cdkd could not address the skipped resource(s), so they may still exist in AWS. ` +
           `Fix the physicalId in state.json (${showHint}) and ` +
           `re-run, or delete them by hand and drop the records with ${orphanHint}.`
@@ -1717,7 +1822,7 @@ export async function runDestroyForStack(
             `or delete them by hand and drop the records with ${hintFor('cdkd state orphan', skippedTargets)}.`
           : '';
       logger.warn(
-        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}, ${red(result.errorCount)} errors). ` +
+        `\n${yellow('⚠')} ${bold(`Stack ${stackName} partially destroyed`)} (${green(result.deletedCount)} deleted${retainedSuffix}${skippedSuffix}${guardSuffix}, ${red(result.errorCount)} errors). ` +
           `State preserved — re-run 'cdkd destroy' / 'cdkd state destroy' to clean up. ` +
           `If the same resource keeps failing, ${orphanHint} is the last resort: it removes the state record without deleting AWS resources.` +
           skippedClause

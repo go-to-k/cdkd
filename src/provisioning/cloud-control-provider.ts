@@ -35,6 +35,10 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 import { markNonRetryable } from '../deployment/retryable-errors.js';
+// Safe from `cloud-control-provider.ts` despite the dense engine -> executor ->
+// registry -> provider ring: `delete-outcome.ts` is a documented LEAF whose only
+// imports are types, so a new edge INTO it cannot close a cycle.
+import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { getTopLevelWriteOnlyProperties } from './write-only-properties.js';
 import { assertRegionMatch, type DeleteContext, type RegionCheckPhase } from './region-check.js';
@@ -49,6 +53,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   UpdateContext,
+  IndeterminateGuard,
 } from '../types/resource.js';
 
 /**
@@ -285,6 +290,20 @@ const CC_DELETE_IDENTITY_CHECKED_TYPES: ReadonlySet<string> = new Set(['AWS::S3:
 export function requiresCcDeleteIdentityCheck(resourceType: string): boolean {
   return CC_DELETE_IDENTITY_CHECKED_TYPES.has(resourceType);
 }
+
+/**
+ * `IndeterminateGuard.guard` for the pre-flight identity confirmation above
+ * (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)).
+ *
+ * Named for the GUARD, not for the type or the API it happens to probe today:
+ * the value is persisted into `deployments/*.jsonl` and is therefore a user
+ * contract, and the set it fires for is
+ * {@link CC_DELETE_IDENTITY_CHECKED_TYPES} — a set that is expected to grow to
+ * any type whose physical id is globally unique while its resource is
+ * regional. `s3` / `get-bucket-location` in the id would go stale on the first
+ * such addition, and a stale id cannot be corrected without breaking readers.
+ */
+export const CC_DELETE_REGION_IDENTITY_GUARD = 'cc-delete-region-identity';
 
 /**
  * The region a `GetBucketLocation` answer denotes, canonicalized.
@@ -810,7 +829,17 @@ export class CloudControlProvider implements ResourceProvider {
     // UNFENCED, and deliberately so: fencing them would mean putting a
     // delegating type into `CC_DELETE_IDENTITY_CHECKED_TYPES`, which is a
     // routing change rather than a test.
-    await this.confirmDeleteTargetIdentity(logicalId, resourceType, physicalId, context);
+    // Issue #2301 item 3: a guard that could NOT answer proceeds, but the
+    // outcome must survive the run. A provider cannot reach the deployment-event
+    // recorder, so the verdict rides out on `ResourceDeleteResult` and the
+    // destroy runner persists it. Every `return` below this line therefore has
+    // to carry it — see `withIndeterminateGuard`.
+    const indeterminateGuard = await this.confirmDeleteTargetIdentity(
+      logicalId,
+      resourceType,
+      physicalId,
+      context
+    );
 
     // `--remove-protection` for an `AWS::AutoScaling::AutoScalingGroup` routed
     // through Cloud Control (its template set a silent-drop property such as
@@ -855,7 +884,20 @@ export class CloudControlProvider implements ResourceProvider {
       // forwarding correct if `ASGProvider.delete` widens its own concrete
       // return type later, so no edit is needed here when it does.
       const asgProvider: ResourceProvider = new ASGProvider();
-      return await asgProvider.delete(logicalId, physicalId, resourceType, _properties, context);
+      // Issue #2301 item 3: the pre-flight ran HERE, before the delegation, so
+      // its verdict is this provider's to report — the delegate never saw it
+      // and cannot. Merged into whichever outcome the delegate returned rather
+      // than replacing it, for the same reason the delegate's `'skipped'` is
+      // propagated at all: the two facts are independent.
+      //
+      // UNREACHABLE with today's tables (`AWS::AutoScaling::AutoScalingGroup`
+      // is not in `CC_DELETE_IDENTITY_CHECKED_TYPES`, so `indeterminateGuard`
+      // is always `undefined` here) and written anyway, because the alternative
+      // is a silent drop the day a delegating type joins that set.
+      return withIndeterminateGuard(
+        await asgProvider.delete(logicalId, physicalId, resourceType, _properties, context),
+        indeterminateGuard
+      );
     }
 
     // `--remove-protection` for an `AWS::EC2::Instance` routed through Cloud
@@ -925,7 +967,7 @@ export class CloudControlProvider implements ResourceProvider {
         );
 
         this.logger.debug(`Deleted resource ${logicalId}`);
-        return;
+        return withIndeterminateGuard(undefined, indeterminateGuard);
       } catch (error) {
         // Treat "not found" / "does not exist" as idempotent success for DELETE,
         // but only when the AWS client is operating against the same region the
@@ -972,7 +1014,11 @@ export class CloudControlProvider implements ResourceProvider {
           this.logger.debug(
             `Resource ${logicalId} already deleted (not found), treating as success`
           );
-          return;
+          // Still carries the guard: an unanswerable identity probe followed by
+          // a `NotFound` delete is exactly the sequence a DENIED probe produces
+          // when the name really does denote something elsewhere, so this is
+          // the LAST place to drop the record.
+          return withIndeterminateGuard(undefined, indeterminateGuard);
         }
         if (
           isProtectedEc2Instance &&
@@ -1140,14 +1186,29 @@ export class CloudControlProvider implements ResourceProvider {
    * indeterminate arm, which PROCEEDS. `src/utils/aws-region-resolver.ts`
    * records the same finding, and the SDK-side guard re-learned it the
    * expensive way.
+   *
+   * RETURN VALUE (issue #2301 item 3). `undefined` means the guard reached a
+   * verdict — it confirmed the region, or the type is unguarded, or the bucket
+   * is absent (a fourth outcome, not an indeterminate one, per the paragraph
+   * above). An {@link IndeterminateGuard} means it could NOT, and the caller
+   * must carry it out through `ResourceDeleteResult` so the destroy runner can
+   * persist a `RESOURCE_GUARD_INDETERMINATE` event. A MISMATCH still throws.
+   *
+   * The two indeterminate arms below produce THREE distinct `reason` texts,
+   * not two, and that is deliberate: the region-resolution arm falls THROUGH
+   * into the no-region warn, so before this change a client whose SDK region
+   * chain REJECTED was reported identically to one that was never asked. The
+   * remedies differ (fix the credential chain / pass `--region` vs. repair the
+   * state record), so the durable record — and the warn beside it — names
+   * which happened.
    */
   private async confirmDeleteTargetIdentity(
     logicalId: string,
     resourceType: string,
     physicalId: string,
     context?: DeleteContext
-  ): Promise<void> {
-    if (!requiresCcDeleteIdentityCheck(resourceType)) return;
+  ): Promise<IndeterminateGuard | undefined> {
+    if (!requiresCcDeleteIdentityCheck(resourceType)) return undefined;
 
     // `expectedRegion` is the state's recorded region and is the right
     // comparand when it is there. The client region is the fallback rather
@@ -1177,6 +1238,9 @@ export class CloudControlProvider implements ResourceProvider {
     const recordedRegion = context?.expectedRegion?.trim();
     let expectedRegion: string | undefined =
       recordedRegion === undefined || recordedRegion === '' ? undefined : recordedRegion;
+    // Set only when the SDK region chain REJECTED, which is a different fact
+    // from "resolved to nothing" and gets a different `reason` / warn tail.
+    let clientRegionError: string | undefined;
     if (expectedRegion === undefined) {
       try {
         const clientRegion = (await this.cloudControlClient.config.region())?.trim();
@@ -1188,20 +1252,30 @@ export class CloudControlProvider implements ResourceProvider {
         // otherwise have run -- that would make this guard fail closed on one
         // input while failing open on every other undeterminable one. The
         // warn immediately below is the visible outcome.
+        clientRegionError = error instanceof Error ? error.message : String(error);
         this.logger.debug(
           `Could not resolve the Cloud Control client region while confirming ${physicalId}: ` +
-            `${error instanceof Error ? error.message : String(error)}`
+            `${clientRegionError}`
         );
         expectedRegion = undefined;
       }
     }
     if (expectedRegion === undefined) {
+      // The two spellings share the head so the pre-existing needle still
+      // matches, and diverge on the tail so the fixed text is not a lie about
+      // which of the two happened. `reason` mirrors the tail rather than
+      // paraphrasing it: a durable record that disagrees with the terminal is
+      // worse than either alone.
+      const reason =
+        clientRegionError === undefined
+          ? `neither the stack state nor the AWS client reports a region`
+          : `the stack state records no region and the AWS client's region could not be ` +
+            `resolved: ${clientRegionError}`;
       this.logger.warn(
         `Could not confirm that ${resourceType} ${physicalId} (${logicalId}) is the resource ` +
-          `this destroy targets: neither the stack state nor the AWS client reports a region. ` +
-          `Proceeding with the delete.`
+          `this destroy targets: ${reason}. Proceeding with the delete.`
       );
-      return;
+      return { guard: CC_DELETE_REGION_IDENTITY_GUARD, reason };
     }
     const wantRegion = canonicalizeRegion(expectedRegion);
 
@@ -1228,23 +1302,26 @@ export class CloudControlProvider implements ResourceProvider {
           `Bucket ${physicalId} (${logicalId}) is already absent; leaving the delete to the ` +
             `Cloud Control idempotency path`
         );
-        return;
+        return undefined;
       }
-      const reason = error instanceof Error ? error.message : String(error);
+      const cause = error instanceof Error ? error.message : String(error);
       this.logger.warn(
         `Could not confirm which region S3 bucket ${physicalId} (${logicalId}) lives in before ` +
-          `deleting it: ${reason}. S3 bucket names are globally unique, so cdkd cannot rule out ` +
+          `deleting it: ${cause}. S3 bucket names are globally unique, so cdkd cannot rule out ` +
           `that this name denotes a bucket in another region. Grant s3:GetBucketLocation on the ` +
           `bucket to enable the check. Proceeding with the delete.`
       );
-      return;
+      return {
+        guard: CC_DELETE_REGION_IDENTITY_GUARD,
+        reason: `s3:GetBucketLocation on ${physicalId} could not be answered: ${cause}`,
+      };
     }
 
     if (actualRegion === wantRegion) {
       this.logger.debug(
         `Confirmed S3 bucket ${physicalId} (${logicalId}) lives in ${wantRegion} before deleting it`
       );
-      return;
+      return undefined;
     }
 
     throw markNonRetryable(

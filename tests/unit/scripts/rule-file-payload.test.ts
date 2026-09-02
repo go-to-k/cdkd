@@ -205,6 +205,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['assets.md', 51],
   ['cli-internals.md', 48],
   ['code-layout.md', 261],
+  ['delete-outcome.md', 5], // literal list: EXACT, see below
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
@@ -477,7 +478,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 37; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 38; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -528,6 +529,19 @@ const CORPUS_FILE_COUNT = 37; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  and 20,536 B after the 2026-09-02 round. Re-measure at the tree
                               //  that SHIPS the figure: a size taken mid-edit and never re-read is
                               //  the same defect as a stale `want` in a table.)
+                              //  + delete-outcome.md (go-to-k/cdkd#2301 item 3): the
+                              //  `delete-outcome.ts` entry moved out of layout-deployment.md
+                              //  verbatim when the suppressed-guard pair pushed the
+                              //  secret-redaction.ts payload to 113,402 B against a 112,000 B cap
+                              //  -- the #2241 shape, one directory over: every file under
+                              //  `src/deployment/**` was paying for one module's return-value
+                              //  contract. The satellite is 4,550 B under a five-path `paths:`
+                              //  list (the module plus its four consumers) and
+                              //  layout-deployment.md fell 1,231 B net, taking that payload to
+                              //  110,697 B. No `code-layout.md` index row was added: at 261
+                              //  reached files a ~186 B row took three OTHER budget rows over
+                              //  their caps, so the pointer in layout-deployment.md is the only
+                              //  entry point. That makes 37.
 const CORPUS_BYTES_MIN = 917_000;   // measured 951,706 B -- 34,706 B of slack.
                                     // 899_000 -> 917_000 (2026-09-02), re-measured with the same
                                     // ~34 KB of slack the previous bound was set with. The comment

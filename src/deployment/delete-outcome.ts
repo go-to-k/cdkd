@@ -1,9 +1,15 @@
-import type { ResourceDeleteResult } from '../types/resource.js';
+import type { IndeterminateGuard, ResourceDeleteResult } from '../types/resource.js';
 
 /**
- * Deploy-side consumption of {@link ResourceDeleteResult} (issue
- * [#1762](https://github.com/go-to-k/cdkd/issues/1762)) — the twin of what
- * `src/cli/commands/destroy-runner.ts` does for `cdkd destroy`.
+ * Shared helpers over {@link ResourceDeleteResult} — originally the deploy-side
+ * consumption of it (issue
+ * [#1762](https://github.com/go-to-k/cdkd/issues/1762)), the twin of what
+ * `src/cli/commands/destroy-runner.ts` does for `cdkd destroy`, and since issue
+ * [#2301](https://github.com/go-to-k/cdkd/issues/2301) also the PRODUCER-side
+ * `indeterminateGuards` constructor. Write and read live in one file on
+ * purpose: the field's whole job is to survive a hop from a provider to a
+ * recorder, and a sanitizer that does not sit beside its constructor is how
+ * the two drift.
  *
  * Issue [#1752](https://github.com/go-to-k/cdkd/issues/1752) gave
  * `ResourceProvider.delete` an optional return value whose `'skipped'` arm
@@ -93,4 +99,77 @@ export function deleteSkippedMessage(
     `cdkd could not address ${logicalId} (${physicalId}) ${duringClause}, so it was NOT ` +
     `deleted and may still exist: ${reason}`
   );
+}
+
+/**
+ * Attach an {@link IndeterminateGuard} to whatever a delete arm was about to
+ * return (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)).
+ *
+ * `undefined` in, `undefined` out when there is no guard to carry — so a
+ * provider whose guard reached a verdict keeps returning the back-compat
+ * `void` the ~80 providers that return it use, and nothing about the
+ * existing shape changes on the hot path.
+ *
+ * A `'skipped'` result keeps its outcome and its `reason`: a guard that could
+ * not answer and a delete that could not be addressed are independent facts,
+ * and collapsing either into the other loses one of them.
+ */
+export function withIndeterminateGuard(
+  result: void | ResourceDeleteResult,
+  guard: IndeterminateGuard | undefined
+): void | ResourceDeleteResult {
+  if (!guard) return result;
+  // `Array.isArray`, not `?? []`: the spread on the next line THROWS on a
+  // non-iterable, so an untyped producer that set `indeterminateGuards` to a
+  // number would crash the delete path from inside the hardening. The reader
+  // below is defensive about exactly this population; the writer has to be
+  // too, and a non-array here is not recoverable data — it is dropped.
+  const existing = Array.isArray(result?.indeterminateGuards) ? result.indeterminateGuards : [];
+  const indeterminateGuards = [...existing, guard];
+  if (result && result.outcome === 'skipped') {
+    return { outcome: 'skipped', reason: result.reason, indeterminateGuards };
+  }
+  return { outcome: 'deleted', indeterminateGuards };
+}
+
+/**
+ * The guards a delete result reports as INDETERMINATE — those that ran, could
+ * not reach a verdict, and were therefore not enforced while cdkd proceeded
+ * (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)). Empty for the
+ * overwhelmingly common case, including the back-compat `void` return.
+ *
+ * Defensive in the same shape and for the same reason as
+ * {@link deleteSkipReason}: the value crosses into a DURABLE record
+ * (`deployments/*.jsonl`), providers are the least type-checked layer in the
+ * repo (a hand-built test double, a future arm, a JS provider), and a
+ * malformed entry must degrade to "not reported" rather than crash the delete
+ * path or persist `guard: undefined`. `typeof` rather than `?.trim()` for the
+ * same reason `deleteSkipReason` uses it — a non-string makes `.trim` itself
+ * `undefined`, i.e. a TypeError thrown out of the very path this hardens.
+ *
+ * Entries whose `guard` or `reason` is missing / non-string / blank are
+ * DROPPED rather than defaulted, which is the opposite of `deleteSkipReason`'s
+ * choice and deliberately so: there a default is the user's only signal that a
+ * live resource survived, so inventing `UNSPECIFIED_SKIP_REASON` beats
+ * silence. Here a guard row with no guard id and no cause says only "something
+ * somewhere was not checked", which cannot be acted on — and it would count
+ * toward the destroy summary's tally, turning an unactionable row into a
+ * number the operator has to chase.
+ */
+export function deleteIndeterminateGuards(
+  result: void | ResourceDeleteResult
+): readonly IndeterminateGuard[] {
+  const raw = result?.indeterminateGuards;
+  if (!Array.isArray(raw)) return [];
+  const out: IndeterminateGuard[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { guard, reason } = entry as { guard?: unknown; reason?: unknown };
+    if (typeof guard !== 'string' || typeof reason !== 'string') continue;
+    const trimmedGuard = guard.trim();
+    const trimmedReason = reason.trim();
+    if (trimmedGuard === '' || trimmedReason === '') continue;
+    out.push({ guard: trimmedGuard, reason: trimmedReason });
+  }
+  return out;
 }

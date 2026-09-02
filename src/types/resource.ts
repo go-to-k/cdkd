@@ -209,6 +209,46 @@ export type ResourceUpdateOutcome =
 export type ResourceUpdateResult = ResourceUpdateResultBase & ResourceUpdateOutcome;
 
 /**
+ * One PRE-FLIGHT SAFETY GUARD that RAN, could NOT reach a verdict, and was
+ * therefore not enforced — cdkd proceeded with the operation anyway (issue
+ * [#2301](https://github.com/go-to-k/cdkd/issues/2301)).
+ *
+ * Proceeding is deliberate wherever a guard reports one of these: refusing on
+ * an unanswerable probe would strand least-privilege operators who never
+ * granted the permission the probe needs. What was NOT acceptable is that the
+ * outcome existed only as a `logger.warn` on a terminal that scrolls away —
+ * because the attack the guards exist to catch is precisely one that DISABLES
+ * a probe (an `s3:GetBucketLocation` `Deny` in a bucket policy, settable by
+ * anyone holding `s3:PutBucketPolicy` on the target). After the run, a destroy
+ * that proceeded WITHOUT confirming its target was indistinguishable from one
+ * that confirmed it. A provider has no access to the deployment-event recorder
+ * (`git grep DeploymentEventRecorder -- src` reaches only the destroy runner,
+ * the deploy engine, the store and the types module), so the delete's RETURN
+ * VALUE is the structured channel back to the caller that does.
+ *
+ * Metadata only, exactly like `ResourceDeleteResult.reason`: provider-authored
+ * prose about the IDENTIFIER and the probe, never resource properties.
+ */
+export interface IndeterminateGuard {
+  /**
+   * Stable machine-readable id of the guard that could not answer, e.g.
+   * `cc-delete-region-identity`. Deliberately NOT a per-resource-type or
+   * per-API name: the persisted event is a user contract, and the next guard
+   * to grow an indeterminate arm should reuse this shape with its own id
+   * rather than mint a second event type.
+   */
+  readonly guard: string;
+  /**
+   * One line saying why the guard could not answer, rendered beneath the
+   * event by `cdkd events` and carried into the destroy summary's warning.
+   * Distinct causes get distinct text even when they reach the same
+   * proceed-anyway outcome, because the remediation differs (grant an IAM
+   * permission vs. repair a state record vs. fix a credential chain).
+   */
+  readonly reason: string;
+}
+
+/**
  * What a provider's `delete` actually DID (issue
  * [#1752](https://github.com/go-to-k/cdkd/issues/1752)).
  *
@@ -249,13 +289,41 @@ export type ResourceUpdateResult = ResourceUpdateResultBase & ResourceUpdateOutc
  *
  * Returning nothing (`undefined`) means `'deleted'`, so the ~80 providers
  * that already return `void` need no change.
+ *
+ * Both arms additionally carry `indeterminateGuards` (issue
+ * [#2301](https://github.com/go-to-k/cdkd/issues/2301)) — see
+ * {@link IndeterminateGuard}. It is an OPTIONAL FIELD on the EXISTING arms
+ * rather than a third `outcome` member, and that choice is load-bearing:
+ * a suppressed guard says nothing about whether the resource was addressed,
+ * so it is orthogonal to `outcome`. A third member would also break every
+ * consumer by construction — returning nothing already means `'deleted'` (the
+ * paragraph above says so, and the ~80 providers that return `void` rely on
+ * it), so every existing caller reads "not `'skipped'`" as "deleted". A new member
+ * would silently join the deleted side at some call sites and need explicit
+ * handling at others, while an optional field is invisible to callers that
+ * do not read it.
  */
 export type ResourceDeleteResult =
   | {
       /** cdkd addressed the resource — identical to returning `void`. */
       readonly outcome: 'deleted';
+      /**
+       * Pre-flight safety guards that could not reach a verdict on this
+       * operation. See {@link IndeterminateGuard}.
+       */
+      readonly indeterminateGuards?: readonly IndeterminateGuard[];
     }
   | {
+      /**
+       * Pre-flight safety guards that could not reach a verdict on this
+       * operation. See {@link IndeterminateGuard}. Present on this arm too:
+       * a guard that could not answer and a delete that could not be
+       * addressed are independent facts, and a provider can report both (an
+       * `AWS::AutoScaling::AutoScalingGroup` whose Cloud-Control delete runs
+       * the pre-flight and then delegates to a `ResourceProvider` that
+       * reports `'skipped'` is the shape that produces the pair).
+       */
+      readonly indeterminateGuards?: readonly IndeterminateGuard[];
       /**
        * cdkd could NOT address the resource this result names, so it was NOT
        * destroyed and may still be ALIVE.

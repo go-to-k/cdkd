@@ -24,7 +24,8 @@ Each deploy / destroy run appends one **JSONL** line per lifecycle event:
 | `RUN_STARTED` / `RUN_FINISHED` | Once per deploy / destroy / rollback run (carries command, region, cdkd version, terminal result, per-op counts). The `command` field is `deploy`, `destroy`, or `rollback` (issue #1183). |
 | `RESOURCE_STARTED` / `RESOURCE_SUCCEEDED` / `RESOURCE_FAILED` | Per per-resource CREATE / UPDATE / DELETE (carries logicalId, resourceType, `provisionedBy`, physicalId on success, duration, error metadata on failure). |
 | `RESOURCE_RETAINED` | Destroy-side skip for a `DeletionPolicy: Retain` resource — the AWS resource is kept **on purpose** and its state record is dropped. |
-| `RESOURCE_SKIPPED` | A skip where cdkd could **not address** the resource, so it may still exist (issue #1752). Emitted by `cdkd destroy` / `cdkd state destroy` AND, since issue #1762, by the `cdkd deploy` DELETE branch (a resource removed from the template whose provider refused the delete). Three producers: a malformed composite physicalId in state (no AWS call issued at all); a state record missing the id or the property the delete is addressed BY — Lambda layer / permission, Custom Resource, IAM policy / user-group (issue #1770, also no AWS call at all); and a nested stack whose own destroy skipped or was interrupted (the child's other resources *were* deleted first) — so the invariant is "this row was not destroyed", not "nothing happened". The opposite of `RESOURCE_RETAINED` in both halves: keeping the AWS resource is not intended, and the state record is **kept** so the orphan stays traceable. Carries no `error` (nothing failed); the cause is in `reason`. Since issue #1819 it is ALSO emitted for a **partial UPDATE**: a replacement whose inner delete left the OLD resource alive. That row is the one case where `RESOURCE_SKIPPED` sits NEXT TO a `RESOURCE_SUCCEEDED` for the same logical id rather than replacing it — the resource named by the SUCCEEDED event was updated, and the SKIPPED event names the predecessor that survived and is no longer in state. Reading the pair as a contradiction is the mistake to avoid: the invariant above still holds, because the row the skip describes is the old resource, not the new one. |
+| `RESOURCE_SKIPPED` | A skip where cdkd could **not address** the resource, so it may still exist (issue #1752). Emitted by `cdkd destroy` AND, since issue #1762, by the `cdkd deploy` DELETE branch (a resource removed from the template whose provider refused the delete). Three producers: a malformed composite physicalId in state (no AWS call issued at all); a state record missing the id or the property the delete is addressed BY — Lambda layer / permission, Custom Resource, IAM policy / user-group (issue #1770, also no AWS call at all); and a nested stack whose own destroy skipped or was interrupted (the child's other resources *were* deleted first) — so the invariant is "this row was not destroyed", not "nothing happened". The opposite of `RESOURCE_RETAINED` in both halves: keeping the AWS resource is not intended, and the state record is **kept** so the orphan stays traceable. Carries no `error` (nothing failed); the cause is in `reason`. Since issue #1819 it is ALSO emitted for a **partial UPDATE**: a replacement whose inner delete left the OLD resource alive. That row is the one case where `RESOURCE_SKIPPED` sits NEXT TO a `RESOURCE_SUCCEEDED` for the same logical id rather than replacing it — the resource named by the SUCCEEDED event was updated, and the SKIPPED event names the predecessor that survived and is no longer in state. Reading the pair as a contradiction is the mistake to avoid: the invariant above still holds, because the row the skip describes is the old resource, not the new one. |
+| `RESOURCE_GUARD_INDETERMINATE` | A **pre-flight safety guard** ran on this resource, could **not reach a verdict**, and was therefore not enforced — cdkd proceeded anyway (issue #2301). Carries `guard` (a stable machine-readable id, e.g. `cc-delete-region-identity`) and `reason` (why it could not answer). This row says nothing about whether the operation succeeded: it sits **alongside** the resource's own `RESOURCE_SUCCEEDED` / `RESOURCE_SKIPPED` / `RESOURCE_FAILED` row rather than replacing it, and it does **not** move any `counts` field or the run's `result`. Carries no `error` — nothing failed. The durability is the point: a guard is disabled by DENYING the permission it depends on (an `s3:GetBucketLocation` `Deny` in a bucket policy, settable by anyone holding `s3:PutBucketPolicy` on the target), and the `logger.warn` cdkd prints does not survive the run — so without this row, a destroy that proceeded **without** confirming its target was indistinguishable, afterwards, from one that confirmed it. Emitted by `cdkd destroy` today. |
 | `ROLLBACK_STARTED` / `ROLLBACK_RESOURCE_SUCCEEDED` / `ROLLBACK_RESOURCE_FAILED` / `ROLLBACK_FINISHED` | Rollback phase — emitted both by the deploy-failure automatic rollback AND by a standalone `cdkd rollback` run (issue #1183), which records them under its own `runId` (with `command: rollback` in `index.json`). |
 
 A `RUN_FINISHED` additionally carries `counts.skipped` when non-zero, on
@@ -54,6 +55,33 @@ destroy status line — rendered on its own line beneath the event. The events
 store is the durable post-mortem, so a skip recorded without a cause would be
 close to useless there. Like every other event field this is metadata only:
 provider-authored prose about the *identifier*, never resource properties.
+
+`RESOURCE_GUARD_INDETERMINATE` carries the same **`reason`** field, plus a
+**`guard`** id. `reason` is likewise the whole value of the row — the outcome
+("cdkd proceeded") is already implied by the event type, so what is left to say
+is why the guard could not answer; distinct causes get distinct text even where
+they reach the same proceed-anyway outcome, because the remedies differ (grant
+an IAM permission vs. repair a state record vs. fix a credential chain).
+`cdkd events` renders `guard=<id>` as a column and the reason on its own line:
+
+```text
+2026-09-02T05:15:35Z  RESOURCE_GUARD_INDETERMINATE  MyBucket (AWS::S3::Bucket)  DELETE  guard=cc-delete-region-identity  [cc-api]
+      s3:GetBucketLocation on my-bucket could not be answered: Access Denied
+2026-09-02T05:15:36Z  RESOURCE_SUCCEEDED  MyBucket (AWS::S3::Bucket)  DELETE  [cc-api]  980ms
+```
+
+The destroy summary carries the count half of the same signal
+(`Stack MyStack destroyed (1 deleted, 1 unverified, 0 errors)`) plus a warning
+naming the resources and pointing back at `cdkd events`. Note that
+`cdkd destroy --purge-events` deletes this history along with the rest after a
+clean destroy — that flag is an explicit "delete my history" instruction and
+this row is history like any other. An attacker who can deny a probe cannot
+make an operator pass the flag, so the two are independent; if you want the
+record kept, do not pass it.
+
+`cdkd state destroy` records **no** deployment events at all (it threads no
+recorder), so its only surface for a suppressed guard is the summary line and
+its warning.
 
 Failure events carry an `error` object: `{ name, message, awsErrorCode?,
 requestId? }`. The AWS error code + request id are extracted from the

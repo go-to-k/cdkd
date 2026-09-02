@@ -95,6 +95,26 @@ then prints `⚠ … skipped (<reason>)`, counts a separate `skippedCount`, emit
 the loss — neither the resource deleted nor an id to delete it with), preserves
 `state.json`, and exits 2.
 
+**A PRE-FLIGHT GUARD that could not answer is a THIRD outcome, and it is
+neither of the two above** (issue
+[#2301](https://github.com/go-to-k/cdkd/issues/2301)). The delete still goes
+ahead, so `outcome` is normally `'deleted'`; what needs reporting is that a
+safety check ran and was NOT enforced. Return through `withIndeterminateGuard(result, guard)`
+(`src/deployment/delete-outcome.ts`), which is a no-op when there is no guard —
+so the ordinary path keeps returning the back-compat `void` — and preserves a
+`'skipped'` outcome with its `reason` when both facts hold at once. Proceed
+rather than refuse: these arms exist for probes a least-privilege caller may not
+be allowed to make, and refusing on an unanswerable probe strands every operator
+who never granted the permission; the DURABLE record is what makes proceeding
+acceptable rather than silent. Name the GUARD in `guard`, never the API or the
+resource type — the value is persisted into `deployments/*.jsonl` and is a user
+contract, and the set a guard covers is expected to grow. The destroy runner
+emits `RESOURCE_GUARD_INDETERMINATE` ALONGSIDE the resource's own outcome row,
+counts it into the summary's `N unverified` suffix, and moves no outcome counter
+and no exit code. `CloudControlProvider.confirmDeleteTargetIdentity` is the only
+producer today; the deploy engine and the rollback executor still DISCARD the
+field ([#2422](https://github.com/go-to-k/cdkd/issues/2422)).
+
 **A provider that RECURSES into another destroy must propagate the child's
 skip.** `NestedStackProvider.delete` drives `runDestroyForStack` for the child
 stack; discarding that result re-creates the mis-report one level up — the
