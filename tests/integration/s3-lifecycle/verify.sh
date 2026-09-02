@@ -240,6 +240,9 @@ cleanup() {
     aws s3api delete-bucket-policy --bucket "${CC_ARM_ID_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
     aws s3api delete-bucket --bucket "${CC_ARM_ID_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  if [ -n "${CC_ARM_ID_CLEAN_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${CC_ARM_ID_CLEAN_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   # Assigned INSIDE the arm, never at load time: `cleanup` also runs pre-run,
   # and a scratch dir created at variable-definition time would be removed
   # before its first write.
@@ -472,6 +475,40 @@ write_cc_arm_state() { # usage: write_cc_arm_state <stackName> <bucketName>
 }" | aws s3 cp - "s3://${STATE_BUCKET}/cdkd/${stack_name}/${REGION}/state.json"
 }
 
+# The 0c-ID variant: TWO cc-api-routed buckets in one stack, so a single
+# `cdkd destroy` run covers both sides of the new event's condition. Issue
+# #2301's contract is not "a guard row exists" but "a guard row exists FOR THE
+# RESOURCE WHOSE PROBE WAS DENIED, and for no other" -- and a single-resource
+# stack cannot tell those apart: one resource yields one row whether the event
+# is conditional or emitted unconditionally. The second bucket carries no deny
+# policy, so its probe ANSWERS, and the run's guard-row count discriminates.
+write_cc_arm_state_pair() { # usage: write_cc_arm_state_pair <stackName> <deniedBucket> <cleanBucket>
+  local stack_name="$1" denied_bucket="$2" clean_bucket="$3"
+  printf '%s' "{
+  \"version\": 9,
+  \"stackName\": \"${stack_name}\",
+  \"region\": \"${REGION}\",
+  \"resources\": {
+    \"CcArmBucket\": {
+      \"physicalId\": \"${denied_bucket}\",
+      \"resourceType\": \"AWS::S3::Bucket\",
+      \"properties\": { \"BucketName\": \"${denied_bucket}\" },
+      \"dependencies\": [],
+      \"provisionedBy\": \"cc-api\"
+    },
+    \"CcArmBucketClean\": {
+      \"physicalId\": \"${clean_bucket}\",
+      \"resourceType\": \"AWS::S3::Bucket\",
+      \"properties\": { \"BucketName\": \"${clean_bucket}\" },
+      \"dependencies\": [],
+      \"provisionedBy\": \"cc-api\"
+    }
+  },
+  \"outputs\": {},
+  \"lastModified\": $(( CC_ARM_STAMP * 1000 ))
+}" | aws s3 cp - "s3://${STATE_BUCKET}/cdkd/${stack_name}/${REGION}/state.json"
+}
+
 echo "==> Phase 0c-OK (control): a cc-api-routed bucket IN ${REGION} must still delete"
 plant_bucket "${CC_ARM_OK_BUCKET}" "${REGION}"
 write_cc_arm_state "${CC_ARM_STACK_OK}" "${CC_ARM_OK_BUCKET}"
@@ -575,6 +612,13 @@ echo "    OK: refused (rc=${CC_XR_RC}) and ${CC_ARM_XR_BUCKET} survives in ${XR_
 # beats the caller's own IAM Allow, so the probe 403s while the credentials are
 # otherwise unchanged.
 #
+# The stack holds TWO cc-api-routed buckets and only the first is denied. That
+# is what makes the assertions discriminating rather than merely green: the
+# contract is "a guard row for the resource whose probe was denied, and for no
+# other", and a one-resource stack yields one row under either reading. The
+# second bucket is the in-run control -- same command, same route, same guard,
+# answering probe.
+#
 # THE DELETE STILL HAS TO SUCCEED, and that is a claim about AWS rather than
 # about cdkd, so it was MEASURED rather than assumed. `cloudformation
 # describe-type --type RESOURCE --type-name AWS::S3::Bucket` (us-east-1,
@@ -594,10 +638,14 @@ echo "    OK: refused (rc=${CC_XR_RC}) and ${CC_ARM_XR_BUCKET} survives in ${XR_
 # runs from a scratch directory with no `cdk.json`, which is what makes the CLI
 # fall back to its state-based stack list.
 CC_ARM_ID_BUCKET="cdkd-lifecycle-ccid-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+# Same stack, same route, NO deny policy -- the in-run control (see
+# `write_cc_arm_state_pair`).
+CC_ARM_ID_CLEAN_BUCKET="cdkd-lifecycle-ccidok-${ACCOUNT_ID}-${CC_ARM_STAMP}"
 CC_ARM_ID_WORKDIR="$(mktemp -d)"
 
-echo "==> Phase 0c-ID: a DENIED s3:GetBucketLocation must still delete, and must leave a durable record"
+echo "==> Phase 0c-ID: a DENIED s3:GetBucketLocation must still delete, must leave a durable record, and must not tar the bucket beside it"
 plant_bucket "${CC_ARM_ID_BUCKET}" "${REGION}"
+plant_bucket "${CC_ARM_ID_CLEAN_BUCKET}" "${REGION}"
 
 cat > "${CC_ARM_ID_WORKDIR}/deny-getbucketlocation.json" <<POLICY
 {
@@ -646,7 +694,7 @@ echo "    premise: s3:GetBucketLocation on ${CC_ARM_ID_BUCKET} is DENIED"
 # ${REGION} -- the ONLY thing wrong with this destroy is that cdkd cannot
 # CONFIRM that. So a refusal here would be a false refusal, and a silent
 # success would be the issue.
-write_cc_arm_state "${CC_ARM_STACK_ID}" "${CC_ARM_ID_BUCKET}"
+write_cc_arm_state_pair "${CC_ARM_STACK_ID}" "${CC_ARM_ID_BUCKET}" "${CC_ARM_ID_CLEAN_BUCKET}"
 
 set +e
 # `env -u CDKD_APP`: the scratch directory has no `cdk.json`, but an ambient
@@ -668,6 +716,8 @@ fi
 
 assert_gone_eventually "phase 0c-ID: ${CC_ARM_ID_BUCKET} survived a destroy that reported success" \
   aws s3api head-bucket --bucket "${CC_ARM_ID_BUCKET}" --region "${REGION}"
+assert_gone_eventually "phase 0c-ID: ${CC_ARM_ID_CLEAN_BUCKET} (the in-run control) survived a destroy that reported success" \
+  aws s3api head-bucket --bucket "${CC_ARM_ID_CLEAN_BUCKET}" --region "${REGION}"
 
 # Short needles against a FLATTENED copy, never one long phrase against the raw
 # output: grep is line-based, so a needle straddling a logger line-wrap scores 0
@@ -740,34 +790,58 @@ case "${CC_ID_GUARD_REASON}" in
     ;;
 esac
 
-# ...ALONGSIDE the resource's own success row, not instead of it. This is the
-# design decision the PR records, so it gets an assertion rather than a comment:
-# emitting instead-of would leave the RESOURCE_STARTED row with no terminal
-# partner and would contradict RUN_FINISHED's `counts.deleted`.
-CC_ID_SUCCESS_ROWS="$(cc_id_jq '[.[] | select(.eventType == "RESOURCE_SUCCEEDED" and .logicalId == "CcArmBucket")] | length')"
-CC_ID_DELETED_COUNT="$(cc_id_jq '[.[] | select(.eventType == "RUN_FINISHED")] | .[0].counts.deleted // -1')"
-if [ "${CC_ID_SUCCESS_ROWS}" != "1" ] || [ "${CC_ID_DELETED_COUNT}" != "1" ]; then
-  echo "FAIL phase 0c-ID: the guard row replaced the success row instead of accompanying it (RESOURCE_SUCCEEDED=${CC_ID_SUCCESS_ROWS}, counts.deleted=${CC_ID_DELETED_COUNT})" >&2
+# THE IN-RUN NEGATIVE CONTROL, and the reason this arm's stack holds TWO
+# buckets. `CcArmBucketClean` went through the same command, the same Cloud
+# Control route and the same guard, differing only in that its probe was never
+# denied -- so it must have NO guard row. Asserted as the guard rows' exact
+# membership rather than only their count, because those are different claims:
+# a count of 1 is satisfied by a row naming the WRONG resource.
+#
+# Without a second resource this control cannot exist. A single-resource stack
+# yields exactly one guard row whether the event is conditional on the verdict
+# or emitted unconditionally on every delete, so the count assertion above
+# would pass either way -- it would read as fenced while discriminating
+# nothing. (The unit suite covers the same condition at
+# `tests/unit/cli/destroy-runner-guard-indeterminate.test.ts`, but a provider
+# that reports a guard on every delete is a PRODUCER-side failure the runner
+# tests cannot see, since they feed the runner its delete results directly.)
+CC_ID_GUARD_LOGICALS="$(cc_id_jq '[.[] | select(.eventType == "RESOURCE_GUARD_INDETERMINATE") | .logicalId] | sort | join(",")')"
+if [ "${CC_ID_GUARD_LOGICALS}" != "CcArmBucket" ]; then
+  echo "FAIL phase 0c-ID control: guard rows name [${CC_ID_GUARD_LOGICALS}], expected exactly [CcArmBucket]. A row for CcArmBucketClean means the event fires regardless of the guard's verdict, not because the probe was denied." >&2
   printf '%s\n' "${CC_ID_EVENTS}" >&2
   exit 1
 fi
 
-# The NEGATIVE CONTROL, and it is the arm that keeps the new row meaningful: the
-# 0c-OK bucket earlier in this phase was destroyed with the guard ANSWERING, so
-# nothing in cdkd may have recorded a guard row for it. Without this, a guard
-# emitted unconditionally would satisfy every assertion above.
-#
-# 0c-OK ran under `cdkd state destroy`, which records no events at all, so the
-# control cannot be "its stream has no guard row" -- there is no stream. It is
-# the stronger statement that the arm wrote no `deployments/` object whatsoever.
-CC_OK_EVENT_KEYS="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
-  --prefix "cdkd/${CC_ARM_STACK_OK}/${REGION}/deployments/" --query 'Contents[].Key' --output text)"
-if [ -n "${CC_OK_EVENT_KEYS}" ] && [ "${CC_OK_EVENT_KEYS}" != "None" ]; then
-  echo "FAIL phase 0c-ID control: the confirmed-bucket arm unexpectedly wrote deployment events: ${CC_OK_EVENT_KEYS}" >&2
+# ...ALONGSIDE each resource's own success row, not instead of it. This is the
+# design decision the PR records, so it gets an assertion rather than a comment:
+# emitting instead-of would leave the RESOURCE_STARTED row with no terminal
+# partner and would contradict RUN_FINISHED's `counts.deleted`. Both buckets
+# were deleted, so both carry a success row and the run counts two.
+CC_ID_SUCCESS_ROWS="$(cc_id_jq '[.[] | select(.eventType == "RESOURCE_SUCCEEDED" and (.logicalId == "CcArmBucket" or .logicalId == "CcArmBucketClean"))] | length')"
+CC_ID_DELETED_COUNT="$(cc_id_jq '[.[] | select(.eventType == "RUN_FINISHED")] | .[0].counts.deleted // -1')"
+if [ "${CC_ID_SUCCESS_ROWS}" != "2" ] || [ "${CC_ID_DELETED_COUNT}" != "2" ]; then
+  echo "FAIL phase 0c-ID: the guard row replaced a success row instead of accompanying it (RESOURCE_SUCCEEDED=${CC_ID_SUCCESS_ROWS}, expected 2; counts.deleted=${CC_ID_DELETED_COUNT}, expected 2)" >&2
+  printf '%s\n' "${CC_ID_EVENTS}" >&2
   exit 1
 fi
 
-echo "    OK: delete proceeded (rc=0), bucket gone, and RESOURCE_GUARD_INDETERMINATE persisted in ${CC_ID_JSONL_KEY}"
+# A SEPARATE claim from the control above, kept because it is the only place
+# either verb's event behaviour is pinned live: `cdkd state destroy` -- which
+# is what phase 0c-OK ran -- threads no `eventRecorder` at all, so it writes no
+# `deployments/` object whatsoever. That is a real gap rather than a property
+# worth having (go-to-k/cdkd#2423 tracks closing it); this assertion exists so
+# that closing it is a deliberate edit here rather than a silent change in
+# behaviour. It is NOT evidence about the guard's conditionality -- an arm that
+# records nothing cannot distinguish a conditional row from an unconditional
+# one, which is exactly why the in-run control above was added.
+CC_OK_EVENT_KEYS="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+  --prefix "cdkd/${CC_ARM_STACK_OK}/${REGION}/deployments/" --query 'Contents[].Key' --output text)"
+if [ -n "${CC_OK_EVENT_KEYS}" ] && [ "${CC_OK_EVENT_KEYS}" != "None" ]; then
+  echo "FAIL phase 0c-ID: 'cdkd state destroy' wrote deployment events (${CC_OK_EVENT_KEYS}). If go-to-k/cdkd#2423 was intentionally closed, update this assertion and phase 0c-ID's comments, which both state that it records none." >&2
+  exit 1
+fi
+
+echo "    OK: delete proceeded (rc=0), both buckets gone, and exactly one RESOURCE_GUARD_INDETERMINATE -- naming the denied bucket only -- persisted in ${CC_ID_JSONL_KEY}"
 
 # The `deployments/` objects this arm just asserted on are NOT swept by
 # `cdkd destroy` (state deletion deliberately leaves the post-mortem behind), so

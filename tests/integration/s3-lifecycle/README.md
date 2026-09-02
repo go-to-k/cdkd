@@ -88,6 +88,11 @@ failed against real S3).
      `deployments/{runId}.jsonl` OBJECT, not on console text, because console
      output not surviving the run IS the defect. It also asserts the row sits
      ALONGSIDE the resource's `RESOURCE_SUCCEEDED` rather than replacing it.
+     The stack holds **two** cc-api-routed buckets and only one is denied, so
+     the guard rows' exact membership is the in-run control: the contract is "a
+     row for the resource whose probe was denied, and for no other", and a
+     one-resource stack yields one row under either reading — it would look
+     fenced while discriminating nothing.
      Two things about it are decisions: it drives `cdkd destroy` rather than
      `cdkd state destroy` (the latter threads no event recorder, so it writes
      no events at all — issue
