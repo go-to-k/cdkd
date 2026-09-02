@@ -1,3 +1,10 @@
+## [0.285.9](https://github.com/go-to-k/cdkd/compare/v0.285.8...v0.285.9) (2026-09-02)
+
+
+### Bug Fixes
+
+* **state:** honour a custom resource's NoEcho so its generated secret never reaches state.json ([#2462](https://github.com/go-to-k/cdkd/issues/2462)) ([b42197c](https://github.com/go-to-k/cdkd/commit/b42197c37ad30d84a3b66e1d42cadace5cdeb1c0))
+
 ## [0.285.8](https://github.com/go-to-k/cdkd/compare/v0.285.7...v0.285.8) (2026-09-02)
 
 
