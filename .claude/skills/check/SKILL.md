@@ -30,6 +30,34 @@ Run these sequentially and report results:
    The gap used to be 260x, and closing it is what the `cache: false` change bought. While the `test` task still cached, `vp run test` gave the child a TTY, so vitest switched to its per-file reporter with console interception on: **1,981 lines / 171 KB** for a green run. It could also exit 0 having run NOTHING, when the cache encoder overflowed while serialising the task's inputs (`Cache lookup failed: Encoded sequence length exceeded preallocation limit`, no `Test Files` line, rc=0). Both are gone with the cache; `vp test run` never had either.
    Read the summary line, not just the exit code: a run that reports no `Test Files` count did not run.
 
+   **And check WHICH PROJECT the summary belongs to — the summary line cannot
+   tell you.** `vp` is installed globally (`~/.vite-plus/`) and drives a task
+   graph spanning linked workspace projects; cdkd depends on `cdk-local`, which
+   in the Orca layout is a sibling worktree with its own vitest. Measured
+   2026-09-02 with several sessions running suites at once: three consecutive
+   `vp test run` invocations from cdkd's worktree printed
+   `Test Files 246 passed (246) / Tests 4410 passed (4410) / Type Errors no
+   errors` — **cdk-local's suite**, not cdkd's 855 files. `cd`-ing to the right
+   worktree did not help and neither did `--config vite.config.ts`; the shell's
+   `pwd` was correct throughout. The only tells are the `RUN <root>` header
+   hundreds of lines earlier and a stray `vp run: cdk-local#test ...` line at
+   the end. Acting on it sets the `check` marker (and through `requires`, the
+   `verify-pr` one) over a suite that never ran — the real run, once obtained,
+   had 2 failures. So assert the root in the same command that produces the
+   verdict, rather than reading the summary alone:
+
+   ```bash
+   vp test run > /tmp/t.log 2>&1; rc=$?
+   run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" /tmp/t.log | sed 's/^RUN  v[0-9.]* //')
+   [ "$run_root" = "$(pwd -P)" ] || { echo "WRONG PROJECT -- attests to nothing"; exit 1; }
+   grep -E "Test Files|      Tests |Type Errors" /tmp/t.log
+   ```
+
+   It is contention-dependent, not sticky — re-running usually lands on the
+   right project — and a single-FILE run (`vp test run tests/unit/<x>.test.ts`)
+   reported the right project every time in the same window, so that is the
+   reliable form while other lanes are busy.
+
 ## Output
 
 Report as a table:
