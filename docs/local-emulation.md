@@ -512,22 +512,25 @@ and cdkd's `--verbose` debug output -- goes to **stderr**, the way
 a terminal shows what it always did, and `2>&1` restores the old
 single-stream view.
 
-**But stdout is not yet payload-only, so pipe through `tail -1`.** Three
-things still reach it, none of them routed by cdkd's logger:
+**But stdout is not yet payload-only, so pipe through `tail -1`.** Two
+things still reach it, neither routed by cdkd's logger:
 
 1. **The container's own stdout**, piped through by `streamLogs`. The Lambda
    runtime emulator puts `START` / `END` / `REPORT` *and* every handler log
    line on the container's stdout -- `console.error` included, which is
    measured rather than assumed -- so any handler that prints lands ahead of
    the response ([#2419](https://github.com/go-to-k/cdkd/issues/2419)).
-2. **`docker pull` progress**, run in foreground mode (`stdio: 'inherit'`)
-   under `--verbose`, and **unconditionally** for an image pulled from ECR
-   (same issue).
-3. **cdk-local's own logger.** The container-image build path is reused from
+2. **cdk-local's own logger.** The container-image build path is reused from
    cdk-local, which has a separate logger with no reservation concept, so
    `Building container image (platform=...)` and `Skipping docker build ...`
    print on stdout for a container-image Lambda
    ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
+
+A third used to be listed here and is now closed: `docker pull` progress
+reached stdout because `runDockerForeground` passes `stdio: 'inherit'`, and
+`cdkd` runs it unconditionally for an ECR image, so it needed no flag at all.
+While a command holds the reservation that child's fd 1 is now redirected to
+fd 2. go-to-k/cdkd#2419's remaining scope is `streamLogs` alone.
 
 ```bash
 # Safe today: the response payload is always the LAST line on stdout.
@@ -535,7 +538,7 @@ cdkd local invoke MyStack/Handler --event event.json | tail -1 | jq .body
 cdkd local invoke-agentcore MyStack/Agent 2> progress.log | tail -1
 ```
 
-A ZIP-code Lambda whose handler prints nothing hits none of the three, so
+A ZIP-code Lambda whose handler prints nothing hits neither, so
 `cdkd local invoke MyStack/Handler | jq` does work there -- it is just not a
 guarantee cdkd can make yet for every target.
 

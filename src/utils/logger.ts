@@ -206,8 +206,8 @@ export class ConsoleLogger implements Logger {
    * `runStackBuffered` call is the only thing that opens a buffer, and `deploy`
    * reserves nothing (its stdout is a human surface). A bare line number here
    * would go stale on the next edit to that file with nothing noticing, so it
-   * is named by symbol. The fix would therefore be untestable, and would have
-   * to guess where the flush should route.
+   * is named by symbol instead. Because the path is unreachable, a fix would
+   * be untestable and would have to guess where the flush should route.
    *
    * That rationale survives #2410 unchanged, and it is worth restating WHY,
    * because #2410 widened the reserving population from a `--json`-only set to

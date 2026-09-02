@@ -1323,7 +1323,7 @@ Everything **cdkd's own logger** prints on those commands -- `Synthesizing
 CDK app...`, `cdkd synth`'s `Synthesis complete!` summary block, `cdkd local
 invoke`'s `Target: ...` / `Starting container ...` lines, the CDK app's
 re-emitted stderr, and its `--verbose` debug output -- goes to **stderr**.
-Three things on the two `cdkd local` commands are NOT cdkd's logger and still
+Two things on the two `cdkd local` commands are NOT cdkd's logger and still
 reach stdout; they are listed under "known residuals" below. As with `--json`, the lines are
 **moved, not suppressed**: a terminal shows what it always did, and `2>&1`
 restores the old single-stream view.
@@ -1335,7 +1335,7 @@ cdkd list | while read -r id; do echo "found stack: $id"; done
 cdkd local invoke MyStack/Handler --event e.json | tail -1 | jq .body
 ```
 
-The `tail -1` on the last line is not decoration: three things on
+The `tail -1` on the last line is not decoration: two things on
 `cdkd local invoke` still reach stdout without passing through cdkd's logger,
 so its payload is the LAST stdout line rather than the whole stream. They are
 listed under "known residuals" below, and the same applies to
@@ -1350,8 +1350,8 @@ Three consequences worth stating explicitly:
   stdout on `cdkd synth` is the template or it is nothing; the summary is never
   a payload. Use `--output <dir>` and read the per-stack template files from the
   assembly directory to get every stack's template.
-- **Known residuals on `cdkd local invoke` / `invoke-agentcore`: three things
-  still reach stdout**, because none of them passes through cdkd's logger.
+- **Known residuals on `cdkd local invoke` / `invoke-agentcore`: two things
+  still reach stdout**, because neither passes through cdkd's logger.
   **Until they are fixed, take the LAST line**
   (`cdkd local invoke ... | tail -1 | jq`), which is what cdkd's own integ
   fixtures do:
@@ -1360,10 +1360,7 @@ Three consequences worth stating explicitly:
      line -- `console.error` included -- on the container's stdout, so any
      handler that prints lands ahead of the response
      ([#2419](https://github.com/go-to-k/cdkd/issues/2419)).
-  2. **`docker pull` progress**, which runs in foreground mode
-     (`stdio: 'inherit'`) under `--verbose`, and **unconditionally** for an
-     image pulled from ECR (same issue).
-  3. **cdk-local's own logger.** cdkd reuses cdk-local for the container-image
+  2. **cdk-local's own logger.** cdkd reuses cdk-local for the container-image
      build path, and cdk-local has a SEPARATE logger with no reservation
      concept, so `Building container image (platform=...)` and `Skipping
      docker build ...` print on stdout for a container-image Lambda

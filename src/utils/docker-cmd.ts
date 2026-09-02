@@ -211,16 +211,26 @@ export async function spawnStreaming(
  * exit, so the caller can wrap with its own error class.
  *
  * Differs from {@link runDockerStreaming} in two ways:
- *   1. `stdio: 'inherit'` — output is NOT captured, so terminal control codes
- *      (color, progress bar overwrites) flow through unchanged. This is the
- *      load-bearing reason for the split: `docker pull`'s progress bars only
- *      animate properly when stdout is a real TTY connected to the parent.
+ *   1. The child INHERITS descriptors — output is NOT captured, so terminal
+ *      control codes (color, progress bar overwrites) flow through
+ *      unchanged. That is the load-bearing reason for the split:
+ *      `docker pull`'s progress bars only animate when the child writes to a
+ *      real TTY rather than a pipe. Under a payload reservation the child's
+ *      fd 1 is redirected to the parent's fd 2 rather than piped, precisely
+ *      so it keeps a descriptor and not a pipe — though the animation then
+ *      depends on STDERR being a terminal, and degrades to plain lines under
+ *      `2> file` (issue
+ *      [#2410](https://github.com/go-to-k/cdkd/issues/2410)).
  *   2. No `input` / `streamLive` options — inherit-mode has nothing to
  *      capture and nothing to mirror.
  *
- * Used by the `--verbose`-mode `docker pull` plumbing in `docker-runner.ts`
- * and `ecr-puller.ts` (visible layer progress). Non-verbose pulls go through
- * {@link runDockerStreaming} so stderr can be folded into the error message.
+ * Used by the `docker pull` plumbing in `docker-runner.ts` and
+ * `ecr-puller.ts`. Those two callers differ, and the difference matters
+ * enough to state: `docker-runner.ts` reaches this only under `--verbose`,
+ * while `ecr-puller.ts` runs it UNCONDITIONALLY, which is what made the
+ * pre-#2410 stdout leak reachable with no flag at all. Non-verbose pulls in
+ * `docker-runner.ts` go through {@link runDockerStreaming} instead, so
+ * stderr can be folded into the error message.
  */
 export async function runDockerForeground(
   args: string[],
@@ -269,8 +279,10 @@ export async function spawnForeground(
       // progress into the payload with no `--verbose` and no flag at all.
       //
       // fd 1 is redirected to OUR fd 2 rather than piped, so the child keeps
-      // writing to a real terminal file descriptor and its progress bars
-      // still animate — a pipe would make docker fall back to plain lines.
+      // writing to a descriptor rather than a pipe — a pipe would make docker
+      // fall back to plain lines. The bars animate when stderr is a terminal;
+      // under `2> file` they degrade, which is the correct trade against
+      // corrupting the payload.
       // stderr and stdin stay inherited, and a command that reserves nothing
       // gets the original `'inherit'` on all three.
       stdio: isStdoutReservedForPayload() ? ['inherit', 2, 'inherit'] : 'inherit',
