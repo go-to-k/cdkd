@@ -1,3 +1,10 @@
+## [0.285.2](https://github.com/go-to-k/cdkd/compare/v0.285.1...v0.285.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **cognito:** announce a removed Policies sub-key instead of deploying it as a silent no-op ([#2420](https://github.com/go-to-k/cdkd/issues/2420)) ([3dd6283](https://github.com/go-to-k/cdkd/commit/3dd62830a9106c35f4ab0db7e6f2f034fa70afb9))
+
 ## [0.285.1](https://github.com/go-to-k/cdkd/compare/v0.285.0...v0.285.1) (2026-09-01)
 
 
