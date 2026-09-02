@@ -102,7 +102,8 @@ export interface ResourceCreateResult {
   physicalId: string                     // AWS physical ID
   attributes?: Record<string, unknown>   // Attributes for Fn::GetAtt
   effectiveProperties?: Record<string, unknown>  // See below — rarely needed
-  noEchoAttributes?: boolean             // See below — one producer today
+  noEchoAttributes?: boolean             // See below — the whole bag is sensitive
+  noEchoAttributeNames?: readonly string[]  // ...or only these keys of it
 }
 
 export interface ResourceUpdateResult {
@@ -110,7 +111,8 @@ export interface ResourceUpdateResult {
   wasReplaced: boolean                   // Whether resource was replaced
   attributes?: Record<string, unknown>   // Attributes after update
   effectiveProperties?: Record<string, unknown>  // See below — rarely needed
-  noEchoAttributes?: boolean             // See below — one producer today
+  noEchoAttributes?: boolean             // See below — the whole bag is sensitive
+  noEchoAttributeNames?: readonly string[]  // ...or only these keys of it
 }
 ```
 
@@ -124,11 +126,18 @@ every resource that consumed one through `Fn::GetAtt`, and in `state.outputs`.
 Three things about it are decisions rather than accidents, and each is a rule
 for a second producer:
 
-- **WHOLE-BAG, not per attribute.** The one producer today is
-  `CustomResourceProvider`, relaying the `NoEcho: true` field of the
+- **`noEchoAttributes` is WHOLE-BAG, and that matches its producer.**
+  `CustomResourceProvider` relays the `NoEcho: true` field of the
   CloudFormation custom-resource RESPONSE envelope — a property of the
-  response, not of one `Data` member. A per-attribute shape would invent a
-  granularity the wire format does not have.
+  response, not of one `Data` member — so declaring one member sensitive would
+  invent a granularity the wire format does not have. Use
+  `noEchoAttributeNames` instead when your bag genuinely MIXES sensitive and
+  ordinary members: `NestedStackProvider` does, because its attributes are a
+  whole child stack's outputs, of which typically one is sensitive. Declaring
+  such a bag whole would mask every unrelated member into this record and into
+  every resource that consumes one — degrading resources that have nothing to
+  do with the secret. A name the returned `attributes` does not carry is
+  ignored.
 - **Do NOT mask the values you return.** They are what `Fn::GetAtt` resolves
   to, and CloudFormation delivers a `NoEcho` custom resource's `Data` to a
   dependent resource in the CLEAR (measured against real CloudFormation).

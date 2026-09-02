@@ -34,6 +34,7 @@ import { nestedStackChildFailureMessage } from '../nested-stack-messages.js';
 // `ResourceUpdateNotSupportedError` — the class raised here is NOT a refusal
 // in every instance (see the per-arm note at the `errorCount` throw).
 import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { carriesSecretMask, recoverMaskedOutput } from '../../deployment/secret-redaction.js';
 
 /**
  * Returns `true` when `p` is absolute on the current platform OR begins
@@ -209,7 +210,7 @@ export class NestedStackProvider implements ResourceProvider {
       grandchildTemplates
     );
 
-    const attributes = await this.readChildOutputsAsAttributes(ctx, childStackName, childRegion);
+    const childOutputs = await this.readChildOutputsAsAttributes(ctx, childStackName, childRegion);
 
     return {
       physicalId: this.synthesizeArn(
@@ -222,7 +223,13 @@ export class NestedStackProvider implements ResourceProvider {
         ctx.parentStackName,
         logicalId
       ),
-      attributes,
+      attributes: childOutputs.attributes,
+      // Issue #2274: names the recovered outputs so the deploy engine
+      // re-registers them as mask-only needles for this record and for every
+      // parent resource that resolves one.
+      ...(childOutputs.noEchoAttributeNames.length > 0 && {
+        noEchoAttributeNames: childOutputs.noEchoAttributeNames,
+      }),
     };
   }
 
@@ -269,12 +276,20 @@ export class NestedStackProvider implements ResourceProvider {
       grandchildTemplates
     );
 
-    const attributes = await this.readChildOutputsAsAttributes(ctx, childStackName, childRegion);
+    const updatedOutputs = await this.readChildOutputsAsAttributes(
+      ctx,
+      childStackName,
+      childRegion
+    );
 
     return {
       physicalId,
       wasReplaced: false,
-      attributes,
+      attributes: updatedOutputs.attributes,
+      // Issue #2274 — see `create()`.
+      ...(updatedOutputs.noEchoAttributeNames.length > 0 && {
+        noEchoAttributeNames: updatedOutputs.noEchoAttributeNames,
+      }),
     };
   }
 
@@ -576,18 +591,55 @@ export class NestedStackProvider implements ResourceProvider {
     await withNestedStackContext(childCtx, () => childEngine.deploy(childStackName, childTemplate));
   }
 
+  /**
+   * The child's outputs, as `Outputs.<Key>` attributes for the parent's
+   * `Fn::GetAtt` — plus the subset whose plaintext this run had to RECOVER
+   * (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+   *
+   * WHY THE RECOVERY IS HERE. This method reads the child's PERSISTED state,
+   * and since #2274 an output whose value resolved a `NoEcho` custom resource's
+   * `Data` is persisted as the redaction mask. Handing the parent `***` would
+   * make the FIRST deploy of any such parent refuse — a template that deployed
+   * before the feature — so where the child engine masked that output moments
+   * ago IN THIS PROCESS, the plaintext is still available (see
+   * `recoverMaskedOutput`) and is what the parent gets. The reported names are
+   * what tells the deploy engine to re-register those values as MASK-ONLY
+   * needles, so the parent's own record and every parent resource that consumes
+   * one still persist `***`.
+   *
+   * PER ATTRIBUTE, not for the bag: a child typically exports one sensitive
+   * output among several ordinary ones, and declaring the whole bag would mask
+   * every unrelated output into the parent's state and into any parent resource
+   * that reads one.
+   *
+   * A mask this run did NOT produce (the child was deployed by an earlier run
+   * and its custom resource was `NO_CHANGE`, so no handler ran) is left as the
+   * mask, and the resolver refuses the consumer rather than writing `***` to
+   * AWS. That refusal is the feature's stated cost; recovering here removes it
+   * for the in-run case only.
+   */
   private async readChildOutputsAsAttributes(
     ctx: NestedStackProviderContext,
     childStackName: string,
     childRegion: string
-  ): Promise<Record<string, unknown>> {
+  ): Promise<{ attributes: Record<string, unknown>; noEchoAttributeNames: string[] }> {
     const childStateData = await ctx.stateBackend.getState(childStackName, childRegion);
     if (!childStateData) {
       throw new Error(
         `Child stack state '${childStackName}' not found after deploy — NestedStackProvider invariant violated.`
       );
     }
-    return this.buildOutputsAttributes(childStateData.state.outputs ?? {});
+    const attributes = this.buildOutputsAttributes(childStateData.state.outputs ?? {});
+    const noEchoAttributeNames: string[] = [];
+    for (const [outputKey, persisted] of Object.entries(childStateData.state.outputs ?? {})) {
+      if (!carriesSecretMask(persisted)) continue;
+      const recovered = recoverMaskedOutput(childStackName, childRegion, outputKey);
+      if (recovered === undefined) continue;
+      const attributeName = this.outputAttributeName(outputKey);
+      attributes[attributeName] = recovered;
+      noEchoAttributeNames.push(attributeName);
+    }
+    return { attributes, noEchoAttributeNames };
   }
 
   private requireContext(): NestedStackProviderContext {
@@ -860,10 +912,19 @@ export class NestedStackProvider implements ResourceProvider {
    * make EVERY consumer persist it — but the count is "one resolution path",
    * not "one reader".
    */
+  /**
+   * The ONE spelling of a child output's attribute name. Both this class's
+   * writers go through it, so the recovery pass (issue #2274) cannot name a key
+   * `buildOutputsAttributes` did not write.
+   */
+  private outputAttributeName(outputKey: string): string {
+    return `Outputs.${outputKey}`;
+  }
+
   private buildOutputsAttributes(outputs: Record<string, unknown>): Record<string, unknown> {
     const attributes: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(outputs)) {
-      attributes[`Outputs.${key}`] = value;
+      attributes[this.outputAttributeName(key)] = value;
     }
     return attributes;
   }

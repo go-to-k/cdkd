@@ -252,6 +252,28 @@ if printf '%s' "${STATE_AFTER}" | grep -qF "${EXPECTED_NOECHO}"; then
 fi
 echo "    OK: the NoEcho token appears NOWHERE in the state blob"
 
+# 2e. The value cdkd ITSELF SUPPLIED must survive. The handler ECHOES its own
+# `ServiceToken` back inside the same `NoEcho` `Data`, which is what the CDK
+# `Provider` samples encourage. Registering an echoed input as a redaction
+# needle rewrites `properties.ServiceToken` to '***' in the very record
+# `CustomResourceProvider.delete` reads it back from -- and '***' is a TRUTHY
+# STRING that passes both of that method's guards, so the delete would try to
+# invoke a "Lambda" named '***'. Asserted on AWS-shaped data rather than on a
+# fixed literal, because the ARN is CDK-derived.
+echo "==> Asserting the echoed ServiceToken survived the redaction"
+NOECHO_SERVICE_TOKEN=$(echo "${STATE_AFTER}" | jq -r '[.resources[] | select(.attributes.Token != null) | .properties.ServiceToken] | first // "<absent>"')
+case "${NOECHO_SERVICE_TOKEN}" in
+  arn:aws*:lambda:*:function:*)
+    echo "    OK: the NoEcho CR ServiceToken is still an addressable Lambda ARN"
+    ;;
+  *)
+    echo "FAIL: the NoEcho CR's state ServiceToken is '${NOECHO_SERVICE_TOKEN}', expected a Lambda ARN" >&2
+    echo "    => the handler's ECHO of a cdkd-supplied input was registered as a redaction needle" >&2
+    echo "       (issue #2274 review): a masked ServiceToken makes destroy invoke a Lambda named '***'" >&2
+    exit 1
+    ;;
+esac
+
 # --- The NEGATIVE arm, in state -------------------------------------------
 # A custom resource WITHOUT `NoEcho` must be untouched by any of this. The
 # existing assertions cover AWS and `state.outputs`; these cover the two state

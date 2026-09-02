@@ -38,7 +38,10 @@ import {
   recordNestedStackParameterExpressions,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
+  carriesSecretMask,
   recordMaskOnlyValuesIn,
+  recordRecoverableMaskedOutput,
+  wholeStringLeavesOf,
   TEMPLATE_SOURCED_RULES,
   type RecordedSecretValues,
 } from './secret-redaction.js';
@@ -915,8 +918,12 @@ export class DeployEngine {
    * `ResolverContext.redactedAttributeReads`.
    *
    * Reset per `deploy()`, like `perResourceSecrets`.
+   *
+   * `true` means the WHOLE attributes bag is sensitive (a custom resource's
+   * `NoEcho` response); a SET names the sensitive members only (a nested
+   * stack's `Outputs.<Key>` entries — see `NoEchoAttributesResult`).
    */
-  private noEchoAttributeResources = new Set<string>();
+  private noEchoAttributeResources = new Map<string, true | ReadonlySet<string>>();
   /**
    * PER-RESOURCE unresolved TEMPLATE properties, keyed by logicalId (issues
    * #1904 / #1900). The redaction choke point uses this as the POSITION source:
@@ -1028,7 +1035,7 @@ export class DeployEngine {
     this.recordedImports = [];
     this.recordedOutputReads = [];
     this.perResourceSecrets = new Map();
-    this.noEchoAttributeResources = new Set();
+    this.noEchoAttributeResources = new Map();
     this.perResourceTemplateProps = new Map();
     this.outputSecrets = new Map();
     this.outputsTemplateSource = {};
@@ -1208,6 +1215,35 @@ export class DeployEngine {
    * resolving one secret collapsed onto whichever expression was recorded last
    * at all three.
    */
+  /**
+   * Record the plaintext behind every output {@link redactOutputs} just masked,
+   * for the duration of THIS PROCESS (issue #2274).
+   *
+   * Per KEY, comparing the two bags rather than re-deriving from the secrets
+   * map: what matters is whether the persisted value at this key IS a mask that
+   * the resolved value was not, which is exactly "this key's plaintext is about
+   * to become unreadable". A key already carrying `***` before redaction — a
+   * value read back out of a previous run's state — is skipped, because there
+   * is no plaintext behind it to remember.
+   *
+   * Called only from the REAL-DEPLOY outputs pass. The other two `redactOutputs`
+   * callers hand it a bag from a previous generation, where a mask is already
+   * unrecoverable and pretending otherwise would serve a stale value.
+   */
+  private rememberRecoverableMaskedOutputs(
+    stackName: string,
+    resolved: Record<string, unknown>,
+    redacted: Record<string, unknown>
+  ): void {
+    if (resolved === redacted) return;
+    for (const [key, redactedValue] of Object.entries(redacted)) {
+      if (!carriesSecretMask(redactedValue)) continue;
+      const plaintext = resolved[key];
+      if (plaintext === undefined || carriesSecretMask(plaintext)) continue;
+      recordRecoverableMaskedOutput(stackName, this.stackRegion, key, plaintext);
+    }
+  }
+
   private redactOutputs(outputs: Record<string, unknown>): Record<string, unknown> {
     if (this.outputSecrets.size === 0) return outputs;
     // TEMPLATE_SOURCED and not the DEFAULT template-DERIVED rules (issue
@@ -1291,15 +1327,46 @@ export class DeployEngine {
    * the needles exist by the time anything is persisted. Nothing is masked in
    * memory: `stateResources[logicalId].attributes` keeps the REAL value, which
    * is what the resolver serves to dependents in this same run.
+   *
+   * `ownProperties` is the resource's OWN resolved template bag, and passing it
+   * is what stops a handler from masking cdkd's inputs back at it (issue #2274
+   * review). Its whole string leaves are EXCLUDED from the needles: a handler
+   * echoing `event.ResourceProperties` into its `Data` — the shape the CDK
+   * `Provider` samples encourage — makes `Data.X` equal the resource's own
+   * `ServiceToken`, and registering that rewrites `properties.ServiceToken` to
+   * `***` in the record `CustomResourceProvider.delete` reads it back from,
+   * where the mask is a truthy string that passes both of that method's guards.
+   * A value already present in the template is not handler-GENERATED, so
+   * excluding it gives up no secrecy — and where the template value IS a
+   * resolved secret it already carries a real EXPRESSION needle, which
+   * `recordMaskOnlyValue` would refuse to demote anyway.
    */
   private registerNoEchoAttributes(
     logicalId: string,
-    result: { attributes?: Record<string, unknown>; noEchoAttributes?: boolean },
-    secrets: RecordedSecretValues
+    result: {
+      attributes?: Record<string, unknown>;
+      noEchoAttributes?: boolean;
+      noEchoAttributeNames?: readonly string[];
+    },
+    secrets: RecordedSecretValues,
+    ownProperties?: Record<string, unknown>
   ): void {
-    if (result.noEchoAttributes !== true || result.attributes === undefined) return;
-    this.noEchoAttributeResources.add(logicalId);
-    recordMaskOnlyValuesIn(result.attributes, secrets);
+    const attributes = result.attributes;
+    if (attributes === undefined) return;
+    const excluded = ownProperties === undefined ? undefined : wholeStringLeavesOf(ownProperties);
+    if (result.noEchoAttributes === true) {
+      this.noEchoAttributeResources.set(logicalId, true);
+      recordMaskOnlyValuesIn(attributes, secrets, excluded);
+      return;
+    }
+    // The PER-ATTRIBUTE arm. Filtered against the bag actually returned, so a
+    // name the provider declared but did not deliver registers nothing — the
+    // declaration is evidence about a VALUE, and with no value there is no
+    // needle to record.
+    const names = (result.noEchoAttributeNames ?? []).filter((name) => name in attributes);
+    if (names.length === 0) return;
+    this.noEchoAttributeResources.set(logicalId, new Set(names));
+    for (const name of names) recordMaskOnlyValuesIn(attributes[name], secrets, excluded);
   }
 
   /**
@@ -1336,13 +1403,16 @@ export class DeployEngine {
     if (reads === undefined || reads.length === 0) return;
     throw new ProvisioningError(
       `Cannot resolve ${reads.join(', ')} for ${logicalId}: cdkd's recorded state holds only the ` +
-        `redaction mask there. That happens when a custom resource handler declared its response ` +
-        `NoEcho: true — the value is generated by the handler, so cdkd has nothing to re-derive ` +
-        `it from and must not write the literal mask to AWS. Force that custom resource to update ` +
-        `(change one of its properties, e.g. a nonce / version property) so its handler runs ` +
-        `again and supplies the value; for a cross-stack reference, re-deploy the PRODUCER stack ` +
-        `first. Or stop setting NoEcho on that response. See ` +
-        `https://github.com/go-to-k/cdkd/issues/2449.`,
+        `redaction mask there, and the value is not recoverable from state. That happens when a ` +
+        `custom resource handler declared its response NoEcho: true — the value is generated by ` +
+        `the handler, so cdkd has nothing to re-derive it from and must not write the literal ` +
+        `mask to AWS. Two remedies: force that custom resource to update (change one of its ` +
+        `properties, e.g. a nonce / version property) so its handler runs again and supplies the ` +
+        `value in this same run; or stop setting NoEcho on that response. If the value comes ` +
+        `from ANOTHER stack, the producer and this stack must deploy in ONE run (cdkd deploy ` +
+        `--all) with the producer's custom resource actually running — re-deploying the producer ` +
+        `by itself does not help, because it re-masks the value on the way into its own state. ` +
+        `See https://github.com/go-to-k/cdkd/issues/2449.`,
       resourceType,
       logicalId
     );
@@ -2916,7 +2986,18 @@ export class DeployEngine {
       // `this.outputSecrets` with the outputs' own substituted references, and
       // `this.outputsTemplateSource` with the unresolved values that position
       // them (#1910).
+      const resolvedOutputsBeforeRedaction = outputs;
       outputs = this.redactOutputs(outputs);
+      // Issue #2274: remember, FOR THIS PROCESS ONLY, the plaintext behind any
+      // output the redaction just replaced with the mask. Every cross-stack
+      // route — a nested stack's `Outputs.<Key>`, `Fn::ImportValue`,
+      // `Fn::GetStackOutput` — reads the producer's PERSISTED outputs, so
+      // without this the first deploy of a consumer whose producer exports a
+      // `NoEcho` custom-resource value would land on `***` and be refused: a
+      // template that deployed before this feature. See
+      // `recoverableMaskedOutputs` for why the key is a COORDINATE and not a
+      // bare plaintext.
+      this.rememberRecoverableMaskedOutputs(stackName, resolvedOutputsBeforeRedaction, outputs);
     } catch (outputError) {
       await this.persistStateAfterOutputFailure(
         stackName,
@@ -3966,7 +4047,7 @@ export class DeployEngine {
         // Issue #2274: BEFORE the record is built, so the needles exist by the
         // time anything is persisted, and before any dependent resolves against
         // this resource's fresh attributes.
-        this.registerNoEchoAttributes(logicalId, result, createSecrets);
+        this.registerNoEchoAttributes(logicalId, result, createSecrets, resolvedProps);
 
         // Extract ALL dependencies from template (Ref, Fn::GetAtt, DependsOn)
         // so that deletion order is correct even without implicit type-based deps
@@ -4656,7 +4737,7 @@ export class DeployEngine {
           // result carries its own `NoEcho` declaration and must register it —
           // the create arm's registration is in a different `case` and does not
           // run here.
-          this.registerNoEchoAttributes(logicalId, createResult, updateSecrets);
+          this.registerNoEchoAttributes(logicalId, createResult, updateSecrets, resolvedProps);
 
           stateResources[logicalId] = {
             physicalId: createResult.physicalId,
@@ -4933,8 +5014,12 @@ export class DeployEngine {
             {
               ...(carriedAttributes && { attributes: carriedAttributes }),
               ...(result.noEchoAttributes === true && { noEchoAttributes: true }),
+              ...(result.noEchoAttributeNames && {
+                noEchoAttributeNames: result.noEchoAttributeNames,
+              }),
             },
-            updateSecrets
+            updateSecrets,
+            resolvedProps
           );
 
           stateResources[logicalId] = {

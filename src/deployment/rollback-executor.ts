@@ -989,8 +989,10 @@ function refuseMaskedReplayBaseline(
   throw new CdkdError(
     `Cannot roll ${logicalId} back: its recorded baseline holds the redaction mask ` +
       `('${SECRET_MASK}') where a NoEcho custom-resource value was resolved, so cdkd would ` +
-      `write that literal to the live resource. Restore the property with 'cdkd deploy' — the ` +
-      `custom resource's handler re-runs there and supplies the real value. See ` +
+      `write that literal to the live resource. Restore the property with 'cdkd deploy' AFTER ` +
+      `forcing that custom resource to update (change one of its properties, e.g. a nonce), so ` +
+      `its handler runs again and supplies the real value — an ordinary re-deploy leaves the ` +
+      `resource unchanged, so the handler does not run and the mask stays. See ` +
       `https://github.com/go-to-k/cdkd/issues/2449.`,
     'ROLLBACK_REDACTED_BASELINE'
   );

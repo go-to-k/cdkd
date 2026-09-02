@@ -273,7 +273,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // a sample. These rows put every rule file under at least one budget -- which
   // is asserted below rather than left as a claim -- and the number beside each
   // is its measured payload rounded out by roughly a tenth in each direction.
-  ['src/deployment/secret-redaction.ts', 89_000, 112_000],   // measured 101,396
+  ['src/deployment/secret-redaction.ts', 89_000, 112_000],   // measured 101,842
   ['src/cli/commands/scrub.ts', 88_000, 110_000],            // measured 100,029
   // Issue #2274 split `provider-custom-resources.md` out of `providers.md`
   // (whose glob is `src/provisioning/**`, so every provider paid for the
@@ -281,7 +281,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // file, which no other budgeted path matches, so without this row it sits
   // under no budget and could go dark or grow unnoticed.
   ['src/provisioning/providers/custom-resource-provider.ts', 225_000, 290_000],
-  ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured  99,178
+  ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured 104,268
   ['src/cli/commands/import.ts', 63_000, 80_000],            // measured  72,035
   ['src/utils/ip-protocol.ts', 83_000, 105_000],             // measured  95,005
   ['src/provisioning/cloud-control-provider.ts', 83_000, 105_000], // measured 94,925
@@ -289,8 +289,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `layout-scrub.md` (issue #2274), and that file is in EVERY payload, so a
   // cap with 100 B of headroom fails for a reason unrelated to the path it
   // names -- the same argument that moved the `rule-file-payload.test.ts` row.
-  ['src/state/s3-state-backend.ts', 43_000, 57_000],         // measured  48,864
-  ['src/types/state.ts', 43_000, 57_000],                    // measured  48,864
+  // Every `measured` figure on the rows below was RE-TAKEN on this branch
+  // rather than carried forward: the #2274 mask-only paragraph in
+  // `layout-deployment-secrets.md` and the new `code-layout.md` index row moved
+  // several of them, and a `measured` comment that no longer matches the tree
+  // reads as evidence while being none.
+  ['src/state/s3-state-backend.ts', 43_000, 57_000],         // measured  55,030
+  ['src/types/state.ts', 43_000, 57_000],                    // measured  55,030
   ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
@@ -353,7 +358,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // was covered only by prose, in the `region-check.ts` row's claim to speak
   // for "the 20-odd shared helpers" -- it does not, because that row's payload
   // is 52,459 B lighter.
-  ['src/provisioning/masked-retry-logger.ts', 122_000, 162_000], // measured 147,384
+  ['src/provisioning/masked-retry-logger.ts', 122_000, 162_000], // measured 126,979
   ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
   ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  37,183
   ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
@@ -570,7 +575,20 @@ const CORPUS_BYTES_MIN = 917_000;   // measured 951,706 B -- 34,706 B of slack.
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 985_000;   // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 1_000_000; // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+                                    // 985_000 -> 1_000_000 (2026-09-03, issue go-to-k/cdkd#2274's
+                                    // fix round): measured 987,192 B. The #2274 lane had already
+                                    // spent this bound down to 25 B of headroom, which is the
+                                    // landmine shape this file names elsewhere -- the NEXT edit
+                                    // fails for a reason unrelated to itself. Raised rather than
+                                    // funded by trimming, because the bytes are the review round's
+                                    // OWN corrections (the mask-only channel's needle floor, the
+                                    // cdkd-supplied exclusion, the drift path-set split, and the
+                                    // in-run cross-stack recovery), and cutting them would delete
+                                    // the record of decisions the round was called to make. Band
+                                    // set from the measurement (12,808 B of slack), the way
+                                    // CORPUS_BYTES_MIN's own history prescribes -- not nudged to
+                                    // just clear today's tree.
                                     // 946_000 -> 985_000, measured 951,706 B in the tree and
                                     // 961,037 B PROJECTED against origin/main (which is itself at
                                     // 942,951 B -- a parallel lane has spent part of the same

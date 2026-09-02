@@ -166,7 +166,18 @@ exports.handler = async (event) => {
     // NOT a real credential: a fixed, inert literal, so a regression that
     // leaks it into a state version discloses nothing. It is distinctive so
     // verify.sh can grep the whole state blob for it.
-    Data: { Token: 'noecho-token-' + seed },
+    Data: {
+      Token: 'noecho-token-' + seed,
+      // The ECHO the review round asked for: a handler returning its own
+      // input inside a NoEcho response is the shape the CDK \`Provider\`
+      // samples encourage, and it makes \`Data.ServiceTokenEcho\` equal this
+      // resource's own \`ServiceToken\` property. Registering THAT as a
+      // redaction needle would rewrite \`properties.ServiceToken\` to '***'
+      // in the very state record \`CustomResourceProvider.delete\` reads it
+      // back from -- where '***' is a truthy string that passes both of that
+      // method's guards. verify.sh asserts the ServiceToken survives.
+      ServiceTokenEcho: (event.ResourceProperties || {}).ServiceToken,
+    },
     NoEcho: true,
   };
 };

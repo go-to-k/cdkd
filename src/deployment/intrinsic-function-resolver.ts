@@ -50,7 +50,9 @@ import {
   isSecretExpressionByVerdictOrSpelling,
   isSingleDynamicReferenceToken,
   inheritedParameterExpression,
+  clearRecoverableMaskedOutputs,
   recordMaskOnlyValuesIn,
+  recoverMaskedOutput,
   carriesSecretMask,
   MIN_NEEDLE_LENGTH,
   type RecordedSecretValues,
@@ -873,8 +875,13 @@ export interface ResolverContext {
    * time rather than pre-seeding every context is what keeps the per-resource
    * scoping every reader of `perResourceSecrets` assumes — the same rule issue
    * #2087 forced on the inherited-secrets channel.
+   *
+   * `true` declares the WHOLE attributes bag sensitive (a custom resource's
+   * `NoEcho` response); a SET names the sensitive members only (a nested
+   * stack's `Outputs.<Key>` entries, where the rest of the child's outputs are
+   * ordinary and masking them would degrade unrelated parent resources).
    */
-  noEchoAttributeResources?: ReadonlySet<string>;
+  noEchoAttributeResources?: ReadonlyMap<string, true | ReadonlySet<string>>;
   /**
    * Bag the resolver pushes `<logicalId>.<attributeName>` into whenever it
    * serves a PERSISTED attribute that is nothing but {@link SECRET_MASK}
@@ -1494,6 +1501,11 @@ export function resetAccountInfoCache(): void {
   // (issues #1901 / #1916) — keeping them would let a stale verdict decide
   // secret-ness for a reference this call just asked to forget.
   recordedSecretExpressions.clear();
+  // Issue #2274's in-run recovery store shares this lifetime for the same
+  // reason: it holds PLAINTEXT this process masked out of a producer's outputs,
+  // and a test (or a later phase) that asks to forget the account's caches must
+  // not keep serving a value from a run it just discarded.
+  clearRecoverableMaskedOutputs();
   // The issue #2059 cross-stack associations are deliberately NOT cleared here,
   // and need no clearing at all: they are scoped to the resolution pass's own
   // `recordedSecretValues` bag through a `WeakMap`, so they die with it. A
@@ -3223,7 +3235,11 @@ export class IntrinsicFunctionResolver {
           this.logger.debug(
             `Normalized legacy Fn::GetAtt attribute: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, nameServers)}`
           );
-          return nameServers;
+          // Issue #2274 review: this branch ALSO serves a value out of the
+          // PERSISTED `attributes` bag, so it takes the note like the two
+          // below. It shipped without one, which is why this method's doc no
+          // longer claims the pass-through shape makes a skip impossible.
+          return this.noteAttributeSecrecy(logicalId, attributeName, nameServers, context);
         }
         this.logger.debug(
           `Resolved Fn::GetAtt from attributes: ${logicalId}.${attributeName} -> ${stringifyAttributeForLog(attributeName, flatValue)}`
@@ -3406,11 +3422,22 @@ export class IntrinsicFunctionResolver {
    *    deploy engine can refuse to push the literal `***` to AWS.
    *
    * IT RETURNS THE VALUE, and passing through rather than mutating in place is
-   * the point: the caller's `return` is what makes it impossible to add a third
-   * attribute-serving branch that silently skips the note — a branch that
-   * forgets this call does not compile to the same shape as the two that have
-   * it. `Fn::GetAtt` must keep delivering the REAL value (CloudFormation does,
+   * the point: a new attribute-serving branch is written as `return
+   * this.noteAttributeSecrecy(...)` by imitation of the two that have it.
+   * `Fn::GetAtt` must keep delivering the REAL value (CloudFormation does,
    * measured), so this can never rewrite what it is handed.
+   *
+   * IT IS NOT A GUARANTEE, and an earlier revision claimed it was ("impossible
+   * to add a third branch that silently skips the note"). Nothing in the type
+   * system stops a branch returning a value it never passed through here, and
+   * one already did: the Route 53 `NameServers` legacy-shape normalization,
+   * which reads the SAME persisted `attributes` bag and shipped without the
+   * note (it takes it now). The rule the note actually needs is about the
+   * SOURCE of the value — every branch serving one out of a PERSISTED
+   * `attributes` bag must call this — and that is not a shape a compiler can
+   * enforce. `constructGuardedAttribute`'s return is deliberately outside it:
+   * that value is fetched from AWS in this run, not read back from state, so
+   * it can be neither a stale mask nor a value a provider declared `NoEcho`.
    *
    * A context supplying NEITHER field — the diff / no-op resolver, `cdkd
    * scrub`, `cdkd import` — pays two undefined checks and gets its value back.
@@ -3421,7 +3448,10 @@ export class IntrinsicFunctionResolver {
     value: unknown,
     context: ResolverContext
   ): unknown {
-    if (context.noEchoAttributeResources?.has(logicalId) === true && context.recordedSecretValues) {
+    const declared = context.noEchoAttributeResources?.get(logicalId);
+    const attributeIsDeclared =
+      declared === true || (declared !== undefined && declared.has(attributeName));
+    if (attributeIsDeclared && context.recordedSecretValues) {
       recordMaskOnlyValuesIn(value, context.recordedSecretValues);
     }
     if (context.redactedAttributeReads !== undefined && carriesSecretMask(value)) {
@@ -5197,7 +5227,8 @@ export class IntrinsicFunctionResolver {
     producerRegion: string | undefined,
     context: ResolverContext,
     origin: string,
-    sourceKey: string | undefined
+    sourceKey: string | undefined,
+    producerOutput?: { stackName: string; region: string; outputKey: string }
   ): Promise<unknown> {
     // Issue #2274: the CROSS-STACK twin of `noteAttributeSecrecy`, and it goes
     // HERE because this method is the one choke point every cross-stack read
@@ -5209,12 +5240,39 @@ export class IntrinsicFunctionResolver {
     // `carriesDynamicReference` early return, because the mask is not a
     // dynamic reference and that return is exactly the path it takes.
     //
+    // RECOVERY FIRST, refusal only when it fails. When the producer was
+    // deployed by THIS process in THIS run, the plaintext behind the mask is
+    // still in memory (`recoverMaskedOutput`) — which is the whole
+    // `cdkd deploy --all` case, and the case a consumer template that deployed
+    // fine before this feature lands on. Recovering it keeps the wire value
+    // correct and re-registers it as a MASK-ONLY needle in the CONSUMER's own
+    // bag, so the consumer's record still persists `***`. The refusal below is
+    // then narrowed to what it is genuinely for: a producer deployed by an
+    // EARLIER run, whose plaintext no longer exists anywhere cdkd can read.
+    //
     // `origin` rather than a logical id: it is the caller-built description of
     // WHICH read this is (`Fn::ImportValue '<name>' (producer <stack> /
     // <region>)`), which is what a user needs to find the producer, and it
     // carries no resolved value.
-    if (context.redactedAttributeReads !== undefined && carriesSecretMask(value)) {
-      if (!context.redactedAttributeReads.includes(origin)) {
+    if (carriesSecretMask(value)) {
+      const recovered =
+        producerOutput === undefined
+          ? undefined
+          : recoverMaskedOutput(
+              producerOutput.stackName,
+              producerOutput.region,
+              producerOutput.outputKey
+            );
+      if (recovered !== undefined) {
+        if (context.recordedSecretValues) {
+          recordMaskOnlyValuesIn(recovered, context.recordedSecretValues);
+        }
+        return recovered;
+      }
+      if (
+        context.redactedAttributeReads !== undefined &&
+        !context.redactedAttributeReads.includes(origin)
+      ) {
         context.redactedAttributeReads.push(origin);
       }
     }
@@ -5524,7 +5582,17 @@ export class IntrinsicFunctionResolver {
           entry.producerRegion,
           context,
           `Fn::ImportValue '${exportName}' (producer ${entry.producerStack} / ${entry.producerRegion})`,
-          sourceKey
+          sourceKey,
+          // Issue #2274: the coordinate the value was READ from, so an in-run
+          // producer's masked output can be recovered rather than refused. The
+          // exports index is keyed by export name and `state.outputs` aliases
+          // an exported output under that same name, so the export name IS the
+          // output key here.
+          {
+            stackName: entry.producerStack,
+            region: entry.producerRegion,
+            outputKey: exportName,
+          }
         );
       }
     }
@@ -5616,7 +5684,10 @@ export class IntrinsicFunctionResolver {
         found.lookupRegion,
         context,
         `Fn::ImportValue '${exportName}' (producer ${found.refStack} / ${found.lookupRegion})`,
-        sourceKey
+        sourceKey,
+        // Issue #2274 — see the index arm above. Same bag, reached by scanning
+        // state instead of the index, so the same coordinate applies.
+        { stackName: found.refStack, region: found.lookupRegion, outputKey: exportName }
       );
     }
 
@@ -6213,7 +6284,10 @@ export class IntrinsicFunctionResolver {
       region,
       context,
       `Fn::GetStackOutput '${outputName}' (producer ${stackName} / ${region})`,
-      sourceKey
+      sourceKey,
+      // Issue #2274: this read is `outputs[outputName]` of that producer's
+      // state, so the coordinate is exact — see the ImportValue arms.
+      { stackName, region, outputKey: outputName }
     );
   }
 

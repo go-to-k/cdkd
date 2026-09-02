@@ -793,7 +793,31 @@ not invent a value for it:
   rather than pushing the mask; when AWS reports nothing there, it refuses the
   resource.
 - `cdkd rollback` refuses to replay a recorded baseline holding the mask, for
-  the same reason. Re-deploy to restore the property.
+  the same reason. Force the custom resource to update and re-deploy to restore
+  the property — a plain re-deploy leaves it unchanged, so the handler does not
+  run and the mask stays.
+- `cdkd export` blocks a resource whose recorded properties hold the mask: the
+  exported CloudFormation template would declare the literal `***`. Forcing the
+  custom resource to update does NOT clear this one, because the export reads
+  STATE and state is exactly where the mask lives. Stop setting `NoEcho` on that
+  response and re-deploy, or export the stack without that resource.
+
+**ACROSS STACKS the value is available only within ONE run.** Every cross-stack
+route reads the PRODUCER's persisted outputs — a nested stack's
+`Fn::GetAtt [<Child>, 'Outputs.<Key>']`, `Fn::ImportValue`, and
+`Fn::GetStackOutput` — so a masked output has no plaintext for a consumer to
+read. cdkd bridges the case it can: while the producer was deployed by the SAME
+`cdkd deploy` process (a nested-stack child, or another stack in the same
+`cdkd deploy --all`), the plaintext is still in memory and is handed to the
+consumer, which then masks it in its OWN state record. Outside that:
+
+- a `cdkd deploy Consumer` run whose producer was deployed EARLIER reads the
+  mask, and is refused rather than writing `***` to AWS;
+- **re-deploying the producer by itself does not help** — it re-masks the value
+  on the way into its own state, so the consumer's next run reads the mask
+  again. Deploy the producer and the consumer in one run, with the producer's
+  custom resource actually running (force it to update), or stop marking that
+  response `NoEcho`.
 
 Giving the state file a durable per-attribute `NoEcho` flag — which would let a
 later deploy know WHY the mask is there rather than inferring it from the value

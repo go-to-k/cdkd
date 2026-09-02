@@ -416,6 +416,40 @@ back through dynamic-reference resolution first:
 `recordedImports` bag — the DeployEngine reads this after resource
 provisioning and persists it to `state.imports`.
 
+#### A REDACTION MASK is not re-resolvable, and only ONE run can bridge it
+
+Issue [#2274](https://github.com/go-to-k/cdkd/issues/2274). The re-resolution
+above works because a secret-bearing output persists its EXPRESSION, which names
+a value cdkd can fetch again. A `NoEcho` custom resource's `Data` has no
+expression — the handler minted the value — so an output carrying one persists
+the literal mask `***` instead, and there is nothing to re-resolve.
+
+All three cross-stack reads land on that mask, plus a nested stack's
+`Fn::GetAtt [<Child>, 'Outputs.<Key>']`, which reads the child's persisted
+outputs the same way. cdkd bridges exactly the case where the plaintext still
+exists:
+
+- **Same run → the real value.** While the producer was deployed by the SAME
+  cdkd process — a nested-stack child, or another stack in the same
+  `cdkd deploy --all` — the plaintext behind the mask is still in memory, keyed
+  by `(producer stack, region, output key)`, and the consumer is given it. The
+  consumer then records it as a mask-only needle in its OWN bag, so its
+  `state.json` stores `***` too. Nothing is keyed by the bare value: keyed that
+  way, one stack's answer would be served to another stack's identically
+  spelled read.
+- **Any other run → REFUSED.** A consumer deploy whose producer was deployed
+  earlier reads the mask and cdkd fails that resource rather than writing `***`
+  to the live resource.
+- **Re-deploying the producer alone does not help.** It re-masks the value on
+  the way into its own state, so the consumer's next run reads the mask again.
+  Deploy producer and consumer in ONE run with the producer's custom resource
+  actually running (force it to update), or stop marking that response
+  `NoEcho`.
+
+The values themselves are still delivered to AWS in the clear on the runs that
+succeed; only what cdkd writes down changes. See
+[state-management.md](state-management.md#noecho-custom-resource-responses).
+
 ### `Fn::GetStackOutput` does NOT recordImport — it records to a separate bag
 
 Weak-reference by design. The producer stays deletable independently;

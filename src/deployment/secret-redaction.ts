@@ -205,11 +205,38 @@ export function clearRecordedSecretExpressions(): void {
  * {@link isMaskOnlyPlaintext} re-checks the map value, so a plaintext that
  * later acquires a real expression stops being mask-only immediately.
  *
- * The empty string is refused for the reason the value pass refuses it: it is
- * not a distinguishing value, and recording it would mask every empty leaf.
+ * A plaintext shorter than {@link MIN_NEEDLE_LENGTH} is REFUSED, and this floor
+ * is the one place the mask class needs a bound the EXPRESSION class does not
+ * (issue #2274 review). An expression-bearing needle below the threshold is
+ * still substituted on the WHOLE-VALUE arm, and that is safe because the pair
+ * came from a POSITION cdkd resolved: the leaf it rewrites provably held that
+ * reference. A mask-only needle has no position behind it — it is a bare
+ * plaintext the handler happened to return — so the whole-value arm masks EVERY
+ * leaf equal to it, anywhere in the record. A handler answering
+ * `Data: { Count: "7" }` would otherwise mask any property whose whole value is
+ * `"7"`, unrecoverably (there is no expression to re-resolve) and on every
+ * later run (the mask then trips `refuseRedactedAttributeReads`,
+ * `refuseMaskedReplayBaseline` and the export blocker). The floor is the same
+ * constant the substring arm already applies, so the two arms of this module
+ * now agree about what is too short to be a distinguishing value.
+ *
+ * THE BOUND IS THE MODULE'S, NOT ONE THIS CHANNEL INVENTED, and it is stated
+ * rather than overstated: {@link MIN_NEEDLE_LENGTH} is 4, so a FOUR-character
+ * member (`"true"`) still becomes a needle and a property whose whole value is
+ * `"true"` is still masked. Raising the floor here alone would fork the two
+ * arms' idea of a distinguishing value, which is the disagreement the shared
+ * constant exists to prevent. The remedy for that shape is a handler contract
+ * — do not declare a whole response `NoEcho` when its `Data` mixes a secret
+ * with short non-secret members — and it is asserted in
+ * `secret-redaction-mask-only.test.ts` so the bound is a recorded decision
+ * rather than a surprise.
+ *
+ * The empty string is refused by the same bound, and would be refused anyway
+ * for the reason the value pass refuses it: it is not a distinguishing value,
+ * and recording it would mask every empty leaf.
  */
 export function recordMaskOnlyValue(secrets: RecordedSecretValues, plaintext: string): void {
-  if (plaintext === '') return;
+  if (plaintext.length < MIN_NEEDLE_LENGTH) return;
   const existing = secrets.get(plaintext);
   if (existing !== undefined && existing !== SECRET_MASK) return;
   secrets.set(plaintext, SECRET_MASK);
@@ -227,18 +254,25 @@ function isMaskOnlyPlaintext(secrets: RecordedSecretValues, plaintext: string): 
 }
 
 /**
- * How deep {@link recordMaskOnlyValuesIn} and {@link carriesSecretMask} walk.
+ * CYCLE SAFETY for the two mask-only walks, replacing the depth cap an earlier
+ * revision used (issue #2274 review).
  *
- * A custom resource's `Data` is a flat `Record<string, unknown>` by the wire
- * format's own definition, so anything past a couple of levels is a handler
- * returning something exotic. The cap exists for the same reason
- * `ERROR_CAUSE_MASK_MAX_DEPTH` does — the input is UNTRUSTED handler output and
- * a self-referential structure must not hang the deploy. A value BELOW the cap
- * is simply not recorded, which under-redacts; that is stated rather than hidden
- * because the alternative (an unbounded walk over attacker-shaped JSON) is
- * worse, and the shapes it gives up on cannot occur in a real `Data` bag.
+ * The cap was ASYMMETRIC with the walk that WRITES the mask —
+ * {@link redactSecretsForState}'s own walk and `redactByPath` are unbounded —
+ * so a mask placed more than ten levels deep persisted while
+ * {@link carriesSecretMask} read the record as clean, and the rollback replay,
+ * the export blocker and `noteAttributeSecrecy` all missed it. That is the one
+ * direction this pair must never fail in: a recognition test that under-reports
+ * ships `***` to AWS. The recognition side's input is state JSON, not untrusted
+ * handler output, so there was nothing for a depth cap to protect against
+ * either.
+ *
+ * A `Set` of visited containers gives the safety the cap was reaching for
+ * without capping DEPTH: a self-referential structure terminates, and a legal
+ * deep one is still walked to the bottom. Both walks share it so the two can no
+ * longer disagree about which values they can see.
  */
-const MASK_ONLY_WALK_MAX_DEPTH = 10;
+type WalkedContainers = Set<object>;
 
 /**
  * Record every STRING LEAF of `value` as a MASK-ONLY needle in `secrets`.
@@ -248,23 +282,70 @@ const MASK_ONLY_WALK_MAX_DEPTH = 10;
  * are skipped deliberately: the redaction walk matches by string value, so
  * there is nothing to key a number or a boolean on, and both are far too
  * collision-prone to be useful needles even if there were.
+ *
+ * `excluded` is the set of plaintexts CDKD ITSELF SUPPLIED to the resource, and
+ * passing it is what keeps a handler from masking cdkd's own inputs back at it
+ * (issue #2274 review). A handler echoing its `event.ResourceProperties` into
+ * `Data` — the shape the CDK `Provider` framework's samples encourage — makes
+ * `Data.X` equal to the resource's own `ServiceToken`, and recording THAT as a
+ * needle rewrites `properties.ServiceToken` to `***` in the very record
+ * `CustomResourceProvider.delete` reads it back from, where `'***'` is a
+ * truthy string that passes both of that method's guards. Such a value is not
+ * handler-GENERATED at all — it is in the synthesized template already — so
+ * excluding it costs no secrecy.
  */
-export function recordMaskOnlyValuesIn(value: unknown, secrets: RecordedSecretValues): void {
-  const walk = (node: unknown, depth: number): void => {
-    if (depth > MASK_ONLY_WALK_MAX_DEPTH) return;
+export function recordMaskOnlyValuesIn(
+  value: unknown,
+  secrets: RecordedSecretValues,
+  excluded?: ReadonlySet<string>
+): void {
+  const seen: WalkedContainers = new Set();
+  const walk = (node: unknown): void => {
     if (typeof node === 'string') {
+      if (excluded?.has(node) === true) return;
       recordMaskOnlyValue(secrets, node);
       return;
     }
+    if (node === null || typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
     if (Array.isArray(node)) {
-      for (const item of node) walk(item, depth + 1);
+      for (const item of node) walk(item);
       return;
     }
-    if (node !== null && typeof node === 'object') {
-      for (const child of Object.values(node as Record<string, unknown>)) walk(child, depth + 1);
-    }
+    for (const child of Object.values(node as Record<string, unknown>)) walk(child);
   };
-  walk(value, 0);
+  walk(value);
+}
+
+/**
+ * Every WHOLE string leaf of `value`, as a set — the `excluded` argument
+ * {@link recordMaskOnlyValuesIn} takes, built from the resource's own resolved
+ * template properties.
+ *
+ * WHOLE leaves only, matching the arm the mask class is served on: a mask-only
+ * needle never reaches the substring scan, so a plaintext that merely OCCURS
+ * inside a property is not something this exclusion has to answer for.
+ */
+export function wholeStringLeavesOf(value: unknown): Set<string> {
+  const leaves = new Set<string>();
+  const seen: WalkedContainers = new Set();
+  const walk = (node: unknown): void => {
+    if (typeof node === 'string') {
+      leaves.add(node);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    for (const child of Object.values(node as Record<string, unknown>)) walk(child);
+  };
+  walk(value);
+  return leaves;
 }
 
 /**
@@ -282,18 +363,21 @@ export function recordMaskOnlyValuesIn(value: unknown, secrets: RecordedSecretVa
  * treating it as a mask would refuse ordinary values. The corresponding limit —
  * a NoEcho value EMBEDDED in a larger leaf keeps its plaintext — is the same
  * one the mask-only channel note above states, and is tracked separately.
+ *
+ * UNBOUNDED in depth, guarded by {@link WalkedContainers} — see that type for
+ * why a depth cap here was a hole rather than a safety measure.
  */
 export function carriesSecretMask(value: unknown): boolean {
-  const walk = (node: unknown, depth: number): boolean => {
-    if (depth > MASK_ONLY_WALK_MAX_DEPTH) return false;
+  const seen: WalkedContainers = new Set();
+  const walk = (node: unknown): boolean => {
     if (typeof node === 'string') return node === SECRET_MASK;
-    if (Array.isArray(node)) return node.some((item) => walk(item, depth + 1));
-    if (node !== null && typeof node === 'object') {
-      return Object.values(node as Record<string, unknown>).some((child) => walk(child, depth + 1));
-    }
-    return false;
+    if (node === null || typeof node !== 'object') return false;
+    if (seen.has(node)) return false;
+    seen.add(node);
+    if (Array.isArray(node)) return node.some((item) => walk(item));
+    return Object.values(node as Record<string, unknown>).some((child) => walk(child));
   };
-  return walk(value, 0);
+  return walk(value);
 }
 
 /**
@@ -327,6 +411,83 @@ function recordedExpressionsOf(secrets: RecordedSecretValues): Set<string> {
     if (!isMaskOnlyPlaintext(secrets, plaintext)) expressions.add(expression);
   }
   return expressions;
+}
+
+/**
+ * The IN-RUN recovery channel for a stack OUTPUT this process masked (issue
+ * [#2274](https://github.com/go-to-k/cdkd/issues/2274)).
+ *
+ * WHY IT EXISTS. Masking a `NoEcho` custom resource's `Data` on the way into
+ * `state.json` is right within one stack, where `Fn::GetAtt` reads the value out
+ * of the IN-MEMORY record and gets the plaintext. It breaks the moment the value
+ * crosses a STACK boundary, because every cross-stack route reads the producer's
+ * PERSISTED `state.outputs`: a nested stack's `Outputs.<Key>` (via
+ * `NestedStackProvider.readChildOutputsAsAttributes`), `Fn::ImportValue` (via
+ * the exports index or a state scan) and `Fn::GetStackOutput` all land on the
+ * mask. Without this the FIRST deploy of a parent whose child exports such a
+ * value would refuse — a template that deployed before this feature — which is
+ * a regression rather than a trade.
+ *
+ * WHAT IT IS. `stack + region + output key -> the plaintext that key held
+ * before redaction`, written at the moment the producer's outputs are redacted
+ * and read at the three cross-stack sites above. It answers only for a producer
+ * THIS PROCESS deployed in THIS run, which is exactly the population that has a
+ * plaintext to hand back: a separate `cdkd deploy` of the consumer has none, and
+ * that case is refused rather than guessed at.
+ *
+ * WHY THE COORDINATE, and not a plaintext-keyed set. A bare-plaintext store was
+ * the shape PR #2415 was forced to WITHDRAW (`provenPublicExpressions`,
+ * residual #2425): keyed on a value alone, one stack's answer is served to
+ * another stack's identically-spelled read. Here the key names the producer
+ * stack, its region and the output — so a hit is served only to a resolution
+ * that asked for that exact output of that exact stack, i.e. to precisely the
+ * reader that would have received the plaintext before this feature existed.
+ * Nothing is widened.
+ *
+ * A RECOVERED VALUE IS STILL SECRET, and every reader re-registers it as a
+ * mask-only needle in its OWN bag before using it — the recovery hands back the
+ * value for the WIRE, never for persistence.
+ */
+const recoverableMaskedOutputs = new Map<string, unknown>();
+
+function maskedOutputKey(stackName: string, region: string, outputKey: string): string {
+  // NUL-separated for the reason `crossStackSourceKey` is: a `:` / `/` occurs
+  // inside real stack names, regions and export names, so any printable
+  // separator can be forged into another coordinate's key.
+  return `${stackName}\u0000${region}\u0000${outputKey}`;
+}
+
+/**
+ * Remember the plaintext an output held before {@link SECRET_MASK} replaced it.
+ * See {@link recoverableMaskedOutputs}.
+ */
+export function recordRecoverableMaskedOutput(
+  stackName: string,
+  region: string,
+  outputKey: string,
+  plaintext: unknown
+): void {
+  recoverableMaskedOutputs.set(maskedOutputKey(stackName, region, outputKey), plaintext);
+}
+
+/**
+ * The plaintext this process masked out of `stackName`'s `outputKey`, or
+ * `undefined` when this run did not produce that output.
+ *
+ * `undefined` is the honest answer for a producer deployed by an EARLIER run:
+ * the value is gone and cdkd must refuse rather than write the mask to AWS.
+ */
+export function recoverMaskedOutput(
+  stackName: string,
+  region: string,
+  outputKey: string
+): unknown | undefined {
+  return recoverableMaskedOutputs.get(maskedOutputKey(stackName, region, outputKey));
+}
+
+/** Drop every remembered plaintext. Cleared on the `resetAccountInfoCache` lifetime. */
+export function clearRecoverableMaskedOutputs(): void {
+  recoverableMaskedOutputs.clear();
 }
 
 /**
@@ -4284,8 +4445,12 @@ export function redactSecretsForState<T>(
           span.start <= offset && end <= span.end && (span.start !== offset || span.end !== end)
       );
       if (strictlyInsideASpan) return match;
-      // Unreachable today: `needles` is built FROM `secrets.keys()`, so every
-      // match is a key. {@link SECRET_MASK} anyway, and the polarity is the
+      // Unreachable today: `needles` is built from {@link substringNeedlesOf},
+      // i.e. from `secrets.keys()` minus the mask-only class, so every match is
+      // a key. (It was `secrets.keys()` verbatim before issue #2274 narrowed
+      // the substring arm; the reachability argument is unchanged, since
+      // narrowing the needle set can only REMOVE matches.) {@link SECRET_MASK}
+      // anyway on a miss, and the polarity is the
       // whole point of keeping a dead branch — a caller that ever hands this
       // function a regex built from somewhere else gets a MASK rather than the
       // plaintext. An earlier revision made it identity on the grounds that the

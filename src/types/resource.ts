@@ -121,10 +121,18 @@ export interface EffectivePropertiesResult {
  * field and read it nowhere, so a handler-GENERATED secret was persisted
  * verbatim into `state.json`.
  *
- * WHOLE-BAG, not per attribute, because `NoEcho` is a property of the RESPONSE:
- * a handler declares the response sensitive, not one member of its `Data`. A
- * per-attribute shape would be inventing a granularity the wire format does not
- * have.
+ * TWO SHAPES, because two producers answer at different granularities.
+ * {@link NoEchoAttributesResult.noEchoAttributes} is WHOLE-BAG, matching the
+ * wire format: `NoEcho` is a property of the RESPONSE, so a handler declares
+ * the response sensitive rather than one member of its `Data`, and inventing a
+ * per-member granularity there would be inventing a contract AWS does not have.
+ * {@link NoEchoAttributesResult.noEchoAttributeNames} is the PER-ATTRIBUTE one,
+ * and it exists because `NestedStackProvider` has a genuinely different fact to
+ * report: its attributes are a whole child stack's OUTPUTS, of which typically
+ * one carries a `NoEcho` value and the rest are ordinary. Declaring the bag
+ * whole there would mask every unrelated output of that child into the parent's
+ * record and into every parent resource that consumes one — degrading resources
+ * that have nothing to do with the secret.
  *
  * WHAT THE ENGINE DOES WITH IT, and what it deliberately does NOT do. It
  * registers each returned string leaf as a MASK-ONLY redaction needle
@@ -151,6 +159,17 @@ export interface NoEchoAttributesResult {
    * sensitive", so no provider needs to change.
    */
   noEchoAttributes?: boolean;
+  /**
+   * The SUBSET of `attributes` keys that are sensitive, for a provider whose
+   * bag mixes sensitive and ordinary members. Ignored when
+   * {@link noEchoAttributes} is `true` (the whole bag already covers it) and
+   * ignored for a name the returned `attributes` does not carry, so a stale
+   * declaration cannot register a needle out of nothing.
+   *
+   * One producer today: `NestedStackProvider`, naming the `Outputs.<Key>`
+   * entries whose value it recovered from a child output THIS RUN masked.
+   */
+  noEchoAttributeNames?: readonly string[];
 }
 
 /**

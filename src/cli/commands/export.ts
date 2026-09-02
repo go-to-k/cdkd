@@ -3894,9 +3894,11 @@ export async function buildImportPlan(
         resourceType,
         reason:
           "cdkd state holds only the redaction mask ('***') for at least one property — a " +
-          'NoEcho custom-resource value cdkd cannot re-derive. Re-deploy with the custom ' +
-          'resource forced to update (change one of its properties) so its handler supplies ' +
-          'the value, or stop setting NoEcho on that response, then export again. ' +
+          'NoEcho custom-resource value cdkd cannot re-derive. Forcing the custom resource to ' +
+          'update does NOT clear this: the handler supplies the value to the deploy, and cdkd ' +
+          're-masks it on the way into state, so the export still has nothing to declare. Stop ' +
+          'setting NoEcho on that response and re-deploy, then export again; or export this ' +
+          'stack without that resource and adopt it into CloudFormation by hand. ' +
           'See https://github.com/go-to-k/cdkd/issues/2274.',
       });
       continue;
