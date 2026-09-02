@@ -43,7 +43,9 @@ export function buildProgram(): Command {
 
   program
     .name('cdkd')
-    .description('CDK Direct - Deploy AWS CDK apps directly via SDK/Cloud Control API')
+    .description(
+      'Drop-in CDK CLI for existing CDK apps - up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation'
+    )
     // `getCdkdVersion()` carries the `typeof` guard the build-time define
     // needs: this module is imported directly by unit tests, where tsdown's
     // `define` has not run and a bare reference would throw ReferenceError. The
