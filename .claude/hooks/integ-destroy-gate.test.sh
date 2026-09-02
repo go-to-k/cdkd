@@ -64,7 +64,7 @@ verdict="\${MARKGATE_MOCK_VERDICT:-stale}"
 case "\$1" in
   verify)
     [ "\$verdict" = "fresh" ] && exit 0
-    # markgate 0.4 `hash: diff` exits 2 when it cannot EVALUATE the gate
+    # markgate 0.4 \`hash: diff\` exits 2 when it cannot EVALUATE the gate
     # (unresolvable base ref, empty delta) as opposed to 1 for a stale
     # marker. Different remedy, so the hook must branch on it.
     [ "\$verdict" = "error" ] && exit 2
@@ -75,7 +75,7 @@ case "\$1" in
       printf 'key:        %s\nstate:      match\n' "\$2"
     elif [ "\$verdict" = "error" ]; then
       # Real 0.4 behavior on this path: the message goes to stderr and
-      # stdout carries no `state:` line at all, so the hook's awk reason
+      # stdout carries no \`state:\` line at all, so the hook's awk reason
       # extraction comes back empty.
       echo "markgate: hash=diff: base ref does not resolve" >&2
       exit 2

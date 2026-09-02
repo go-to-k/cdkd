@@ -49,9 +49,9 @@ cat > "$SHIM_DIR/markgate" <<MARKGATE_EOF
 echo "\$PWD" >> "$CWD_TRACE_FILE"
 # Record the ARGUMENTS too, not only the cwd. Discarding them left this suite
 # unable to see WHICH gate the hook asked about: swapping
-# `markgate verify verify-pr` for `markgate verify check` kept it at 22/22
+# \`markgate verify verify-pr\` for \`markgate verify check\` kept it at 22/22
 # GREEN, and that mutant is a live bypass -- verify-pr-gate would pass whenever
-# `/check` alone is fresh, with `/verify-pr` never having run. Found by a
+# \`/check\` alone is fresh, with \`/verify-pr\` never having run. Found by a
 # sibling repo's round-2 test review, which named the class: nothing asserted
 # what the gate ASKS ITS VERIFIER.
 echo "\$*" >> "$ARGS_TRACE_FILE"
