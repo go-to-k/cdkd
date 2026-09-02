@@ -1041,9 +1041,13 @@ there. `rollback-journal.json` stores
 `failedOperations[].attemptedProperties` — the properties of the failed write,
 verbatim — and four measured versions of
 `CdkdDeletionPolicySnapshotHeavyExample`'s journal carried a literal
-`"MasterUserPassword"`. `lock.json` accumulates faster than anything else (452
-versions on one key), and `deployments/**` is not delete-markered by
-`cdkd destroy` at all, so its objects survive as CURRENT ones. One prefix covers
+`"MasterUserPassword"`. `lock.json` USED to accumulate faster than anything
+else (452 versions on one key) and still leaves a CURRENT delete marker per
+stack — since issue [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 5
+cdkd purges the lock key's own noncurrent versions on release, so what survives
+is that marker plus whatever a crashed run left un-reaped. `deployments/**` is
+not delete-markered by `cdkd destroy` at all, so its objects survive as CURRENT
+ones. One prefix covers
 all four; a key list covers whichever ones its author thought of.
 
 One blind spot to know: a nested-stack child lives at

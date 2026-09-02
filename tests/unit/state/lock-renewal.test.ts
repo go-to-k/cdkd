@@ -50,7 +50,24 @@ function makeFakeClient(): {
   };
 } {
   return {
-    send: vi.fn(),
+    // Unprimed calls keep answering `undefined`, exactly as a bare `vi.fn()`
+    // did, with ONE exception -- the same arm `lock-manager.test.ts` carries,
+    // and for the same reason. Since issue #2346 site 5 every `deleteLock` is
+    // followed by a `ListObjectVersions` on the lock key, and an unprimed
+    // `undefined` there makes the purge blow up on `resp.Versions`. The helper
+    // swallows that into a warning and the release path routes it to `debug`,
+    // so this file's ~40 releases would run the purge's ERROR path on every one
+    // while the suite stayed green. Answering an EMPTY listing keeps the added
+    // round trip an honest no-op.
+    send: vi.fn((command: unknown) => {
+      if (
+        (command as { constructor: { name: string } }).constructor.name ===
+        'ListObjectVersionsCommand'
+      ) {
+        return Promise.resolve({ IsTruncated: false });
+      }
+      return undefined;
+    }),
     config: {
       region: () => Promise.resolve('us-east-1'),
       credentials: () =>
@@ -1419,4 +1436,35 @@ describe('LockManager lock renewal and conditional release (issue #2168)', () =>
       });
     }
   });
+
+  describe('the purge added by issue #2346 site 5 stays a no-op here', () => {
+    // FENCE FOR THIS FILE'S FAKE CLIENT, not for the purge. `makeFakeClient`
+    // answers `ListObjectVersionsCommand` with an empty listing; without that
+    // arm `send` returns `undefined`, the purge blows up on `resp.Versions`,
+    // and every one of this file's ~40 releases runs the purge's ERROR path --
+    // silently, because release-path purge failures go to `debug`.
+    //
+    // That is exactly how the arm was missing in the first place: it was added
+    // to the sibling suite and not to this one, and nothing reddened. Restoring
+    // correct behaviour without asserting it just re-arms the same trap for the
+    // next person who simplifies the double back to a bare `vi.fn()`.
+    it('never logs a purge failure during an ordinary acquire/release', async () => {
+      const manager = new LockManager(s3Client as unknown as S3Client, config, {
+        disableRenewal: true,
+      });
+      s3Client.send.mockResolvedValueOnce({ ETag: '"e1"' });
+      expect(await manager.acquireLock('test-stack', 'us-east-1')).toBe(true);
+      s3Client.send.mockResolvedValueOnce({});
+      await manager.releaseLock('test-stack', 'us-east-1');
+
+      const purgeLines = [...logs.debug.mock.calls, ...logs.warn.mock.calls]
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('noncurrent versions'));
+      expect(
+        purgeLines,
+        'the fake client must answer ListObjectVersions, or every release here runs the purge error path'
+      ).toEqual([]);
+    });
+  });
+
 });

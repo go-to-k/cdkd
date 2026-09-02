@@ -340,6 +340,29 @@ async function purgeUnderPrefix(
         // empty `Errors` is the success signal and a populated one is a
         // partial failure the call itself reported as overall success.
         for (const err of deleted.Errors ?? []) {
+          // `NoSuchVersion` is the OUTCOME WE WANTED, reported as an error.
+          // The version named is already gone, so the key is in exactly the
+          // state this function exists to produce, and counting it as a
+          // failure tells a blameless user to grant IAM they already hold.
+          //
+          // It is reachable rather than theoretical since issue #2346 site 5
+          // put a purge on the LOCK key: two actors legitimately purge the
+          // same lock concurrently -- a reaper taking over an expired lock and
+          // the original owner waking up to release it -- and whichever loses
+          // the race sees this code for rows the winner has already removed.
+          // Deliberately NOT widened to `NoSuchKey` or to a general
+          // 404-shaped bucket: those say the LISTING and the delete disagree
+          // about the key itself, which is a different claim and one worth a
+          // warning.
+          //
+          // What makes the carve-out safe rather than merely convenient is
+          // that every `(Key, VersionId)` handed to `DeleteObjects` came from
+          // the `ListObjectVersions` walk directly above -- this function never
+          // synthesises an id. So `NoSuchVersion` cannot mean "we asked about
+          // the wrong object"; it can only mean the row we listed stopped
+          // existing between the listing and the delete, which is the state we
+          // were trying to reach.
+          if (err.Code === 'NoSuchVersion') continue;
           const reason =
             `version ${err.VersionId ?? '<unknown>'}: ${err.Code ?? 'Error'}` +
             (err.Message ? ` - ${err.Message}` : '');

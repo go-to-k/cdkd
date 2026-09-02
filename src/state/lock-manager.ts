@@ -13,6 +13,7 @@ import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
+import { purgeNoncurrentKeyVersions } from './s3-noncurrent-version-purge.js';
 import { hostname } from 'os';
 
 /**
@@ -54,6 +55,34 @@ const RENEWAL_TTL_FRACTION = 4;
 
 /** Floor, so a pathologically small TTL cannot spin the event loop. */
 const MIN_RENEWAL_INTERVAL_MS = 1000;
+
+/**
+ * Which kind of path landed the delete marker the purge is cleaning up after
+ * (issue [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 5).
+ *
+ * It exists to pick the LOG LEVEL, and the level is the one place where site 5
+ * genuinely differs from the four sites already purging. It is spelled as the
+ * PATH rather than as the level so the mapping — and its reason — lives in one
+ * place instead of at each call site.
+ *
+ * - `'release'` — `releaseLock`, i.e. the tail of every mutating cdkd command.
+ * - `'reap'` — `acquireLock`'s expired-lock takeover and `forceReleaseLock`
+ *   (`cdkd force-unlock`, and `cdkd state orphan`). Rare, operator-visible.
+ */
+type LockPurgePath = 'release' | 'reap';
+
+/**
+ * What a surviving `lock.json` version holds, for the purge warning's
+ * parenthetical.
+ *
+ * The helper makes this per-caller precisely so a reader chasing the warning is
+ * told which object to go and inspect; `lock.json` is the one call site whose
+ * content is NOT a secret, and saying so is more useful than a vague phrase.
+ */
+const LOCK_OBJECT_DESCRIPTION =
+  'a stack lock heartbeat, which records the lock owner, its acquisition ' +
+  'timestamp, its deadline and the operation name — no secret, but one row ' +
+  'per renewal';
 
 /**
  * A lock this process currently believes it holds.
@@ -407,6 +436,26 @@ export class LockManager {
               return false;
             }
             throw retryError;
+          } finally {
+            // Issue #2346 site 5, and the ORDER is the whole point: this runs
+            // AFTER the re-acquisition PUT, never between the delete above and
+            // this retry. Two extra round trips inside that window would widen
+            // the delete-then-reacquire race the `isForeignLockError(retryError)`
+            // arm below reports ("another process acquired the lock between our
+            // delete and retry"); after the PUT they widen nothing, and by then the
+            // takeover's own delete marker has gone noncurrent so the purge
+            // collects it too.
+            //
+            // This is the path that reclaims a CRASHED run's chain: the dead
+            // owner never released, so its renewal versions are collected by
+            // whoever reaps its lock. `IfMatch` on the delete is still the only
+            // thing serializing concurrent reapers -- the purge only ever
+            // touches `IsLatest === false` rows, so it can neither take the new
+            // current lock nor stand in for the condition.
+            //
+            // WARN level here, unlike the release path: a takeover is rare and
+            // already prints a warning of its own.
+            await this.purgeLockVersions(key, 'reap');
           }
         }
 
@@ -620,6 +669,12 @@ export class LockManager {
       await held.renewing?.catch(() => undefined);
     }
 
+    // The two refusals below return WITHOUT purging, and deliberately (issue
+    // #2346 site 5). No delete marker is landed on either arm, so there is
+    // nothing this release added to the chain; the versions already there are
+    // collected by whichever actor next reaps or releases this lock, since the
+    // purge is key-scoped rather than scoped to what this process minted. The
+    // purge attaches to the DELETE, not to the method.
     if (held?.lost) {
       this.logger.warn(
         `Not releasing the lock for stack '${stackName}' (${region}): this process lost it while the ` +
@@ -704,6 +759,25 @@ export class LockManager {
         `Failed to release lock for stack '${stackName}' (${region}): ${error instanceof Error ? error.message : String(error)}`,
         error instanceof Error ? error : undefined
       );
+    } finally {
+      // Issue #2346 site 5. ONE purge covers BOTH deletes above -- the
+      // conditional one and the unconditional escape hatch -- because it is
+      // key-scoped rather than scoped to a version this process named.
+      //
+      // In a `finally` rather than after the successful delete, for the reason
+      // `deleteRollbackJournal` gives: skipping the purge whenever the delete
+      // failed would leave every readable body behind with nothing said about
+      // it, and the `IsLatest` filter makes it safe on every arm -- a key whose
+      // delete failed keeps its current version and loses only its history.
+      // That includes the two refusal arms reached from the `catch`. On the
+      // `etagUncertain` / no-longer-ours arm the current version is ANOTHER
+      // process's live lock rather than ours -- which the filter protects
+      // exactly the same way, since it excludes whatever is current without
+      // caring who wrote it.
+      //
+      // It cannot mask the `LockError` this block may be throwing:
+      // `purgeLockVersions` never throws.
+      await this.purgeLockVersions(this.getLockKey(stackName, region), 'release');
     }
   }
 
@@ -805,7 +879,8 @@ export class LockManager {
     // If this process happens to be the holder, stop renewing before the
     // delete -- otherwise the next tick would re-create the very lock the user
     // asked to remove.
-    const held = this.heldLocks.get(this.getLockKey(stackName, region));
+    const key = this.getLockKey(stackName, region);
+    const held = this.heldLocks.get(key);
     if (held) {
       this.stopRenewal(held);
       // Mark it released so a later `releaseLock` for the same key does not
@@ -813,7 +888,18 @@ export class LockManager {
       held.releasing = Promise.resolve();
     }
 
-    await this.deleteLock(stackName, region);
+    try {
+      await this.deleteLock(stackName, region);
+    } finally {
+      // Issue #2346 site 5. A REAP, like the takeover above: this is
+      // `cdkd force-unlock` (and `cdkd state orphan`), an explicit operator
+      // action on a lock this process usually does not own -- so clearing the
+      // history of whoever left it behind is the point rather than a side
+      // effect, and a failure is worth a warning on a command the user ran on
+      // purpose. In a `finally` so a delete that failed still gets the history
+      // swept; the `IsLatest` filter keeps whatever is current intact.
+      await this.purgeLockVersions(key, 'reap');
+    }
   }
 
   /**
@@ -824,6 +910,17 @@ export class LockManager {
    * caller read or wrote. S3 evaluates the condition against the CURRENT
    * version, which is the right unit here even on the versioned state bucket:
    * the current version IS the live lock.
+   *
+   * EVERY CALLER MUST PAIR THIS WITH {@link purgeLockVersions} (issue
+   * [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 5). The delete
+   * writes a DELETE MARKER on the versioned state bucket and leaves every
+   * prior body readable, so a delete on its own grows the key forever. The
+   * purge is NOT folded in here, for two reasons that are both per-call-site:
+   * the log level differs (see {@link LockPurgePath}), and the takeover path
+   * must purge AFTER its re-acquisition PUT rather than immediately after the
+   * delete. `tests/unit/state/lock-noncurrent-version-purge.test.ts` parses
+   * this file and fails if a caller of this method does not also call the
+   * purge, so a fifth call site cannot quietly skip it.
    */
   private async deleteLock(
     stackName: string,
@@ -842,6 +939,114 @@ export class LockManager {
         ...(etag !== undefined && { IfMatch: etag }),
       })
     );
+  }
+
+  /**
+   * Delete the lock key's NONCURRENT versions after a delete marker has been
+   * landed on it (issue [#2346](https://github.com/go-to-k/cdkd/issues/2346)
+   * site 5).
+   *
+   * ## Why the lock key needs this at all
+   *
+   * `cdkd bootstrap` turns VERSIONING ON for the state bucket, so
+   * {@link deleteLock} writes a delete marker and every earlier body stays
+   * readable through `GetObject` with a `VersionId`. Renewal writes one version
+   * every {@link MAX_RENEWAL_INTERVAL_MS} (2 minutes at the default 30-minute
+   * TTL, so a 30-minute deploy mints about fifteen), `deleteState` never
+   * sweeps the lock key, and nothing else ever did — so the chain was
+   * monotonic in stacks EVER deployed. 452 versions were measured on a single
+   * key. Nothing in a `LockInfo` is a secret, so this is bucket cost and
+   * listing noise rather than disclosure; it is still unbounded.
+   *
+   * ## Why the SHARED helper, and why that is safe on a lock
+   *
+   * A per-`VersionId` scheme (remember what this process minted, delete
+   * exactly that) was designed and REJECTED on review. Its hazards were all
+   * created by the mechanism: deleting one's OWN delete marker resurrects a
+   * stale lock whenever a batch partially fails, a per-id delete has no
+   * `IsLatest` guard so it can remove the CURRENT version on a refusal branch,
+   * a `"null"` version id under suspended versioning is a legal delete target,
+   * and the 1000-entry `DeleteObjects` cap forces a re-implementation of the
+   * shared helper's batching. The shared helper's `IsLatest` filter removes
+   * every one of them: it can never touch what is current, which is exactly
+   * the live lock — ours or anyone else's.
+   *
+   * That filter is also what makes it correct to run this from a `finally`,
+   * including on the arms where the delete was REFUSED. Purging noncurrent
+   * versions while our own lock is still the current one is harmless.
+   *
+   * ## Level, and the one UX regression this avoids
+   *
+   * The four sites already purging (rollback journal, bootstrap marker,
+   * transient template, custom-resource response) all warn, because what
+   * survives there may be a secret and they fire on rare paths. `lock.json` is
+   * neither: it holds no secret and `'release'` fires at the tail of EVERY
+   * mutating command. Inheriting WARN would mean a user on the pre-#2340
+   * four-action IAM policy — who gets a silent clean deploy today — starts
+   * seeing a warning after every single command, about bucket tidiness. So
+   * release-path failures go to `debug` and only the rare `'reap'` paths warn,
+   * which is the cost profile `docs/state-management.md` means by "only the
+   * cleanup paths that need them".
+   *
+   * A warn-once-per-process dedupe was the other option and is not taken, for
+   * the reason `s3-noncurrent-version-purge.ts` gives for rejecting one: it
+   * needs module-global state, which this repo has been bitten by under
+   * `--stack-concurrency > 1`.
+   *
+   * NEVER THROWS. The helper guarantees that for itself, but
+   * `ensureClientForBucket()` and `ownerParam()` sit outside it and both reach
+   * AWS (`GetBucketLocation`, `sts:GetCallerIdentity`), so the wrap below is
+   * what makes the contract true — the same reasoning as
+   * `S3StateBackend.purgeNoncurrentVersions`. It matters more here than there:
+   * every call site is a `finally`, and a throw from a `finally` REPLACES the
+   * `LockError` the release was raising. Nothing on this path is
+   * interrupt-aware (`LockManager` starts no interrupt watch and issues no
+   * `withRetry`), so there is no `InterruptedWaitError` for the swallow below
+   * to hide.
+   */
+  private async purgeLockVersions(key: string, path: LockPurgePath): Promise<void> {
+    // TOTAL BY CONSTRUCTION, and that is what makes the never-throw claim above
+    // true rather than merely intended. `report` is handed to the shared helper
+    // as its `logger.warn` SINK, and the helper calls that sink outside any
+    // `try` -- so a sink that throws makes the never-throwing helper throw.
+    // `logger.debug` reaches `console.debug` on stdout, which this repo has
+    // measured throwing EPIPE SYNCHRONOUSLY under `--verbose | head` (see
+    // `releaseLock`'s JSDoc, which exists for that measurement). Every call
+    // site of this method is a `finally`, so such a throw would REPLACE the
+    // `LockError` the release was raising -- turning a diagnosable lock failure
+    // into a broken pipe. Losing a log line is the only safe direction.
+    const report = (message: string): void => {
+      try {
+        if (path === 'reap') this.logger.warn(message);
+        else this.logger.debug(message);
+      } catch {
+        // Deliberately empty: the message is the least important thing on a
+        // path whose whole contract is not to disturb its caller.
+      }
+    };
+    try {
+      await this.ensureClientForBucket();
+      await purgeNoncurrentKeyVersions(this.s3Client, this.config.bucket, [key], {
+        requestFields: await this.ownerParam(),
+        // The helper's `logger` option is typed as a bare `warn` sink, which
+        // is the documented seam for exactly this: the release path routes the
+        // helper's own warning to `debug` without the helper knowing.
+        logger: { warn: report },
+        objectDescription: LOCK_OBJECT_DESCRIPTION,
+      });
+    } catch (error) {
+      report(
+        // `displaySafe` because the key embeds the stack name and -- on the reap
+        // paths -- a region this process read out of a lock/state object BODY,
+        // i.e. attacker-influenced text on its way to a terminal.
+        `Could not purge noncurrent versions of the lock key '${displaySafe(key)}' in bucket ` +
+          `'${this.config.bucket}': the purge could not be started. Their previous versions ` +
+          `survive and remain readable via GetObject with a VersionId (${LOCK_OBJECT_DESCRIPTION}). ` +
+          `Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the state bucket, or purge ` +
+          `the key by hand. Underlying error: ` +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   /**

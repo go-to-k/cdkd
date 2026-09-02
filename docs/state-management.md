@@ -1261,23 +1261,49 @@ Two consequences worth knowing:
   takeover at `warn` level naming the previous owner, because on the remaining
   chance that the process IS alive, two writers are now operating on the stack.
 - **The state bucket is versioned**, so each renewal adds one `lock.json`
-  object version. A 30-minute deploy writes about fifteen. They go noncurrent
-  the moment the next renewal lands, and **releasing the lock does not remove
-  them**: the release is a `DeleteObject`, which on a versioned bucket writes a
-  DELETE MARKER and leaves every earlier version readable through `GetObject`
-  with a `VersionId`. Nothing in cdkd purges them today, so the count grows for
-  the life of the bucket -- 452 versions on a single measured key. Nothing
-  sensitive is in them (`lock.json` carries only `owner`, `timestamp`,
-  `expiresAt` and an optional `operation`), so this is storage cost and listing
-  noise rather than disclosure, and the remedy is a **bucket lifecycle rule on
-  noncurrent versions** rather than a code change: purging on release would put
-  a `ListObjectVersions` + `DeleteObjects` round trip on the hot path of every
-  cdkd command and would make `s3:ListBucketVersions` / `s3:DeleteObjectVersion`
-  required for ordinary use rather than only for the cleanup paths that need
-  them. Tracked as a deliberately-open site of issue
-  [#2346](https://github.com/go-to-k/cdkd/issues/2346), whose other sites --
-  the rollback journal, the bootstrap marker, the transient template upload and
-  the custom-resource response sidecar -- ARE purged.
+  object version. A 30-minute deploy writes about fifteen, and they go
+  noncurrent the moment the next renewal lands. A `DeleteObject` on a versioned
+  bucket writes a DELETE MARKER and leaves every earlier version readable
+  through `GetObject` with a `VersionId`, so before issue
+  [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 5 the release left
+  the whole chain behind and the count grew for the life of the bucket -- 452
+  versions on a single measured key, invisible to `aws s3 ls`, still billed,
+  and still paged through by every version listing the other purge sites issue.
+  **cdkd now purges the lock key's noncurrent versions wherever it deletes the
+  lock**: on release, on the expired-lock takeover, and on `cdkd force-unlock`.
+  Nothing sensitive is in them (`lock.json` carries only `owner`, `timestamp`,
+  `expiresAt` and an optional `operation`), so this is bucket cost rather than
+  disclosure -- which is exactly why the reporting differs from the four
+  secret-bearing sites: a purge failure on the RELEASE path is logged at
+  `debug`, not `warn`, so a least-privilege principal without
+  `s3:ListBucketVersions` / `s3:DeleteObjectVersion` does not get a warning at
+  the tail of every mutating command about a heartbeat record. The two rare
+  reap paths (takeover, `force-unlock`) do warn, matching the cost profile the
+  [bucket-policy section](#recommended-bucket-policy-with-least-privilege)
+  describes -- that section is also where the two grants and the never-throw
+  contract are spelled out. Nothing fails either way.
+
+  Two things this does NOT do. The CURRENT version is never touched -- the
+  purge filters on `IsLatest`, so it can neither delete the live lock nor
+  remove the delete marker whose removal would resurrect a stale one. And it is
+  scoped to the `lock.json` KEY, never to the stack prefix, so `state.json`'s
+  history is untouched.
+
+  **A bucket lifecycle rule is not an alternative here, contrary to what this
+  document said before the site shipped.** The lock key is
+  `cdkd/{stackName}/{region}/lock.json` -- `lock.json` is a key SUFFIX,
+  interleaved under the same per-stack prefix as `state.json`,
+  `rollback-journal.json` and `deployments/`. S3 lifecycle filters support
+  `Prefix`, `Tag` and `ObjectSize` only, so no rule can select the lock keys and
+  spare `state.json`; the one expressible prefix rule, `cdkd/`, would expire
+  `state.json`'s noncurrent versions too -- the recovery capability sites 1-3
+  are deliberately held open to protect, done in bucket configuration instead
+  of in code. A tag-scoped rule would need `s3:PutObjectTagging` on the lock
+  write, i.e. on the hot path.
+
+  Still deliberately NOT purged: `state.json` itself and the v1 -> v2 migration
+  delete (sites 1-3 of the same issue), because those noncurrent versions ARE
+  the state-recovery capability versioning is enabled for.
 
 If the holding process dies without releasing, the lock stops being renewed and
 is reclaimed by the next `cdkd` invocation once `expiresAt` passes -- or
@@ -1726,7 +1752,7 @@ stays readable through `GetObject` with a `VersionId`.
   above it, so the `arn:aws:s3:::cdkd-state-bucket/*` ARN covers it. Lets cdkd
   remove them.
 
-**Four kinds of object need these two actions, not one.** The set grew with
+**Five kinds of object need these two actions, not one.** The set grew with
 issue [#2346](https://github.com/go-to-k/cdkd/issues/2346), and the ordinary
 commands are now in it:
 
@@ -1736,13 +1762,13 @@ commands are now in it:
 | custom-resource response object | `cdkd deploy` (the provider's own cleanup) and `cdkd gc` | the handler's FULL cfn-response, `Data` included — where a handler-minted password or API key lands |
 | transient CFn template | `cdkd import --migrate-from-cloudformation`, `cdkd export`, and MACRO EXPANSION during `cdkd deploy` / `cdkd diff` (any template over the 51,200-byte inline ceiling) | the template body, which carries a secret only if the template does (an inline `Code.ZipFile`, a hand-written literal) |
 | `cdkd-bootstrap/{region}.json` | `cdkd bootstrap --destroy` | the asset bucket and container-repo names. No secret; listed for completeness |
+| `lock.json` | every command that RELEASES a stack lock, plus the expired-lock takeover and `cdkd force-unlock` | the lock heartbeat: `owner`, `timestamp`, `expiresAt`, `operation`. No secret -- one row per two-minute renewal, which is why it was the fastest-growing key in the bucket. **Reported differently: see below** |
 
 The journal is the one to note if you are deciding whether this matters to you:
 it is written by an ORDINARY failed or interrupted deploy, not by an opt-in
 feature, and it is swept by an ordinary `cdkd destroy`. `state.json` is
 deliberately NOT in this table — its previous versions are the state-recovery
-capability versioning is enabled for — and neither is `lock.json`, whose
-history is bulk rather than exposure (see the lock section above).
+capability versioning is enabled for.
 
 **Without the two grants, nothing fails — and that is the point to
 understand.** The purge runs on a cleanup path and must never abort the
@@ -1777,6 +1803,22 @@ overall, so cdkd has to read that array to notice. It does — a partial failure
 across a batch is counted key by key and named the same way — but it is why
 granting one of the two and not the other is worth avoiding: everything looks
 normal except the warning.
+
+**`lock.json` is the one exception to the warning, deliberately.** A release
+runs at the tail of EVERY mutating cdkd command, so inheriting the warning
+would mean a principal on the older four-action policy -- who sees a silent
+clean deploy today -- getting one after every single command, about a
+heartbeat record with no secret in it. Release-path purge failures therefore go
+to `debug` (visible under `--verbose`); the two rare reap paths, the
+expired-lock takeover and `cdkd force-unlock`, still warn. Every other object
+in the table warns as described above. Nothing fails on any of them.
+
+A per-key `NoSuchVersion` counts as SUCCESS rather than as a failure, on every
+object. The version named is already gone, which is the state the purge exists
+to produce -- and on the lock key it is reachable in normal operation, because
+a process reaping an abandoned lock and its original owner waking up to release
+it can legitimately purge the same key at once. Reporting it would tell a
+blameless user to grant permissions they already hold.
 
 If you are on the older four-action policy, adding these two lines is the whole
 fix; the objects already stranded before the change have to be purged by hand
