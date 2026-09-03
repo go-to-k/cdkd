@@ -1,6 +1,7 @@
 import { EC2Client, DescribeAvailabilityZonesCommand } from '@aws-sdk/client-ec2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Availability Zones context provider
@@ -21,9 +22,7 @@ export class AZContextProvider implements ContextProvider {
 
     this.logger.debug(`Fetching availability zones for region: ${region}`);
 
-    const client = new EC2Client({
-      ...(region && { region }),
-    });
+    const client = new EC2Client({ ...awsClientDefaults(), ...(region && { region }) });
 
     try {
       const response = await client.send(new DescribeAvailabilityZonesCommand({}));

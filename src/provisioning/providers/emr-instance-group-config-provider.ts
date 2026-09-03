@@ -20,6 +20,7 @@ import type {
   ResourceCreateResult,
   ResourceUpdateResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Default polling budget for an instance group reaching RUNNING. Adding a
@@ -139,7 +140,10 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
 
   private getClient(): EMRClient {
     if (!this.client) {
-      this.client = new EMRClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new EMRClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

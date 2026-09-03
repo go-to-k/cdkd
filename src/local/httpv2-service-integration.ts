@@ -53,6 +53,7 @@ import type * as SfnNs from '@aws-sdk/client-sfn';
 import type * as SqsNs from '@aws-sdk/client-sqs';
 import { stringifyValue } from '../utils/stringify.js';
 import { getLogger } from '../utils/logger.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 const logger = getLogger();
 
@@ -141,32 +142,32 @@ async function getClient(service: string, region: string): Promise<unknown> {
   switch (service) {
     case 'sqs': {
       const mod = await import('@aws-sdk/client-sqs');
-      client = new mod.SQSClient({ region });
+      client = new mod.SQSClient({ ...awsClientDefaults(), region });
       break;
     }
     case 'sns': {
       const mod = await import('@aws-sdk/client-sns');
-      client = new mod.SNSClient({ region });
+      client = new mod.SNSClient({ ...awsClientDefaults(), region });
       break;
     }
     case 'eventbridge': {
       const mod = await import('@aws-sdk/client-eventbridge');
-      client = new mod.EventBridgeClient({ region });
+      client = new mod.EventBridgeClient({ ...awsClientDefaults(), region });
       break;
     }
     case 'kinesis': {
       const mod = await import('@aws-sdk/client-kinesis');
-      client = new mod.KinesisClient({ region });
+      client = new mod.KinesisClient({ ...awsClientDefaults(), region });
       break;
     }
     case 'sfn': {
       const mod = await import('@aws-sdk/client-sfn');
-      client = new mod.SFNClient({ region });
+      client = new mod.SFNClient({ ...awsClientDefaults(), region });
       break;
     }
     case 'ssm': {
       const mod = await import('@aws-sdk/client-ssm');
-      client = new mod.SSMClient({ region });
+      client = new mod.SSMClient({ ...awsClientDefaults(), region });
       break;
     }
     default:

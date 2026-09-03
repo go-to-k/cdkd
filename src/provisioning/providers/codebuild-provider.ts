@@ -32,6 +32,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * SDK Provider for AWS CodeBuild resources
@@ -79,7 +80,10 @@ export class CodeBuildProvider implements ResourceProvider {
 
   private getClient(): CodeBuildClient {
     if (!this.client) {
-      this.client = new CodeBuildClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new CodeBuildClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

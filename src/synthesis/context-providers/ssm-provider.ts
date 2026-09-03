@@ -1,6 +1,7 @@
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * SSM Parameter context provider
@@ -26,9 +27,7 @@ export class SSMContextProvider implements ContextProvider {
 
     this.logger.debug(`Reading SSM parameter: ${parameterName} (region: ${region})`);
 
-    const client = new SSMClient({
-      ...(region && { region }),
-    });
+    const client = new SSMClient({ ...awsClientDefaults(), ...(region && { region }) });
 
     try {
       const response = await client.send(new GetParameterCommand({ Name: parameterName }));

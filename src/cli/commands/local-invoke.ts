@@ -74,6 +74,7 @@ import { createLocalStartAgentCoreCommand } from './local-start-agentcore.js';
 import { createLocalStartAlbCommand } from './local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './local-start-cloudfront.js';
 import { setEmbedConfig } from 'cdk-local';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * cdkd's branding for cdk-local's embed-config. cdkd re-exports cdk-local's
@@ -1256,7 +1257,7 @@ export async function resolvePseudoParametersForInvoke(
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const sts = new STSClient({ ...(region && { region }) });
+    const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;
@@ -1481,7 +1482,7 @@ async function assumeLambdaExecutionRole(
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

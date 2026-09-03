@@ -103,6 +103,7 @@ import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 interface LocalInvokeAgentCoreOptions {
   app?: string;
@@ -1606,7 +1607,11 @@ async function resolveCallerAccountId(
   profile: string | undefined
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }), ...(profile && { profile }) });
+  const sts = new STSClient({
+    ...awsClientDefaults({ profile }),
+    ...(region && { region }),
+    ...(profile && { profile }),
+  });
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
@@ -1854,7 +1859,7 @@ async function assumeAgentCoreExecutionRole(
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

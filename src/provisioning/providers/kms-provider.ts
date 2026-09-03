@@ -34,6 +34,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * SDK Provider for AWS KMS resources
@@ -73,7 +74,10 @@ export class KMSProvider implements ResourceProvider {
 
   private getClient(): KMSClient {
     if (!this.client) {
-      this.client = new KMSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new KMSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

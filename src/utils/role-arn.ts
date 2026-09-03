@@ -1,5 +1,6 @@
 import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { getLogger } from './logger.js';
+import { awsClientDefaults } from './aws-client-defaults.js';
 
 /**
  * Temporary AWS credentials produced by `sts:AssumeRole`. Shape mirrors the
@@ -155,7 +156,7 @@ export async function assumeRoleForCrossAccountStateRead(roleArn: string): Promi
     const logger = getLogger().child('role-arn');
     logger.debug(`Assuming role for cross-account state read: ${roleArn}`);
 
-    const sts = new STSClient({});
+    const sts = new STSClient({ ...awsClientDefaults() });
     try {
       let response;
       try {
@@ -264,7 +265,10 @@ export async function applyRoleArnIfSet(opts: {
   const logger = getLogger().child('role-arn');
   logger.debug(`Assuming role ${roleArn}...`);
 
-  const sts = new STSClient({ ...(opts.region && { region: opts.region }) });
+  const sts = new STSClient({
+    ...awsClientDefaults(),
+    ...(opts.region && { region: opts.region }),
+  });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

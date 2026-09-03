@@ -99,16 +99,99 @@ export interface ClientSite {
   readonly verdict: SiteVerdict;
 }
 
+/** Is this the `await import('@aws-sdk/client-*')` expression? */
+function isSdkDynamicImport(node: ts.Node | undefined): boolean {
+  if (node === undefined) return false;
+  const call = ts.isAwaitExpression(node) ? node.expression : node;
+  if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword) {
+    return false;
+  }
+  const arg = call.arguments[0];
+  return arg !== undefined && ts.isStringLiteral(arg) && arg.text.startsWith('@aws-sdk/client-');
+}
+
 /**
- * Identifiers this source imports from an `@aws-sdk/client-*` package.
+ * Names bound to a whole `@aws-sdk/client-*` MODULE, for the `new mod.XClient()`
+ * form (`const mod = await import('@aws-sdk/client-sns'); new mod.SNSClient()`).
  *
- * Covers the named form (`import { S3Client } from '@aws-sdk/client-s3'`)
- * including aliases, which is every shape in the tree today. A namespace import
- * is deliberately NOT resolved: nothing uses one, and pretending to handle it
- * would claim a coverage this does not have.
+ * `src/local/httpv2-service-integration.ts` builds six clients this way.
+ */
+export function sdkClientNamespaces(source: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      isSdkDynamicImport(node.initializer)
+    ) {
+      names.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return names;
+}
+
+/**
+ * Identifiers this source binds to a class from an `@aws-sdk/client-*` package.
+ *
+ * TWO shapes, and the second was the hole that made PR 2465's totality claim
+ * false: a STATIC named import (`import { S3Client } from '@aws-sdk/client-s3'`,
+ * aliases included), and a DESTRUCTURED DYNAMIC one
+ * (`const { STSClient } = await import('@aws-sdk/client-sts')`). Reading only
+ * top-level `ImportDeclaration`s meant a dynamic site contributed no
+ * identifiers, so it never got a verdict at all -- not a gap, not anything --
+ * and 17 of them, including `deploy.ts`'s `GetCallerIdentity` on every deploy,
+ * sat unmigrated behind a green run and an empty allow-list.
+ *
+ * WHAT IS STILL NOT COVERED, stated exhaustively because the previous version of
+ * this comment named one exclusion and was silent about the one that mattered --
+ * and silence reads as coverage:
+ *
+ * - A STATIC namespace import (`import * as sns from '@aws-sdk/client-sns'`).
+ *   Nothing uses one. The DYNAMIC namespace form IS covered, by
+ *   {@link sdkClientNamespaces}.
+ * - An inline `(await import('...')).XClient`, and a `.then(m => m.XClient)`
+ *   chain. Neither appears in the tree.
+ * - A class re-exported through an intermediate module.
+ * - The AGGREGATED client (`import { S3 } from '@aws-sdk/client-s3'`, or
+ *   `new mod.S3()`): every SDK package exports a convenience class without the
+ *   `Client` suffix. This one is worth naming separately because it is the ONE
+ *   shape the reconciliation cannot rescue -- the text scan in
+ *   `aws-client-defaults-fence.test.ts` keys on the same suffix, so the two
+ *   methods are wrong in the SAME way here, which is exactly the premise
+ *   ("wrong in DIFFERENT ways") that makes the reconciliation worth anything.
+ *   Nothing in the tree uses one; a first use needs both sides widened.
+ *
+ * The floors in the unit suite are what stop this list quietly becoming stale:
+ * a shape that stops being detected shows up as a count regression, and the
+ * reconciliation against an independent `grep -c 'new [A-Za-z]*Client('` is
+ * what proves the detected population IS the real one.
  */
 export function sdkClientIdentifiers(source: ts.SourceFile): Set<string> {
   const names = new Set<string>();
+
+  // The destructured dynamic form, anywhere in the file.
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isObjectBindingPattern(node.name) &&
+      isSdkDynamicImport(node.initializer)
+    ) {
+      for (const element of node.name.elements) {
+        if (!ts.isIdentifier(element.name)) continue;
+        // `propertyName` is the EXPORTED name under an alias
+        // (`{ S3Client: Bucket }`); `name` is what the `new` refers to.
+        const exported = element.propertyName ?? element.name;
+        if (ts.isIdentifier(exported) && exported.text.endsWith('Client')) {
+          names.add(element.name.text);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const specifier = statement.moduleSpecifier;
@@ -123,7 +206,8 @@ export function sdkClientIdentifiers(source: ts.SourceFile): Set<string> {
       // `@aws-sdk/client-*` package exports commands, paginators and
       // exceptions from the same module, and `new HeadBucketCommand({...})`
       // takes an input bag that has nothing to do with transport — matching
-      // the import alone reported 1726 sites where there are 165. Binding to
+      // the import alone reported 1726 sites against a real population of ~160
+      // (158 at the commit that swept them; run the checker for today's). Binding to
       // the suffix ALONE is what the AST replaces: a name regex also matches
       // cdkd's own `S3StateBackend`-style classes and misses a construction
       // split across lines. Both filters together ask the real question.
@@ -271,6 +355,24 @@ export function classifyConfigArgument(
 }
 
 /**
+ * The binding NAME an expression reads, for `bag` and for `this.bag` alike.
+ *
+ * One spelling for both branches of {@link sharedDefaultsSource}: they were
+ * written separately and disagreed, which is how a bare `this.opts` argument
+ * escaped the shared-bag pass while the spread form was caught.
+ */
+function bindingName(expression: ts.Expression): string | undefined {
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    expression.expression.kind === ts.SyntaxKind.ThisKeyword
+  ) {
+    return expression.name.text;
+  }
+  return undefined;
+}
+
+/**
  * The NAME of the binding a site gets its defaults from, or `undefined` when it
  * calls the helper itself.
  *
@@ -284,11 +386,23 @@ export function classifyConfigArgument(
  *                          // about the ORDER and blind to the SHARING
  * ```
  *
- * A literal that calls `awsClientDefaults()` DIRECTLY is exempt whatever else
- * it spreads: that is the prescribed form, `{ ...awsClientDefaults(), ...bag }`,
- * and it builds a fresh handler per client. The exemption is tested on the
- * literal WRITTEN AT THE SITE, never on a resolved bag -- checking the resolved
- * one would exempt `new A(bag)` too, since the call is inside `bag`.
+ * A DIRECT `awsClientDefaults()` call at the site exempts NOTHING by itself.
+ * Every spread is resolved on its own, and the direct call simply contributes
+ * no shared root -- it has no binding name, so the walk passes over it. The
+ * prescribed form `{ ...awsClientDefaults(), ...bag }` is therefore clean
+ * because `bag` resolves to nothing defaults-bearing, not because the call
+ * short-circuits the check.
+ *
+ * There WAS such an exemption, and it was removed for the same reason as its
+ * twin in {@link sharedRoot}: it was fail-open, pinned by no test, and wrong for
+ * a constructible shape -- a once-evaluated defaults-bearing bag spread AFTER
+ * the call wins on later-key-wins, so the clients share and the exemption called
+ * it `defaults-first`. Removing it left the report byte-identical, zero sites
+ * newly flagged, which is what showed the real sites never leaned on it.
+ *
+ * Its companion warning died with it: "test the literal written at the site,
+ * never the resolved bag" guarded against exempting `new A(bag)` because the
+ * call sits inside `bag`, and with no exemption there is nothing to over-apply.
  *
  * WHAT COUNTS AS SHARED IS THE EVALUATION, NOT THE SPELLING. A `const bag = {
  * ...awsClientDefaults() }` is evaluated ONCE, so every client spreading it
@@ -302,24 +416,64 @@ function sharedDefaultsSource(
   source: ts.SourceFile
 ): string | undefined {
   if (argument === undefined) return undefined;
-  if (ts.isIdentifier(argument)) {
-    return isEvaluatedOnce(argument.text, source) ? argument.text : undefined;
-  }
+  // The BARE-argument branch extracts a name the same way the spread branch
+  // below does. Handling only `new A(bag)` and not `new A(this.opts)` left the
+  // second escaping the shared-bag pass entirely -- the argument is neither an
+  // identifier nor a literal, so this returned `undefined` while the
+  // PropertyDeclaration arm of `resolveObjectLiteral` still classified it
+  // `defaults-first`.
+  const bare = bindingName(argument);
+  if (bare !== undefined) return sharedRoot(argument, source, 0);
   if (!ts.isObjectLiteralExpression(argument)) return undefined;
 
   const spreads = argument.properties.filter((p) => ts.isSpreadAssignment(p)) as ts.SpreadAssignment[];
-  if (spreads.some((p) => isDefaultsCall(p.expression))) return undefined;
 
   for (const spread of spreads) {
-    const name = ts.isIdentifier(spread.expression)
-      ? spread.expression.text
-      : ts.isPropertyAccessExpression(spread.expression) &&
-          spread.expression.expression.kind === ts.SyntaxKind.ThisKeyword
-        ? spread.expression.name.text
-        : undefined;
-    if (name === undefined || !isEvaluatedOnce(name, source)) continue;
-    const inner = resolveObjectLiteral(spread.expression, source);
-    if (inner !== undefined && mentionsDefaults(inner, source, 0)) return name;
+    const root = sharedRoot(spread.expression, source, 0);
+    if (root !== undefined) return root;
+  }
+  return undefined;
+}
+
+/**
+ * The ONCE-evaluated binding an expression ultimately reads the defaults from,
+ * following getters on the way.
+ *
+ * Asking `isEvaluatedOnce` of the TOP name only was a bound: the defaults-credit
+ * recursion is transitive, so a getter returning `{ ...this.cached }` over a
+ * `private cached = { ...awsClientDefaults() }` hands every caller the SAME
+ * object while looking per-access at its own level. The name returned is the
+ * ROOT rather than the getter, so two clients reaching one field through
+ * different getters still count as one shared binding.
+ */
+function sharedRoot(
+  expression: ts.Expression,
+  source: ts.SourceFile,
+  depth: number
+): string | undefined {
+  const name = bindingName(expression);
+  if (name === undefined || depth >= MAX_RESOLUTION_DEPTH) return undefined;
+  const literal = resolveObjectLiteral(expression, source);
+  if (literal === undefined) return undefined;
+
+  if (isEvaluatedOnce(name, source)) {
+    return mentionsDefaults(literal, source, 0) ? name : undefined;
+  }
+  // A getter: it shares nothing of its own, but what it SPREADS may be shared.
+  //
+  // There is deliberately NO "a direct call inside the getter stops the walk"
+  // guard here, and its absence is the point. Such a guard was fail-open and
+  // pinned by nothing -- mutating it away redded no test -- and WRONG for a
+  // constructible shape: a getter that calls the helper and then spreads a
+  // once-evaluated bag hands every caller the bag's `requestHandler` on
+  // later-key-wins, so the clients share and the guard called it
+  // `defaults-first`. Without it that shape is reported, and the answer on every
+  // shape in this tree is unchanged (measured: byte-identical report, 158/158)
+  // because the loop below returns `undefined` for a bare helper call anyway.
+  const spreads = literal.properties.filter((p) => ts.isSpreadAssignment(p)) as ts.SpreadAssignment[];
+  for (const spread of spreads) {
+    const root = sharedRoot(spread.expression, source, depth + 1);
+    if (root !== undefined) return root;
   }
   return undefined;
 }
@@ -362,15 +516,27 @@ function isEvaluatedOnce(name: string, source: ts.SourceFile): boolean {
 export function findClientSites(filePath: string, source: string): ClientSite[] {
   const parsed = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
   const clients = sdkClientIdentifiers(parsed);
-  if (clients.size === 0) return [];
+  const namespaces = sdkClientNamespaces(parsed);
+  if (clients.size === 0 && namespaces.size === 0) return [];
 
   const sites: ClientSite[] = [];
   /** Config-bag identifier per site, for the shared-bag pass below. */
   const bagNames: (string | undefined)[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
-      const client = node.expression.text;
-      if (clients.has(client)) {
+    if (ts.isNewExpression(node)) {
+      // `new XClient(...)`, or `new mod.XClient(...)` where `mod` is a whole
+      // `@aws-sdk/client-*` module bound by a dynamic import.
+      const client = ts.isIdentifier(node.expression)
+        ? clients.has(node.expression.text)
+          ? node.expression.text
+          : undefined
+        : ts.isPropertyAccessExpression(node.expression) &&
+            ts.isIdentifier(node.expression.expression) &&
+            namespaces.has(node.expression.expression.text) &&
+            node.expression.name.text.endsWith('Client')
+          ? node.expression.name.text
+          : undefined;
+      if (client !== undefined) {
         const argument = node.arguments?.[0];
         sites.push({
           file: filePath,
@@ -387,6 +553,15 @@ export function findClientSites(filePath: string, source: string): ClientSite[] 
 
   // SHARED-BAG pass. A bag naming the defaults, handed to more than one client,
   // gives them one `requestHandler` and one routing agent between them.
+  //
+  // The count is file-global BY NAME, so two functions each with their own local
+  // `const opts = { ...awsClientDefaults() }` for one client apiece would both
+  // flip to `shared-defaults` although neither shares anything. That is
+  // FAIL-CLOSED, and deliberately the opposite polarity to
+  // `resolveObjectLiteral`'s "never manufacturing a gap" note beside it: a false
+  // accusation here costs one reviewer a look, while a miss ships the
+  // correctness bug the verdict exists to catch. No such shape exists in the
+  // tree today; scope it per declaration if one appears.
   const uses = new Map<string, number>();
   for (const name of bagNames) {
     if (name !== undefined) uses.set(name, (uses.get(name) ?? 0) + 1);

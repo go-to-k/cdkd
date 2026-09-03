@@ -29,6 +29,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * AWS DocumentDB Provider
@@ -103,9 +104,10 @@ export class DocDBProvider implements ResourceProvider {
 
   private getClient(): DocDBClient {
     if (!this.docdbClient) {
-      this.docdbClient = new DocDBClient(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.docdbClient = new DocDBClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.docdbClient;
   }

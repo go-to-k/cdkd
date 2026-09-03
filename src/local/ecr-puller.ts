@@ -16,6 +16,7 @@ function ecrUrlSuffix(region: string): string {
 export { parseEcrRegistryHost };
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * ECR pull fallback for `cdkd local invoke` / `cdkd local start-api` /
@@ -278,7 +279,10 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   const callerIdentityKey = callerRegion ?? '_unset';
   let callerAccount = CALLER_IDENTITY_CACHE.get(callerIdentityKey);
   if (callerAccount === undefined) {
-    const sts = new STSClient({ ...(callerRegion && { region: callerRegion }) });
+    const sts = new STSClient({
+      ...awsClientDefaults(),
+      ...(callerRegion && { region: callerRegion }),
+    });
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       if (!identity.Account) {
@@ -344,6 +348,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // When `assumed` is set, the ECR client uses those temporary
   // credentials; otherwise the default credential chain.
   const ecr = new ECRClient({
+    ...awsClientDefaults(),
     region: parsed.region,
     ...(assumed && { credentials: assumed }),
   });
@@ -377,7 +382,10 @@ async function assumeRoleForEcr(
   logger: ReturnType<ReturnType<typeof getLogger>['child']>
 ): Promise<TempCredentials> {
   logger.debug(`Assuming role ${roleArn} for ECR pull...`);
-  const sts = new STSClient({ ...(callerRegion && { region: callerRegion }) });
+  const sts = new STSClient({
+    ...awsClientDefaults(),
+    ...(callerRegion && { region: callerRegion }),
+  });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

@@ -29,6 +29,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * AWS ElastiCache Provider
@@ -100,9 +101,10 @@ export class ElastiCacheProvider implements ResourceProvider {
 
   private getClient(): ElastiCacheClient {
     if (!this.client) {
-      this.client = new ElastiCacheClient(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.client = new ElastiCacheClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

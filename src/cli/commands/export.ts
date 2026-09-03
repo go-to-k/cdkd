@@ -70,6 +70,7 @@ import {
   type TemplateFormat,
 } from '../yaml-cfn.js';
 import { carriesSecretMask } from '../../deployment/secret-redaction.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 interface ExportOptions {
   app?: string;
@@ -2278,7 +2279,7 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
         `cdkd state's properties for ${entry.logicalId} (${entry.resourceType}) is missing 'ApiId'`
       );
     }
-    const client = new ApiGatewayV2Client({});
+    const client = new ApiGatewayV2Client({ ...awsClientDefaults() });
     try {
       await client.send(new DeleteStageCommand({ ApiId: apiId, StageName: entry.physicalId }));
     } catch (err) {
@@ -2333,7 +2334,7 @@ const PRE_DELETE_HANDLERS: Record<string, PreDeleteHandler> = {
       );
     }
 
-    const client = new IAMClient({});
+    const client = new IAMClient({ ...awsClientDefaults() });
 
     // Each per-target send is idempotent on NoSuchEntityException
     // (matches IAMPolicyProvider.delete; covers partial-retry safety

@@ -37,6 +37,7 @@ import {
   DEFAULT_STATE_PREFIX,
   CUSTOM_RESOURCE_RESPONSE_PREFIX,
 } from './state-file-keys.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * `cdkd gc` — garbage-collect unreferenced objects / images from the
@@ -1158,6 +1159,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   // state bucket is account-scoped and may live in a different region
   // than --region. The asset bucket / ECR repo clients keep using --region.
   const markerS3Client = new S3Client({
+    ...awsClientDefaults({ profile: options.profile }),
     region: effective.region,
     ...(options.profile && { profile: options.profile }),
   });
@@ -1192,6 +1194,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   setAwsClients(awsClients);
 
   const ecrClient = new ECRClient({
+    ...awsClientDefaults({ profile: options.profile }),
     region,
     ...(options.profile && { profile: options.profile }),
   });

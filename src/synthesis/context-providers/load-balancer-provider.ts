@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Load Balancer context provider
@@ -28,6 +29,7 @@ export class LoadBalancerContextProvider implements ContextProvider {
     this.logger.debug(`Looking up load balancer (arn: ${loadBalancerArn}, region: ${region})`);
 
     const client = new ElasticLoadBalancingV2Client({
+      ...awsClientDefaults(),
       ...(region && { region }),
     });
 
@@ -91,6 +93,7 @@ export class LoadBalancerListenerContextProvider implements ContextProvider {
     );
 
     const client = new ElasticLoadBalancingV2Client({
+      ...awsClientDefaults(),
       ...(region && { region }),
     });
 

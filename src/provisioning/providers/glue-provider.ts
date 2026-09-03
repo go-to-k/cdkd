@@ -103,6 +103,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
 const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
@@ -423,7 +424,10 @@ export class GlueProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new GlueClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
@@ -2241,7 +2245,10 @@ export class GlueWorkflowProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new GlueClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
@@ -2476,7 +2483,10 @@ export class GlueWorkflowProvider implements ResourceProvider {
   private async getAccountId(): Promise<string> {
     if (this.cachedAccountId) return this.cachedAccountId;
     if (!this.stsClient) {
-      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.stsClient = new STSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     const identity = await this.stsClient.send(new GetCallerIdentityCommand({}));
     if (!identity.Account) {
@@ -2528,7 +2538,10 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new GlueClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
@@ -3125,14 +3138,20 @@ export class GlueJobProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new GlueClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
 
   private getStsClient(): STSClient {
     if (!this.stsClient) {
-      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.stsClient = new STSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.stsClient;
   }
@@ -3671,14 +3690,20 @@ export class GlueCrawlerProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new GlueClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
 
   private getStsClient(): STSClient {
     if (!this.stsClient) {
-      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.stsClient = new STSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.stsClient;
   }
@@ -4161,7 +4186,10 @@ export class GlueConnectionProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new GlueClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
@@ -4454,14 +4482,20 @@ export class GlueTriggerProvider implements ResourceProvider {
 
   private getClient(): GlueClient {
     if (!this.client) {
-      this.client = new GlueClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new GlueClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
 
   private getStsClient(): STSClient {
     if (!this.stsClient) {
-      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.stsClient = new STSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.stsClient;
   }

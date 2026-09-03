@@ -44,6 +44,7 @@ import type {
   CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * True when Route 53 refused a zone mutation because the zone's
@@ -278,9 +279,10 @@ export class Route53Provider implements ResourceProvider {
 
   private getClient(): Route53Client {
     if (!this.route53Client) {
-      this.route53Client = new Route53Client(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.route53Client = new Route53Client({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.route53Client;
   }

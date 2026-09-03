@@ -39,6 +39,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * AWS ECR Repository Provider
@@ -74,7 +75,10 @@ export class ECRProvider implements ResourceProvider {
 
   private getClient(): ECRClient {
     if (!this.client) {
-      this.client = new ECRClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new ECRClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

@@ -35,6 +35,7 @@ import type {
   ResourceImportResult,
   CreateContext,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /** Shapes of the two `AWS::S3Tables::*` composite physicalIds (issue #1657). */
 const S3_TABLES_NAMESPACE_ID_FORMAT: CompositeIdFormat = {
@@ -163,7 +164,10 @@ export class S3TablesProvider implements ResourceProvider {
 
   private getClient(): S3TablesClient {
     if (!this.client) {
-      this.client = new S3TablesClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new S3TablesClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-route-53';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Hosted Zone context provider
@@ -32,9 +33,7 @@ export class HostedZoneContextProvider implements ContextProvider {
 
     this.logger.debug(`Looking up hosted zone: ${domainName} (private: ${privateZone})`);
 
-    const client = new Route53Client({
-      ...(region && { region }),
-    });
+    const client = new Route53Client({ ...awsClientDefaults(), ...(region && { region }) });
 
     try {
       const response = await client.send(

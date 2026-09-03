@@ -56,6 +56,7 @@ import type {
   UpdateContext,
   IndeterminateGuard,
 } from '../types/resource.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * AWS Cloud Control API Provider
@@ -1686,7 +1687,7 @@ export class CloudControlProvider implements ResourceProvider {
           // CC API client uses the cdkd-resolved region; the RDSClient
           // inherits via env / profile, same as DynamoDB / API Gateway
           // enrichment branches above.
-          const rdsClient = new RDSClient({});
+          const rdsClient = new RDSClient({ ...awsClientDefaults() });
           const describeResponse = await rdsClient.send(
             new DescribeDBClustersCommand({ DBClusterIdentifier: physicalId })
           );
@@ -1733,7 +1734,7 @@ export class CloudControlProvider implements ResourceProvider {
         try {
           // The RDSClient inherits the cdkd-resolved region via env / profile,
           // same as the DBCluster / DynamoDB / API Gateway branches.
-          const rdsClient = new RDSClient({});
+          const rdsClient = new RDSClient({ ...awsClientDefaults() });
           const describeResponse = await rdsClient.send(
             new DescribeDBInstancesCommand({ DBInstanceIdentifier: physicalId })
           );
@@ -2131,7 +2132,7 @@ export class CloudControlProvider implements ResourceProvider {
         // Best-effort: a failed Describe leaves the CC-API attribute shape
         // unchanged and must not fail the deploy.
         try {
-          const elastiCacheClient = new ElastiCacheClient({});
+          const elastiCacheClient = new ElastiCacheClient({ ...awsClientDefaults() });
           const describeResponse = await elastiCacheClient.send(
             new DescribeReplicationGroupsCommand({ ReplicationGroupId: physicalId })
           );
@@ -2205,7 +2206,7 @@ export class CloudControlProvider implements ResourceProvider {
         // unlike ElastiCache). Best-effort: a failed Describe leaves the CC-API
         // attribute shape unchanged and never fails the deploy.
         try {
-          const redshiftClient = new RedshiftClient({});
+          const redshiftClient = new RedshiftClient({ ...awsClientDefaults() });
           const describeResponse = await redshiftClient.send(
             new DescribeClustersCommand({ ClusterIdentifier: physicalId })
           );
@@ -2249,7 +2250,7 @@ export class CloudControlProvider implements ResourceProvider {
         // Best-effort: a failed Describe leaves the CC-API attribute shape
         // unchanged and never fails the deploy.
         try {
-          const openSearchClient = new OpenSearchClient({});
+          const openSearchClient = new OpenSearchClient({ ...awsClientDefaults() });
           const describeResponse = await openSearchClient.send(
             new DescribeDomainCommand({ DomainName: physicalId })
           );

@@ -78,6 +78,7 @@ import {
 import { matchStacks, describeStack } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../types/state.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Deploy command implementation
@@ -488,6 +489,7 @@ async function deployCommand(
     // 3. Build work graph: asset-publish → stack deploy (DAG)
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
     const stsClient = new STSClient({
+      ...awsClientDefaults(),
       region: namedCliRegion(options.region) ?? 'us-east-1',
     });
     const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));

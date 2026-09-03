@@ -123,6 +123,7 @@ import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 interface LocalStartApiOptions {
   app?: string;
@@ -2616,7 +2617,7 @@ export async function resolveProfileCredentials(
   profile: string
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string }> {
   const { STSClient } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ profile });
+  const sts = new STSClient({ ...awsClientDefaults({ profile }), profile });
   try {
     const credsProvider = sts.config.credentials;
     const creds = typeof credsProvider === 'function' ? await credsProvider() : credsProvider;
@@ -2648,7 +2649,7 @@ async function assumeLambdaExecutionRole(
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -3113,7 +3114,7 @@ export async function resolvePseudoParametersForStartApi(
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const sts = new STSClient({ ...(region && { region }) });
+    const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;

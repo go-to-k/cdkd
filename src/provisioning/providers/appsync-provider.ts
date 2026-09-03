@@ -86,6 +86,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /** Shapes of the three `AWS::AppSync::*` child composite physicalIds (issue #1657). */
 const APPSYNC_DATASOURCE_ID_FORMAT: CompositeIdFormat = {
@@ -255,7 +256,10 @@ export class AppSyncProvider implements ResourceProvider {
 
   private getClient(): AppSyncClient {
     if (!this.client) {
-      this.client = new AppSyncClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new AppSyncClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
@@ -553,7 +557,10 @@ export class AppSyncProvider implements ResourceProvider {
    */
   private getS3Client(): S3Client {
     if (!this.s3Client) {
-      this.s3Client = new S3Client(this.providerRegion ? { region: this.providerRegion } : {});
+      this.s3Client = new S3Client({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.s3Client;
   }

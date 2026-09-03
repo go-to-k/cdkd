@@ -48,6 +48,7 @@ import { loadBootstrapContainerRepo } from './local-state-loader.js';
 import { createLocalStateProvider } from './local-state-source.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import type { SubstitutionContext } from '../../local/state-resolver.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 interface LocalRunTaskOptions {
   app?: string;
@@ -426,7 +427,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
 async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
@@ -451,7 +452,7 @@ async function assumeTaskRole(
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -680,7 +681,7 @@ function pickCandidateStack(
 
 async function resolveCallerAccountId(region: string | undefined): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  const sts = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;

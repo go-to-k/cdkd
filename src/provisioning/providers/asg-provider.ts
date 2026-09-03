@@ -45,6 +45,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * AWS Auto Scaling Provider
@@ -167,16 +168,20 @@ export class ASGProvider implements ResourceProvider {
 
   private getClient(): AutoScalingClient {
     if (!this.asgClient) {
-      this.asgClient = new AutoScalingClient(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.asgClient = new AutoScalingClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.asgClient;
   }
 
   private getEc2Client(): EC2Client {
     if (!this.ec2Client) {
-      this.ec2Client = new EC2Client(this.providerRegion ? { region: this.providerRegion } : {});
+      this.ec2Client = new EC2Client({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.ec2Client;
   }

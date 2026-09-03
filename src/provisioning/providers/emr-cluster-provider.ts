@@ -44,6 +44,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Default polling budget for EMR cluster lifecycle transitions. A cluster
@@ -192,7 +193,10 @@ export class EMRClusterProvider implements ResourceProvider {
 
   private getClient(): EMRClient {
     if (!this.client) {
-      this.client = new EMRClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new EMRClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
