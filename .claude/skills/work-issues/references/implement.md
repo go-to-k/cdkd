@@ -80,10 +80,11 @@ after a cwd reset, and since go-to-k/cdkd#2406 it covers this spelling** — it
 matches in COMMAND POSITION and judges the matched SEGMENT, so the chained form
 is refused (rc=2) while `git fetch origin && git switch main` still passes. An
 older copy skipped to the FIRST `git` token and exited 0 on exactly the
-spelling this file PRINTS, so settle which copy a stale worktree has by
-CONTENT, never by a commit subject: `git show
+spelling this file PRINTS, so settle which copy is DEPLOYED by CONTENT, never
+by a commit subject: `git show
 origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c
-gate_verb_rest_each` prints non-zero.
+gate_verb_rest_each` prints non-zero (drop the `git show` prefix to ask the
+same of the copy in YOUR worktree, which is the one that will fire).
 
 **`mise trust` is not optional here, and skipping it fails in the direction that
 costs most.** An untrusted `.mise.toml` makes `mise exec -- markgate set` error
@@ -198,13 +199,13 @@ measurement reads as evidence and is not.
 just a count — and it is the harder half, because there is no command to paste:
 you never ran one.** One 2026-08-26 run published FOUR relayed counts, every one
 wrong ("all nine sibling `clearOnUpdateRemoval` sites" — grep found **78** across
-14 files; "nine mutation probes" — fourteen; "ten unit shapes" — thirteen; "a
+14 provider files; "nine mutation probes" — fourteen; "ten unit shapes" — thirteen; "a
 third copy" — nine existed), two into GitHub artifacts outliving the session.
 Non-numeric claims fail identically: pins reported "each probed adversarially"
 had a PATH decoy never placed on PATH, and deleting six left the suite 65/65
-green. The tell is grammatical — a number arriving as a WORD was counted by a
-person or an agent, one arriving as output by a machine. Run the query yourself
-before publishing a relayed claim anywhere durable.
+green. The tell is grammatical — a number arriving as a WORD was counted by a person
+or an agent, one arriving as output by a machine. Before publishing a relayed
+claim anywhere durable, run the query yourself and put its OUTPUT in the text.
 
 **Before deriving a fix, grep the repo for the SYMPTOM -- something may already
 have solved it.** Different from the sibling-site sweep: that greps the
@@ -255,16 +256,13 @@ harness** — `.claude/hooks/` carries per-hook `*.test.sh` suites run by
 
 **Run such a harness from BESIDE its subject, never from a scratch copy.**
 Every suite resolves the hook under test from its own script path, so a copy
-runs against a sibling that is not there and every case fails with exit 127 —
-a regression your change did not cause (2026-08-19: `branch-gate.test.sh`
-scores `Pass: 27  Fail: 0` from `.claude/hooks/`, exits 1 from scratch). Say
-`$0` / `${BASH_SOURCE[0]}`-relative rather than naming one spelling (27 of 33
-suites use `${BASH_SOURCE[0]}`, 6 use `$0`); `pr-review-gate.test.sh` derives
-the REPO ROOT the same way, and `run-tests.sh` is itself
-`${BASH_SOURCE[0]}`-relative, so a copied RUNNER cds to the wrong repo
-entirely. The trap is invited by the before/after comparison a hook change
-wants — the obvious `git show origin/main:<suite> > /tmp/x.sh && bash
-/tmp/x.sh`. Instead write the old copy beside the real one as
+runs against a sibling that is not there and every case fails with exit 127 — a
+regression your change did not cause (2026-08-19: `branch-gate.test.sh` scores
+`Pass: 27  Fail: 0` from `.claude/hooks/`, exits 1 from scratch). Resolve
+`${BASH_SOURCE[0]}`-relative; `run-tests.sh` does the same, so a copied RUNNER
+cds to the wrong repo entirely. The trap is invited by the before/after
+comparison a hook change wants — the obvious `git show origin/main:<suite> >
+/tmp/x.sh && bash /tmp/x.sh`. Instead write the old copy beside the real one as
 `.claude/hooks/_old-<name>.test.sh` and delete it after.
 
 §8's scratch-copy idiom is right for a data file, wrong for a runnable
@@ -336,7 +334,8 @@ breakage and unfinished fixes in ONE undifferentiated dirty tree. Measured
 limit mid-probe with 9 dirty files, and the resuming session had to read the
 full diff to establish none of it was probe wreckage. With a pre-probe commit
 the separator is just `git diff` — anything unstaged after a probe is the
-probe's (go-to-k/cdkd#2416 is this repo's filing).
+probe's (mirrored from go-to-k/cdk-real-drift#1853; go-to-k/cdkd#2416 is this
+repo's filing).
 
 **Restore a probe from a BYTE-EXACT COPY, never an inverse string replace.**
 `cp <file> <backup>` before, `cp <backup> <file>` after, proved by `git diff --
@@ -422,20 +421,18 @@ JSON-DOCUMENT secret makes the needle stop occurring. Before trusting a green,
 ask what property of the INPUT the defect depends on.
 
 **When the change alters a CLASSIFIER, hand-picked cases cannot fence it —
-measure the DELTA against the old implementation.** A classifier is any
-function deciding which of several shapes an input is (region-vs-stack-name
-predicate, route selector, error categoriser); its defects live in shapes
-nobody wrote down. go-to-k/cdkd#2001 (2026-08-21) shipped THREE green
-revisions, each fixing the case the previous review named and breaking a
-neighbour, every revision passing a suite that grew one case per round. The
-fence that ends it is a differential walk: enumerate the input space, run BOTH
-the new implementation and a transcription of the old one, and fail on any
-difference outside an explicitly enumerated set of intended classes — a shape
-nobody imagined is a failure by default (it showed three delta classes where
-the comments said two). Get the transcription from
-`git show origin/main:<path>`, not memory, and confirm agreement on the cells
-where they SHOULD agree before trusting the cells where they differ. Two ways
-it goes inert, both measured on that lane:
+measure the DELTA against the old implementation.** A classifier is any function
+deciding which of several shapes an input is (region-vs-stack-name predicate,
+route selector, error categoriser); its defects live in shapes nobody wrote
+down. go-to-k/cdkd#2001 (2026-08-21) shipped THREE green revisions, each fixing
+the case the previous review named and breaking a neighbour. The fence that ends
+it is a differential walk: enumerate the input space, run BOTH the new
+implementation and a transcription of the old one, and fail on any difference
+outside an explicitly enumerated set of intended classes — a shape nobody
+imagined is a failure by default (it showed three delta classes where the
+comments said two). Take the transcription from `git show origin/main:<path>`,
+not memory, and confirm agreement on the cells where they SHOULD agree before
+trusting the cells where they differ. Two ways it goes inert, both measured:
 
 - **Classify by the resulting VALUE, not by the input's shape.** The first cut
   bucketed a differing cell by which key it was, so mutating the fix to return
@@ -444,16 +441,16 @@ it goes inert, both measured on that lane:
   now returns.
 - **Carry a floor per class.** The walk reaches a class only if the input pool
   contains it; one class was real, intended and never reached, so a pool that
-  quietly stops covering one would pass as "no regressions".
+  quietly stops covering one passes as "no regressions".
 
 **A VALUE import from a module other suites `vi.mock` reds those suites.** The
 `type`-only import is invisible to the mock; a runtime one is not, and the
 failure names the EXPORT (`[vitest] No "<CONST>" export ...`), reading as a
-missing symbol in the module you just edited rather than a mocking problem in
-a suite you did not touch (one constant imported into `state-file-keys.ts`
-reddened `gc.test.ts` and `bootstrap-destroy.test.ts`). When two modules must
-agree on a constant and one is widely mocked, spell it in both and fence the
-pair with a test importing both — the sync is what matters.
+missing symbol in the module you just edited rather than a mocking problem in a
+suite you did not touch (one constant imported into `state-file-keys.ts`
+reddened two unrelated suites). When two modules must agree on a constant and
+one is widely mocked, spell it in both and fence the pair with a test importing
+both — the sync is what matters.
 
 **Run probes with `vp test run <path>`, never `vp run test <path>`.** The
 wrapped form puts the Vite+ task runner between caller and verdict, and while
@@ -488,8 +485,8 @@ tree:
   on `'custom-resource-responses'` *with both quote characters*, so the probe's
   `` `${'...'}/` `` reds it while the spelling anybody would type — trailing
   slash inside the quote — sailed through, as did any copy outside the fence's
-  hand-written file list. Its author had just read the "grep for the SHAPE" rule
-  above. Mutate a fence the way a future contributor would, and derive the
+  hand-written file list. Its author had just read the "grep for the SHAPE, not
+  for a NAME" rule above. Mutate a fence the way a future contributor would, and derive the
   population rather than listing it.
 - **Write the defect in every spelling the language allows** and confirm each
   is flagged. go-to-k/cdkd#2111 (2026-08-20): a scanner for
@@ -746,11 +743,11 @@ because it converts an open gap into a recorded assurance:
 - **A scratch harness was silently REPLACED by another agent's file of the
   same name.** Its `__main__` was `pass`, so four probes "passed" having
   applied nothing — parallel agents share scratch space and pick the same
-  obvious filenames. Make every probe emit a positive receipt it cannot produce
-  without having run — `bytes 41822 -> 41799; anchor now 0 (was 1)` — and read
-  the receipt rather than the exit code.
+  obvious filenames. Name scratch files per lane, and make every probe emit a
+  positive receipt it cannot produce without having run — `bytes 41822 ->
+  41799; anchor now 0 (was 1)` — then read the receipt, not the exit code.
 
-  **That rule was already written here and was broken THREE times in one run
+  **The naming rule was already written here and was broken THREE times in one run
   (2026-08-26), so stop asking agents to invent the name: the ORCHESTRATOR
   assigns each dispatched agent a unique scratch directory IN ITS PROMPT**
   (`$SCRATCHPAD/lane<issue>-private/`, `$SCRATCHPAD/rev-<role>-<sha>/`), plus
