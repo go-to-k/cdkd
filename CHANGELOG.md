@@ -1,3 +1,10 @@
+## [0.285.11](https://github.com/go-to-k/cdkd/compare/v0.285.10...v0.285.11) (2026-09-03)
+
+
+### Bug Fixes
+
+* **cli:** quote YAML through the yaml package so cdkd synth output parses ([#2466](https://github.com/go-to-k/cdkd/issues/2466)) ([9fce13f](https://github.com/go-to-k/cdkd/commit/9fce13fb33373018c7d4a454b0e0700708387a3f))
+
 ## [0.285.10](https://github.com/go-to-k/cdkd/compare/v0.285.9...v0.285.10) (2026-09-02)
 
 
