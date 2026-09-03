@@ -253,6 +253,11 @@ function buildReport(): FlagCoverageReport {
 
 function renderMarkdown(report: FlagCoverageReport): string {
   const lines: string[] = [];
+  lines.push('---');
+  lines.push('title: "CLI flag coverage matrix"');
+  lines.push('unlisted: true');
+  lines.push('---');
+  lines.push('');
   lines.push('# CLI Flag Coverage Matrix');
   lines.push('');
   lines.push(

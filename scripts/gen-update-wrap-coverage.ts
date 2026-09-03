@@ -814,6 +814,11 @@ export function findGaps(report: UpdateWrapCoverageReport): readonly ClassClassi
 
 function renderMarkdown(report: UpdateWrapCoverageReport): string {
   const lines: string[] = [];
+  lines.push('---');
+  lines.push('title: "Update error-wrapping coverage matrix"');
+  lines.push('unlisted: true');
+  lines.push('---');
+  lines.push('');
   lines.push('# SDK-provider `update()` error-wrapping coverage matrix');
   lines.push('');
   lines.push(

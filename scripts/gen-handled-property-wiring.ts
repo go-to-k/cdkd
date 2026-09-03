@@ -1720,6 +1720,11 @@ export function assessBaseline(
 
 function renderMarkdown(report: HandledPropertyWiringReport): string {
   const lines: string[] = [];
+  lines.push('---');
+  lines.push('title: "handledProperties wiring-evidence matrix"');
+  lines.push('unlisted: true');
+  lines.push('---');
+  lines.push('');
   lines.push('# `handledProperties` wiring-evidence matrix');
   lines.push('');
   lines.push(

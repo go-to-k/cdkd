@@ -330,6 +330,11 @@ export async function partitionCoverage(
  */
 export function renderMarkdown(report: CoverageReport): string {
   const lines: string[] = [];
+  lines.push('---');
+  lines.push('title: "Provider coverage report"');
+  lines.push('unlisted: true');
+  lines.push('---');
+  lines.push('');
   lines.push('# Provider Coverage Report');
   lines.push('');
   lines.push(

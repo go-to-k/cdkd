@@ -15,7 +15,7 @@ This document summarizes common issues when using cdkd and their solutions.
 4. [Asset Publishing Issues](#asset-publishing-issues)
 5. [Intrinsic Function Issues](#intrinsic-function-issues)
 6. [Permission Errors](#permission-errors)
-7. [Proxy / Corporate Network](#proxy--corporate-network)
+7. [Proxy / Corporate Network](#proxy-corporate-network)
 8. [Performance Issues](#performance-issues)
 9. [Orphaned Resources](#orphaned-resources)
 

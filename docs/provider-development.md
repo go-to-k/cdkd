@@ -1223,7 +1223,7 @@ The `property-coverage` test will fail until the new type's schema fixture exist
 node scripts/refresh-cfn-schemas.mjs --only-missing
 ```
 
-Then classify every unaccounted property into `handledProperties` (if wired) or `unhandledByDesign` (if intentionally skipped, with a one-line rationale). See [§3c handledProperties coverage check](#3c-handledproperties--cfn-schema-coverage-check-issue-391) for the full workflow.
+Then classify every unaccounted property into `handledProperties` (if wired) or `unhandledByDesign` (if intentionally skipped, with a one-line rationale). See [§3c handledProperties coverage check](#3c-handledproperties-cfn-schema-coverage-check-issue-391) for the full workflow.
 
 ### Step 6: Create Tests
 

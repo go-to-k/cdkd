@@ -45,7 +45,7 @@ Same shape as `cdkd local invoke`. The container receives the developer's AWS cr
 - `--jwt <bearer-token>` — verified + forwarded when the runtime declares `customJwtAuthorizer`.
 - `--timeout <ms>` — per-request timeout (default 120000 / 120s).
 - `--ws` — bidirectional `/ws` WebSocket mode (HTTP protocol only). Auto-detects a TTY, and the two halves read DIFFERENT streams. Whether the REPL runs depends on **stdin**: an interactive terminal enters a multi-turn REPL (each stdin line is sent as a follow-up frame until Ctrl-D / agent close), while piped / redirected / CI stdin stays a wire-faithful one-shot (force one-shot in a TTY with `--ws </dev/null`). Whether the `> ` prompt is written depends on **stdout**, because that is the payload stream: with stdout redirected the frames stay raw and unprompted even from a terminal, so `--ws > frames.txt` and `--ws | tail -1` mean what they look like.
-- `--watch` — re-synth + reload the agent container on CDK source edits. See [Hot reload (`--watch`)](#hot-reload---watch) below. Off by default. Supported on the HTTP / AGUI protocols; a no-op WARN for MCP / A2A (their single shot runs once and exits).
+- `--watch` — re-synth + reload the agent container on CDK source edits. See [Hot reload (`--watch`)](#hot-reload-watch) below. Off by default. Supported on the HTTP / AGUI protocols; a no-op WARN for MCP / A2A (their single shot runs once and exits).
 - `--sigv4` — sign `/invocations` with SigV4 (for SigV4-protected runtimes).
 - `--from-state` / `--from-cfn-stack [name]` / `--state-bucket` / `--state-prefix` / `--stack-region` — state-source flags.
 - `--assume-role [arn]` / `--no-assume-role` / `--ecr-role-arn <arn>` — role-assumption flags.

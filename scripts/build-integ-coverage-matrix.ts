@@ -694,6 +694,11 @@ function buildReport(): CoverageReport {
 
 function renderMarkdown(report: CoverageReport): string {
   const lines: string[] = [];
+  lines.push('---');
+  lines.push('title: "Integration test coverage matrix"');
+  lines.push('unlisted: true');
+  lines.push('---');
+  lines.push('');
   lines.push('# Integration Test Coverage Matrix');
   lines.push('');
   lines.push(

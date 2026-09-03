@@ -137,6 +137,29 @@ describe('published docs cross-links', () => {
     expect(failures).toEqual([]);
   });
 
+  // Same-page `](#fragment)` links were the fence's blind spot: the cross-doc
+  // test above only matches `file.md#fragment`. Five TOC/see-below links
+  // shipped with GitHub-style slugs (`#proxy--corporate-network`) that 404 on
+  // the site, whose slugger collapses every non-alphanumeric run to ONE
+  // hyphen (issue #2467 lane, maintainer report 2026-09-03).
+  it('every same-page #fragment link resolves to a heading in its own file', () => {
+    const failures: string[] = [];
+    let checked = 0;
+    for (const file of handWrittenDocs) {
+      const body = stripFences(readFileSync(file, 'utf8'));
+      const slugs = headingSlugsOf(file);
+      for (const m of body.matchAll(/\]\(#([^)\s]+)\)/g)) {
+        checked += 1;
+        if (!slugs.has(m[1])) {
+          failures.push(`${relative(ROOT, file)} -> #${m[1]} (no such heading on the page)`);
+        }
+      }
+    }
+    // Anti-vacuity floor: the corpus carries ~28 same-page anchors today.
+    expect(checked).toBeGreaterThanOrEqual(15);
+    expect(failures).toEqual([]);
+  });
+
   it('every relative md link (no fragment) resolves to a real file', () => {
     const failures: string[] = [];
     let checked = 0;
@@ -174,6 +197,38 @@ describe('site navigation config', () => {
     expect(paths.length).toBeGreaterThanOrEqual(20);
     const missing = paths.filter((p) => !existsSync(join(DOCS, `${p}.md`)));
     expect(missing).toEqual([]);
+  });
+
+  // Every published docs page must be deliberately placed: either reachable
+  // from the sidebar navigation, or marked `unlisted: true` so it leaves the
+  // sitemap / llms.txt / pagination. A page in neither state is a silent
+  // public publication — the nine machine-generated coverage matrices shipped
+  // that way (issue #2467; their generators now emit the frontmatter).
+  it('every docs page is a sidebar entry or unlisted', () => {
+    const navPaths = new Set(navGroups().flatMap(([, p]) => p));
+    // The entry page is the site root; it has no sidebar entry by design.
+    const exempt = new Set(['index']);
+    const failures: string[] = [];
+    let checked = 0;
+    for (const file of walkMarkdown(DOCS)) {
+      const slug = relative(DOCS, file).replace(/\.md$/, '');
+      checked += 1;
+      const head = readFileSync(file, 'utf8').slice(0, 400);
+      // Scope the test to the FIRST frontmatter block only — a lazy
+      // whole-head match would also accept "unlisted: true" appearing in
+      // body prose before a `---` thematic break (reviewer note).
+      const fm = /^---\n([\s\S]*?)\n---/.exec(head);
+      const unlisted = fm !== null && /\bunlisted:\s*true\b/.test(fm[1]);
+      if (navPaths.has(slug) && unlisted) {
+        failures.push(`docs/${slug}.md is BOTH a sidebar entry and unlisted (contradictory)`);
+        continue;
+      }
+      if (navPaths.has(slug) || exempt.has(slug) || unlisted) continue;
+      failures.push(`docs/${slug}.md is neither in the sidebar nav nor unlisted`);
+    }
+    // Anti-vacuity floor: docs/ holds far more pages than this.
+    expect(checked).toBeGreaterThanOrEqual(40);
+    expect(failures).toEqual([]);
   });
 
   // Maintainer policy (2026-09-03): user-facing pages must not surface GitHub
