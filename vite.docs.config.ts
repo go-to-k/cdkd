@@ -149,7 +149,7 @@ const theme = defineTheme({
     '  :root:not([data-theme="light"]) .hero-image img.theme-asset--light { display: none; }',
     '}',
     '.hero-name { grid-column: 2; grid-row: 1; align-self: start; margin: 0; line-height: 1; text-align: left; }',
-    '.hero-name::after { content: "CDK Direct"; display: inline-block; margin-left: 0.4rem; font-size: 0.85rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--octc-color-text-muted); transform: translateY(-0.9rem); }',
+    '.hero-name::after { content: "CDK Direct"; display: inline-block; margin-left: 0.6rem; font-size: 0.85rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--octc-color-text-muted); transform: translateY(-0.9rem); }',
     '.hero-text { grid-column: 2; grid-row: 2; align-self: end; margin: 0; text-align: left; font-size: 1.35rem; }',
     '.hero-tagline { grid-column: 1 / -1; grid-row: 3; margin: 1.75rem 0 0; max-width: 36.5rem; }',
     '.hero-actions { grid-column: 1 / -1; grid-row: 4; }',
