@@ -15,7 +15,7 @@ You are checking whether documentation is up to date with recent code changes in
    - `src/index.ts` — public exports
    - `src/cli/options.ts`, `src/cli/commands/**` — CLI surface described in README.md
    - `src/types/**` — public type definitions
-   - `src/state/**` — bucket name, key layout, lock layout, schema version. These are documented verbatim in `docs/state-management.md`, `docs/troubleshooting.md`, README.md ("Outputs" example path), and CLAUDE.md ("S3 storage structure"). A path-layout change in `s3-state-backend.ts` or `lock-manager.ts` invalidates ~30 shell snippets across those files; the auto-migration session of 2026-05-01 (PR #57 → v0.7.0) shipped before this trigger existed and the docs took the full rollout to be re-aligned.
+   - `src/state/**` — bucket name, key layout, lock layout, schema version. These are documented verbatim in `docs/state-management.md`, `docs/troubleshooting.md`, `docs/stack-outputs.md` (the "Outputs" example path), and CLAUDE.md ("S3 storage structure"). A path-layout change in `s3-state-backend.ts` or `lock-manager.ts` invalidates ~30 shell snippets across those files; the auto-migration session of 2026-05-01 (PR #57 → v0.7.0) shipped before this trigger existed and the docs took the full rollout to be re-aligned.
    - **any new file added** anywhere under `src/**` — must be mentioned in CLAUDE.md "Key Files and Directories"
    - `package.json` — dependency additions/removals described in CLAUDE.md "Dependencies"
    - `README.md`, `CLAUDE.md`, `docs/**`, `.claude/rules/**` — the docs themselves
@@ -28,13 +28,13 @@ You are checking whether documentation is up to date with recent code changes in
    - `src/synthesis/` changes → check docs/architecture.md synthesis section, CLAUDE.md synthesis section
    - `src/assets/` changes → check docs/architecture.md asset section, CLAUDE.md asset section
    - `src/deployment/` changes → check docs/architecture.md deployment section, CLAUDE.md deployment section
-   - `src/provisioning/` changes → check docs/provider-development.md, CLAUDE.md provider section. For a NEW SDK provider ALSO check docs/supported-resources.md + docs/import.md (per `.claude/rules/providers.md` "Adding a New SDK Provider"). **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), its resource type MUST appear in the `--no-wait` resource lists: the table + intro in docs/cli-deploy.md, the `--no-wait` bullet in README.md, and the `noWaitOption` help + JSDoc in src/cli/options.ts. Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (CI fails if a `CDKD_NO_WAIT` provider is absent from the cli-deploy.md `--no-wait` table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — this bullet + that test are the backstop.
+   - `src/provisioning/` changes → check docs/provider-development.md, CLAUDE.md provider section. For a NEW SDK provider ALSO check docs/supported-resources.md + docs/import.md (per `.claude/rules/providers.md` "Adding a New SDK Provider"). **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), its resource type MUST appear in the `--no-wait` resource lists: the table + intro and the `--no-wait` list in docs/cli-deploy.md, and the `noWaitOption` help + JSDoc in src/cli/options.ts (the README no longer enumerates flags — that content lives in docs/cli-deploy.md). Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (CI fails if a `CDKD_NO_WAIT` provider is absent from the cli-deploy.md `--no-wait` table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — this bullet + that test are the backstop.
    - `src/analyzer/` changes → check docs/architecture.md analysis section
    - `src/state/` changes → check docs/state-management.md
    - New files added → check if they're mentioned in CLAUDE.md "Key Files and Directories"
    - New exports in `src/index.ts` → check if public API docs are updated
    - `package.json` dependency changes → check CLAUDE.md "Dependencies" section
-   - New CLI options → check README.md usage section
+   - New CLI options → check docs/getting-started.md and the per-command pages under docs/ (the README's usage cheatsheet moved there)
    - New integration tests → check docs/testing.md
 
 4. **Read the relevant documentation sections** and compare with the actual code to find:
