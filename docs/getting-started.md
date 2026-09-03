@@ -150,6 +150,7 @@ variant, and stage / wildcard pattern matching.
 
 ## Next steps
 
+- [Using with AI Agents](ai-agents.md) — install the cdkd skill so Claude Code and other agents deploy with cdkd.
 - [Wait modes](wait-modes.md) — `--no-wait` / default / `--full-wait`: choose what "done" means per resource type.
 - [Use in CI: per-PR environments](ci-per-pr.md) — one ephemeral stack per pull request, deployed and destroyed by workflow.
 - [CLI reference](cli-reference.md) — every command and flag in detail.

@@ -184,7 +184,7 @@ const theme = defineTheme({
     // leaking through. Let paragraphs use the full column like GitHub does,
     // and thin the heavy 2px heading rules to a hairline.
     '.content p { max-width: none; }',
-    '.content h2 { border-bottom-width: 1px; }',
+    '.content h2 { border-bottom: 2px solid color-mix(in srgb, var(--octc-sw-rule) 45%, transparent); }',
     '.nav-title, .toc-title { border-top: none; }',
     // The sidebar/outline column rules run the full viewport height and cut
     // across the header nav items above them — drop both.
