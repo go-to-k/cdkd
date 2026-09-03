@@ -2,11 +2,13 @@
 # verify.sh — cdkd Cloud Control API greenfield fallback integ test
 # (issue #614).
 #
-# Asserts that a Lambda Function whose template uses a silent-drop
-# property (`RuntimeManagementConfig`) is auto-routed via Cloud Control
-# API and that `RuntimeManagementConfig.UpdateRuntimeOn` reaches AWS
-# verbatim — the silent-drop bug is closed by default. Also asserts the
-# destroy path works through CC API.
+# Asserts that an HTTP API whose template uses a silent-drop property
+# (`Body`, an inline OpenAPI spec — an ARCHITECTURAL exclusion, see
+# issue #2473 and the rationale in lib/cc-api-fallback-stack.ts) is
+# auto-routed via Cloud Control API and that the spec's route reaches
+# AWS — the silent-drop bug is closed by default. Also asserts the
+# destroy path works through CC API. Step 0 reds self-diagnosingly if
+# the trigger is ever backfilled.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -51,7 +53,8 @@ cd "$(dirname "$0")"
 STACK="CdkdCcApiFallback"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
-FN_NAME="cdkd-cc-api-fallback-probe"
+API_TITLE="cdkd-cc-api-fallback-probe"
+PROBE_ROUTE="GET /cdkd-2473-probe"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -67,7 +70,10 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  for api_id in $(aws apigatewayv2 get-apis --region "${REGION}" \
+      --query "Items[?Name=='${API_TITLE:-cdkd-cc-api-fallback-probe}'].ApiId" --output text 2>/dev/null); do
+    aws apigatewayv2 delete-api --api-id "${api_id}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -88,6 +94,27 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2
   exit 1
 fi
+
+# --- Step 0: self-diagnosing trigger guard (issue #2473) --------------------
+# This fixture's premise is that `Body` is a silent-drop for
+# AWS::ApiGatewayV2::Api. Every previous trigger died when the backfill
+# campaign wired it (LoggingConfig -> RecursiveLoop -> RuntimeManagementConfig),
+# each time as a mysterious permanent deploy-time red that cost a root-cause
+# session. This guard turns that death into a one-line red naming its own fix.
+echo "==> Step 0: trigger premise guard"
+if ! (cd "${PWD}/../../.." && node --input-type=module -e "
+const mod = await import('./src/provisioning/property-coverage.generated.ts');
+const table = Object.values(mod).find((v) => v instanceof Map);
+const cov = table && table.get('AWS::ApiGatewayV2::Api');
+if (!cov || !cov.silentDrop || !cov.silentDrop.has('Body')) process.exit(1);
+"); then
+  echo "FAIL: AWS::ApiGatewayV2::Api.Body is no longer a silent-drop — the trigger" >&2
+  echo "      was backfilled and this fixture's premise is dead. Do NOT debug the" >&2
+  echo "      deploy: pick the next durable silent-drop trigger per the selection" >&2
+  echo "      rule in lib/cc-api-fallback-stack.ts (issue 2473)." >&2
+  exit 1
+fi
+echo "    OK: Body is still a silent-drop (premise holds)"
 
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
@@ -110,17 +137,18 @@ if [ -z "${STATE}" ]; then
   exit 1
 fi
 
-# --- Assertion 1: state.provisionedBy on the Lambda is 'cc-api' -------
+# --- Assertion 1: state.provisionedBy on the HTTP API is 'cc-api' -----
 # Lookup by resourceType (CDK appends a hash to the logical id; the
-# bare `SilentDropLambda` key does not exist — it's e.g.
-# `SilentDropLambdaXXXXXXXX`).
-PROVISIONED=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
+# bare `SilentDropApi` key does not exist — it's e.g.
+# `SilentDropApiXXXXXXXX`).
+PROVISIONED=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGatewayV2::Api") | .value.provisionedBy // ""] | first')
+API_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGatewayV2::Api") | .value.physicalId // ""] | first')
 if [ "${PROVISIONED}" != "cc-api" ]; then
-  echo "FAIL: Lambda resource has provisionedBy='${PROVISIONED}', expected 'cc-api' (auto-route should have fired on RuntimeManagementConfig)" >&2
+  echo "FAIL: HTTP API resource has provisionedBy='${PROVISIONED}', expected 'cc-api' (auto-route should have fired on Body)" >&2
   echo "${STATE}" | jq .
   exit 1
 fi
-echo "    OK: Lambda resource provisionedBy == 'cc-api' (auto-route fired)"
+echo "    OK: HTTP API resource provisionedBy == 'cc-api' (auto-route fired)"
 
 # --- Assertion 2: state.provisionedBy on the IAM Role is 'sdk' (heterogeneous) ---
 ROLE_PROVISIONED=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::IAM::Role") | .value.provisionedBy // ""] | first')
@@ -131,19 +159,29 @@ if [ "${ROLE_PROVISIONED}" != "sdk" ]; then
 fi
 echo "    OK: IAM Role resource provisionedBy == 'sdk' (heterogeneous routing in one stack)"
 
-# --- Assertion 3: RuntimeManagementConfig actually reached AWS ----------------------
-# RuntimeManagementConfig lives on its own control-plane API
-# (get-runtime-management-config), not on get-function-configuration.
-# Default is 'Auto'; the fixture sets 'FunctionUpdate', so seeing
-# 'FunctionUpdate' proves the CC route forwarded the silent-drop prop.
-RTM_UPDATE_ON=$(aws lambda get-runtime-management-config \
-  --function-name "${FN_NAME}" --region "${REGION}" \
-  --query 'UpdateRuntimeOn' --output text 2>/dev/null)
-if [ "${RTM_UPDATE_ON}" != "FunctionUpdate" ]; then
-  echo "FAIL: Lambda RuntimeManagementConfig.UpdateRuntimeOn is '${RTM_UPDATE_ON}', expected 'FunctionUpdate' (silent-drop NOT closed by CC route)" >&2
+# --- Assertion 3: the OpenAPI Body actually reached AWS -----------------------
+# The `GET /cdkd-2473-probe` route is declared ONLY inside `Body`, so its
+# presence on the live API proves the CC route imported the spec; the SDK
+# path would have silently dropped it, leaving an API with no routes.
+case "${API_ID}" in
+  '' | null)
+    echo "FAIL: no ApiGatewayV2::Api physicalId in state" >&2
+    exit 1
+    ;;
+esac
+ROUTE_COUNT=$(aws apigatewayv2 get-routes --api-id "${API_ID}" --region "${REGION}" \
+  --query "length(Items[?RouteKey=='${PROBE_ROUTE}'])" --output text)
+case "${ROUTE_COUNT}" in
+  '' | *[!0-9]*)
+    echo "FAIL: could not read the route count (got '${ROUTE_COUNT}')" >&2
+    exit 1
+    ;;
+esac
+if [ "${ROUTE_COUNT}" -lt 1 ]; then
+  echo "FAIL: route '${PROBE_ROUTE}' not found on API ${API_ID} (Body silent-drop NOT closed by CC route)" >&2
   exit 1
 fi
-echo "    OK: Lambda RuntimeManagementConfig.UpdateRuntimeOn == 'FunctionUpdate' on AWS (silent-drop CLOSED by #614)"
+echo "    OK: route '${PROBE_ROUTE}' exists on AWS (silent-drop CLOSED by #614)"
 
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy via CC delete path"
@@ -152,8 +190,8 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --region "${REGION}" \
   --force
 
-assert_gone "Lambda function ${FN_NAME} still exists after destroy" aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
-echo "    OK: Lambda function is gone"
+assert_gone "HTTP API ${API_ID} still exists after destroy" aws apigatewayv2 get-api --api-id "${API_ID}" --region "${REGION}"
+echo "    OK: HTTP API is gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
