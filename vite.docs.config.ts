@@ -159,7 +159,7 @@ const theme = defineTheme({
     // on the compact hero overlaps the action buttons and reads as the
     // section going transparent — drop it. Feature cards keep no hover
     // motion (the skin slides them 8px right) and no scroll-rise animation.
-    '.hero { border-bottom: 0; }',
+    '.hero { border-bottom: 0; background: none; }',
     '.hero::after { display: none; }',
     '.feature-card { animation: none; }',
     '.feature-card:hover { transform: none; }',
