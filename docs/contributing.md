@@ -1,15 +1,12 @@
+---
+title: Contributing
+description: How to set up a cdkd development environment, make changes, and know which verification your PR needs.
+---
+
 # Contributing to cdkd
 
-Thank you for your interest in contributing to cdkd!
-
-The full contributor guide — project structure, PR flow, the
-integration-test policy (which verification each PR needs, and why you are
-never required to run the AWS-charging tests yourself), and code style —
-lives in **[docs/contributing.md](docs/contributing.md)**, next to the
-[Architecture](docs/architecture.md),
-[Provider Development](docs/provider-development.md), and
-[Testing](docs/testing.md) deep dives (rendered at
-[cdkd.dev/contributing](https://cdkd.dev/contributing/)).
+Thank you for your interest in contributing to cdkd! Issues and pull
+requests are welcome at [github.com/go-to-k/cdkd](https://github.com/go-to-k/cdkd).
 
 ## Development Setup
 
@@ -57,8 +54,7 @@ vp run format
 
 ## Project Structure
 
-See [docs/architecture.md](docs/architecture.md) for the layer-by-layer
-walkthrough (also summarized in [CLAUDE.md](CLAUDE.md)).
+See [Architecture](architecture.md) for the layer-by-layer walkthrough.
 
 ## Making Changes
 
@@ -70,8 +66,7 @@ walkthrough (also summarized in [CLAUDE.md](CLAUDE.md)).
 
 ## Adding a New SDK Provider
 
-See [docs/provider-development.md](docs/provider-development.md) for a
-step-by-step guide.
+See [Provider Development](provider-development.md) for a step-by-step guide.
 
 ## Adding Integration Tests
 
@@ -83,10 +78,10 @@ Integration tests under `tests/integration/` deploy and destroy **real AWS
 resources**, so running them incurs real AWS charges. CI does not run them.
 
 **You are not required to run them.** If your change needs integration
-coverage, just say so in your PR — the maintainer runs the required tests
-before merging, at no cost to you. The maintainer's merge gates physically
-block merging until the required integration run has passed, so coverage is
-guaranteed either way; asking is never a burden.
+coverage (see the table below), just say so in your PR — the maintainer runs
+the required tests before merging, at no cost to you. The maintainer's merge
+gates physically block merging until the required integration run has passed,
+so coverage is guaranteed either way; asking is never a burden.
 
 Note this is about *running* the tests, not writing them: if your change adds
 behavior no existing fixture covers (e.g. a new SDK provider), you are still
@@ -94,15 +89,27 @@ expected to add the fixture in the same PR (see "Adding Integration Tests"
 above) — the maintainer can run it for you.
 
 You are welcome to run them yourself against your own AWS account if you
-prefer — see [docs/testing.md](docs/testing.md) for per-test instructions.
+prefer — see [Testing](testing.md) for per-test instructions.
 Most `local-*` tests are the exception on cost: they need only a local
 Docker daemon and touch no AWS resources (`local-invoke-from-state` is the
 one exception — it also deploys and destroys real AWS resources).
 
+### When is an integration test needed, and which one?
+
 Which verification a PR needs is derived mechanically from the paths it
-touches — the per-gate table lives in
-[docs/contributing.md](docs/contributing.md#when-is-an-integration-test-needed-and-which-one)
-(source of truth: the gate scopes in [`.markgate.yml`](.markgate.yml)).
+touches. The path lists are the gate scopes in
+[`.markgate.yml`](https://github.com/go-to-k/cdkd/blob/main/.markgate.yml) —
+the maintainer's merge gates read exactly those, so the file is the source of
+truth. In summary:
+
+| Your PR touches | Required verification (gate) |
+| --- | --- |
+| Deletion logic — `src/provisioning/providers/**`, destroy commands, rollback / retry code | An integration test that completes deploy **and destroy** cleanly (`integ-destroy`) |
+| Cross-cutting deploy/destroy code — `src/deployment/deploy-engine.ts`, `src/analyzer/dag-builder.ts`, intrinsic resolution, provider registration | A broad multi-resource test in addition to any feature-specific one (`integ-broad`; the test-name set is listed in `.markgate.yml`) |
+| Local execution — `src/local/**`, `src/cli/commands/local-*.ts` | A `local-*` test — Docker-based, most need no AWS account (`integ-local`) |
+| A state schema version bump in `src/types/state.ts` | The `schema-v<N>-to-v<N+1>-migration` round-trip test (`integ-schema-migration`) |
+| None of the above | No integration test — unit tests and CI are enough |
+
 When in doubt, open the PR and ask; the maintainer will pick and run the
 right tests.
 

@@ -90,6 +90,7 @@ const navigation: SsgNavigationGroup[] = [
   {
     title: 'Contributing',
     items: [
+      { title: 'Contributing Guide', path: '/contributing' },
       { title: 'Architecture', path: '/architecture' },
       { title: 'Provider Development', path: '/provider-development' },
       { title: 'Testing', path: '/testing' },
