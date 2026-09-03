@@ -2,167 +2,117 @@
 
 ## Gotchas (learned the hard way)
 
-- **Claim before editing, always** — the whole point. An unclaimed lane races a
-  parallel agent onto the same cross-cutting file.
-- **Claiming is not winning.** Posting the comment does not end the race — read
-  it back and yield to an earlier `createdAt` (§4). Claiming late, after the
-  triage, is what makes the race winnable in the first place.
-- **A pushed branch with no PR is a live lane.** `gh pr list` goes blind between
-  a lane's first push and its `gh pr create` — when it is writing hardest — and
-  `git worktree list` shows the lane without saying it is alive.
-  `git for-each-ref --sort=-committerdate refs/remotes/origin` after a
-  `git fetch` is what sees the push (§2). Issue comments are NOT blind here (§4
-  posts the claim before the first edit); the window that IS the claim's alone
-  is the mirror — a lane with a worktree and nothing pushed (§3, §9).
+- **Claim before editing, always** — an unclaimed lane races a parallel agent
+  onto the same cross-cutting file. **Claiming is not winning**: read it back
+  and yield to an earlier `createdAt` (§4).
+- **A pushed branch with no PR is a live lane.** `gh pr list` goes blind
+  between a lane's first push and its `gh pr create`;
+  `git for-each-ref --sort=-committerdate refs/remotes/origin` after a fetch
+  sees the push (§2). The window that is the claim's alone is the mirror — a
+  lane with a worktree and nothing pushed (§3, §9).
 - **A fresh issue is someone's deferral, not free backlog** (§3-0). The author
-  field proves nothing about which session filed it, so the 60-minute window is
+  field proves nothing about which session filed it; the 60-minute window is
   the whole defence — and §4 is its other half: claim what you FILE, not only
   what you take.
-- **The filer may already have classified the issue.** A body carrying
-  `Session-fit: next` names the cycle the issue needs; take it only if this run
-  can pay for that, and say why in the claim (§3). go-to-k/cdkd#1791 passed
-  every §2 / §3 gate, was claimed, and had to be retracted after the deep read
-  showed the fixture arm + export integ its body had already named (2026-08-13)
-  — nothing but a grep stood between the run and it.
+- **The filer may already have classified the issue.** A `Session-fit: next`
+  body names the cycle it needs; take it only if this run can pay for that,
+  and say why in the claim (go-to-k/cdkd#1791 passed every §2/§3 gate, was
+  claimed, and had to be retracted — nothing but a grep stood between the run
+  and the fixture arm its body had already named).
 - **A cross-repo framing spends the deferral budget up front.** When the user
   says "do this across the repos in one session", `Session-fit: next` is no
-  longer available for anything discovered inside that scope — the decision was
-  made when the scope was set. Three tells make it unarguable: you are about to
-  file the SAME issue body in more than one repo (that split is what the
-  framing exists to end); the fix is mechanical and its evidence is live right
-  now; or the user already said "finish it here". The four fields make a
-  deferral HONEST, not available — a defensible-reading `Effort` / `Estimate`
-  for work the run is already positioned to do is the tell that the
-  classification is an excuse (measured 2026-08-20: a three-repo consolidation
-  run filed the residual gap as three per-repo issues and had to carry them
-  in-session once the user objected). **Same session is the bar; same PR only
-  when the work is small enough to review together.**
-- **A mirror issue may already be carried elsewhere.** A lesson can already sit
-  in a target repo because a sibling found it first. Resolve it against the
-  file, open PRs and open issues before filing one (§10-c) or claiming one (§3).
-- **One lane per cross-cutting file.** The files §2 lists as contested absorb
-  most non-trivial fixes; you cannot parallelize two issues that both land
-  there. Per-provider fixes ARE disjoint — parallelize those freely. §2 holds
-  the list; this bullet does not restate it, for the reason go-to-k/cdkd#2076
-  records.
-- **Never merge a PR whose destroy path is unverified.** A green CI does not
-  exercise real-AWS destroy. If the fix touches any `delete()` /
-  DAG-destroy-order / state-cleanup path, the `integ-destroy` (+ `integ-broad`)
-  gate blocks the merge until `/run-integ` completes the destroy step with zero
-  orphans.
-- **Never bypass `/run-integ`** with a raw `cdkd deploy` / `cdkd destroy` — the
-  skill is what guarantees the destroy + orphan sweep + ledger write happen
-  together.
-- **Unique stack names on a real account** — it may hold PROD stacks; a shared
-  fixed name risks clobbering one.
-- **`vp run build` before any live test**, and re-`build` after every source
-  edit — the user runs `node dist/cli.js`, so an unbuilt change is invisible.
+  longer available for anything discovered inside that scope. Three tells make
+  it unarguable: filing the SAME issue body in more than one repo; a
+  mechanical fix whose evidence is live right now; the user already said
+  "finish it here" (measured 2026-08-20: a three-repo run filed the residual
+  gap as three per-repo issues and had to carry them in-session once the user
+  objected). Same session is the bar; same PR only when reviewable together.
+- **A mirror issue may already be carried elsewhere** — resolve against the
+  file, open PRs and open issues before filing (§10-c) or claiming (§3).
+- **One lane per cross-cutting file.** §2 holds the list; this bullet does not
+  restate it (go-to-k/cdkd#2076 records why).
+- **Never merge a PR whose destroy path is unverified** — green CI does not
+  exercise real-AWS destroy; the `integ-destroy` (+ `integ-broad`) gate blocks
+  until `/run-integ` completes the destroy step with zero orphans. **Never
+  bypass `/run-integ`** with raw `cdkd deploy` / `destroy` — the skill
+  guarantees destroy + orphan sweep + ledger together.
+- **Unique stack names on a real account** — it may hold PROD stacks.
+- **`vp run build` before any live test**, and after every source edit — the
+  user runs `node dist/cli.js`.
 - **Stale-base phantom diff** (§7) — never "restore" the peer's lines a stale
   `git diff main` appears to have removed; rebase instead.
-- **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the main
-  tree between calls; use `git -C <lane tree>` for git ops (the path is
-  `.claude/worktrees/<branch>`, or the launch worktree when the mode is
-  IN-PLACE) and re-`cd` before relative-path commands. **A KILLED or REFUSED
-  call is a named reset trigger, and it lies about the filesystem too.** A tool-call timeout
-  can return the shell at the session cwd (measured 2026-08-28; surfaced
-  go-to-k/cdkd#2368); a PreToolUse refusal aborts the whole call, so the
-  `mkdir` a later call's `cd` depends on never ran — and a failed `cd` does
-  NOT stop the rest of its call (measured: the lines after one wrote into the
-  main tree). After any timeout or refusal, run `pwd` AND re-verify what the
-  aborted call was supposed to create. **Its worst form is not a misplaced
-  edit but a FALSE GREEN on a verification command**: a gate run from the main
-  tree verifies unmodified `main` and passes (measured 2026-08-20:
-  `vp run typecheck:test` RC=0 twice while the lane's worktree held 20 type
-  errors; the tell was a COUNT — 123 tests vs 143 — so a run that only reads
-  rc cannot detect it). Prefix every verification command with
-  `cd <worktree> &&`, and when a result is surprisingly clean, check `pwd`
-  before believing it. **A BACKGROUNDED call gets this wrong even when you
-  know the rule**: the `cd` you relied on came from an earlier tool call, and
-  the backgrounded command starts from the session cwd, which may have drifted
-  (measured twice 2026-08-26). Make every long-running call print its own
-  `pwd` as its first line and read it before the results. **When it has
-  already happened, the two obvious repairs are both refused**:
-  `git checkout -- <path>` trips `dirty-path-restore-gate` (the stray edit IS
-  uncommitted work) and writing the file back trips `main-tree-edit-gate`.
-  Re-apply the edit in the worktree with an ABSOLUTE path first, then
-  `git -C <main> stash push -m <label> -- <path>` — that clears the main tree
-  without discarding anything. Drop the stash only after confirming
-  `stash@{0}`'s message is yours; parallel lanes stash too, and the indices
-  shift (2026-08-19). A blocked call runs NOTHING, preamble included — §6 has
-  the rule and what it costs.
-- **An IN-PLACE run ends with the Stop hook still calling its lane unmerged, and
-  the remedy it names is one this mode forbids.**
-  `.claude/hooks/stop-unmerged-lane-warn.sh` enumerates every worktree whose
-  branch is ahead of `origin/main`, and this repo SQUASH-merges, so a merged
-  branch reads as ahead forever; because the launch worktree IS the session's,
-  the warning arrives as `additionalContext` — "remove its worktree and delete
-  the branch" — whose FIRST half SKILL.md "Launch mode" forbids here. The
-  second half is now prescribed: the lane branch does get deleted, just after
-  the restore below rather than while you are standing on it. Expected, not a
-  defect: confirm the PR is MERGED (`gh pr view <N> --json state`) and say so in
-  the wrap. The tree is only clearable from inside by LEAVING the lane branch,
-  which is what §9's IN-PLACE arm does as the run's last step: `git switch
-  --no-guess <LAUNCH_BRANCH> && git branch -D` the lane branch — the branch the
-  probe recorded, restored as-is, with `--no-guess` so a branch that survives
-  only on `origin` fails here instead of being re-created from the remote. That silences the hook for the same reason
-  its own suggestion would — provided `LAUNCH_BRANCH` carries no commits of its
-  own, the ordinary case for a workspace branch the tool cut from `main` (§9 has
-  the `git rev-list --count` check and what to do when it is non-zero) — without
-  removing a tree this run does not own. `git switch --detach
-  origin/main` silences it too, since the hook skips a worktree whose
-  `git branch --show-current` is empty, and WAS this appendix's recommendation
-  until 2026-09-02 — but it leaves the outer tool displaying a detached
-  workspace it had created on a branch, which the maintainer flagged. Detach is
-  now the fallback for a run that was launched detached, not the default
-  (go-to-k/cdkd#2417).
-- **A usage-limit interruption does not have to end the run: leave yourself a
-  one-shot checkpoint at the reset time.** The 2026-09-02 run was cut off
-  mid-lane by the 5-hour window and resumed itself at the reset instant from an
-  in-session one-shot cron, finishing the lane it was in. Worth doing because
-  the alternative is not "resume later" but "re-derive later" — an interrupted
-  lane's context (which claims are posted, which gate cycles are already paid)
-  is exactly what §10-a says does not survive. Schedule it when the limit is
-  ANNOUNCED, not when it bites (go-to-k/cdkd#2417).
+- **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the
+  main tree between calls; use `git -C <lane tree>` for git ops and re-`cd`
+  before relative paths. **A KILLED or REFUSED call is a named reset trigger,
+  and it lies about the filesystem too**: a timeout can return the shell at
+  the session cwd; a PreToolUse refusal aborts the WHOLE call, so the `mkdir`
+  a later `cd` depends on never ran — and a failed `cd` does NOT stop the rest
+  of its call (lines after one wrote into the main tree). After any timeout or
+  refusal, run `pwd` AND re-verify what the aborted call should have created.
+  **Its worst form is a FALSE GREEN on a verification command**: a gate run
+  from the main tree verifies unmodified `main` and passes (measured:
+  `vp run typecheck:test` RC=0 twice while the lane held 20 type errors; the
+  tell was a COUNT — 123 tests vs 143). Prefix every verification command with
+  `cd <worktree> &&`; when a result is surprisingly clean, check `pwd`. **A
+  BACKGROUNDED call starts from the session cwd**, not the `cd` of an earlier
+  call — make every long-running call print its own `pwd` first. **When a
+  stray main-tree edit has already happened, both obvious repairs are
+  refused** (`git checkout -- <path>` trips `dirty-path-restore-gate`; writing
+  the file back trips `main-tree-edit-gate`): re-apply the edit in the
+  worktree with an ABSOLUTE path, then
+  `git -C <main> stash push -m <label> -- <path>`; drop the stash only after
+  confirming `stash@{0}`'s message is yours — parallel lanes stash too. A
+  blocked call runs NOTHING, preamble included — §6 has the rule.
+- **An IN-PLACE run ends with the Stop hook still calling its lane unmerged,
+  and the remedy it names is one this mode forbids.**
+  `stop-unmerged-lane-warn.sh` enumerates worktrees ahead of `origin/main`,
+  and a squash-merged branch reads as ahead forever; the warning's "remove its
+  worktree" half is forbidden here (SKILL.md "Launch mode"). Expected, not a
+  defect: confirm the PR is MERGED and say so in the wrap. The tree is only
+  clearable from inside by LEAVING the lane branch, which is what §9's
+  IN-PLACE arm does as the run's last step: `git switch
+  --no-guess <LAUNCH_BRANCH> && git branch -D` the lane branch — the branch
+  the probe recorded, restored as-is, with `--no-guess` so a branch surviving
+  only on `origin` fails here instead of being re-created from the remote.
+  That silences the hook — provided `LAUNCH_BRANCH` carries no commits of its
+  own (§9 has the `git rev-list --count` check) — without removing a tree this
+  run does not own. Detach silences it too but leaves the outer tool
+  displaying a detached workspace; it is the fallback for a run launched
+  detached, not the default (go-to-k/cdkd#2417).
+- **A usage-limit interruption does not have to end the run: leave a one-shot
+  checkpoint at the reset time**, scheduled when the limit is ANNOUNCED, not
+  when it bites (the 2026-09-02 run resumed itself at the reset instant from
+  an in-session one-shot cron and finished its lane — the alternative is not
+  "resume later" but "re-derive later"; go-to-k/cdkd#2417).
 
 ## Important existing rules this skill leans on
 
-- **All changes via PR; never commit to `main`.** Feature work lives in its OWN
-  worktree under `.claude/worktrees/<branch>/` — or, when the run was launched
-  inside a worktree already, in that one (SKILL.md "Launch mode"); the
-  orchestrator integrates. (`CLAUDE.md` → Workflow Rules.)
-- **Always add unit tests** for a fix — do not wait to be asked. (`CLAUDE.md` →
-  Workflow Rules.)
-- **Merge with `--squash --delete-branch` only** — the repo's sole merge method.
-- **English-only** for all committed/public artifacts (source, docs, PR/commit
-  messages, issue comments on this repo).
-- **`Severity` / `Effort` go on the issue as LABELS too** — same two values,
-  body text unchanged (`CLAUDE.md` → the four TODO classification fields). Set
-  at filing (§5-f) and at the claim that rewrites an old packed body (§4). The
-  lane's PR inherits them from the issue it closes, so never hand-add them to a
-  PR.
+- **All changes via PR; never commit to `main`.** Feature work lives in its
+  OWN worktree — or, launched inside one, in that one (SKILL.md "Launch
+  mode"); the orchestrator integrates. (`CLAUDE.md` → Workflow Rules.)
+- **Always add unit tests** for a fix — do not wait to be asked.
+- **Merge with `--squash --delete-branch` only.**
+- **English-only** for all committed/public artifacts.
+- **`Severity` / `Effort` go on the issue as LABELS too** — set at filing
+  (§5-f) and at the claim that rewrites an old packed body (§4); the lane's PR
+  inherits them from the issue it closes, so never hand-add them to a PR.
 - **Never download/run/install untrusted third-party content** (§0).
-- **Drive each lane to MERGED, not to "pushed".** Section 9 is the finish line
-  for a LANE — merge, pull, confirm the release PR picked it up, rebuild, remove the
-  worktree — and section 10 is the finish line for the RUN. A lane left as an
-  open PR is unfinished work, and a NOT-CLOSEABLE session verdict is a to-do
+- **Drive each lane to MERGED, not to "pushed".** §9 is the finish line for a
+  LANE (merge, pull, confirm the release PR picked it up, rebuild, remove the
+  worktree) and §10 for the RUN. An open PR is unfinished work; a
+  NOT-CLOSEABLE verdict is a to-do
   list, not a stopping point — keep going until every lane is merged and every
-  worktree removed, or until the only blockers left are ones you cannot act on
-  (CI in flight, a running reviewer, a maintainer decision). Low context is not
-  such a blocker: commit, push, file the issue, and continue. If you stop, say
-  per blocker WHY it is not yours to finish. The removal half is "every worktree
-  THIS RUN added is gone" — an IN-PLACE run added none and leaves its tree
-  standing.
-- **Wrap with a Remaining-work section + State line + Session-close verdict,
-  scoped to the issues this run actually worked.** This skill is the easiest
-  place to get that scope wrong: the backlog issues you triaged but did NOT
-  pick up are not follow-ups and do not belong in the report. List only
-  residuals of the lanes you shipped. (`CLAUDE.md` → Workflow Rules.)
-- **Classify every deferral `now` / `next` the moment you defer it — this flow
-  is where that decision is hardest and most often re-litigated.** Each merge
-  in section 9 lands on the same question: keep going here, or hand off?
-  Answer it when the item is created — write the four classification lines into
-  the issue body, one field per line, per `CLAUDE.md` → "The four TODO fields"
-  — not after the merge when the context that justified it is gone:
+  worktree removed, or the only blockers left are ones you cannot act on (CI
+  in flight, a running reviewer, a maintainer decision). Low context is not
+  such a blocker: commit, push, file, continue. The removal half is "every
+  worktree THIS RUN added is gone" — an IN-PLACE run added none and leaves its
+  tree standing.
+- **Wrap with Remaining-work + State + Session-close, scoped to the issues
+  this run actually worked** — backlog issues you triaged but did not pick up
+  are not follow-ups. (`CLAUDE.md` → Workflow Rules.)
+- **Classify every deferral `now` / `next` the moment you defer it** — write
+  the four classification lines into the issue body, one field per line, per
+  `CLAUDE.md` → "The four TODO fields":
 
   ```text
   Session-fit: now (do it in this session) | next (not this session) — <reason>
@@ -171,67 +121,37 @@
   Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
   ```
 
-  The report repeats those four lines and adds a `Notes` line for
-  session-specific context; the issue body carries no `Notes` but does carry a
-  `Dup-check:` line (section 5-f), a filing-time record rather than a
-  classification field. **After a lane merges, `next` is the default**: what
-  stays hot is that lane's files and the integ you already ran — a residual
-  landing in those files is `now`, anywhere else `next` even when small. A
-  fan-out run sharpens this both ways: a residual in a lane whose worktree you
-  are STILL holding is almost always `now` (worktree, deps and markers already
-  paid for), while one in a lane just merged and cleaned up has lost exactly
-  those things and is `next`.
+  The report repeats those four and adds `Notes`; the issue body carries
+  `Dup-check:` (§5-f) instead. **After a lane merges, `next` is the default**
+  — what stays hot is that lane's files and the integ already run; a residual
+  in a worktree you are STILL holding is almost always `now` (worktree, deps,
+  markers paid for), one in a lane already cleaned up is `next`. **The trap:
+  the filing happens mid-lane, where the loud question is "can this ride THIS
+  PR?" (usually no) while the rule asks "is that lane's worktree still open?"
+  (quiet, usually yes)** — two ~30-60 min items were filed `next` while the
+  lanes owning their files were still open, and by wrap the classification had
+  become right for the wrong reason (go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
+  Ask the worktree question at FILING time; a separate PR from the same open
+  worktree is cheap, and is not what `next` is for.
 
-  **The trap is that the filing happens mid-lane, and the wrong question is the
-  loud one there.** Mid-review the loud question is "can this ride THIS PR?" —
-  a reviewability question, usually answered no — while the rule asks "is that
-  lane's worktree still open?", which is quiet and usually yes. Measured
-  2026-08-27: go-to-k/cdkd#2321 / go-to-k/cdkd#2322 were filed `next` while
-  the lanes owning their files were still open; by wrap the worktrees were
-  gone and `next` had become the correct answer to a question that had a
-  different answer an hour earlier — both ~30-60 min items that would have
-  ridden an integ their lane was running anyway. Ask the worktree question at
-  FILING time, not the PR-size one: a separate PR from the same open worktree
-  is cheap, and is not what `next` is for.
-
-  Close the run with the **not-this-session line** — the decision first, then
-  the literal command
-  (`Not this session — start a fresh session with: /work-issues`) — and say
-  which `next` items are file-disjoint enough for one fresh run to take
-  together. Do NOT label it "Handoff" or "Next steps": those name how the work
-  moves, not whether this run will do it. **This flow is where that line is
-  most likely to be written ambiguously**, because lanes merge at different
-  times: "next session, after lane C merges" collapses waiting-on-C and
-  handing-off into "this run continues into them once C lands". Write the
-  start command with NO condition attached, and keep `next` items off the
-  State line entirely — that line is only for lanes this run is still driving
-  to merge. Conversely, a `now` item found mid-run is a commitment this run
-  finishes it: it goes in Remaining work WITH what you are about to do, the
-  State line is never STOPPED while it is open, and the verdict is NOT
-  CLOSEABLE naming it. A final report can therefore only ever list `next`
-  items and won't-dos.
+  Close the run with the **not-this-session line** — decision first, then the
+  literal command (`Not this session — start a fresh session with:
+  /work-issues`), no condition attached ("after lane C merges" collapses
+  waiting and handing-off), and keep `next` items off the State line. A `now`
+  found mid-run is a commitment: Remaining work says what you are about to do,
+  the State line is never STOPPED while it is open, the verdict is NOT
+  CLOSEABLE naming it. A final report can only list `next` items and
+  won't-dos.
 - **This flow parks a LOT, so the State line carries most of its weight.** A
-  fan-out run spends most of its wall-clock parked: a lane subagent still
-  implementing, `gh pr checks --watch`, a `/run-integ`. Every one of those is
-  **WAITING**, not STOPPED — you resume with no
-  user input and drive the lane to merged. Name the lane and the signal per
-  line, e.g.
-  `WAITING — lane A (go-to-k/cdkd#1752) subagent: background completion notification -> review tier, live-test evidence, then merge`.
-  Report **STOPPED** only when every lane is merged, every worktree THIS RUN
-  added is removed, and nothing is pending. An IN-PLACE run added none, so that
-  half is satisfied by leaving its launch tree standing.
-
-  **ARM the signal BEFORE you write the line, not after — a named signal is not
-  an armed one.** Naming what will re-invoke you feels like compliance; the
-  poll, the `Monitor` or the backgrounded `until` loop is what actually resumes
-  the run. Write the report only once the thing that will wake you is RUNNING.
-  Measured 2026-08-28: a run with two PRs in CI wrote
-  `WAITING — Signal: gh pr checks`, armed nothing, and simply ended — every
-  other field accurate, which is what made the failure invisible from inside.
+  fan-out run spends most wall-clock parked (lane subagents, `gh pr checks
+  --watch`, `/run-integ`) — every one is **WAITING**, not
+  STOPPED: name the lane and the signal per line. Report **STOPPED** only when
+  every lane is merged and nothing is pending. **ARM the signal BEFORE you
+  write the line** — a named signal is not an armed one; the poll, `Monitor`
+  or backgrounded `until` loop is what actually resumes the run (measured: a
+  run wrote `WAITING — Signal: gh pr checks`, armed nothing, and simply
+  ended).
 - **A lane needing a user decision goes through `AskUserQuestion`, never
-  prose.** Scope calls this skill legitimately escalates (a fix direction only
-  the maintainer can pick; whether to engage an untrusted comment per §0) are
-  asked with the tool, so the run continues from the answer. Do NOT end the
-  turn with the question in prose — that reads as STOPPED and loses the other
+  prose** — a prose question ends the turn as STOPPED and loses the other
   lanes' momentum. Everything else (which integ, how many reviewers, how deep
   to verify) you decide yourself and report as a decision.

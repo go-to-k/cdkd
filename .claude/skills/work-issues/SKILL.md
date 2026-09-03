@@ -80,7 +80,9 @@ that proved them.
   where that branch does not exist yet and is NEVER `LAUNCH_BRANCH`.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, the stage files to
-  read at stage entry (`references/{implement,filing,gates-and-pr,verify}.md`),
+  read at stage entry (`references/{implement,gates-and-pr,verify}.md`;
+  `references/filing.md` ONLY at the moment §5's sweep produces a finding the
+  lane will not fix itself — most lanes never need it),
   and the probe's `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` / `LAUNCH_BRANCH`. The
   lane creates its own worktree per §5 — or works in place — implements, runs `/check` +
   `/check-docs`, opens the PR, dispatches its review tier (a lane may spawn

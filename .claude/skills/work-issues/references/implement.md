@@ -2,28 +2,25 @@
 
 ## 5. One tree per lane, then implement
 
-This stage (and 6-8) normally runs INSIDE a lane subagent — one per claimed
+This stage (and 6–8) normally runs INSIDE a lane subagent — one per claimed
 issue, so its diffs, test output and review round-trips stay out of the parent
 context. Every rule below holds unchanged there: hooks fire on the lane's tool
 calls, markgate markers land in the lane's own tree. Two actions stay with the
 parent's serialization turn: a real-AWS integ run and the merge (§9). A lane
-stops at merge-ready.
+stops at merge-ready. (Placement live-proven 2026-08-28: two skill-split PRs
+built end-to-end by lane subagents with every hook firing inside the lanes.)
 
-That placement is live-proven: on 2026-08-28 two of the three skill-split PRs
-(go-to-k/cdk-local#621, go-to-k/cdk-real-drift#1831) were built END-TO-END by
-lane subagents — worktree, implementation, gates, reviewer dispatch, CI — with
-the parent doing only claims, serialized merges and cleanup, and every hook and
-markgate gate firing inside the lanes' calls exactly as in the parent.
+### 5-a. The tree
 
-Never edit in the main checkout (`main-tree-branch-gate` blocks branching there).
-Per lane:
+Never edit in the main checkout (`main-tree-branch-gate` blocks branching
+there). Per lane:
 
 ```bash
 # MAIN-CHECKOUT mode only. IN-PLACE (launched inside a linked worktree) skips
 # these two and creates NO WORKTREE -- nesting dies with the outer workspace
 # (go-to-k/cdkd#2390). It DOES still take a branch, in place: see the branch
 # recipe below, which is unconditional. (The probe lives in
-# references/launch-mode.md, its only copy -- not in §3, where it used to sit.)
+# references/launch-mode.md, its only copy.)
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp / markgate will not resolve
@@ -31,741 +28,411 @@ pnpm install                 # worktrees have no node_modules
 vp run build                 # ...and no dist/ — see below
 ```
 
-**IN-PLACE: confirm the tree is YOURS before adopting it** — a stray `cd` into a
-peer's live lane looks exactly like a workspace handed to you. Read every probe
-below under §9's rule that every ownership signal establishes LIFE and never
-absence: any one of them saying "someone is here" means STOP and report — never
+**IN-PLACE: confirm the tree is YOURS before adopting it** — a stray `cd` into
+a peer's live lane looks exactly like a workspace handed to you. Read every
+probe below under §9's rule that every ownership signal establishes LIFE and
+never absence: any one saying "someone is here" means STOP and report — never
 nest a worktree inside a peer's lane to get out of it.
 
 ```bash
-# The FIRST line is the anchor, and it is why none of the rest needs a `-C`:
-# every probe under it describes THIS shell's tree, so a cwd that has silently
-# reset to the main checkout (appendix, "Bash cwd silent reset") shows up IN THE
-# OUTPUT instead of being invisible. Anchoring a READ this way is enough --
-# noticing afterwards costs nothing, and the alternative (carrying a captured
-# path forward) buys nothing a printed subject does not. A WRITE is a different
-# problem: see the branch recipe below.
+# The FIRST line is the anchor: every probe under it describes THIS shell's
+# tree, so a silently reset cwd (appendix, "Bash cwd silent reset") shows up
+# IN THE OUTPUT instead of being invisible.
 git rev-parse --show-toplevel   # STOP unless this is the tree you meant to adopt
 git status --porcelain          # non-empty: someone's uncommitted work
 git branch --show-current       # the branch you would be committing to
 git log --oneline -3            # whose commits these are
-cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # this repo's owner sentinel
+cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # owner sentinel
 ```
 
-Then read the issue thread for a claim naming this branch — across clones it is
-the only signal the probes above cannot see.
+Then read the issue thread for a claim naming this branch — across clones it
+is the only signal the probes above cannot see.
 
-**Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The branch
-this tree arrived on is `LAUNCH_BRANCH`: the OUTER TOOL's, not this run's, and §9
-puts it back untouched at the end (`references/launch-mode.md` carries the rule
-and why committing onto it would DELETE the outer tool's branch). The ALWAYS is
-what the evidence bought: the rule was CONDITIONAL until go-to-k/cdkd#2417 ("if
-the branch here is detached, or its PR has already merged") and the condition
-was wrong in the common case. Know what is and is not protecting you while you
-branch:
+**Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The
+branch this tree arrived on is `LAUNCH_BRANCH`: the OUTER TOOL's, not this
+run's, and §9 puts it back untouched at the end (`references/launch-mode.md`
+carries the rule and why committing onto it would DELETE the outer tool's
+branch). The ALWAYS is deliberate: the rule was conditional until
+go-to-k/cdkd#2417 and the condition was wrong in the common case.
 
 ```bash
-git status --porcelain   # must be empty FIRST -- see below
+git status --porcelain   # must be empty FIRST -- `git switch` carries
+                         # uncommitted changes ACROSS, moving someone else's
+                         # work onto your lane branch
 git fetch origin && git switch -c <branch> origin/main
 ```
 
-`git status` comes first because `git switch` carries uncommitted changes
-ACROSS: branching out of a dirty tree moves someone else's work onto your lane
-branch, and §9's restore moves it onto the outer tool's. One hazard, both
-directions, checked on both sides.
+The `&&` is deliberate: unchained, a failed `fetch` still branches off a stale
+`origin/main`. `main-tree-branch-gate` covers this chained spelling since
+go-to-k/cdkd#2406 — settle which copy is DEPLOYED by content, never by a
+commit subject (`git show origin/main:.claude/hooks/main-tree-branch-gate.sh |
+grep -c gate_verb_rest_each` prints non-zero).
 
-The `&&` is deliberate: unchained, a failed `fetch` still branches, off a stale
-`origin/main`. **`main-tree-branch-gate` is the backstop for running that line
-after a cwd reset, and since go-to-k/cdkd#2406 it covers this spelling** — it
-matches in COMMAND POSITION and judges the matched SEGMENT, so the chained form
-is refused (rc=2) while `git fetch origin && git switch main` still passes. An
-older copy skipped to the FIRST `git` token and exited 0 on exactly the
-spelling this file PRINTS, so settle which copy is DEPLOYED by CONTENT, never
-by a commit subject: `git show
-origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c
-gate_verb_rest_each` prints non-zero (drop the `git show` prefix to ask the
-same of the copy in YOUR worktree, which is the one that will fire).
+**`mise trust` is not optional, and skipping it fails in the direction that
+costs most**: an untrusted `.mise.toml` makes `mise exec -- markgate set`
+error instead of writing, and a pipeline's rc hides it (2026-08-28: two `mise
+ERROR` lines, every gate still `no marker`). Verify with `markgate status`,
+never an exit code.
 
-**`mise trust` is not optional here, and skipping it fails in the direction that
-costs most.** An untrusted `.mise.toml` makes `mise exec -- markgate set` error
-instead of writing, and a pipeline's rc hides it (2026-08-28: two `mise ERROR`
-lines, every gate still `no marker`). Verify with `markgate status`, never an
-exit code.
+**Build BEFORE the first test run.** A new worktree has no `dist/`; a test
+spawning the built CLI fails with an assertion about its SUBJECT, and the main
+checkout passes only because it HAS one — a docs-only lane nearly reported "a
+peer merge broke main" over 13 such failures. A fresh tree failing where the
+main checkout passes is evidence about the TREE first.
 
-**Build BEFORE the first test run, and read a fresh tree's failures with that
-in mind.** A new worktree has no `dist/`; a test spawning the built CLI fails on
-the missing binary with an assertion about its SUBJECT (`expected 1 to be 2`),
-and the main checkout passes only because it HAS one — a docs-only lane nearly
-reported "a peer merge broke main" over 13 such failures (go-to-k/cdk-real-drift,
-2026-08-27). **A fresh tree failing where the main checkout passes is evidence
-about the TREE first**; a build costs seconds against a false report.
+### 5-b. Sweep the class, not the instance
 
-**Before fixing, ask whether the defect has SIBLING SITES — and if it does,
-sweep them in THIS lane rather than filing them.** Most defects here are a
-CLASS, not an instance (one provider mishandling an empty sub-object, one
-resolver arm missing an intrinsic, one caller assuming a helper's old
-contract). Once the root cause is named, grep the shape across the repo:
+**Before fixing, ask whether the defect has SIBLING SITES — and sweep them in
+THIS lane rather than filing them.** Most defects here are a CLASS. Once the
+root cause is named, grep the shape across the repo. Rules, each bought by a
+measured miss:
 
-```bash
-# The shape depends on the defect; the DISCIPLINE is that you run one.
-grep -rn "<the mishandled call / property / assumption>" src/ | grep -v test
-grep -rln "implements ResourceProvider" src/provisioning/providers/   # per-implementer audits
-```
+- **Query for the PRECONDITION minus the REMEDY, never the remedy alone.**
+  A grep for a MISSING thing returns only the sites that already have it:
 
-**Query for the PRECONDITION minus the REMEDY, never for the remedy alone.**
-When the defect is a MISSING thing, a grep for the missing thing returns only
-the sites that already HAVE it — absent sites are invisible by construction.
-Ask what makes a site ELIGIBLE, then which eligible sites lack the fix:
+  ```bash
+  # WRONG -- finds only the providers that already validate.
+  grep -rln "validateDesiredProperties" src/provisioning/providers/
+  # RIGHT -- eligibility minus remedy.
+  for f in $(grep -rln "implements ResourceProvider" src/provisioning/providers/); do
+    grep -q "validateDesiredProperties" "$f" || echo "NO VALIDATION: $f"
+  done
+  ```
 
-```bash
-# WRONG -- finds only the providers that already validate.
-grep -rln "validateDesiredProperties" src/provisioning/providers/
-# RIGHT -- eligibility minus remedy.
-for f in $(grep -rln "implements ResourceProvider" src/provisioning/providers/); do
-  grep -q "validateDesiredProperties" "$f" || echo "NO VALIDATION: $f"
-done
-```
+  Measured in go-to-k/cdk-local (2026-08-27): the remedy-shaped grep saw 5 of
+  12 eligible sites. This repo's defects are often missing entries (an absent
+  `handledProperties` row, a provider with no validation arm) — invisible to
+  a grep for what they lack.
+- **A count derived from the instance you happened to hit is not a count** —
+  the same run sized a deferred residue "one site, ~30 min"; the class was
+  seven. `Effort` / `Estimate` are what a future session budgets from.
+- **A FIX ROUND owes the same sweep, and that is where it gets skipped**:
+  the fix lands on one call site while a sibling keeps the defect, usually
+  shipping a comment asserting completeness. Measured FIVE times on two lanes
+  in one day (the 2-arg `Fn::Sub` check missing the bare-string arm one line
+  over; a redaction fixing update/delete but not create; one enumeration
+  completed while a second in the same file — and a third on the same LINE —
+  kept the defect). Every one found by enumerating readers with grep, none by
+  re-reading the diff. After writing a fix:
 
-Measured in go-to-k/cdk-local 2026-08-27 (fixtures leaking Docker images): a
-remedy-shaped grep (`docker rmi|docker image rm|docker image prune`) found 5
-sites, all already clean; eligibility minus remedy found six more, plus a
-seventh neither query finds — the remedy-shaped query had seen 5 of 12
-eligible sites. This repo is the most exposed — its defects are often missing
-entries (an absent `handledProperties` row, a provider with no validation arm,
-a type with no comparator), each invisible to a grep for what it lacks.
+  ```bash
+  # Derive the population from the CODE, not from the files your diff touched.
+  grep -rn "<the field / helper / message you just changed>" src/ | grep -v test
+  ```
 
-**The same run then repeated the mistake one level up, which is why this is a
-rule and not a footnote:** it sized the deferred residue from the ONE instance
-it tripped over ("one site, ~30 min"; the class was seven). **A count derived
-from the instance you happened to hit is not a count** — and `Effort` /
-`Estimate` are what a future session budgets from.
+  The cheap tell: a diff touching ONE site whose message says "every", "all",
+  "never" or "only" — derive the population or drop the quantifier.
+- **Grep for the SHAPE, not for a NAME** — a name finds only the copies you
+  already knew about (go-to-k/cdkd#2176: grepping `maskDeep` found four
+  copies and shipped "four" everywhere; there were SIX, two spelled
+  `maskLeaf*`). Grep a structural line the copies must share; confirm by name
+  second.
+- **Count the population BEFORE you fix, assert the count afterwards** —
+  re-deriving from the post-fix tree cannot detect a copy the sweep never saw.
+  A fix that REMOVES a behaviour owes a SECOND population: the assertions
+  that the behaviour happens, which do not go red when it stops
+  (`references/verify.md` §8-d).
+- **Paste the command with the number, and re-run it before you ship** — a
+  sweep claimed "88 hits across 13 files"; the reviewer's grep returned 47
+  and nothing reproduced 88. A right conclusion with an unreproducible
+  measurement reads as evidence and is not.
+- **Any CLAIM relayed from a subagent's report is unearned the same way** —
+  and harder, because you never ran a command. One run published FOUR relayed
+  counts, every one wrong ("nine sites" — grep found 78; "nine probes" —
+  fourteen), two into GitHub artifacts. The tell is grammatical: a number
+  arriving as a WORD was counted by an agent, one arriving as OUTPUT by a
+  machine. Run the query yourself and put its output in the text.
+- **Grep the repo for the SYMPTOM before deriving a fix** — something may
+  already have solved the same QUESTION (the SDK region-redirect mechanism a
+  lane spent a real-AWS round trip rediscovering already sat verbatim in
+  `src/utils/aws-region-resolver.ts`).
+- **Grep the ISSUE NUMBER — a third sweep with a different key.** Closing an
+  issue falsifies every comment that CITES it, and the dangerous ones are
+  deliberate NON-assertions carrying neither shape nor symptom
+  (`git grep -n "<issue number>" -- src tests docs .claude`). Measured on
+  go-to-k/cdkd#2466 closing go-to-k/cdkd#2421: four live citations, including
+  a "deliberately NOT asserted" bullet in a fixture that already synthesized —
+  adding the assertion cost nothing and found a SECOND failure mode. Such a
+  non-assertion is usually the cheapest high-value test in the change.
 
-**This applies to a FIX ROUND at least as much as to the original find, and
-that is where it gets skipped:** the fix lands on ONE call site while a sibling
-keeps the defect, usually shipping a comment asserting completeness. Measured
-2026-08-27, FIVE times on two lanes, the last two while fixing the previous
-instance:
+**A defect the sweep turns up that this lane is NOT fixing gets FILED — rules
+in `references/filing.md` (§5-f)**: N sites of one root cause is ONE issue,
+the dup-check window, the `Severity` / `Effort` labels. Read it at the moment
+the sweep produces something this lane will not close.
 
-| Fix | Sibling that kept the defect |
-| --- | --- |
-| the 2-arg `Fn::Sub` binding check | the bare-string arm, one line over |
-| adding a region-header read | never bounded WHICH errors carry the region |
-| redacting the update/delete warn | the create path, and its own `catch`'s sibling arm |
-| adding a site to one enumeration | the second enumeration in the same file |
-| completing that second enumeration | a third list on the same LINE |
+### 5-c. The fix itself
 
-Every one was found by ENUMERATING readers or call sites with grep; none by
-re-reading the diff (three had review rounds that read it and missed them).
-After writing a fix, before believing it:
+Do the fix in the lane's tree (match the existing pattern; ESM relative
+imports need the `.js` extension even in TypeScript). Rebuild with
+`vp run build` after every source change — the CLI runs from `dist/`. **Always
+add a unit test that fails without the fix and passes with it** (under
+`tests/unit/**`, AWS SDK mocked via `vi.mock()`). **Check whether the artifact
+already has a test harness** — `.claude/hooks/` carries per-hook `*.test.sh`
+suites run by `run-tests.sh`, not visible from `tests/unit/**`.
 
-```bash
-# Derive the population from the CODE, not from the files your diff touched.
-grep -rn "<the field / helper / message you just changed>" src/ | grep -v test
-```
+- **Run such a harness from BESIDE its subject, never from a scratch copy** —
+  every suite resolves the hook under test from its own script path, so a
+  copy fails everything with exit 127. For a before/after comparison, write
+  the old copy beside the real one as `.claude/hooks/_old-<name>.test.sh` and
+  delete it after. §8's scratch-copy idiom is right for a data file, wrong
+  for a runnable harness, and wrong for a WORKTREE in a way that WRITES to
+  the live tree (§8 carries the mechanism).
+- **When the issue reports a stale ENTRY in an enumerated list, audit the
+  whole list in BOTH directions** — every entry still resolves AND everything
+  that belongs is present; the second half is the one skipped
+  (go-to-k/cdkd#1972: the issue named one dead path; the audit found a second
+  plus four live surfaces never added). Then make the recurrence mechanical:
+  a list that must stay in sync with the repo is a test, not a sentence.
+- **Adding a HANDLER to a slot that already has one REPLACES it.** Bash
+  `trap` does not chain: a second `trap ... EXIT` silently disarms the first,
+  which in an integ fixture is the AWS teardown (a reviewer-nit fix would
+  have traded a leaked temp file for live AWS resources on every failure
+  path). Put the work inside the EXISTING handler or re-install one that
+  CALLS the original. Fenced by
+  `tests/unit/scripts/integ-single-exit-trap.test.ts`. Generalize: before
+  adding to any single-slot registration, count what is already there.
 
-and check the count against what you changed. Touching two of three readers is
-not a fix — and writing "all N sites now do X" over it makes the miss durable,
-because an overstated invariant stops the next reader looking. The cheap tell:
-a diff touching ONE site whose message says "every", "all", "never" or "only" —
-derive the population or drop the quantifier.
-
-**Grep for the SHAPE, not for a NAME — a name finds only the copies you already
-knew about.** go-to-k/cdkd#2176 (2026-08-23) swept a duplicated secret-masking
-walk by grepping `maskDeep` / `MASK_WALK_MAX_DEPTH`, found four copies, and
-shipped "four" everywhere; there were SIX — two spelled `maskLeaf` /
-`maskLeafValue` with no named constant to grep for. Grep a structural line the
-copies must share whatever they are called — here `typeof value === 'string'`
-beside an `Object.fromEntries`, or simply `Object.entries(.*).map`:
-
-```bash
-# Structural first (finds a renamed copy), name second (confirms what you found).
-grep -rn "<a line the shape cannot omit>" src/ | grep -v test
-```
-
-**And count the population BEFORE you fix, then assert the count afterwards.**
-Re-deriving the number from the post-fix tree cannot detect a copy the sweep
-never saw — the fix removed the very thing you would grep for.
-A fix that REMOVES a behaviour owes a SECOND population — the assertions that
-the behaviour happens, which do not go red when it stops (`references/verify.md`,
-"The inverse bites when your fix REMOVES a behaviour").
-
-**Paste the command with the number, and re-run it before you ship.** The
-go-to-k/cdkd#2227 sweep (2026-08-26) claimed "88 hits across 13 files"; the
-reviewer's grep returned 47 and no single grep reproduced 88. The conclusion
-held — which is why this ships: a right conclusion with an unreproducible
-measurement reads as evidence and is not.
-
-**Any CLAIM relayed from a subagent's report is unearned in the same way — not
-just a count — and it is the harder half, because there is no command to paste:
-you never ran one.** One 2026-08-26 run published FOUR relayed counts, every one
-wrong ("all nine sibling `clearOnUpdateRemoval` sites" — grep found **78** across
-14 provider files; "nine mutation probes" — fourteen; "ten unit shapes" — thirteen; "a
-third copy" — nine existed), two into GitHub artifacts outliving the session.
-Non-numeric claims fail identically: pins reported "each probed adversarially"
-had a PATH decoy never placed on PATH, and deleting six left the suite 65/65
-green. The tell is grammatical — a number arriving as a WORD was counted by a person
-or an agent, one arriving as output by a machine. Before publishing a relayed
-claim anywhere durable, run the query yourself and put its OUTPUT in the text.
-
-**Before deriving a fix, grep the repo for the SYMPTOM -- something may already
-have solved it.** Different from the sibling-site sweep: that greps the
-defect's shape for the same BUG; this greps the error string, API name, or
-surprising behaviour for a place that already answered the same QUESTION.
-`src/utils/aws-region-resolver.ts` already carried, verbatim, the mechanism the
-go-to-k/cdkd#2227 lane spent a real-AWS round trip rediscovering (SDK v3's
-region-redirect middleware mishandling the empty-body HEAD 301 → synthetic
-`UnknownError`), plus the fail-OPEN trap the fix had to avoid — a grep for
-`UnknownError` or `followRegionRedirects` would have found it in seconds.
-
-**And grep the ISSUE NUMBER — a THIRD sweep, with a different key.** Closing an
-issue falsifies every comment that CITES it, and the dangerous ones are
-invisible to both sweeps above: phrased as **deliberate non-assertions**, they
-carry neither the defect's shape nor its symptom, only a present-tense reason
-for not testing it.
-
-```bash
-git grep -n "<the issue number>" -- src tests docs .claude
-```
-
-Measured 2026-09-03 (go-to-k/cdkd#2466 closing go-to-k/cdkd#2421): four live
-citations, not all reachable from a symptom grep — a forward reference in
-`synth.ts`, an "until it is fixed" bullet in `docs/cli-reference.md`, a
-changelog entry in the present tense, and the valuable one, an entire missing
-test in `tests/integration/local-invoke/verify.sh` ("Deliberately NOT asserted:
-that the template PARSES") sitting in a fixture that already synthesized.
-Adding it cost nothing and immediately found a SECOND failure mode the issue
-never named. Such a non-assertion is usually the cheapest high-value test in
-the change: its author already decided the assertion belonged there.
-
-**A defect the sweep turns up that this lane is NOT fixing gets FILED, and
-the rules for that are their own stage file: `references/filing.md` (§5-f)**
-— N sites of one root cause is ONE issue and ONE PR, the dup-check window
-that decides mint-vs-fold, and the `Severity` / `Effort` labels that filing
-carries. Read it at the moment the sweep produces something this lane will
-not close; it is not optional context.
-
-Do the fix in the lane's tree (match the existing provider/pattern exactly; ESM
-relative imports need the `.js` extension — even in TypeScript). Rebuild with
-`vp run build` after every source change — the CLI runs from `dist/`, so an
-unbuilt change has no effect. **Always add a unit test that fails without the
-fix and passes with it** (under `tests/unit/**`, AWS SDK mocked via `vi.mock()`) — do
-not wait to be asked. **Check first whether the artifact already has a test
-harness** — `.claude/hooks/` carries per-hook `*.test.sh` suites run by
-`run-tests.sh` under its own `hooks.yml` workflow, not visible from
-`tests/unit/**`.
-
-**Run such a harness from BESIDE its subject, never from a scratch copy.**
-Every suite resolves the hook under test from its own script path, so a copy
-runs against a sibling that is not there and every case fails with exit 127 — a
-regression your change did not cause (2026-08-19: `branch-gate.test.sh` scores
-`Pass: 27  Fail: 0` from `.claude/hooks/`, exits 1 from scratch). Resolve
-`${BASH_SOURCE[0]}`-relative; `run-tests.sh` does the same, so a copied RUNNER
-cds to the wrong repo entirely. The trap is invited by the before/after
-comparison a hook change wants — the obvious `git show origin/main:<suite> >
-/tmp/x.sh && bash /tmp/x.sh`. Instead write the old copy beside the real one as
-`.claude/hooks/_old-<name>.test.sh` and delete it after.
-
-§8's scratch-copy idiom is right for a data file, wrong for a runnable
-harness, and wrong for a WORKTREE in a way that WRITES to the live tree rather
-than failing; §8 carries the mechanism and what a reviewer's brief owes for it.
-
-**When the issue reports a stale ENTRY in an enumerated list, audit the whole
-list, in both directions, before fixing the named entry.** Drift almost never
-produces exactly the one instance noticed: check that every entry still
-resolves to something real AND that everything real that belongs is present —
-the second half is the one that gets skipped, because the issue only names the
-first. go-to-k/cdkd#1972 (2026-08-19) reported one dead path in the
-security-surface list; the audit found a second
-(`src/local-invoke/docker-runner.ts`, stale since a PR go-to-k/cdkd#228
-rename) and four live surfaces never added. Then make the recurrence
-mechanical: a list that must stay in sync with the repo is a test, not a
-sentence.
+### 5-d. Measurement audits
 
 **When the audit is a MEASUREMENT, the shape of the sample is the finding — a
 clean result from the wrong shape is indistinguishable from a clean subject.**
-Auditing go-to-k/cdkd#2096 (2026-08-20) produced SIX confident wrong answers,
-each from a different plausible sampling shape, each hiding a real secret:
+Auditing go-to-k/cdkd#2096 produced SIX confident wrong answers, each from a
+plausible sampling shape, each hiding a real secret: newest-N (the newest
+versions come from the run most likely already fixed — sample across the
+range); one global needle (each fixture spells its own literal — derive the
+needle per subject or assert a needle-independent observable); a name derived
+from convention (read the identifier from the subject's own `STACK=` line); a
+silent parse failure inside a pipe (a parse that can fail must report
+failing, not fall through to a count); a per-page aggregate (`--query
+'length(...)'` applies PER PAGE — count rows of a projection); and grepping
+the layer the subject does not use (a type registered to NO provider takes
+the Cloud Control readback, invisible in `src/provisioning/providers/**`).
+The through-line: every one FAILED CLEAN. Run the shape against a case you
+KNOW is dirty first; only then trust a zero.
 
-- **Newest-N.** The 6 newest state versions cleared `appsync` while versions
-  12-45 held an API key in 17 of 33 — the newest come from the run most likely
-  already fixed. Sample across the range, or grep everything.
-- **One global needle.** Each fixture spells its OWN literal, so a single
-  `cdkd-known-*` grep reported a fixture clean while 5 of 7 versions carried
-  `cdkd-array-nested-pw-789`. Derive the needle per subject, or assert on a
-  needle-INDEPENDENT observable (surviving version count == 0).
-- **A name derived from convention.** `cognito-resource-server`'s stack is
-  `CognitoResourceServerStack`, not the `Cdkd…Example` the directory implies;
-  the probe returned `0 of 1`. Read the identifier from the subject
-  (`verify.sh`'s `STACK=`), never infer it.
-- **A silent parse failure inside a pipe.** `s3api get-object … /dev/stdout`
-  emits metadata beside the body, so a `json.load` died and the loop counted
-  `0 of 16` where a text match found 4. A parse that can fail must report
-  failing, not fall through to a count.
-- **A per-page aggregate.** `--query 'length(Versions)'` applies PER PAGE and
-  concatenates: a 1189-entry prefix prints `1000\n189`. Count ROWS of a
-  projection instead.
-- **Grepping the layer the subject does not use.** `AWS::ApiGateway::ApiKey` is
-  registered to NO provider — it takes the generic Cloud Control readback whose
-  model includes `Value`, so `src/provisioning/providers/**` cannot see it.
+### 5-e. Mutation probes
 
-The through-line: every one FAILED CLEAN. Treat "nothing here" as the claim
-needing evidence — run the shape against a case you KNOW is dirty first, and
-only then trust a zero. The same run's merged repo-wide scanner failed clean a
-seventh time: `stripComments` stripped block comments before line ones, so a
-`//` comment containing the glob `src/provisioning/**` opened a block comment
-and swallowed 235 lines of `deploy-engine.ts` silently.
+**COMMIT the round's real fixes BEFORE running any mutation probe** — a probe
+deliberately breaks the tree, and an interruption mid-probe leaves breakage
+and unfinished fixes in one undifferentiated dirty tree (a lane died at the
+session limit with 9 dirty files; go-to-k/cdkd#2416). With a pre-probe commit
+the separator is just `git diff`.
 
-**Adding a HANDLER to a slot that already has one REPLACES it.** Bash `trap`
-does not chain: a second `trap ... EXIT` silently disarms the first, and in an
-integ fixture the first is the AWS teardown — on the go-to-k/cdkd#2213 lane
-(2026-08-25) a reviewer-nit fix (`trap 'rm -f "${OUT}"' EXIT`) would have
-traded a leaked temp file for live AWS resources on every failure path, and
-the happy path still passes. Put the extra work inside the EXISTING handler
-(unset-guarded — it can run before the variable is assigned, under `set +eu`),
-or re-install a handler that still CALLS the original (the form 16 fixtures
-use). Fenced by `tests/unit/scripts/integ-single-exit-trap.test.ts`. Carry the
-shape past `trap`: before adding to any single-slot registration — a signal
-handler, a callback field, an `EXIT` hook — count what is already there.
-
-**COMMIT the round's real fixes BEFORE running any mutation probe.** A probe
-deliberately breaks the tree, so an interruption mid-probe leaves deliberate
-breakage and unfinished fixes in ONE undifferentiated dirty tree. Measured
-2026-09-02 (go-to-k/cdk-real-drift#1841): a lane subagent died at the session
-limit mid-probe with 9 dirty files, and the resuming session had to read the
-full diff to establish none of it was probe wreckage. With a pre-probe commit
-the separator is just `git diff` — anything unstaged after a probe is the
-probe's (mirrored from go-to-k/cdk-real-drift#1853; go-to-k/cdkd#2416 is this
-repo's filing).
-
-**Restore a probe from a BYTE-EXACT COPY, never an inverse string replace.**
-`cp <file> <backup>` before, `cp <backup> <file>` after, proved by `git diff --
-<file>` printing nothing. An inverse replace is a second edit with its own
-failure modes; Python's `str.replace('', x)` is the sharp one, matching between
-EVERY character so the "revert" rewrites the file (2026-09-02,
-go-to-k/cdk-real-drift#1854: an 11 KB stage file became 838 KB, and the three
-probes AFTER it scored a corrupted subject). The DOWNSTREAM probes are the real
-cost — the corrupted file is obvious, they are not.
+**Restore a probe from a BYTE-EXACT COPY, never an inverse string replace**
+(`cp` before, `cp` back after, proved by `git diff -- <file>` printing
+nothing). An inverse replace is a second edit; Python's `str.replace('', x)`
+matches between every character and rewrote an 11 KB file to 838 KB, scoring
+the three probes AFTER it against a corrupted subject.
 
 **A mutation probe proves a test discriminates only if it changes the value
-the test READS.** Four vacuous tests shipped across three lanes on 2026-08-19,
-all one shape: the assertion targeted an observable the BROKEN code also
-produces — a confluence point, not a discriminator. Examples: `.at(-1)`
-re-reading a FIRST call's poll count that a second `delete()` never reached
-(passed with the release deleted); asserting "the ambient client was reused",
-which the reject-unsafe arm also produces; asserting
-`ambient.ssm !== instances.at(-1)` where `ambient.ssm` is a LAZY getter
-constructing at assertion time — measuring its own side effect.
+the test READS.** Four vacuous tests shipped in one day, all one shape: the
+assertion targeted an observable the BROKEN code also produces — a confluence
+point. Name the discriminator first and assert THAT (which client, which
+region, what the second invocation saw); "the happy path still happens" is
+almost never it. A test that still passes under the mutation that motivated
+it is worse than no test.
 
-**Publishing a probe MATRIX — in a PR body, a changelog, a commit message —
-re-measures it on the tree you are about to merge**; carrying one forward across
-review rounds is wrong even when every row was true when written
-(`references/verify.md`, "A tally patched instead of re-measured").
+**A probe that reports NO discrimination is a claim about the FENCE — three
+other things produce identical output.** Ask in order before touching the
+fence: (1) **did the edit land?** (`sed`/`perl` fail silently in ways that
+read as "no match"; prove with `grep -c '<anchor>'` and require exactly 1);
+(2) **does the case's execution path REACH the edited line?** (the fix is a
+case that must take that path, not a fence change); (3) **did the command run
+where you think it did?** (a relative-path edit under a reset cwd lands in
+another worktree, and the confirming `git status` runs in the same wrong
+tree — use absolute paths and confirm by a property the wrong tree cannot
+fake). Plus one fixture shape: **an expected value must be an INDEPENDENT
+variable from the one under test.** Only after all four does "the fence is
+weak" remain.
 
-So name the discriminator first and assert THAT: which client was constructed
-with what region, which call the stub actually received, what the second
-invocation saw. "The happy path still happens" is almost never it. And run the
-probe: a test that still passes under the mutation that motivated it converts
-an open gap into a false assurance — worse than no test.
+**A RED probe is void as easily as a green one** — an anchor matching TWICE
+mutates every copy (the red belongs to a broader change), and an edit that
+does not COMPILE fails the suite at LOAD, indistinguishable from
+discrimination. Read the TALLY and failure TEXT, never the rc — which lies in
+both directions (a suite can `skipIf` itself when `dist/` is absent; a run
+whose every test passes can still exit non-zero, §6's rc rule). A load error
+or a short test count VOIDS the probe.
 
-**A probe that reports NO discrimination is a claim about the FENCE, and three
-other things produce the identical output.** Ask them in order before touching
-the fence (each hit on 2026-08-25, each nearly cost a working assertion):
+**Choose the probe's INPUT to discriminate too** — a mask-before-stringify
+fix probed with a SCALAR secret came back green under its own motivating
+mutation; only a JSON-document secret makes the needle stop occurring. Ask
+what property of the INPUT the defect depends on.
 
-1. **Did the edit land?** `sed`/`perl` one-liners fail silently in ways that
-   read as "no match": a `perl -0pi -e "s|^\|...|...|m"` delimited by the same
-   `|` it escapes matches nothing; a `sed -E`-only alternation (`\|`) is a GNU
-   extension matching nothing on macOS; a `sed: bad flag` prints ABOVE the
-   suite output and scrolls past. Prove it with `grep -c '<the anchor>'` before
-   reading the result, and require **exactly 1** — `python3` with
-   `assert s.count(anchor) == 1` is louder than a quoting slip that matches
-   zero, and unlike an `in` test it also catches the ambiguous anchor the
-   void-probe rule below is about.
-2. **Does the case's execution path REACH the edited line?** Breaking a hook's
-   branch-lookup left its suite green because every case carried an explicit
-   PR number, so the lookup never ran. The fix is a case that HAS to take that
-   path, not a change to the fence.
-3. **Did the command run where you think it did?** A relative-path edit under
-   a silently reset cwd lands in another worktree — and the confirming
-   `git status` runs in that same wrong tree, so "clean" and "clean somewhere
-   else" print identically. Use ABSOLUTE paths and confirm by a property the
-   wrong tree cannot fake (`ls -la` mtime).
+**Publishing a probe MATRIX re-measures it on the tree you are about to
+merge** (`references/verify.md` §8-g); carrying one forward across rounds is
+wrong even when every row was true when written.
 
-And one shape inside the fixture itself: **an expected value must be an
-INDEPENDENT variable from the one under test.** A stub keyed its content on a
-sha whose default was the same literal on both producing and consuming sides,
-so breaking the producing call still served the content. Only after all four
-does "the fence is weak" remain — deleting an assertion on an unexamined green
-is how a working guard gets removed.
+**Run probes with `vp test run <path>`, never `vp run test <path>`** — the
+wrapped form puts the task runner between caller and verdict
+(`.claude/hooks/vp-run-test-path-gate.sh` blocks it). Read the OUTPUT as well
+as the rc.
 
-**And a RED probe is void as easily as a green one — there it reads as the
-fence FIRING.** Four instances in one run (2026-09-02, go-to-k/cdkd#2428 /
-go-to-k/cdkd#2450): an anchor matching TWICE (a duplicated
-`purgeLockVersions(key, 'reap')` line; `throw new ProvisioningError(` recurring
-through the file) mutates every copy, so the red belongs to a broader change
-than the one you attribute it to; and an edit that does not COMPILE (a
-malformed multi-line replacement, an import the mutation orphaned) fails the
-suite at LOAD, printing failures indistinguishable from discrimination. Read
-the TALLY and the failure TEXT, never the rc — which lies in both directions
-here: a suite can report `skipped` rather than `passed` (the `version` test
-`skipIf`s itself when `dist/` is absent, the normal state of a fresh worktree),
-and a run whose every test passes can still exit non-zero (§6's rc rule). A
-load error, or a test count below the file's own, VOIDS the probe: re-anchor
-and re-run rather than record it.
+**A VALUE import from a module other suites `vi.mock` reds those suites** —
+the failure names the EXPORT, reading as a missing symbol rather than a
+mocking problem. When two modules must agree on a constant and one is widely
+mocked, spell it in both and fence the pair with a test importing both.
 
-**Choose the probe's INPUT to discriminate too, not only its mutation.** The
-mutation decides which code changes; the input decides whether the change is
-observable. A mask-before-`JSON.stringify` fix (PR go-to-k/cdkd#2067,
-2026-08-20) probed with a SCALAR secret came back GREEN under its own
-motivating mutation — `stringify` escapes a JSON document's quotes, so only a
-JSON-DOCUMENT secret makes the needle stop occurring. Before trusting a green,
-ask what property of the INPUT the defect depends on.
+### 5-f'. Scanner/fence calibration (when the fix ships a repo-wide check)
+
+**Calibrate against the PRE-FIX tree, not the issue's wording** — run the
+candidate over the still-broken tree, read every hit, tighten until all are
+genuine. Two markdown sub-traps: strip exemption regions on the WHOLE text,
+not per line (a code span straddling a hard wrap inverts per-line parity),
+and report the HIT's own line.
+
+**Calibration is HALF the measurement — follow it with probes against the
+real tree:**
+
+- **Write the defect in the spelling a PERSON would write**, not the easiest
+  to inject (a fence split on quote characters caught its own probe and
+  missed the spelling anybody would type — go-to-k/cdkd#2052).
+- **Write the defect in every spelling the language allows** (a scanner
+  matched `||` only while the tree used `??` at four sites; widening it
+  surfaced a real unfiled bug — go-to-k/cdkd#2111).
+- **Delete the thing the fence REQUIRES and watch it fail.** An OR of
+  whole-file substrings is satisfied by any one; a population derived from
+  the DEFECT itself drops the subject out instead of failing (a gate-parity
+  test selecting gates by their own condition stayed green with two gates
+  disarmed). A population derived from an OPTIONAL language feature (a type
+  annotation, an explicit return type, `implements`) is derivable-around for
+  free — derive from a relation the write CANNOT omit, and ask: what would
+  this look like if the author did not write the optional part?
+- **Probe the fence with the evasions the DEFECT would use**, not the one you
+  just fixed — the removed line is the one spelling you have proved you can
+  see (a fence caught its own removed line and missed computed members,
+  `Object.assign`, an object literal and a spread rebuild).
+- **Watch the FLOOR for the same collapse** — a floor naming only the file
+  the defect lives in is satisfied BY the collapse; a floor computed from the
+  pool it guards is unfalsifiable (emptying the pool left it green). Write
+  the expected count as a LITERAL from a source the fence does not read.
+- **Is anything RUNNING it?** (nine shell hook harnesses were invoked by no
+  CI step and no task — exercised only by hand since written).
 
 **When the change alters a CLASSIFIER, hand-picked cases cannot fence it —
-measure the DELTA against the old implementation.** A classifier is any function
-deciding which of several shapes an input is (region-vs-stack-name predicate,
-route selector, error categoriser); its defects live in shapes nobody wrote
-down. go-to-k/cdkd#2001 (2026-08-21) shipped THREE green revisions, each fixing
-the case the previous review named and breaking a neighbour. The fence that ends
-it is a differential walk: enumerate the input space, run BOTH the new
-implementation and a transcription of the old one, and fail on any difference
-outside an explicitly enumerated set of intended classes — a shape nobody
-imagined is a failure by default (it showed three delta classes where the
-comments said two). Take the transcription from `git show origin/main:<path>`,
-not memory, and confirm agreement on the cells where they SHOULD agree before
-trusting the cells where they differ. Two ways it goes inert, both measured:
+measure the DELTA against the old implementation.** A classifier is any
+function deciding which of several shapes an input is (a
+region-vs-stack-name predicate, a route selector, an error categoriser); its
+defects live in shapes nobody wrote down (go-to-k/cdkd#2001: three green
+revisions, each fixing the named case and breaking a neighbour; the
+differential walk ended it in one round). The fence: enumerate the input
+space, run BOTH the new implementation and a transcription of the old one —
+taken from `git show origin/main:<path>`, never from memory — and fail on any
+difference outside an explicitly enumerated set of intended classes: a shape
+nobody imagined is a failure by default. Confirm agreement on the cells where
+they SHOULD agree before trusting the cells where they differ. Two ways it
+goes inert, both measured: **classify by the resulting VALUE, not the input's
+shape** (bucketing a differing cell by which key it was let a total
+regression sit in the "intended repair" bucket, fence green); and **carry a
+floor per class** (the walk reaches a class only if the input pool contains
+it — a pool that quietly stops covering one passes as "no regressions").
 
-- **Classify by the resulting VALUE, not by the input's shape.** The first cut
-  bucketed a differing cell by which key it was, so mutating the fix to return
-  the prefix outright — a total regression — left every cell in the "intended
-  repair" bucket and the fence GREEN. Each arm must assert what the function
-  now returns.
-- **Carry a floor per class.** The walk reaches a class only if the input pool
-  contains it; one class was real, intended and never reached, so a pool that
-  quietly stops covering one passes as "no regressions".
+**When a fence must read another tool's CONFIG, parse it with a real parser
+and fail CLOSED on anything unmodelled — never hand-roll a scanner, never
+patch one per spelling.** Measured across three sibling fences over
+`.markgate.yml` (go-to-k/cdkd#2383, go-to-k/cdk-real-drift#1838,
+go-to-k/cdk-local#631): the unused key (`exclude` — read the tool's OWN
+schema from the pinned binary, not its `init` template); then the spelling
+treadmill — four spellings across four rounds (flow lists, quoted keys, a
+two-space comment ending a block scan, the YAML merge key splicing an
+`exclude` from a sibling gate), each patch moving the hole. **Three spellings
+in three rounds is the signal to change instrument**: parse for real
+(`yaml`'s `parse(text, { merge: true })`), allow-list the tool's own keys,
+fail closed outside them — or REFUSE the construct rather than model it
+(refusal is the stricter option: an unmodelled shape stops the fence instead
+of passing through). And a probe establishing any of this must move ONE
+variable (an early draft's published probe had re-`set` the marker in
+between, making its headline sentence false).
 
-**A VALUE import from a module other suites `vi.mock` reds those suites.** The
-`type`-only import is invisible to the mock; a runtime one is not, and the
-failure names the EXPORT (`[vitest] No "<CONST>" export ...`), reading as a
-missing symbol in the module you just edited rather than a mocking problem in a
-suite you did not touch (one constant imported into `state-file-keys.ts`
-reddened two unrelated suites). When two modules must agree on a constant and
-one is widely mocked, spell it in both and fence the pair with a test importing
-both — the sync is what matters.
+**The general shape: a fence is not evidence until you have watched it go red
+on something you had not already counted.**
 
-**Run probes with `vp test run <path>`, never `vp run test <path>`.** The
-wrapped form puts the Vite+ task runner between caller and verdict, and while
-`test` was cached (until 2026-08-30) a repeat replayed the previous run without
-executing, so a probe editing a file the task hash did not cover reported PASS
-having run nothing (2026-08-20; one reviewer had FOUR).
-`.claude/hooks/vp-run-test-path-gate.sh` blocks the wrapped form; a bare
-`vp run test` (whole suite) is unaffected. Read the OUTPUT as well as the rc —
-the void-probe rule above carries the two false greens that ride this command.
+**No number of probes can falsify the FIXTURE — a mutation probe perturbs the
+CODE and reads the TEST while both read the same mock.** Any premise SHARED by
+code and mock is invariant under mutation (go-to-k/cdkd#2227: seven cases
+passed, probed both ways, and the guard could not fire against real AWS — the
+mocks encoded the AWS CLI's redirect-following behaviour, not the SDK's). A
+fixture encoding an AWS response needs its own evidence: a recorded real
+response, a live arm, or a probe against the SDK.
 
-**A repo-wide SCANNER test is calibrated against the PRE-FIX tree, not written
-from the issue's wording.** The issue's signature is what its author noticed on
-ONE instance, never a rule with a measured false-positive rate. Run the
-candidate over the still-broken tree FIRST, read every hit, and tighten until
-all are genuine (go-to-k/cdkd#1990: 13 bare `#N` hits, all real, while the same
-regex without stripping frontmatter and code spans would have flagged
-legitimate examples). Two markdown sub-traps: strip on the WHOLE text, not per
-line — an inline code span straddling a hard wrap makes a per-line pass pair
-one span's closing backtick with the next span's opening one and invent
-findings — and report the HIT's own line, not the start of the stripped
-region.
+Two more fence questions (go-to-k/cdkd#2027): **does it watch the OTHER
+direction?** ("refuses what it must" AND "leaves alone what it must" — only
+the second catches an over-tightening fix); **is it hermetic, and on WHICH
+axis?** (enumerate git history, environment, cwd, clock, locale, user; pin
+each or record a measured negative — prefer PINNING over normalizing, since a
+normalization layer sits exactly where a fence goes green-but-inert).
 
-**Calibrating against the broken tree is only HALF the measurement, and the
-half it leaves out is the one that lets a fence ship inert.** The pre-fix tree
-measures PRECISION and recall on the instances that HAPPEN TO EXIST — nothing
-about the SHAPE: spellings the tree does not currently use, and contexts that
-defeat your exemption logic. Follow calibration with probes against the REAL
-tree:
+### 5-g. Fan-out mechanics
 
-- **Write the defect in the spelling a PERSON would write, not the one that is
-  easiest to inject.** go-to-k/cdkd#2052 (2026-08-26): a prefix-sync fence split
-  on `'custom-resource-responses'` *with both quote characters*, so the probe's
-  `` `${'...'}/` `` reds it while the spelling anybody would type — trailing
-  slash inside the quote — sailed through, as did any copy outside the fence's
-  hand-written file list. Its author had just read the "grep for the SHAPE, not
-  for a NAME" rule above. Mutate a fence the way a future contributor would, and derive the
-  population rather than listing it.
-- **Write the defect in every spelling the language allows** and confirm each
-  is flagged. go-to-k/cdkd#2111 (2026-08-20): a scanner for
-  `options.region || process.env['AWS_REGION']` calibrated perfectly (19
-  violations, 0 false positives) yet matched `||` only, while the tree used
-  `??` at four sites and two files spell the bag `opts.` / `args.`. Widening it
-  surfaced a real unfiled bug.
-- **Delete the thing the fence REQUIRES, and watch it fail.** A predicate of
-  whole-file substrings OR'd together is satisfied by any one: the "every
-  region-taking handler folds" fence passed 130/130 while a probe deleted the
-  ONLY fold from four handlers at once, each still holding a different accepted
-  substring. Its POPULATION was wrong too — derived from "mentions
-  `options.region`", it pulled in helpers that merely RECEIVE a folded value
-  and missed the files that accept the flag. Derive from what DECLARES the
-  option, and make the predicate per-READ rather than per-file.
+You may fan out **one subagent per lane** (disjoint files): give each its
+worktree path, allowed files, and "do NOT touch other lanes' files; STOP and
+report if the fix needs a forbidden one". A subagent's Bash **bypasses the
+PreToolUse gate hooks** (it can `gh pr create` past `verify-pr-gate`) —
+enforce quality yourself; the orchestrator still gates the MERGE.
 
-  The worst population is one derived from the DEFECT itself: deleting the
-  required thing drops the subject OUT of the population instead of failing.
-  Four such fences in one tree (2026-08-20, go-to-k/cdk-real-drift#1797) — a
-  gate-parity test selecting gates by `condition.includes('Bash(git commit*)')`
-  stayed 7/7 green with two gates disarmed, and a hook-coverage test
-  enumerating `*.test.sh` could never report the hook with no harness. A
-  STATEFUL scanner fails the same way with no OR: go-to-k/cdk-local#537's scan
-  flipped one `inFence` boolean on any fence marker, so a single nested fence
-  inverted it and muted every later check.
+- **Forbid lane agents the FULL SUITE; run it yourself, serially.** Five
+  concurrent full suites drove load to 195 and all three lanes were killed by
+  the 600s watchdog with timeouts in files no diff touched; serialized, the
+  same trees were green. Each agent runs only `vp test run <its own suite>`.
+- **A PEER SESSION's suite is invisible to every probe here** — a full suite
+  exited 1 with all tests passing (`Worker exited unexpectedly`, load 54, the
+  heaviest vitest belonging to another session's worktree). Before treating a
+  suite failure as a regression, read the rc AND the error section AND
+  `uptime`, and check `ps` for a vitest whose path is not yours; re-run when
+  the machine is quiet.
+- Budget two fan-out costs: a lane agent waiting inside a tool call is killed
+  at 600s of silence (background long runs with a log redirect, poll with
+  short `tail`s), and a fix round re-touching an `integ-*` scope invalidates
+  that gate's marker — that is the gate working; budget the run.
 
-  **A population derived from an OPTIONAL language feature is derivable-around
-  for free, and a type annotation is the commonest one.** A 2026-08-26 fence
-  built to END a four-round cascade derived its population as "files
-  annotating `: DestroyRunnerResult`"; TypeScript infers, so the two files
-  holding the object as plain locals were never scanned, and planting the
-  write in one left the fence 4/4 GREEN. Derive from a relation the write
-  CANNOT omit — here, that a file either constructs the result or receives it
-  from the one function that returns it. Ask of any population: *what would
-  this look like if the author simply did not write the optional part?*
-  Annotations, explicit return types, `export` markers, and interface
-  `implements` clauses all answer "identical, and invisible to you".
+**Guardrails every lane prompt must carry** (each learned the hard way):
 
-  **Probe the fence with the evasions the DEFECT would use, not with the one
-  you just fixed.** Re-planting the exact removed line is the cheapest and
-  least informative probe — the one spelling you have already proved you can
-  see. The same fence caught its own removed line and missed four ordinary
-  alternatives: a computed member (`x['field'] =`), `Object.assign`, an object
-  literal, and a spread rebuild — the last is first to try when the cascade is
-  about early returns, because a new early return is written as a new object.
+- **Never force-push over a commit you did not author** — re-`git fetch` and
+  inspect the branch first; STOP if it carries work you did not write.
+- **A new fixture literal must not collide with an existing assertion needle,
+  nor a new fixture RESOURCE with an existing resource's VALUE** (a
+  hard-coded URL user equal to the swept needle produced a false LEAK report
+  — worse than a missing assertion; an arm reusing a plaintext an existing
+  assertion owned failed on an assertion the lane never wrote,
+  go-to-k/cdkd#2270). When an arm makes two things equal, ask what ELSE holds
+  that value; scope the sharing. **And check the arm's shape actually
+  exercises the fix before spending a run** (two separate resources was
+  vacuous there — only one resource holding both leaves let the mechanism
+  under test decide the answer).
+- **Execute every read expression you write** — jq / JMESPath / `--query`
+  are untested code; run each against real output shape, in both directions
+  where the expression carries a guard.
+- **Do not dispatch reviewers against a worktree whose lane has uncommitted
+  work** — reviewers probe by edit-and-restore-from-`HEAD`, which restores
+  HEAD, not in-flight work (three `src/` edits wiped). Commit the lane first;
+  when a lane resumes after a review round, it re-runs
+  `git status --porcelain` and `git diff --stat` FIRST and reports both.
+- **Reviewers collide with EACH OTHER — a 3-axis dispatch puts three in one
+  worktree by construction.** Say IN THE PROMPT of every reviewer: peers are
+  probing this same worktree; `git status --porcelain` must be EMPTY before
+  you start a probe; if not, WAIT and re-check rather than restoring (a
+  `git show HEAD:<path>` over a peer's edit reverts it); read any surprising
+  probe result as possibly theirs first. §8 adds the AFTER half and the
+  copied-worktree hazard; both also live in `.claude/agents/pr-*-reviewer.md`.
+- **That is a DURATION constraint, and the ORCHESTRATOR breaks it most
+  easily**: reviewers restore from a snapshot at THEIR t0, so an orchestrator
+  edit landing inside the review window is reverted by a restore behaving
+  correctly. Dispatch, then do not touch the files under review; if you must,
+  re-verify with `git status --porcelain` plus a `grep -c` per edit.
 
-  **And watch the FLOOR for the same collapse.** A floor naming only the file
-  the defect lives in is satisfied BY the collapse it exists to catch:
-  narrowing that fence's pathspec to the owner file alone still passed 4/4.
-  Name the peripheral members a collapse drops FIRST, not the central one.
-  **And derive the floor from a source the fence does not itself read.** A
-  floor computed from the very pool it guards is unfalsifiable, because
-  deleting pool entries moves both sides of the comparison together — measured
-  2026-08-29: emptying the guarded pool left such a fence 10/10 GREEN. Write
-  the expected count as a LITERAL, so the pool shrinking is what reddens it.
+**Two probe-harness failures that reported a false green:**
 
-And ask the dumbest question last: **is anything RUNNING it?** The nine hook
-harnesses in go-to-k/cdk-real-drift were shell, so neither the vitest task nor
-any CI step invoked them — exercised only by hand since the day each was
-written.
-
-**When a fence must read another tool's CONFIG, parse it with a real parser and
-fail CLOSED on anything unmodelled — do not hand-roll a scanner, and do not
-patch one per spelling.** Measured across go-to-k/cdkd#2383,
-go-to-k/cdk-real-drift#1838 and go-to-k/cdk-local#631 (2026-08-29) — three
-different fences over the same config, all three ending on one that fails
-CLOSED rather than on a better pattern:
-
-- **The unused key.** markgate resolves a `hash: files` gate as `include` MINUS
-  `exclude`. No repo in the family had ever written an `exclude`, so the fence
-  modelled `include` alone and reported full coverage over a scope the tool
-  would already have subtracted from. Read the tool's OWN schema, from the
-  pinned binary rather than its `init` template: 0.4.1 has eight gate keys
-  (`hash` / `include` / `exclude` / `base` / `ttl` / `state_dir` / `requires` /
-  `composes`); `init` emits six, dropping the two a repo is likeliest never to
-  have written.
-- **Then the spelling treadmill, which is the real lesson.** Each round patched
-  the spelling that had just got through while the next sailed past: block
-  items only, so a FLOW list passed; unquoted keys only, so `"exclude":`
-  passed; a block scan terminating on `/^ {2}\S/`, which a two-space COMMENT
-  ended early, leaving all fourteen cases GREEN while markgate really did
-  subtract; then a "raw text" tripwire that was itself another hand-rolled
-  pattern over the same text, inheriting every blind spot — and it did not fire
-  on the YAML merge key (`<<: *anchor`) splicing an `exclude` from a SIBLING
-  gate, the very case it was added to backstop. go-to-k/cdkd#2383 tallies four
-  spellings across four rounds, each patch moving the hole rather than closing
-  it. **Three spellings in three rounds is the signal to stop patterning and
-  change instrument** — a YAML parser was a production dependency the whole
-  time, and a third-party, versioned, separately-tested library is not the
-  fence checking its own work.
-- **Neither escape was a fifth pattern.** Either parse for real — with
-  `parse(text, { merge: true })`, without which `yaml` reports the gate's keys
-  as `["hash", "<<"]` and its `exclude` as undefined — then ALLOW-LIST the
-  tool's own keys, fail CLOSED outside them, and raw-scan the WHOLE `gates:`
-  map. Or, where the repo has no parser to reach for, REFUSE the construct
-  rather than model it: go-to-k/cdk-local#631 took that route and then held
-  against every respelling its reviewers constructed. Refusal is the STRICTER
-  option, not the weaker one — an unmodelled shape stops the fence instead of
-  passing through it, which is why an allow-list also beats deny-listing the
-  spellings someone happened to think of.
-- **And the probe that establishes any of this must move ONE variable.** The
-  rule's first draft published "adding `exclude` while holding `include`
-  constant takes `verify` from rc=1 to rc=0" — measured, it stays rc=1, because
-  subtracting files changes the digest. The probe behind that sentence had
-  re-`set` the marker in between. The real hazard needs the marker RECORDED
-  with the exclude present: `set` rc=0, after which an edit to an excluded file
-  keeps `verify` at rc=0 forever while an included file still reds. A rule
-  about probes is exactly where an unreproducible probe does the most damage.
-
-The general shape: **a fence is not evidence until you have watched it go red
-on something you had not already counted.** Calibration tells you it is not
-noisy; only the spelling and deletion probes tell you it is load-bearing.
-
-**And no number of probes can falsify the FIXTURE, because a mutation probe
-perturbs the CODE and reads the TEST while both read the same mock.** Any
-premise SHARED by code and mock is invariant under mutation. go-to-k/cdkd#2227
-(2026-08-26): seven cases passed and were probed two complementary ways, yet
-the guard could not fire against real AWS at all — the mocks were written from
-a measurement taken with the AWS **CLI**, which follows S3's cross-region 301,
-while the SDK client cdkd uses does not and yields a synthetic `UnknownError`;
-only the live arm caught it. A fixture encoding an AWS response needs its own
-evidence — a recorded real response, a live arm, or a probe against the SDK
-rather than the CLI. Probing harder cannot supply it.
-
-Two more questions to ask of any fence, both from go-to-k/cdkd#2027
-(2026-08-21):
-
-- **Does it watch the OTHER direction?** A fence asking only "is the bad input
-  refused?" never notices the gate starting to refuse GOOD input: that lane's
-  fence had no such case, and two consecutive rounds shipped false refusals (a
-  commit message quoting `git -C $W`; `MSG=$(echo git commit -m x)`). For a
-  guard, the pair is "refuses what it must" AND "leaves alone what it must";
-  only the second catches an over-tightening fix.
-- **Is it hermetic, and on WHICH axis?** Hermeticity is per-dependency, and CI
-  finds the open axes one per round-trip: the same fence was pinned to a git
-  SHA (failed in CI's shallow clone — correctly, and loudly), vendored as a
-  fixture, then failed AGAIN because a `~` expansion made its expected values
-  depend on `$HOME`. Enumerate the axes up front — git history, environment,
-  cwd, clock, locale, user — and for each either pin it or record a measured
-  negative. Prefer PINNING over normalizing: a normalization layer sits
-  between implementation and assertions, exactly where a fence goes
-  green-but-inert; pinning keeps the case asserting an exact known value.
-
-You may fan out **one subagent per lane** (disjoint files) to run them
-concurrently — give each agent its worktree path, its allowed files, and an
-explicit "do NOT touch <the other lanes' / other agents' files>; STOP and
-report if the fix needs a forbidden file" guardrail. Note: a subagent's Bash
-**bypasses the PreToolUse gate hooks**, so it can `gh pr create` past
-`verify-pr-gate` — enforce quality yourself; you (the orchestrator) still gate
-the MERGE.
-
-**Forbid the lane agents the FULL SUITE and run it yourself, serially.**
-Fan-out is right for editing and targeted probes, wrong for `vp run test`: on
-2026-08-20 five concurrent full suites drove load to 195, one test FILE took
-607s against a 5s per-test timeout, and all three lane agents were killed by
-the 600s watchdog — `Test timed out` in files no diff touched,
-indistinguishable from a real regression; serialized, the same trees were
-green. Tell each agent to run only `vp test run <its own suite>`, that the
-authoritative full suite is yours; run one lane's at a time.
-
-**Serializing YOUR suites is not the same as serializing the machine, and a
-PEER SESSION's suite is invisible from every probe this skill lists.** On
-2026-08-27 a full suite exited **1** with `Test Files 806 passed` /
-`Tests 16597 passed` — the failure was `[vitest-pool]: Worker forks emitted
-error / Worker exited unexpectedly` at load 54, a dead fork, and
-`ps aux | grep vitest` showed the heaviest run belonged to ANOTHER session's
-worktree. Before treating a suite failure as a regression, read the rc AND the
-error section AND `uptime`, and check `ps` for a vitest whose path is not
-yours. You cannot serialize a peer — re-run once the machine is quiet; do not
-hunt the diff.
-
-Two fan-out costs to budget rather than discover: a lane agent that waits
-inside a tool call is killed at 600s of silence (have it launch long runs
-backgrounded with a log redirect and poll with short `tail` calls), and any
-fix round re-touching `src/provisioning/providers/**` or another `integ-*`
-scope invalidates that gate's marker — a late review finding buys another
-real-AWS run. That is the gate working; budget the run rather than arguing the
-code "cannot have changed behaviour".
-
-**Three guardrails every lane prompt must carry, all learned the hard way on
-2026-08-19:**
-
-- **Never force-push over a commit you did not author.** A lane agent resumed
-  with edits predating four orchestrator commits on its branch and force-pushed;
-  only the rebase preserved them. Say in the prompt: re-`git fetch` and inspect
-  the branch first, and STOP if it carries work you did not write.
-- **A new fixture literal must not collide with an existing assertion needle —
-  and neither may a new fixture RESOURCE collide with an existing resource's
-  VALUE.** The literal form: a `DB_URL` hard-coded `cdkd-user` as its URL user
-  — exactly `EXPECTED_USERNAME`, the needle grepped over the whole persisted
-  env — so the run reported a secret LEAK that had not happened; a false leak
-  report is worse than a missing assertion, being indistinguishable from the
-  real thing. The RESOURCE form is the same trap one level up
-  (go-to-k/cdkd#2270, 2026-08-26): an arm testing a same-plaintext COLLAPSE
-  must give two leaves one plaintext — that sharing is what makes it
-  discriminate — and it reused a plaintext a pre-existing assertion already
-  owned, failing on an assertion the lane never wrote. When an arm makes two
-  things equal, ask what ELSE holds that value and give the arm its own secret
-  / key / name. Scope the sharing; breaking it retires the fence.
-
-  **And check the arm's shape actually exercises the fix before spending a run
-  on it.** The obvious decoupling there (two separate RESOURCES) was VACUOUS:
-  `perResourceSecrets` is keyed by logical id, so two resources get two
-  single-pair bags and redact correctly either way. One resource holding both
-  leaves was the only shape where the mechanism under test decides the answer.
-- **Execute every read expression you write.** Two integ runs were lost to
-  fixture code, not product defects: the literal collision above, and a `jq`
-  assignment written through `to_entries[]`, which builds a new array and is
-  not a path back into the document. jq / JMESPath / AWS CLI `--query` are
-  untested code; run each against real output shape before finishing, in both
-  directions where the expression carries a guard.
-- **A read-only REVIEWER can silently revert a live lane's uncommitted `src/`
-  edits, and nothing surfaces it.** Reviewers probe by editing a file and
-  restoring it from `git show HEAD:<path>` — which restores HEAD, not the
-  lane's in-flight work; on 2026-08-20 that wiped three `src/` edits, caught
-  only because `git status` disagreed with what the agent had written. So:
-  **do not dispatch reviewers against a worktree whose lane still has
-  uncommitted work.** Commit the lane first (the gates make that cheap) and
-  point the reviewers at the committed diff. When a lane resumes after a
-  review round, have it re-run `git status --porcelain` and `git diff --stat`
-  FIRST and report both — the orchestrator cannot tell a wiped edit from an
-  unstarted one.
-
-  **Reviewers collide with EACH OTHER too, and a 3-axis dispatch puts three or
-  four of them in one worktree by construction.** All probe by
-  edit-and-restore-from-`HEAD`, so a peer's in-flight mutation is
-  indistinguishable from the subject, and restoring it is "correct" behaviour
-  that silently discards their work (2026-08-27: a security reviewer's first
-  pass reported **6 failures that were a peer's mutation**; both lanes
-  recovered by judgement, not by the flow). Say it IN THE PROMPT of every
-  reviewer: peers are probing this same worktree, `git status --porcelain`
-  must be EMPTY before you start a probe, and if it is not, WAIT and re-check
-  rather than restoring — a `git show HEAD:<path>` over a peer's edit reverts
-  it. And read any surprising probe result as possibly theirs first. §8 adds
-  the AFTER half of that check and the copied-worktree hazard; both also live
-  in `.claude/agents/pr-*-reviewer.md`, so no dispatch can omit them.
-
-  **That is a DURATION constraint, not just a precondition, and the
-  ORCHESTRATOR breaks it more easily than a lane agent does.** A clean tree at
-  dispatch buys nothing if you edit while the reviewers run — their probes
-  restore from a snapshot taken at THEIR t0, so an edit landing inside that
-  window is reverted by a restore behaving correctly (2026-08-21: an early
-  blocker's fix was applied mid-review; only a reviewer's closing warning
-  surfaced it, and the edits survived by luck). Dispatch, then WAIT — do other
-  lanes' work, write the PR body, watch CI, but do not touch the files under
-  review; if you must, re-verify with `git status --porcelain` plus a
-  `grep -c` for a marker of each edit, exactly as §6 prescribes for a blocked
-  restore.
-
-**Two probe-harness failures from the same run, both of which reported a false
-green rather than an error.** A probe that cannot fail is worse than no probe,
-because it converts an open gap into a recorded assurance:
-
-- **A scratch harness was silently REPLACED by another agent's file of the
-  same name.** Its `__main__` was `pass`, so four probes "passed" having
-  applied nothing — parallel agents share scratch space and pick the same
-  obvious filenames. Name scratch files per lane, and make every probe emit a
-  positive receipt it cannot produce without having run — `bytes 41822 ->
-  41799; anchor now 0 (was 1)` — then read the receipt, not the exit code.
-
-  **The naming rule was already written here and was broken THREE times in one run
-  (2026-08-26), so stop asking agents to invent the name: the ORCHESTRATOR
-  assigns each dispatched agent a unique scratch directory IN ITS PROMPT**
-  (`$SCRATCHPAD/lane<issue>-private/`, `$SCRATCHPAD/rev-<role>-<sha>/`), plus
-  "never a bare generic name in the scratchpad root" — decided once per run, it
-  cannot be re-derived wrongly per agent. Without it, one lane ran another's
-  whole probe table against that lane's worktree, one reviewer's mutation was
-  restored from `HEAD` by another, and a TRESPASS was reported that had not
-  happened (the `_old-<name>.test.sh` copy a reviewer is TOLD to write beside
-  its subject is indistinguishable, from inside the worktree, from a peer
-  writing there — only the orchestrator can tell). A hook was rejected: it
-  would have to match command TEXT for scratch-path writes, the
-  unbounded-bypass shape go-to-k/cdkd#2156 documents.
-- **A probe's FIXTURE, not its mutation, decided the outcome.** A region test
-  set `AWS_REGION` to the CONSUMER's region, where the correct code and the
-  mutation bind identically; only the PRODUCER's region separated them. When a
-  probe comes back green, suspect the fixture first — and no count of passing
-  cases can see the commonest instance, an expected value COINCIDING with the
-  ambient default: assertions pinned to `'us-east-1'`, at once the fixture's
-  region and this repo's hardcoded fallback, cannot tell a threaded binding
-  from a defaulted one, and substituting the literal for the binding left 434
-  tests green (2026-08-29). Choose a value the default can never produce.
+- **A scratch harness silently REPLACED by another agent's same-named file**
+  (its `__main__` was `pass`; four probes "passed" applying nothing).
+  **The ORCHESTRATOR assigns each dispatched agent a unique scratch directory
+  IN ITS PROMPT** (`$SCRATCHPAD/lane<issue>-private/`,
+  `$SCRATCHPAD/rev-<role>-<sha>/`) — the ask-agents-to-invent-a-name rule was
+  broken three times in one run. Make every probe emit a positive receipt it
+  cannot produce without having run (`bytes 41822 -> 41799; anchor now 0
+  (was 1)`), and read the receipt, not the exit code.
+- **A probe's FIXTURE, not its mutation, decided the outcome** — a region
+  test set `AWS_REGION` to the value where correct code and mutation bind
+  identically. When a probe comes back green, suspect the fixture first — and
+  especially an expected value COINCIDING with the ambient default
+  (assertions pinned to `'us-east-1'`, at once the fixture region and the
+  repo's fallback, left 434 tests green under substitution). Choose a value
+  the default can never produce.

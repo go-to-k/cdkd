@@ -5,93 +5,77 @@ description: Run local quality checks (typecheck, lint, build, tests). Quick che
 
 # Local Quality Check
 
-Run all local quality checks. Use during development to verify the current state quickly.
+Run all local quality checks. Use during development to verify the current
+state quickly.
 
 ## Steps
 
 Run these sequentially and report results:
 
-0. **Worktree pre-flight**: confirm root `node_modules/` exists in the cwd:
-   ```bash
-   [ -d node_modules ] || pnpm install --frozen-lockfile
-   ```
+0. **Worktree pre-flight**: `[ -d node_modules ] || pnpm install --frozen-lockfile`.
    `git worktree add` does NOT copy `node_modules`, and in a fresh worktree
    `vp check` fails with an UNNAMED `typescript(tsconfig-error): Invalid
-   tsconfig — Cannot find type definition file for 'node'` (no file path in
-   the message), which reads like a broken fixture tsconfig and sends you
-   hunting in the wrong place. `/verify-pr` step 0 has the same pre-flight;
-   this copy exists because `/check` is usually the FIRST skill run in a
-   fresh worktree.
+   tsconfig — Cannot find type definition file for 'node'`, which reads like a
+   broken fixture tsconfig. (`/verify-pr` step 0 has the same pre-flight; this
+   copy exists because `/check` is usually the FIRST skill run in a fresh
+   worktree.)
 
-1. `vp check --fix` — typecheck + lint + Prettier formatting, with auto-fix. Then `vp run check` — the EXACT command CI's `check-build-test` job runs. The two are NOT equivalent: `vp check --fix` has passed 0-errors while `vp run check` failed with a TS7053 error on the same tree (observed 2026-08-09 on PR #1372 — an implicit-any union index the --fix invocation never surfaced, plus a `no-base-to-string` that --fix reported as a warning but CI failed as an error). Run both; CI parity comes from the second. **Use this, not `vp run lint:fix`**: the CI workflow runs `vp check` (which includes Prettier), and `lint:fix` does NOT touch Prettier formatting — so a `lint:fix`-only run passes locally but CI fails with `Formatting issues found` on the same branch. See memory rule `feedback_vp_check_vs_lint_fix.md` for the underlying gotcha and PR #363 for a concrete trap.
-2. `vp run typecheck:test` — type-checks `tsconfig.test.json` (the `tests/**` project). **`vp check` above only type-checks `tsconfig.json` (src/** + types/**), which excludes `**/*.test.ts`** — so a wrong `import type` or a stale mock shape in a test file would pass `vp check` AND `vp test` (whose "Type Errors" line only covers `*.test-d.ts`). This step is what makes test-file type errors fail locally the same way CI now fails them (issue #1133).
+1. `vp check --fix` — typecheck + lint + Prettier, with auto-fix. Then
+   `vp run check` — the EXACT command CI's `check-build-test` job runs. The
+   two are NOT equivalent: `vp check --fix` has passed 0-errors while
+   `vp run check` failed with a TS7053 on the same tree (PR #1372). **Use
+   this, not `vp run lint:fix`** — `lint:fix` does not touch Prettier, so a
+   `lint:fix`-only run passes locally while CI fails `Formatting issues
+   found` (PR #363). Run both; CI parity comes from the second.
+
+2. `vp run typecheck:test` — type-checks `tsconfig.test.json` (`tests/**`).
+   **`vp check` only type-checks `tsconfig.json` (src + types), which
+   excludes `**/*.test.ts`** — a wrong `import type` or stale mock shape in a
+   test file passes `vp check` AND `vp test` (whose "Type Errors" line covers
+   only `*.test-d.ts`). This step matches how CI fails them (issue #1133).
+
 3. `vp run build`
 
-   **Before step 4, regenerate the generated artifacts — UNCONDITIONALLY, it
-   is offline and takes seconds**: `vp run gen:all-matrices && vp run audit:coverage:check && vp run format`.
+   **Before step 4, regenerate the generated artifacts — UNCONDITIONALLY,
+   offline, seconds**:
+   `vp run gen:all-matrices && vp run audit:coverage:check && vp run format`.
    The suite carries a byte-for-byte guard per generated matrix, and the
-   trigger set is wider than any one condition you would write — adding or
-   renaming a PRIVATE method in a provider stales
-   `docs/_generated/handled-property-wiring.json` (issue #1417's class), and
-   a `verify.sh` edit with no src change stales `cli-flag-coverage`. Measured
-   2026-09-03 on the issue-#2472 lane: a provider gained one private helper,
-   nothing else in `docs/_generated/` was touched, and the full ~10-minute
-   suite went red on exactly two `gen-handled-property-wiring` cases before
-   the regeneration made it green. `/verify-pr` step 5 says the same for the
-   PR gate; this copy exists because `/check` is the run that pays the suite.
-4. `vp test run` — the whole unit suite. **Prefer this over `vp run test`**, even though that is the spelling CI uses and the `test` task delegates to exactly this command: nothing sits between the caller and the verdict. Measured on this repo 2026-08-31, both spellings on the same 17,497 tests: `vp test run` prints **15 lines / 617 bytes**, `vp run test` **17 lines / 651 bytes**.
-   The gap used to be 260x, and closing it is what the `cache: false` change bought. While the `test` task still cached, `vp run test` gave the child a TTY, so vitest switched to its per-file reporter with console interception on: **1,981 lines / 171 KB** for a green run. It could also exit 0 having run NOTHING, when the cache encoder overflowed while serialising the task's inputs (`Cache lookup failed: Encoded sequence length exceeded preallocation limit`, no `Test Files` line, rc=0). Both are gone with the cache; `vp test run` never had either.
-   Read the summary line, not just the exit code: a run that reports no `Test Files` count did not run.
+   trigger set is wider than any condition you would write — renaming a
+   PRIVATE provider method stales `handled-property-wiring.json` (issue
+   #1417's class); a `verify.sh` edit with no src change stales
+   `cli-flag-coverage` (measured 2026-09-03: one private helper, two red
+   cases, green after regeneration).
+
+4. `vp test run` — the whole unit suite. **Prefer this over `vp run test`**:
+   nothing sits between the caller and the verdict (the cached `vp run test`
+   historically replayed without executing and could exit 0 having run
+   NOTHING; both gone since `cache: false`, but the direct spelling stays the
+   rule). Read the summary line, not just the exit code — a run reporting no
+   `Test Files` count did not run.
 
    **And check WHICH PROJECT the summary belongs to — the summary line cannot
-   tell you.** Measured 2026-09-02 with several sessions running suites at once:
-   three consecutive `vp test run` invocations from cdkd's worktree printed
-   `Test Files 246 passed (246) / Tests 4410 passed (4410) / Type Errors no
-   errors` — the suite of a **cdk-local worktree**
-   (`/Users/goto/pc/github/cdk-local/.claude/worktrees/...`, which has exactly
-   246 test files), not cdkd's 856. `cd`-ing to the right worktree did not help
-   and neither did `--config vite.config.ts`; the shell's `pwd` was correct
-   throughout. The tells are the `RUN <root>` header — 3 lines above the
-   summary on a clean cdkd run, but ~1,600 lines above it here (probably
-   because the foreign project's output is not stream-fenced the way
-   cdkd's `tests/setup.ts` fences its own; inferred, not confirmed) — and a
-   stray `vp run: cdk-local#test ...` line at the end.
-
-   **The MECHANISM is unconfirmed; do not repeat a guess as fact.** Ruled out
-   in this tree: `node_modules/cdk-local` is a pnpm REGISTRY install (store
-   symlink, v0.147.7), `pnpm-workspace.yaml` declares no `packages:`, and
-   `vite.config.ts` references no sibling project — so it is not a workspace
-   link. **Also ruled out — and this is the second wrong guess, so stop
-   guessing:** the `vp` on PATH is not an unpinned toolchain. `type -a vp`
-   resolves function -> `~/.vite-plus/bin/vp` -> the mise shim, and while that
-   launcher self-reports `vp v0.1.12`, it prints `Local vite-plus: v0.2.5`,
-   matching both `package.json` and `.mise.toml`'s `http:vp` pin. No version
-   mismatch. What remains observable is only that PATH prefers the
-   `~/.vite-plus` launcher over the mise shim; whether that matters here is
-   unknown. Treat the cause as OPEN and reproduce it before acting on any
-   theory.
-
-   Whatever the cause, acting on the summary sets the `check` marker (and
-   through `requires`, the `verify-pr` one) over a suite that never ran. So
-   assert the root in the same command that produces the verdict, and read the
-   suite's own exit code rather than the trailing `grep`'s:
+   tell you.** Measured 2026-09-02 with several sessions running suites at
+   once: three consecutive `vp test run` invocations from cdkd's worktree
+   printed a **cdk-local worktree's** suite (246 files, not cdkd's 856), with
+   `pwd` correct throughout. The tells: the `RUN <root>` header far above the
+   summary, and a stray `vp run: cdk-local#test` line at the end. **The
+   MECHANISM is unconfirmed — do not repeat a guess as fact** (ruled out:
+   workspace links, an unpinned `vp`). Acting on the wrong summary sets the
+   `check` marker (and through `requires`, `verify-pr`) over a suite that
+   never ran — so assert the root in the same command that produces the
+   verdict, and read the suite's own rc, not the trailing grep's:
 
    ```bash
-   # Subshell so the `exit`s are safe to paste into an interactive shell and
-   # still give the caller a non-zero status.
+   # Subshell so the `exit`s are safe to paste into an interactive shell.
    (
-     log=$(mktemp)                     # NOT a fixed path: the documented
-                                       # trigger is concurrent lanes, and a
-                                       # shared /tmp/t.log lets one lane read
-                                       # another's summary as its own.
-     echo "log: $log"                  # print it BEFORE the exits below, or a
-                                       # failing run's output is unrecoverable
-                                       # (each agent Bash call is a new shell).
+     log=$(mktemp)                     # NOT a fixed path: concurrent lanes
+                                       # share /tmp, and a shared log lets one
+                                       # lane read another's summary as its own.
+     echo "log: $log"                  # print BEFORE the exits, or a failing
+                                       # run's output is unrecoverable.
      vp test run > "$log" 2>&1; rc=$?
-     # Exactly ONE header. Two projects interleaved into one log would let
-     # `-m1` bind cdkd's header while the summary grep prints both suites';
-     # zero headers means the suite never started. Report the count, since
-     # the two directions have different causes.
+     # Exactly ONE header: two projects interleaved would let -m1 bind cdkd's
+     # header while the summary grep prints both; zero means it never started.
      runs=$(grep -c 'RUN  v' "$log")
      [ "$runs" = 1 ] || { echo "expected 1 RUN header, found $runs -- attests to nothing; log: $log"; exit 1; }
      run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')
@@ -101,13 +85,11 @@ Run these sequentially and report results:
    )
    ```
 
-   It is contention-dependent, not sticky — re-running usually lands on the
-   right project. A single-FILE run (`vp test run tests/unit/<x>.test.ts`)
-   reported the right project every time in the same window, so it is a useful
-   way to confirm which project you are addressing while other lanes are busy —
-   **but it does NOT substitute for this step.** The marker still requires a
-   full-suite run that passed AND was rooted here; if the full suite cannot be
-   obtained, say so rather than setting the marker on a narrower run.
+   It is contention-dependent, not sticky — re-running usually lands right. A
+   single-FILE run reported the right project every time in the same window,
+   so it can confirm which project you are addressing — **but it does NOT
+   substitute for this step**: the marker requires a full-suite run that
+   passed AND was rooted here.
 
 ## Output
 
@@ -120,23 +102,27 @@ Report as a table:
 | build | pass/fail |
 | tests (N files, M tests) (`vp test run`) | pass/fail |
 
-If all pass, confirm "All checks passed."
-If any fail, show the error output and STOP — do not write the commit-gate marker.
+If all pass, confirm "All checks passed." If any fail, show the error output
+and STOP — do not write the commit-gate marker.
 
 ## Commit-gate marker (on success only)
 
-After all four checks pass, record a marker so the PreToolUse `check-gate` hook (see `.claude/hooks/check-gate.sh`) allows the next `git commit`. The marker is managed by [markgate](https://github.com/go-to-k/markgate) and captures the current working tree state; any subsequent edits invalidate it and require re-running `/check`.
+After all four checks pass, record the marker so the `check-gate` hook allows
+the next `git commit`. The marker captures the working-tree state; subsequent
+edits invalidate it.
 
-**Merely CREATING a file inside a gate's scope stales that gate — no edit to an existing file, and no commit.** An untracked file counts: the digest covers the scope's file SET, so a new path appearing in it changes the digest the moment the file exists. Measured 2026-08-20 in a feature worktree, markers otherwise fresh: creating an untracked `tests/_probe.ts` flipped `markgate verify check` from rc=0 to rc=1, and deleting it flipped it back to rc=0. `git commit` is **not** the trigger — the staleness is already there before you commit.
+**Merely CREATING a file inside a gate's scope stales that gate** — an
+untracked file counts (the digest covers the scope's file SET; measured:
+creating `tests/_probe.ts` flipped `markgate verify check` rc 0→1, deleting
+it flipped it back; `docs` stayed 0 throughout because `tests/**` is not in
+its scope). Correct behaviour, but the symptom is a `check-gate` refusal that
+reads as "my markers randomly expired" — **re-run the skill; do not
+investigate**. `/verify-pr` re-sets both markers in one shot.
 
-It is scope-dependent, which is what makes it confusing rather than merely surprising: in the same measurement `docs` stayed rc=0 throughout, because `tests/**` is not in its scope. So the same action stales one gate, both, or neither depending only on where the file landed — a new file under `tests/**` stales `check` alone, one under `.github/workflows/release.yml` or `CONTRIBUTING.md` stales neither. The measurement's third case is now stale rather than wrong: it recorded three untracked files under `.claude/hooks/` leaving BOTH gates at rc=0, and `.claude/hooks/**` joined the `check` scope in issue #2381, so that path now stales `check`. (Derived from the include list, not re-measured.)
-
-This is correct behaviour, not a defect — a new test file genuinely means the recorded run no longer covers the tree. But the symptom is a `check-gate` refusal that reads as "my markers randomly expired", so it gets debugged instead of re-run. **Re-run the skill; do not investigate.** `/verify-pr` re-sets both markers in one shot.
-
-Run this from the repo root (cdkd pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active):
+Run from the repo root (`mise exec` because cdkd pins markgate via mise):
 
 ```bash
 mise exec -- markgate set check
 ```
 
-Skip this step if any check failed — a stale or missing marker correctly forces the user (or Claude) to re-run `/check` after fixing the failure.
+Skip this step if any check failed.

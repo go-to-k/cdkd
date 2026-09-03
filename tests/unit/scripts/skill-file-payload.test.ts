@@ -45,7 +45,13 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
-const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 33,598 B (verify-pr, 2026-09-02)
+const MAX_SKILL_MD_BYTES = 23_000; // RE-DERIVED DOWNWARD 36_000 -> 23_000 by the 2026-09-04 token-diet
+// pass: largest non-split skill is now verify-pr at 20,556 B (was 33,598 B),
+// and leaving the old cap would let regrowth silently erode most of the
+// verify-pr / run-integ compression gain -- the same fold-back erosion the
+// MAX_REFERENCE_FILE_BYTES re-derivation below exists to prevent. ~12%
+// headroom over the leader; per retro.md section 10-c a retro never raises
+// this to fit an addition.
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB at the 2026-08-28 split; its CURRENT size is asserted as MEASURED.orchestratorBytes below, never quoted here
 // That number is the point, not trivia: the orchestrator has repeatedly grown to
 // within a few hundred bytes of its cap while this comment still quoted the
@@ -65,27 +71,17 @@ const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~6.5 KB a
 // MEASURED record below, not merely written down: it drifted twice inside that
 // single change (once when a later edit grew a stage file, once after a rebase
 // pulled in go-to-k/cdkd#2418) and both times a human had to catch it.
-// Set 2026-08-28 after the rule+citation compression (PR #2377), when the
-// largest stage file was implement.md at 44,875 B; the cap keeps the same ~9%
-// headroom ratio the original 64,000 held over 58,698 B, so the retro.md §10-b
-// fold-back loop cannot silently erode the compression's gain. Re-measured
-// 2026-09-02 (go-to-k/cdkd#2417): the largest is STILL implement.md -- see
-// MEASURED below for its size, which is asserted rather than quoted. THIS FILE
-// IS EFFECTIVELY FULL, and the 2026-09-02 work-issues retro is the run that
-// proved it: two lessons wanted implement.md, only ONE could land there, and
-// paying for that one took five compressions plus moving an existing passage
-// out to verify.md -- and the file still ended 441 B LARGER than it started. That is the last cheap payment; the slack MEASURED below is
-// what is left, so the stage needs splitting: go-to-k/cdkd#2424. The two have already swapped the title once
-// (6.4 KB moved out of implement.md into filing.md on 2026-08-31 and the
-// owner-probe text moved back in), which is exactly why "largest" is re-derived
-// here and never carried forward. The cap is UNCHANGED; only the measurement it
-// was set against is restated, so the next reader compares against a true
-// number -- and MEASURED below makes that mechanical instead of aspirational,
-// reporting the leader's remaining headroom in its own failure message. Down
-// from the ~9% the cap was originally sized for -- worth watching,
-// not worth loosening an upper bound
-// over.
-const MAX_REFERENCE_FILE_BYTES = 49_000;
+// RE-DERIVED DOWNWARD 49_000 -> 30_000 by the 2026-09-04 corpus compression
+// pass (rule + one-line citation form applied to every stage file; the
+// narrative bodies moved out or were cut). Largest is asserted in
+// MEASURED below rather than quoted here (the title has already swapped
+// files twice). The cap
+// keeps roughly the ~9-13% headroom ratio the original 64,000 held over
+// 58,698 B, so the retro.md section 10-b fold-back loop cannot silently erode
+// the compression's gain; per that section a retro NEVER buys room by raising
+// this cap -- it compresses, displaces, or splits the stage
+// (go-to-k/cdkd#2424 tracks the split option).
+const MAX_REFERENCE_FILE_BYTES = 30_000;
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~235 KB at the split, compressed to ~181 KB on
@@ -125,91 +121,44 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // go-to-k/cdkd#2417 until 2026-09-02, while SKILL.md had been 11,548 B
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
-    orchestratorBytes: 11_512,
-    corpusBytes: 255_437,
-    largest: { file: 'verify.md', bytes: 48_992 },
-    runnerUp: { file: 'implement.md', bytes: 48_911 },
+    orchestratorBytes: 11_641,
+    corpusBytes: 168_089,
+    largest: { file: 'implement.md', bytes: 26_541 },
+    runnerUp: { file: 'verify.md', bytes: 26_455 },
   },
 };
 
 const SPLIT_SKILLS = ['work-issues'];
 const MIN_REFERENCE_FILES = 6;
-// The floor must sit ABOVE `corpus - largest file`, or hollowing out the single
+// The floor must sit ABOVE `corpus - largest`, or hollowing out the single
 // biggest stage file still passes and the guard is silent about it. That
-// property is now ASSERTED at the bottom of this file rather than only
-// described here -- it had lapsed silently more than once, each time found by a
-// human re-deriving it by hand from a comment.
-// Re-derived 2026-09-02 at the FINAL tree of go-to-k/cdkd#2417, AFTER rebasing
-// onto go-to-k/cdkd#2418 (re-derive AFTER the rebase, not before, or every
-// number is the pre-merge one). The inputs are in MEASURED below and asserted,
-// so only the REASONING lives here: the floor must clear `corpus - largest`,
-// and also `corpus - runnerUp` for the day the two swap places (they have
-// swapped once already). 206_000 clears them by ~4.7k and ~3.3k -- the pair the
-// 203_000 it replaces was sized to hold -- is strictly TIGHTER than that value
-// (no upper bound is touched), and leaves ~44 KB of narrative compression
-// headroom below it.
+// property is ASSERTED at the bottom of this file rather than only described
+// here.
+// RE-DERIVED DOWNWARD 208_000 -> 145_000 by the 2026-09-04 corpus compression
+// pass, exactly the move the assertion's failure message prescribes for a
+// genuine compression ("re-derive it DOWNWARD in the same commit"). Inputs are
+// in MEASURED and asserted: corpus 168,089 B, largest implement.md 26,541 B,
+// runner-up verify.md 26,455 B. The floor must clear `corpus - largest`
+// (141,548) and `corpus - runnerUp` (141,634, the binding direction);
+// 145,000 clears them by 3,452 and 3,366 B and leaves ~23 KB of further
+// compression headroom below the corpus. Growth in a NON-leader file erodes
+// the either-largest margin first -- MEASURED's failure message reports both
+// margins, so the next lapse reds this file at the commit that causes it.
+// History worth keeping: the floor was RAISED 206_000 -> 208_000 by the
+// 2026-09-02 retro (go-to-k/cdkd#2459) to fit its additions; retro.md
+// section 10-c now forbids that direction outright -- a retro pays for its
+// bytes by compression or displacement, and the floor moves DOWN with
+// compression passes, never up to accommodate growth.
 //
-// RAISED 206_000 -> 208_000 by the 2026-09-02 work-issues retro
-// (go-to-k/cdkd#2459), at the tree that spent it. 206_000 had ALREADY lapsed on
-// that branch's rebase: `corpus - runnerUp` reached 206,065, 65 B past it, so
-// the assertion below was red rather than merely tight. 208_000 clears the two
-// directions by 2,219 and 1,935 B and leaves 46,562 B of compression headroom.
-//
-// It lapsed because that rebase made the two leaders SWAP -- the case the
-// paragraph above calls "one ordinary stage-file edit away" -- and then swap
-// back once the branch paid for its own additions. verify.md came off
-// origin/main at 49,039 B, 39 B OVER the per-file cap, with this branch's two
-// bullets on it; compressing those by 542 B put it back under and returned
-// implement.md to the lead. Both figures are in MEASURED, so the next swap reds
-// this file rather than passing quietly.
-//
-// The EITHER-LARGEST margin is the one that erodes, and the go-to-k/cdkd#2417
-// run is why the warning is here rather than in a commit message: it grew SEVEN
-// non-leader stage files, which moves `corpus - runnerUp` up without moving the
-// leader at all, and the floor had to be re-derived FOUR times inside one change
-// as successive review rounds landed. If you are adding to a stage file that is
-// not the largest, expect to re-derive this line -- and MEASURED will tell you
-// so rather than letting it slide.
-//
-// Which HALF a growth spends is not intuitive, and the retro of the
-// go-to-k/cdkd#2410 / go-to-k/cdkd#2275 run got it wrong in this very comment
-// before a reviewer re-derived it. Growing the RUNNER-UP moves `corpus` and
-// `runnerUp` by the same amount, so it leaves `corpus - runnerUp` UNCHANGED and
-// spends only the binding (largest-side) margin; the either-largest margin is
-// spent by growth in every OTHER file. The third case completes it: RELOCATING
-// text from the leader into the runner-up leaves `corpus` unchanged while
-// raising `runnerUp`, so `corpus - runnerUp` FALLS and the either-largest
-// margin is RELAXED -- go-to-k/cdkd#2459 did exactly that, and it is the one
-// move that buys per-file cap headroom without spending this floor.
-// That run added 1,322 B to verify.md and
-// 3,608 B across launch-mode / retro / ship, and it is the SECOND number that
-// moved the either-largest margin -- from 3,876 B under the old 203_000 floor
-// to 268 B -- and forced this raise.
-//
-// "The day the two swap places" is not hypothetical -- the paragraph above
-// records it happening on this branch's own rebase, and MEASURED names both
-// files so a swap reds this file rather than passing quietly. An earlier
-// revision quoted the gap between them here; that number was falsified by the
-// very MEASURED update that accompanied it, so the fact is stated without one.
-//
-// What this floor does NOT catch, stated plainly because the comment used to
-// imply otherwise: gutting a NON-largest stage file. Deleting the whole of
-// triage.md (38,974 B) would leave 215,588 B, which the CURRENT floor does NOT
-// catch. Earlier revisions of this comment recorded that it DID, "by where it
-// landed rather than by design", and read that as a coincidence which had since
-// expired. Measured at all three commits where the claim was written or
-// revised, there was no coincidence to expire -- the leftover cleared the floor
-// every time: 39c2e919 (floor 180_000, leftover 185,197), 30196099 (202_000,
-// 202,391), 18184707 (206_000, 210,703). The sentence was wrong when first
-// written and stayed green because a comment is not an assertion, which is this
-// file's thesis. A smaller file gutted the same way was never caught either.
-// A byte floor
-// cannot see that, and raising it until it could would forbid legitimate
-// compression. The per-file guards are elsewhere and are about CONTENT rather
-// than size: work-issues-skill-refs.test.ts pins the document COUNT, and
-// work-issues-launch-mode.test.ts pins that each arm-bearing stage file still
-// names the mode it branches on and that the probe still exists exactly once.
-const MIN_REFERENCE_CORPUS_BYTES = 208_000;
+// What this floor does NOT catch, stated plainly: gutting a NON-largest stage
+// file (deleting the whole of a mid-sized file leaves a total the floor still
+// clears). A byte floor cannot see that, and raising it until it could would
+// forbid legitimate compression. The per-file guards are elsewhere and are
+// about CONTENT rather than size: work-issues-skill-refs.test.ts pins the
+// document COUNT, and work-issues-launch-mode.test.ts pins that each
+// arm-bearing stage file still names the mode it branches on and that the
+// probe still exists exactly once.
+const MIN_REFERENCE_CORPUS_BYTES = 145_000;
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
@@ -354,8 +303,8 @@ describe('skill file payload budget', () => {
           `  runner-up  ${expected!.runnerUp.file} ${expected!.runnerUp.bytes} -> ` +
           `${actual.runnerUp.file} ${actual.runnerUp.bytes}\n` +
           `  floor margins: ${MIN_REFERENCE_CORPUS_BYTES - (actual.corpusBytes - actual.largest.bytes)} ` +
-          `(binding) / ${MIN_REFERENCE_CORPUS_BYTES - (actual.corpusBytes - actual.runnerUp.bytes)} ` +
-          `(either-largest)\n` +
+          `(largest-side) / ${MIN_REFERENCE_CORPUS_BYTES - (actual.corpusBytes - actual.runnerUp.bytes)} ` +
+          `(runner-up side, the BINDING direction)\n` +
           `  ${actual.largest.file} has ${capHeadroom} B left under the ` +
           `${MAX_REFERENCE_FILE_BYTES} B per-file cap.\n` +
           `Update MEASURED and re-read the comments that cite it -- every byte claim in ` +
