@@ -244,10 +244,12 @@ function emitStructured(payload: unknown, asJson: boolean): void {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return;
   }
-  // toYaml emits a leading newline for non-empty arrays/objects; trim so
-  // the output starts at column 0 like CDK CLI does.
-  const yaml = toYaml(payload).replace(/^\n/, '');
-  process.stdout.write(yaml);
+  // Issue #2421 decided the leading-newline contract inside `toYaml`: it
+  // returns a document starting at column 0, so the `.replace(/^\n/, '')`
+  // that used to sit here is gone. `synth.ts` writes the same value verbatim
+  // — one serializer, one contract, rather than each consumer patching the
+  // output it happened to dislike.
+  process.stdout.write(toYaml(payload));
 }
 
 /**

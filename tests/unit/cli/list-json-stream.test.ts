@@ -212,16 +212,17 @@ describe('list keeps stdout to the payload in every mode (issues #2280, #2410)',
     const { stdout, stderr, error } = await runList(['--long']);
 
     expect(error).toBeUndefined();
-    // `account` reads back as a NUMBER: `toYaml` emits the all-digit string
-    // unquoted and YAML's implicit typing resolves it. That is pre-existing
-    // behavior of the YAML mode (the `--json` case above keeps the string) and
-    // is asserted as-found rather than worked around — parsing at all is the
-    // point, and a prose line inside the document would make it throw.
+    // `account` reads back as the STRING it is in the payload. It used to
+    // come back as a NUMBER — `toYaml` emitted the all-digit string unquoted
+    // and YAML's implicit typing resolved it — and this suite asserted that
+    // as-found, because parsing at all was the point here and the type
+    // divergence belonged to the serializer. Issue #2421 fixed the
+    // serializer, so the YAML and `--json` spellings above now agree.
     expect(parseYaml(stdout)).toEqual([
       {
         id: 'MyStack',
         name: 'MyStack',
-        environment: { account: 111111111111, region: 'us-east-1' },
+        environment: { account: '111111111111', region: 'us-east-1' },
       },
     ]);
 

@@ -149,7 +149,11 @@ describe('cdkd list', () => {
 
     expect(stdout).toContain('id: MyStage/Api');
     expect(stdout).toContain('name: MyStage-Api');
-    expect(stdout).toContain('account: 123456789012');
+    // Quoted since issue #2421: an account id is a STRING in the payload, and
+    // an all-digit scalar emitted bare reads back as a number — the same
+    // type-fidelity defect as the unquoted `*`, in the other direction. The
+    // `--json` spelling below has always kept the string; now they agree.
+    expect(stdout).toContain('account: "123456789012"');
     expect(stdout).toContain('region: us-west-2');
     // No dependencies key without --show-dependencies
     expect(stdout).not.toContain('dependencies:');

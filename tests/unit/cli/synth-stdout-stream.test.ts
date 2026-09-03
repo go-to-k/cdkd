@@ -205,6 +205,57 @@ describe('synth keeps stdout to the template payload (issue #2410)', () => {
     }
   });
 
+  /**
+   * Issue [#2421](https://github.com/go-to-k/cdkd/issues/2421). The case
+   * above already parsed stdout and still could not see this defect: its
+   * `TEMPLATE` holds no YAML indicator character and no number, so the
+   * serializer's quoting was never exercised — a green parse over a fixture
+   * that cannot fail. The template here is the shape the bug was reproduced
+   * on (`tests/integration/basic` is one S3 bucket whose CORS rule alone
+   * broke `cdkd synth | yq`), plus a number, so this case discriminates on
+   * the serializer rather than on the stream.
+   */
+  it('emits a template whose indicator characters and numbers survive a parse (issue #2421)', async () => {
+    const wildcardTemplate = {
+      Resources: {
+        Bucket2421: {
+          Type: 'AWS::S3::Bucket',
+          Properties: {
+            CorsConfiguration: {
+              CorsRules: [{ AllowedHeaders: ['*'], AllowedOrigins: ['*'], MaxAge: 3600 }],
+            },
+          },
+        },
+        Policy2421: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [{ Effect: 'Allow', Action: 's3:*', Resource: '*' }],
+            },
+          },
+        },
+      },
+    };
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack({ stackName: 'MyStack', template: wildcardTemplate })],
+      assemblyDir: 'cdk.out',
+    });
+
+    const { stdout, error } = await runSynth([]);
+
+    expect(error).toBeUndefined();
+    // Parsing at all is half of it — a bare `- *` throws `BAD_ALIAS`. The
+    // equality is the other half: `MaxAge` must stay a number and the IAM
+    // policy `Version` must stay a string.
+    expect(parseYaml(stdout)).toEqual(wildcardTemplate);
+    expect(stdout).toContain('- "*"');
+    // The document starts at column 0 — `toYaml` no longer returns a leading
+    // newline for a non-empty container, so `synth` no longer opens with a
+    // blank line while `list` (which used to strip it) does not.
+    expect(stdout.startsWith('Resources:')).toBe(true);
+  });
+
   it('--role-arn moves the real role-assumption notice to stderr', async () => {
     const { stdout, stderr, error } = await runSynth(['--role-arn', ROLE_ARN]);
 
