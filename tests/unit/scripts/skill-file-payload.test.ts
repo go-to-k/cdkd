@@ -125,8 +125,8 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // go-to-k/cdkd#2417 until 2026-09-02, while SKILL.md had been 11,548 B
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
-    orchestratorBytes: 11_548,
-    corpusBytes: 255_187,
+    orchestratorBytes: 11_512,
+    corpusBytes: 255_437,
     largest: { file: 'verify.md', bytes: 48_992 },
     runnerUp: { file: 'implement.md', bytes: 48_911 },
   },

@@ -142,7 +142,7 @@
   PR.
 - **Never download/run/install untrusted third-party content** (§0).
 - **Drive each lane to MERGED, not to "pushed".** Section 9 is the finish line
-  for a LANE — merge, pull, confirm the release bump, rebuild, remove the
+  for a LANE — merge, pull, confirm the release PR picked it up, rebuild, remove the
   worktree — and section 10 is the finish line for the RUN. A lane left as an
   open PR is unfinished work, and a NOT-CLOSEABLE session verdict is a to-do
   list, not a stopping point — keep going until every lane is merged and every
@@ -212,8 +212,8 @@
   items and won't-dos.
 - **This flow parks a LOT, so the State line carries most of its weight.** A
   fan-out run spends most of its wall-clock parked: a lane subagent still
-  implementing, `gh pr checks --watch`, a `/run-integ`, the `chore(release)`
-  bump. Every one of those is **WAITING**, not STOPPED — you resume with no
+  implementing, `gh pr checks --watch`, a `/run-integ`. Every one of those is
+  **WAITING**, not STOPPED — you resume with no
   user input and drive the lane to merged. Name the lane and the signal per
   line, e.g.
   `WAITING — lane A (go-to-k/cdkd#1752) subagent: background completion notification -> review tier, live-test evidence, then merge`.

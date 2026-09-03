@@ -21,7 +21,7 @@ import { dirname, join } from 'node:path';
  * workflow would POST.
  *
  * WHAT EACH CASE FENCES -- these are the ways the copy goes wrong quietly:
- *   - the deny list, so a `released` label (applied by semantic-release AFTER
+ *   - the deny list, so a `released` label (applied by semantic-release, the pre-release-please automation, AFTER
  *     the fix ships) never lands on a PR that has not merged
  *   - label names CONTAINING SPACES (`good first issue`), which a built-up
  *     `-f labels[]=...` argument string splits mid-name -- the reason the
@@ -38,7 +38,7 @@ import { dirname, join } from 'node:path';
  *   - dedup across two issues sharing a label neither is already on the PR --
  *     the earlier overlap case confounded `sort -u` with the `have` filter
  *   - each deny-list entry individually, including the per-channel
- *     `released on @<channel>` form semantic-release actually emits
+ *     `released on @<channel>` form semantic-release actually emitted
  *
  * Mutation-probed 2026-08-26: removing the deny list fails 7 of 17; dropping
  * `sort -u`, re-pointing the POST, accepting the `Closes (#N)` paren form, and
@@ -211,7 +211,7 @@ describe('pr-inherit-issue-labels workflow', () => {
     ['duplicate', 'duplicate'],
     ['wontfix', 'wontfix'],
     ['invalid', 'invalid'],
-    // Not a fixed string: semantic-release emits one per release channel, so a
+    // Not a fixed string: semantic-release emitted one per release channel, so a
     // hardcoded `released on @experimental` breaks the moment a channel is added.
     ['a per-channel released label', 'released on @next'],
   ])('drops %s', (_name, label) => {

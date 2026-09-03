@@ -284,7 +284,7 @@ describe('createMigrateCommand — Commander registration', () => {
   it('declares every documented flag (T4)', () => {
     // Extended in T4 from the prior 5-flag spot-check to assert every
     // long-form Option the design doc commits to. A removal here is a
-    // CLI-surface regression — bumps semantic-release MAJOR.
+    // CLI-surface regression — a breaking (major) change under conventional commits.
     const cmd = createMigrateCommand();
     const optNames = cmd.options.map((o) => o.long);
     const expectedLongFlags = [

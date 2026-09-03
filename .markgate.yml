@@ -256,6 +256,13 @@ gates:
       - ".claude/hooks/**"
       - ".github/workflows/ci.yml"
       - ".github/workflows/pr-inherit-issue-labels.yml"
+      # release-please-v0.test.ts reads all three: the config's
+      # bump-minor-pre-major, the manifest's 0.x version, and the release
+      # workflow's publish-job guard (the two layers that keep an accidental
+      # v1.0.0 unshippable).
+      - ".github/workflows/release.yml"
+      - "release-please-config.json"
+      - ".release-please-manifest.json"
       - "docs/**"
       # This file itself (the go-to-k/cdk-local#623 sibling, handled in the
       # same session): the gate's own definition decides what the marker

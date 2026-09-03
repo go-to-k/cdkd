@@ -1,6 +1,6 @@
 ---
 name: work-issues
-description: Work through already-filed GitHub issues (typically the bug-hunt's output) end to end — triage safely, pick a few FILE-DISJOINT issues to fix in parallel, claim each on the issue before starting (collision-safe with other agents), verify against real AWS, then carry each through merge → pull → release → rebuild the linked binary → worktree cleanup. Use when asked to "handle/address filed issues", not to hunt for new bugs (that is /hunt-bugs).
+description: Work through already-filed GitHub issues (typically the bug-hunt's output) end to end — triage safely, pick a few FILE-DISJOINT issues to fix in parallel, claim each on the issue before starting (collision-safe with other agents), verify against real AWS, then carry each through merge → pull → rebuild the linked binary → worktree cleanup. Use when asked to "handle/address filed issues", not to hunt for new bugs (that is /hunt-bugs).
 argument-hint: "[optional focus, e.g. 'destroy issues' | '#651 #650' | 'provider FPs']"
 ---
 
@@ -94,7 +94,7 @@ that proved them.
   merge-ready lane its turn — resume the lane agent (SendMessage) to run its
   named integ fixtures and merge while it holds the turn, or run `/run-integ`
   and `gh pr merge` yourself FROM THAT LANE'S WORKTREE (merge gates read the
-  worktree the command runs from — §9). Post-merge (pull → release → rebuild
+  worktree the command runs from — §9). Post-merge (pull → rebuild
   → worktree cleanup) follows §9.
 - **Retro (stage 10): a subagent**, dispatched after the last merge with
   `references/retro.md` plus this run's key evidence (what you re-read, what
@@ -119,7 +119,7 @@ the user wants to watch); the stage files apply unchanged either way.
 | 6. Gates + PR | `references/gates-and-pr.md` | `/check`, `/check-docs`, marker freshness per worktree, PR create |
 | 7. Main advanced | `references/gates-and-pr.md` | Rebase over parallel merges, re-grep what LANDED |
 | 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, review tier + reviewer dispatch, live test |
-| 9. Ship | `references/ship.md` | Merge → pull → release → rebuild linked binary → worktree cleanup, owner probes before removing a worktree |
+| 9. Ship | `references/ship.md` | Merge → pull → rebuild linked binary → worktree cleanup, owner probes before removing a worktree |
 | 10. Retro | `references/retro.md` | Net backlog effect (§10-0), promotion check on this run's `next` filings, where a lesson lands (§10-b/c), ship the retro PR (§10-d) |
 | Appendix | `references/gotchas.md` | Gotchas learned the hard way + the existing rules this skill leans on |
 

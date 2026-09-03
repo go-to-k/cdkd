@@ -52,7 +52,7 @@ jobs:
           # truth, so they are the one family excluded. `duplicate` / `wontfix`
           # / `invalid` are triage verdicts on the ISSUE and say nothing about
           # the PR that fixes it.
-          # `released on @experimental` is not a fixed string: semantic-release
+          # `released on @experimental` is not a fixed string: semantic-release (pre-release-please)
           # emits `released on @<channel>` per release channel, so enumerating
           # today's channels defeats the exclusion the moment one is added.
           DENY='^(released( on @.+)?|duplicate|wontfix|invalid)[[:space:]]*$'

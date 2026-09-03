@@ -1,6 +1,6 @@
 <!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), filing.md (§5-f), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
-## 9. Ship: merge → pull → release → rebuild → cleanup
+## 9. Ship: merge → pull → rebuild → cleanup
 
 With subagent lanes, this stage is the PARENT's serialization point: grant one
 merge-ready lane at a time its turn — resume that lane agent (SendMessage) to
@@ -18,7 +18,7 @@ matches nothing this gate can see ...; the digest would be a constant that
 never goes stale` — which is the gate declining to record an empty set, not a
 markgate fault. Write the sentinel first (`/run-integ` step 11), never bypass.
 Never two lanes' integs or merges concurrently; everything after the merge in
-this section (pull → release → rebuild → cleanup) stays with the parent.
+this section (pull → rebuild → cleanup) stays with the parent.
 
 **A `SendMessage` that answers "queued" has NOT been delivered — read the reply
 every time.** The tool returns one of two things: `Resuming agent ...`, meaning
@@ -274,12 +274,16 @@ routinely is when another lane's write lands there (§7). It fails loudly — re
 the error, and do NOT restore the offending path: it is another session's
 uncommitted work, and `dirty-path-restore-gate` refuses it.
 
-**Release** is automated (semantic-release via `.github/workflows/`) — merging a
-`fix:` / `feat:` commit to `main` produces a `chore(release): <ver> [skip ci]`
-bump commit on `main` a minute or two later. Poll for it:
+**Release** is BATCHED (release-please via `.github/workflows/release.yml`) —
+merging a `fix:` / `feat:` commit to `main` publishes NOTHING by itself: it
+only creates/updates the standing `chore(release): <ver>` release PR. The npm
+release happens when the maintainer merges that release PR, so do NOT poll for
+a version bump after an ordinary merge, and never merge the release PR unless
+the user asked for a release. Confirm the release PR picked up the merge
+instead:
 
 ```bash
-git fetch origin && git log origin/main --oneline -3   # look for chore(release)
+gh pr list --state open --search "chore(release) in:title"   # the standing release PR
 ```
 
 cdkd is used from other projects via a global `pnpm link --global` that points at

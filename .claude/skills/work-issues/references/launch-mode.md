@@ -157,7 +157,7 @@ tree:
 | 5 | Remove no worktree: a lane that removes the tree it runs in deletes its own cwd. Cleanup of the TREE belongs to whoever created it | §9, §10-d |
 | 6 | Switch back to `LAUNCH_BRANCH` **as-is** — no pull, no rebase, no fast-forward — and delete only the branches THIS run created; detach only when `LAUNCH_BRANCH` was empty at probe time or is now gone | §9 |
 | 7 | `main` is checked out in the main checkout, so the post-merge `git checkout main && git pull` cannot run here — pull through `git -C "<MAIN_CHECKOUT>"` | §9 |
-| 8 | The post-release rebuild targets the MAIN checkout for the same reason | §9 |
+| 8 | The post-merge rebuild targets the MAIN checkout for the same reason | §9 |
 | 9 | The retro branch is created in THIS tree too, so the `LAUNCH_BRANCH` restore is the run's LAST step — after the retro PR merges, not inside §9's per-lane cleanup | §10-d |
 
 "Four things and nothing else" was the previous count, and it was wrong in the
