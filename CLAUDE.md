@@ -178,7 +178,23 @@ high.
 - `@ox-content/vite-plugin` - Ox Content SSG for the cdkd.dev documentation site (config in `vite.docs.config.ts`, brand assets + OG template in `docs-site/`, deployed by `.github/workflows/docs-deploy.yml`)
 - `typescript` - TypeScript 7 native compiler (`tsc`) for typecheck
 - `typescript-v6` - npm alias of typescript@6; provides the stable JS compiler API for the codegen scripts (TS7 ships it only under `typescript/unstable/*`)
-- `semantic-release` - Automated releases
+
+## Release Flow
+
+Releases are BATCHED via release-please (GitHub Action, not a devDependency —
+config in `release-please-config.json` + `.release-please-manifest.json`).
+Pushes to `main` create/update a single standing `chore(release): <ver>` PR;
+merging THAT PR creates the tag + GitHub release and publishes to npm. An
+ordinary `feat:` / `fix:` merge no longer publishes anything by itself, so do
+not wait for a version bump after a merge, and never merge the release PR
+without the maintainer asking for a release. cdkd deliberately stays at major
+version 0: `bump-minor-pre-major: true` maps breaking changes to MINOR bumps,
+and the publish job in `.github/workflows/release.yml` hard-fails on any tag
+whose major is not 0. The release PR is created with `GITHUB_TOKEN`, so it
+carries NO CI checks (GitHub does not trigger `pull_request` workflows for
+such PRs) and `ci-green-gate` blocks an agent-side merge of it — the
+maintainer merges the release PR via the web UI (its diff is only
+version/CHANGELOG/manifest, already CI-covered on main).
 
 ## Node.js Version
 
@@ -332,7 +348,7 @@ high.
   **`now` is load-bearing, not a label.** A session with any open `now` item is NOT closeable — finish it, or re-classify it to `next` with the reason stated. The reverse move is required too: if the session ends up touching those files anyway, promote a `next` to `now` and clear it while the context is hot.
 
   **State** — exactly one of **WAITING** or **STOPPED**, stated every time you end a turn. From the report alone the user cannot tell whether the agent quietly gave up or is simply parked until something finishes, and that ambiguity is the whole reason this line exists. Never leave it to be inferred from context.
-  - **WAITING (on: ...)** — you will resume **without any further user input** the moment the awaited condition is met, and carry the work to its goal (merged PR, green integ, released fix). Name three things on one line each: **what** you are waiting on, **how you will learn it finished** (a background-task completion notification, `gh pr checks --watch`, a `Monitor`, a polling loop), and **what you will do next** once it lands. Typical: a background subagent, a CI run, a `/run-integ` in flight, the semantic-release bump commit. If you cannot name a concrete signal that will re-invoke you, you are not WAITING — you are STOPPED, and the honest label is what the user needs. **List only what THIS session will still do on its own; a `Session-fit: next` TODO must never appear here** (it is handed off by definition, so listing it says the session will do it — see the handoff-line rules under Session close).
+  - **WAITING (on: ...)** — you will resume **without any further user input** the moment the awaited condition is met, and carry the work to its goal (merged PR, green integ, released fix). Name three things on one line each: **what** you are waiting on, **how you will learn it finished** (a background-task completion notification, `gh pr checks --watch`, a `Monitor`, a polling loop), and **what you will do next** once it lands. Typical: a background subagent, a CI run, a `/run-integ` in flight. If you cannot name a concrete signal that will re-invoke you, you are not WAITING — you are STOPPED, and the honest label is what the user needs. **List only what THIS session will still do on its own; a `Session-fit: next` TODO must never appear here** (it is handed off by definition, so listing it says the session will do it — see the handoff-line rules under Session close).
   - **STOPPED** — nothing is pending; the turn ends until the user says something. This is only legitimate when the work is genuinely finished. Stopping with work left undone is the failure that "A NOT-CLOSEABLE verdict is a TO-DO LIST" describes, so if you must end there, say in one line why the remaining work is not yours to do.
   - **Needing a user decision is NOT a state — it is an `AskUserQuestion` call.** Every request for confirmation, a choice between approaches, or permission for a risky/irreversible action MUST go through the `AskUserQuestion` tool, never a question in prose that ends the turn. Consequently "waiting on the user's answer" must never appear on this line: the question is held by the tool, which resumes the work as soon as it is answered. And per the "Decide routine calls yourself" rule above, most calls are not the user's to make — ask only what only the user can decide, and report the rest as a decision made.
 

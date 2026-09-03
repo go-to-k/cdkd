@@ -8,7 +8,7 @@
 #
 # WHY: this is the PR-title side of `commit-prefix-scope-gate.sh`.
 # `gh pr merge --squash` uses the PR title as the squashed commit
-# subject, and semantic-release on main parses that subject to decide
+# subject, and release-please on main parses that subject to decide
 # version bumps + CHANGELOG entries. So a PR whose LOCAL commits are
 # all `chore:` (correctly typed by the per-commit gate) can still
 # trigger a misleading release if the PR TITLE uses `fix:` or `feat:`.
@@ -182,7 +182,7 @@ if [[ "$title" =~ ^([a-z]+)(\([^\)]+\))?!?:[[:space:]] ]]; then
 fi
 
 if [[ -z "$prefix" ]]; then
-  # Not a conventional-commit shape — pass. semantic-release skips
+  # Not a conventional-commit shape — pass. release-please skips
   # non-conforming subjects anyway.
   exit 0
 fi
@@ -196,7 +196,7 @@ esac
 # --- Check branch diff against origin/main for any src/** path ---
 #
 # Use a 3-dot diff so we look at what THIS branch adds on top of the
-# merge-base with origin/main (matches the semantic-release "what does
+# merge-base with origin/main (matches the release-please "what does
 # this PR ship" view). Fail open if origin/main is missing locally —
 # the hook should not block on transient `git fetch` issues.
 if ! git -C "$target_dir" rev-parse origin/main >/dev/null 2>&1; then
@@ -276,7 +276,7 @@ fi
 {
   echo "${RED_BOLD}Blocked by pr-title-prefix-scope-gate:${RESET}"
   echo
-  echo "PR title prefix '${prefix}:' triggers a semantic-release version"
+  echo "PR title prefix '${prefix}:' feeds a release-please version"
   echo "bump AND lands in the user-facing CHANGELOG, but the branch diff"
   echo "against origin/main contains no file under src/**. The change is"
   echo "internal (dev tooling / docs / tests / build), not a cdkd CLI"

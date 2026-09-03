@@ -5,7 +5,7 @@
 # a `feat:` or `fix:` conventional-commit prefix but NO file under
 # `src/**` is staged.
 #
-# WHY: semantic-release on main maps commit prefixes to version bumps:
+# WHY: release-please on main maps commit prefixes to version bumps:
 #   feat:   -> minor bump (e.g. v0.96 -> v0.97)
 #   fix:    -> patch bump
 #   chore:  -> no bump
@@ -211,7 +211,7 @@ fi
 
 if [[ -z "$prefix" ]]; then
   # Not a conventional-commit shape — pass. The repo's existing
-  # commits enforce the shape via semantic-release's commit-analyzer
+  # commits enforce the shape via release-please's commit parsing
   # config; non-conforming commits get no release entry anyway.
   exit 0
 fi
@@ -298,7 +298,7 @@ fi
 {
   echo "${RED_BOLD}Blocked by commit-prefix-scope-gate:${RESET}"
   echo
-  echo "Commit prefix '${prefix}:' triggers a semantic-release version bump"
+  echo "Commit prefix '${prefix}:' feeds a release-please version bump"
   echo "AND lands in the user-facing CHANGELOG, but no file under src/** is"
   echo "staged. The change is internal (dev tooling / docs / tests / build),"
   echo "not a cdkd CLI behavior change, and would mislead users reading the"

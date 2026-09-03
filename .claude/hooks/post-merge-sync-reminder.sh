@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # post-merge-sync-reminder.sh — PostToolUse hook on `gh pr merge` that
-# emits a reminder to run the two routine post-merge sync commands:
+# emits a reminder to run the routine post-merge sync commands:
 #
 #   1. `git pull --ff-only origin main` (from main worktree)
-#   2. `vp install -g @go-to-k/cdkd@latest`
+#   2. `vp run build` in the main worktree (the globally linked binary
+#      points at its dist/cli.js) — and, only after a release PR merge,
+#      `vp install -g @go-to-k/cdkd@latest` for npm-installed copies
+#      (releases are batched by release-please; an ordinary merge does
+#      not bump the version)
 #
 # Memory rule `feedback_session_completion_audit_required.md` step 6
 # encodes this as mandatory, but the rule is only read at session start
@@ -87,7 +91,7 @@ esac
 # Emit the reminder via PostToolUse additionalContext (visible to the
 # operator, non-blocking).
 cat <<'EOF'
-{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"PR merge succeeded. Post-merge sync REQUIRED before claiming session complete (memory feedback_session_completion_audit_required step 6):\n  1. git pull --ff-only origin main   (from main worktree — advance local main + pick up parallel-session merges)\n  2. vp install -g @go-to-k/cdkd@latest   (semantic-release bumps the version on every merge; global cdkd binary drifts within minutes)\n\nVerify cdkd --version reports the post-release value and surface it in the session-wrap report."}}
+{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"PR merge succeeded. Post-merge sync REQUIRED before claiming session complete (memory feedback_session_completion_audit_required step 6):\n  1. git pull --ff-only origin main   (from main worktree — advance local main + pick up parallel-session merges)\n  2. vp run build   (from main worktree — the globally linked cdkd points at its dist/cli.js)\n\nReleases are BATCHED (release-please): an ordinary merge does not bump the version — it only updates the standing chore(release) PR. Run vp install -g @go-to-k/cdkd@latest only after a release PR merge, and never merge the release PR unless the user asked for a release."}}
 EOF
 
 exit 0
