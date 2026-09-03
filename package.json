@@ -1,6 +1,6 @@
 {
   "name": "@go-to-k/cdkd",
-  "version": "0.285.12",
+  "version": "0.285.13",
   "description": "Drop-in CDK CLI for existing CDK apps - up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

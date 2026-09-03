@@ -1,3 +1,10 @@
+## [0.285.13](https://github.com/go-to-k/cdkd/compare/v0.285.12...v0.285.13) (2026-09-03)
+
+
+### Bug Fixes
+
+* **utils:** spread awsClientDefaults() at every client site, including the dynamic-import ones ([#2465](https://github.com/go-to-k/cdkd/issues/2465)) ([9d353b4](https://github.com/go-to-k/cdkd/commit/9d353b472ca81c1c66918d110b38c0f4f0dbd34e))
+
 ## [0.285.12](https://github.com/go-to-k/cdkd/compare/v0.285.11...v0.285.12) (2026-09-03)
 
 
