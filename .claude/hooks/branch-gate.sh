@@ -53,6 +53,31 @@ set -u
 # Read the entire stdin payload once; we need both .tool_input.command
 # and .cwd from it. Reading via two separate jq invocations would
 # consume stdin twice and the second read would see nothing.
+
+# STATED FAIL-OPENS AT THE PAYLOAD LEVEL, here rather than at the enumeration far
+# below -- that one lists the readings that reach ITS line, and these never get
+# that far, so the enumeration reads as a complete list of exit-0 paths and is
+# not one. Both measured by driving this hook with a `git commit -m x` payload
+# whose cwd is an opted-in repo on `main`, which scores rc=2 normally:
+#
+#   `jq` absent from PATH entirely  -> rc=0. `$cmd` is empty, so the verb match
+#     below finds nothing. (Easy to mis-measure: a dev Mac carries `jq` at BOTH
+#     /opt/homebrew/bin and /usr/bin, so dropping only the first proves nothing.
+#     Measured under `env -i PATH=<dir with bash/git/cat/dirname only>`.)
+#   a malformed or truncated JSON payload -> rc=0, same way.
+#
+# Deliberate and unchanged. A gate that could not read its own input has nothing
+# to say about a command it never saw, and the alternative -- refusing every
+# Bash call on a box without `jq` -- is worse than the hole.
+#
+# A THIRD CANDIDATE WAS RAISED IN REVIEW AND IS NOT ONE IN THIS REPO: a
+# `git -C "$W" commit` whose target is an unexpanded variable. `gate_target_dir_strict`
+# REFUSES it (rc=2) rather than falling back, which is exactly what #2027 added.
+# Measured in all three shapes -- cwd inside the gated repo, cwd drifted out of
+# it, and an explicit `cd <non-gated>` before the verb -- rc=2 every time. The
+# two sibling repos still take the loose resolver and DO exit 0 on the last two,
+# which is the difference worth knowing when this comment is read side by side
+# with theirs.
 input=$(cat 2>/dev/null || true)
 
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
@@ -130,8 +155,14 @@ branch=$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
 #   --porcelain`'s first entry. A local `canonicalize` copy was written here
 #   first and NO mutation could kill it, which is what sent the question to a
 #   probe. If a future git ever stopped resolving `--show-toplevel`, this
-#   compare would fail OPEN and the five BLOCK cases in `branch-gate.test.sh`
-#   are what go red.
+#   compare would fail OPEN, and `branch-gate.test.sh` is what goes red -- but
+#   NOT the five cases this sentence used to name. That count was stale in two
+#   directions at once: the suite has grown since, and the number was never a
+#   constant to begin with. Stood in for by swapping the compare to
+#   `$target_dir` and re-running: 22 of 42 rows red on this macOS fixture root,
+#   3 of 42 on a non-symlinked one, for the reason the arm below spells out.
+#   The only fixed number in the pair is the SCOPED one that arm already
+#   quotes, so that is where a count is given and this is not.
 if [ -z "$branch" ]; then
   # `symbolic-ref --short HEAD` prints NOTHING in two situations that are not
   # the same thing, and the comment that used to stand here asserted only the
@@ -267,6 +298,26 @@ if [ -z "$branch" ]; then
     # hand-made directory above. The comment used to name both files as the
     # discriminator, which overstated what the code looks at.)
     #
+    # STATED BOUND -- A `$` IN THE CHECKOUT PATH. Every remedy this gate prints
+    # wraps the path in DOUBLE quotes, which is how the sibling gates spell it
+    # too, so a literal `$` in the path RE-EXPANDS in whatever shell the reader
+    # pastes it into. Measured on git 2.53 by rebuilding `branch-gate.test.sh`'s
+    # fixture under a root containing `$`: the printed `rebase --abort` exits 1
+    # with `<rest-of-path>: unbound variable` under `set -u`, and in a shell
+    # without `set -u` it would expand to nothing and quietly act on the WRONG
+    # directory -- the silent half being the worse one.
+    #
+    # Left as a bound rather than fixed, and the reasons are worth writing down
+    # because "the quoting is just a convention" is how it stayed implied. (1)
+    # It is not local to this arm: the branch-NAME arm's `switch -c fix/xxx`
+    # line is printed the same way, so single-quoting here alone would leave the
+    # gate inconsistent with itself and with the other gates. (2) The same
+    # fixture also reddens rows whose PAYLOAD carries a `-C` target, so the
+    # gate's own path handling is already affected upstream of any remedy -- a
+    # `$` path is outside what these gates read correctly at all, not merely
+    # outside what they print correctly. Fixing the print alone would buy the
+    # appearance of a fix.
+    #
     # The order below follows git's own status precedence: rebase, then
     # cherry-pick / revert, then merge, then bisect.
     git_dir=$(git -C "$target_dir" rev-parse --absolute-git-dir 2>/dev/null || echo "")
@@ -300,7 +351,8 @@ if [ -z "$branch" ]; then
     #   rebase --abort, rebase started FROM a branch      -> branch main
     #   rebase --abort, rebase started ALREADY detached   -> DETACHED
     #   am / cherry-pick / revert / merge --abort         -> DETACHED (all four)
-    #   bisect reset                                      -> branch main
+    #   bisect reset, bisect started FROM a branch        -> branch main
+    #   bisect reset, bisect started ALREADY detached     -> DETACHED
     #
     # `am` / `cherry-pick` / `revert` / `merge` never detach HEAD themselves, so
     # this arm is reachable for them ONLY from an already-detached tree, and
@@ -323,6 +375,35 @@ if [ -z "$branch" ]; then
     # `detached HEAD`, empty -- is read as "no branch to return to", the
     # conservative direction: it under-promises instead of repeating the
     # overclaim.
+    #
+    # BISECT HAS THE SAME TWO POLARITIES AND ITS OWN DISCRIMINATOR, and the
+    # sentence below it used to carry was the SAME defect one arm over: it said
+    # the bisect "is what detached HEAD here" and that `bisect reset` "restores
+    # the branch you started from". Both are false of a bisect begun in a tree
+    # that was ALREADY detached -- and `main-tree-branch-gate.sh` passes
+    # `git checkout <sha>` in the main checkout, so that is one allowed command
+    # away. Measured on git 2.53, same fixture both ways:
+    #
+    #   started FROM a branch   BISECT_START = main    reset -> branch main
+    #   started DETACHED        BISECT_START = <sha>   reset -> rc=0, STILL DETACHED
+    #
+    # `git bisect start` records what it must return to in `.git/BISECT_START`:
+    # the BRANCH NAME when it began on a branch, a raw SHA when it began
+    # detached. That file is to bisect exactly what `head-name` is to rebase.
+    #
+    # ASKED WITH `show-ref`, NOT WITH A 40-HEX PATTERN, because `git bisect
+    # reset` ends in `git checkout "$(cat BISECT_START)"` and `show-ref
+    # --verify refs/heads/<x>` is the same question that checkout resolves
+    # against. Three consequences, all measured on git 2.53: a branch whose NAME
+    # happens to be 40 hex characters is answered "re-attaches", and checkout
+    # agrees, where a pattern would have called it a sha; an EMPTY or missing
+    # `BISECT_START` is answered "no branch", and reset does leave HEAD
+    # detached; and a start branch that no longer exists is answered "no
+    # branch", where reset fails loudly (`fatal: invalid reference`) rather than
+    # re-attaching. That last state is not reachable by ordinary commands --
+    # `git branch -D` refuses with `cannot delete branch 'x' used by worktree`
+    # while the bisect holds it -- and needs a low-level `update-ref -d` to
+    # produce, so it is a bound rather than a case.
     reattach_to=""
     if [ "$inflight" = "rebase" ] && [ -n "$git_dir" ]; then
       __head_name=""
@@ -334,6 +415,15 @@ if [ -z "$branch" ]; then
       case "$__head_name" in
         refs/heads/?*) reattach_to="${__head_name#refs/heads/}" ;;
       esac
+    elif [ "$inflight" = "bisect" ] && [ -n "$git_dir" ]; then
+      __bisect_start=""
+      if [ -f "$git_dir/BISECT_START" ]; then
+        __bisect_start=$(cat "$git_dir/BISECT_START" 2>/dev/null || echo "")
+      fi
+      if [ -n "$__bisect_start" ] &&
+        git -C "$target_dir" show-ref --verify --quiet "refs/heads/$__bisect_start" 2>/dev/null; then
+        reattach_to="$__bisect_start"
+      fi
     fi
     echo "Blocked by branch-gate: target git working tree has a DETACHED HEAD in the MAIN checkout." >&2
     echo "  resolved target dir: $target_dir" >&2
@@ -344,9 +434,17 @@ if [ -z "$branch" ]; then
     echo "A detached HEAD is not a feature branch, and this is the SHARED main checkout," >&2
     echo "so a commit here puts off-branch work in the tree every other lane reads." >&2
     if [ "$inflight" = "bisect" ]; then
-      echo "A 'git bisect' is what detached HEAD here, and 'switch main' would leave the" >&2
-      echo "bisect running. End it instead -- this restores the branch you started from:" >&2
+      echo "A 'git bisect' is IN PROGRESS, and 'switch main' would leave it running --" >&2
+      echo "git switches with a warning and the bisect survives. End it instead:" >&2
       echo "  git -C \"$main_checkout\" bisect reset" >&2
+      if [ -n "$reattach_to" ]; then
+        echo "That restores the branch you started from, '$reattach_to'." >&2
+      else
+        echo "That does NOT re-attach HEAD: this bisect started from a tree that was" >&2
+        echo "ALREADY detached, so 'bisect reset' returns to that same detached commit." >&2
+        echo "Re-attach afterwards:" >&2
+        echo "  git -C \"$main_checkout\" switch main" >&2
+      fi
     elif [ -n "$inflight" ]; then
       echo "A '$inflight' is IN PROGRESS, so 'switch main' is not available here -- git" >&2
       echo "refuses it outright. Finish or abandon the operation first:" >&2
@@ -367,7 +465,9 @@ if [ -z "$branch" ]; then
     echo "way to clear a lane." >&2
     exit 2
   fi
-  # FAIL-OPEN, deliberate and stated. FOUR readings reach this line, and the
+  # FAIL-OPEN, deliberate and stated. FOUR readings reach this line -- and this
+  # list is NOT every exit-0 path in the hook, only every path to THIS one; the
+  # payload-level ones are stated at the `jq` read near the top. The
   # compare above sends all four here without needing a guard of their own,
   # since `$target_top` is non-empty and so can equal none of the answers below:
   #   - `git worktree list` gave nothing (not a repo we can read) -- we do not
