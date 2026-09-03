@@ -21,6 +21,7 @@ import type {
   ResourceCreateResult,
   ResourceUpdateResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * SDK Provider for AWS::Kinesis::StreamConsumer.
@@ -60,7 +61,10 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
 
   private getClient(): KinesisClient {
     if (!this.client) {
-      this.client = new KinesisClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new KinesisClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

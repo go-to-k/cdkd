@@ -24,6 +24,7 @@ import {
   ssmResolvedValueType,
 } from '../utils/parameter-types.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * Options threaded into {@link expandMacros}.
@@ -311,7 +312,7 @@ async function expandMacrosAttempt(
     // finally's `cfn.destroy()` switch ON; passing a mock client via
     // `opts.cfnClient` (tests) leaves it OFF.
     ownsClient = opts.cfnClient === undefined;
-    cfn = opts.cfnClient ?? new CloudFormationClient({ region });
+    cfn = opts.cfnClient ?? new CloudFormationClient({ ...awsClientDefaults(), region });
 
     // Pick inline vs TemplateURL based on the wire size.
     let templateInput: { TemplateBody: string } | { TemplateURL: string };

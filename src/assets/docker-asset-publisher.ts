@@ -9,6 +9,7 @@ import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
 import { buildDockerImage } from './docker-build.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * The ECR registry host suffix for a region (issue #1745).
@@ -92,7 +93,7 @@ export class DockerAssetPublisher {
 
       this.logger.debug(`Publishing Docker image ${asset.displayName || assetHash} → ${ecrUri}`);
 
-      const client = new ECRClient({ region: destRegion });
+      const client = new ECRClient({ ...awsClientDefaults(), region: destRegion });
 
       try {
         // Check if image already exists
@@ -146,7 +147,7 @@ export class DockerAssetPublisher {
 
       const ecrUri = `${accountId}.dkr.ecr.${destRegion}.${ecrUrlSuffix(destRegion)}/${repositoryName}:${imageTag}`;
 
-      const client = new ECRClient({ region: destRegion });
+      const client = new ECRClient({ ...awsClientDefaults(), region: destRegion });
 
       try {
         if (await this.imageExists(client, repositoryName, imageTag)) {

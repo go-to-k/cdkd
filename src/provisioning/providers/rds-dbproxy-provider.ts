@@ -24,6 +24,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -89,7 +90,10 @@ export class RDSDBProxyProvider implements ResourceProvider {
 
   private getClient(): RDSClient {
     if (!this.rdsClient) {
-      this.rdsClient = new RDSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.rdsClient = new RDSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.rdsClient;
   }

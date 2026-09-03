@@ -37,6 +37,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * SDK Provider for AWS::Budgets::Budget (issue #1041).
@@ -90,7 +91,10 @@ export class BudgetsBudgetProvider implements ResourceProvider {
 
   private getClient(): BudgetsClient {
     if (!this.client) {
-      this.client = new BudgetsClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new BudgetsClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

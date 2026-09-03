@@ -54,6 +54,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
@@ -124,16 +125,20 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
 
   private getClient(): ServiceDiscoveryClient {
     if (!this.client) {
-      this.client = new ServiceDiscoveryClient(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.client = new ServiceDiscoveryClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }
 
   private getStsClient(): STSClient {
     if (!this.stsClient) {
-      this.stsClient = new STSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.stsClient = new STSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.stsClient;
   }

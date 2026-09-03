@@ -32,6 +32,7 @@ import type {
   ResourceImportResult,
   CreateContext,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Translate the empty-string placeholder `readCurrentState` emits for an
@@ -504,9 +505,10 @@ export class WAFv2WebACLProvider implements ResourceProvider {
 
   private getClient(): WAFV2Client {
     if (!this.wafv2Client) {
-      this.wafv2Client = new WAFV2Client(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.wafv2Client = new WAFV2Client({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.wafv2Client;
   }

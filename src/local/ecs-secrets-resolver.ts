@@ -1,6 +1,7 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * Resolve `ContainerDefinitions[].Secrets[].ValueFrom` references to real
@@ -71,9 +72,13 @@ export async function resolveEcsSecrets(
 
   const secretsClient =
     options.secretsManagerClient ??
-    new SecretsManagerClient({ ...(options.region && { region: options.region }) });
+    new SecretsManagerClient({
+      ...awsClientDefaults(),
+      ...(options.region && { region: options.region }),
+    });
   const ssmClient =
-    options.ssmClient ?? new SSMClient({ ...(options.region && { region: options.region }) });
+    options.ssmClient ??
+    new SSMClient({ ...awsClientDefaults(), ...(options.region && { region: options.region }) });
   const ownsSecretsClient = options.secretsManagerClient === undefined;
   const ownsSsmClient = options.ssmClient === undefined;
 

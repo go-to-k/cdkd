@@ -11,6 +11,7 @@ import type { AssemblyManifest } from '../types/assembly.js';
 import { loadCdkJson, loadUserCdkJson } from '../cli/config-loader.js';
 import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * CDK CLI compatibility: a `--app` value pointing at an existing directory is
@@ -198,7 +199,7 @@ export class Synthesizer {
     const region = explicitRegion || (await resolveSdkDefaultRegion(options.profile));
     let accountId: string | undefined;
     try {
-      const stsClient = new STSClient({ ...(region && { region }) });
+      const stsClient = new STSClient({ ...awsClientDefaults(), ...(region && { region }) });
       const identity = await stsClient.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;
       stsClient.destroy();
@@ -381,7 +382,7 @@ export class Synthesizer {
     let accountId = resolved?.accountId;
     if (resolved === undefined && !options.stateBucket) {
       try {
-        const stsClient = new STSClient({ region });
+        const stsClient = new STSClient({ ...awsClientDefaults(), region });
         const identity = await stsClient.send(new GetCallerIdentityCommand({}));
         accountId = identity.Account;
         stsClient.destroy();
@@ -462,7 +463,7 @@ export class Synthesizer {
 async function resolveSdkDefaultRegion(profile?: string): Promise<string | undefined> {
   let client: STSClient | undefined;
   try {
-    client = new STSClient({ ...(profile && { profile }) });
+    client = new STSClient({ ...awsClientDefaults({ profile }), ...(profile && { profile }) });
     const region = await client.config.region();
     return region || undefined;
   } catch {

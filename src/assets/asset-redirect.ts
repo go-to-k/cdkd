@@ -12,6 +12,7 @@ import { AssetModeResolver, type BootstrapMarker } from './asset-storage.js';
 import { isCfnTemplateAssetPath } from './asset-manifest-loader.js';
 import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { escapeRegExp } from '../utils/regexp.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * Asset-location redirection to cdkd-owned storage (issue #1002 PR 2, design
@@ -571,6 +572,7 @@ export function createAssetRedirectResolver(opts: {
     accountIdPromise ??= (async () => {
       const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
       const stsClient = new STSClient({
+        ...awsClientDefaults({ profile: opts.profile }),
         region: opts.stsRegion,
         ...(opts.profile && { profile: opts.profile }),
       });

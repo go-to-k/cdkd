@@ -97,6 +97,7 @@ import type {
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { readConfigString } from '../config-shape.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
@@ -349,7 +350,10 @@ export class ECSProvider implements ResourceProvider {
 
   private getClient(): ECSClient {
     if (!this.ecsClient) {
-      this.ecsClient = new ECSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.ecsClient = new ECSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.ecsClient;
   }

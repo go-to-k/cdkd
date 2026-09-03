@@ -69,6 +69,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Test seam for the capacity-reservation stabilize poll (mirrors
@@ -274,9 +275,10 @@ export class ELBv2Provider implements ResourceProvider {
 
   private getClient(): ElasticLoadBalancingV2Client {
     if (!this.elbv2Client) {
-      this.elbv2Client = new ElasticLoadBalancingV2Client(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.elbv2Client = new ElasticLoadBalancingV2Client({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.elbv2Client;
   }

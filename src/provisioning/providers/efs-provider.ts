@@ -53,6 +53,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * SDK Provider for AWS EFS resources
@@ -118,7 +119,10 @@ export class EFSProvider implements ResourceProvider {
 
   private getClient(): EFSClient {
     if (!this.client) {
-      this.client = new EFSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new EFSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

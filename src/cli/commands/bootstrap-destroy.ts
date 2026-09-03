@@ -39,6 +39,7 @@ import {
   STATE_FILE_SUFFIX,
   DEFAULT_STATE_PREFIX,
 } from './state-file-keys.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * `cdkd bootstrap --destroy` — teardown of cdkd-created account resources
@@ -259,7 +260,11 @@ async function deleteContainerRepo(
   profile: string | undefined,
   logger: Logger
 ): Promise<void> {
-  const ecrClient = new ECRClient({ region, ...(profile && { profile }) });
+  const ecrClient = new ECRClient({
+    ...awsClientDefaults({ profile }),
+    region,
+    ...(profile && { profile }),
+  });
   try {
     await ecrClient.send(
       new DeleteRepositoryCommand({ repositoryName: containerRepo, force: true })
@@ -425,6 +430,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   if (regionNeedsReconciliation(effective)) {
     const probeBackend = new S3StateBackend(
       new S3Client({
+        ...awsClientDefaults({ profile: options.profile }),
         region: effective.region,
         ...(options.profile && { profile: options.profile }),
       }),
@@ -453,6 +459,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
   setAwsClients(awsClients);
 
   const markerS3Client = new S3Client({
+    ...awsClientDefaults({ profile: options.profile }),
     region,
     ...(options.profile && { profile: options.profile }),
   });

@@ -58,6 +58,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * AWS API Gateway V2 (HTTP API) Provider
@@ -216,9 +217,10 @@ export class ApiGatewayV2Provider implements ResourceProvider {
 
   private getClient(): ApiGatewayV2Client {
     if (!this.client) {
-      this.client = new ApiGatewayV2Client(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.client = new ApiGatewayV2Client({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

@@ -5,6 +5,7 @@ import type { TemplateFormat } from './yaml-cfn.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { purgeNoncurrentKeyVersions } from '../state/s3-noncurrent-version-purge.js';
 import { getLogger } from '../utils/logger.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * CloudFormation `TemplateBody` hard limit (51,200 bytes). Templates larger
@@ -115,6 +116,7 @@ export async function uploadCfnTemplate(
     ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),
   });
   const s3 = new S3Client({
+    ...awsClientDefaults({ profile: s3ClientOpts?.profile }),
     region,
     ...(s3ClientOpts?.profile && { profile: s3ClientOpts.profile }),
     ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),

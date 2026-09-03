@@ -22,6 +22,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * SDK Provider for AWS::Scheduler::Schedule.
@@ -83,7 +84,10 @@ export class SchedulerScheduleProvider implements ResourceProvider {
 
   private getClient(): SchedulerClient {
     if (!this.client) {
-      this.client = new SchedulerClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new SchedulerClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

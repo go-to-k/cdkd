@@ -25,6 +25,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /** CFn tag-list entry shape (`{ Key, Value }`). */
 interface CfnTag {
@@ -89,7 +90,10 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
 
   private getClient(): DLMClient {
     if (!this.client) {
-      this.client = new DLMClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new DLMClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

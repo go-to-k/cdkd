@@ -61,6 +61,7 @@ import { getLogger } from '../utils/logger.js';
 import type { ResourceState } from '../types/state.js';
 import type { CrossStackResolver } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 export interface CfnLocalStateProviderOptions {
   /**
@@ -139,6 +140,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // credential resolution picks up the named profile from
       // `~/.aws/credentials` / `~/.aws/config`. Issue #628.
       this.client = new CloudFormationClient({
+        ...awsClientDefaults({ profile: this.clientOptions.profile }),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });

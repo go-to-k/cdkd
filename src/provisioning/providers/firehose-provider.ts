@@ -45,6 +45,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * CFn destination property names that this provider can apply
@@ -104,7 +105,10 @@ export class FirehoseProvider implements ResourceProvider {
 
   private getClient(): FirehoseClient {
     if (!this.client) {
-      this.client = new FirehoseClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new FirehoseClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

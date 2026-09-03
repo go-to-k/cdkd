@@ -1,4 +1,5 @@
 import { canonicalizeRegion } from '../utils/aws-partition.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * ONE region-normalization point for the CLI's command handlers.
@@ -222,7 +223,7 @@ async function resolveSdkDefaultRegion(profile?: string): Promise<string | undef
   const { STSClient } = await import('@aws-sdk/client-sts');
   let client: InstanceType<typeof STSClient> | undefined;
   try {
-    client = new STSClient({ ...(profile && { profile }) });
+    client = new STSClient({ ...awsClientDefaults({ profile }), ...(profile && { profile }) });
     return (await client.config.region()) || undefined;
   } catch {
     return undefined;

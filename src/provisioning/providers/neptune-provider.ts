@@ -29,6 +29,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * AWS Neptune Provider
@@ -102,9 +103,10 @@ export class NeptuneProvider implements ResourceProvider {
 
   private getClient(): NeptuneClient {
     if (!this.neptuneClient) {
-      this.neptuneClient = new NeptuneClient(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.neptuneClient = new NeptuneClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.neptuneClient;
   }

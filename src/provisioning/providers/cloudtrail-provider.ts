@@ -31,6 +31,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * The selector set a trail carries when its template declares NO
@@ -184,9 +185,10 @@ export class CloudTrailProvider implements ResourceProvider {
 
   private getClient(): CloudTrailClient {
     if (!this.client) {
-      this.client = new CloudTrailClient(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.client = new CloudTrailClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

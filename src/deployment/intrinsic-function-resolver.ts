@@ -68,6 +68,7 @@ import { S3StateBackend } from '../state/s3-state-backend.js';
 import type { ExportIndexStore } from '../state/export-index-store.js';
 import { parseWebACLArn } from '../provisioning/providers/wafv2-provider.js';
 import { TemplateParser } from '../analyzer/template-parser.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * Special symbol to represent AWS::NoValue
@@ -2339,6 +2340,10 @@ export class IntrinsicFunctionResolver {
     const building = (async () => {
       const { ServiceDiscoveryClient } = await import('@aws-sdk/client-servicediscovery');
       return new ServiceDiscoveryClient({
+        // The profile is passed rather than left to the `AWS_PROFILE` mirror
+        // `program.ts` sets: `credentialConfig` can carry one, and relying on
+        // the mirror made this the only site whose correctness depended on it.
+        ...awsClientDefaults({ profile: scoped.credentialConfig?.profile }),
         ...(scoped.credentialConfig ?? {}),
         ...(region ? { region } : {}),
       });
@@ -5946,7 +5951,7 @@ export class IntrinsicFunctionResolver {
   private getCfnClient(region: string): CloudFormationClient {
     let client = this.cfnClients[region];
     if (!client) {
-      client = new CloudFormationClient({ region });
+      client = new CloudFormationClient({ ...awsClientDefaults(), region });
       this.cfnClients[region] = client;
     }
     return client;
@@ -6418,6 +6423,7 @@ export class IntrinsicFunctionResolver {
     const prefix = context.stateBackend?.prefix ?? 'cdkd';
 
     const s3 = new S3Client({
+      ...awsClientDefaults(),
       region: bucketRegion,
       credentials: {
         accessKeyId: credentials.accessKeyId,

@@ -21,6 +21,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * AWS RDS DBProxyTargetGroup Provider
@@ -81,7 +82,10 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
 
   private getClient(): RDSClient {
     if (!this.rdsClient) {
-      this.rdsClient = new RDSClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.rdsClient = new RDSClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.rdsClient;
   }

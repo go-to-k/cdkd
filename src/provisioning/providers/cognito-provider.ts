@@ -52,6 +52,7 @@ import type {
   UpdateContext,
   SecretMasker,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * The standard (OIDC) Cognito User Pool attribute names. A Schema entry whose
@@ -1215,9 +1216,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
   private getClient(): CognitoIdentityProviderClient {
     if (!this.cognitoClient) {
-      this.cognitoClient = new CognitoIdentityProviderClient(
-        this.providerRegion ? { region: this.providerRegion } : {}
-      );
+      this.cognitoClient = new CognitoIdentityProviderClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.cognitoClient;
   }

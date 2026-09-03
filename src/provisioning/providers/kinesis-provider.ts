@@ -36,6 +36,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Class 1/2 sanitize for `StreamEncryption` placeholder.
@@ -266,7 +267,10 @@ export class KinesisStreamProvider implements ResourceProvider {
 
   private getClient(): KinesisClient {
     if (!this.client) {
-      this.client = new KinesisClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new KinesisClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

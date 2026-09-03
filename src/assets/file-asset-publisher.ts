@@ -3,6 +3,7 @@ import { join, basename } from 'node:path';
 import { S3Client, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import type { FileAsset } from '../types/assets.js';
 import { getLogger } from '../utils/logger.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 
 /**
  * Publishes file assets to S3
@@ -46,9 +47,7 @@ export class FileAssetPublisher {
         `Publishing file asset ${asset.displayName || assetHash} → s3://${bucketName}/${objectKey}`
       );
 
-      const client = new S3Client({
-        region: destRegion,
-      });
+      const client = new S3Client({ ...awsClientDefaults(), region: destRegion });
 
       try {
         // Check if already exists

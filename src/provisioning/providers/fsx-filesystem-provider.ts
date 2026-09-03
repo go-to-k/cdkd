@@ -47,6 +47,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
  * Default polling budget for FSx lifecycle transitions. Lustre SCRATCH
@@ -301,7 +302,10 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
   private getClient(): FSxClient {
     if (!this.client) {
-      this.client = new FSxClient(this.providerRegion ? { region: this.providerRegion } : {});
+      this.client = new FSxClient({
+        ...awsClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
     }
     return this.client;
   }

@@ -1,4 +1,12 @@
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,7 +52,7 @@ function sites(source: string) {
  * The invariant it guards is invisible in review and invisible to every test:
  * a client built without `awsClientDefaults()` behaves identically everywhere
  * except behind a proxy, where it fails at credential resolution with an error
- * that names neither the proxy nor the client. With ~134 construction sites and
+ * that names neither the proxy nor the client. With ~160 construction sites and
  * a repository that gains providers steadily, the next new provider is where it
  * decays.
  */
@@ -64,7 +72,8 @@ describe('SDK client construction critic', () => {
     });
 
     it('ignores commands, which share the package but take an input bag', () => {
-      // Binding to the import ALONE reported 1726 sites where there are 134.
+      // Binding to the import ALONE reported 1726 sites against a real
+      // population of ~160.
       const source = `import { S3Client, HeadBucketCommand } from '@aws-sdk/client-s3';`;
       expect([...sdkClientIdentifiers(parse(source))]).toEqual(['S3Client']);
     });
@@ -158,6 +167,90 @@ describe('SDK client construction critic', () => {
       expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
     });
 
+    it('flags a BARE `this.opts` argument, not only the spread form', () => {
+      // Recorded as a checker bound on PR #2398 and closed here: the argument is
+      // neither an identifier nor a literal, so the shared-bag pass returned
+      // early while `resolveObjectLiteral`'s PropertyDeclaration arm still
+      // classified both sites `defaults-first`.
+      const found = sites(
+        `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
+         class A {
+           private readonly opts = { ...awsClientDefaults(), region: 'x' };
+           one() { return new S3Client(this.opts); }
+           two() { return new ECRClient(this.opts); }
+         }`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
+    });
+
+    it('follows a getter to the once-evaluated field BEHIND it', () => {
+      // The second recorded bound: `isEvaluatedOnce` was asked of the top name
+      // only, while the defaults-credit recursion is transitive. The getter
+      // shares nothing of its own and hands out the same `cached` object every
+      // time, so both clients get one handler.
+      const found = sites(
+        `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
+         class A {
+           private readonly cached = { ...awsClientDefaults(), region: 'x' };
+           private get opts() { return { ...this.cached }; }
+           one() { return new S3Client({ ...this.opts }); }
+           two() { return new ECRClient({ ...this.opts }); }
+         }`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
+    });
+
+    it('accepts a helper-calling getter whose other spreads carry no defaults', () => {
+      // The paired ACCEPT for the recursion above, or "follow the chain" would
+      // widen into flagging the correct per-access shape.
+      //
+      // RETITLED: this used to say "stops following at a getter that calls the
+      // helper itself", naming a direct-call stop that no longer exists -- the
+      // guard was removed because it was fail-open, unpinned, and wrong for the
+      // shape the reject case below now covers. What this pins is what it always
+      // measured: the walk finds no shared binding here because a bare helper
+      // call has no binding name, and `this.plain` -- a once-evaluated bag, so
+      // the walk DOES follow it -- carries no defaults. The spread is present on
+      // purpose: without it the title spoke of "other spreads" the fixture did
+      // not have, which is the same over-claim in miniature. The SITE literals
+      // do not call the helper because, when this fixture was reshaped in an
+      // earlier round, a site-level call WOULD have exited at the
+      // argument-level exemption and `sharedRoot` would never have run. That
+      // exemption is gone as of this change, so the shape no longer needs the
+      // defense -- a site-level call is harmless either way, which the
+      // argument-level reject fixture below demonstrates by carrying one and
+      // still being flagged.
+      const found = sites(
+        `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
+         class A {
+           private readonly plain = { region: 'x' };
+           private get opts() { return { ...awsClientDefaults(), ...this.plain }; }
+           one() { return new S3Client({ ...this.opts }); }
+           two() { return new ECRClient({ ...this.opts }); }
+         }`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['defaults-first', 'defaults-first']);
+    });
+
+    it('flags a helper-calling getter that also spreads a defaults-bearing bag', () => {
+      // The shape the removed guard got WRONG. The getter calls the helper, so
+      // each access starts with a fresh handler -- and then `...this.cached`
+      // spreads a once-evaluated bag over it, and later-key-wins hands both
+      // clients the SAME `requestHandler`. The guard reported `defaults-first`
+      // here; nothing in the tree writes it, which is why it went unnoticed
+      // until the guard was mutated and no test redded.
+      const found = sites(
+        `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
+         class A {
+           private readonly cached = { ...awsClientDefaults(), region: 'x' };
+           private get opts() { return { ...awsClientDefaults(), ...this.cached }; }
+           one() { return new S3Client({ ...this.opts }); }
+           two() { return new ECRClient({ ...this.opts }); }
+         }`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
+    });
+
     it('does NOT flag a getter spread — it is re-evaluated per client', () => {
       // The discrimination the rule turns on, and the one that decides 22 real
       // sites: sharing is one VALUE reaching two clients, and a getter hands
@@ -198,6 +291,33 @@ describe('SDK client construction critic', () => {
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first', 'defaults-first']);
     });
 
+    it('flags a defaults-bearing bag spread AFTER a direct call at the site', () => {
+      // The argument-level twin of the getter-arm shape, and the reason the
+      // "a direct call exempts the literal" rule was removed: the call makes a
+      // fresh handler, then `...shared` puts the once-evaluated bag's handler
+      // back on top by later-key-wins, so both clients get the same one.
+      const found = sites(
+        `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
+         const shared = { ...awsClientDefaults(), region: 'x' };
+         const a = new S3Client({ ...awsClientDefaults(), ...shared });
+         const b = new ECRClient({ ...awsClientDefaults(), ...shared });`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
+    });
+
+    it('accepts the prescribed form — a defaults-FREE bag spread after the call', () => {
+      // The paired ACCEPT, and what pins that the 158 real sites never leaned on
+      // the removed exemption: this is clean because `plain` resolves to nothing
+      // defaults-bearing, not because the direct call short-circuits anything.
+      const found = sites(
+        `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
+         const plain = { region: 'x' };
+         const a = new S3Client({ ...awsClientDefaults(), ...plain });
+         const b = new ECRClient({ ...awsClientDefaults(), ...plain });`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['defaults-first', 'defaults-first']);
+    });
+
     it('does not relabel a shared bag that lacks the defaults', () => {
       // `missing` is the worse and more actionable of the two, so saying
       // "shared" there would name the lesser problem.
@@ -215,6 +335,71 @@ describe('SDK client construction critic', () => {
         `${IMPORT}const opts = { ...awsClientDefaults(), region: 'x' };\nnew S3Client(opts);`
       );
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first']);
+    });
+
+    it('sees a DESTRUCTURED dynamic import — the hole that made the sweep incomplete', () => {
+      // `sdkClientIdentifiers` read only top-level `ImportDeclaration`s, so this
+      // shape contributed no identifiers and the site got no verdict at all --
+      // not a gap, nothing. 17 real sites sat behind that, including
+      // `deploy.ts`'s `GetCallerIdentity` on every deploy.
+      const found = sites(
+        `const { STSClient } = await import('@aws-sdk/client-sts');
+         const c = new STSClient({ region: 'x' });`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['missing']);
+    });
+
+    it('accepts a migrated destructured dynamic import', () => {
+      const found = sites(
+        `const { STSClient } = await import('@aws-sdk/client-sts');
+         const c = new STSClient({ ...awsClientDefaults(), region: 'x' });`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['defaults-first']);
+    });
+
+    it('follows an ALIAS through a destructured dynamic import', () => {
+      // The suffix is tested on the EXPORTED name and the LOCAL name recorded,
+      // same as the static arm. Handled from the start but unpinned, so the
+      // branch could be lost without a test noticing.
+      const found = sites(
+        `const { S3Client: Bucket } = await import('@aws-sdk/client-s3');
+         const c = new Bucket({ region: 'x' });`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['missing']);
+    });
+
+    it('sees the `new mod.XClient()` form of a dynamic namespace import', () => {
+      // Six real sites in `httpv2-service-integration.ts` are written this way,
+      // and the construction is a property access rather than an identifier, so
+      // it needs BOTH halves: the namespace binding and the `new ns.X` arm.
+      const found = sites(
+        `const mod = await import('@aws-sdk/client-sns');
+         const c = new mod.SNSClient({ region: 'x' });`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['missing']);
+    });
+
+    it('does not treat a NON-SDK module binding as a client namespace', () => {
+      // The paired REFUSAL: `new helpers.FooClient()` over a local module must
+      // not be swept in just because the name ends in Client.
+      const found = sites(
+        `const helpers = await import('./helpers.js');
+         const c = new helpers.FooClient({ region: 'x' });`
+      );
+      expect(found).toEqual([]);
+    });
+
+    it('counts two same-named single-use local bags as shared — fail-closed, by design', () => {
+      // The reject side of the documented file-global `uses` polarity, which
+      // was closed by comment only. Neither function shares anything, and both
+      // flip: a false accusation costs a reviewer one look, a miss ships the
+      // correctness bug.
+      const found = sites(
+        `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
+         function one() { const opts = { ...awsClientDefaults() }; return new S3Client(opts); }
+         function two() { const opts = { ...awsClientDefaults() }; return new ECRClient(opts); }`
+      );
+      expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
     });
 
     it('reports a config it cannot read as opaque rather than assuming it clean', () => {
@@ -241,7 +426,9 @@ describe('SDK client construction critic', () => {
     it('still sees the population — a collapsed parse must fail loudly', () => {
       // FLOORS. Without them a walk that silently stops matching reports zero
       // gaps and passes vacuously, which is indistinguishable from clean.
-      // Measured on the PR 1 tree: 134 sites across 67 files, 33 clean.
+      // Measured at the sweep: 158 sites across 79 files. The floors are ROUND
+      // NUMBERS below that on purpose -- they catch a collapsed parse, and a
+      // literal count here would just be a fourth place for the number to drift.
       expect(report.totalSites).toBeGreaterThanOrEqual(100);
       expect(report.filesWithSites).toBeGreaterThanOrEqual(50);
       expect(report.cleanSites).toBeGreaterThanOrEqual(25);
@@ -254,6 +441,87 @@ describe('SDK client construction critic', () => {
       );
       expect(found.length).toBeGreaterThanOrEqual(20);
       expect(found.every((site) => site.verdict === 'defaults-first')).toBe(true);
+    });
+  });
+
+  describe('the detected population IS the real one', () => {
+    /**
+     * The reconciliation that would have caught this checker's own blind spot,
+     * turned into an assertion.
+     *
+     * PR 2465 shipped a review round claiming "there is no version of this
+     * change that forgets one and still passes" on the strength of a green run
+     * and an empty allow-list. That was false: `sdkClientIdentifiers` read only
+     * top-level `ImportDeclaration`s, so 18 destructured `await import(...)`
+     * sites had no verdict at all -- 17 of them unmigrated, `deploy.ts`'s
+     * `GetCallerIdentity` among those -- plus 6 more in the namespace form.
+     * (The two counts differ by `config-loader.ts`, migrated by hand in the
+     * previous PR, so it had no verdict while already being correct.)
+     *
+     * A green run tells you about the population the detector can SEE, and
+     * nothing about the size of that population.
+     *
+     * So the population is checked against a method that is wrong in DIFFERENT
+     * ways: a text scan for the construction itself. Every hit it finds must
+     * either be a site the AST walk also found, or a line of prose. A new
+     * binding shape the AST misses lands here as an unexplained hit.
+     */
+    const CONSTRUCTION = /new\s+(?:[A-Za-z0-9_]+\.)?[A-Za-z0-9]+Client\s*\(/;
+
+    function textScan(): { file: string; line: number; text: string }[] {
+      const out: { file: string; line: number; text: string }[] = [];
+      const walk = (dir: string): void => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
+            readFileSync(full, 'utf8').split('\n').forEach((text, i) => {
+              if (CONSTRUCTION.test(text)) out.push({ file: full, line: i + 1, text });
+            });
+          }
+        }
+      };
+      walk(join(repoRoot, 'src'));
+      return out;
+    }
+
+    it('finds no construction the AST walk did not, except in prose', () => {
+      const detected = new Set<string>();
+      for (const [file, sites] of new Map(
+        textScan().map((h) => [h.file, findClientSites(h.file, readFileSync(h.file, 'utf8'))])
+      )) {
+        for (const site of sites) detected.add(`${file}:${site.line}`);
+      }
+
+      const unexplained = textScan().filter(
+        (hit) =>
+          !detected.has(`${hit.file}:${hit.line}`) &&
+          // A construction NAMED in a comment is not a construction.
+          !/^\s*(\*|\/\/)/.test(hit.text)
+      );
+
+      expect(
+        unexplained.map((u) => `${u.file.replace(repoRoot + '/', '')}:${u.line}`),
+        'a text scan found a client construction the AST walk has no verdict for. Either it ' +
+          'is a binding shape `sdkClientIdentifiers` does not know (teach it, and add an ' +
+          'accept/reject pair), or the line is prose (then it needs no action but this list ' +
+          'needs re-reading). Do NOT widen the comment filter to make this pass.'
+      ).toEqual([]);
+    });
+
+    it('the two methods agree on the SIZE, not just on the absence of surprises', () => {
+      // The floor's other direction: if the AST walk started reporting sites the
+      // text scan cannot see, one of them is wrong and it is worth knowing.
+      const scanned = new Set(textScan().map((h) => `${h.file}:${h.line}`));
+      const detectedNotScanned: string[] = [];
+      for (const hit of textScan()) {
+        for (const site of findClientSites(hit.file, readFileSync(hit.file, 'utf8'))) {
+          if (!scanned.has(`${hit.file}:${site.line}`)) {
+            detectedNotScanned.push(`${hit.file}:${site.line}`);
+          }
+        }
+      }
+      expect([...new Set(detectedNotScanned)]).toEqual([]);
     });
   });
 
@@ -319,18 +587,30 @@ describe('SDK client construction critic', () => {
     it('reports an allow-listed file that has become clean', () => {
       // The other direction of the ratchet: an entry that outlives its reason
       // silently withholds protection from the file it names.
+      //
+      // The victim is SYNTHESISED rather than read from the real list, which is
+      // now empty. Taking `allowList.files[0]` made this case die with an
+      // `undefined` index the moment the sweep finished -- a probe that stops
+      // running exactly when the thing it guards starts mattering.
       const srcDir = scratchCopyOfSrc();
-      const victim = allowList.files[0]!;
-      const target = join(srcDir, victim.replace(/^src\//, ''));
-      writeFileSync(
-        target,
-        readFileSync(target, 'utf8').replace(
-          /new (\w+Client)\(\s*\{/g,
-          'new $1({ ...awsClientDefaults(),'
-        )
-      );
-      const report = buildReport(srcDir, allowList);
+      const victim = 'src/utils/expected-bucket-owner.ts';
+      expect(
+        allowList.files,
+        'the victim must NOT be genuinely allow-listed, or this proves nothing'
+      ).not.toContain(victim);
+      const report = buildReport(srcDir, { files: [victim] });
       expect(report.staleAllowList).toContain(victim);
+    });
+
+    it('is EMPTY, which is the endpoint the ratchet was pointed at', () => {
+      // Every other assertion about the list passes vacuously once it is empty
+      // (sorted, deduplicated, names only existing files), so without this the
+      // suite would stop noticing an entry being added back. Re-adding one is a
+      // decision that needs a rationale in the JSON comment and a reviewer.
+      expect(
+        allowList.files,
+        'a file was re-added to the allow-list — say why in the $comment and in the PR'
+      ).toEqual([]);
     });
 
     it('reports the shared-bag shape restored in the REAL asset-storage.ts', () => {
