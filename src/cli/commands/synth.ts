@@ -66,11 +66,14 @@ async function synthCommand(options: {
   // `Synthesizing CDK app...` line below and before synthesis runs at all —
   // `app-executor.ts` re-emits the CDK app's stderr (bundling progress,
   // warnings) at INFO, so a DEFAULT run put prose inside the document with no
-  // `--verbose` involved. NOT sufficient on its own for `cdkd synth | yq`:
-  // `toYaml` still leaves YAML indicator characters unquoted, so a template
-  // containing `"*"` emits a bare `- *` a parser rejects — a serializer
-  // defect, tracked as
-  // [#2421](https://github.com/go-to-k/cdkd/issues/2421).
+  // `--verbose` involved. This was necessary but not sufficient for
+  // `cdkd synth | yq`: the stream was clean while the DOCUMENT on it was
+  // still invalid, because `toYaml` left YAML indicator characters unquoted
+  // and a template containing `"*"` emitted a bare `- *` a parser rejects.
+  // That half is fixed too, in
+  // [#2421](https://github.com/go-to-k/cdkd/issues/2421) — `toYaml` now
+  // delegates its quoting to the `yaml` package, so the two halves together
+  // are what make the pipe work.
   //
   // Accepted consequence, stated because it is a real behavior change rather
   // than an oversight: in the MULTI-stack case nothing at all is written to

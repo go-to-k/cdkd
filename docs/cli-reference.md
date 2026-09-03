@@ -1340,7 +1340,8 @@ reach stdout; they are listed under "known residuals" below. As with `--json`, t
 restores the old single-stream view.
 
 ```bash
-cdkd synth > template.yaml 2> progress.log   # see the toYaml caveat below
+cdkd synth > template.yaml 2> progress.log
+cdkd synth | yq '.Resources | keys'
 cdkd list --long | yq '.[].name'
 cdkd list | while read -r id; do echo "found stack: $id"; done
 cdkd state list | while read -r ref; do echo "found state for: $ref"; done
@@ -1354,7 +1355,7 @@ listed under "known residuals" below, and the same applies to
 `cdkd local invoke-agentcore`. The other three commands need no such
 qualifier.
 
-Three consequences worth stating explicitly:
+Four consequences worth stating explicitly:
 
 - **`cdkd synth` on a MULTI-stack app writes nothing to stdout.** The template
   is emitted only when the app has exactly one stack (matching `cdk synth`), so
@@ -1393,19 +1394,30 @@ Three consequences worth stating explicitly:
   prose moves -- to stderr, where an operator at a terminal still sees it and
   where it stops corrupting a redirect to a file. The alternative, a mode-aware
   condition, is the flag-shaped gating issue #2435 exists to remove.
-- **`cdkd synth`'s stdout is the template, but it is not yet valid YAML for
-  every template.** The renderer leaves YAML indicator characters unquoted, so
-  a template containing `"*"` -- any IAM policy `Resource` / `Action`, any CORS
-  rule -- emits a bare `- *` that a YAML parser rejects. Reserving stdout does
-  not change that; it is issue
-  [#2421](https://github.com/go-to-k/cdkd/issues/2421). Until it is fixed, read
-  the per-stack template JSON out of the `--output` assembly directory when you
-  need a parser to consume it.
-  `cdkd list --long` / `--show-dependencies` render through the SAME
-  `toYaml`, but their payload is not affected in practice: every value they
-  emit is a stack id, a display path, an account or a region, and none of
-  those can begin with a YAML indicator character. `cdkd synth` is the one
-  surface where arbitrary template values reach the renderer.
+- **`cdkd synth`'s stdout parses, and it parses back to the template.** This
+  used to be the exception: the renderer left YAML indicator characters
+  unquoted, so a template containing `"*"` -- any IAM policy `Resource` /
+  `Action`, any CORS rule -- emitted a bare `- *` that a YAML parser rejects,
+  and reserving stdout did not change it. Issue
+  [#2421](https://github.com/go-to-k/cdkd/issues/2421) fixed it by handing the
+  quoting to the `yaml` package -- the library the AWS CDK CLI uses for the
+  same job -- and checking every string scalar against that library's own
+  parser under BOTH a YAML 1.1 reader (which is what `yq` is) and a 1.2 one,
+  quoting anything that would not come back unchanged. Two visible consequences, both
+  of which make the output MATCH the template rather than diverge from it:
+  - **Scalars keep their type.** A number stays a number (`ExpirationInDays:
+    90`, not `"90"`) and a numeric string stays a string (`schemaVersion:
+    "2.2"`). The document a parser hands back is now deep-equal to the
+    per-stack template JSON in the `--output` assembly directory.
+  - **The document starts at column 0.** `cdkd synth` no longer opens with a
+    blank line, matching what `cdkd list --long` always printed -- the two
+    consumers of one renderer used to disagree about it.
+
+  `cdkd list --long` / `--show-dependencies` render through the SAME renderer
+  and gain the same guarantee. The one output change you may notice there is an
+  AWS account id: it is a string in the payload, so it is now emitted quoted
+  (`account: "123456789012"`) and reads back as a string, matching what
+  `--json` has always returned.
 
 `cdkd deploy` and the long-running `cdkd local` servers -- `start-api`,
 `run-task`, `start-service`, `start-agentcore`, `start-alb`,

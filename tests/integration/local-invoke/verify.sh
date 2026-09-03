@@ -40,10 +40,27 @@ fi
 # it. Asserted here rather than in a new fixture because this one already
 # synthesizes the app.
 #
-# Deliberately NOT asserted: that the template PARSES. `toYaml` still leaves
-# YAML indicator characters unquoted, so a template containing `"*"` emits a
-# bare `- *` a parser rejects (issue go-to-k/cdkd#2421). That is a serializer
-# defect, not a stream one; asserting it here would red on an unrelated fix.
+# The template PARSES, and parses back to the template. This was deliberately
+# NOT asserted until issue go-to-k/cdkd#2421: `toYaml` left YAML indicator
+# characters unquoted, so the stream was clean while the document on it was
+# not. Both halves have landed now, so the pipe `cdkd synth | yq` is a
+# supported operation and this is where it gets its live coverage.
+#
+# The arm is NOT vacuous on this fixture, and it was probed rather than
+# assumed: with `src/utils/yaml.ts` reverted to `origin/main` and the binary
+# rebuilt, this same assertion exits 1. Measured 2026-09-03 --
+# `YAMLParseError: Nested mappings are not allowed in compact mappings` (code
+# `BLOCK_AS_IMPLICIT_KEY`) at the `InlineHandler` `Code.ZipFile` line, whose
+# value is `exports.handler = async (event) => ({ inlineEcho: event });`. The
+# colon-space inside the handler body made YAML read the code as a nested
+# mapping, because the pre-fix predicate quoted a scalar only for a leading
+# `{` / `[` / `"`, a `#`, a newline, or the three literals.
+#
+# Worth recording because it is NOT the failure the issue was filed for: that
+# one is `BAD_ALIAS` from a bare `- *`. Same root cause, different indicator,
+# and this fixture reaches it with no wildcard anywhere -- which is the point
+# of asserting a PARSE here instead of grepping for the one shape we knew
+# about.
 echo "==> Synthesizing fixture CDK app (and asserting the stdout/stderr split)"
 SYNTH_OUT=$(mktemp)
 SYNTH_ERR=$(mktemp)
@@ -75,6 +92,49 @@ for PROSE in 'Synthesizing CDK app' 'Synthesis complete' 'Output:'; do
   }
 done
 echo "    stdout: template only ($(wc -l <"${SYNTH_OUT}" | tr -d ' ') lines); stderr: prose ($(wc -l <"${SYNTH_ERR}" | tr -d ' ') lines)"
+
+# ...and the document is well-formed AND faithful (issue go-to-k/cdkd#2421).
+# Parsing alone is the weaker half: it is satisfied by any output a parser
+# happens to accept, including one whose scalars changed TYPE on the way out
+# (the pre-fix emitter rendered every number as a string and every all-digit
+# string bare). So the assertion is deep equality against the assembly's own
+# template JSON -- the same object, serialized two ways -- which is the
+# property `cdkd synth | yq` actually depends on.
+#
+# `yaml` resolves from the repo root's node_modules (this fixture does not
+# depend on it); node walks up from the fixture directory to find it.
+echo "==> Asserting cdkd synth stdout parses back to the template"
+TEMPLATE_JSON=$(ls cdk.out/*.template.json 2>/dev/null | head -1 || true)
+[ -n "${TEMPLATE_JSON}" ] || {
+  echo "FAIL: no cdk.out/*.template.json to compare against -- the arm cannot run"
+  exit 1
+}
+node --input-type=module -e "
+import { readFileSync } from 'node:fs';
+const YAML = await import('yaml');
+const text = readFileSync(process.argv[1], 'utf8');
+const json = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+// BOTH readers, because that is the guarantee: the emitter quotes anything
+// either resolver would hand back changed, and \`yq\` is the 1.1 one. A
+// default-reader-only arm cannot see a 1.1-specific hazard -- the \`<<\` merge
+// key shipped past a whole review round for exactly that reason.
+for (const schema of ['core', 'yaml-1.1']) {
+  let parsed;
+  try {
+    parsed = YAML.parse(text, { schema });
+  } catch (err) {
+    console.error('FAIL: cdkd synth stdout is not valid YAML under the ' + schema + ' reader: ' + err.name + ' ' + (err.code ?? '') + ' -- ' + err.message.split('\n')[0]);
+    process.exit(1);
+  }
+  if (JSON.stringify(parsed) !== JSON.stringify(json)) {
+    console.error('FAIL: cdkd synth stdout parses under ' + schema + ' but does not equal the assembly template');
+    console.error('--- parsed YAML ---'); console.error(JSON.stringify(parsed, null, 2).slice(0, 2000));
+    console.error('--- template JSON ---'); console.error(JSON.stringify(json, null, 2).slice(0, 2000));
+    process.exit(1);
+  }
+}
+console.log('    stdout parses under both readers and deep-equals ' + process.argv[2]);
+" "${SYNTH_OUT}" "${TEMPLATE_JSON}"
 
 # Same contract on `cdkd list`, which had even less live coverage than synth:
 # it appears in ZERO verify.sh scripts. Issue go-to-k/cdkd#2410 made its
