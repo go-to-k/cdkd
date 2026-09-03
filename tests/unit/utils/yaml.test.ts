@@ -83,6 +83,14 @@ const HOSTILE_SCALARS: readonly string[] = [
   'off',
   '2026-09-03',
   '12:30:00',
+  // Resolves under YAML 1.2 core but NOT under 1.1, which is the schema we
+  // emit under -- so this one goes out bare unless the emitter asks BOTH
+  // readers. Found by review; the reason the emitter delegates the question
+  // to the library rather than carrying a list like this one.
+  '0o17',
+  // The 1.1 MERGE key. Ordinary in value position, special as a KEY, which
+  // is why the emitter asks a different question for each position.
+  '<<',
   // Multi-line content: a plain scalar cannot hold a line break at all.
   'line1\nline2',
   'line1\n\nline3',
@@ -106,8 +114,8 @@ const PLAIN_SCALARS: readonly string[] = [
 
 describe('toYaml', () => {
   describe('round-trips every scalar it emits (issue #2421)', () => {
-    // The three positions are asserted separately because the emitter used to
-    // reach them by three different code paths — a map VALUE, a sequence
+    // The four positions are asserted separately because the emitter used to
+    // reach them by different code paths — a map VALUE, a sequence
     // ITEM, and a map KEY (which had its own, also-incomplete, quoting rule:
     // `key.includes(' ') ? '"key"' : key`).
     for (const value of [...HOSTILE_SCALARS, ...PLAIN_SCALARS]) {
@@ -129,9 +137,18 @@ describe('toYaml', () => {
       }
     });
 
-    it('leaves plain scalars unquoted', () => {
+    // The OTHER direction, at every position. An emitter that quotes
+    // everything satisfies every round-trip assertion above while making each
+    // template unreadable, and asserting only the top-level position leaves
+    // that free in the two positions a template actually uses: measured, an
+    // emitter quoting every SEQUENCE ITEM reddened 0 of these cases before
+    // the item and key arms were added here.
+    it('leaves plain scalars unquoted, at every position', () => {
       for (const value of PLAIN_SCALARS) {
         expect(toYaml(value)).toBe(`${value}\n`);
+        expect(toYaml({ Key: value })).toBe(`Key: ${value}\n`);
+        expect(toYaml([value])).toBe(`- ${value}\n`);
+        expect(toYaml({ [value]: 'v' })).toBe(`${value}: v\n`);
       }
     });
   });
@@ -186,7 +203,13 @@ describe('toYaml', () => {
     const shared = { Ref: 'Bucket' };
     const emitted = toYaml({ Outputs: { A: { Value: shared }, B: { Value: shared } } });
 
-    expect(emitted).not.toMatch(/[&*]a\d/);
+    // NOT a regex over the default `anchorPrefix` ('a'): that binds the
+    // assertion to a library default, and the same aliased output scores
+    // clean under `anchorPrefix: 'x'`. The deep-equality below cannot carry
+    // this either -- an aliased document parses back to an identical
+    // structure -- so the character itself is the discriminator.
+    expect(emitted).not.toContain('&');
+    expect(emitted).not.toContain('*');
     expect(parseYaml(emitted)).toEqual({
       Outputs: { A: { Value: { Ref: 'Bucket' } }, B: { Value: { Ref: 'Bucket' } } },
     });
@@ -195,9 +218,22 @@ describe('toYaml', () => {
   it('does not fold long values onto extra lines', () => {
     // A CDK `Analytics` blob / a long ARN must stay on one line: folding is
     // legal YAML but changes the string a naive line-based reader sees.
-    const long = `arn:aws:iam::123456789012:role/${'x'.repeat(200)}`;
+    // The value MUST contain whitespace: `yaml` folds only at a space, so a
+    // single long token stays on one line at any `lineWidth` and a fixture
+    // without one leaves the option unfenced (measured -- removing
+    // `lineWidth: 0` reddened nothing before this line had its spaces).
+    const long = `Deny every action on ${'the resource '.repeat(30)}always`;
 
-    expect(toYaml({ RoleArn: long })).toBe(`RoleArn: ${long}\n`);
+    expect(toYaml({ Description: long })).toBe(`Description: ${long}\n`);
+  });
+
+  it('omits an undefined object VALUE, matching JSON.stringify', () => {
+    // A silent contract change from the hand-rolled emitter, which wrote
+    // `a: null`. Unreachable from either consumer today, but pinned so the
+    // next reader finds it asserted rather than inferred: this is what makes
+    // the YAML and `--json` spellings of `cdkd list` agree.
+    expect(toYaml({ a: undefined, b: 1 })).toBe('b: 1\n');
+    expect(JSON.parse(JSON.stringify({ a: undefined, b: 1 }))).toEqual({ b: 1 });
   });
 
   it('renders undefined as null', () => {

@@ -226,6 +226,14 @@ describe('list keeps stdout to the payload in every mode (issues #2280, #2410)',
       },
     ]);
 
+    // The command-level twin of `yaml.test.ts`'s column-0 pin, and the
+    // counterpart of the one `synth-stdout-stream.test.ts` carries: issue
+    // #2421 moved the leading-newline contract INTO `toYaml`, so
+    // `emitStructured` no longer strips it here. Without this, the removal of
+    // that `.replace(/^\n/, '')` is fenced only by a unit test on the
+    // serializer, not by the command that used to do the stripping.
+    expect(stdout.startsWith('- id:')).toBe(true);
+
     expect(stderr).toContain(CHATTER);
     expect(stdout).not.toContain(CHATTER);
   });

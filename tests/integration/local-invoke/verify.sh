@@ -104,7 +104,7 @@ echo "    stdout: template only ($(wc -l <"${SYNTH_OUT}" | tr -d ' ') lines); st
 # `yaml` resolves from the repo root's node_modules (this fixture does not
 # depend on it); node walks up from the fixture directory to find it.
 echo "==> Asserting cdkd synth stdout parses back to the template"
-TEMPLATE_JSON=$(ls cdk.out/*.template.json 2>/dev/null | head -1)
+TEMPLATE_JSON=$(ls cdk.out/*.template.json 2>/dev/null | head -1 || true)
 [ -n "${TEMPLATE_JSON}" ] || {
   echo "FAIL: no cdk.out/*.template.json to compare against -- the arm cannot run"
   exit 1
