@@ -123,6 +123,12 @@ const theme = defineTheme({
     '  background: color-mix(in srgb, var(--octc-color-primary) 12%, transparent);',
     '  color: var(--octc-color-primary);',
     '}',
+    // Entry-page hero: the theme stacks the image centered above the text;
+    // put the logo BESIDE the title block instead (left of "cdkd ...").
+    '.hero { display: flex; flex-direction: row; align-items: center; gap: 3.5rem; }',
+    '.hero-image { margin: 0; flex-shrink: 0; }',
+    '.hero-image img { width: 10rem; height: 10rem; }',
+    '@media (max-width: 768px) { .hero { flex-direction: column; gap: 1.5rem; } }',
     '.nav-title, .toc-title { border-top: none; }',
     // The sidebar/outline column rules run the full viewport height and cut
     // across the header nav items above them — drop both.

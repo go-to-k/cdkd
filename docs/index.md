@@ -6,6 +6,13 @@ hero:
   name: cdkd
   text: Deploy CDK apps directly. Skip CloudFormation.
   tagline: Drop-in CDK CLI for existing CDK apps — up to 15x faster dev/test deploys via direct AWS SDK calls instead of CloudFormation.
+  image:
+    src: /brand/logo-dark.svg
+    lightSrc: /brand/logo-light.svg
+    darkSrc: /brand/logo-dark.svg
+    alt: cdkd
+    width: 192
+    height: 192
   actions:
     - theme: brand
       text: Get Started
@@ -20,35 +27,21 @@ features:
   - icon: ⚡
     title: Up to 15x faster deploys
     details: Direct SDK calls, aggressive parallelization, and --no-wait to skip slow stabilization waits — faster than Terraform and CloudFormation Express mode too.
-    link: /introduction/
+    link: /benchmarks/
     linkText: See the benchmarks
-  - icon: 🪣
-    title: S3-based state management
-    details: No DynamoDB required — state lives in S3 with optimistic locking via S3 conditional writes, keyed by stack name and region.
-    link: /state-management/
-    linkText: State management
-  - icon: 🔀
-    title: Event-driven parallel DAG
-    details: Ref / Fn::GetAtt dependencies become a dependency graph; each resource dispatches the moment its dependencies complete — no level barriers.
-    link: /architecture/
-    linkText: How it works
-  - icon: 🔄
-    title: Bidirectional CloudFormation migration
-    details: Adopt existing CFn stacks with cdkd import --migrate-from-cloudformation, and hand a stack back to CloudFormation with cdkd export when it's production-ready.
-    link: /import/
-    linkText: Import & export
+  - icon: 🔌
+    title: No code changes
+    details: Your existing CDK app runs as-is — replace cdk deploy with cdkd deploy and that's the whole migration. No new DSL, no rewrite, no lock-in.
+    link: /getting-started/
+    linkText: Get started
   - icon: 🐳
     title: Local execution
     details: cdkd local runs your Lambdas, API Gateway routes, ECS tasks, ALBs, and CloudFront distributions on your machine — resolving env vars and secrets from your real deployed stack.
     link: /local-emulation/
     linkText: Local execution
-  - icon: 🔍
-    title: Drift, rollback, and diff
-    details: CloudFormation-parity safety without CloudFormation — property-level diff, drift detection with accept/revert, and automatic rollback on failed deploys.
-    link: /cli-reference/
-    linkText: CLI reference
+  - icon: 🤝
+    title: Use it alongside the CDK CLI
+    details: cdkd for dev/test iteration, CloudFormation for staging and production — the same CDK app serves both, and cdkd import / export moves a stack between them anytime.
+    link: /introduction/
+    linkText: How they fit together
 ---
-
-cdkd is a drop-in CDK CLI for existing CDK apps: your CDK code runs as-is, and you just replace `cdk deploy` with `cdkd deploy`. It deploys directly via AWS SDK and Cloud Control API calls instead of CloudFormation, which makes dev/test iteration dramatically faster. Use cdkd for rapid iteration alongside the AWS CDK CLI, which stays in charge of production.
-
-> **IMPORTANT**: cdkd is for dev/test workflows only — early in development, not yet production-ready.
