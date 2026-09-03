@@ -47,11 +47,13 @@
 #   - ssm:<name>            (String param)              (plaintext param) SUPPORTED
 #   - ssm:<name>            (SecureString param)        (decrypts, and is
 #                                                        REDACTED in state)   SUPPORTED
-#   - ssm-secure:<name>                                 (SecureString)    NOT SUPPORTED -> see note below
+#   - ssm-secure:<name>                                 (SecureString)    SUPPORTED since issue #2482 -> see note below
 #
-# `ssm-secure` is intentionally NOT exercised: cdkd's resolveDynamicReferences
-# routes only `secretsmanager` and `ssm`; an `ssm-secure:` reference hits the
-# `else` branch (warn + leave literal), so it would deploy a broken value.
+# `ssm-secure` is exercised by its OWN fixture, `ssm-secure-dynamic-ref`, which
+# seeds the SecureString parameter out of band (CloudFormation cannot create
+# one) and asserts the whole / embedded / versioned forms against a readable
+# destination. Before issue #2482 the spelling hit the resolver's unsupported
+# service `else` branch (warn + leave literal) and was skipped here.
 # A version-ID form (`...:SecretString:key::<uuid>`) is also not exercised
 # because the secret's version id is not known ahead of deploy; the
 # version-STAGE slot (AWSCURRENT) covers the optional-trailing-field grammar.
@@ -372,7 +374,7 @@ if [ "${fail_count}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: all dynamic references resolved to the correct values (none left literal)"
-echo "    SKIP: ssm-secure:<name> not exercised (cdkd does not resolve it; see header note)"
+echo "    NOTE: ssm-secure:<name> is exercised by tests/integration/ssm-secure-dynamic-ref (see header note)"
 
 # --- Assertion 1b: baseline Description + KmsKeyId reached AWS ------------
 DESC_P1=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \

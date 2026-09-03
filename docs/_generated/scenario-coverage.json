@@ -114,7 +114,7 @@
     },
     {
       "tag": "dynamic-reference-resolution",
-      "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.)"
+      "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` / `{{resolve:ssm-secure:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. `ssm-secure:` is secret by SPELLING (issue #2482): its whole, embedded and `<name>:<version>` forms decrypt to the SecureString value and persist as the expression, with the parameter seeded out of band because CloudFormation cannot create a SecureString."
     },
     {
       "tag": "elbv2-listener-tg-lb-deletion-order",
@@ -1973,6 +1973,13 @@
       "scenarios": []
     },
     {
+      "name": "ssm-secure-dynamic-ref",
+      "annotated": true,
+      "scenarios": [
+        "dynamic-reference-resolution"
+      ]
+    },
+    {
       "name": "stack-lock-renewal",
       "annotated": false,
       "scenarios": []
@@ -2290,14 +2297,15 @@
     },
     {
       "scenario": "dynamic-reference-resolution",
-      "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. (`ssm-secure:` is NOT resolved by cdkd and is intentionally out of scope.)",
+      "description": "CloudFormation dynamic references (`{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` / `{{resolve:ssm-secure:...}}`) resolved by cdkd itself (`resolveDynamicReferences`) BEFORE the property reaches the provider — JSON-key (`:SecretString:<key>`), whole-secret, and version-stage forms + plaintext SSM param; the deployed resource carries the RESOLVED value, never the literal token. Secret-bearing references are additionally REDACTED back to their expression in persisted state, decided by the parameter TYPE rather than the spelling: an `ssm:` reference to a SecureString parameter is redacted (issue #1901) while a String parameter beside it stays resolved. `ssm-secure:` is secret by SPELLING (issue #2482): its whole, embedded and `<name>:<version>` forms decrypt to the SecureString value and persist as the expression, with the parameter seeded out of band because CloudFormation cannot create a SecureString.",
       "fixtures": [
         "cross-stack-secret-import",
         "dynamic-ref-cross-region",
         "nested-stack-secret",
         "rollback-cross-region-secret",
         "secrets-array-nested",
-        "secrets-dynamic-ref"
+        "secrets-dynamic-ref",
+        "ssm-secure-dynamic-ref"
       ]
     },
     {

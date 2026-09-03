@@ -178,7 +178,7 @@ Exit codes:
 | `0` (detection) | Every inspected stack has zero drift **and cdkd left no comparison incomplete** (nothing refused, and no read or comparison failed). Note a resource can be reported under `notCompared` and the run still exit `0` — that happens when the only reason it was not compared is a `{{resolve:...}}` spelling cdkd never resolves (see the `2 (detection)` row). |
 | `0` (`--accept` / `--revert`) | The remediation run completed: it resolved every drift cleanly, or there was no drift to resolve. **Unlike the detection row, this does NOT mean every comparison completed** — the remediation modes keep their documented exit codes, so a run whose reads were refused or failed still exits `0` (the `2` exit is scoped to detection-only mode deliberately; changing it would alter what a remediation run means). It says so in WORDS instead: a remediation run that found no drift but could not compare everything prints `Comparison INCOMPLETE — nothing to accept/revert, and that is NOT a clean bill of health`, names how many of the stack's resources were not compared and why, splits them into the ones cdkd is genuinely uncertain about (a failed read, a refused or unresolvable dynamic reference) and the ones it never drift-checks by design (`Custom::*`, and types no provider reads back yet — reported without any uncertainty claim), and points at the detection-only run — which DOES report it as exit `2`. Such resources are never touched by `--accept` / `--revert` (both act on drifted resources only), so nothing is written on the strength of a comparison that did not happen. `--accept` likewise exits `0` when it deliberately REFUSED a secret-bearing property whose AWS-current value it could not identify (see "Secret dynamic references" above) — the refusal is warned about by name and the drift is still reported on the next run. **If you gate CI on "everything was actually compared", run `cdkd drift` without `--accept` / `--revert` and read its exit code, or read `--json`'s `notCompared[].cause`.** |
 | `1` | Drift detected on at least one resource on at least one stack (detection-only mode), OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. Drift OUTRANKS a partial comparison: a run that both detects drift and leaves something uncompared exits `1`, not `2`. |
-| `2` (detection) | Nothing drifted, but at least one resource's comparison did not happen for a reason **you can act on**. Two causes produce it. (a) cdkd **deliberately REFUSED** to compare a resource: a dynamic reference its state records could not be attributed to a region, so its secret-bearing properties were not compared. (b) the **read or comparison FAILED** for a resource — an SDK or Cloud Control readback that rejected (a least-privilege role, a throttle), or a comparison that threw on a provider-authored bag. Previously that second cause did not produce an exit code at all: it aborted the whole run with exit `1`, leaving every other resource in the stack unchecked while reporting the same code that means "drift detected", so a CI gate could not tell the two apart. Reporting that run as `0` would be a clean bill of health for a comparison that did not happen — and the refused population likewise used to exit `1`, because cdkd resolved the reference in the wrong region and reported phantom drift, so a non-zero exit is what CI consumers already had. **This is narrower than `notCompared`, deliberately.** A resource whose only uncompared properties hold a surviving `{{resolve:ssm-secure:...}}` token is listed under `notCompared` and in the report's not-fully-compared block, but does **not** produce this exit code: cdkd has never resolved that spelling, so the condition is permanent and unclearable by any action you can take, and exiting non-zero for it would fail such a stack's CI forever over something unrelated. **A type Cloud Control has no READ handler for is excluded on the same grounds** and reports `drift unknown` instead, whether the fallback signals it by returning nothing or by throwing `UnsupportedActionException`. Fix a refusal by spelling the reference as a full ARN, which names its region; fix a read failure by granting the missing permission or re-running. Use `--json` and read each `notCompared` entry's `cause` to tell them apart per resource. |
+| `2` (detection) | Nothing drifted, but at least one resource's comparison did not happen for a reason **you can act on**. Two causes produce it. (a) cdkd **deliberately REFUSED** to compare a resource: a dynamic reference its state records could not be attributed to a region, so its secret-bearing properties were not compared. (b) the **read or comparison FAILED** for a resource — an SDK or Cloud Control readback that rejected (a least-privilege role, a throttle), or a comparison that threw on a provider-authored bag. Previously that second cause did not produce an exit code at all: it aborted the whole run with exit `1`, leaving every other resource in the stack unchecked while reporting the same code that means "drift detected", so a CI gate could not tell the two apart. Reporting that run as `0` would be a clean bill of health for a comparison that did not happen — and the refused population likewise used to exit `1`, because cdkd resolved the reference in the wrong region and reported phantom drift, so a non-zero exit is what CI consumers already had. **This is narrower than `notCompared`, deliberately.** A resource whose only uncompared properties hold a surviving `{{resolve:...}}` look-alike token (a spelling that is not a CloudFormation dynamic reference at all — every supported spelling, `ssm-secure` included, is resolved) is listed under `notCompared` and in the report's not-fully-compared block, but does **not** produce this exit code: cdkd resolves that spelling for nobody, so the condition is permanent and unclearable by any action you can take, and exiting non-zero for it would fail such a stack's CI forever over something unrelated. **A type Cloud Control has no READ handler for is excluded on the same grounds** and reports `drift unknown` instead, whether the fallback signals it by returning nothing or by throwing `UnsupportedActionException`. Fix a refusal by spelling the reference as a full ARN, which names its region; fix a read failure by granting the missing permission or re-running. Use `--json` and read each `notCompared` entry's `cause` to tell them apart per resource. |
 | `2` (`--revert`) | `--revert` finished but one or more resources did not revert (`PartialFailureError`): a `provider.update` call failed, threw `ResourceUpdateNotSupportedError`, or — counted and reported separately, since it never reached `provider.update` at all — cdkd could not re-resolve the dynamic reference(s) the resource's state records (grant the caller `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference). That same counter also covers a resource `--revert` REFUSED because its recorded baseline holds only the redaction mask and AWS reports nothing to preserve there (force that custom resource to update and re-deploy, so its handler supplies the value again; an ordinary re-deploy leaves it unchanged). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
 
 The command produces four terminal states per resource:
@@ -195,9 +195,11 @@ The command produces four terminal states per resource:
     resource's state records, so its secret-bearing properties were never
     looked at. Clearable: spell the reference as a full ARN.
   - `unresolvedToken` — the state records a `{{resolve:...}}` spelling cdkd
-    resolves for nobody, in practice `{{resolve:ssm-secure:...}}`. Permanent;
-    a re-run cannot clear it, which is why it alone does not affect the exit
-    code.
+    resolves for nobody. cdkd resolves all three CloudFormation services
+    (`secretsmanager`, `ssm` and `ssm-secure`), so this is reserved for a
+    spelling that is not a dynamic reference at all, or one AWS adds later.
+    Permanent; a re-run cannot clear it, which is why it alone does not
+    affect the exit code.
   - `readFailed` — the read or the comparison THREW, so **none** of that
     resource's properties were compared. Every OTHER resource
     in the stack is still compared and reported; previously one such throw
@@ -236,17 +238,19 @@ code:
 - **Refused** — cdkd CAN read the reference but declines to, because it cannot
   tell which region should answer for it. This is actionable (spell the
   reference as a full ARN) and it drives exit `2`.
-- **Unresolvable** — a `{{resolve:...}}` spelling cdkd resolves for nobody, in
-  practice `{{resolve:ssm-secure:...}}`, which CloudFormation resolves
-  server-side. Nothing you can do makes cdkd compare it, so it is reported but
-  left out of the exit code.
+- **Unresolvable** — a `{{resolve:...}}` spelling cdkd resolves for nobody.
+  No CloudFormation service is in that position (cdkd resolves
+  `secretsmanager`, `ssm` and `ssm-secure`); the bucket is kept for text that
+  merely looks like a reference. Nothing you can do makes cdkd compare it, so
+  it is reported but left out of the exit code.
 
 The `--json` payload does not distinguish them today; if you need to, key on
 whether the run exited `2`. Giving the two
 causes a single, explicit representation is planned.
 
-**Secret dynamic references** (`{{resolve:secretsmanager:...}}`, and
-`{{resolve:ssm:...}}` naming a `SecureString` parameter) are compared
+**Secret dynamic references** (`{{resolve:secretsmanager:...}}`,
+`{{resolve:ssm-secure:...}}`, and `{{resolve:ssm:...}}` naming a
+`SecureString` parameter) are compared
 like-for-like. cdkd state stores the unresolved expression, never the
 plaintext, so `cdkd drift` re-resolves the baseline in memory before
 comparing it against the AWS-current snapshot — a comparison, and nothing
@@ -327,37 +331,34 @@ A property whose real value happens to BE the string `***` is treated the same
 way, since nothing in state distinguishes the two — see
 [state-management.md](state-management.md#noecho-custom-resource-responses).
 
-**Known limitation.** cdkd cannot mask a value for a reference it never
-resolved, so for `{{resolve:ssm-secure:...}}` the protections above are not
-complete. The report masks by POSITION and the `--revert` payload declines to
-carry such a value, but if a provider echoes its own readback back to cdkd
-(`effectiveProperties`, which `--revert` persists as a narrowing) the resolved
-value can reach `state.json` with nothing able to recognise it. This predates
-the reconciliation described here — that write previously had no redaction at
-all — and closing it needs masking by SPAN rather than by value, which is
-tracked separately. If that matters for your stack, prefer a
-`secretsmanager` or plain `ssm` reference, both of which cdkd resolves and can
-therefore mask.
+**A surviving token is not treated as a secret.** Every CloudFormation
+spelling — `secretsmanager`, `ssm` and `ssm-secure` — is resolved and
+therefore maskable, so a `{{resolve:...}}` token that survives the pass is
+text that merely looks like a reference (or a service AWS adds later). The
+value AWS holds at such a position is reported as ordinary data: masking it
+would leave a path refused by `--accept` and pinned by `--revert` with no
+remedy you could apply.
 
-A reference cdkd does not resolve at all — `{{resolve:ssm-secure:...}}` is the
-one such spelling today — is **not** an error, and is **not** compared: the
-property is reported as neither clean nor drifted, and a warning names the
-token once per resource.
+A reference cdkd does not resolve at all is **not** an error, and is **not**
+compared: the property is reported as neither clean nor drifted, and a
+warning names the token once per resource.
 
 What a `--revert` triggered by another drifted property on the same resource
-does to those positions depends on where the token sits, and the difference
-matters for a stack adopted with `cdkd import --migrate-from-cloudformation`,
-where CloudFormation resolved `ssm-secure` server-side so AWS holds the
-resolved value while cdkd state holds the literal token:
+does to those positions depends on where the token sits:
 
 - If the property's **whole value** is the token, the live value is left
   **unchanged** — cdkd cannot tell what it should be, so it does not touch it.
-- If the token is **embedded in a longer string** (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`),
-  that string is written **with the token literal**, exactly as `cdkd deploy`
-  does — so a resolved value AWS holds there **is overwritten**. Preserving
-  this case needs masking by span, which is tracked separately; until then,
-  prefer a `secretsmanager` or plain `ssm` reference in a composed string, or
-  keep the reference as the property's whole value.
+- If the token is **embedded in a longer string**, that string is written
+  **with the token literal**, exactly as `cdkd deploy` does — so a value AWS
+  holds there **is overwritten**.
+
+**A stack deployed by a cdkd release that did not yet resolve `ssm-secure`**
+holds the literal token on AWS and the same token in state, so the deploy
+diff reads `NO_CHANGE` and the live value is not repaired by the upgrade. For
+a property the provider reads back, `cdkd drift` reports it (the resolved
+value no longer matches the literal) and `--revert` writes the resolved value;
+a write-only destination (`MasterUserPassword`, `LoginProfile.Password`) needs
+that property to be updated once.
 
 Both the drift warning and the revert warning state which of the two applies,
 and the drift one is printed before the confirmation prompt.

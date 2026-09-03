@@ -35,7 +35,7 @@ interface FakeSend {
   input: unknown;
 }
 
-const { secretResponses, secretSends, cfnSends, makeFakeClientClass } = vi.hoisted(() => {
+const { secretResponses, secretSends, ssmSends, cfnSends, makeFakeClientClass } = vi.hoisted(() => {
   const secretResponses = new Map<string, unknown>();
 
   const makeFakeClientClass = (sends: FakeSend[], serviceLabel: string): unknown =>
@@ -60,9 +60,17 @@ const { secretResponses, secretSends, cfnSends, makeFakeClientClass } = vi.hoist
   return {
     secretResponses,
     secretSends: [] as FakeSend[],
+    ssmSends: [] as FakeSend[],
     cfnSends: [] as FakeSend[],
     makeFakeClientClass,
   };
+});
+
+// Issue #2482: an `ssm-secure` producer expression is resolved through SSM,
+// so the leaf `SSMClient` is faked the same way the Secrets Manager one is.
+vi.mock('@aws-sdk/client-ssm', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  return { ...actual, SSMClient: makeFakeClientClass(ssmSends, 'ssm') };
 });
 
 vi.mock('@aws-sdk/client-secrets-manager', async (importOriginal) => {
@@ -232,6 +240,7 @@ beforeEach(() => {
   process.env['AWS_REGION'] = REGION;
   secretResponses.clear();
   secretSends.length = 0;
+  ssmSends.length = 0;
   cfnSends.length = 0;
   logLines.length = 0;
   resetAccountInfoCache();
@@ -1426,14 +1435,23 @@ describe('THE DISCRIMINATOR reads the PRODUCER STATE, not the needle count (issu
     expect(stateBackend.saveState).not.toHaveBeenCalled();
   });
 
-  it('an UNRESOLVABLE producer expression (ssm-secure) does not refuse — the stored value still carries it', async () => {
-    // cdkd resolves `ssm-secure` for nobody (CloudFormation resolves it
-    // server-side), so the read returns the expression untouched and NO needle
-    // is ever recorded for this population. The old code was saved by an early
-    // `carriesDynamicReference(resolved)` return that no test fenced; the direct
-    // read subsumes it, since a resolved value can only carry an expression when
-    // the STORED one did.
+  it('an ssm-secure producer expression is resolved like ssm, so a scrubbed producer does not refuse (issue #2482)', async () => {
+    // Until issue #2482 cdkd resolved `ssm-secure` for nobody: the read handed
+    // the expression back untouched, no needle was ever recorded, and this
+    // case fenced the "a RESOLVED value still carrying an expression implies
+    // the STORED one does" arm. The spelling now decrypts through the same
+    // `GetParameter` as `ssm`, so the producer's STORED value — the expression
+    // — is what says it is scrubbed, and the plaintext becomes a needle that
+    // reaches the consumer's imported leaf.
     const SSM_SECURE_EXPR = '{{resolve:ssm-secure:/prod/db/password:1}}';
+    const SSM_SECURE_PLAINTEXT = 'ssm-secure-plaintext-2482';
+    secretResponses.set('ssm|GetParameterCommand', {
+      Parameter: { Value: SSM_SECURE_PLAINTEXT, Type: 'SecureString' },
+    });
+    consumerState = makeConsumerState({
+      MasterUserPassword: SSM_SECURE_PLAINTEXT,
+      MasterUsername: PLAINTEXT,
+    });
     useProducerOutputs({ [EXPORT_NAME]: SSM_SECURE_EXPR });
 
     const res = await scrub(
@@ -1450,10 +1468,19 @@ describe('THE DISCRIMINATOR reads the PRODUCER STATE, not the needle count (issu
       }
     );
 
-    // POSITIVE MARKER: the stack was scrubbed for its OWN secret, so the run
-    // really did reach the rewrite rather than merely not throwing.
+    // Decrypted by name, with the `:1` version selector reaching `Name` as-is
+    // (SSM parses it), and never mangled into `secure:/prod/...`.
+    expect(ssmSends.map((s) => s.command)).toContain('GetParameterCommand');
+    expect(ssmSends[0]!.input).toMatchObject({
+      Name: '/prod/db/password:1',
+      WithDecryption: true,
+    });
+    const saved = savedState();
+    expect(saved.resources['Db']!.properties['MasterUserPassword']).toBe(SSM_SECURE_EXPR);
+    expect(saved.resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(SSM_SECURE_PLAINTEXT);
+    expect(JSON.stringify(saved)).not.toContain(PLAINTEXT);
     expect(res.recordsChanged).toBe(1);
-    expect(savedState().resources['Db']!.properties['MasterUsername']).toBe(SECRET_EXPR);
   });
 
   it('a CROSS-REGION producer is classified from ITS region, with appStacks supplied', async () => {

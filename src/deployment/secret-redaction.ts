@@ -1765,8 +1765,9 @@ function isKnownSecretExpression(
 }
 
 /**
- * The two arms of {@link isKnownSecretExpression} that need NO pass-local set:
- * `secretsmanager` by SPELLING, and anything this process PROVED secret.
+ * The arms of {@link isKnownSecretExpression} that need NO pass-local set:
+ * `secretsmanager` / `ssm-secure` by SPELLING, and anything this process
+ * PROVED secret.
  *
  * Split out so the resolver can ask the same question at the issue #2059
  * recording seam, where no `secretExpressions` set is in hand. It must not
@@ -1792,7 +1793,15 @@ function isKnownSecretExpression(
  */
 export function isSecretExpressionByVerdictOrSpelling(expression: string): boolean {
   return (
-    expression.startsWith('{{resolve:secretsmanager:') || isRecordedSecretExpression(expression)
+    // The two spellings that are secret whatever they point at — the same
+    // pair `SPELLED_SECRET_REFERENCE_PREFIXES` lists; `ssm-secure` joined here
+    // with issue #2482. The resolver still records that expression into the
+    // verdict store at its shared tail, but for ENUMERATION (the #1916
+    // losing-member recovery), not because the verdict needs a memo — the
+    // spelling answers here before anything has been resolved.
+    expression.startsWith('{{resolve:secretsmanager:') ||
+    expression.startsWith('{{resolve:ssm-secure:') ||
+    isRecordedSecretExpression(expression)
   );
 }
 
@@ -2952,12 +2961,13 @@ function subtreeHasDynamicReference(value: unknown): boolean {
  * Widening it changes one answer, in the SAFE direction for BOTH readers.
  *
  * `drift.ts`'s `survivingDynamicReferences` is the reader that is easy to
- * forget, because it lives in another file — it feeds `isSecretBySpelling`,
- * so seeing MORE tokens can only mask more, never less. Do not shorten this
- * to "the only reader": that sentence is what a later editor uses to bound
- * the blast radius of touching the class, and getting it wrong points them
- * away from the report / `--json` / `--accept` path where an unmasked
- * `ssm-secure` survivor would surface.
+ * forget, because it lives in another file — it feeds the survivor REPORT
+ * (`onUnresolved`, and through it the `unresolvedToken` cause), so seeing MORE
+ * tokens can only report more, never less. Do not shorten this to "the only
+ * reader": that sentence is what a later editor uses to bound the blast
+ * radius of touching the class, and getting it wrong points them away from
+ * the report / `--json` / `--accept` path where an unreported survivor would
+ * surface.
  *
  * The other reader is the DECLARED direction for issue #1901:
  * {@link mixedLeafMayCarryPublicReference}, which asks whether a MIXED leaf
@@ -3462,9 +3472,9 @@ function unkeyedArrayPairsByAnchors(bag: readonly unknown[], source: readonly un
  * from one the pass decided IN FAVOUR of the value already there. Two shapes
  * hit it, both fabricating a baseline `cdkd drift --revert` then pushes:
  *
- * - the resolver's unsupported-service arm leaves an `{{resolve:ssm-secure:`
- *   token LITERAL, so AWS echoes it back and the source leaf EQUALS the bag
- *   leaf. The string arm returns `source` — a decision — and the equality made
+ * - the resolver's unsupported-service arm leaves a `{{resolve:...}}` token it
+ *   has no arm for LITERAL (`ssm-secure:` was one until issue #2482), so AWS
+ *   echoes it back and the source leaf EQUALS the bag leaf. The string arm returns `source` — a decision — and the equality made
  *   it look like no decision at all. (A BARE such token takes the whole-token
  *   arm and one embedded in text takes the mixed-leaf arm; both decide, and
  *   both were misread.)
@@ -3701,7 +3711,8 @@ function learnWholeTokenNeedle(
  *   would then contain a whole `{{resolve:...}}` token and a resolved readback
  *   cannot end with one. The shape it genuinely decides is a second reference
  *   that survives LITERALLY in the readback — the resolver's
- *   unsupported-service arm (`ssm-secure:`) produces exactly that — where the
+ *   unsupported-service arm produces exactly that (`ssm-secure:` did until
+ *   issue #2482; a spelling with no arm still does) — where the
  *   extraction would in fact be right and is declined anyway. Measured: a
  *   both-resolved fixture leaves this line unfenced.
  * - the source's literal PREFIX and SUFFIX must both be present at the ends of

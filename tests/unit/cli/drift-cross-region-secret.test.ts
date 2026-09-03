@@ -274,13 +274,23 @@ const PRODUCER_SSM_ARN = `arn:aws:ssm:${PRODUCER_REGION}:111122223333:parameter$
 const SSM_ARN_EXPR = `{{resolve:ssm:${PRODUCER_SSM_ARN}}}`;
 
 /**
- * The spelling cdkd resolves for NOBODY. CloudFormation resolves `ssm-secure`
- * SERVER-side, so `resolveDynamicReferences` warns and hands the literal back
- * rather than throwing -- the token SURVIVES the pass, which marks the resource
- * `referencesUnresolved` WITHOUT anything having been refused.
+ * A spelling cdkd resolves for NOBODY: `resolveDynamicReferences` warns and
+ * hands the literal back rather than throwing -- the token SURVIVES the pass,
+ * which marks the resource `referencesUnresolved` WITHOUT anything having been
+ * refused. Since issue #2482 no CloudFormation service is in that position
+ * (`ssm-secure` was, and now resolves like `ssm` -- see {@link SSM_SECURE_EXPR}),
+ * so the survivor is text that merely looks like a reference.
  *
  * That distinction is the whole reason this constant exists: it is the
- * pre-existing population that must NOT be driven into the exit code.
+ * population that must NOT be driven into the exit code.
+ */
+const UNRESOLVABLE_EXPR = `{{resolve:notaservice:${SSM_PARAM}}}`;
+
+/**
+ * Issue #2482: the CloudFormation `ssm-secure` spelling, resolved through the
+ * same `GetParameter` as {@link SSM_ARN_EXPR}. Region-less by construction
+ * (the name form), so it takes the same `ambiguous` / `local` verdicts as
+ * {@link NAME_EXPR} -- the two cases below pin both directions.
  */
 const SSM_SECURE_EXPR = `{{resolve:ssm-secure:${SSM_PARAM}}}`;
 
@@ -380,8 +390,8 @@ function bothCausesResource(): ResourceState {
     FunctionName: 'fn',
     Environment: {
       Variables: {
-        /** Walked FIRST: cdkd resolves `ssm-secure` for nobody, so the token SURVIVES. */
-        SSM_SECURE_PASSWORD: SSM_SECURE_EXPR,
+        /** Walked FIRST: a spelling cdkd resolves for nobody, so the token SURVIVES. */
+        SURVIVOR_PASSWORD: UNRESOLVABLE_EXPR,
         /** Walked SECOND: region-less name + a foreign producer on record = REFUSED. */
         SECRET_PASSWORD: NAME_EXPR,
       },
@@ -408,7 +418,7 @@ function bothCausesAws(): Record<string, unknown> {
     FunctionName: 'fn',
     Environment: {
       Variables: {
-        SSM_SECURE_PASSWORD: 'whatever-aws-holds-here',
+        SURVIVOR_PASSWORD: 'whatever-aws-holds-here',
         SECRET_PASSWORD: IRELAND_PASSWORD,
       },
     },
@@ -1222,8 +1232,9 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
   /**
    * The narrowing this group exists to hold. "Not compared" has TWO causes --
    * cdkd REFUSED to resolve, or a `{{resolve:...}}` token simply survived -- and
-   * the second one is a large PRE-EXISTING population (`ssm-secure`, which cdkd
-   * resolves for nobody) that predates issue #2108 and can never clear on a
+   * the second one is a token cdkd resolves for nobody (until issue #2482 a
+   * large PRE-EXISTING population, `ssm-secure`; now text that merely looks
+   * like a reference) that predates issue #2108 and can never clear on a
    * re-run. Driving the exit code off both would make `cdkd drift` exit non-zero
    * forever, in CI, for every one of those users, over a defect this change did
    * not introduce.
@@ -1235,18 +1246,18 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
    * `PARTIALLY compared` block still cover both populations, because as
    * INFORMATION both were genuinely not compared.
    */
-  it('a SURVIVING ssm-secure token alone exits 0 — it is reported, never refused', async () => {
+  it('a SURVIVING look-alike token alone exits 0 — it is reported, never refused', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
     // No foreign producer on record, so nothing can be refused; the token is
     // simply one cdkd cannot resolve at all.
-    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(SSM_SECURE_EXPR) }, []));
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(UNRESOLVABLE_EXPR) }, []));
     mockRegistryGetProvider.mockReturnValue({
       readCurrentState: async () => awsEnv('whatever-aws-holds-here'),
     });
 
     const { output, error } = await runDrift(['Consumer']);
 
-    // Nothing was fetched: `ssm-secure` never reaches a resolver.
+    // Nothing was fetched: a look-alike spelling never reaches a resolver.
     expect(secretSends).toHaveLength(0);
     expect(ssmSends).toHaveLength(0);
     // THE ASSERTION. This population exited 0 before #2108 and must keep doing
@@ -1260,7 +1271,7 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
 
   it('the same run still marks it notCompared in --json, so only the exit code is narrowed', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
-    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(SSM_SECURE_EXPR) }, []));
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(UNRESOLVABLE_EXPR) }, []));
     mockRegistryGetProvider.mockReturnValue({
       readCurrentState: async () => awsEnv('whatever-aws-holds-here'),
     });
@@ -1283,6 +1294,55 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
+  it('an ssm-secure NAME with a foreign producer on record is REFUSED, never resolved locally (issue #2482)', async () => {
+    // `ssm-secure` joined `REPLAY_SECRET_SERVICES` with #2482, so the name form
+    // is `ambiguous` under the same evidence that refuses NAME_EXPR. Before the
+    // change the token survived unresolved and this stack exited 0.
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(
+      makeState({ Fn: lambdaResource(SSM_SECURE_EXPR) }, [PRODUCER_REGION])
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(IRELAND_PASSWORD),
+    });
+
+    const { output } = await runDrift(['Consumer', '--json']);
+
+    // No lookup at all: the verdict is decided BEFORE any client is asked.
+    expect(ssmSends).toHaveLength(0);
+    expect(secretSends).toHaveLength(0);
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    expect(parsed[0]!.notCompared).toEqual([
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: true, cause: 'refused' },
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('an ssm-secure NAME with no foreign producer resolves LOCALLY, decrypted, and compares clean (issue #2482)', async () => {
+    mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
+    mockGetState.mockResolvedValue(makeState({ Fn: lambdaResource(SSM_SECURE_EXPR) }, []));
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => awsEnv(TOKYO_PASSWORD),
+    });
+
+    const { output, error } = await runDrift(['Consumer', '--json']);
+
+    expect(error).toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
+    // Read by an SSM client CONSTRUCTED in the consumer's region, by name,
+    // decrypted -- and the name reaches AWS intact (`ssmParameterName` strips
+    // the service, not a fixed `ssm:` prefix that would leave `secure:/...`).
+    expect(ssmCtorRegions()).toEqual([CONSUMER_REGION]);
+    expect(ssmSends[0]!.input).toMatchObject({ Name: SSM_PARAM, WithDecryption: true });
+    expect(secretSends).toHaveLength(0);
+    const parsed = JSON.parse(output) as StackDriftJson[];
+    expect(parsed[0]!.clean).toEqual([
+      { logicalId: 'Fn', type: LAMBDA_TYPE, referencesUnresolved: false },
+    ]);
+    expect(parsed[0]!.notCompared).toEqual([]);
+    expect(output).not.toContain(TOKYO_PASSWORD);
+  });
+
   it('a refusal in the SAME run does exit 2, so the two causes are told apart per resource', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
     // Two resources: one merely unresolvable, one genuinely refused. If the exit
@@ -1290,7 +1350,7 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
     // one could not both hold.
     mockGetState.mockResolvedValue(
       makeState(
-        { Survivor: lambdaResource(SSM_SECURE_EXPR), Refused: lambdaResource(NAME_EXPR) },
+        { Survivor: lambdaResource(UNRESOLVABLE_EXPR), Refused: lambdaResource(NAME_EXPR) },
         [PRODUCER_REGION]
       )
     );
@@ -1323,10 +1383,10 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
    * `outcomeExitSignal` answers `none`, and the command EXITS 0 on a refused
    * comparison -- the exact silent downgrade issues #2108 and #2135 exist to
    * prevent. `refused` therefore has to win, and the direction is not
-   * symmetric: `unresolvedToken` must NOT drive a non-zero exit, because
-   * `ssm-secure` is a large pre-existing population that can never clear on a
-   * re-run, while `refused` must, because pre-#2108 that same population exited
-   * 1 and exiting 0 would be a downgrade.
+   * symmetric: `unresolvedToken` must NOT drive a non-zero exit, because a
+   * token cdkd resolves for nobody can never clear on a re-run, while `refused`
+   * must, because pre-#2108 that same population exited 1 and exiting 0 would
+   * be a downgrade.
    */
   it('ONE resource with BOTH causes is `refused`, not `unresolvedToken`: exits 2', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'Consumer', region: CONSUMER_REGION }]);
@@ -1347,7 +1407,7 @@ describe('the drift EXIT CODE is scoped to REFUSALS, not to everything uncompare
     // again.
     const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
     expect(warnings.some((w) => w.includes('refused to resolve a dynamic reference'))).toBe(true);
-    expect(warnings.some((w) => w.includes(`cdkd cannot resolve ${SSM_SECURE_EXPR}`))).toBe(true);
+    expect(warnings.some((w) => w.includes(`cdkd cannot resolve ${UNRESOLVABLE_EXPR}`))).toBe(true);
 
     // THE ASSERTION. Nothing drifted -- both secret-bearing leaves were
     // SKIPPED, which is why `2` and not `1` is the code that must appear -- so
@@ -1376,7 +1436,7 @@ describe('every rendering agrees about what was NOT compared (issue #2135)', () 
    *
    * One state, three resources chosen so each rendering has to make a different
    * call about each: one compared-and-matched, one refused (the exit-code
-   * population), and one carrying a surviving `{{resolve:ssm-secure:...}}`
+   * population), and one carrying a surviving look-alike `{{resolve:...}}`
    * token, which is reported but deliberately NOT in the exit code. Asserting
    * them together is the point -- each rendering on its own was already correct
    * at some round or other.
@@ -1386,7 +1446,7 @@ describe('every rendering agrees about what was NOT compared (issue #2135)', () 
       {
         Matched: lambdaResource('plain-value'),
         Refused: lambdaResource(NAME_EXPR),
-        Survivor: lambdaResource(SSM_SECURE_EXPR),
+        Survivor: lambdaResource(UNRESOLVABLE_EXPR),
       },
       [PRODUCER_REGION]
     );
@@ -1487,7 +1547,7 @@ describe('every rendering agrees about what was NOT compared (issue #2135)', () 
         {
           Matched: lambdaResource('plain-value'),
           Refused: lambdaResource(NAME_EXPR),
-          Survivor: lambdaResource(SSM_SECURE_EXPR),
+          Survivor: lambdaResource(UNRESOLVABLE_EXPR),
           Unread: {
             physicalId: 'q',
             resourceType: 'AWS::SQS::Queue',

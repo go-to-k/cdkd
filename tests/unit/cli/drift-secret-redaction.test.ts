@@ -76,10 +76,19 @@ const SECURE_PLAINTEXT = 'cdkd-known-secure-value-456';
 // parameter is a plain `String` is public config, must stay RESOLVED, and must
 // never mark its path secret-bearing.
 const PUBLIC_SSM_EXPR = '{{resolve:ssm:/cdkd/test/public}}';
-// A spelling cdkd deliberately does NOT resolve: the resolver's
-// unsupported-service arm warns and returns the literal, and `cdkd deploy` does
-// the same, so AWS holds this string verbatim.
-const UNSUPPORTED_EXPR = '{{resolve:ssm-secure:/cdkd/test/secure}}';
+// A spelling cdkd resolves for NOBODY: the resolver's unsupported-service arm
+// warns and returns the literal, and `cdkd deploy` does the same, so AWS holds
+// this string verbatim. Since issue #2482 no CloudFormation service is in that
+// position (`ssm-secure` was, and resolves like `ssm` now), so the survivor is
+// text that merely looks like a reference — and NOT a secret.
+const UNSUPPORTED_EXPR = '{{resolve:notaservice:/cdkd/test/unsupported}}';
+// What AWS holds at a look-alike position: ordinary data, never masked.
+const LIVE_AT_UNSUPPORTED = 'cdkd-live-at-lookalike-000';
+// Issue #2482: the CloudFormation `ssm-secure` spelling, resolved through the
+// same `GetParameter` as SECURE_EXPR — the mock answers `SecureString` for this
+// name, so both spellings decrypt to SECURE_PLAINTEXT.
+const SSM_SECURE_EXPR = '{{resolve:ssm-secure:/cdkd/test/secure}}';
+const ROTATED_SECURE_PLAINTEXT = 'cdkd-rotated-secure-value-999';
 const PUBLIC_SSM_VALUE = 'cdkd-known-ssm-value';
 
 // The drift command constructs its own `AwsClients` (s3 + iam), while the
@@ -1592,21 +1601,22 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(JSON.stringify(saved)).not.toContain(SECRET_PLAINTEXT);
   });
 
-  it('--revert registers the live value it pins, so an ARRAY-nested one never reaches state', async () => {
-    // `preserveLiveValuesAtUnresolvedTokens` deliberately moves the LIVE
-    // plaintext into the bag being sent — and `secrets` is empty by
-    // construction on this path, since nothing was recorded. Unless the moved
-    // value is registered, the narrowing delta's `descendArrays: false` rules
-    // cannot position an array-nested leaf and the (empty) value scan cannot
-    // find it, so it lands in `state.json`. ECS
+  it('--revert masks a resolved ssm-secure value out of an ARRAY-nested narrowing delta (issue #2482)', async () => {
+    // Until issue #2482 this shape reached the payload through
+    // `preserveLiveValuesAtUnresolvedTokens`, which pinned the LIVE plaintext
+    // over a surviving `ssm-secure` token and had to REGISTER it, because
+    // nothing had been recorded and the narrowing delta's `descendArrays:
+    // false` rules cannot position an array-nested leaf. The token now
+    // RESOLVES, so the pair is recorded the ordinary way and the value scan is
+    // what keeps the plaintext out of `state.json`. ECS
     // `ContainerDefinitions[].Environment[]` is the shape.
     const update = vi.fn().mockResolvedValue({
       physicalId: 'td',
       effectiveProperties: {
         // A NARROWING: the provider dropped `Name` while echoing the rest, so
         // this subtree differs from what was sent and therefore lands in the
-        // #1644 delta — with the pinned plaintext still in it. Echoing the sent
-        // bag verbatim would make the whole case vacuous, since
+        // #1644 delta — with the resolved plaintext still in it. Echoing the
+        // sent bag verbatim would make the whole case vacuous, since
         // `collectNarrowedTopLevelKeys` only reports keys that CHANGED.
         ContainerDefinitions: [{ Environment: [{ Name: 'DB', Value: SECURE_PLAINTEXT }] }],
         Cpu: '512',
@@ -1620,13 +1630,13 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
           resourceType: 'AWS::ECS::TaskDefinition',
           properties: {
             ContainerDefinitions: [
-              { Name: 'app', Environment: [{ Name: 'DB', Value: UNSUPPORTED_EXPR }] },
+              { Name: 'app', Environment: [{ Name: 'DB', Value: SSM_SECURE_EXPR }] },
             ],
             Cpu: '256',
           },
           observedProperties: {
             ContainerDefinitions: [
-              { Name: 'app', Environment: [{ Name: 'DB', Value: UNSUPPORTED_EXPR }] },
+              { Name: 'app', Environment: [{ Name: 'DB', Value: SSM_SECURE_EXPR }] },
             ],
             Cpu: '256',
           },
@@ -1646,8 +1656,8 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     await runDrift(['TestStack', '--revert', '--yes']);
 
     expect(update).toHaveBeenCalledTimes(1);
-    // The live value really was pinned into the payload — otherwise the
-    // registration this test is about would have nothing to register.
+    // The payload really does carry the decrypted value — otherwise the
+    // masking this test is about would have nothing to mask.
     const sent = update.mock.calls[0]![3] as {
       ContainerDefinitions: Array<{ Environment: Array<{ Value: string }> }>;
     };
@@ -1658,17 +1668,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
   it('--revert does not register a MIXED leaf, whose send string carries resolved plaintext', async () => {
     // The send leaf at a mixed position is already PARTIALLY resolved — the
-    // secretsmanager half became its plaintext before the ssm-secure half was
+    // secretsmanager half became its plaintext before the look-alike half was
     // left standing. Registering the whole leaf as the replacement expression
     // would substitute THAT into state: the GHSA class, through the mechanism
     // that exists to prevent it.
-    //
-    // The ssm-secure token comes FIRST on purpose: with it second,
-    // `isSecretBySpelling` blocks the leaf on its own and this case cannot tell
-    // the two guards apart — which is what a mutation probe showed about the
-    // first version of it.
     const mixed = UNSUPPORTED_EXPR + ':' + SECRET_EXPR;
-    const liveDsn = SECURE_PLAINTEXT + ':' + SECRET_PLAINTEXT;
+    const liveDsn = LIVE_AT_UNSUPPORTED + ':' + SECRET_PLAINTEXT;
     const update = vi.fn().mockResolvedValue({
       physicalId: 'fn',
       effectiveProperties: { Env: { DSN: liveDsn, LEVEL: 'x' } },
@@ -1697,30 +1702,24 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // whole would put it there verbatim, because that leaf IS the substitution
     // `redactSecretsForState` writes in.
     expect(saved).not.toContain(SECRET_PLAINTEXT);
-    // The PAYLOAD no longer carries the ssm-secure half either — the
-    // whole-token preservation gate declines to copy the live value into a
-    // mixed leaf, so the mechanism cannot create an exposure it is unable to
-    // mask.
+    // The PAYLOAD does not carry the live value at the look-alike half either —
+    // the whole-token preservation gate declines to copy the live value into a
+    // mixed leaf, so the literal ships there exactly as `cdkd deploy` sends it.
     expect(update).toHaveBeenCalledTimes(1);
     const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
-    expect(String(sent.Env['DSN'])).not.toContain(SECURE_PLAINTEXT);
+    expect(String(sent.Env['DSN'])).not.toContain(LIVE_AT_UNSUPPORTED);
     expect(String(sent.Env['DSN'])).toContain(UNSUPPORTED_EXPR);
-    // Deliberately NOT asserted on `saved`: the ssm-secure plaintext still
-    // reaches state here, by a route that is NOT this mechanism — the provider
-    // echoed its own readback in `effectiveProperties`, and the #1644 narrowing
-    // persists that. cdkd cannot mask a value for a reference it never
-    // resolved, so no pass covers it; before this PR that delta was persisted
-    // with no redaction at all. See the note in `runRevert` and
-    // docs/cli-reference.md.
   });
 
-  it('does not carry an unresolvable reference plaintext into the payload OR the logs', async () => {
-    // The two surfaces the preservation gate does close, kept apart from the
-    // provider-echo route above so a regression in either is attributable.
+  it('--revert resolves the ssm-secure half of a MIXED leaf into the payload and masks it in the logs (issue #2482)', async () => {
+    // Until issue #2482 the `ssm-secure` half SURVIVED here, and this case
+    // asserted that its live plaintext reached neither the payload nor the
+    // logs. The spelling now resolves like `ssm`, so the payload MUST carry the
+    // decrypted value — that is the revert — while the logs still must not.
     const update = vi
       .fn()
       .mockRejectedValue(new Error('ValidationException: rejected the DSN value'));
-    const mixed2 = UNSUPPORTED_EXPR + ':' + SECRET_EXPR;
+    const mixed2 = SSM_SECURE_EXPR + ':' + SECRET_EXPR;
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
       makeState({
@@ -1734,7 +1733,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     );
     mockRegistryGetProvider.mockReturnValue({
       readCurrentState: async () => ({
-        Env: { DSN: SECURE_PLAINTEXT + ':' + SECRET_PLAINTEXT, LEVEL: 'debug' },
+        Env: { DSN: ROTATED_SECURE_PLAINTEXT + ':' + SECRET_PLAINTEXT, LEVEL: 'debug' },
       }),
       update,
     });
@@ -1743,8 +1742,17 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
     expect(update).toHaveBeenCalledTimes(1);
     const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
-    expect(String(sent.Env['DSN'])).not.toContain(SECURE_PLAINTEXT);
-    expect(output).not.toContain(SECURE_PLAINTEXT);
+    expect(sent.Env['DSN']).toBe(SECURE_PLAINTEXT + ':' + SECRET_PLAINTEXT);
+    // Nothing survived: the token is not reported as unresolvable.
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).not.toContain('cannot resolve');
+    // ...and neither half reaches the report, the revert log or the AWS error.
+    const reported = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    for (const text of [output, warned, reported]) {
+      expect(text).not.toContain(SECURE_PLAINTEXT);
+      expect(text).not.toContain(SECRET_PLAINTEXT);
+      expect(text).not.toContain(ROTATED_SECURE_PLAINTEXT);
+    }
   });
 
   it('--revert does not make a NEEDLE out of a short live value', async () => {
@@ -1785,9 +1793,10 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
   });
 
   it('--revert does not register a live value for a look-alike spelling', async () => {
-    // `isSecretBySpelling` declares these non-secret one function up;
-    // registering their live values here would contradict that in the same
-    // round, turning ordinary data into a redaction needle.
+    // A survivor is never a secret (since issue #2482 every CloudFormation
+    // spelling resolves, so what survives is text that merely looks like a
+    // reference); registering its live value would turn ordinary data into a
+    // redaction needle.
     const ODD = '{{resolve:notaservice:/x}}';
     const update = vi.fn().mockResolvedValue({
       physicalId: 'fn',
@@ -1819,10 +1828,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(observed.Env['LEVEL']).toBe('ordinary-live-value');
   });
 
-  it('--revert masks a pinned live value out of the AWS error text', async () => {
-    // Consequence A of the same gap: the payload now carries a plaintext the
-    // secrets map never knew about, so the error mask was a no-op — the leak
-    // fixed at four sites, reopened through a fifth door.
+  it('--revert masks a resolved ssm-secure value out of the AWS error text (issue #2482)', async () => {
+    // The error mask reads the secrets map. Until issue #2482 the payload at
+    // an `ssm-secure` position carried a PINNED live plaintext the map only
+    // knew about through the preservation pass's registration; the token now
+    // resolves, so the pair is recorded by resolution and the mask must still
+    // hold — AWS quotes the offending value back.
     const update = vi
       .fn()
       .mockRejectedValue(new Error(`ValidationException: bad value '${SECURE_PLAINTEXT}'`));
@@ -1832,8 +1843,8 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
         Task: {
           physicalId: 'td',
           resourceType: 'AWS::ECS::TaskDefinition',
-          properties: { Env: { DB: UNSUPPORTED_EXPR, LEVEL: 'info' } },
-          observedProperties: { Env: { DB: UNSUPPORTED_EXPR, LEVEL: 'info' } },
+          properties: { Env: { DB: SSM_SECURE_EXPR, LEVEL: 'info' } },
+          observedProperties: { Env: { DB: SSM_SECURE_EXPR, LEVEL: 'info' } },
         },
       })
     );
@@ -1851,7 +1862,8 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
   });
 
   it('does not treat an arbitrary unsupported spelling as a secret', async () => {
-    // Only `ssm-secure` is a secret by definition. Text that merely LOOKS like
+    // No survivor is a secret by definition — since issue #2482 every
+    // CloudFormation spelling resolves or throws. Text that merely LOOKS like
     // a reference must keep its real values, or the path is masked, refused by
     // `--accept`, pinned by the revert, and permanently stuck with no remedy.
     const ODD = '{{resolve:notaservice:/x}}';
@@ -1878,7 +1890,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
   it('withholds the revert plan key lists when ONE reference of several was unresolvable', async () => {
     // `o.secrets.size === 0` is the wrong question: this resource has a
-    // resolvable secretsmanager reference (non-empty map) AND an `ssm-secure`
+    // resolvable secretsmanager reference (non-empty map) AND a look-alike
     // survivor, so the map exists but cannot answer for the survivor's
     // position.
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
@@ -1898,7 +1910,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     mockRegistryGetProvider.mockReturnValue({
       readCurrentState: async () => ({
         Secret: SECRET_PLAINTEXT,
-        Secure: SECURE_PLAINTEXT,
+        Secure: LIVE_AT_UNSUPPORTED,
         Tags: [
           { Key: 'a', Value: 'drifted' },
           { Key: 'aws:cloudformation:managed', Value: 'service' },
@@ -1917,7 +1929,7 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     // still prints the whole `Tags` array, which is a different surface: that
     // value is masked by `redactDriftChanges` when the map can answer, and this
     // resource's map — non-empty, but built solely from the RESOLVABLE
-    // reference — has no entry for the ssm-secure one. That is the residual
+    // reference — has no entry for the look-alike one. That is the residual
     // named in the code, not something the plan's withhold claims to fix.)
     // A UNIQUE anchor, not the bare word (issue #1958). Both withhold notes say
     // `withheld`, so `toContain('withheld')` alone is satisfied by the
@@ -1935,21 +1947,21 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(output).not.toContain('has no observed-capture baseline');
   });
 
-  it('MASKS a value at a path whose reference cdkd cannot resolve', async () => {
-    // The blocker round 3 opened. Downgrading the survivor from a throw to a
-    // warning moved this input off the offline-seed path onto the PROVEN one,
-    // where nothing marks it — so the position went unmasked. The shape is a
-    // CFn-migrated record: CloudFormation resolves `ssm-secure` SERVER-side, so
-    // AWS holds the plaintext while state holds the literal token, and
-    // `diffAt` never descends arrays, so the whole array lands as `awsValue`.
+  it('resolves a CFn-migrated ssm-secure record and compares it CLEAN when AWS holds the same value (issue #2482)', async () => {
+    // The shape that used to be the round-3 blocker: CloudFormation resolved
+    // `ssm-secure` SERVER-side, so a record adopted by `cdkd import
+    // --migrate-from-cloudformation` holds the literal token in state while
+    // AWS holds the plaintext — and cdkd resolved the token for nobody, so the
+    // position was a survivor masked by SPELLING. The token now decrypts
+    // through `GetParameter`, so the two sides simply agree.
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
       makeState({
         Task: {
           physicalId: 'td',
           resourceType: 'AWS::ECS::TaskDefinition',
-          properties: { Secrets: [{ Name: 'DB', ValueFrom: UNSUPPORTED_EXPR }] },
-          observedProperties: { Secrets: [{ Name: 'DB', ValueFrom: UNSUPPORTED_EXPR }] },
+          properties: { Secrets: [{ Name: 'DB', ValueFrom: SSM_SECURE_EXPR }] },
+          observedProperties: { Secrets: [{ Name: 'DB', ValueFrom: SSM_SECURE_EXPR }] },
         },
       })
     );
@@ -1959,7 +1971,91 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
     const { output } = await runDrift(['TestStack', '--json']);
 
+    // Decrypted, by name, as-is.
+    expect(mockSsmSend).toHaveBeenCalled();
+    expect(mockSsmSend.mock.calls[0]![0]).toMatchObject({
+      input: { Name: '/cdkd/test/secure', WithDecryption: true },
+    });
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).not.toContain('cannot resolve');
+    expect(warned).not.toContain('Unsupported dynamic reference');
     expect(output).not.toContain(SECURE_PLAINTEXT);
+    const payload = JSON.parse(output) as Array<{
+      drifted: unknown[];
+      clean: Array<{ logicalId: string }>;
+      notCompared: unknown[];
+    }>;
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([]);
+    expect(payload[0]!.clean.map((c) => c.logicalId)).toEqual(['Task']);
+  });
+
+  it('REFUSES an ssm-secure reference to a String parameter: the resource is `refused`, exit 2 (issue #2482)', async () => {
+    // The resolver's refusal is a throw, and drift's secret-resolution catch
+    // degrades it to the `refused` cause — the clearable, exit-code-driving
+    // one — rather than letting a public value stand in for a secret.
+    const PUBLIC_UNDER_SECURE = '{{resolve:ssm-secure:/cdkd/test/public}}';
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Consumer: {
+          physicalId: 'fn',
+          resourceType: LAMBDA_TYPE,
+          properties: { Env: { DB: PUBLIC_UNDER_SECURE, LEVEL: 'info' } },
+          observedProperties: { Env: { DB: PUBLIC_UNDER_SECURE, LEVEL: 'info' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({ Env: { DB: PUBLIC_SSM_VALUE, LEVEL: 'info' } }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    const payload = JSON.parse(output) as Array<{
+      drifted: unknown[];
+      notCompared: Array<{ logicalId: string; cause: string }>;
+    }>;
+    expect(payload[0]!.drifted).toEqual([]);
+    expect(payload[0]!.notCompared).toEqual([
+      expect.objectContaining({ logicalId: 'Consumer', cause: 'refused' }),
+    ]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    // Reported as a REFUSAL, not as "could not resolve" — the latter sends the
+    // reader hunting for an IAM problem that does not exist.
+    expect(warned).toContain('refused to resolve a dynamic reference');
+    expect(warned).not.toContain('could not resolve the dynamic reference');
+    expect(warned).toContain('ssm-secure spelling is defined for SecureString parameters only');
+    expect(warned).not.toContain(PUBLIC_SSM_VALUE);
+  });
+
+  it('MASKS a rotated value at an ssm-secure position (issue #2482)', async () => {
+    // The other half of the same record: AWS no longer holds what the parameter
+    // decrypts to, so the array drifts — and the position is secret-bearing by
+    // the ordinary recorded-pair route now, not by spelling. `diffAt` never
+    // descends arrays, so the whole array lands as `awsValue`.
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'td',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          properties: { Secrets: [{ Name: 'DB', ValueFrom: SSM_SECURE_EXPR }] },
+          observedProperties: { Secrets: [{ Name: 'DB', ValueFrom: SSM_SECURE_EXPR }] },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Secrets: [{ Name: 'DB', ValueFrom: ROTATED_SECURE_PLAINTEXT }],
+      }),
+    });
+
+    const { output } = await runDrift(['TestStack', '--json']);
+
+    expect(output).not.toContain(SECURE_PLAINTEXT);
+    expect(output).not.toContain(ROTATED_SECURE_PLAINTEXT);
     const payload = JSON.parse(output) as Array<{
       drifted: Array<{ changes: Array<{ path: string; awsValue: unknown }> }>;
     }>;
@@ -1968,12 +2064,12 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(payload[0]!.drifted[0]!.changes[0]!.awsValue).toBe(SECRET_MASK);
   });
 
-  it('--revert leaves the LIVE value alone at a reference cdkd cannot resolve', async () => {
-    // The other half of the same blocker, and a live-AWS destructive write. On
-    // a CFn-migrated record the state token is NOT what AWS holds, so the
-    // round-3 "replaying it is a no-op" premise is false: a revert triggered by
-    // a SIBLING key overlays the whole top-level subtree and would push the
-    // literal token over the resolved secret.
+  it('--revert leaves the LIVE value alone at a look-alike token', async () => {
+    // A live-AWS destructive write. A revert triggered by a SIBLING key
+    // overlays the whole top-level subtree, and at a position cdkd cannot
+    // compare — a token nobody resolves, with something else live there (an
+    // out-of-band edit, a migrated record) — it must not push the literal
+    // token over that value.
     const update = vi.fn().mockResolvedValue({ physicalId: 'td' });
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
@@ -1991,9 +2087,9 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
       })
     );
     mockRegistryGetProvider.mockReturnValue({
-      // AWS holds the RESOLVED value (CloudFormation put it there), and a
-      // sibling key drifted so the subtree is overlaid.
-      readCurrentState: async () => ({ Env: { DB: SECURE_PLAINTEXT, LEVEL: 'debug' } }),
+      // AWS holds something else at the token's position, and a sibling key
+      // drifted so the subtree is overlaid.
+      readCurrentState: async () => ({ Env: { DB: LIVE_AT_UNSUPPORTED, LEVEL: 'debug' } }),
       update,
     });
 
@@ -2002,8 +2098,50 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
     expect(update).toHaveBeenCalledTimes(1);
     const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
     // The live value survives; only the genuinely drifted sibling is reverted.
+    expect(sent.Env['DB']).toBe(LIVE_AT_UNSUPPORTED);
+    expect(sent.Env['LEVEL']).toBe('info');
+  });
+
+  it('--revert writes the RESOLVED ssm-secure value over an out-of-band edit and persists the expression (issue #2482)', async () => {
+    // The same shape with the CloudFormation spelling, which no longer reaches
+    // the preservation pass at all: the token resolves, the position drifts on
+    // its own, and the revert restores what the parameter decrypts to. The
+    // provider echoes a NARROWING (an extra key), so the #1644 delta is
+    // persisted — and state keeps the EXPRESSION.
+    const update = vi.fn().mockResolvedValue({
+      physicalId: 'td',
+      effectiveProperties: { Env: { DB: SECURE_PLAINTEXT, LEVEL: 'info', REGION: 'us' } },
+    });
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      makeState({
+        Task: {
+          physicalId: 'td',
+          resourceType: 'AWS::ECS::TaskDefinition',
+          properties: { Env: { DB: SSM_SECURE_EXPR, LEVEL: 'info' } },
+          observedProperties: { Env: { DB: SSM_SECURE_EXPR, LEVEL: 'info' } },
+        },
+      })
+    );
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        Env: { DB: ROTATED_SECURE_PLAINTEXT, LEVEL: 'debug' },
+      }),
+      update,
+    });
+
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const sent = update.mock.calls[0]![3] as { Env: Record<string, unknown> };
     expect(sent.Env['DB']).toBe(SECURE_PLAINTEXT);
     expect(sent.Env['LEVEL']).toBe('info');
+    expect(mockSaveState).toHaveBeenCalledTimes(1);
+    const saved = JSON.stringify(mockSaveState.mock.calls[0]![2]);
+    expect(saved).toContain(SSM_SECURE_EXPR);
+    expect(saved).not.toContain(SECURE_PLAINTEXT);
+    expect(output).not.toContain(SECURE_PLAINTEXT);
+    expect(output).not.toContain(ROTATED_SECURE_PLAINTEXT);
   });
 
   it('--revert still sends the literal where AWS has nothing at that position', async () => {
@@ -2070,16 +2208,17 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
 
   it('reports a token containing `{`, which the RESOLVER matches', async () => {
     // The two regexes must agree. `intrinsic-function-resolver.ts` scans with
-    // `[^}]+`, so `{{resolve:ssm-secure:/a{b}}` IS a token to it — it tries the
+    // `[^}]+`, so `{{resolve:notaservice:/a{b}}` IS a token to it — it tries the
     // reference, warns, and leaves the literal. Scanning with `[^{}]*` here
-    // would miss it, so nothing marks the path and nothing reports it: the
-    // warning is lost AND the live plaintext at that position goes unmasked.
+    // would miss it, so nothing reports it: the warning is lost and the
+    // resource is not marked `unresolvedToken`.
     //
-    // Held inside an ARRAY for the same reason the ECS case above is: a leaf
+    // Held inside an ARRAY for the same reason the ECS cases above are: a leaf
     // whose state side is still a token is skipped by the comparator, so the
     // only way the value reaches a report at all is a drift reported at the
-    // array that contains it.
-    const BRACED = '{{resolve:ssm-secure:/a{b}}';
+    // array that contains it. The live value at a look-alike position is
+    // ordinary data, so it is REPORTED, not masked.
+    const BRACED = '{{resolve:notaservice:/a{b}}';
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
     mockGetState.mockResolvedValueOnce(
       makeState({
@@ -2092,17 +2231,21 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
       })
     );
     mockRegistryGetProvider.mockReturnValue({
-      readCurrentState: async () => ({ Secrets: [{ Name: 'DB', ValueFrom: SECURE_PLAINTEXT }] }),
+      readCurrentState: async () => ({
+        Secrets: [{ Name: 'DB', ValueFrom: LIVE_AT_UNSUPPORTED }],
+      }),
     });
 
     const { output } = await runDrift(['TestStack', '--json']);
 
-    expect(output).not.toContain(SECURE_PLAINTEXT);
     const payload = JSON.parse(output) as Array<{
-      drifted: Array<{ changes: Array<{ awsValue: unknown }> }>;
+      drifted: Array<{ changes: Array<{ awsValue: unknown }>; referencesUnresolved: boolean }>;
     }>;
     expect(payload[0]!.drifted).toHaveLength(1);
-    expect(payload[0]!.drifted[0]!.changes[0]!.awsValue).toBe(SECRET_MASK);
+    expect(payload[0]!.drifted[0]!.referencesUnresolved).toBe(true);
+    expect(payload[0]!.drifted[0]!.changes[0]!.awsValue).toEqual([
+      { Name: 'DB', ValueFrom: LIVE_AT_UNSUPPORTED },
+    ]);
     expect(
       warnSpy.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes(BRACED))
     ).toBe(true);
@@ -2406,9 +2549,10 @@ describe('cdkd drift — secret dynamic references (issue #1914)', () => {
   });
 
   it('--revert replays an unresolvable token as the LITERAL it was deployed as, and warns', async () => {
-    // `ssm-secure:` hits the resolver's unsupported-service arm, which warns
-    // and returns the literal — and `cdkd deploy` resolves through that same
-    // arm, so AWS is ALREADY holding the literal token and state records it.
+    // A look-alike spelling hits the resolver's unsupported-service arm, which
+    // warns and returns the literal — and `cdkd deploy` resolves through that
+    // same arm, so AWS is ALREADY holding the literal token and state records
+    // it.
     // Replaying it is a correct no-op. Failing the resource over it would
     // abandon every other drifted property on it and exit 2 over nothing.
     const update = vi.fn().mockResolvedValue({ physicalId: 'fn' });

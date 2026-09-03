@@ -39,12 +39,14 @@ grammar regardless of the CDK version's token shape.
 | secretsmanager whole-secret | `{{resolve:secretsmanager:NAME:SecretString}}` | SUPPORTED |
 | secretsmanager version-stage | `{{resolve:secretsmanager:NAME:SecretString:password:AWSCURRENT}}` | SUPPORTED |
 | ssm plaintext param | `{{resolve:ssm:NAME}}` | SUPPORTED |
-| ssm-secure SecureString | `{{resolve:ssm-secure:NAME}}` | **NOT** resolved by cdkd — out of scope (see below) |
+| ssm-secure SecureString | `{{resolve:ssm-secure:NAME}}` | SUPPORTED since issue #2482 — covered by `tests/integration/ssm-secure-dynamic-ref` (see below) |
 
-`ssm-secure` is intentionally **not** exercised: cdkd's
-`resolveDynamicReferences` routes only `secretsmanager` and `ssm`; an
-`ssm-secure:` reference hits the `else` branch (warn + leave literal), so it
-would deploy a broken value. A secret **version-ID** form
+`ssm-secure` is exercised by its **own** fixture, `ssm-secure-dynamic-ref`:
+the SecureString parameter has to be seeded out of band (CloudFormation cannot
+create one), and that fixture asserts the whole, embedded and versioned forms
+against a destination that reads back. Before issue #2482 the spelling hit the
+resolver's unsupported-service `else` branch (warn + leave literal) and was
+skipped here. A secret **version-ID** form
 (`...:SecretString:key::<uuid>`) is also not exercised because the version id
 is not knowable ahead of deploy; the version-**stage** slot (`AWSCURRENT`)
 covers the optional-trailing-field grammar.
