@@ -131,14 +131,22 @@ const theme = defineTheme({
     // while its interior stays left-aligned; rows 1fr/1fr stretch the title
     // column to the logo's height so "cdkd" tops out level with the logo and
     // the headline bottoms out level with it.
-    '.hero { display: grid; grid-template-columns: auto auto; grid-template-rows: 4.5rem 4.5rem auto auto; column-gap: 3rem; align-content: center; width: fit-content; margin-inline: auto; }',
+    // min-height:unset kills the skin's min(100vh, 56rem) hero, which left a
+    // screenful of dead space between the actions and the feature cards.
+    '.hero { display: grid; grid-template-columns: auto auto; grid-template-rows: 4.5rem 4.5rem auto auto; column-gap: 1.75rem; align-content: center; width: fit-content; margin-inline: auto; min-height: unset; padding-block: calc(var(--octc-header-height) + 3.5rem) 4rem; }',
     '.hero-content { display: contents; }',
     '.hero-image { grid-column: 1; grid-row: 1 / span 2; margin: 0; align-self: center; }',
     '.hero-image img { width: 9rem; height: 9rem; display: block; }',
     '.hero-name { grid-column: 2; grid-row: 1; align-self: start; margin: 0; line-height: 1; text-align: left; }',
     '.hero-text { grid-column: 2; grid-row: 2; align-self: end; margin: 0; text-align: left; }',
-    '.hero-tagline { grid-column: 1 / -1; grid-row: 3; margin: 1.75rem 0 0; max-width: 42rem; }',
+    '.hero-tagline { grid-column: 1 / -1; grid-row: 3; margin: 1.75rem 0 0; max-width: 36.5rem; }',
     '.hero-actions { grid-column: 1 / -1; grid-row: 4; }',
+    // One skin layer draws .hero{border-bottom:2px} while the first feature
+    // card draws its own border-top — a double rule between hero and cards.
+    '.hero { border-bottom: 0; }',
+    // The entry page sets ox-hide-edit-link (editLink: false) but the skin
+    // carries no matching rule.
+    '.ox-hide-edit-link .ox-edit-this-page { display: none; }',
     '@media (max-width: 768px) {',
     '  .hero { grid-template-columns: 1fr; }',
     '  .hero-image { grid-column: 1; grid-row: 1; justify-self: center; }',
