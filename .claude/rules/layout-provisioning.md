@@ -44,6 +44,6 @@ Index of every area: [code-layout.md](code-layout.md).
 
 ## SDK Providers
 
-SDK Providers are in `src/provisioning/providers/`. See [README](../../README.md) for the full list of supported resource types. Registration is centralized in `src/provisioning/register-providers.ts`.
+SDK Providers are in `src/provisioning/providers/`. See [docs/supported-resources.md](../../docs/supported-resources.md) for the full list of supported resource types. Registration is centralized in `src/provisioning/register-providers.ts`.
 
 SDK Providers are preferred over Cloud Control API for performance -- they make direct synchronous API calls with no polling overhead. Cloud Control API is used as a fallback for resource types without an SDK Provider.

@@ -14,16 +14,19 @@ fits in the README. For the basic command invocations (`deploy`, `diff`,
 
 The detailed per-command / per-flag reference is split across these pages:
 
-- **[Deploy: waits & tuning](cli-deploy.md)** — concurrency, the
-  per-resource-type wait-semantics table, `--no-wait` / `--full-wait`,
-  VPC route DependsOn relaxation, observed-state capture, name prefixing,
-  per-resource timeouts, and CDK annotation messages.
+- **[Deploy: waits & concurrency](cli-deploy.md)** — the concurrency
+  knobs, the per-resource-type wait-semantics table, and `--no-wait` /
+  `--full-wait`.
+- **[Deploy: tuning](cli-deploy-tuning.md)** — VPC route DependsOn
+  relaxation, observed-state capture, name prefixing, per-resource
+  timeouts, and CDK annotation messages.
 - **[Deploy: safety & compatibility flags](cli-deploy-safety.md)** —
   `--allow-unsupported-types`, `--allow-unsupported-properties`,
   `--recreate-via-cc-api`, `--replace`, `--recreate-via-sdk-provider`,
   `--strict-getatt`, `--allow-unaddressed`, and `--no-cfn-fallback`.
-- **[cdkd bootstrap & gc](cli-bootstrap-gc.md)** — provisioning the state
-  bucket, and garbage-collecting cdkd-owned storage.
+- **[cdkd bootstrap](cli-bootstrap.md)** — provisioning the state bucket
+  and per-region cdkd-owned asset storage.
+- **[cdkd gc](cli-gc.md)** — garbage-collecting cdkd-owned storage.
 - **[cdkd diff](cli-diff.md)** — previewing what a deploy would change.
 - **[cdkd drift](cli-drift.md)** — detecting and resolving drift against
   live AWS resources.

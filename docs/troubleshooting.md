@@ -820,7 +820,7 @@ auto-create was declined / opted out (`--no-auto-asset-storage`), failed
 the bucket/repo after opt-in. Deploys that stay in **legacy mode** publish
 to the CDK bootstrap bucket instead, which then must exist
 (`npx cdk bootstrap aws://123456789012/us-east-1`). See
-[cli-bootstrap-gc.md](cli-bootstrap-gc.md#cdkd-bootstrap).
+[cli-bootstrap.md](cli-bootstrap.md#cdkd-bootstrap).
 
 > **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkd reads destinations from the manifest (and, in cdkd-assets mode, redirects default-bootstrap-shaped destinations to cdkd-owned storage), so custom qualifiers are fully supported.
 

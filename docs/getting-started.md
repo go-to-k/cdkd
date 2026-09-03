@@ -53,7 +53,7 @@ to track deployed resources, plus cdkd-owned asset storage (by default a
 `cdkd-assets-{accountId}-{region}` bucket + a
 `cdkd-container-assets-{accountId}-{region}` ECR repo; custom names via
 `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
-[`cdkd bootstrap`](cli-bootstrap-gc.md#cdkd-bootstrap)). Per-region asset
+[`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap)). Per-region asset
 storage is added automatically on the first `cdkd deploy` into each region.
 Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
 [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
@@ -69,15 +69,18 @@ under a previous cdkd version, the legacy region-suffixed state bucket name
 (`cdkd-state-{accountId}-{region}`) is still picked up automatically with a
 deprecation warning. Explicit pre-provisioning
 (`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
-`cdk bootstrap`: see [`cdkd bootstrap`](cli-bootstrap-gc.md#cdkd-bootstrap).
+`cdk bootstrap`: see [`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap).
 
 ## Usage
 
 cdkd has three command families:
 
-- **Top-level commands** (`cdkd deploy` / `destroy` / `diff` / `synth` /
-  `list` / `import` / `orphan` / `publish-assets`) require a CDK app —
-  they synthesize a template to learn what they're operating on.
+- **Top-level commands** — most (`cdkd deploy` / `destroy` / `diff` /
+  `synth` / `list` / `import` / `export` / `migrate` / `orphan` /
+  `scrub` / `publish-assets`) require a CDK app — they synthesize a template to
+  learn what they're operating on. A few operate on the state bucket /
+  AWS directly and need no app: `cdkd bootstrap`, `cdkd drift`,
+  `cdkd rollback`, `cdkd events`, `cdkd gc`, `cdkd force-unlock`.
 - **`cdkd state ...` subcommands** (`state info` / `list` / `resources`
   / `show` / `orphan` / `destroy` / `migrate` / `refresh-observed`)
   operate on the S3 state bucket only and do NOT need the CDK app —
@@ -113,6 +116,10 @@ cdkd diff MyStack --fail            # exit 1 on any change (CI gate)
 cdkd drift MyStack                  # exit 1 if drift
 cdkd drift MyStack --accept --yes   # state ← AWS
 cdkd drift MyStack --revert --yes   # AWS ← state
+
+# Deployment history — CloudFormation DescribeStackEvents equivalent (no synth)
+cdkd events MyStack                 # list past deploy / destroy runs, newest first
+cdkd events MyStack --run <runId>   # one run's full event stream
 
 # State secret hygiene — clean + audit. Keeps cdkd state free of sensitive
 # plaintext: a resolved secret dynamic reference is stored as its

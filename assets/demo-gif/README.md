@@ -11,7 +11,7 @@ Source files for `assets/cdk-vs-cdkd.gif` — the side-by-side `cdk deploy` vs `
 
 ## Reproducing
 
-Prerequisites: AWS credentials, [`vhs`](https://github.com/charmbracelet/vhs) (`brew install vhs`), `tmux`, JetBrainsMono Nerd Font, and the [cdkd CLI](../../README.md#installation) on PATH.
+Prerequisites: AWS credentials, [`vhs`](https://github.com/charmbracelet/vhs) (`brew install vhs`), `tmux`, JetBrainsMono Nerd Font, and the [cdkd CLI](https://cdkd.dev/getting-started/) on PATH.
 
 ```bash
 cd assets/demo-gif

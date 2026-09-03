@@ -191,11 +191,15 @@ gates:
       #   - the two workflow YAMLs — provider-error-cause / provider-secret-
       #     mask / local-reachability read ci.yml; pr-inherit-issue-labels
       #     .test.ts reads its workflow
-      #   - README.md — cc-protection-doc-coverage.test.ts asserts its
-      #     registry-type table (found by #2366's own review: the reader
-      #     resolves the root as `ROOT` and takes the path from a table, so
-      #     the sweep's join-literal regex could not see it — the class
-      #     fence's stated known limit, demonstrated live)
+      #   - README.md — no test asserts its CONTENT any more (the slimmed
+      #     README links to cdkd.dev pages instead of carrying tables;
+      #     cc-protection-doc-coverage.test.ts, the former reader, now stops
+      #     at docs/cli-destroy.md). What still demands the entry is the
+      #     coverage sweep in check-scope-checker-inputs.test.ts: the
+      #     'README.md' mock literals in codecommit-repository-provider
+      #     .test.ts are candidates (not in NON_READ_LITERALS), and the
+      #     BARE-literal floor pins 'README.md' as the repo-root-file shape
+      #     the parsers must keep seeing — so the entry stays.
       #   - docs/** — the WHOLE tree, widened from the three precise entries
       #     this list used to name (docs/cli-reference.md,
       #     docs/changelog-cdkd.md, docs/_generated/**; issue #2381). Those

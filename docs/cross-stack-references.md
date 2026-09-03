@@ -15,10 +15,9 @@ different semantics:
 
 This doc covers the design and implementation of strong-reference
 enforcement and the supporting performance optimizations (persistent
-exports index). For the user-facing CLI behavior, see [README.md] and
+exports index). For the user-facing CLI behavior, see
+[mixed-estates.md](mixed-estates.md) and
 [docs/cli-reference.md](cli-reference.md).
-
-[README.md]: ../README.md
 
 ---
 

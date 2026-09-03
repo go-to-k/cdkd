@@ -388,7 +388,7 @@ export class ConfigError extends CdkdError {
  *        unhandled exception). Default for any thrown error.
  *   - 2: partial failure — work completed but some resources are still in
  *        an error state. Re-running typically resolves it. Documented in
- *        README's "Exit codes" section.
+ *        docs/cli-reference.md's "Exit codes" section.
  *
  * `handleError` recognizes this class via `instanceof` and uses its
  * `exitCode` instead of the default 1.

@@ -210,7 +210,7 @@ cdkd's main CI use case is per-PR preview environments: deploy on PR open/sync, 
 - A cancelled mid-deploy job can leave a stack lock; it expires after its TTL (30 minutes), or clear it with `cdkd force-unlock <stack>`.
 - Housekeeping: sweep stale environments via `cdkd state list --json` on a schedule; reclaim unreferenced assets with `cdkd gc` outside deploy hours (it aborts while any stack is locked). Read outputs for PR comments with `cdkd state show <stack> --json`.
 
-See the [README's CI section](https://github.com/go-to-k/cdkd/blob/main/README.md#use-in-ci-per-pr-environments) for a complete GitHub Actions example.
+See the [CI per-PR guide](https://cdkd.dev/ci-per-pr/) for a complete GitHub Actions example.
 
 ## Run workloads locally
 
@@ -258,4 +258,4 @@ cdkd destroy <stack>
 
 Options such as `--app`, `--state-bucket`, and context values may come from CLI flags, environment variables, or `cdk.json`. Inspect the project instead of assuming defaults.
 
-For current command behavior, consult the [README](https://github.com/go-to-k/cdkd/blob/main/README.md), [CLI reference](https://github.com/go-to-k/cdkd/blob/main/docs/cli-reference.md), [state management](https://github.com/go-to-k/cdkd/blob/main/docs/state-management.md), and [import guidance](https://github.com/go-to-k/cdkd/blob/main/docs/import.md).
+For current command behavior, consult the [documentation site](https://cdkd.dev) — in particular the [CLI reference](https://cdkd.dev/cli-reference/), [state management](https://cdkd.dev/state-management/), and [import guidance](https://cdkd.dev/import/).

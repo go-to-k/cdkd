@@ -75,11 +75,12 @@ import { describe, expect, it } from 'vite-plus/test';
  *       demanding an include entry (noise), never toward missing one — but it
  *       also means a NON-read occurrence can satisfy a named floor after the
  *       last real reader is gone. Measured occurrences outside this file:
- *       '.claude/hooks/branch-gate.sh' 1, 'docs/testing.md' 1, 'README.md' 3
- *       — and two of README.md's three are mock fixtures in
- *       codecommit-repository-provider.test.ts, not reads, so that floor
- *       entry alone would survive cc-protection-doc-coverage.test.ts ceasing
- *       to read it. The carve-out list is the only place a use is classified
+ *       '.claude/hooks/branch-gate.sh' 1, 'docs/testing.md' 1, 'README.md' 2
+ *       — and BOTH README.md occurrences are mock fixtures in
+ *       codecommit-repository-provider.test.ts, not reads: the last real
+ *       reader, cc-protection-doc-coverage.test.ts, stopped reading it when
+ *       the slimmed README dropped its `--remove-protection` type table —
+ *       exactly the survival this limit predicted, now demonstrated live. The carve-out list is the only place a use is classified
  *       by hand; everywhere else this parser reports candidates.
  *   (g) The bare parsers' character class covers what this repo's tracked
  *       paths actually use. A path containing a space, `+`, `(`, `)` or `~`
@@ -140,8 +141,10 @@ const JOIN_RE = /(?:join|resolve)\(\s*(?:REPO_ROOT|repoRoot|root|ROOT)\s*((?:,\s
  *  - BARE_ROOT_RE — a repo-ROOT file with no directory at all ('README.md').
  *
  * The second exists because requiring a '/' hides a real population: a table
- * row naming a root file is invisible to BOTH parsers. Measured on this tree —
- * cc-protection-doc-coverage.test.ts reads 'README.md' exactly that way, and
+ * row naming a root file is invisible to BOTH parsers. Measured when the shape
+ * landed — cc-protection-doc-coverage.test.ts then read 'README.md' exactly
+ * that way (it has since stopped: the slimmed README dropped that table, so
+ * today's 'README.md' occurrences are codecommit mock fixtures), and
  * README.md is only accidentally in scope. Restricting the second shape to an
  * existing repo-root FILE with an extension keeps the noise at one entry
  * (segment names like 'docs' and extension-less roots like LICENSE are not
@@ -658,11 +661,14 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
   });
 
   it('parser floor: the BARE extraction sees what the JOIN parser cannot (issue #2381)', () => {
-    // These three are read as checker input and none is written as
-    // join(repoRoot, ...), so a floor naming them is a floor on the idiom this
-    // parser exists for, not on the remedy. The first two are the #2381 gaps
-    // (each reds a different suite when its file is renamed); README.md is the
-    // root-file shape, invisible to both parsers before this revision.
+    // None of these three is written as join(repoRoot, ...), so a floor
+    // naming them is a floor on the idiom this parser exists for, not on the
+    // remedy. The first two are the #2381 gaps, each read as checker input
+    // (each reds a different suite when its file is renamed); README.md is
+    // the root-file shape, invisible to both parsers before this revision —
+    // since the README slimmed, its only occurrences are the
+    // codecommit-repository-provider.test.ts mock fixtures, which the bare
+    // parser must keep seeing all the same.
     const bareTargets = extractBareTargets();
     for (const known of ['.claude/hooks/branch-gate.sh', 'docs/testing.md', 'README.md']) {
       expect([...bareTargets.keys()], `BARE extraction finds ${known}`).toContain(known);

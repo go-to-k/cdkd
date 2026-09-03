@@ -1782,7 +1782,8 @@ async function buildContainerSpec(args: {
     // state-resolver evolves).
     if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
     // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
-    // matches the README guidance and `cdkd local invoke` target shape;
+    // matches docs/local-invoke.md's target-resolution guidance and the
+    // `cdkd local invoke` target shape;
     // the resolver's prefix rule accepts either form.
     const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? logicalId;
     getLogger().warn(
