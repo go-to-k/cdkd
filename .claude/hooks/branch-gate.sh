@@ -31,22 +31,36 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 # `bash verify-pr-gate.sh` from inside the hooks dir), which would look for
 # `<script-name>/lib/...`. Fall back to the cwd in that case.
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
-if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
-  || ! declare -F cmd_matches_verb >/dev/null \
-  || ! declare -F gate_matches >/dev/null \
-  || ! declare -F gate_target_dir_strict >/dev/null \
-  || ! declare -F gate_refuse_unresolved_target >/dev/null \
-  || ! declare -F cmd_last_cd_target >/dev/null \
-  || ! declare -F strip_noncommand_spans >/dev/null; then
-  # FAIL CLOSED. Without the helper `cmd_matches_verb` is undefined, the
-  # `if ! cmd_matches_verb ...` guard below sees exit 127 (truthy for `!`),
-  # and the hook would `exit 0` -- silently disabling the gate, which is the
-  # exact failure mode this file exists to prevent. Refuse instead.
-  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
+# FAIL CLOSED, IN TWO ARMS WITH TWO MESSAGES. Without the helper
+# `cmd_matches_verb` is undefined, the `if ! cmd_matches_verb ...` guard below
+# sees exit 127 (truthy for `!`), and the hook would `exit 0` -- silently
+# disabling the gate, which is the exact failure mode this file exists to
+# prevent. Refuse instead.
+#
+# The two states used to share one `if` and one message, and that is why
+# `branch-gate.test.sh` could not tell them apart: its MISSING row and its
+# TRUNCATED row both asked for the file path, which both refusals print, so
+# deleting the source check left the suite green -- the missing file just fell
+# through to the `declare -F` clause and printed a message the MISSING row still
+# matched. Two rows over one needle are one row. Split, each arm now emits a
+# tail only it can emit, and the loop names the function that is actually
+# missing rather than reporting "unloadable" for a file that loaded fine.
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or did not load," >&2
   echo "so this gate cannot evaluate the command. Restore the file; do not" >&2
   echo "work around the gate." >&2
   exit 2
 fi
+for __gate_fn in cmd_matches_verb gate_matches gate_target_dir_strict \
+  gate_refuse_unresolved_target cmd_last_cd_target strip_noncommand_spans; do
+  if ! declare -F "$__gate_fn" >/dev/null; then
+    echo "Blocked: .claude/hooks/lib/command-match.sh loaded but $__gate_fn is undefined" >&2
+    echo "(truncated file?), so this gate cannot evaluate the command. Restore the" >&2
+    echo "file; do not work around the gate." >&2
+    exit 2
+  fi
+done
+unset __gate_fn
 
 set -u
 
@@ -159,8 +173,8 @@ branch=$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
 #   NOT the five cases this sentence used to name. That count was stale in two
 #   directions at once: the suite has grown since, and the number was never a
 #   constant to begin with. Stood in for by swapping the compare to
-#   `$target_dir` and re-running: 22 of 42 rows red on this macOS fixture root,
-#   3 of 42 on a non-symlinked one, for the reason the arm below spells out.
+#   `$target_dir` and re-running: 31 of 82 rows red on this macOS fixture root,
+#   3 of 82 on a non-symlinked one, for the reason the arm below spells out.
 #   The only fixed number in the pair is the SCOPED one that arm already
 #   quotes, so that is where a count is given and this is not.
 if [ -z "$branch" ]; then
@@ -404,6 +418,20 @@ if [ -z "$branch" ]; then
     # `git branch -D` refuses with `cannot delete branch 'x' used by worktree`
     # while the bisect holds it -- and needs a low-level `update-ref -d` to
     # produce, so it is a bound rather than a case.
+    #
+    # THE NEGATIVE ARM NAMES NO CAUSE, and that is a correction rather than a
+    # style choice. `reattach_to=""` is reached from FIVE states -- a bisect
+    # begun already detached, an EMPTY `BISECT_START`, a missing one, an
+    # unreadable one, and a start branch deleted under the bisect -- and the
+    # sentence used to assert the first ("this bisect started from a tree that
+    # was ALREADY detached"), which the code never established. With the start
+    # branch deleted, BOTH halves of that sentence are false: measured on git
+    # 2.53, `bisect reset` exits 1 with `fatal: invalid reference: <name>`, so
+    # it does not "return to that same detached commit", and the printed
+    # `switch main` fallback is what actually re-attaches. The sibling rebase
+    # arm below already had the neutral spelling ("git has no branch recorded
+    # to return to"); this arm now uses it, so one file no longer states the
+    # same fact two ways.
     reattach_to=""
     if [ "$inflight" = "rebase" ] && [ -n "$git_dir" ]; then
       __head_name=""
@@ -440,9 +468,8 @@ if [ -z "$branch" ]; then
       if [ -n "$reattach_to" ]; then
         echo "That restores the branch you started from, '$reattach_to'." >&2
       else
-        echo "That does NOT re-attach HEAD: this bisect started from a tree that was" >&2
-        echo "ALREADY detached, so 'bisect reset' returns to that same detached commit." >&2
-        echo "Re-attach afterwards:" >&2
+        echo "That does NOT re-attach HEAD: git has no branch recorded to return to, so" >&2
+        echo "'bisect reset' leaves this checkout DETACHED. Re-attach afterwards:" >&2
         echo "  git -C \"$main_checkout\" switch main" >&2
       fi
     elif [ -n "$inflight" ]; then

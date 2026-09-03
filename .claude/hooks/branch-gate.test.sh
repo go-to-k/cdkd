@@ -15,28 +15,59 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/branch-gate.sh"
 
 # --- MACHINE INDEPENDENCE ----------------------------------------------------
 # The developer's own git config must not decide what this suite exercises, and
-# before this block it did. Measured by breaking the hook's `rebase-merge`
-# detection arm and running the suite:
+# before this block it did.
 #
-#   default on the author's machine                  38 pass /  4 fail   catches it
-#   with a global `rebase.backend = apply`           42 pass /  0 fail   GREEN, broken hook
+# THE ORIGINAL EXHIBIT NO LONGER REPRODUCES, and it is repeated here as HISTORY
+# rather than as evidence, because a reader taking it as evidence would be
+# reading a claim this file has since falsified. It was: break the hook's
+# `rebase-merge` detection arm, and a global `rebase.backend = apply` sends
+# every plain `git rebase` down `rebase-apply/` instead, so the broken arm is
+# never reached and the rows that exist to hold it down pass without exercising
+# it -- a fully green suite over a broken hook. That was true when the rows said
+# `git rebase`. They now say `git rebase --merge` / `git rebase --apply`, which
+# is the OTHER half of the same fix, and an explicit backend outranks the config
+# key. Re-measured at this tree, broken arm, 82 rows:
 #
-# `rebase.backend = apply` sends every plain `git rebase` down `rebase-apply/`
-# instead, so the `rebase-merge` arm is never reached and the rows that exist to
-# hold it down pass without exercising it. Two more ordinary global options turn
-# half the suite red against the UNMUTATED hook, for the same inheritance:
+#   broken `rebase-merge` arm, clean global config    77 pass / 5 fail
+#   ...and with a global `rebase.backend = apply`     77 pass / 5 fail   same
 #
-#   global `commit.gpgsign = true`                   25 pass / 21 fail
-#   global `init.templateDir = <dir with a hook>`    25 pass / 21 fail
+# WHAT STILL BITES, and what keeps the two exports below load-bearing: two
+# ordinary global options turn nearly half the suite red against the UNMUTATED
+# hook, because they break the fixture COMMITS rather than the rebase backend.
 #
-# The author's machine HAS `init.templateDir` set (git-secrets), so this suite
-# was green only because those installed hooks happen to exit 0. That is exactly
-# the "green for a reason other than the one claimed" class the rest of this
-# file exists to correct, landing in the file itself.
+#   global `commit.gpgsign = true`                    57 pass / 25 fail
+#   global `init.templateDir = <dir with a FAILING hook>`
+#                                                     57 pass / 25 fail
+#
+# Both also report 18 FIXTURE failures -- setups that never entered their
+# operation because the commit behind them was rejected -- which is the count
+# the old numbers folded into `fail` and why their denominators did not add up
+# to the case list.
+#
+# `init.templateDir` has to point at a hook that FAILS. The author's machine has
+# one set (git-secrets) whose hooks exit 0, which is why this suite was green:
+# green for a reason other than the one claimed, landing in the file whose
+# subject is that class.
 #
 # `/dev/null` rather than an empty scratch file: nothing to clean up, and a
 # stray `git config --global` from a child cannot write to it. Honoured since
-# git 2.32; an older git ignores both variables and is no worse off than before.
+# git 2.32, which the probe below now checks rather than assumes.
+#
+# SCOPE, stated because it is narrower than "machine independence": these two
+# variables neutralise git's CONFIG FILES. They do not neutralise the
+# ENVIRONMENT, and the environment has twins for most of what a config file can
+# say. Measured at this tree, each set for the whole run:
+#
+#   GIT_TEMPLATE_DIR=<dir with a failing hook>        57 pass / 25 fail
+#   GIT_CONFIG_COUNT / _KEY_0 / _VALUE_0              57 pass / 25 fail
+#   GIT_DIR=<elsewhere>                               50 pass / 32 fail
+#
+# All three fail LOUD rather than green, which is the direction that costs a
+# reader an hour rather than a release, and the one direction that COULD go
+# quiet -- a rebase backend chosen for us -- is closed on the other side by
+# naming `--merge` / `--apply` on every rebase row. So this is a stated bound,
+# not an open hole: a suite cannot scrub an environment it did not create, and
+# `env -i` would take `PATH` and `HOME` with it.
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 # Two consequences, both already satisfied below and stated so they stay so:
@@ -55,7 +86,35 @@ export GIT_CONFIG_SYSTEM=/dev/null
 # the fixture; on Linux `mktemp` does honour it. Renaming is correct on both
 # without having to know which one is running.)
 FIXROOT="$(mktemp -d)"
-trap 'rm -rf "$FIXROOT"' EXIT
+# `EXIT INT TERM`, not `EXIT` alone. The repo's leak-safety convention, and it
+# bites here: a Ctrl-C anywhere in the operation block leaves a git repo, a
+# linked worktree and a patch directory behind under the per-user temp dir,
+# which nothing else ever cleans.
+trap 'rm -rf "$FIXROOT"' EXIT INT TERM
+
+# ...AND PROVE THE NEUTRALISER ABOVE ACTUALLY TOOK EFFECT. `GIT_CONFIG_GLOBAL`
+# and `GIT_CONFIG_SYSTEM` are honoured only from git 2.32; an older git ignores
+# both SILENTLY. Exported-but-ignored looks exactly like protection while the
+# suite goes on inheriting the developer's config -- the same "green for a
+# reason other than the one claimed" the block above exists to end, one level
+# up, and the one thing about it nothing asserted.
+#
+# A POSITIVE probe, not "is the global config empty?": pointing the variable at
+# a file holding a known key and reading that key back proves the variable IS
+# consulted whatever the developer's real config contains. The negative probe
+# passes trivially on a machine with no global config, which is precisely the
+# machine that cannot tell you anything.
+_ni_probe="$FIXROOT/ni-probe.gitconfig"
+printf '[hooktest]\n\tmarker = seen\n' > "$_ni_probe"
+for _ni_var in GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; do
+  if [ "$(env "$_ni_var=$_ni_probe" git config --get hooktest.marker 2>/dev/null)" != "seen" ]; then
+    printf 'FATAL: this git ignores %s, so the machine-independence block above\n' "$_ni_var" >&2
+    printf '       is inert and this suite would be reading the developer config.\n' >&2
+    printf '       Needs git >= 2.32; this is %s\n' "$(git --version)" >&2
+    exit 1
+  fi
+done
+unset _ni_probe _ni_var
 
 # --- BASH INTERPRETER FENCE (go-to-k/cdkd#2402) ------------------------------
 # Running this SUITE under bash 3.2 did NOT run the HOOK under it. The hook is
@@ -75,7 +134,7 @@ trap 'rm -rf "$FIXROOT"' EXIT
 # PROVEN TO REACH THE HOOK, not merely to be exported. With `;;&` (a bash-4
 # `case` terminator, a PARSE error under 3.2 and valid syntax under 5.x)
 # injected into the hook's detached-HEAD arm, this suite reports
-# 43 pass / 30 fail under `HOOK_BASH=/bin/bash` and 73 pass / 0 fail under
+# 44 pass / 38 fail under `HOOK_BASH=/bin/bash` and 82 pass / 0 fail under
 # `HOOK_BASH=/opt/homebrew/bin/bash` -- same suite, same mutant, only the
 # interpreter differs. A shim that did not reach the subject would print the
 # same tally twice.
@@ -86,15 +145,22 @@ trap 'rm -rf "$FIXROOT"' EXIT
 # already carried the corrected pair (41/25 and 66/0), so the code and the doc
 # disagreed inside one file tree, and the doc was the one telling the truth.
 # Numbers that are cheap to leave behind are exactly the ones to re-measure
-# whenever rows are added; this round did, and both sides now say 43/30 and 73/0.
+# whenever rows are added; round 4 did, and round 5 did it again after adding
+# nine rows: both sides now say 44/38 and 82/0.
 #
-# WHAT THIS MUTANT IS BLIND TO, and why -- because 43 of the rows still
-# pass under it and a reader should not mistake that for coverage:
+# WHAT THIS MUTANT IS BLIND TO, and why -- because 44 of the rows still
+# pass under it and a reader should not mistake that for coverage. Counted,
+# because "every row that wants exit 2" was the shape this used to claim and
+# it is not true: a row that also reads the MESSAGE fails under the mutant,
+# since a parse error prints no message.
 #
-#   Every row that wants exit 2 passes, because a bash PARSE ERROR *is*
-#     exit 2 -- for the wrong reason.
-#   Every row that wants exit 0 and EXITS BEFORE the broken construct is
-#     parsed also passes. Bash parses a script one complete command at a time, and the
+#   20 rows want exit 2 and check nothing else, and a bash PARSE ERROR *is*
+#     exit 2. They pass for the wrong reason.
+#   3 rows also want exit 2 and pass for the RIGHT one: the fail-CLOSED rows
+#     refuse at the top of the hook, before the parser has reached the
+#     compound the mutation sits in.
+#   21 rows want exit 0 and EXIT BEFORE the broken construct is
+#     parsed. Bash parses a script one complete command at a time, and the
 #     mutation sits inside the single `if [ -z "$branch" ]; then ... fi`
 #     compound; a payload that leaves at the verb match, at the repo opt-in, or
 #     at "not a git repo" never reaches it. Those rows are genuinely unaffected.
@@ -195,6 +261,11 @@ git -C "$mt_spaced" -c user.email=t@t -c user.name=t worktree add -q "$mt_spaced
 
 pass=0
 fail=0
+# FIXTURE failures are counted apart from ROW failures. They are not cases: a
+# fixture that did not build says nothing about the hook, and folding it into
+# `fail` made `Pass + Fail` exceed the number of rows -- a denominator no reader
+# can reconcile with the case list. Both counters gate the exit status.
+fixture_fail=0
 fail_log=""
 
 # run_case <name> <expect_exit> <stdin_json>
@@ -325,7 +396,17 @@ run_case_head() {
   if [ -n "$forbid" ] && printf '%s\n' "$out" | grep -qF -- "$forbid"; then
     ok=0; why="${why:+$why; }message must not contain: $forbid"
   fi
-  line=$(printf '%s\n' "$out" | grep -F -- "$need" | head -1)
+  # ANCHORED ON THE HOOK'S TWO-SPACE COMMAND INDENT, not on print order.
+  # `$need` is a fragment like `bisect reset`, and the PROSE around the remedy
+  # contains the same fragment ("...so 'bisect reset' leaves this checkout
+  # DETACHED"); `head -1` picked the command only because the command happens to
+  # print FIRST today. Re-ordering the message would silently start EVAL-ing a
+  # sentence -- with the quoting of an English clause, not of a command. Every
+  # remedy this hook offers is printed as two spaces then `git `, and nothing
+  # else in the message is -- the diagnosis lines are two spaces then a
+  # LABEL (`resolved target dir`, `main checkout`, `HEAD`, `in progress`,
+  # `command`), never two spaces then `git`.
+  line=$(printf '%s\n' "$out" | grep -E '^  git ' | grep -F -- "$need" | head -1)
   # Strip the trailing ` # after resolving the conflict` the hook prints on its
   # `--continue` / `--abort` lines. `%` (SHORTEST suffix) anchored on the space
   # before the `#`, not `%%#*`, which was the first spelling: that one cut at
@@ -583,13 +664,52 @@ fc_payload=$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}'
 # fail-closed mutation reddens it. It is NOT an inert row in general, and saying
 # so would be the mislabel this file has twice avoided by measuring: it reads the
 # branch-NAME message, so gutting that message reddens it alongside the
-# branch-NAME row above (measured: 2 red, not 1).
+# branch-NAME row above (measured: 3 red, not 1).
 run_case_hook "$fc_ok/branch-gate.sh" "copied hook WITH its matcher library still blocks on main" \
   2 "$fc_payload" "is on branch 'main'"
+# ARM-SPECIFIC NEEDLES. Both rows used to ask for the same prefix -- the file
+# path, which BOTH refusals print -- so neither was pinned to the arm it names.
+# The hook proved it: deleting its source check left this suite green, because
+# the MISSING fixture then fell through to the `declare -F` clause and printed a
+# message the MISSING row still matched. Two rows over one needle are one row.
+# Each now asks for the tail only its own arm emits, which is also why the hook
+# now carries two messages instead of one.
 run_case_hook "$fc_missing/branch-gate.sh" "matcher library MISSING: gate refuses (fail CLOSED)" \
-  2 "$fc_payload" "Blocked: .claude/hooks/lib/command-match.sh"
+  2 "$fc_payload" "is missing or did not load"
 run_case_hook "$fc_trunc/branch-gate.sh" "matcher library TRUNCATED: gate refuses (fail CLOSED)" \
-  2 "$fc_payload" "Blocked: .claude/hooks/lib/command-match.sh"
+  2 "$fc_payload" "loaded but cmd_matches_verb is undefined"
+
+# TRUNCATED AT AN OFFSET THAT DISCRIMINATES. The row above cuts the library to a
+# single comment line, which defines NOTHING -- the one truncation shape a guard
+# naming a single function could see, and the reason the sibling repos' copies
+# of this suite passed while their gates were silently disabled across two
+# thirds of the offsets. This library is 2581 lines and the hook calls six of
+# its functions, the last defined near the end; the cut below lands between the
+# first and the last, so it is a file that loads, defines most of what the hook
+# needs, and is still fatal.
+#
+# DERIVED from the library rather than a hard-coded line number, so it stays
+# inside the window as the library grows: stop one line before
+# `cmd_last_cd_target`'s definition. The fixture then asserts it really is in
+# the window -- `cmd_matches_verb` present, `cmd_last_cd_target` absent -- so
+# this row cannot decay into a second copy of the zero-definition row above.
+fc_mid="$FIXROOT/fc-mid"; mkdir -p "$fc_mid"; fc_mk "$fc_mid"
+fc_cut=$(grep -n '^cmd_last_cd_target()' "${HOOK%/*}/lib/command-match.sh" | head -1 | cut -d: -f1)
+if [ -z "$fc_cut" ] || [ "$fc_cut" -lt 2 ]; then
+  fixture_fail=$((fixture_fail + 1))
+  fail_log="${fail_log}FAIL mid-file truncation fixture: cmd_last_cd_target has no definition line\n"
+  printf 'FAIL mid-file truncation fixture: cmd_last_cd_target has no definition line\n'
+else
+  head -n $((fc_cut - 1)) "${HOOK%/*}/lib/command-match.sh" > "$fc_mid/lib/command-match.sh"
+fi
+if ! bash -c '. "$1" >/dev/null 2>&1; declare -F cmd_matches_verb >/dev/null 2>&1 &&
+    ! declare -F cmd_last_cd_target >/dev/null 2>&1' _ "$fc_mid/lib/command-match.sh"; then
+  fixture_fail=$((fixture_fail + 1))
+  fail_log="${fail_log}FAIL mid-file truncation fixture: the cut is not inside the window\n"
+  printf 'FAIL mid-file truncation fixture: the cut is not inside the window\n'
+fi
+run_case_hook "$fc_mid/branch-gate.sh" "matcher library truncated MID-FILE: gate refuses, naming the missing function" \
+  2 "$fc_payload" "loaded but cmd_last_cd_target is undefined"
 
 # --- LINE-START ANCHORING cases (issue #563) ---
 #
@@ -658,6 +778,36 @@ run_case "detached HEAD in the MAIN checkout: commit BLOCKED" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}' "$mt_repo")"
 run_case "detached HEAD in the MAIN checkout: push BLOCKED" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git push origin HEAD"}}' "$mt_repo")"
+# THE DIAGNOSIS BLOCK, which nothing read. The two rows above take the exit
+# code; the four below take the four lines that tell the reader WHICH tree the
+# gate resolved, which checkout it decided was the main one, where HEAD is, and
+# whether an operation is running. Measured before they existed: deleting all
+# four `echo` lines while keeping `exit 2` left this suite fully green -- the
+# same defect this round fixed for the branch-NAME arm, still standing one arm
+# over, on the arm with four times as much to say.
+#
+# FOUR ROWS RATHER THAN ONE, so a dropped line is attributable to the line
+# rather than to "the message changed". Each needle is built from a value read
+# back a DIFFERENT way than the hook computes it: the target dir is the payload
+# cwd this row passed in, the main checkout comes from `rev-parse
+# --show-toplevel` where the hook reads `worktree list --porcelain`, and the sha
+# comes from a separate `rev-parse --short`. On Linux the first two strings are
+# equal (no `/var` symlink); the rows still separate, because each needle
+# carries its own label.
+mt_top=$(git -C "$mt_repo" rev-parse --show-toplevel)
+mt_head_short=$(git -C "$mt_repo" rev-parse --short HEAD)
+run_case_msg "detached block names the RESOLVED TARGET DIR" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}' "$mt_repo")" \
+  "  resolved target dir: $mt_repo"
+run_case_msg "detached block names the MAIN CHECKOUT it compared against" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}' "$mt_repo")" \
+  "  main checkout      : $mt_top"
+run_case_msg "detached block prints the HEAD it is refusing over" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}' "$mt_repo")" \
+  "  HEAD               : $mt_head_short"
+run_case_msg "detached block prints 'in progress: nothing' when nothing is" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}' "$mt_repo")" \
+  "  in progress        : nothing"
 # The cwd one level DOWN. The gate compares TOPLEVELS rather than the raw
 # resolved dir, so a subdirectory of the main checkout is still the main
 # checkout. `main_tree_of` in main-tree-branch-gate.sh compares the raw dir and
@@ -786,12 +936,22 @@ op_wt="$FIXROOT/op-wt"
 opg() { git -C "$op_repo" -c user.email=t@t -c user.name=t "$@"; }
 git init -q -b main "$op_repo"
 # Identity in the REPO's own config, not only in the `opg` wrapper's `-c` flags.
-# The resulting-HEAD rows run the remedy the hook PRINTS, verbatim, and that line
-# carries no `-c` -- so a machine with no global identity answers `Committer
-# identity unknown` (exit 128) and the row blames the remedy for the fixture.
-# Measured: green locally, red on the CI runner, which has no global identity.
-# Setting it here is also the more faithful fixture: a user copy-pasting that
-# line has an identity, and the row is about whether the line WORKS.
+# The resulting-HEAD rows run the remedy the hook PRINTS, verbatim, and that
+# line carries no `-c` -- so a tree with no identity available answers
+# `Committer identity unknown` (exit 128) and the row blames the remedy for the
+# fixture.
+#
+# THE RECORDED REASON NO LONGER REPRODUCES, and saying so is the point. It read
+# "green locally, red on the CI runner, which has no global identity" -- true
+# when it was written, and no longer a discriminator now that
+# `GIT_CONFIG_GLOBAL=/dev/null` is exported at the top of this file: there is no
+# global identity on ANY machine here, so removing these two lines leaves the
+# suite green everywhere rather than red on CI alone. Measured this round.
+# Kept anyway, for the reason that still holds and is not about CI: none of the
+# remedies this suite EVALs commits anything today, but each is run verbatim as
+# a user would paste it, and a fixture that only works because no printed remedy
+# happens to need an identity is one edit away from failing for a reason that
+# has nothing to do with the hook.
 git -C "$op_repo" config user.email hook-test@example.invalid
 git -C "$op_repo" config user.name "Hook Test"
 touch "$op_repo/.markgate.yml"
@@ -818,8 +978,11 @@ opg format-patch -q -1 other -o "$FIXROOT/op-patches" >/dev/null
 # right after EVERY operation setup in both blocks below and before the hook
 # runs, so a fixture that silently did not start reports ITSELF rather than
 # blaming the hook's remedy.
+# <want> <label> [<repo>] -- <repo> defaults to `$op_repo`, so the second
+# fixture below (a checkout root containing `#`) can be asserted by the same
+# helper rather than by an open-coded `[ -f ... ]` that reports differently.
 op_assert_inflight() {
-  local want="$1" label="$2" found=""
+  local want="$1" label="$2" repo="${3:-$op_repo}" found=""
   # FIRST-match-wins, spelled as an if/elif chain in the hook's own precedence
   # order. It used to be a run of `[ … ] && found=…` lines, which is LAST-match
   # -wins: the two disagree for any state where more than one marker is present
@@ -827,23 +990,30 @@ op_assert_inflight() {
   # answering different questions. Latent today -- git does not currently leave
   # two of these behind together -- and fixed rather than documented, because
   # the agreement is free and the divergence would be silent.
-  if [ -d "$op_repo/.git/rebase-merge" ]; then
+  if [ -d "$repo/.git/rebase-merge" ]; then
     found="rebase"
-  elif [ -d "$op_repo/.git/rebase-apply" ]; then
-    if [ -f "$op_repo/.git/rebase-apply/applying" ]; then found="am"; else found="rebase"; fi
-  elif [ -f "$op_repo/.git/CHERRY_PICK_HEAD" ]; then
+  elif [ -d "$repo/.git/rebase-apply" ]; then
+    if [ -f "$repo/.git/rebase-apply/applying" ]; then found="am"; else found="rebase"; fi
+  elif [ -f "$repo/.git/CHERRY_PICK_HEAD" ]; then
     found="cherry-pick"
-  elif [ -f "$op_repo/.git/REVERT_HEAD" ]; then
+  elif [ -f "$repo/.git/REVERT_HEAD" ]; then
     found="revert"
-  elif [ -f "$op_repo/.git/MERGE_HEAD" ]; then
+  elif [ -f "$repo/.git/MERGE_HEAD" ]; then
     found="merge"
-  elif [ -f "$op_repo/.git/BISECT_LOG" ]; then
+  elif [ -f "$repo/.git/BISECT_LOG" ]; then
     found="bisect"
   fi
   if [ "$found" != "$want" ]; then
-    fail=$((fail + 1))
+    # REPORTED THE WAY EVERY OTHER HELPER REPORTS: into `fail_log`, on stdout.
+    # It used to bump `fail` and print only to stderr, so its failure never
+    # reached the replay block at the bottom, and the final `Pass + Fail` came
+    # out larger than the number of rows -- a denominator a reader cannot
+    # reconcile with the case list. It is not a CASE, so it does not touch
+    # `pass`; the tally below counts it only when it fires.
+    fixture_fail=$((fixture_fail + 1))
+    fail_log="${fail_log}FAIL $label: fixture is in ${found:-nothing}, expected ${want:-nothing}\n"
     printf 'FAIL %s: fixture is in %s, expected %s\n' \
-      "$label" "${found:-nothing}" "${want:-nothing}" >&2
+      "$label" "${found:-nothing}" "${want:-nothing}"
     return 1
   fi
   return 0
@@ -1005,8 +1175,11 @@ opg checkout -q main
 # one leaves the fixture MID-OPERATION and every row after it then fails for a
 # reason that is not its own. Measured before this helper existed: dropping the
 # `applying` sentinel red-lined the `am` row (correctly) and then cherry-pick,
-# revert, merge and bisect (cascade) -- 6 rows for a defect that touches 1. A
-# tally that cannot be attributed to a row is not a fence, it is noise.
+# revert, merge and bisect (cascade). Re-measured at this tree WITH the helper
+# in place, the same drop reddens 2 rows -- the `am` row it should, plus the
+# one `detached MAIN mid-AM` row that reads the same message -- and no others,
+# which is the helper working. A tally that cannot be attributed to a row is
+# not a fence, it is noise.
 #
 # It also VERIFIES that it cleaned up, because `git am` and `git rebase --apply`
 # SHARE `.git/rebase-apply`: if an abort leaves that directory behind, the next
@@ -1030,6 +1203,12 @@ op_reset() {
   rm -rf "$op_repo/.git/rebase-apply" "$op_repo/.git/rebase-merge" 2>/dev/null
   rm -f "$op_repo/.git/CHERRY_PICK_HEAD" "$op_repo/.git/REVERT_HEAD" \
         "$op_repo/.git/MERGE_HEAD" "$op_repo/.git/BISECT_LOG" 2>/dev/null
+  # The whole `BISECT_*` family, not `BISECT_LOG` alone. `git bisect reset`
+  # FAILS (rc=1, `fatal: invalid reference`) when the branch recorded in
+  # `BISECT_START` has been deleted under the bisect -- the state the
+  # deleted-start-branch row below builds on purpose -- and then leaves
+  # `BISECT_START` behind for the next `git bisect start` to trip over.
+  rm -f "$op_repo"/.git/BISECT_* 2>/dev/null
   :
 }
 
@@ -1037,6 +1216,12 @@ op_reset() {
 # really does re-attach, and the row that pins the `head-name` READ.
 opg rebase --merge other >/dev/null 2>&1
 op_assert_inflight rebase "mid-REBASE-from-main fixture"
+# The OTHER polarity of the `in progress` line the block above pins as
+# `nothing`. Without this row a hook that hard-coded `nothing` would keep both
+# halves green, and the field's whole job is telling those two apart.
+run_case_msg "detached block names the operation in the 'in progress' field" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  "  in progress        : rebase"
 run_case_head "mid-REBASE from main: 'rebase --abort' lands on main, and says so" \
   "$op_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
@@ -1163,9 +1348,101 @@ run_case_head "mid-BISECT started DETACHED: 'bisect reset' stays detached, and s
   'bisect reset' 'DETACHED' 'does NOT re-attach HEAD' \
   'restores the branch you started from'
 op_reset
+# 10. A BRANCH WHOSE NAME IS 40 HEX CHARACTERS. This is the row that fences the
+# `show-ref` LOOKUP against the 40-hex PATTERN the comment above that code
+# spends a paragraph rejecting -- and nothing held it down: swapping the lookup
+# for the pattern left this suite fully green, with none of the three
+# consequences that paragraph names carrying a row.
+#
+# `git bisect reset` ends in `git checkout "$(cat BISECT_START)"`, so the
+# question is "does checkout resolve this as a branch", and `show-ref --verify
+# refs/heads/<x>` is that same question. A pattern asks a DIFFERENT one -- "does
+# this look like a sha" -- and the two disagree exactly here. Measured on git
+# 2.53: the branch is created, `BISECT_START` records its name, `show-ref` finds
+# it, and `bisect reset` re-attaches to it; the pattern would have called the
+# name a sha and printed "does NOT re-attach HEAD" over a reset that does.
+op_hexb=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+opg checkout -q -b "$op_hexb" main
+opg bisect start >/dev/null 2>&1
+opg bisect bad >/dev/null 2>&1
+opg bisect good "$op_root" >/dev/null 2>&1
+op_assert_inflight bisect "mid-BISECT-from-a-hex-named-branch fixture"
+run_case_head "mid-BISECT from a 40-HEX-NAMED branch: 'bisect reset' re-attaches to it" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'bisect reset' "branch $op_hexb" "restores the branch you started from, '$op_hexb'" \
+  'does NOT re-attach'
+op_reset
+opg branch -q -D "$op_hexb"
+
+# 11. THE START BRANCH DELETED UNDER THE BISECT -- the other side of the same
+# lookup, and the row that also pins the negative arm's WORDING.
+#
+# Against the pattern the recorded name `bisect-start-gone` is "not a sha", so
+# the hook would promise re-attachment to a branch that no longer exists. Against
+# `show-ref` it is simply absent, and no promise is made. `git branch -D`
+# REFUSES while the bisect holds the branch ("cannot delete branch ... used by
+# worktree"), so the state needs the low-level `update-ref -d` -- which is why
+# the hook's comment calls it a bound rather than a case. It is still the state
+# that separates the two implementations, so it is worth one row.
+#
+# The second forbidden string is item 5's: the arm used to explain the empty
+# `reattach_to` as "this bisect started from a tree that was ALREADY detached",
+# a cause the code never established and one that is FALSE here -- this bisect
+# started from a branch. Measured: `bisect reset` in this state exits 1 with
+# `fatal: invalid reference: bisect-start-gone`, so the old sentence's other
+# half ("returns to that same detached commit") is false too, and the printed
+# `switch main` fallback is what actually re-attaches.
+opg checkout -q -b bisect-start-gone main
+opg bisect start >/dev/null 2>&1
+opg bisect bad >/dev/null 2>&1
+opg bisect good "$op_root" >/dev/null 2>&1
+opg update-ref -d refs/heads/bisect-start-gone
+op_assert_inflight bisect "mid-BISECT-with-a-deleted-start-branch fixture"
+run_case_msg "mid-BISECT whose start branch was DELETED: promises nothing, blames nothing" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'does NOT re-attach HEAD' \
+  'restores the branch you started from' \
+  'ALREADY detached'
+op_reset
+
+# 12. THE REMEDY LINE, EXTRACTED FROM UNDER A ROOT CONTAINING `#`. `run_case_head`
+# cuts the hook's trailing ` # to abandon it` off the line it EVALs, and the
+# comment beside that cut records a `%%#*` spelling which truncated the PATH
+# instead, leaving `git -C "<truncated` and charging the resulting rc=2 to the
+# hook. Nothing held the fix down: reverting `%` to `%%` left this suite fully
+# green, because every fixture above lives under `mktemp -d`, whose paths never
+# contain a `#`. One fixture that does closes it -- and it exercises the hook
+# under such a path too, which nothing else did.
+hash_repo="$FIXROOT/ha#sh/op-repo"
+mkdir -p "$hash_repo"
+git init -q -b main "$hash_repo"
+git -C "$hash_repo" config user.email hook-test@example.invalid
+git -C "$hash_repo" config user.name "Hook Test"
+touch "$hash_repo/.markgate.yml"
+printf 'base\n' > "$hash_repo/f.txt"
+git -C "$hash_repo" add -A
+git -C "$hash_repo" commit -q -m base
+git -C "$hash_repo" checkout -q -b other
+printf 'other\n' > "$hash_repo/f.txt"
+git -C "$hash_repo" commit -q -am other
+git -C "$hash_repo" checkout -q main
+printf 'mine\n' > "$hash_repo/f.txt"
+git -C "$hash_repo" commit -q -am mine
+git -C "$hash_repo" checkout -q --detach main
+git -C "$hash_repo" merge other >/dev/null 2>&1
+op_assert_inflight merge "mid-MERGE-under-a-hash-root fixture" "$hash_repo"
+run_case_head "detached mid-MERGE under a root containing '#': the printed remedy still runs" \
+  "$hash_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$hash_repo")" \
+  'merge --abort' 'DETACHED' 'NEITHER ending re-attaches HEAD' 'Either ending'
+
 echo
 echo "Pass: $pass  Fail: $fail"
-if [[ "$fail" -gt 0 ]]; then
+if [[ "$fixture_fail" -gt 0 ]]; then
+  echo "Fixture failures: $fixture_fail  (not cases -- a fixture that did not build)"
+fi
+if [[ "$fail" -gt 0 || "$fixture_fail" -gt 0 ]]; then
   echo
   printf '%b' "$fail_log"
   exit 1
