@@ -606,6 +606,15 @@ op_repo="$TMPDIR/op-repo"
 op_wt="$TMPDIR/op-wt"
 opg() { git -C "$op_repo" -c user.email=t@t -c user.name=t "$@"; }
 git init -q -b main "$op_repo"
+# Identity in the REPO's own config, not only in the `opg` wrapper's `-c` flags.
+# The resulting-HEAD rows run the remedy the hook PRINTS, verbatim, and that line
+# carries no `-c` -- so a machine with no global identity answers `Committer
+# identity unknown` (exit 128) and the row blames the remedy for the fixture.
+# Measured: green locally, red on the CI runner, which has no global identity.
+# Setting it here is also the more faithful fixture: a user copy-pasting that
+# line has an identity, and the row is about whether the line WORKS.
+git -C "$op_repo" config user.email hook-test@example.invalid
+git -C "$op_repo" config user.name "Hook Test"
 touch "$op_repo/.markgate.yml"
 mkdir -p "$op_repo/sub"
 touch "$op_repo/sub/f.txt"
