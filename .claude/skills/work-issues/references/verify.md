@@ -18,17 +18,15 @@ confidently asserted the opposite).
   fix, file the structural one, and reference it from the narrow fix so the
   choice reads as made, not missed.
 - **But filing the structural fix does not STOP the cascade.** In
-  go-to-k/cdk-local#596 (2026-08-27) it was filed at round five and the
-  rounds ran to TWELVE (eleven instances of one class, five introduced by
-  fixes). What ended it was making the artifact **CLAIM LESS**. The tell:
-  each round's fix is more SOPHISTICATED than the last, while the plain
-  rc-only sweeps nearby were correct the whole time — `grep -q 'does not exist'`
-  also matches botocore's `The source_profile ... does not exist`, raised
-  before any network call, so a broken profile reported CLEAN having queried
-  nothing. The sophistication WAS the defect; the sweep now prints raw output
-  and names both outcomes instead of emitting a verdict — a command that
-  claims nothing cannot claim something false. Expect it to feel like a
-  retreat; it is one, and it converges.
+  go-to-k/cdk-local#596 (2026-08-27) it was filed at round five and the rounds
+  ran to TWELVE. What ended it was making the artifact **CLAIM LESS**: the tell
+  is that each round's fix is more SOPHISTICATED than the last while the plain
+  rc-only sweeps nearby were right all along (a `grep -q 'does not exist'` also
+  matched botocore's own `source_profile ... does not exist`, raised before any
+  network call, so a broken profile reported CLEAN having queried nothing). The
+  sweep now prints raw output and names both outcomes instead of emitting a
+  verdict — a command that claims nothing cannot claim something false. Expect
+  it to feel like a retreat; it is one, and it converges.
   - **Fence the REMEDIATION, not just the detection.** The last instance was
     in the repair: `cdk destroy` on names built without the required suffix
     exits 0 SILENTLY, and every fence pinned the DETECTION, so restoring that
@@ -47,6 +45,21 @@ confidently asserted the opposite).
   that every round's finding is a new INPUT CLASS the code got wrong rather
   than a new place the logic was wrong — when that is the shape, stop
   patching instances.
+- **When the shape is "THE FENCE COVERS ONE ROW OF A MULTI-DIMENSIONAL
+  GUARANTEE", widen it to the CROSS PRODUCT before the next fix.** Unlike the
+  shapes around it this is a defect in what can OBSERVE the fix, so a fix can be
+  wholly INERT with every signal green. The tell: the guarantee ranges over two
+  independent things (position AND reader, mode AND platform) while the suite
+  varies one at a time. Count the cells; if the fence has fewer assertions than
+  cells, name the uncovered ones and probe one. **The uncovered cell is not
+  random** — a hazard lives there BECAUSE that cell behaves differently, which
+  is why a "representative case per dimension" skips it. Measured 2026-09-03,
+  go-to-k/cdkd#2466: "every scalar round-trips" spans 4 positions x 2 YAML
+  readers; the suite covered 4 under 1.2 plus ONE under 1.1, and `<<` (the 1.1
+  merge key, special only as a KEY, only under 1.1) sat in the missing cell — so
+  its fix shipped inert through a full 3-axis round, the library's merge tag
+  discarding a correctly-set style. Widening the 1.1 arm to four positions reds
+  it; nothing did before.
 - **When the shape is "TWO SPELLINGS OF ONE QUESTION", the fix is to make both
   sites use ONE predicate verbatim — not to write a better second spelling.**
   A better spelling looks like a fix and passes its own test.
@@ -75,22 +88,18 @@ confidently asserted the opposite).
   written, passed, mutation-probed and reverted, so none of it is rebuilt.
 
 **When the fix WIDENS what a guard catches, the thing you removed may have been
-load-bearing — and the instrument you own for measuring that can be
-structurally blind to it.** Ask before believing a widening safe: *what was
-the thing I am deleting actually doing?* go-to-k/cdkd#2333 (2026-08-27,
-WITHDRAWN after four review rounds): dequoting structural tokens closed a real
-bypass (`git "commit"` evaded every gate), but go-to-k/cdkd#2156 had widened
-`GATE_FLAGS` so after a `-C` any later token can occupy the verb slot — the
-only brake was that a QUOTED later token happened not to match. Removing it
-made `git show "commit"` and 15 more ordinary commands BLOCK, `check-gate` on
-a feature worktree included. The bypass was real and the fix was worse.
-
-**The survey could not have told you.** `false-refusal-survey.sh` returned
-`NEWLY CONSIDERED 0` because every text it probes lands in ARGUMENT position,
-never the flag PREFIX — where the change acted. A measurement taken in the
-wrong position is not weak evidence, it is none, and it reads identically to
-the real thing. Name the POSITION your change acts in, confirm the instrument
-probes it, and build the arm that does before quoting a zero.
+load-bearing — and your instrument for measuring that can be structurally blind
+to it.** Ask before believing a widening safe: *what was the thing I am
+deleting actually doing?* go-to-k/cdkd#2333 (2026-08-27, WITHDRAWN after four
+rounds): dequoting structural tokens closed a real bypass, but the only brake
+on a widened `GATE_FLAGS` was that a QUOTED later token happened not to match,
+so removing it BLOCKED `git show "commit"` and 15 more ordinary commands. The
+bypass was real and the fix was worse — and the survey could not have told you,
+returning `NEWLY CONSIDERED 0` because every text it probes lands in ARGUMENT
+position, never the flag PREFIX where the change acted. A measurement taken in
+the wrong position is not weak evidence, it is none, and it reads identically
+to the real thing: name the POSITION your change acts in, confirm the
+instrument probes it, and build the arm that does before quoting a zero.
 
 - **Derive the reader population before patching readers.** Four rounds each
   found one more consumer deciding a gate outcome from the same text; one
@@ -349,14 +358,13 @@ under a 120s cap — because `docker version` answering says nothing about
 registry networking, and that is the half that fails.
 
 **Do NOT restart Docker to fix a hang — on Docker Desktop the restart IS the
-likelier cause.** The daemon routes registry traffic through
-`http.docker.internal:3128`, a proxy the Docker Desktop **application**
-serves. Quit-and-reopen can leave the self-respawning `com.docker.backend`
-watchdog up while the app never finishes launching — every pull then waits on
-a proxy that is not there, while `docker version` keeps answering over the
-local socket (measured 2026-08-20: four consecutive pulls hung, `pkill` could
-not clear it, only a manual app restart recovered). Diagnose in this order
-and STOP at the first line that explains the symptom:
+likelier cause.** The daemon routes registry traffic through a proxy the
+Docker Desktop **application** serves, so a quit-and-reopen can leave the
+`com.docker.backend` watchdog up while the app never finishes launching: every
+pull then waits on a proxy that is not there while `docker version` keeps
+answering over the local socket (2026-08-20, four consecutive hung pulls; only
+a manual app restart recovered). Diagnose in this order and STOP at the first
+line that explains the symptom:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/  # 401 = HOST networking is fine
@@ -709,20 +717,15 @@ the lane's assumptions, not about the diff.
 **A reviewer's scratch COPY of a worktree is not detached from git, so its
 `git add -A` writes to the LIVE tree.** A linked worktree's `.git` is a FILE
 holding `gitdir: <repo>/.git/worktrees/<name>`, and `cp -R` carries the
-pointer: every git command inside the copy reads and WRITES the real
-worktree's index and HEAD. Measured 2026-08-29: a read-only code reviewer
-copied a lane's worktree, ran `git add -A` there, and staged three tracked
-DELETIONS under `tests/integration/local-invoke-layers/` in the live tree,
-which the lane's next commit would have shipped. Nothing announced it — the
-reviewer believed it was on a copy. So two lines belong in every read-only
-reviewer's brief, on top of §5's peer-probe rules: **run no WRITING git verb**
-(`add` / `commit` / `restore` / `checkout` / `stash` / `clean`) anywhere, copy
-included — and if you must copy, copy OUTSIDE every repository, since deleting
-the `.git` file does not detach the copy, it only makes discovery walk UPWARD
-into whatever encloses it; and **report the TARGET worktree's
-`git status --porcelain` before AND after the round.** The before/after pair is
-what makes damage attributable rather than a mystery a later agent finds: that incident surfaced only because the NEXT
-reviewer volunteered "the tree went dirty mid-review, not mine", after which
-the responsible one self-reported and repaired the index with `git restore
---staged` (index only, never the working tree). Every reviewer given these two
-lines in that run reported clean both ways.
+pointer, so every git command inside the copy reads and WRITES the real
+worktree's index and HEAD. Measured 2026-08-29: a read-only reviewer copied a
+lane's worktree, ran `git add -A`, and staged three tracked DELETIONS in the
+live tree — surfaced only because the NEXT reviewer volunteered that the tree
+had gone dirty mid-review. So two lines belong in every read-only reviewer's
+brief, on top of §5's peer-probe rules: **run no WRITING git verb** (`add` /
+`commit` / `restore` / `checkout` / `stash` / `clean`) anywhere, copy included —
+and if you must copy, copy OUTSIDE every repository, since deleting the `.git`
+file does not detach the copy, it only makes discovery walk UPWARD; and
+**report the TARGET worktree's `git status --porcelain` before AND after the
+round**, which is what makes damage attributable rather than a mystery. Every
+reviewer given these two lines reported clean both ways.

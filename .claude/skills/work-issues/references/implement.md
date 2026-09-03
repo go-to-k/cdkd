@@ -76,14 +76,13 @@ directions, checked on both sides.
 
 The `&&` is deliberate: unchained, a failed `fetch` still branches, off a stale
 `origin/main`. **`main-tree-branch-gate` is the backstop for running that line
-after a cwd reset, and it now covers this spelling** — it matches in COMMAND
-POSITION and judges the matched SEGMENT, so the chained form is refused (rc=2)
-while `git fetch origin && git switch main` still passes. It did NOT always:
-measured 2026-08-31, the copy then on `main` skipped to the FIRST `git` token,
-read `sub=fetch` and exited 0 — the spelling this file PRINTS was the one it
-missed, while a bare `git switch -c <b> origin/main` was refused. Fixed in
-go-to-k/cdkd#2406; settle which copy is deployed by CONTENT, never by a commit
-subject: `git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c
+after a cwd reset, and since go-to-k/cdkd#2406 it covers this spelling** — it
+matches in COMMAND POSITION and judges the matched SEGMENT, so the chained form
+is refused (rc=2) while `git fetch origin && git switch main` still passes. An
+older copy skipped to the FIRST `git` token and exited 0 on exactly the
+spelling this file PRINTS, so settle which copy a stale worktree has by
+CONTENT, never by a commit subject: `git show
+origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c
 gate_verb_rest_each` prints non-zero.
 
 **`mise trust` is not optional here, and skipping it fails in the direction that
@@ -141,10 +140,10 @@ from the instance you happened to hit is not a count** — and `Effort` /
 `Estimate` are what a future session budgets from.
 
 **This applies to a FIX ROUND at least as much as to the original find, and
-that is where it actually gets skipped:** the fix lands on ONE call site while
-a sibling keeps the defect, usually shipping a comment asserting completeness.
-Measured 2026-08-27, FIVE times on two lanes, the last two in edits made while
-fixing the previous instance:
+that is where it gets skipped:** the fix lands on ONE call site while a sibling
+keeps the defect, usually shipping a comment asserting completeness. Measured
+2026-08-27, FIVE times on two lanes, the last two while fixing the previous
+instance:
 
 | Fix | Sibling that kept the defect |
 | --- | --- |
@@ -155,7 +154,7 @@ fixing the previous instance:
 | completing that second enumeration | a third list on the same LINE |
 
 Every one was found by ENUMERATING readers or call sites with grep; none by
-re-reading the diff (three had review rounds that read the diff and missed it).
+re-reading the diff (three had review rounds that read it and missed them).
 After writing a fix, before believing it:
 
 ```bash
@@ -197,16 +196,15 @@ measurement reads as evidence and is not.
 
 **Any CLAIM relayed from a subagent's report is unearned in the same way — not
 just a count — and it is the harder half, because there is no command to paste:
-you never ran one.** One 2026-08-26 run published FOUR relayed counts, every
-one wrong ("all nine sibling `clearOnUpdateRemoval` sites" — grep found **78**
-across 14 provider files; "nine mutation probes" — fourteen; "ten unit shapes"
-— thirteen; "a third copy" — nine existed), two into GitHub artifacts that
-outlive the session. Non-numeric claims fail identically: pins reported "each
-probed adversarially" had a PATH decoy never placed on PATH, and deleting six
-left the suite 65/65 green. The tell is grammatical: a number arriving as a
-WORD ("nine sites") was counted by a person or an agent; one arriving as
-output was counted by a machine. Before a relayed claim is published anywhere
-durable, run the query yourself and put it in the text.
+you never ran one.** One 2026-08-26 run published FOUR relayed counts, every one
+wrong ("all nine sibling `clearOnUpdateRemoval` sites" — grep found **78** across
+14 files; "nine mutation probes" — fourteen; "ten unit shapes" — thirteen; "a
+third copy" — nine existed), two into GitHub artifacts outliving the session.
+Non-numeric claims fail identically: pins reported "each probed adversarially"
+had a PATH decoy never placed on PATH, and deleting six left the suite 65/65
+green. The tell is grammatical — a number arriving as a WORD was counted by a
+person or an agent, one arriving as output by a machine. Run the query yourself
+before publishing a relayed claim anywhere durable.
 
 **Before deriving a fix, grep the repo for the SYMPTOM -- something may already
 have solved it.** Different from the sibling-site sweep: that greps the
@@ -217,6 +215,26 @@ go-to-k/cdkd#2227 lane spent a real-AWS round trip rediscovering (SDK v3's
 region-redirect middleware mishandling the empty-body HEAD 301 → synthetic
 `UnknownError`), plus the fail-OPEN trap the fix had to avoid — a grep for
 `UnknownError` or `followRegionRedirects` would have found it in seconds.
+
+**And grep the ISSUE NUMBER — a THIRD sweep, with a different key.** Closing an
+issue falsifies every comment that CITES it, and the dangerous ones are
+invisible to both sweeps above: phrased as **deliberate non-assertions**, they
+carry neither the defect's shape nor its symptom, only a present-tense reason
+for not testing it.
+
+```bash
+git grep -n "<the issue number>" -- src tests docs .claude
+```
+
+Measured 2026-09-03 (go-to-k/cdkd#2466 closing go-to-k/cdkd#2421): four live
+citations, not all reachable from a symptom grep — a forward reference in
+`synth.ts`, an "until it is fixed" bullet in `docs/cli-reference.md`, a
+changelog entry in the present tense, and the valuable one, an entire missing
+test in `tests/integration/local-invoke/verify.sh` ("Deliberately NOT asserted:
+that the template PARSES") sitting in a fixture that already synthesized.
+Adding it cost nothing and immediately found a SECOND failure mode the issue
+never named. Such a non-assertion is usually the cheapest high-value test in
+the change: its author already decided the assertion belonged there.
 
 **A defect the sweep turns up that this lane is NOT fixing gets FILED, and
 the rules for that are their own stage file: `references/filing.md` (§5-f)**
@@ -270,29 +288,27 @@ clean result from the wrong shape is indistinguishable from a clean subject.**
 Auditing go-to-k/cdkd#2096 (2026-08-20) produced SIX confident wrong answers,
 each from a different plausible sampling shape, each hiding a real secret:
 
-- **Newest-N.** The 6 NEWEST state versions cleared `appsync` while versions
+- **Newest-N.** The 6 newest state versions cleared `appsync` while versions
   12-45 held an API key in 17 of 33 — the newest come from the run most likely
   already fixed. Sample across the range, or grep everything.
-- **One global needle.** A single `cdkd-known-*` grep reported
-  `secrets-array-nested` clean while 5 of 7 versions carried
-  `cdkd-array-nested-pw-789`. Each fixture spells its OWN literal — derive the
-  needle per subject, or assert on a needle-INDEPENDENT observable (surviving
-  version count == 0).
+- **One global needle.** Each fixture spells its OWN literal, so a single
+  `cdkd-known-*` grep reported a fixture clean while 5 of 7 versions carried
+  `cdkd-array-nested-pw-789`. Derive the needle per subject, or assert on a
+  needle-INDEPENDENT observable (surviving version count == 0).
 - **A name derived from convention.** `cognito-resource-server`'s stack is
   `CognitoResourceServerStack`, not the `Cdkd…Example` the directory implies;
-  the convention probe returned `0 of 1`. Read the identifier from the subject
+  the probe returned `0 of 1`. Read the identifier from the subject
   (`verify.sh`'s `STACK=`), never infer it.
-- **A silent parse failure inside a pipe.** `aws s3api get-object …
-  /dev/stdout` emits metadata beside the body, so a `json.load` died and the
-  loop counted `0 of 16`; a text match found 4. A parse that can fail must
-  report failing, not fall through to a count.
+- **A silent parse failure inside a pipe.** `s3api get-object … /dev/stdout`
+  emits metadata beside the body, so a `json.load` died and the loop counted
+  `0 of 16` where a text match found 4. A parse that can fail must report
+  failing, not fall through to a count.
 - **A per-page aggregate.** `--query 'length(Versions)'` applies PER PAGE and
-  concatenates: a 1189-entry prefix prints `1000\n189`, and `[ "$n" -ne 0 ]`
-  on that is a bash error. Count ROWS of a projection instead.
-- **Grepping the layer the subject does not use.** `AWS::ApiGateway::ApiKey`
-  is registered to NO provider — it takes the generic Cloud Control readback
-  whose model includes `Value`, so searching `src/provisioning/providers/**`
-  cannot see it.
+  concatenates: a 1189-entry prefix prints `1000\n189`. Count ROWS of a
+  projection instead.
+- **Grepping the layer the subject does not use.** `AWS::ApiGateway::ApiKey` is
+  registered to NO provider — it takes the generic Cloud Control readback whose
+  model includes `Value`, so `src/provisioning/providers/**` cannot see it.
 
 The through-line: every one FAILED CLEAN. Treat "nothing here" as the claim
 needing evidence — run the shape against a case you KNOW is dirty first, and
@@ -314,25 +330,22 @@ shape past `trap`: before adding to any single-slot registration — a signal
 handler, a callback field, an `EXIT` hook — count what is already there.
 
 **COMMIT the round's real fixes BEFORE running any mutation probe.** A probe
-deliberately breaks the tree, so an interruption mid-probe (a session limit, a
-crash) leaves deliberate breakage and unfinished fixes in ONE undifferentiated
-dirty tree. Measured 2026-09-02 on the go-to-k/cdk-real-drift#1841 lane: the
-lane subagent died at the 5-hour session limit mid-probe with 9 dirty files,
-and the resuming session had to read the full diff to establish that none of
-it was probe wreckage before it could commit. With a pre-probe commit the
-separator is just `git diff` — anything unstaged after a probe is the probe's
-(mirrored from go-to-k/cdk-real-drift#1853; go-to-k/cdkd#2416 is this repo's
-filing).
+deliberately breaks the tree, so an interruption mid-probe leaves deliberate
+breakage and unfinished fixes in ONE undifferentiated dirty tree. Measured
+2026-09-02 (go-to-k/cdk-real-drift#1841): a lane subagent died at the session
+limit mid-probe with 9 dirty files, and the resuming session had to read the
+full diff to establish none of it was probe wreckage. With a pre-probe commit
+the separator is just `git diff` — anything unstaged after a probe is the
+probe's (go-to-k/cdkd#2416 is this repo's filing).
 
 **Restore a probe from a BYTE-EXACT COPY, never an inverse string replace.**
-`cp <file> <backup>` before, `cp <backup> <file>` after, proved by
-`git diff -- <file>` printing nothing. An inverse replace is a second edit with
-its own failure modes; Python's `str.replace('', x)` is the sharp one, matching
-between EVERY character so the "revert" rewrites the file. Measured 2026-09-02
-(go-to-k/cdk-real-drift#1854): an 11 KB stage file became 838 KB, and the three
-probes AFTER it scored a corrupted subject, so their verdicts meant nothing
-while still reading as evidence. The DOWNSTREAM probes are the real cost — the
-corrupted file is obvious, they are not.
+`cp <file> <backup>` before, `cp <backup> <file>` after, proved by `git diff --
+<file>` printing nothing. An inverse replace is a second edit with its own
+failure modes; Python's `str.replace('', x)` is the sharp one, matching between
+EVERY character so the "revert" rewrites the file (2026-09-02,
+go-to-k/cdk-real-drift#1854: an 11 KB stage file became 838 KB, and the three
+probes AFTER it scored a corrupted subject). The DOWNSTREAM probes are the real
+cost — the corrupted file is obvious, they are not.
 
 **A mutation probe proves a test discriminates only if it changes the value
 the test READS.** Four vacuous tests shipped across three lanes on 2026-08-19,
@@ -452,17 +465,16 @@ having run nothing (2026-08-20; one reviewer had FOUR).
 the void-probe rule above carries the two false greens that ride this command.
 
 **A repo-wide SCANNER test is calibrated against the PRE-FIX tree, not written
-from the issue's wording.** When the test globs the tree, the issue's
-signature is what its author noticed on ONE instance, never a rule with a
-measured false-positive rate. Run the candidate rule over the still-broken
-tree FIRST, read every hit, and tighten until all are genuine. Done for
-go-to-k/cdkd#1990: 13 bare `#N` hits, all real, while the same regex without
-stripping frontmatter and code spans would have flagged legitimate examples as
-violations. Two markdown-scanner sub-traps: strip on the WHOLE text, not per
-line — an inline code span straddling a hard-wrapped line break makes a
-per-line pass pair one span's closing backtick with the next span's opening
-one and invent findings — and report the HIT's own line, not the start of the
-stripped region.
+from the issue's wording.** The issue's signature is what its author noticed on
+ONE instance, never a rule with a measured false-positive rate. Run the
+candidate over the still-broken tree FIRST, read every hit, and tighten until
+all are genuine (go-to-k/cdkd#1990: 13 bare `#N` hits, all real, while the same
+regex without stripping frontmatter and code spans would have flagged
+legitimate examples). Two markdown sub-traps: strip on the WHOLE text, not per
+line — an inline code span straddling a hard wrap makes a per-line pass pair
+one span's closing backtick with the next span's opening one and invent
+findings — and report the HIT's own line, not the start of the stripped
+region.
 
 **Calibrating against the broken tree is only HALF the measurement, and the
 half it leaves out is the one that lets a fence ship inert.** The pre-fix tree
@@ -472,14 +484,13 @@ defeat your exemption logic. Follow calibration with probes against the REAL
 tree:
 
 - **Write the defect in the spelling a PERSON would write, not the one that is
-  easiest to inject.** go-to-k/cdkd#2052 (2026-08-26): a prefix-sync fence
-  split on `'custom-resource-responses'` *with both quote characters*, so the
-  probe's `` `${'...'}/` `` reds it while the spelling anybody would type —
-  `listRawObjects('custom-resource-responses/')`, trailing slash inside the
-  quote — sailed through, as did any copy outside the fence's hand-written file
-  list. Its author had just read the "grep for the SHAPE, not for a NAME" rule.
-  Mutate a fence the way a future contributor would, and derive the population
-  rather than listing it.
+  easiest to inject.** go-to-k/cdkd#2052 (2026-08-26): a prefix-sync fence split
+  on `'custom-resource-responses'` *with both quote characters*, so the probe's
+  `` `${'...'}/` `` reds it while the spelling anybody would type — trailing
+  slash inside the quote — sailed through, as did any copy outside the fence's
+  hand-written file list. Its author had just read the "grep for the SHAPE" rule
+  above. Mutate a fence the way a future contributor would, and derive the
+  population rather than listing it.
 - **Write the defect in every spelling the language allows** and confirm each
   is flagged. go-to-k/cdkd#2111 (2026-08-20): a scanner for
   `options.region || process.env['AWS_REGION']` calibrated perfectly (19
@@ -495,16 +506,15 @@ tree:
   and missed the files that accept the flag. Derive from what DECLARES the
   option, and make the predicate per-READ rather than per-file.
 
-  The worst population is one derived from the DEFECT itself, because deleting
-  the required thing then drops the subject OUT of the population instead of
-  failing. Sibling-repo probes (2026-08-20) found four such fences in one tree
-  (go-to-k/cdk-real-drift#1797): a gate-parity test selecting gates by
-  `condition.includes('Bash(git commit*)')` stayed 7/7 green with two gates
-  disarmed, and a hook-coverage test enumerating `*.test.sh` could never
-  report the hook with no harness. A STATEFUL scanner fails the same way with
-  no OR: go-to-k/cdk-local#537's scan flipped one `inFence` boolean on any
-  fence marker, so a single nested fence inverted it and muted every later
-  check silently.
+  The worst population is one derived from the DEFECT itself: deleting the
+  required thing drops the subject OUT of the population instead of failing.
+  Four such fences in one tree (2026-08-20, go-to-k/cdk-real-drift#1797) — a
+  gate-parity test selecting gates by `condition.includes('Bash(git commit*)')`
+  stayed 7/7 green with two gates disarmed, and a hook-coverage test
+  enumerating `*.test.sh` could never report the hook with no harness. A
+  STATEFUL scanner fails the same way with no OR: go-to-k/cdk-local#537's scan
+  flipped one `inFence` boolean on any fence marker, so a single nested fence
+  inverted it and muted every later check.
 
   **A population derived from an OPTIONAL language feature is derivable-around
   for free, and a type annotation is the commonest one.** A 2026-08-26 fence
@@ -557,20 +567,19 @@ CLOSED rather than on a better pattern:
   `composes`); `init` emits six, dropping the two a repo is likeliest never to
   have written.
 - **Then the spelling treadmill, which is the real lesson.** Each round patched
-  the one spelling that had just got through while the next sailed past. Block
-  items only -> a FLOW list passed. Unquoted keys only -> `"exclude":` passed.
-  A block scan terminating on `/^ {2}\S/` -> a two-space COMMENT ended it early
-  and left all fourteen cases GREEN while markgate really did subtract. A "raw
-  text" tripwire, added so the guard would not read the parser it protects ->
-  another hand-rolled pattern over the same text, inheriting every blind spot.
-  Last, a YAML merge key (`<<: *anchor`) splicing an `exclude` declared on a
-  SIBLING gate — which that tripwire, added as exactly this backstop, did not
-  fire on either, grepping only the `check` block. go-to-k/cdkd#2383 tallies it
-  as **four spellings across four rounds, each patch moving the hole rather
-  than closing it**. **Three spellings in three rounds is the signal to stop
-  patterning and change instrument** — a YAML parser was a production
-  dependency the whole time, and a third-party, versioned, separately-tested
-  library is not the fence checking its own work.
+  the spelling that had just got through while the next sailed past: block
+  items only, so a FLOW list passed; unquoted keys only, so `"exclude":`
+  passed; a block scan terminating on `/^ {2}\S/`, which a two-space COMMENT
+  ended early, leaving all fourteen cases GREEN while markgate really did
+  subtract; then a "raw text" tripwire that was itself another hand-rolled
+  pattern over the same text, inheriting every blind spot — and it did not fire
+  on the YAML merge key (`<<: *anchor`) splicing an `exclude` from a SIBLING
+  gate, the very case it was added to backstop. go-to-k/cdkd#2383 tallies four
+  spellings across four rounds, each patch moving the hole rather than closing
+  it. **Three spellings in three rounds is the signal to stop patterning and
+  change instrument** — a YAML parser was a production dependency the whole
+  time, and a third-party, versioned, separately-tested library is not the
+  fence checking its own work.
 - **Neither escape was a fifth pattern.** Either parse for real — with
   `parse(text, { merge: true })`, without which `yaml` reports the gate's keys
   as `["hash", "<<"]` and its `exclude` as undefined — then ALLOW-LIST the
@@ -664,10 +673,9 @@ code "cannot have changed behaviour".
 2026-08-19:**
 
 - **Never force-push over a commit you did not author.** A lane agent resumed
-  with edits predating four orchestrator commits on its branch and
-  force-pushed; only the rebase preserved them. Say in the prompt: re-`git
-  fetch` and inspect the branch first, and if it carries work you did not
-  write, STOP and report.
+  with edits predating four orchestrator commits on its branch and force-pushed;
+  only the rebase preserved them. Say in the prompt: re-`git fetch` and inspect
+  the branch first, and STOP if it carries work you did not write.
 - **A new fixture literal must not collide with an existing assertion needle —
   and neither may a new fixture RESOURCE collide with an existing resource's
   VALUE.** The literal form: a `DB_URL` hard-coded `cdkd-user` as its URL user
@@ -685,8 +693,8 @@ code "cannot have changed behaviour".
   **And check the arm's shape actually exercises the fix before spending a run
   on it.** The obvious decoupling there (two separate RESOURCES) was VACUOUS:
   `perResourceSecrets` is keyed by logical id, so two resources get two
-  single-pair bags and redact correctly with or without the fix. One resource holding both leaves was the
-  only shape where the mechanism under test decides the answer.
+  single-pair bags and redact correctly either way. One resource holding both
+  leaves was the only shape where the mechanism under test decides the answer.
 - **Execute every read expression you write.** Two integ runs were lost to
   fixture code, not product defects: the literal collision above, and a `jq`
   assignment written through `to_entries[]`, which builds a new array and is
@@ -737,24 +745,23 @@ because it converts an open gap into a recorded assurance:
 
 - **A scratch harness was silently REPLACED by another agent's file of the
   same name.** Its `__main__` was `pass`, so four probes "passed" having
-  applied nothing — parallel agents share `/tmp`-style scratch space and pick
-  the same obvious filenames. Name scratch files per lane, and make every
-  probe emit a positive receipt it cannot produce without having run —
-  `bytes 41822 -> 41799; anchor now 0 (was 1); changed=True` — then read the
-  receipt rather than the exit code.
+  applied nothing — parallel agents share scratch space and pick the same
+  obvious filenames. Make every probe emit a positive receipt it cannot produce
+  without having run — `bytes 41822 -> 41799; anchor now 0 (was 1)` — and read
+  the receipt rather than the exit code.
 
-  **This rule was already written here and was broken THREE times in one run
+  **That rule was already written here and was broken THREE times in one run
   (2026-08-26), so stop asking agents to invent the name: the ORCHESTRATOR
   assigns each dispatched agent a unique scratch directory IN ITS PROMPT**
   (`$SCRATCHPAD/lane<issue>-private/`, `$SCRATCHPAD/rev-<role>-<sha>/`), plus
-  "never a bare generic name in the scratchpad root". Decided once per run, it
-  cannot be re-derived wrongly per agent. Without it: lane B ran lane A's whole
-  probe table twelve times against lane A's worktree; one reviewer's mutation
-  was restored from `HEAD` by another; and a TRESPASS was reported that had not
-  happened, the `_old-<name>.test.sh` copy a reviewer is TOLD to write beside
-  its subject being indistinguishable, from inside the worktree, from a peer
-  writing there. Only the orchestrator can know which is which. A hook was
-  rejected: it would have to match command TEXT for scratch-path writes, the
+  "never a bare generic name in the scratchpad root" — decided once per run, it
+  cannot be re-derived wrongly per agent. Without it, one lane ran another's
+  whole probe table against that lane's worktree, one reviewer's mutation was
+  restored from `HEAD` by another, and a TRESPASS was reported that had not
+  happened (the `_old-<name>.test.sh` copy a reviewer is TOLD to write beside
+  its subject is indistinguishable, from inside the worktree, from a peer
+  writing there — only the orchestrator can tell). A hook was rejected: it
+  would have to match command TEXT for scratch-path writes, the
   unbounded-bypass shape go-to-k/cdkd#2156 documents.
 - **A probe's FIXTURE, not its mutation, decided the outcome.** A region test
   set `AWS_REGION` to the CONSUMER's region, where the correct code and the
