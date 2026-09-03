@@ -426,9 +426,10 @@ const EXEMPT_SHAPES: readonly Exemption[] = [
   {
     what: 'generateSecretString — the value is minted locally and never persisted or read back',
     re: /generateSecretString/,
-    // composite-stack, event-driven, full-stack-demo, secrets-rotation-schedule
-    // and local-run-task-from-state (which is in the seeding set anyway,
-    // through `unsafePlainText`). Measured at 7 before fixture sources were
+    // composite-stack, event-driven, full-stack-demo, secrets-rotation-schedule,
+    // secretsmanager-update-value-source and local-run-task-from-state (the
+    // last two are in the seeding set anyway, through `unsafePlainText`).
+    // Measured at 7 before fixture sources were
     // comment-stripped: `secrets-dynamic-ref` and `secrets-array-nested` each
     // carry a COMMENT saying generateSecretString is deliberately NOT used, and
     // the floor was counting those. A floor derived from comments is a floor on
