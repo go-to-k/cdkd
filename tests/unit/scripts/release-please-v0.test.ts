@@ -74,18 +74,29 @@ describe('release-please v0 fence', () => {
     expect(guard, 'v0 guard step missing from the publish job').toBeDefined();
     // Pin each guard arm with its own exit 1 — the run block carries several
     // `exit 1`s, so a bare toContain('exit 1') would stay green if one arm
-    // were softened to a warning.
-    expect(guard?.run).toMatch(
-      /if \[ "\$PKG_VERSION" != "\$VERSION" \]; then\n[^]*?\bexit 1\n\s*fi/,
+    // were softened to a warning. Each arm's body is bounded at its FIRST
+    // `fi` line before asserting, so the lazy match cannot cross into a
+    // sibling arm and be satisfied by that arm's exit 1.
+    const pkgArm = guard!.run!.match(
+      /if \[ "\$PKG_VERSION" != "\$VERSION" \]; then\n([^]*?)\nfi\n/,
     );
-    expect(guard?.run).toMatch(/if \[ "\$MAJOR" != "0" \]; then\n[^]*?\bexit 1\n\s*fi/);
+    expect(pkgArm, 'PKG_VERSION mismatch arm missing').not.toBeNull();
+    expect(pkgArm![1]).toContain('exit 1');
+    const majorArm = guard!.run!.match(/if \[ "\$MAJOR" != "0" \]; then\n([^]*?)\nfi\n/);
+    expect(majorArm, 'MAJOR != 0 arm missing').not.toBeNull();
+    expect(majorArm![1]).toContain('exit 1');
     // The 0.* case arm is the third, independent spelling of the same fence.
     expect(guard?.run).toContain('0.*)');
     expect(guard?.run).toMatch(/\*\)\n[^]*?\bexit 1\n/);
 
     const guardIndex = steps.indexOf(guard!);
+    // Exact pin on purpose: any flag added to npm publish (e.g. --provenance)
+    // must be a deliberate test edit, not a silent drift of what ships.
     const publishIndex = steps.findIndex((s) => s.run?.trim() === 'npm publish');
-    expect(publishIndex, 'npm publish step missing').toBeGreaterThan(-1);
+    expect(
+      publishIndex,
+      'no step whose run is exactly `npm publish` (a flag change must update this pin)',
+    ).toBeGreaterThan(-1);
     expect(guardIndex, 'v0 guard must run before npm publish').toBeLessThan(publishIndex);
   });
 
