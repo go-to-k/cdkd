@@ -213,9 +213,17 @@ describe('site navigation config', () => {
     for (const file of walkMarkdown(DOCS)) {
       const slug = relative(DOCS, file).replace(/\.md$/, '');
       checked += 1;
-      if (navPaths.has(slug) || exempt.has(slug)) continue;
       const head = readFileSync(file, 'utf8').slice(0, 400);
-      if (/^---\n[\s\S]*?\bunlisted:\s*true\b[\s\S]*?\n---/.test(head)) continue;
+      // Scope the test to the FIRST frontmatter block only — a lazy
+      // whole-head match would also accept "unlisted: true" appearing in
+      // body prose before a `---` thematic break (reviewer note).
+      const fm = /^---\n([\s\S]*?)\n---/.exec(head);
+      const unlisted = fm !== null && /\bunlisted:\s*true\b/.test(fm[1]);
+      if (navPaths.has(slug) && unlisted) {
+        failures.push(`docs/${slug}.md is BOTH a sidebar entry and unlisted (contradictory)`);
+        continue;
+      }
+      if (navPaths.has(slug) || exempt.has(slug) || unlisted) continue;
       failures.push(`docs/${slug}.md is neither in the sidebar nav nor unlisted`);
     }
     // Anti-vacuity floor: docs/ holds far more pages than this.
