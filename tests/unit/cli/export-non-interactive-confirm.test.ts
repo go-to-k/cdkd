@@ -290,7 +290,7 @@ describe('cdkd export prompts REFUSE a non-interactive stdin (issue #2275)', () 
       expect(message).toContain('The cdkd export confirmation prompt cannot run');
       expect(createInterfaceMock).not.toHaveBeenCalled();
       // This prompt sits INSIDE the lock's `try`, which is exactly why the
-      // refusal must not leak it: `docs/cli-reference.md` claims every lock
+      // refusal must not leak it: `docs/cli-destroy.md` claims every lock
       // held at a prompt is released in a `finally`, and this is the arm that
       // makes the claim true for `cdkd export`.
       expect(mockAcquireLock).toHaveBeenCalledTimes(1);

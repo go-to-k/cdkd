@@ -56,9 +56,25 @@ const navigation: SsgNavigationGroup[] = [
     ],
   },
   {
+    title: 'CLI Reference',
+    items: [
+      { title: 'Overview', path: '/cli-reference' },
+      { title: 'Deploy: waits & tuning', path: '/cli-deploy' },
+      { title: 'Deploy: safety flags', path: '/cli-deploy-safety' },
+      { title: 'diff', path: '/cli-diff' },
+      { title: 'drift', path: '/cli-drift' },
+      { title: 'Destroy flags & guards', path: '/cli-destroy' },
+      { title: 'bootstrap & gc', path: '/cli-bootstrap-gc' },
+      { title: 'rollback', path: '/cli-rollback' },
+      { title: 'export', path: '/cli-export' },
+      { title: 'scrub', path: '/cli-scrub' },
+      { title: 'publish-assets', path: '/cli-publish-assets' },
+      { title: 'events', path: '/cli-events' },
+    ],
+  },
+  {
     title: 'Reference',
     items: [
-      { title: 'CLI Reference', path: '/cli-reference' },
       { title: 'Supported Resources', path: '/supported-resources' },
       { title: 'Feature Parity', path: '/supported-features' },
       { title: 'State Management', path: '/state-management' },
@@ -160,7 +176,7 @@ const theme = defineTheme({
     // the headline bottoms out level with it.
     // min-height:unset kills the skin's min(100vh, 56rem) hero, which left a
     // screenful of dead space between the actions and the feature cards.
-    '.hero { display: grid; grid-template-columns: auto auto; grid-template-rows: 4.5rem 4.5rem auto auto; column-gap: 1.1rem; align-content: center; width: fit-content; margin-inline: auto; min-height: unset; padding-block: calc(var(--octc-header-height) + 3.5rem) 4rem; }',
+    '.hero { display: grid; grid-template-columns: auto auto; grid-template-rows: 4.5rem 4.5rem auto auto; column-gap: 1.1rem; align-content: center; width: fit-content; margin-inline: auto; min-height: unset; padding-block: calc(var(--octc-header-height) + 2.5rem) 3rem; }',
     '.hero-content { display: contents; }',
     '.hero-image { grid-column: 1; grid-row: 1 / span 2; margin: 0; align-self: center; }',
     '.hero-image img { width: 9rem; height: 9rem; }',
@@ -180,6 +196,8 @@ const theme = defineTheme({
     '.hero-text { grid-column: 2; grid-row: 2; align-self: end; margin: 0; text-align: left; font-size: 1.35rem; }',
     '.hero-tagline { grid-column: 1 / -1; grid-row: 3; margin: 1.75rem 0 0; max-width: 36.5rem; }',
     '.hero-actions { grid-column: 1 / -1; grid-row: 4; }',
+    // The skin flattens every control to sharp corners; round the hero CTAs.
+    '.hero-action { border-radius: 8px !important; }',
     // One skin layer draws .hero{border-bottom:2px} while the first feature
     // card draws its own border-top — a double rule between hero and cards.
     // Its ::after paints a bottom fade sized for the full-height hero, which
@@ -188,13 +206,19 @@ const theme = defineTheme({
     // motion (the skin slides them 8px right) and no scroll-rise animation.
     '.hero { border-bottom: 0; background: none; }',
     '.hero::after { display: none; }',
+    // Three selling-point cards in one row (the skin stacks them in a tall
+    // single column); collapse back to one column on narrow viewports.
+    '.features-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; column-gap: 2.5rem; }',
+    '@media (max-width: 900px) { .features-grid { grid-template-columns: 1fr; } }',
     '.feature-card { animation: none; }',
     '.feature-card:hover { transform: none; }',
     '@media (max-width: 768px) {',
-    '  .hero { grid-template-columns: 1fr; }',
+    '  .hero { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto auto; justify-items: center; text-align: center; }',
     '  .hero-image { grid-column: 1; grid-row: 1; justify-self: center; }',
-    '  .hero-name { grid-column: 1; grid-row: 2; }',
-    '  .hero-text { grid-column: 1; grid-row: 3; }',
+    '  .hero-image img { width: 6.5rem; height: 6.5rem; }',
+    '  .hero-name { grid-column: 1; grid-row: 2; align-self: auto; margin-top: 1.25rem; text-align: center; }',
+    '  .hero-name::after { display: none; }',
+    '  .hero-text { grid-column: 1; grid-row: 3; align-self: auto; margin-top: 0.75rem; text-align: center; }',
     '  .hero-tagline { grid-column: 1; grid-row: 4; margin-top: 1rem; }',
     '  .hero-actions { grid-column: 1; grid-row: 5; }',
     '}',

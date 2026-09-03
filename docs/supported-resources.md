@@ -53,7 +53,7 @@ with a rationale) sets. Any unhandled top-level property in the CFn schema
 triggers a fast-fail with the silently-dropped property name, the
 rationale, a 1-click GitHub issue link to request support, and the exact
 `--allow-unsupported-properties <ResourceType>:<PropertyName>` re-run
-command. See [docs/cli-reference.md `--allow-unsupported-properties`](cli-reference.md#allow-unsupported-properties-deploy)
+command. See [docs/cli-deploy-safety.md `--allow-unsupported-properties`](cli-deploy-safety.md#allow-unsupported-properties-deploy)
 for the escape hatch.
 
 Coverage data is generated from the CFn schema fixtures + each SDK

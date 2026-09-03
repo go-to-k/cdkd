@@ -24,7 +24,7 @@ modes, least to most waiting:
   and the wait cannot detect a failure).
 - **`--full-wait`** additionally waits everywhere CloudFormation does —
   the exact per-type set is the wait-semantics table in the
-  [CLI reference](cli-reference.md#wait-semantics).
+  [CLI reference](cli-deploy.md#wait-semantics).
 
 ## How to pick
 
@@ -43,7 +43,7 @@ holds ENIs and would `DependencyViolation` sibling deletes).
 ## What "done" means per resource type
 
 The single source of truth is the wait-semantics table in the
-[CLI reference](cli-reference.md#wait-semantics): what each mode does
+[CLI reference](cli-deploy.md#wait-semantics): what each mode does
 per resource type, next to what CloudFormation and Terraform do, plus
 the caveats (NAT egress, RDS final-snapshot timing, etc.). cdkd is
 template-compatible with CloudFormation but not

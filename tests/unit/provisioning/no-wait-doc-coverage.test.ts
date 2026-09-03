@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 /**
  * Enforce that every SDK provider whose stabilization wait is gated on
  * `CDKD_NO_WAIT` is documented in the `--no-wait` resource table of
- * `docs/cli-reference.md`. When a new provider adds a `--no-wait`-eligible
+ * `docs/cli-deploy.md`. When a new provider adds a `--no-wait`-eligible
  * async resource, its resource type MUST appear in that table — otherwise the
  * user-facing "which resources does --no-wait skip" list silently rots.
  *
@@ -17,13 +17,13 @@ import { dirname, join } from 'node:path';
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const providersDir = join(repoRoot, 'src', 'provisioning', 'providers');
-const cliReferencePath = join(repoRoot, 'docs', 'cli-reference.md');
+const deployDocPath = join(repoRoot, 'docs', 'cli-deploy.md');
 
 /** Extract the `## `--no-wait`` section (up to the next `## ` heading). */
 function noWaitSection(): string {
-  const md = readFileSync(cliReferencePath, 'utf8');
+  const md = readFileSync(deployDocPath, 'utf8');
   const start = md.indexOf('## `--no-wait`');
-  expect(start, 'cli-reference.md must have a `--no-wait` section').toBeGreaterThanOrEqual(0);
+  expect(start, 'cli-deploy.md must have a `--no-wait` section').toBeGreaterThanOrEqual(0);
   const rest = md.slice(start + 1);
   const next = rest.indexOf('\n## ');
   return next >= 0 ? rest.slice(0, next) : rest;
@@ -52,7 +52,7 @@ describe('--no-wait doc coverage', () => {
     expect(noWaitProviders.length).toBeGreaterThanOrEqual(8);
   });
 
-  it('documents each CDKD_NO_WAIT provider in the cli-reference --no-wait table', () => {
+  it('documents each CDKD_NO_WAIT provider in the cli-deploy.md --no-wait table', () => {
     const section = noWaitSection();
     const undocumented = noWaitProviders.filter((p) => {
       const types = handledTypes(p.source);
@@ -63,7 +63,7 @@ describe('--no-wait doc coverage', () => {
     });
     expect(
       undocumented.map((p) => p.file),
-      'these providers honor --no-wait but no handled type appears in the cli-reference --no-wait table; add a row'
+      'these providers honor --no-wait but no handled type appears in the cli-deploy.md --no-wait table; add a row'
     ).toEqual([]);
   });
 });

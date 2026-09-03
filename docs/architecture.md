@@ -1047,7 +1047,7 @@ Each layer has clear responsibilities
   whose parameter is a `SecureString` (issue
   [#1901](https://github.com/go-to-k/cdkd/issues/1901)). A `String` /
   `StringList` parameter is public config and stays resolved in state. See
-  [docs/cli-reference.md](cli-reference.md#cdkd-scrub-state-secret-hygiene-clean-audit).
+  [docs/cli-scrub.md](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit).
 - A **custom-resource `Data` value has no reference behind it**, so it takes a
   second channel: a handler that sets `NoEcho: true` on its cfn-response has
   every string in its `Data` persisted as `***` — in the custom resource's own

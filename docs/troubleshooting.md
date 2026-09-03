@@ -637,7 +637,7 @@ resource opted in.
    ```
 
 See the "Destroy data guards" section in
-[cli-reference.md](cli-reference.md) for the full semantics.
+[cli-destroy.md](cli-destroy.md#destroy-data-guards-non-empty-s3-buckets-and-image-carrying-ecr-repositories) for the full semantics.
 
 ### Issue: "has DeletionPolicy: Snapshot, but ..." refusal on delete
 
@@ -668,7 +668,7 @@ itself would refuse the attribute on.
    snapshotting.
 
 See the "DeletionPolicy: Snapshot" section in
-[cli-reference.md](cli-reference.md) for the per-type mechanics.
+[cli-destroy.md](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics.
 
 ---
 
@@ -820,7 +820,7 @@ auto-create was declined / opted out (`--no-auto-asset-storage`), failed
 the bucket/repo after opt-in. Deploys that stay in **legacy mode** publish
 to the CDK bootstrap bucket instead, which then must exist
 (`npx cdk bootstrap aws://123456789012/us-east-1`). See
-[cli-reference.md](cli-reference.md#cdkd-bootstrap).
+[cli-bootstrap-gc.md](cli-bootstrap-gc.md#cdkd-bootstrap).
 
 > **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkd reads destinations from the manifest (and, in cdkd-assets mode, redirects default-bootstrap-shaped destinations to cdkd-owned storage), so custom qualifiers are fully supported.
 
@@ -1480,7 +1480,7 @@ cdkd rollback MyStack --force # skip the confirmation prompt
   success) or the process was killed before the journal was written (a
   SIGKILL before the PUT). In the latter case use `cdkd deploy` to resume or
   `cdkd destroy` to clean up.
-- See [docs/cli-reference.md](cli-reference.md#cdkd-rollback-revert-a-failed-deploy) for the full flag
+- See [docs/cli-rollback.md](cli-rollback.md#cdkd-rollback-revert-a-failed-deploy) for the full flag
   reference and known limitations.
 
 ### Issue: destroy reports `N skipped` and exits 2

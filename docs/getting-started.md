@@ -53,7 +53,7 @@ to track deployed resources, plus cdkd-owned asset storage (by default a
 `cdkd-assets-{accountId}-{region}` bucket + a
 `cdkd-container-assets-{accountId}-{region}` ECR repo; custom names via
 `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
-[`cdkd bootstrap`](cli-reference.md#cdkd-bootstrap)). Per-region asset
+[`cdkd bootstrap`](cli-bootstrap-gc.md#cdkd-bootstrap)). Per-region asset
 storage is added automatically on the first `cdkd deploy` into each region.
 Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
 [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
@@ -69,7 +69,7 @@ under a previous cdkd version, the legacy region-suffixed state bucket name
 (`cdkd-state-{accountId}-{region}`) is still picked up automatically with a
 deprecation warning. Explicit pre-provisioning
 (`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
-`cdk bootstrap`: see [`cdkd bootstrap`](cli-reference.md#cdkd-bootstrap).
+`cdk bootstrap`: see [`cdkd bootstrap`](cli-bootstrap-gc.md#cdkd-bootstrap).
 
 ## Usage
 

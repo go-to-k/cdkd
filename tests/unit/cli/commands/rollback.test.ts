@@ -90,7 +90,7 @@ interface FakeBackend {
  * Lock spies hoisted out of `installSetup` so a case can assert them.
  * `cdkd rollback` acquires the stack lock BEFORE its confirmation prompt, so
  * the refusal has to release it on the way out -- the guarantee
- * `docs/cli-reference.md` states for all four commands that hold a lock at
+ * `docs/cli-destroy.md` states for all four commands that hold a lock at
  * their prompt. A stuck lock blocks every other session against that stack,
  * which is a worse outcome than the run that failed. Re-created per test in
  * `installSetup` so counts do not accumulate across cases.

@@ -225,7 +225,7 @@ to track deployed resources, plus cdkd-owned asset storage (by default a
 `cdkd-assets-{accountId}-{region}` bucket + a
 `cdkd-container-assets-{accountId}-{region}` ECR repo; custom names via
 `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
-[`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap)). Per-region asset
+[`cdkd bootstrap`](docs/cli-bootstrap-gc.md#cdkd-bootstrap)). Per-region asset
 storage is added automatically on the first `cdkd deploy` into each region.
 Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
 [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
@@ -241,7 +241,7 @@ under a previous cdkd version, the legacy region-suffixed state bucket name
 (`cdkd-state-{accountId}-{region}`) is still picked up automatically with a
 deprecation warning. Explicit pre-provisioning
 (`cdkd bootstrap --region <r>`), legacy-mode opt-outs, and how this relates to
-`cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-reference.md#cdkd-bootstrap).
+`cdk bootstrap`: see [`cdkd bootstrap`](docs/cli-bootstrap-gc.md#cdkd-bootstrap).
 
 ## Usage
 
@@ -348,7 +348,7 @@ opposite ends of one axis and cannot be combined.
 **Deploy-only**: `cdkd destroy` always waits (NAT in `deleting` state
 holds ENIs and would `DependencyViolation` sibling deletes).
 
-See [docs/cli-reference.md](docs/cli-reference.md#wait-semantics) for
+See [docs/cli-deploy.md](docs/cli-deploy.md#wait-semantics) for
 the per-resource table (what each mode does, next to what
 CloudFormation and Terraform do) and caveats (NAT egress, RDS
 final-snapshot timing, etc.).
@@ -520,7 +520,7 @@ pre-deploy state and the new one deleted (for a stateful type the old
 data is unrecoverable — warned loudly). Exit codes: `0` = fully clean
 (journal deleted), `2` = partial (some ops failed / were skipped — the
 journal is kept so you can re-run), `1` = hard error. See
-[docs/cli-reference.md](docs/cli-reference.md#cdkd-rollback) for the
+[docs/cli-rollback.md](docs/cli-rollback.md#cdkd-rollback-revert-a-failed-deploy) for the
 full reference and known limitations (a DELETE that already happened
 cannot be restored).
 
@@ -666,7 +666,7 @@ cdkd drift MyStack --revert --yes   # AWS ← state (undo a console edit)
 cdkd state refresh-observed MyStack # populate the drift baseline without redeploying
 ```
 
-See **[docs/cli-reference.md `cdkd drift`](docs/cli-reference.md#cdkd-drift)**
+See **[docs/cli-drift.md `cdkd drift`](docs/cli-drift.md#cdkd-drift)**
 for the full reference: `--no-capture-observed-state` deploy opt-out
 (per-command vs per-project, mid-flight reversibility), v2→v3 state
 upgrade flow, exit codes, and what changes when capture is off.
@@ -700,7 +700,7 @@ stacks; bench-cdk-sample 398s → 181s). Pass
 Custom Resource synchronously invokes a VPC Lambda outside cdkd's
 Lambda-ServiceToken Active wait).
 
-See [docs/cli-reference.md](docs/cli-reference.md) for the full
+See [docs/cli-deploy.md](docs/cli-deploy.md#vpc-route-dependson-relaxation-default-on) for the full
 type-pair allowlist and trade-off notes.
 
 ## `DeletionPolicy: Snapshot`: final snapshots on delete
@@ -718,7 +718,7 @@ Pass `--skip-final-snapshot` (on `deploy` / `destroy` / `state destroy` /
 dev/test stacks). Rolling a CREATE back is a delete too, so the policy
 applies there as well — for a resource whose CREATE completed and, under
 `--revert-failed`, for one whose CREATE failed after AWS provisioned it. See the "DeletionPolicy: Snapshot" section in
-[docs/cli-reference.md](docs/cli-reference.md).
+[docs/cli-destroy.md](docs/cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete---skip-final-snapshot).
 
 ## `--remove-protection`: one-shot bypass for protected resources
 
@@ -773,7 +773,7 @@ cdkd publish-assets MyStack          # specific stack
 cdkd publish-assets -a cdk.out       # skip synth, use pre-synthesized assembly
 ```
 
-See [docs/cli-reference.md](docs/cli-reference.md#publish-assets-synth--build--publish-no-deploy)
+See [docs/cli-publish-assets.md](docs/cli-publish-assets.md#publish-assets-synth--build--publish-no-deploy)
 for stack-selection rules and concurrency knobs.
 
 ## Compatibility
@@ -790,7 +790,7 @@ full reference. For per-resource-type provisioning support (SDK Providers
 vs Cloud Control API fallback), see
 **[docs/supported-resources.md](docs/supported-resources.md)**.
 
-**Property-level coverage is incremental.** SDK Providers wire most but not every CFn property of a supported type. cdkd fails fast at pre-flight when a template uses a not-yet-implemented property, with the property name + a 1-click issue link. `--allow-unsupported-properties <Type>:<Prop>,...` is the safety valve when this is too strict (e.g. mid-life update on an existing resource); avoid it on security-meaningful properties (encryption / IAM / TLS). See [docs/cli-reference.md](docs/cli-reference.md#--allow-unsupported-properties-deploy).
+**Property-level coverage is incremental.** SDK Providers wire most but not every CFn property of a supported type. cdkd fails fast at pre-flight when a template uses a not-yet-implemented property, with the property name + a 1-click issue link. `--allow-unsupported-properties <Type>:<Prop>,...` is the safety valve when this is too strict (e.g. mid-life update on an existing resource); avoid it on security-meaningful properties (encryption / IAM / TLS). See [docs/cli-deploy-safety.md](docs/cli-deploy-safety.md#--allow-unsupported-properties-deploy).
 
 ## State Management
 
@@ -907,7 +907,7 @@ A per-resource **skip** exits `2` as well: `⚠ MyTable (AWS::Glue::Table)
 skipped (...)` plus `(4 deleted, 1 skipped, 0 errors)` means cdkd could not
 address that resource, issued no AWS call, and therefore left it in place —
 so the state record is deliberately KEPT rather than dropped. See
-[docs/cli-reference.md](docs/cli-reference.md#skipped-resources-on-destroy-issue-1752).
+[docs/cli-reference.md](docs/cli-reference.md#skipped-resources-on-destroy).
 
 One figure on that line does **not** mean exit `2`: `N unverified` (issue
 [#2301](https://github.com/go-to-k/cdkd/issues/2301)). It counts pre-flight
@@ -940,7 +940,7 @@ it, because they record what happened rather than what the operator chose to
 tolerate. It does suppress the run-level error message along with the exit code
 — that message is the only place the "delete it by hand" remedy appears — and
 the banner's closing sentence changes to say the flag was passed. See
-[docs/cli-reference.md](docs/cli-reference.md#--allow-unaddressed-deploy). The flag exists because the
+[docs/cli-deploy-safety.md](docs/cli-deploy-safety.md#--allow-unaddressed-deploy). The flag exists because the
 orphaned-predecessor case can be temporarily unfixable (an ACM replacement
 blocked on `DescribeCertificate.InUseBy` clears once the consumer finishes
 updating). Prefer it over a shell `|| [ $? -eq 2 ]` wrapper, which would also
