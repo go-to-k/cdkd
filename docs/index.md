@@ -27,7 +27,7 @@ hero:
 features:
   - icon: ⚡
     title: Up to 15x faster deploys
-    details: Direct AWS API calls, parallel deploys, and --no-wait — faster than Terraform and CloudFormation Express mode too.
+    details: Direct AWS API calls, parallel deploys, and the --no-wait option.
   - icon: 🔌
     title: No code changes
     details: Your CDK app runs as-is — just replace cdk deploy with cdkd deploy.
