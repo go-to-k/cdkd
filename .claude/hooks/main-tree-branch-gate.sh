@@ -52,10 +52,21 @@
 #     convention wants feature branches.
 #
 # Bypass: agents that legitimately need to operate in the main tree
-# (e.g. release tooling, history surgery) can `cd <subdir>` first
-# or explicitly `git -C <main-tree>` and override with the
-# documented escape. The hook only fires when the target dir IS
-# the main repo top-level.
+# (e.g. release tooling, history surgery) can `cd <subdir>` first. The hook
+# only fires when the target dir IS the main repo top-level, and `main_tree_of`
+# compares that dir as given, so one level down is not equal to it.
+#
+# `git -C <main-tree>` USED TO BE LISTED HERE AS A SECOND BYPASS AND IS NOT ONE.
+# Measured on a fixture main checkout with a linked worktree, payload cwd = the
+# worktree: `git -C <main checkout> switch -c feat/x` scores rc=2, while
+# `cd <main checkout>/src && git switch -c feat/x` scores rc=0. The `-C` form is
+# exactly what the per-segment resolution exists to CATCH, so naming it as an
+# escape hatch pointed a reader at the one spelling that is refused. Only the
+# subdir form works, and the same measurement says so for `checkout -b`.
+#
+# That asymmetry is why `branch-gate.sh` compares TOPLEVELS rather than the raw
+# dir (go-to-k/cdkd#2402): a subdir escape on the CAUSE side means the SYMPTOM
+# side must still see the commit.
 
 # Shared command-position matcher (issue #1455): catches the guarded verb
 # after ANY chained command (`git push && gh pr create`), not just after an
@@ -667,17 +678,32 @@ EOF
 # behaviour this gate shipped with, kept rather than silently changed here --
 # but the rationale it shipped with, "the sha form is read-only inspection", is
 # FALSE and is not repeated. `git checkout <sha>` REWRITES the shared working
-# tree and leaves a detached HEAD, and the detached HEAD then disarms the
-# sibling gate: `branch-gate.sh` reads
-# `git -C <dir> symbolic-ref --short HEAD`, which is EMPTY while detached, and
-# falls through to its `exit 0`. Measured in a throwaway repo carrying a
-# `.markgate.yml`, driving branch-gate with `git commit -m x`: rc=2 on `main`,
-# rc=0 once detached. So allowing the sha form leaves a two-step path to an
-# ungated commit in the main checkout. Changing the verdict is a behaviour
-# change with its own blast radius (it would refuse a legitimate inspection
-# spelling in three repos) and belongs in its own PR, not smuggled into a parse
-# fix -- recorded here and in .claude/rules/hooks.md so the next reader inherits
-# the measurement rather than the old claim. What IS fixed here is the WORDING:
+# tree and leaves a detached HEAD. That detached HEAD USED TO DISARM the sibling
+# gate: `branch-gate.sh` read `git -C <dir> symbolic-ref --short HEAD`, which is
+# EMPTY while detached, matched neither `main` nor `master`, and fell through to
+# its `exit 0`. Measured in a throwaway repo carrying a `.markgate.yml`, driving
+# branch-gate with `git commit -m x`: rc=2 on `main`, rc=0 once detached -- so
+# the two gates composed into a two-step path to an ungated commit in the SHARED
+# main checkout, a hole neither had alone.
+#
+# THE COMPOSITION IS CLOSED, FROM THE OTHER SIDE (go-to-k/cdkd#2402).
+# `branch-gate.sh` now separates the two readings of an empty `symbolic-ref` --
+# no repo to read (pass) versus a real repo whose tree has LEFT `main` -- and
+# blocks the second when the target is the MAIN checkout. A detached LINKED
+# worktree still passes, because that is the lane-clearing state
+# `stop-unmerged-lane-warn.sh` itself prescribes (`git switch --detach
+# origin/main`). Re-measured on the same fixture: rc=2 detached in the main
+# checkout, rc=0 detached in a linked worktree.
+#
+# THIS GATE'S VERDICT IS UNCHANGED. `git checkout <sha>` here stays ALLOWED;
+# refusing it is a separate behaviour change with its own blast radius (it would
+# refuse a legitimate inspection spelling in three repos) and belongs in its own
+# PR. What #2402 removed is the CONSEQUENCE of allowing it, not the allowance --
+# so the pass below is now a pass with nothing composing off it, rather than a
+# pass with a measured cost. Recorded here and in
+# .claude/rules/hooks-main-tree-branch.md.
+#
+# What IS fixed here is the WORDING:
 # `git checkout -d <branch>` / `--detach <branch>` really detaches (measured,
 # HEAD went to a raw sha), and the block used to announce it as "switches to
 # feature branch '<branch>'" -- a verdict that was right about an operation git

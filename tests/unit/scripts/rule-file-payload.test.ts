@@ -209,6 +209,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
+  ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
   ['hooks-stop.md', 4], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
@@ -311,13 +312,21 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // moved CORPUS_BYTES_MAX. Measured 61,358 B (the 55,681 B beside the old cap
   // was 5,677 B stale).
   ['tests/unit/scripts/rule-file-payload.test.ts', 48_000, 68_000], // measured 61,358
-  // hooks.md is this path's ONLY matcher, so the payload IS hooks.md's size and
-  // this row's CAP is dominated by MAX_RULE_FILE_BYTES no matter where it sits:
-  // at 135_000 (as shipped) it was 15,000 B past the per-file cap and could not
-  // fire at all; anywhere under it, the two fire together. The row is here for
-  // its FLOOR, which nothing else provides, so the cap simply tracks the
-  // per-file cap rather than pretending to add a signal.
-  ['.claude/hooks/branch-gate.sh', 95_000, MAX_RULE_FILE_BYTES], // measured 117,469 -- hooks.md alone
+  // hooks.md WAS this path's only matcher, and while that held the cap was
+  // dominated by MAX_RULE_FILE_BYTES no matter where it sat: at 135_000 (as
+  // shipped) it was 15,000 B past the per-file cap and could not fire at all;
+  // anywhere under it, the two fired together. The row was here for its FLOOR,
+  // which nothing else provides. Since 2026-09-03 the payload is hooks.md PLUS
+  // `hooks-branch-gate.md`, so it has the two-file shape its siblings above
+  // already have and the cap stops tracking the per-file cap -- the two now
+  // measure different things again. The split happened for the reason the
+  // main-tree-branch one did two days earlier: go-to-k/cdkd#2402's review round
+  // added the measured `--abort` / HEAD table and the two stated bounds, which
+  // put hooks.md at 119,803 B against the 120,000 B cap (197 B of headroom, the
+  // landmine shape CORPUS_BYTES_MAX's comment names) and its branch-gate bullet
+  // one line past the >4000 B ratchet. Moved out verbatim, hooks.md is 115,030 B
+  // and the satellite 6,454 B.
+  ['.claude/hooks/branch-gate.sh', 108_000, 140_000], // measured 121,484
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
@@ -508,7 +517,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 40; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 41; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -572,7 +581,20 @@ const CORPUS_FILE_COUNT = 40; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  reached files a ~186 B row took three OTHER budget rows over
                               //  their caps, so the pointer in layout-deployment.md is the only
                               //  entry point. That makes 38.
-const CORPUS_BYTES_MIN = 917_000;   // measured 951,706 B -- 34,706 B of slack.
+                              //  + hooks-branch-gate.md (2026-09-03): the SAME shape a fifth time,
+                              //  on the sibling gate. go-to-k/cdkd#2402's review round added the
+                              //  measured `--abort` / resulting-HEAD table and two stated bounds,
+                              //  which put hooks.md at 119,803 B against the 120,000 B cap -- 197 B
+                              //  of headroom -- and its branch-gate bullet one line past the
+                              //  >4000 B ratchet. Moved out VERBATIM rather than trimmed, which is
+                              //  what this file's own failure messages instruct: hooks.md fell to
+                              //  115,030 B and the satellite is 6,454 B under a two-path `paths:`
+                              //  list (the gate and its suite). That makes 41.
+const CORPUS_BYTES_MIN = 966_000;   // measured 1,000,819 B -- 34,819 B of slack.
+                                    // 917_000 -> 966_000 (2026-09-03): re-measured with the same
+                                    // ~34 KB of slack every previous setting used. The comment
+                                    // beside 917_000 read "measured 951,706 B", 49 KB behind the
+                                    // corpus after two parallel lanes landed their own splits.
                                     // 899_000 -> 917_000 (2026-09-02), re-measured with the same
                                     // ~34 KB of slack the previous bound was set with. The comment
                                     // beside 899_000 still read "measured 933,620 B", 18 KB behind
@@ -583,7 +605,17 @@ const CORPUS_BYTES_MIN = 917_000;   // measured 951,706 B -- 34,706 B of slack.
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 1_000_000; // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 1_040_000; // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+                                    // 1_000_000 -> 1_040_000 (2026-09-03, go-to-k/cdkd#2402's
+                                    // third review round): measured 1,000,819 B. The previous
+                                    // bound was set at 12,808 B of slack and TWO lanes spent it
+                                    // between the setting and this one -- `origin/main` alone was
+                                    // already at 993,403 B before this branch added a byte, so a
+                                    // rebase onto it fails this assertion on someone else's text.
+                                    // Raised to ~39 KB, the same margin the 946_000 -> 985_000
+                                    // raise chose, because a bound whose headroom is smaller than
+                                    // one ordinary lane fails for a reason unrelated to whoever
+                                    // trips it.
                                     // 985_000 -> 1_000_000 (2026-09-03, issue go-to-k/cdkd#2274's
                                     // fix round): measured 987,192 B. The #2274 lane had already
                                     // spent this bound down to 25 B of headroom, which is the
