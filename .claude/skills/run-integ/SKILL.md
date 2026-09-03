@@ -6,141 +6,147 @@ argument-hint: "<test-name|all> [--synth-only] [--no-destroy]"
 
 # Integration Test Runner
 
-Run integration tests against a real AWS account. These tests deploy actual AWS resources, verify them, and clean up.
+Run integration tests against a real AWS account: deploy actual resources,
+verify, clean up.
 
 ## Arguments
 
-- `test-name`: Which test to run. Run `ls tests/integration/` to see all available tests. If not specified, use the `AskUserQuestion` tool to ask which test to run, showing the available options.
-- `all`: Run all tests
-- `--synth-only`: Only run synthesis, skip deploy/destroy
-- `--no-destroy`: Deploy but don't destroy (for debugging)
-- `--deploy-args "<args>"`: Forward extra arguments to the `cdkd deploy` invocation (e.g. `--deploy-args "--aggressive-vpc-parallel"`). Use when validating an opt-in deploy flag end-to-end against `bench-cdk-sample` etc. — the destroy step is unaffected (opt-in flags so far are deploy-only).
+- `test-name`: which test (see `ls tests/integration/`). If unspecified, ask
+  via `AskUserQuestion` showing the options.
+- `all`: run all tests
+- `--synth-only`: synthesis only, skip deploy/destroy
+- `--no-destroy`: deploy but don't destroy (debugging)
+- `--deploy-args "<args>"`: forward extra args to the `cdkd deploy` invocation
+  verbatim (opt-in deploy flags; destroy is unaffected).
 
 ## Steps
 
-1. **Build first**: Run `vp run build` to ensure dist/ is up to date.
+1. **Build first**: `vp run build` so `dist/` is current.
 
-2. **List available tests**: Run `ls tests/integration/` to discover all test directories dynamically. Do NOT rely on a hardcoded list.
+2. **List available tests**: `ls tests/integration/` — never a hardcoded list.
 
-3. **Determine state bucket**: Resolve dynamically via `aws sts get-caller-identity --query Account --output text` to get the account ID, then construct `cdkd-state-{accountId}` (region-free, the current default since PR #62 / v0.11.0). If that bucket doesn't exist, fall back to the legacy `cdkd-state-{accountId}-us-east-1` and note the deprecation in the report.
+3. **Determine state bucket**: account via
+   `aws sts get-caller-identity --query Account --output text`, then
+   `cdkd-state-{accountId}` (region-free default since PR #62). If absent,
+   fall back to legacy `cdkd-state-{accountId}-us-east-1` and note the
+   deprecation in the report.
 
-4. **Pre-flight orphan scan** (mandatory — fail fast on prior-run leftovers instead of going through CREATE + rollback):
-
-   Before invoking deploy, scan AWS for resources matching the stack name from this test that have no business existing yet. The scenario this catches: a previous integration run was killed mid-deploy, leaving orphan Event Source Mappings / Lambda functions / ENIs / IAM roles whose names match the stack about to be deployed. cdkd's diff calculation does NOT see these (they're not in state), so the deploy attempts CREATE — which collides with the orphans, fails immediately with `ResourceAlreadyExists`, and forces a CREATE-then-rollback cycle. Failing at the start is much cheaper than partway through.
-
-   Synth first (without deploy) to learn the stack name and the resource types in the template, then for each scenario in scope run a targeted scan:
+4. **Pre-flight orphan scan** (mandatory — fail fast on prior-run leftovers
+   instead of going through CREATE + rollback): a prior run killed mid-deploy
+   leaves orphans whose names match the stack about to deploy; cdkd's diff
+   does not see them (not in state), so the deploy attempts CREATE and
+   collides. Synth first (to learn stack name + resource types), then scan:
 
    ```bash
-   # Always run these (cheap, broadly applicable):
+   # Always (cheap, broadly applicable):
    aws s3 ls s3://<bucket>/cdkd/<StackName>/ --region us-east-1
    aws iam list-roles --query 'Roles[?contains(RoleName, `<StackName>`)].RoleName' --output text
    aws lambda list-functions --region us-east-1 \
      --query 'Functions[?contains(FunctionName, `<StackName>`)].FunctionName' --output text
 
-   # Run when the template uses Lambda EventSourceMapping (the orphan ESM
-   # case bit cdkd in 2026-05-02: AlreadyExists + rollback cycle on a fresh deploy):
+   # When the template uses Lambda EventSourceMapping (orphan ESM = AlreadyExists + rollback):
    aws lambda list-event-source-mappings --region us-east-1 \
      --query 'EventSourceMappings[?contains(FunctionArn, `<StackName>`)].[UUID,FunctionArn]' --output text
 
-   # Run when the template uses VPC + Lambda VpcConfig (hyperplane ENIs
-   # outlive their function):
+   # When the template uses VPC + Lambda VpcConfig (hyperplane ENIs outlive the function):
    aws ec2 describe-network-interfaces --region us-east-1 \
      --filters "Name=description,Values=AWS Lambda VPC ENI-<StackName>*" \
      --query 'NetworkInterfaces[].[NetworkInterfaceId,Status]' --output text
    ```
 
-   **If anything is found**, abort the test run with a clear report listing the orphans and the cleanup commands the user should run (`aws lambda delete-event-source-mapping --uuid …`, `cdkd state destroy <StackName> --yes`, etc.) — do NOT proceed with deploy. Resuming on top of orphans is the failure mode this step exists to prevent.
-
-   **If nothing is found**, the deploy can proceed cleanly.
+   **Anything found → abort** with the orphan list and cleanup commands; do
+   NOT deploy on top of orphans. Nothing found → proceed.
 
 5. **Run the test(s)**:
 
-   **Dispatch**: a `verify.sh` in `tests/integration/<test-name>/` is for tests with non-standard flows (drift-injection, multi-stage validation, etc.) — the script owns its own deploy + verify + destroy cycle. The standard flow below is for plain "deploy this stack and destroy it" smoke tests. Pre-flight (step 4) and the post-run verification (steps 6 + 7) apply to BOTH paths — they are the safety net that catches a buggy `verify.sh` leaking resources.
+   **Dispatch**: a `verify.sh` in `tests/integration/<test-name>/` owns its
+   own deploy + verify + destroy cycle; the standard flow below is for plain
+   smoke tests. Pre-flight (step 4) and post-run verification (steps 6 + 7)
+   apply to BOTH paths.
 
-   **CHECK FOR `verify.sh` BEFORE PICKING THE FIXTURE — the standard-flow branch is effectively unreachable from an agent session.** The branch tells you to invoke `node ../../../dist/cli.js deploy …` directly, and the harness's auto-approval classifier refuses a direct `cdkd deploy`, so a fixture WITHOUT a `verify.sh` dead-ends after the dispatch. Measured 2026-08-20 on `bench-cdk-sample` (no `verify.sh`): `bash verify.sh` returned **rc=127 in 0 seconds**, and the standard-flow fallback was then denied. **rc=127 means the file does not exist, and `bash` says so on STDERR** — `bash: verify.sh: No such file or directory`, verified on both bash 5.x and macOS system bash 3.2. If that line is missing from what you are reading, you redirected stderr to a log and are reading the tail; go look at it rather than interpreting the exit code alone. (This paragraph previously claimed the failure was silent. It is not — the report it came from had redirected the output.) The practical workaround is a SELECTION decision, made here rather than after the dead-end: when the goal is a marker (`integ-broad` / `integ-destroy`), pick a broad-set fixture that HAS a `verify.sh` (`ls tests/integration/<name>/verify.sh` before committing to the name). Only run the standard flow when a human is driving the shell and can approve the `deploy` / `destroy` invocations.
+   **CHECK FOR `verify.sh` BEFORE PICKING THE FIXTURE — the standard-flow
+   branch is effectively unreachable from an agent session**: the harness's
+   auto-approval classifier refuses a direct `cdkd deploy`, so a fixture
+   WITHOUT a `verify.sh` dead-ends after dispatch. (rc=127 from
+   `bash verify.sh` means the file does not exist, and bash says so on
+   STDERR — if that line is missing you redirected stderr; read the log, not
+   the exit code alone.) When the goal is a marker, pick a fixture that HAS a
+   `verify.sh` (`ls tests/integration/<name>/verify.sh` before committing to
+   the name). Run the standard flow only when a human drives the shell.
 
-   - Navigate to `tests/integration/<test-name>/`
-   - Ensure dependencies: `npm install` if node_modules doesn't exist
-   - **If `tests/integration/<test-name>/verify.sh` exists**, run it instead of the standard flow:
-     - `AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh`
-     - The script is responsible for its own deploy + destroy cycle. Steps 6 (verify cleanup) and 7 (auto-cleanup orphans) STILL run after — do not skip them.
-     - Propagate the script's exit code: a non-zero exit must drive the skill into the failure path so step 7's auto-cleanup fires. Do NOT swallow `verify.sh` failures.
-     - Skip the synth / deploy / destroy commands below (the script does its own).
-   - **Otherwise (no `verify.sh`)**, run the standard flow (synth → deploy → destroy):
-     - Run synth: `node ../../../dist/cli.js synth --region us-east-1`
-     - **Detect multi-stack apps**: read the synth output. If it lists more
-       than one stack (e.g. `multi-stack-deps`, `composite-stack`,
-       `cross-stack-references`), pass `--all` to deploy and destroy.
-       Without `--all`, deploy/destroy will fail with `Multiple stacks
-       found: ... Specify stack name(s) or use --all`.
-     - Run deploy: `node ../../../dist/cli.js deploy [--all] [<extra-deploy-args>] --region us-east-1 --state-bucket <bucket> --verbose`
-       - When `--deploy-args "<args>"` was passed to the skill, splice those args into the deploy invocation verbatim. Don't apply them to destroy.
-     - Run destroy: `node ../../../dist/cli.js destroy [--all] --region us-east-1 --state-bucket <bucket> --force`
+   - `cd tests/integration/<test-name>/`; `npm install` if no `node_modules`.
+   - **If `verify.sh` exists**:
+     `AWS_REGION=us-east-1 STATE_BUCKET=<bucket> bash verify.sh` — the script
+     does its own deploy + destroy; steps 6/7 STILL run after. Propagate its
+     exit code (a non-zero exit must drive the failure path so step 7 fires);
+     never swallow failures. Skip the commands below.
+   - **Otherwise** (standard flow):
+     - `node ../../../dist/cli.js synth --region us-east-1`
+     - **Multi-stack apps**: if synth lists more than one stack, pass `--all`
+       to deploy and destroy (otherwise they fail with `Multiple stacks
+       found`).
+     - `node ../../../dist/cli.js deploy [--all] [<extra-deploy-args>] --region us-east-1 --state-bucket <bucket> --verbose`
+     - `node ../../../dist/cli.js destroy [--all] --region us-east-1 --state-bucket <bucket> --force`
 
 6. **Verify cleanup**:
-   - Check `aws s3 ls s3://<bucket>/cdkd/ --region us-east-1` to confirm no leftover state
-   - **The state bucket is VERSIONED** (`cdkd bootstrap` enables it), so that
-     listing shows nothing while every prior version is still readable: `aws s3
-     rm` writes a DELETE MARKER, it does not remove content. For any fixture that
-     WRITES a secret into state — the redaction / scrub / drift fixtures do it
-     deliberately, to simulate a pre-GHSA binary — "the object is gone" is not
-     "the content is gone", and the difference is a disclosure. Check versions,
-     not just the current object:
+   - `aws s3 ls s3://<bucket>/cdkd/ --region us-east-1` — no leftover state.
+   - **The state bucket is VERSIONED**, so that listing shows nothing while
+     every prior version stays readable (`aws s3 rm` writes a delete marker).
+     For any fixture that WRITES a secret into state (redaction / scrub /
+     drift fixtures do, deliberately), "the object is gone" is not "the
+     content is gone" — the difference is a disclosure. Check versions:
      ```bash
      # Per state/lock key the fixture touched. Non-empty = content still readable.
      aws s3api list-object-versions --bucket <bucket> --prefix "cdkd/<Stack>/<region>/state.json" \
        --query "([Versions, DeleteMarkers][])[?Key=='cdkd/<Stack>/<region>/state.json'].VersionId" \
        --output text
      ```
-     Two bugs of this shape shipped on 2026-08-19 and BOTH survived a green run:
-     a fixture's version sweep lived only in `cleanup`, which runs from the trap
-     the success path DISARMS (so on the normal path it never ran — one key had
-     accumulated 30 versions), and the sweep itself iterated with `printf '%s' |
-     tr | while read`, which drops the LAST field because there is no trailing
-     newline. Neither is visible from reading the script; both are obvious the
-     moment you COUNT what S3 holds afterwards. If a fixture seeded a secret,
-     grep the surviving versions for it rather than assuming the sweep worked.
-   - Also verify actual AWS resources are gone by checking with stack name prefix filters. Get stack names from the synth output, then for each stack name query AWS APIs filtered by that prefix:
+     (Two green-run bugs of this shape shipped 2026-08-19: a version sweep
+     living only in the trap the success path disarms, and a
+     `printf '%s' | tr | while read` loop dropping the last field. Neither is
+     visible from the script; both are obvious the moment you COUNT what S3
+     holds. If a fixture seeded a secret, grep the surviving versions for
+     it.)
+   - Verify actual AWS resources are gone, per stack name from synth output
+     (only the types relevant to the test):
      - `aws iam list-roles --query 'Roles[?contains(RoleName, \`{StackName}\`)].RoleName'`
      - `aws lambda list-functions --region us-east-1 --query 'Functions[?contains(FunctionName, \`{StackName}\`)].FunctionName'`
      - `aws s3api list-buckets --query 'Buckets[?contains(Name, \`{stackName-lowercase}\`)].Name'`
      - `aws ecr describe-repositories --region us-east-1 --query 'repositories[?contains(repositoryName, \`{stackName-lowercase}\`)].repositoryName'`
      - `aws dynamodb list-tables --region us-east-1 --query 'TableNames[?contains(@, \`{StackName}\`)]'`
-     - For VPC-based tests also check: `aws ec2 describe-vpcs --filters "Name=tag:Name,Values={StackName}/Vpc" ...`
-     - For FSx-based tests also check **final backups** (issue #1113): destroy keeps CFn parity, so `DeleteFileSystem` runs with API defaults, which TAKE a chargeable final backup for Windows/ONTAP (observed on OpenZFS too; `AutomaticBackupRetentionDays: 0` does not prevent it). The backup usually carries NO tags (`CopyTagsToBackups` defaults to false), so a tag/name scan reports clean over a live billing backup; attribute by the backup's persisted `FileSystem.FileSystemId` instead:
-       `aws fsx describe-backups --region us-east-1 --query 'Backups[?FileSystem.FileSystemId==\`{fs-id}\`].[BackupId,Lifecycle]'` (use the file-system id(s) the run created, from deploy output or state). If the run's fs ids are not known, list ALL backups (`aws fsx describe-backups --region us-east-1 --query 'Backups[].{Id:BackupId,FsId:FileSystem.FileSystemId,Type:FileSystem.FileSystemType,Created:CreationTime}'`) and flag any untagged/unattributed entry for manual review (do NOT assume clean). Delete a confirmed leftover with `aws fsx delete-backup --backup-id {id} --region us-east-1`.
-   - Only check resource types relevant to the test being run
+     - VPC tests: `aws ec2 describe-vpcs --filters "Name=tag:Name,Values={StackName}/Vpc" ...`
+     - FSx tests: **final backups** (issue #1113) — destroy keeps CFn parity,
+       so `DeleteFileSystem` takes a chargeable final backup by default, and
+       it usually carries NO tags, so a name scan reports clean over a live
+       billing backup. Attribute by the persisted file-system id:
+       `aws fsx describe-backups --region us-east-1 --query 'Backups[?FileSystem.FileSystemId==\`{fs-id}\`].[BackupId,Lifecycle]'`;
+       if the run's fs ids are unknown, list ALL backups and flag any
+       unattributed entry for manual review (do NOT assume clean). Delete a
+       confirmed leftover with `aws fsx delete-backup --backup-id {id}`.
 
-7. **Auto-cleanup orphans (mandatory when destroy didn't fully succeed)**:
+7. **Auto-cleanup orphans (mandatory when destroy didn't fully succeed)** —
+   trigger when the destroy step reported errors, OR step 6 found leftover
+   state or any resource matching the stack prefix:
+   - VPC-attached Lambda failures (commonest), **in delete order**: (1)
+     hyperplane ENIs (`describe-network-interfaces --filters
+     "Name=vpc-id,Values=<vpc>"` → `delete-network-interface`; re-poll
+     `in-use` until `available`), (2) SecurityGroups, (3) Subnets, (4) VPC.
+   - S3 state orphans: `aws s3 rm s3://<bucket>/cdkd/<StackName>/ --recursive`
+     (or `cdkd state orphan <StackName>`, which also handles the lock key).
+   - Other types: infer delete order from CFn dependency rules (children
+     before parents). Always pass `--region`. Re-run step 6 after cleanup.
 
-   **Trigger this step whenever any of the following is true:**
-   - The `destroy` step in step 5 reported a non-zero error count (e.g. "X failed to delete")
-   - Step 6 found a leftover S3 state file
-   - Step 6 found any AWS resource matching the stack name prefix
+   **Never** end the run with orphans present (NAT GW alone is ~$1/hr). If a
+   resource genuinely cannot be deleted after reasonable retries, surface it
+   with the exact ID, region, and what was tried — but only after the
+   auto-cleanup pass.
 
-   **What to do:**
-   - For VPC-attached Lambda failures (the most common pattern), the typical orphan set is, **in delete order**:
-     1. Lambda hyperplane ENIs (`aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=<vpc>"` → `aws ec2 delete-network-interface`). Some may be `in-use` initially — re-poll until they go `available`, then delete.
-     2. SecurityGroups (`aws ec2 delete-security-group`) — must come after the ENIs that reference them are gone.
-     3. Subnets (`aws ec2 delete-subnet`) — must come after every ENI in them is gone.
-     4. VPC (`aws ec2 delete-vpc`) — last.
-   - For S3 state orphans: `aws s3 rm s3://<bucket>/cdkd/<StackName>/ --recursive`. (`cdkd state orphan <StackName>` is the cdkd-native equivalent and also handles the lock key.)
-   - For other resource types, infer the right delete order from CloudFormation dependency rules (children before parents).
-   - Always specify the correct region (`--region`).
-   - Re-run step 6 after cleanup to confirm zero orphans remain.
+8. **Report results**: pass/fail per test, resource counts, timing. Always
+   state "destroy completed: 0 errors, 0 orphans" or itemize what remained.
 
-   **Never** end the run with orphan resources still present in AWS. Cost (NAT GW alone is ~$1/hr) and account hygiene make this non-negotiable. If a resource genuinely cannot be deleted after reasonable retries, surface it to the user with the exact ID, region, and what was tried — but only after the auto-cleanup pass.
-
-8. **Report results**: Show pass/fail for each test, including resource counts and timing. Always state explicitly "destroy completed: 0 errors, 0 orphans" or itemize what remained / what was force-cleaned.
-
-9. **Set the `integ-destroy` markgate marker (only on full clean success)**:
-
-   When — and ONLY when — all of the following hold:
-   - the destroy step finished with **0 errors**,
-   - step 6 found **0 leftover resources**,
-   - step 7 was either skipped (because nothing to clean up) or completed with the post-cleanup re-check showing 0 orphans,
-
-   record the gate so subsequent `gh pr merge` calls are unblocked:
+9. **Set the `integ-destroy` markgate marker (only on full clean success)** —
+   when the destroy step finished with **0 errors**, step 6 found **0
+   leftovers**, and step 7 was skipped or re-checked clean:
 
    ```bash
    mise exec -- markgate set integ-destroy || {
@@ -149,86 +155,45 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
    }
    ```
 
-   **Check the exit code; do not fire and forget.** Under the old
-   `hash: files` mode this command could not fail. The gate now runs
-   markgate 0.4's `hash: diff` (see `.markgate.yml`), where `set` exits
-   **2** if `origin/main` is unresolvable in this worktree or the branch
-   has no delta against the merge base — and it writes that to stderr,
-   so an unchecked call looks silent and successful. Failing to notice
-   means you burned a real-AWS deploy + destroy and recorded nothing:
-   the merge is still blocked, and the natural reaction is to run the
-   integ AGAIN rather than to `git fetch origin`. Run from the PR's own
-   worktree on the PR branch, and if it exits 2, fix the base ref rather
-   than re-running the integ.
+   **Check the exit code; do not fire and forget.** The gate runs markgate
+   0.4's `hash: diff` mode, where `set` exits **2** if `origin/main` is
+   unresolvable in this worktree or the branch has no delta against the merge
+   base — silent-looking on stdout. Missing it means a burned real-AWS run
+   and a still-blocked merge; the remedy is `git fetch origin`, never
+   re-running the integ. Run from the PR's own worktree on the PR branch. If
+   any success condition failed, do NOT set the marker — the
+   `integ-destroy-gate.sh` hook blocking `gh pr merge` is the point.
 
-   If any of the above failed, do NOT set the marker — that is the
-   whole point of the gate. The hook
-   `.claude/hooks/integ-destroy-gate.sh` will block `gh pr merge` for
-   any PR that touches deletion-related code (see `.markgate.yml`
-   `integ-destroy.include`) until this marker is fresh, so a
-   destroy-untested change physically cannot reach main.
-
-10. **Set the `integ-local` markgate marker (only for `local-*` tests, on full clean success)**:
-
-    When the integ test name starts with `local-` (i.e. `local-invoke`,
-    `local-start-api`, `local-run-task`, `local-invoke-container`,
-    `local-invoke-from-state`, `local-invoke-layers`,
-    `local-invoke-python` / `-ruby` / `-java` / `-dotnet` / `-provided`,
-    `local-start-api-cors`, or any future `local-*` test), ALSO set
-    the `integ-local` marker after a clean Docker run.
-
-    Required cleanup verification BEFORE setting the marker (in
-    addition to the conditions above for `integ-destroy`):
+10. **Set the `integ-local` markgate marker (only for `local-*` tests, on
+    full clean success)** — for any test name starting `local-`. Required
+    cleanup verification BEFORE setting it (in addition to step 9's
+    conditions):
 
     ```bash
-    # All three queries MUST return empty. If any lists IDs, the
-    # marker is NOT set and the user is shown the orphan container /
-    # network IDs to clean up via `docker rm -f` / `docker network rm`.
-    # `-a`, not a bare `docker ps`: a print-and-exit task container is already
-    # `Exited` by the time this runs, so a running-only sweep reports clean over
-    # a real orphan. That blind spot let one survive every `local-run-task-from-state`
-    # run until it was caught twice in a row while gating #2183.
+    # All three MUST return empty, else show the orphan IDs and do not set.
+    # `-a`, not bare `docker ps`: a print-and-exit task container is already
+    # `Exited` when this runs, so a running-only sweep reports clean over a
+    # real orphan (caught twice in a row while gating #2183).
     docker ps -a --filter name=cdkd-local- --format '{{.ID}}'
     docker network ls --filter name=cdkd-local-task- --format '{{.ID}}'
     docker network ls --filter name=cdkd-local-svc- --format '{{.ID}}'
     ```
 
-    Subnet-overlap gotcha (seen 2026-07-27): `cdkd local start-service`
-    creates its shared network on the FIXED subnet `169.254.171.0/24`,
-    so a `local-start-*` test can fail with `Pool overlaps with other
-    one on this address space` even when all three queries above are
-    empty — a foreign leftover network (e.g. cdk-local's `cdkl-svc-*`
-    from a crashed run) may own that subnet. Diagnose with
-    `docker network inspect $(docker network ls -q) --format
-    '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}} {{len .Containers}}'`
-    and remove the holder ONLY when it has 0 attached containers (a
-    non-empty one may belong to a live parallel run).
+    Subnet-overlap gotcha: `cdkd local start-service` uses the FIXED subnet
+    `169.254.171.0/24`, so a `local-start-*` test can fail with `Pool
+    overlaps` even when all three are empty — a foreign leftover network
+    (e.g. cdk-local's `cdkl-svc-*`) may own the subnet. Diagnose with
+    `docker network inspect $(docker network ls -q) --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}} {{len .Containers}}'`
+    and remove the holder ONLY at 0 attached containers.
 
-    When all three return empty AND the integ test exited cleanly:
+    When clean: `mise exec -- markgate set integ-local`. Same 14d TTL and
+    same no-bypass rule as `integ-destroy`. The two are independent: a
+    `lambda` run does not refresh `integ-local`, and a `local-invoke` run
+    does not refresh `integ-destroy` — except `local-invoke-from-state`,
+    which exercises a real deploy + destroy and can set BOTH.
 
-    ```bash
-    mise exec -- markgate set integ-local
-    ```
-
-    The hook `.claude/hooks/integ-local-gate.sh` blocks `gh pr merge`
-    (and `git merge`) for any PR that touches `cdkd local *` code
-    (see `.markgate.yml` `integ-local.include`) until this marker is
-    fresh, so an unverified local-execution change physically cannot
-    reach main. Same TTL (14d) and same "do NOT call markgate set
-    directly to bypass" rule as `integ-destroy`.
-
-    Note: Non-`local-*` tests (e.g. `bench-cdk-sample`, `lambda`)
-    leave the `integ-local` marker untouched. The two markers are
-    independent — a `lambda` integ run does not refresh `integ-local`,
-    and a `local-invoke` run does not refresh `integ-destroy` unless
-    its `verify.sh` also exercises a real-AWS deploy + destroy (the
-    `local-invoke-from-state` test does, so it can set BOTH).
-
-11. **Set the `integ-broad` markgate marker (only for BROAD integ tests, on full clean success)**:
-
-    The broad-integ set covers tests that exercise multi-resource
-    deploy/destroy paths (VPC + NAT + Lambda hyperplane ENI, Custom
-    Resource, DAG with 5+ types across 2+ levels). A test is "broad"
+11. **Set the `integ-broad` markgate marker (only for BROAD integ tests, on
+    full clean success)**: A test is "broad"
     iff its name is one of:
 
     ```text
@@ -243,139 +208,74 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     export
     ```
 
-    **Only FIVE of those nine carry a `verify.sh`, and from an agent session
-    the other four cannot be run at all.** Step 5's dispatch note explains why
-    (the standard flow needs a direct `cdkd deploy`, which the harness's
-    auto-approval classifier refuses), but it leaves the selection to be
-    discovered one dead-end at a time. Measured 2026-08-26 while gating a
-    `destroy.ts` change: `multi-stack-deps` is the obvious pick for an `--all`
-    loop change and is one of the four without one.
+    **Only FIVE of the nine carry a `verify.sh`; from an agent session the
+    other four cannot be run at all** (step 5's dispatch note). Runnable from
+    a session: **`lambda`**, `drift-revert`, `drift-revert-vpc`,
+    `remove-protection`, `export`. Human-driven shell only:
+    `bench-cdk-sample`, `microservices`, `multi-stack-deps`,
+    `multi-resource`. `lambda` is the cheap default — ~100 s, 9-resource DAG
+    across SQS / IAM / Lambda / LayerVersion / DynamoDB Table + GlobalTable.
+    Re-derive the split with `ls tests/integration/<name>/verify.sh` if a
+    fixture has since gained one. (All seven copies of this list are compared
+    by `tests/unit/scripts/cross-cutting-list-sync.test.ts`.)
 
-    Runnable from a session: **`lambda`**, `drift-revert`, `drift-revert-vpc`,
-    `remove-protection`, `export`.
-    Human-driven shell only: `bench-cdk-sample`, `microservices`,
-    `multi-stack-deps`, `multi-resource`.
-
-    `lambda` is the cheap default — a ~100 s, 9-resource DAG across SQS / IAM /
-    Lambda / LayerVersion / DynamoDB Table + GlobalTable, which is what makes it
-    broad. Re-derive the split with
-    `ls tests/integration/<name>/verify.sh` rather than trusting this list if a
-    fixture has since gained one.
-
-    (Keep this list in sync with `.claude/hooks/integ-broad-gate.sh`'s
-    error message and the matching memory rule
-    `feedback_cross_cutting_needs_broad_integ.md`. The sync is now
-    enforced rather than requested: `tests/unit/scripts/cross-cutting-list-sync.test.ts`
-    compares all seven copies of this list, after the hook's own header
-    comment was found sitting at 8 entries while every other copy had 9.)
-
-    When the integ test name is in the broad set AND the destroy step
-    finished cleanly with 0 errors / 0 orphans (= the same conditions
-    that flip `integ-destroy`), ALSO record the broad-integ sentinel
-    and flip the marker:
+    When the test name is in the broad set AND the destroy finished cleanly
+    (same conditions as `integ-destroy`), ALSO record the sentinel and flip
+    the marker:
 
     ```bash
-    # Sentinel content is informational (human-readable, helps the
-    # next /verify-pr run know which integ was last run). The
-    # `integ-broad` markgate gate's include scope is just this file,
-    # so writing the test name flips its digest naturally.
+    # Sentinel content is informational; the integ-broad gate's include scope
+    # is just this file, so writing the test name flips its digest naturally.
     printf '%s ran at %s\n' "<test-name>" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       > .markgate-broad-integ-test
     mise exec -- markgate set integ-broad
     ```
 
-    The hook `.claude/hooks/integ-broad-gate.sh` blocks `gh pr merge`
-    for any PR that touches cross-cutting deploy/destroy code (see the
-    hook's `CROSS_CUTTING_REGEX` for the canonical list) until this
-    marker is fresh. Same 14d TTL and same "do NOT call markgate set
-    directly to bypass" rule as the other AWS-coupled gates.
-
-    **Narrow feature integs do NOT set this marker** — e.g.
-    `import-value-strong-ref` flips `integ-destroy` but leaves
-    `integ-broad` alone. This is the structural fix for the PR #348
-    incident: a 2-stack S3+SSM feature fixture is sufficient for the
-    feature's correctness, but a cross-cutting change to
-    `src/deployment/deploy-engine.ts` etc. needs the broader VPC /
-    Lambda / multi-resource coverage that only the broad set provides.
+    `integ-broad-gate.sh` blocks `gh pr merge` for PRs touching
+    cross-cutting deploy/destroy code (the hook's `CROSS_CUTTING_REGEX`).
+    Same 14d TTL, same no-bypass rule. **Narrow feature integs do NOT set
+    this marker** — a 2-stack feature fixture flips `integ-destroy` but a
+    cross-cutting change needs the broad VPC / Lambda / multi-resource
+    coverage (the PR #348 incident's structural fix).
 
 12. **Set the `integ-schema-migration` markgate marker (only for
-    `schema-v*-to-v*-migration` tests, on full clean success)**:
-
-    cdkd's S3 state schema is the actual user contract. A schema
-    version bump (e.g. v5 -> v6) MUST be transparently auto-migrated
-    by the new binary AND verified by a real-AWS integ test that
-    proves the round-trip: deploy under vN -> swap binary -> read
-    works against the vN state without re-deploying -> next write
-    upgrades to vN+1 silently -> destroy clean / 0 orphans.
-
-    A test is "schema-migration" iff its name matches the pattern
-    `schema-v<N>-to-v<N+1>-migration` (e.g.
-    `schema-v5-to-v6-migration`). Test fixtures live under
-    `tests/integration/schema-v<N>-to-v<N+1>-migration/`.
-
-    When the test name matches AND the destroy step finished cleanly
-    with 0 errors / 0 orphans (= the same conditions that flip
-    `integ-destroy`), ALSO record the schema-migration sentinel and
-    flip the marker. Unlike `integ-broad`, this gate's marker uses
-    `src/types/state.ts` as its include scope directly, so the
-    sentinel is informational only (no separate sentinel file is
-    needed for markgate's digest):
+    `schema-v*-to-v*-migration` tests, on full clean success)**: a schema
+    version bump MUST be transparently auto-migrated and verified by a
+    real-AWS round-trip (deploy under vN → swap binary → read works → next
+    write upgrades silently → destroy clean). A test qualifies iff its name
+    matches `schema-v<N>-to-v<N+1>-migration`. When it does AND the destroy
+    finished cleanly:
 
     ```bash
     mise exec -- markgate set integ-schema-migration
     ```
 
-    The hook `.claude/hooks/integ-schema-migration-gate.sh` blocks
-    `gh pr merge` for any PR that bumps the `StackState.version`
-    literal type in `src/types/state.ts` (detected via precise `gh
-    pr diff` grep — non-bump edits to state.ts pass through with no
-    false positive) until this marker is fresh. Same 14d TTL and
-    same "do NOT call markgate set directly to bypass" rule as the
-    other AWS-coupled gates.
+    `integ-schema-migration-gate.sh` blocks `gh pr merge` for any PR bumping
+    the `StackState.version` literal in `src/types/state.ts` (precise
+    `gh pr diff` grep — non-bump edits pass). Same 14d TTL, same no-bypass
+    rule. Non-migration tests do NOT set it. See
+    `feedback_schema_version_migration_integ_required.md` for the checklist +
+    the absolute transparent-auto-migration requirement.
 
-    **Non-schema-migration tests do NOT set this marker** — e.g.
-    `lambda` flips `integ-destroy` + `integ-broad` but leaves
-    `integ-schema-migration` alone. A schema-bump PR must run a
-    test named exactly `schema-v<N>-to-v<N+1>-migration` to clear
-    this gate. See memory rule
-    `feedback_schema_version_migration_integ_required.md` for the
-    full migration-test checklist + the absolute requirement that
-    auto-migration must be transparent (no user action required
-    on upgrade).
+13. **Record the run in the integ ledger (MANDATORY — every run, pass OR
+    fail)**: `docs/_generated/integ-last-run.tsv` is a COMMITTED update-type
+    ledger (one row per test) feeding `/pick-integ`. Write it on EVERY
+    invocation, right after the marker steps (or right after a failure).
 
-13. **Record the run in the integ ledger (MANDATORY — every run, pass OR fail)**:
+    Columns (TAB): `test  last_run_iso  result  duration_s  flow  note`.
+    `result` is `PASS` only at the same bar as the markers (destroy 0
+    errors / 0 orphans; verify.sh exit 0), else `FAIL`. `last_run_iso` is
+    UTC; `flow` is `verify.sh` or `standard`.
 
-    `docs/_generated/integ-last-run.tsv` is a COMMITTED (NOT gitignored), update-type
-    ledger — one row per test — so anyone can see when each integ last ran and whether
-    it passed. This answers "has this been run recently?" / "this hasn't run in months,
-    it's risky to trust" without trawling CI history, and feeds `/pick-integ`. **Write it
-    on EVERY `/run-integ` invocation, pass or fail**, right after the marker steps above
-    (or right after a failure is recorded — never skip it on failure).
-
-    Columns (TAB-separated): `test  last_run_iso  result  duration_s  flow  note`
-    - `result`: `PASS` only when the run finished cleanly (destroy 0 errors AND 0 orphans;
-      verify.sh exited 0) — the SAME bar as the markgate markers. Otherwise `FAIL`.
-    - `last_run_iso`: `date -u +%Y-%m-%dT%H:%M:%SZ` (UTC). `flow`: `verify.sh` or `standard`.
-    - `duration_s`: optional wall-clock seconds. `note`: short reason / finding one-liner.
-
-    Append the new row, then normalize the whole file (do NOT hand-drop the old row —
-    the normalizer collapses to the newest row per test and re-sorts):
-    **Use an ABSOLUTE path into the feature worktree for `LEDGER`.** The
-    session's persistent Bash cwd can silently reset to the MAIN worktree
-    (observed right after a background integ task completes — the cwd-race
-    signature in `main-tree-git-cwd-detector.sh`), and a relative
-    `docs/_generated/...` write then dirties the main tree on `main`, which
-    the `main-tree-dirty-detector` hook flags and you must then repair.
-    Verify with `pwd` immediately before the write, or hardcode
-    `LEDGER=/abs/path/to/.claude/worktrees/<branch>/docs/_generated/integ-last-run.tsv`.
+    **Use an ABSOLUTE path into the feature worktree for `LEDGER`** — the
+    session's Bash cwd can silently reset to the MAIN worktree (observed
+    right after a background integ completes), and a relative write then
+    dirties the main tree on `main`. Verify with `pwd` or hardcode the path.
 
     ```bash
-    # ABSOLUTE path into the feature worktree (see the cwd-race note above);
-    # substitute your worktree path, do not rely on the session cwd.
     LEDGER="/path/to/repo/.claude/worktrees/<branch>/docs/_generated/integ-last-run.tsv"
-    # Bootstrap the header if the file is somehow absent — `>>` alone would create it
-    # headerless, and the normalizer preserves whatever header it finds (none), silently
-    # dropping the invariant + do-not-hand-edit notice.
+    # Bootstrap the header if absent — `>>` alone would create it headerless
+    # and the normalizer preserves whatever header it finds (none).
     [ -f "$LEDGER" ] || printf '%b\n' \
       '# integ-last-run ledger (update-type: one row per test). cols: test\tlast_run_iso\tresult\tduration_s\tflow\tnote' \
       '# INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break' \
@@ -389,47 +289,33 @@ Run integration tests against a real AWS account. These tests deploy actual AWS 
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$TEST" "$TS" "$RESULT" "$DUR" "$FLOW" "$NOTE" >> "$LEDGER"
     vp run integ-ledger-normalize
     ```
-    Commit the ledger update with the branch's changes (it is part of the integ run record;
-    the file is intentionally committed so the last-run history is shared across sessions).
 
-    The one-row-per-test invariant is now **enforced by CI** (issue #1112): the
-    `integ-last-run ledger is normalized` step re-runs the normalizer and fails on any
-    diff. The whole-file rewrite makes a REPLAYED commit reproduce the file byte-for-byte
-    instead of appending a duplicate row — but that covers the replay case only. When two
-    lanes recorded the SAME test, the rebase is a CONFLICT, and resolving it keeps both
-    rows: re-run `vp run integ-ledger-normalize` after any rebase that touched this file
-    **and commit the rewrite before pushing**. Measured 2026-08-29: the normalizer was run
-    after the push and its output never committed, so CI turned the PR red. Confirm with
-    `git status --porcelain -- docs/_generated/` rather than the normalizer's own output —
-    a grep over a check log that keeps only error lines reports a dirty tree as clean.
-    (`--check` reports without writing.)
+    Commit the ledger update with the branch's changes. The one-row-per-test
+    invariant is CI-enforced (issue #1112). When two lanes recorded the SAME
+    test, the rebase conflicts and keep-both leaves two rows: re-run
+    `vp run integ-ledger-normalize` after any rebase touching this file
+    **and commit the rewrite before pushing** (measured: normalizer run after
+    the push, output never committed, PR red). Confirm with
+    `git status --porcelain -- docs/_generated/`, never the normalizer's own
+    output.
 
 ## Important
 
 - **Run `/review-pr` (and apply its fixes) BEFORE this skill when both are
-  planned for the same PR.** The `integ-destroy` / `integ-broad` /
-  `integ-local` markers are digest-bound to their src scopes, so any
-  post-integ review fix that touches a provider or deploy/destroy file
-  stales the marker and forces a full re-run against real AWS. Review
-  polish first, integ last (memory rule
-  `feedback_apply_review_polish_before_integ` — recurred 2026-07-31 on the
-  #1282 PR, costing a second CloudFront deploy + destroy cycle).
-- Always use `--region us-east-1` for integration tests
-- Always destroy after deploy to avoid leftover resources
-- If deploy fails, still attempt destroy to clean up partial state
-- **A run blocked BEFORE its assertions is not a test failure — say which it was.**
-  `cdkd gc` refuses while ANY stack in the state bucket holds a lock (an
-  account-wide guard, deliberate and documented at its site), so on an account
-  with parallel agent sessions a gc fixture can be stopped before it reaches a
-  single gc assertion. That happened twice in a row on 2026-08-19, from two
-  different foreign stacks in a different region than the one under test. Both
-  are recorded as `FAIL` rows because the bar is exit-code-based, and both notes
-  say plainly that the fix was not at fault.
-  When a run dies before its assertions, do all three: clean up as usual (an
-  aborted run still leaks — one of these left a state file, a Lambda and an IAM
-  role behind), write the ledger note so it names the blocker rather than
-  implying the change is broken, and WAIT for the blocker to clear rather than
-  forcing past it. Never `cdkd force-unlock` a lock you did not take: it belongs
-  to another session's in-flight deploy.
-- **Never report success based on a successful deploy alone** — destroy must complete and orphan check must pass
-- **Never bypass this skill** by calling `cdkd deploy` / `cdkd destroy` directly from a shell — the orphan-cleanup contract above is part of the integration test, not optional
+  planned for the same PR** — the integ markers are digest-bound to their src
+  scopes, so a post-integ review fix stales the marker and forces a full
+  real-AWS re-run (recurred on the #1282 PR).
+- Always `--region us-east-1`; always destroy after deploy; if deploy fails,
+  still attempt destroy to clean up partial state.
+- **A run blocked BEFORE its assertions is not a test failure — say which it
+  was.** (`cdkd gc` refuses while ANY stack holds a lock — account-wide, by
+  design — so a parallel session's lock can stop a gc fixture before its
+  first assertion; happened twice on 2026-08-19 from foreign stacks.) Record
+  it as `FAIL` (the bar is exit-code-based) with a note naming the blocker,
+  clean up what the aborted run leaked, and WAIT for the blocker to clear.
+  Never `cdkd force-unlock` a lock you did not take — it belongs to another
+  session's in-flight deploy.
+- **Never report success on a successful deploy alone** — destroy must
+  complete and the orphan check must pass.
+- **Never bypass this skill** with direct `cdkd deploy` / `cdkd destroy` —
+  the orphan-cleanup contract is part of the test, not optional.

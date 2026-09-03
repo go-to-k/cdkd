@@ -6,119 +6,111 @@ argument-hint: "[PR-number]"
 
 # PR Readiness Verification
 
-Heavy pre-merge gate. Run this before creating or merging a pull request — NOT before every commit. Per-commit verification is handled by `/check` (enforced by a PreToolUse hook that blocks `git commit` without a fresh marker).
+Heavy pre-merge gate. Run before creating or merging a pull request — NOT
+before every commit (per-commit verification is `/check`, enforced by the
+`check-gate` hook).
 
 ## Checklist
 
 Run each check and report pass/fail:
 
-0. **Worktree pre-flight**: confirm `node_modules/` exists in the cwd:
-   ```bash
-   [ -d node_modules ] || pnpm install
-   ```
+0. **Worktree pre-flight**: `[ -d node_modules ] || pnpm install`.
    `git worktree add` does NOT copy `node_modules`, so a fresh worktree's
-   `vp run typecheck` / `lint` / `build` and `vp run test` all fail
-   with `tsc: command not found` / `Cannot find package 'vitest'` etc. —
-   but the failure is easy to miss when the output is piped to `tail` (the
-   exit code reflects `tail`, not `vp`, and the failure line gets
-   buried). If the pre-flight skips by way of an existing `node_modules`,
-   confirm it is not stale by spot-checking `pnpm-lock.yaml` mtime ≤
-   `node_modules/.modules.yaml` mtime. **Do not start step 1 until this
-   passes**, or every quality check below silently no-ops while looking
-   green.
+   typecheck/lint/build/test all fail with `tsc: command not found` etc. — and
+   the failure is easy to miss when output is piped to `tail` (the exit code
+   reflects `tail`). If skipping via an existing `node_modules`, spot-check
+   `pnpm-lock.yaml` mtime ≤ `node_modules/.modules.yaml` mtime. Do not start
+   step 1 until this passes, or every check below silently no-ops.
 
 1. **Code quality**
-   - `vp run typecheck` passes
-   - `vp run lint` passes (run `lint:fix` first if needed)
-   - `vp run build` succeeds
-   - When piping any of the above to `tail` / `head` / `grep` for log
-     truncation, **check the actual output content** for `Error` /
-     `Command failed` markers — `$?` after a pipeline reflects
-     the LAST stage (usually 0), NOT the build tool's exit. The same
-     applies to background-task completion notifications: the
-     framework's `exit code 0` is the chained command's exit, not the
-     pipeline head. When in doubt, capture the result without piping:
+   - `vp run typecheck`, `vp run lint` (`lint:fix` first if needed),
+     `vp run build` all pass.
+   - When piping to `tail` / `head` / `grep`, **check the output content** for
+     `Error` / `Command failed` — `$?` after a pipeline reflects the LAST
+     stage, and a background-task notification's `exit code 0` is the chained
+     command's exit. When in doubt:
      `vp run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
 
 2. **Tests**
-   - `vp test run` - all unit tests pass. Preferred over `vp run test` because nothing sits between the caller and the verdict; the two now print 617 and 651 bytes for the same 17,497 tests (measured 2026-08-31). `/check` step 4 carries the full rationale, including the 171 KB reporter and the exit-0-having-run-nothing path that the `cache: false` change removed.
-   - Every scope / diff check in this skill uses `origin/main...HEAD`, not `main...HEAD`. The gate hooks derive their scope from `origin/main` and the `integ-destroy` digest is pinned to `merge-base(origin/main, HEAD)`, so a local `main` that has not been fetched makes this skill and the hook that blocks the merge disagree about what the branch touched.
-   - Report test count (files and tests)
-   - **Test coverage check**: compare `git diff origin/main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding
+   - `vp test run` — all unit tests pass. Preferred over `vp run test`:
+     nothing sits between the caller and the verdict (`/check` step 4 has the
+     full rationale). Report test count.
+   - Every scope / diff check in this skill uses `origin/main...HEAD`, never
+     `main...HEAD` — the gate hooks derive scope from `origin/main`, so an
+     unfetched local `main` makes this skill and the merge-blocking hook
+     disagree about what the branch touched.
+   - **Test coverage check**: compare the diff's `src/` changes vs `tests/`
+     changes; new/modified logic with no corresponding test update = **fail**
+     — add the missing tests before proceeding.
 
 3. **CI status**
-   - If PR number is not provided as argument, auto-detect via `gh pr view --json number -q .number`
-   - If no PR exists for current branch, use the `AskUserQuestion` tool to ask for the PR number
-   - **FIRST: `gh pr view <PR> --json mergeStateStatus,mergeable -q '"mergeable=\(.mergeable) state=\(.mergeStateStatus)"'`** — when this returns `mergeable=CONFLICTING state=DIRTY`, the CI workflow will NEVER fire on the PR no matter how long you wait (empirically observed PR #404 — wasted ~70 min thinking GitHub Actions was broken). Close+reopen, empty commits, and `git push --force-with-lease` of unchanged content all fail to re-trigger. Resolution: `git fetch origin main && git rebase origin/main`, resolve conflicts, `git push --force-with-lease` — CI fires within ~30s of the push. See memory `feedback_pr_conflict_blocks_ci.md` for the full diagnostic checklist.
-   - Only after `mergeStateStatus` is `CLEAN` / `UNSTABLE` / `BLOCKED` / `BEHIND`: `gh pr checks <PR-number>` - all checks pass
-   - If checks are pending, wait and recheck
+   - PR number: argument, else `gh pr view --json number -q .number`, else ask
+     via `AskUserQuestion`.
+   - **FIRST**: `gh pr view <PR> --json mergeStateStatus,mergeable -q
+     '"mergeable=\(.mergeable) state=\(.mergeStateStatus)"'` — at
+     `mergeable=CONFLICTING state=DIRTY` the CI workflow NEVER fires, however
+     long you wait (PR #404: ~70 min lost; close+reopen and force-pushing
+     unchanged content do not re-trigger). Resolution:
+     `git fetch origin main && git rebase origin/main`, resolve, force-push —
+     CI fires within ~30s.
+   - Only after the state is `CLEAN` / `UNSTABLE` / `BLOCKED` / `BEHIND`:
+     `gh pr checks <PR>` — all pass; if pending, wait and recheck.
 
-4. **Working tree**
-   - `git status` - clean (no uncommitted changes)
-   - Branch is up to date with remote
+4. **Working tree**: `git status` clean; branch up to date with remote.
 
 5. **Documentation consistency**
-   - Invoke `/check-docs` skill logic: verify docs match code changes
-   - Check for stale references to removed code
-   - **Generated-artifact freshness**: CI carries a staleness guard per generated
-     artifact — it runs the generator and fails if the working tree changes.
-     There are NINE of them, and this step used to name only four, so the list
-     drifted every time one was added. Do NOT re-list them here; regenerate
-     everything in one shot:
+   - Invoke `/check-docs` logic: docs match code changes; no stale references.
+   - **Generated-artifact freshness**: CI carries a staleness guard per
+     generated artifact (nine of them; a hand-list here drifted four times —
+     PRs #548, #1104, #1231, #1416 — so do NOT re-list). Regenerate everything:
      ```bash
-     # Regenerates every artifact CI guards (offline static analysis, seconds
-     # each). Unconditional on purpose: the old per-matrix `git diff` triggers
-     # were themselves the drift, since each new matrix needed a new trigger.
+     # Regenerates every artifact CI guards (offline static analysis).
      vp run gen:all-matrices
 
-     # `--check` is offline (~0.5s) and verifies the cached
-     # docs/_generated/provider-coverage.json matches register-providers.ts
-     # under the current Tier classification. It is a CRITIC, not a generator,
-     # so it is not part of the aggregate. If it fails, run
-     # `vp run audit:coverage:regenerate` (heavy: ~15 min, needs AWS creds with
-     # cloudformation:ListTypes + DescribeType) and commit the regenerated
-     # cache. /verify-pr does NOT auto-run :regenerate — it needs AWS
-     # credentials this skill cannot assume are present, so it is gated on the
-     # critic FAILING rather than skipped for speed.
+     # Offline CRITIC (~0.5s), not part of the aggregate. If it fails, run
+     # `vp run audit:coverage:regenerate` (heavy ~15 min, needs AWS creds with
+     # cloudformation:ListTypes + DescribeType) and commit the cache —
+     # /verify-pr does not auto-run :regenerate.
      vp run audit:coverage:check
 
      # Anything dirty here was stale before you ran the above.
      git status --short docs/ src/provisioning/property-coverage.generated.ts \
                         src/provisioning/unsupported-types.generated.ts
      ```
-     If `git status` reports anything dirty, the contributor forgot to
-     regenerate after their code change. Stage it, add it to the PR, and re-run
-     `/check-docs` to refresh the docs marker.
-
-     `tests/unit/scripts/matrix-regen-coverage.test.ts` pins `gen:all-matrices`
-     against the guards actually present in `.github/workflows/ci.yml` in BOTH
-     directions, so a new CI guard cannot be added without landing in the
-     aggregate, and a removed one cannot linger. That test is what makes this
-     step non-drifting; keep pointing at the aggregate rather than re-listing.
-
-     History, because the same round-trip has now happened four times: PR #548
-     hit two matrices in succession; PR #1104 hit `cli-flag-coverage` (added to
-     CI by #1072 without updating this step); PR #1231 merged a flag-only diff
-     that staled `cli-flag-coverage` with no fixture change and turned main's
-     `check-build-test` red until #1232; and PR #1416 hit
-     `handled-property-wiring` (added by #1414), which is staled by an ordinary
-     private-method rename inside a provider — a refactor nobody associates with
-     a generated file (issue #1417).
-     The `provider-integ-gate.sh` PreToolUse hook blocks `git commit` when a new `registry.register('AWS::Foo::Bar', ...)` is added without integ coverage (literal type id, `Cfn<Type>(` L1 class, or `// allow-no-integ: <rationale>` carve-out) — but it does not enforce that the matrix snapshots themselves are regenerated. This step closes that gap.
+     Anything dirty: stage it into the PR and re-run `/check-docs`.
+     `tests/unit/scripts/matrix-regen-coverage.test.ts` pins
+     `gen:all-matrices` against `ci.yml`'s guards in both directions — keep
+     pointing at the aggregate. (The `provider-integ-gate.sh` hook blocks a
+     new `registry.register(...)` without integ coverage but does not enforce
+     matrix regeneration; this step closes that gap.)
 
 6. **Leftover resources**
-   - Resolve account ID via `aws sts get-caller-identity --query Account --output text`
-   - `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1` — no leftover state
-   - **For deletion-touching PRs** (any change under `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`, `src/analyzer/dag-builder.ts`, `IMPLICIT_DELETE_DEPENDENCIES`, etc.): the `integ-destroy` markgate gate **physically blocks `gh pr merge`** when its marker is stale (see `.claude/hooks/integ-destroy-gate.sh`). This step verifies the gate state explicitly so failures surface here rather than at merge time:
+   - Account: `aws sts get-caller-identity --query Account --output text`;
+     `aws s3 ls s3://cdkd-state-{accountId}-us-east-1/stacks/ --region us-east-1`
+     — no leftover state.
+   - **For deletion-touching PRs** (changes under
+     `src/provisioning/providers/**`, `src/cli/commands/destroy.ts`,
+     `src/analyzer/dag-builder.ts`, etc.): the `integ-destroy` gate physically
+     blocks `gh pr merge` on a stale marker. Verify it here so failures
+     surface early:
      ```bash
      mise exec -- markgate verify integ-destroy
      ```
-     **Read the exit code, do not just test for non-zero.** The gate runs markgate 0.4's `hash: diff` mode, which has three outcomes, and two of them have opposite remedies:
-     - **exit 1** — the marker is genuinely stale (this branch changed in-scope code, or the 14d TTL expired). Run `/run-integ <relevant-test>` (e.g. `bench-cdk-sample`) and confirm it reports 0 errors / 0 orphans; the skill itself then calls `markgate set integ-destroy`.
-     - **exit 2** — markgate could not EVALUATE the gate: `origin/main` unresolvable (never fetched, shallow clone) or no delta against the merge base. **`/run-integ` cannot fix this** — `markgate set` fails on the identical condition, so running one burns a real-AWS run and leaves the gate blocked anyway. The remedy is `git fetch origin` (or `--unshallow`, or committing the branch's work). `markgate status` also errors here and prints no `state:` line, so the usual staleness reason comes back empty.
-
-     CI is necessary but not sufficient — it does not exercise real-AWS destroy. The gate is the structural enforcement of that fact.
-   - **CROSS-CUTTING CHECK (load-bearing)**: the `integ-destroy` marker accepts ANY clean real-AWS destroy. A narrow feature-specific integ (e.g. `import-value-strong-ref`'s 2-stack S3+SSM fixture) IS sufficient to flip the marker, but it does NOT exercise the broad deploy / destroy code paths a cross-cutting change touches. When the PR diff touches ANY of:
+     **Read the exit code — two non-zero outcomes have opposite remedies**:
+     - **exit 1** — genuinely stale (in-scope change on this branch, or the
+       14d TTL expired). Run `/run-integ <relevant-test>` and confirm 0
+       errors / 0 orphans; the skill sets the marker itself.
+     - **exit 2** — markgate could not EVALUATE the gate (`origin/main`
+       unresolvable, or no delta against the merge base). `/run-integ`
+       cannot fix this — `markgate set` fails on the identical condition, so
+       running one burns a real-AWS run and leaves the gate blocked. Remedy:
+       `git fetch origin` (or `--unshallow`, or commit the branch's work).
+     CI is necessary but not sufficient — it does not exercise real-AWS
+     destroy; the gate is the structural enforcement of that fact.
+   - **CROSS-CUTTING CHECK (load-bearing)**: the `integ-destroy` marker
+     accepts ANY clean real-AWS destroy — a narrow feature integ flips it
+     without exercising the broad deploy/destroy paths a cross-cutting change
+     touches. When the PR diff touches ANY of:
      - `src/deployment/deploy-engine.ts`
      - `src/deployment/intrinsic-function-resolver.ts`
      - `src/cli/commands/destroy-runner.ts`
@@ -131,7 +123,13 @@ Run each check and report pass/fail:
      - `src/deployment/retryable-errors.ts`
      - `src/deployment/rollback-executor.ts`
 
-     ...you MUST run a **broad integ** in addition to whatever feature-specific integ the change came with. (Both lists in this step — the paths above and the test names below — are duplicated across several files and are fenced against the hook by `tests/unit/scripts/cross-cutting-list-sync.test.ts`, so editing one copy alone fails CI rather than drifting silently.) The canonical broad set (keep in sync with `.claude/hooks/integ-broad-gate.sh`, `.claude/skills/run-integ/SKILL.md` step 11, `.markgate.yml` integ-broad gate, CLAUDE.md "integ-broad" entry):
+     ...you MUST run a **broad integ** in addition to the feature integ.
+     (Both lists in this step are duplicated across several files and fenced
+     against the hook by `tests/unit/scripts/cross-cutting-list-sync.test.ts`,
+     so editing one copy alone fails CI.) The canonical broad set (keep in sync
+     with `.claude/hooks/integ-broad-gate.sh`,
+     `.claude/skills/run-integ/SKILL.md` step 11, `.markgate.yml` integ-broad
+     gate, CLAUDE.md "integ-broad" entry):
      - `bench-cdk-sample` (39-resource VPC+NAT+CF+Lambda+SQS)
      - `lambda`
      - `microservices`
@@ -142,7 +140,9 @@ Run each check and report pass/fail:
      - `remove-protection`
      - `export`
 
-     These exercise multi-resource VPC / Lambda / IAM / CFn-Custom paths that narrow integs leave uncovered. Cross-cutting code paths affect EVERY user's deploy/destroy, not just the feature you added — broad integs are the only structural defense against shipping a regression that only surfaces in production on stacks unlike your fixture. Bypassing this is the PR #348 trap from 2026-05-13 (Issue #343 shipped without bench-cdk-sample validation; surfaced post-merge as an incident).
+     Cross-cutting code affects EVERY user's deploy/destroy; the broad integ
+     is the only structural defense against a regression that surfaces on
+     stacks unlike your fixture (the PR #348 / issue #343 incident).
      ```bash
      # Detection: only fires when the diff actually touches cross-cutting code.
      if git diff origin/main...HEAD --name-only | grep -qE '^src/deployment/(deploy-engine|intrinsic-function-resolver|retry|retryable-errors|rollback-executor)\.ts$|^src/cli/commands/(destroy-runner|destroy|deploy)\.ts$|^src/analyzer/(dag-builder|template-parser)\.ts$|^src/provisioning/register-providers\.ts$'; then
@@ -150,78 +150,113 @@ Run each check and report pass/fail:
        # Then run the broad integ via /run-integ and confirm 0 errors / 0 orphans.
      fi
      ```
-     The narrow feature integ stays valuable for testing the FEATURE; the broad integ is the regression backstop. Both must pass; both refresh the same `integ-destroy` marker.
-   - **For local-execution-touching PRs** (any change under `src/local/**`, `src/cli/commands/local-*.ts`, `tests/integration/local-*/**`): the `integ-local` markgate gate physically blocks `gh pr merge` when its marker is stale (see `.claude/hooks/integ-local-gate.sh`). The merge-time gate has a known blind spot: it reads the **local working tree** digest, and when `gh pr merge` runs from a parent worktree still on pre-PR `main`, the digest matches the old content and the gate passes silently — so an unverified local-execution change can reach main via the merge-from-parent path. `/verify-pr` runs in the PR's own worktree (post-PR content), so verifying the marker here closes that gap structurally:
+     Both integs must pass; both refresh the same `integ-destroy` marker.
+   - **For local-execution-touching PRs** (`src/local/**`,
+     `src/cli/commands/local-*.ts`, `tests/integration/local-*/**`): the
+     `integ-local` gate blocks the merge on a stale marker, but reads the
+     LOCAL working-tree digest — merged from a parent worktree still on
+     pre-PR `main`, it passes silently. `/verify-pr` runs in the PR's own
+     worktree, closing that gap:
      ```bash
-     # Only check when the PR diff actually touches the gate scope.
-     # Mirrors how `gh pr merge` is checked, but in the worktree that has the PR's content.
      if git diff origin/main...HEAD --name-only | grep -qE '^src/local/|^src/cli/commands/local-|^tests/integration/local-'; then
        mise exec -- markgate verify integ-local
      fi
      ```
-     If this exits non-zero (digest differs OR expired by TTL), run `/run-integ local-<test>` against a test that exercises the changed surface — `local-start-api` for HTTP-server / route-discovery / authorizer / container-pool changes, `local-invoke` for Lambda-runtime / ZIP-asset changes, `local-run-task` for ECS changes, `local-invoke-container` for container-Lambda changes, `local-invoke-layers` for Lambda Layers changes. The integ skill calls `markgate set integ-local` itself when the Docker-side check passes. As with `integ-destroy`, CI is necessary but not sufficient — it does not exercise Docker-based local execution.
-   - For each region this PR may have created resources in (typically `us-east-1`), spot-check the most failure-prone resource types — VPCs (`describe-vpcs --filters "Name=tag:Name,Values=Cdkd*/Vpc"`), Lambda hyperplane ENIs (`describe-network-interfaces --filters "Name=description,Values=AWS Lambda VPC ENI-*"`), CloudFront Distributions, NAT Gateways. Any match against a stack name in this PR's diff = orphan, must be cleaned up before merge.
+     Non-zero → run `/run-integ local-<test>` matching the changed surface
+     (`local-start-api` for HTTP-server / authorizer / container-pool,
+     `local-invoke` for Lambda-runtime / ZIP-asset, `local-run-task` for ECS,
+     `local-invoke-container` for container-Lambda, `local-invoke-layers` for
+     Layers). The integ skill sets `integ-local` itself.
+   - Spot-check the failure-prone types per region the PR touched (typically
+     `us-east-1`): VPCs
+     (`describe-vpcs --filters "Name=tag:Name,Values=Cdkd*/Vpc"`), Lambda
+     hyperplane ENIs
+     (`describe-network-interfaces --filters "Name=description,Values=AWS Lambda VPC ENI-*"`),
+     CloudFront Distributions, NAT Gateways. Any match against a stack name in
+     the diff = orphan; clean up before merge.
 
-7. **No stale references**
-   - Grep for removed imports, old module names, or deprecated references in source files
-   - Check `src/index.ts` exports are consistent
+7. **No stale references**: grep for removed imports / old module names;
+   `src/index.ts` exports consistent.
 
 8. **Code review**
-   - **First, run `/review-pr <N>`** to get a size-appropriate review plan. The skill outputs one of:
-     - **inline spot-check** (small PR, < 300 LOC OR < 5 files, no security-sensitive paths) — read the diff yourself in this step; no sub-agent dispatch.
-     - **1 reviewer** (medium PR, 300-1000 LOC) — dispatch a single `pr-code-reviewer` agent (the skill emits a ready-to-paste Agent call).
-     - **3-axis parallel** (large PR ≥ 1000 LOC OR security-sensitive paths) — dispatch all three of `pr-spec-reviewer` / `pr-code-reviewer` / `pr-test-reviewer` in parallel (single message, three Agent tool calls).
-     - **security add-on** (additive, ANY tier incl. `inline`) — when the PR touches a security / process-launch surface or is a security fix, `/review-pr` ALSO emits a `pr-security-reviewer` dispatch. Add it to the same parallel batch; its blockers block the merge like any other reviewer's.
-
-     The skill applies bias factors (security surfaces bump up; pure-infra / docs / tests-only bump down) and appends the security reviewer on top of the tier when a security surface / fix is involved. Trust the recommendation; override only when you have a concrete reason (note the reason here).
-   - Synthesize the reviewer reports (or your inline read) into a pass / issues-found verdict. Any blocker → fix-back loop before continuing.
-   - **Then re-review the FIX DELTA, not just re-run the tier heuristic.** The fixes are code no reviewer has seen, written under the momentum of agreeing with a finding, and they land in the exact spot a reviewer just proved is subtle. Dispatch a second round scoped to what changed since the first, telling the reviewers the original design was already accepted so they spend their pass on the delta. This is not belt-and-braces: on 2026-08-19 (PR #2044) round 1 asked for the give-up summary to be deferred into its `try` and for a new retry class to be reported; round 2 found that the fix for the second one **reintroduced the first one's bug one line away** (an unguarded `$metadata` read on a path where nothing had read the field yet) and, separately, printed a new default-level `warn` on graceful-degradation paths that had been silent. A test reviewer in the same round found eight surviving mutants in branches that round 1's fixes had introduced. Neither defect existed when the first round ran, so no amount of rigor there could have caught them.
-   - **The rule RECURSES: it is "review every fix round", not "review the second round".** Round N's fixes are themselves unreviewed code, so stopping at two only moves the blind spot. Keep going while the round just applied contains anything beyond prose — and a TEST rewrite counts, because a weakened test is invisible to every other gate. Measured 2026-09-02 (PR #2420): round 2 found a hard-coded expectation table that could go silently wrong and asked for a derived form; the round-2 fix that derived it **dropped a wire fact the hard-coded value had been pinning by accident**, so applying an empty-object skip to both the forwarding and the predicate together passed 150/150 where the pre-rewrite file caught it. Only a THIRD round, scoped to round 2's own delta, found that. The general shape is worth naming because it is not obvious: a fix that replaces a crude assertion with a principled one can remove a bound nobody realised the crude form was carrying — so when a round REPLACES an assertion rather than adding one, ask what the old one was pinning.
-   - Corollary for the mutation probes this repo relies on: **enumerate the branches the diff ADDS and probe each one**, rather than probing the headline change. A new `if`, a new token in a rendered string, a new early return and a new gate condition are four probes, not one — and every fix round adds more of them.
-   - `git diff origin/main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
-   - For each change: is it correct? complete? necessary?
-   - Check for:
-     - Logic errors or unhandled edge cases
-     - Unnecessary changes (reverted code still in diff, dead code, unrelated changes)
-     - Inconsistencies between changed files
-   - Verify all callers of changed functions handle the new behavior
-   - Verify type definitions are consistent with implementation
-   - **Shared-utility regression check**: if any file under `src/utils/**` (or another widely-imported module) changed, list every importer (`grep -rl "from '\.\./.*utils/<file>'" src tests`) and walk through each one to confirm the new behavior is correct for them. A change to a shared helper is only "done" when every caller has been considered.
-   - **Internal-interface contract change check**: if the diff changes the **semantics** of arguments an interface receives — even if the type signature is unchanged — list every implementer and walk through each one. Examples that count as a contract change: `provider.update`'s `newProperties` shifting from "full desired state" to "partial / overlay / etc."; an intrinsic resolver's input format changing; a state schema field's invariant changing. The risk is implementers that silently treat the old shape's invariants as load-bearing (e.g. `SNSTopicProvider.update` treating `newProps[K] === undefined` as "remove K from AWS"). PR #161 hit this — the first-pass design ("drifted-only partial newProperties") had to be reworked after audit found `SNSTopicProvider` and `IAMRoleProvider.updateManagedPolicies` would silently clear non-drifted attrs. **Audit BEFORE writing tests against the new design**, not after — discovering the breaks via tests-after-design forces a design rework and invalidates the tests already written.
+   - **First, run `/review-pr <N>`** for the size-appropriate plan: inline
+     spot-check (< 300 LOC or < 5 files), 1 reviewer (300–1000 LOC), 3-axis
+     parallel (≥ 1000 LOC or ≥ 10 files), plus the ADDITIVE
+     `pr-security-reviewer` at ANY tier when a security surface or fix is
+     involved. Trust the recommendation; override only with a concrete reason,
+     noted here.
+   - Synthesize the reports into a verdict; any blocker → fix-back loop.
+   - **Then re-review the FIX DELTA, not just re-run the tier heuristic.**
+     Fixes are code no reviewer has seen, written under the momentum of
+     agreeing with a finding, landing exactly where a reviewer just proved is
+     subtle (PR #2044: round 2 found round 1's fix reintroduced the first
+     bug one line away, plus eight surviving mutants in branches round 1's
+     fixes introduced). Scope round 2 to the delta and say the original
+     design is accepted.
+   - **The rule RECURSES — "review every fix round", not "the second round".**
+     Keep going while the round just applied contains anything beyond prose;
+     a TEST rewrite counts (PR #2420: a round-2 fix replacing a crude
+     assertion with a derived one dropped a wire fact the crude form had been
+     pinning by accident — only a third round found it). When a round
+     REPLACES an assertion rather than adding one, ask what the old one was
+     pinning.
+   - Corollary for mutation probes: **enumerate the branches the diff ADDS
+     and probe each one** — a new `if`, a new token in a rendered string, a
+     new early return and a new gate condition are four probes, not one.
+   - `git diff origin/main...HEAD` — confirm the diff is what you reviewed.
+   - For each change: correct? complete? necessary? Logic errors, dead code,
+     inconsistencies between files; all callers of changed functions handle
+     the new behavior; types consistent with implementation.
+   - **Shared-utility regression check**: if `src/utils/**` (or another
+     widely-imported module) changed, list every importer
+     (`grep -rl "from '\.\./.*utils/<file>'" src tests`) and walk each one.
+   - **Internal-interface contract change check**: if the diff changes the
+     SEMANTICS of arguments an interface receives — even with the type
+     signature unchanged — list every implementer and walk each one for
+     load-bearing assumptions about the old shape (truthy gates, "absent =
+     remove" semantics, JSON.parse on stringly input). PR #161's
+     "drifted-only partial newProperties" design had to be reworked after
+     audit found two implementers would silently clear non-drifted attrs.
+     **Audit BEFORE writing tests against the new design** — discovering the
+     breaks tests-after-design forces a rework and invalidates the tests.
      ```bash
-     # For provider interface changes:
      grep -rln "implements ResourceProvider" src/provisioning/providers/
-     # For each implementer, read the body of the affected method and write
-     # down what it assumes about the argument's shape — truthy gates,
-     # diff-based "absent = remove" semantics, JSON.parse on stringly-typed
-     # input, etc. The new contract must preserve every assumption that
-     # is load-bearing, OR every implementer must be updated in the same PR.
      ```
-     See `feedback_internal_contract_audit_first.md` for the full pattern.
 
 9. **Live-test changed behavior**
-   - Unit tests verify code correctness; this step verifies *feature* correctness against the runtime the user actually sees.
-   - Build the latest source: `vp run build`
-   - For each user-visible change in the diff (CLI command, output format, flag, error message), run the actual command path against a real or fixture input and confirm the output matches the spec / CDK CLI parity claim:
-     - CLI surface change → run `node dist/cli.js <subcommand> <args>` against `tests/integration/<example>/cdk.out` or a real state bucket; verify each output mode (`--long` / `--json` / patterns / etc.).
-     - State-touching change → exercise it against a real / test state bucket (e.g. `cdkd-state-test`).
-     - Non-CLI library change → run a minimal repro that imports the new code path.
-   - "Tests passed" is not "feature works." Always run the actual command before declaring done. If you cannot live-test (no real-AWS credentials, no fixture available), say so explicitly rather than skip silently — the gate exits non-zero in that case so a reviewer can decide whether to accept the trade-off.
+   - Unit tests verify code correctness; this verifies *feature* correctness
+     against the runtime the user sees. `vp run build` first.
+   - For each user-visible change (CLI command, output format, flag, error
+     message), run the actual command path against a real or fixture input:
+     CLI change → `node dist/cli.js <subcommand> <args>` against
+     `tests/integration/<example>/cdk.out` or a real state bucket, each
+     output mode; state-touching change → a real / test bucket; library
+     change → a minimal repro importing the new path.
+   - "Tests passed" is not "feature works." If you cannot live-test, say so
+     explicitly rather than skip silently — the gate exits non-zero so a
+     reviewer can decide.
 
 10. **Retrospective + rules update**
-    - Walk back over the session that produced this PR. For each surprise, friction, or correction the user had to make, ask: "is this a one-off, or a pattern that will recur?"
-    - For each pattern, propose where it should be reflected so it doesn't recur:
-      - **Hook** — pattern can be detected mechanically (e.g. fragile shell pattern, deprecated tool, marker-gated step). Strongest enforcement.
-      - **Skill / marker** — pattern is a checklist that must be done before some action. Use the `/check`+`check-gate` / `/check-docs`+`check-gate` / `/verify-pr`+`verify-pr-gate` / `/run-integ`+`integ-destroy-gate` template.
-      - **Memory** — pattern is judgmental ("prefer X when Y") and not mechanically detectable. Weakest enforcement; honest about its limits.
-    - Surface the proposals out loud (in chat, or in this PR's body) before merging. If the user agrees, write them in the same PR for code/skill/hook artifacts; memory entries are local to `~/.claude/projects/.../memory/` so they land regardless of PR boundaries.
-    - The retrospective is itself one of the items the `verify-pr` marker covers — skipping this step means the marker is set on incomplete work.
+    - Walk the session that produced this PR. For each surprise, friction, or
+      user correction: one-off, or recurring pattern? For each pattern,
+      propose where it lands: **hook** (mechanically detectable — strongest),
+      **skill / marker** (a pre-action checklist), **memory** (judgmental —
+      weakest). Surface the proposals before merging; write agreed
+      code/skill/hook artifacts in the same PR.
+    - The retrospective is itself covered by the `verify-pr` marker —
+      skipping it sets the marker on incomplete work.
 
-11. **Residual review-nit sweep** (mandatory — added 2026-05-22 after a multi-PR session left ~9 reviewer-flagged nits unfiled when the parent declared "session complete")
-    - For every `/review-pr` reviewer agent output during this session (including re-reviews after fix-back), walk the reviewer's "Minor / Nit / Informational" section.
-    - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker (these are the same three buckets as CLAUDE.md's "Remaining work" taxonomy — Fixed here / TODO / Won't-do):
-      - (a) **Fixed in this PR** — point at the fix commit / file:line that resolves the nit.
-      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it (e.g. "minor follow-ups in (#515)"). This is the only bucket that leaves future work. The issue body MUST carry the four classification lines, one field per line (see CLAUDE.md → "The four TODO fields"), plus the `Dup-check:` line `/work-issues` section 5-f (`.claude/skills/work-issues/references/filing.md`) requires at filing time:
+11. **Residual review-nit sweep** (mandatory — a multi-PR session once left
+    ~9 reviewer-flagged nits unfiled at "session complete")
+    - For every reviewer output this session (including re-reviews), walk the
+      "Minor / Nit / Informational" section. For EACH item, confirm ONE of
+      these BEFORE setting the `verify-pr` marker (same buckets as CLAUDE.md's
+      Remaining-work taxonomy):
+      - (a) **Fixed in this PR** — point at the fix commit / file:line.
+      - (b) **TODO (issue #N)** — an issue exists AND the PR body references
+        it. The issue body MUST carry the four classification lines, one
+        field per line (CLAUDE.md → "The four TODO fields"), plus the
+        `Dup-check:` line `/work-issues` §5-f requires:
 
         ```text
         Session-fit: now (do it in this session) | next (not this session) — <reason>
@@ -230,34 +265,41 @@ Run each check and report pass/fail:
         Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
         ```
 
-        **The reviewer agents grade on a DIFFERENT scale — translate, do not copy.** `.claude/agents/pr-*-reviewer.md` report `blocker` / `minor` / `nit`; `Severity` takes `high` / `medium` / `low`. This step is exactly where a reviewer's word gets carried into an issue body, so map it: `nit` -> `low`, `minor` -> `medium`. There is deliberately no `blocker` arm: this step walks only the "Minor / Nit / Informational" section, and a blocker is resolved by step 8's fix-back loop before you ever get here. If one reaches this step, the steps are being run out of order — go back to step 8 rather than grading it. And re-read the mapped value against the Severity scale rather than trusting it: reviewer severity grades how bad the FINDING is, while `Severity` grades what stays broken for a USER, and the two come apart on internal-consistency nits.
+        **Reviewers grade on a DIFFERENT scale — translate, do not copy**:
+        `nit` → `low`, `minor` → `medium`. There is deliberately no `blocker`
+        arm — a blocker is resolved by step 8's fix-back loop; one reaching
+        this step means the steps ran out of order. Re-read the mapped value
+        against the Severity scale: reviewer severity grades the FINDING,
+        `Severity` grades what stays broken for a USER.
+        **This step is the deferral moment** — the call gets made here, not
+        at wrap time when the evidence is gone. A `now` item must be fixed
+        before the marker is set, or re-classified with the reason recorded.
+      - (c) **Won't-do (decided + recorded)** — the PR body or a comment
+        names the nit and why shipping as-is is right.
+    - If none holds for any nit, file a bundled follow-up issue NOW and
+      reference it from the PR body. Do not set `verify-pr` until every
+      reviewer-flagged item is on one of the three paths.
+    - Also walk the transcript for memory-rule candidates — each written as a
+      memory file (with MEMORY.md index entry) or explicitly de-prioritized.
+    - **Auto-close audit**: read the PR body; for every `(#N)` parens-form
+      reference adjacent to a close keyword, the merge will NOT auto-close —
+      rewrite to parens-free `Closes #N` or add a manual `gh issue close <N>`
+      step. (`closes-paren-form-gate.sh` already blocks the merge; this
+      catches it before the attempt.)
 
-        **This step is the deferral moment**, so it is where the call gets made — not at wrap time, by which point the evidence for it (which files were open, which verification cycle was already paid for) is gone. A `now` item must be fixed before the marker is set, or re-classified to `next` with the reason recorded; you cannot set `verify-pr` over an open `now`.
-      - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit and explains why shipping as-is is the right call. Requires no future action.
-    - If NONE of (a) / (b) / (c) is true for any nit, file a bundled follow-up issue NOW (one issue per session, listing every uncovered nit) and update the PR body to reference it. Do not set the `verify-pr` marker until every reviewer-flagged item is on one of those three paths.
-    - Also walk the session transcript for **surfaced memory-rule candidates** (surprising traps, repeated friction, "I should remember this for next time" moments). Each MUST be either written as a memory file in `~/.claude/projects/-Users-goto-pc-github-cdkd/memory/` (with a MEMORY.md index entry) OR explicitly de-prioritized in the chat / PR body.
-    - **Auto-close audit** (added 2026-05-22 — counter-trap to the closing-paren disambig convention in memory `feedback_pr_body_no_hash_for_item_numbers.md`):
-      - Read the PR body (`gh pr view <PR> --json body -q .body`). For every `(#N)` parens-form reference, check whether it's adjacent to a close keyword (`closes` / `fixes` / `resolves`, case-insensitive).
-      - If yes: the merge will NOT auto-close the target issue. Either rewrite to parens-free `Closes #N` (auto-close fires), OR add a manual `gh issue close <N>` step to the merge sequence and note it in the PR body.
-      - The mechanical `closes-paren-form-gate.sh` hook ALREADY blocks `gh pr merge` for the `Closes (#N)` pattern — this skill step is the human-readable backup that catches the issue BEFORE the merge attempt.
-    - This step is the structural enforcement of memory `feedback_session_completion_audit_required.md` — claiming "session complete" / "nothing remaining" without running this sweep is the exact violation that surfaced this rule.
-
-11. **PR title + body freshness** (skip if no PR exists yet — `/create-pr` will write them from scratch)
-    - When a PR has follow-up commits after creation, both the title and body authored at PR-create time often go stale: the title was scoped to the first commit's intent only, and the body may mention reverted features, removed checks, or wrong rationale. Detect and fix both.
-    - **Title check**: read `gh pr view <PR> --json title -q .title` and confirm it still describes the union of commits on the branch. If a later commit added a separate concern (e.g. an unrelated fix, an opportunistic refactor), broaden the title. Update via `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."` (NOT `gh pr edit --title`, which currently fails silently due to GraphQL Projects-classic deprecation — see hook `gh-pr-edit-deprecation-gate.sh`).
-    - **Body freshness commands**:
-      - `gh pr view <PR> --json commits -q '.commits | length'` — commit count on the PR
-      - `git log main..HEAD --oneline | wc -l` — commit count locally
-      - If they match and >1, the PR has been iterated on; the initial body is almost certainly stale
-    - Read the current body (`gh pr view <PR> --json body -q .body`) and compare against the actual final diff (`git diff origin/main...HEAD`). Flag any of:
-      - Bullets describing behavior that was reverted in a later commit
-      - Bullets describing checks/validations the code no longer performs
-      - File:line citations that no longer exist
-      - Wording that contradicts the current README.md / CLAUDE.md
-      - Stale numeric claims ("N tests pass" when the count has since changed)
-    - If stale, rewrite the body and patch via:
+11. **PR title + body freshness** (skip if no PR exists yet — `/create-pr`
+    writes them from scratch)
+    - Follow-up commits routinely stale both. **Title**: confirm it describes
+      the union of commits; update via
+      `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."`
+      (NOT `gh pr edit --title`, which fails silently — see
+      `gh-pr-edit-deprecation-gate.sh`).
+    - **Body**: if the PR has >1 commit, the initial body is almost certainly
+      stale. Compare `gh pr view <PR> --json body -q .body` against the final
+      diff; flag bullets describing reverted behavior or removed checks,
+      dead file:line citations, wording contradicting current docs, stale
+      numeric claims. If stale, rewrite and patch:
      ```bash
-     # Write desired body to a file (avoids shell escaping issues with backticks)
      cat > /tmp/pr-body.md <<'EOF'
      ## Summary
      ...
@@ -266,8 +308,9 @@ Run each check and report pass/fail:
      EOF
      gh api repos/{owner}/{repo}/pulls/{number} -X PATCH --field "body=@/tmp/pr-body.md" -q '.html_url'
      ```
-     Note: `gh pr edit --body` may fail with "Projects (classic) is being deprecated" — fall back to the `gh api PATCH` form above.
-   - Verify with `gh pr view <PR> --json body -q .body | head -5` that backticks and special chars rendered correctly.
+     (`gh pr edit --body` may fail with the Projects-classic deprecation —
+     use the `gh api PATCH` form.) Verify with
+     `gh pr view <PR> --json body -q .body | head -5`.
 
 ## Output
 
@@ -295,18 +338,29 @@ Present results as a table:
 | auto-close audit (no `Closes (#N)` in body) | clean / N traps fixed |
 | PR title + body freshness | up-to-date/stale (updated)/n-a (no PR yet) |
 
-If all pass, confirm "PR is ready to merge."
-If any fail, list the issues to fix.
+If all pass, confirm "PR is ready to merge." If any fail, list the issues.
 
-Then add the **State** line CLAUDE.md's wrap-report rule requires — this skill's report is the single most common place it is needed, because "ready to merge" is almost never the end of the turn:
+Then add the **State** line CLAUDE.md's wrap-report rule requires — this
+report is the commonest place it is needed, because "ready to merge" is
+almost never the end of the turn:
 
-- A check that is merely *pending* (CI still running, an integ in flight, a reviewer agent not back yet) is **WAITING**, not a failure and not a stop. Say what you are waiting on, the signal that will re-invoke you (`gh pr checks <N> --watch`, a background-task completion notification), and that you will merge once it is green. Do not hand the user a "ready to merge" verdict and then go quiet — that reads as STOPPED and leaves them unsure whether to intervene.
-- A check that legitimately **cannot** pass (no AWS credentials for the live-test, a decision only the maintainer can make) is not WAITING either — there is no signal coming. Either resolve it, or ask through the `AskUserQuestion` tool so the run continues from the answer. Never end the turn with the question in prose.
-- Report **STOPPED** only when the PR is merged (or the user explicitly owns the next step) and nothing is pending.
+- A check merely *pending* (CI running, an integ in flight, a reviewer not
+  back) is **WAITING**, not a failure and not a stop — say what you are
+  waiting on, the signal that re-invokes you, and that you will merge on
+  green. Do not hand over "ready to merge" and go quiet.
+- A check that legitimately **cannot** pass (no AWS credentials, a
+  maintainer-only decision) is not WAITING — no signal is coming. Resolve
+  it, or ask through `AskUserQuestion`; never end the turn with the question
+  in prose.
+- Report **STOPPED** only when the PR is merged (or the user explicitly owns
+  the next step) and nothing is pending.
 
 ## Final Step
 
-After all checks pass, record THREE markers via [markgate](https://github.com/go-to-k/markgate) so the gate hooks allow the next `git commit`, `gh pr create`, and `gh pr merge`. `/verify-pr` is a superset of `/check` (code correctness) and `/check-docs` (docs consistency), and adds live-test + retrospective + scope-match on top — so its success implies all three. cdkd pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active:
+After all checks pass, record THREE markers via
+[markgate](https://github.com/go-to-k/markgate) — `/verify-pr` is a superset
+of `/check` and `/check-docs`, so its success implies all three. Use
+`mise exec` (cdkd pins markgate via mise):
 
 ```bash
 mise exec -- markgate set check
@@ -314,8 +368,12 @@ mise exec -- markgate set docs
 mise exec -- markgate set verify-pr
 ```
 
-The `verify-pr` marker is the one consulted by `.claude/hooks/verify-pr-gate.sh` to allow `gh pr create` and `gh pr merge`. It is intentionally settable ONLY by this skill — running it by hand from a shell to bypass the gate defeats the whole point. If a check legitimately cannot pass right now (e.g. the live-test cannot run because the user lacks AWS credentials), say so explicitly in the report and DO NOT set the marker — the gate exits non-zero so the human can decide whether to override.
+The `verify-pr` marker is what `.claude/hooks/verify-pr-gate.sh` consults for
+`gh pr create` / `gh pr merge`. It is settable ONLY by this skill — setting it
+by hand to bypass the gate defeats the point. If a check legitimately cannot
+pass right now, say so in the report and DO NOT set the marker — the gate
+exits non-zero so the human can decide.
 
-Then, if there are uncommitted changes (e.g., lint fixes, doc updates made during this run), commit them and push to the remote. This ensures the remote branch is always up to date when reporting "PR is ready to merge."
-
-Skip the marker + commit step if any check failed.
+Then, if there are uncommitted changes from this run (lint fixes, doc
+updates), commit and push so the remote branch matches the "ready to merge"
+report. Skip the marker + commit step if any check failed.

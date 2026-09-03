@@ -236,6 +236,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['provider-replay-and-refusals.md', 65],
   ['provider-resource-identity.md', 65],
   ['providers.md', 92],
+  ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
   ['synthesis.md', 13],
   ['test-stream-fence.md', 3], // literal list: EXACT, see below
@@ -247,6 +248,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // is not decoration. Floors sit ~12% under the 2026-08-25 measurement, so
   // ordinary editing is free and MOVING an area's notes out from under it is
   // not.
+  // CLAUDE.md is the representative path for session-report.md (the wrap-report
+  // field reference split out of CLAUDE.md by the 2026-09-04 token-diet pass);
+  // the band is that one satellite's size.
+  ['CLAUDE.md', 10_000, 20_000], // measured 12,483 at registration (session-report.md alone; re-measure on edit)
   ['src/provisioning/providers/s3-bucket-provider.ts', 210_000, 265_000], // measured 239,539; the cap was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
   // A provisioning path OUTSIDE `providers/**`, and it is the row that makes
   // the provider half of this table bind at all. Review probe, 2026-08-25:
@@ -517,7 +522,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 41; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 42; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -590,6 +595,10 @@ const CORPUS_FILE_COUNT = 41; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  what this file's own failure messages instruct: hooks.md fell to
                               //  115,030 B and the satellite is 6,454 B under a two-path `paths:`
                               //  list (the gate and its suite). That makes 41.
+                              //  + session-report.md (2026-09-04 token-diet pass, PR #2493): the
+                              //  session-wrap field reference moved OUT of CLAUDE.md, which is
+                              //  injected into every context, into a satellite loaded on demand.
+                              //  That makes 42.
 const CORPUS_BYTES_MIN = 966_000;   // measured 1,000,819 B -- 34,819 B of slack.
                                     // 917_000 -> 966_000 (2026-09-03): re-measured with the same
                                     // ~34 KB of slack every previous setting used. The comment
