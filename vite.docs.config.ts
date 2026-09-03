@@ -42,6 +42,25 @@ const navigation: SsgNavigationGroup[] = [
     ],
   },
   {
+    title: 'CLI Reference',
+    items: [
+      { title: 'Overview', path: '/cli-reference' },
+      { title: 'Deploy: waits & concurrency', path: '/cli-deploy' },
+      { title: 'Deploy: tuning', path: '/cli-deploy-tuning' },
+      { title: 'Deploy: safety flags', path: '/cli-deploy-safety' },
+      { title: 'diff', path: '/cli-diff' },
+      { title: 'drift', path: '/cli-drift' },
+      { title: 'Destroy flags & guards', path: '/cli-destroy' },
+      { title: 'bootstrap', path: '/cli-bootstrap' },
+      { title: 'gc', path: '/cli-gc' },
+      { title: 'rollback', path: '/cli-rollback' },
+      { title: 'export', path: '/cli-export' },
+      { title: 'scrub', path: '/cli-scrub' },
+      { title: 'publish-assets', path: '/cli-publish-assets' },
+      { title: 'events', path: '/cli-events' },
+    ],
+  },
+  {
     title: 'Local Execution',
     items: [
       { title: 'Overview', path: '/local-emulation' },
@@ -53,23 +72,6 @@ const navigation: SsgNavigationGroup[] = [
       { title: 'local start-cloudfront', path: '/local-start-cloudfront' },
       { title: 'local invoke-agentcore', path: '/local-invoke-agentcore' },
       { title: 'local start-agentcore', path: '/local-start-agentcore' },
-    ],
-  },
-  {
-    title: 'CLI Reference',
-    items: [
-      { title: 'Overview', path: '/cli-reference' },
-      { title: 'Deploy: waits & tuning', path: '/cli-deploy' },
-      { title: 'Deploy: safety flags', path: '/cli-deploy-safety' },
-      { title: 'diff', path: '/cli-diff' },
-      { title: 'drift', path: '/cli-drift' },
-      { title: 'Destroy flags & guards', path: '/cli-destroy' },
-      { title: 'bootstrap & gc', path: '/cli-bootstrap-gc' },
-      { title: 'rollback', path: '/cli-rollback' },
-      { title: 'export', path: '/cli-export' },
-      { title: 'scrub', path: '/cli-scrub' },
-      { title: 'publish-assets', path: '/cli-publish-assets' },
-      { title: 'events', path: '/cli-events' },
     ],
   },
   {
@@ -217,7 +219,10 @@ const theme = defineTheme({
     '  .hero-image { grid-column: 1; grid-row: 1; justify-self: center; }',
     '  .hero-image img { width: 6.5rem; height: 6.5rem; }',
     '  .hero-name { grid-column: 1; grid-row: 2; align-self: auto; margin-top: 1.25rem; text-align: center; }',
-    '  .hero-name::after { display: none; }',
+    // The desktop beside-the-wordmark label overflowed at phone widths;
+    // instead of hiding it, stack it centered under the wordmark.
+    '  .hero-name { position: relative; }',
+    '  .hero-name::after { display: block; margin-left: 0; transform: none; font-size: 0.7rem; margin-top: 0.55rem; text-align: center; }',
     '  .hero-text { grid-column: 1; grid-row: 3; align-self: auto; margin-top: 0.75rem; text-align: center; }',
     '  .hero-tagline { grid-column: 1; grid-row: 4; margin-top: 1rem; }',
     '  .hero-actions { grid-column: 1; grid-row: 5; }',

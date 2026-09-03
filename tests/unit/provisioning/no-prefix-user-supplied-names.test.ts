@@ -235,7 +235,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
       // New computed name under flag-on = 'my-role'.
       // → replacement fires: create('my-role') then delete('MyStack-my-role').
       //
-      // This is the documented caveat in README / docs/cli-deploy.md
+      // This is the documented caveat in README / docs/cli-deploy-tuning.md
       // ("Mid-flight reversibility"). Asserting it here guards a future
       // refactor from silently breaking the caveat — e.g. by short-
       // circuiting the comparison when only the prefix differs.

@@ -67,7 +67,7 @@ between the PUT and any cleanup, a throw on a path that reaches no cleanup
 call, and a LATE handler PUT landing after cdkd stopped polling (the only one
 that leaves real `Data` content rather than an empty body). `cdkd gc` collects
 the stranded ones — see
-[`cdkd gc`](cli-bootstrap-gc.md#custom-resource-response-placeholders) for the
+[`cdkd gc`](cli-gc.md#custom-resource-response-placeholders) for the
 staleness rule and why an in-flight run's key is never taken.
 
 **Deleting one is not the same as removing it, because this bucket is
@@ -152,7 +152,7 @@ CDK bootstrap destinations verbatim, byte-identical to the behavior before
 cdkd-owned asset storage existed);
 present → cdkd-assets mode (asset publishing redirects to the cdkd storage
 and template references are rewritten to match — see the asset-destinations
-section in [docs/cli-bootstrap-gc.md](cli-bootstrap-gc.md#asset-destinations-after-opt-in-cdkd-assets-mode); no state schema
+section in [docs/cli-bootstrap.md](cli-bootstrap.md#asset-destinations-after-opt-in-cdkd-assets-mode); no state schema
 change, the deployed `properties` simply carry the cdkd names); present but
 bucket/repo deleted → hard error
 (never a silent fallback). `cdkd bootstrap --destroy` removes the marker and
@@ -170,14 +170,14 @@ down the region's asset bucket + ECR repo and deletes the marker last
 (the reverse of the create-side marker-written-last ordering); add
 `--include-state-bucket` to also delete the state bucket once every stack
 is destroyed. See the teardown section in
-[docs/cli-bootstrap-gc.md](cli-bootstrap-gc.md#teardown-cdkd-bootstrap-destroy).
+[docs/cli-bootstrap.md](cli-bootstrap.md#teardown-cdkd-bootstrap-destroy).
 
 Because assets are content-addressed and never deleted on `cdkd destroy`,
 the asset bucket / ECR repo grow over time; `cdkd gc` reclaims
 unreferenced objects / images by scanning every state file in the state
 bucket for asset references (with a 30d default age guard). See the gc
 section in
-[docs/cli-bootstrap-gc.md](cli-bootstrap-gc.md#cdkd-gc-garbage-collect-cdkd-owned-storage).
+[docs/cli-gc.md](cli-gc.md#cdkd-gc-garbage-collect-cdkd-owned-storage).
 
 ### Configuration Example
 

@@ -72,13 +72,25 @@ export default function ogTemplate(props: OgTemplateProps): string {
     font-family: 'Helvetica Neue', Arial, sans-serif;
   }
   .brand { display: flex; align-items: center; gap: 20px; }
-  .brand-name { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; }
+  /* Same lockup as the mobile hero: wordmark with the CDK DIRECT label
+     stacked underneath. */
+  .brand-lockup { display: flex; flex-direction: column; gap: 6px; }
+  .brand-name { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; }
+  .brand-label { font-size: 15px; font-weight: 600; letter-spacing: 0.14em; color: ${BRAND.muted}; }
   .title {
     font-size: ${titleIsLong ? 52 : 64}px;
     font-weight: 800;
     line-height: 1.12;
     letter-spacing: -0.02em;
     max-width: 1000px;
+  }
+  /* The home catchphrase must stay on ONE line (the wrap put a lone "CDK."
+     on line 2). 54px measured to fit the 1032px content box with room to
+     spare; nowrap guards against font-metric drift re-wrapping it. */
+  .title--home {
+    font-size: 54px;
+    white-space: nowrap;
+    max-width: none;
   }
   .description {
     margin-top: 24px;
@@ -97,9 +109,9 @@ export default function ogTemplate(props: OgTemplateProps): string {
 </style>
 </head>
 <body>
-  <div class="brand">${logoSvg}<span class="brand-name">${siteName}</span></div>
+  <div class="brand">${logoSvg}<span class="brand-lockup"><span class="brand-name">${siteName}</span><span class="brand-label">CDK DIRECT</span></span></div>
   <div>
-    <div class="title">${title}</div>
+    <div class="title${isHome ? ' title--home' : ''}">${title}</div>
     ${description && !isHome ? `<div class="description">${description}</div>` : ''}
   </div>
   <div class="footer">

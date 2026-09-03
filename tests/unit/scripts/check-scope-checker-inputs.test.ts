@@ -661,11 +661,14 @@ describe('check-gate scope covers every literal checker input (issue #2364)', ()
   });
 
   it('parser floor: the BARE extraction sees what the JOIN parser cannot (issue #2381)', () => {
-    // These three are read as checker input and none is written as
-    // join(repoRoot, ...), so a floor naming them is a floor on the idiom this
-    // parser exists for, not on the remedy. The first two are the #2381 gaps
-    // (each reds a different suite when its file is renamed); README.md is the
-    // root-file shape, invisible to both parsers before this revision.
+    // None of these three is written as join(repoRoot, ...), so a floor
+    // naming them is a floor on the idiom this parser exists for, not on the
+    // remedy. The first two are the #2381 gaps, each read as checker input
+    // (each reds a different suite when its file is renamed); README.md is
+    // the root-file shape, invisible to both parsers before this revision —
+    // since the README slimmed, its only occurrences are the
+    // codecommit-repository-provider.test.ts mock fixtures, which the bare
+    // parser must keep seeing all the same.
     const bareTargets = extractBareTargets();
     for (const known of ['.claude/hooks/branch-gate.sh', 'docs/testing.md', 'README.md']) {
       expect([...bareTargets.keys()], `BARE extraction finds ${known}`).toContain(known);

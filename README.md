@@ -8,6 +8,11 @@ Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AW
 
 **📚 Documentation: [cdkd.dev](https://cdkd.dev)**
 
+<a href="https://cdkd.dev"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/docs-site-dark.png">
+<img alt="cdkd documentation site — cdkd.dev" src="https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/docs-site-light.png" width="820">
+</picture></a>
+
 - **Drop-in CDK compatible**: your existing CDK app code runs as-is; just replace `cdk deploy` with `cdkd deploy`.
 - **Up to 15x faster deploys**: direct SDK calls, aggressive parallelization, and `--no-wait` to skip slow stabilization waits; **faster than Terraform and CloudFormation Express mode** too (see [Benchmark](#benchmark)).
 
