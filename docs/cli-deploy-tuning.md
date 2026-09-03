@@ -1,5 +1,5 @@
 ---
-title: cdkd deploy: tuning
+title: "Deploy: tuning"
 description: "Deploy-time tuning flags — VPC route DependsOn relaxation, observed-state capture, name prefixing, per-resource timeouts, and CDK annotation messages."
 ---
 

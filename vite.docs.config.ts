@@ -221,7 +221,6 @@ const theme = defineTheme({
     '  .hero-name { grid-column: 1; grid-row: 2; align-self: auto; margin-top: 1.25rem; text-align: center; }',
     // The desktop beside-the-wordmark label overflowed at phone widths;
     // instead of hiding it, stack it centered under the wordmark.
-    '  .hero-name { position: relative; }',
     '  .hero-name::after { display: block; margin-left: 0; transform: none; font-size: 0.7rem; margin-top: 0.55rem; text-align: center; }',
     '  .hero-text { grid-column: 1; grid-row: 3; align-self: auto; margin-top: 0.75rem; text-align: center; }',
     '  .hero-tagline { grid-column: 1; grid-row: 4; margin-top: 1rem; }',

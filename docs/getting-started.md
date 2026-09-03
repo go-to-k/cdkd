@@ -76,8 +76,8 @@ deprecation warning. Explicit pre-provisioning
 cdkd has three command families:
 
 - **Top-level commands** — most (`cdkd deploy` / `destroy` / `diff` /
-  `synth` / `list` / `import` / `export` / `orphan` / `scrub` /
-  `publish-assets`) require a CDK app — they synthesize a template to
+  `synth` / `list` / `import` / `export` / `migrate` / `orphan` /
+  `scrub` / `publish-assets`) require a CDK app — they synthesize a template to
   learn what they're operating on. A few operate on the state bucket /
   AWS directly and need no app: `cdkd bootstrap`, `cdkd drift`,
   `cdkd rollback`, `cdkd events`, `cdkd gc`, `cdkd force-unlock`.
