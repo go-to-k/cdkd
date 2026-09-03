@@ -907,7 +907,7 @@ A per-resource **skip** exits `2` as well: `⚠ MyTable (AWS::Glue::Table)
 skipped (...)` plus `(4 deleted, 1 skipped, 0 errors)` means cdkd could not
 address that resource, issued no AWS call, and therefore left it in place —
 so the state record is deliberately KEPT rather than dropped. See
-[docs/cli-reference.md](docs/cli-reference.md#skipped-resources-on-destroy-issue-1752).
+[docs/cli-reference.md](docs/cli-reference.md#skipped-resources-on-destroy).
 
 One figure on that line does **not** mean exit `2`: `N unverified` (issue
 [#2301](https://github.com/go-to-k/cdkd/issues/2301)). It counts pre-flight

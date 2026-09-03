@@ -206,6 +206,8 @@ const theme = defineTheme({
     // motion (the skin slides them 8px right) and no scroll-rise animation.
     '.hero { border-bottom: 0; background: none; }',
     '.hero::after { display: none; }',
+    // Three selling-point cards in one row (the skin stacks them in a tall
+    // single column); collapse back to one column on narrow viewports.
     '.features-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; column-gap: 2.5rem; }',
     '@media (max-width: 900px) { .features-grid { grid-template-columns: 1fr; } }',
     '.feature-card { animation: none; }',

@@ -1145,7 +1145,7 @@ describe('cdkd import', () => {
     expect(readlineQuestion).not.toHaveBeenCalled();
     expect(mockSaveState).not.toHaveBeenCalled();
     // The lock is acquired BEFORE this prompt, so the refusal must release it
-    // on the way out -- the guarantee `docs/cli-reference.md` states for all
+    // on the way out -- the guarantee `docs/cli-destroy.md` states for all
     // four commands that hold a lock at their prompt. A stuck lock would block
     // every other session against this stack, not merely fail this run.
     expect(mockAcquireLock).toHaveBeenCalledTimes(1);

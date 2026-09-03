@@ -16,7 +16,7 @@ import {
  *
  * Issue #2291 closed the collapse for a child parameter declared `Type: String`.
  * A parameter declared `CommaDelimitedList` is ALSO an allowed spelling for a
- * secret-bearing nested-stack parameter — `docs/cli-reference.md` says so
+ * secret-bearing nested-stack parameter — `docs/cli-diff.md` says so
  * explicitly — and `coerceParameterTypedValue` turns it into an ARRAY
  * before any redaction runs. `redactByPath` then had no arm for "array bag
  * beside an intrinsic OBJECT", so the leaf dropped to the plaintext-keyed value
