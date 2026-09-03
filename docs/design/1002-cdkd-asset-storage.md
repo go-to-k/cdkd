@@ -1,3 +1,8 @@
+---
+title: "cdkd-owned asset storage (`cdk gc` survival) — Design"
+unlisted: true
+---
+
 # cdkd-owned asset storage (`cdk gc` survival) — Design
 
 Tracking: [#1002](https://github.com/go-to-k/cdkd/issues/1002)

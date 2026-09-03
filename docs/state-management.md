@@ -1,3 +1,8 @@
+---
+title: State Management
+description: "How cdkd manages stack state client-side in S3 — bucket layout, state schema, optimistic locking, and troubleshooting."
+---
+
 # cdkd State Management Specification
 
 ## Overview
@@ -169,14 +174,14 @@ down the region's asset bucket + ECR repo and deletes the marker last
 (the reverse of the create-side marker-written-last ordering); add
 `--include-state-bucket` to also delete the state bucket once every stack
 is destroyed. See the teardown section in
-[docs/cli-reference.md](cli-reference.md#teardown-cdkd-bootstrap---destroy-issue-1010).
+[docs/cli-reference.md](cli-reference.md#teardown-cdkd-bootstrap-destroy-issue-1010).
 
 Because assets are content-addressed and never deleted on `cdkd destroy`,
 the asset bucket / ECR repo grow over time; `cdkd gc` reclaims
 unreferenced objects / images by scanning every state file in the state
 bucket for asset references (with a 30d default age guard). See the gc
 section in
-[docs/cli-reference.md](cli-reference.md#cdkd-gc-garbage-collect-cdkd-owned-asset-storage).
+[docs/cli-reference.md](cli-reference.md#cdkd-gc-garbage-collect-cdkd-owned-storage).
 
 ### Configuration Example
 
@@ -465,11 +470,11 @@ fully transparent** — read a v5 state file with a v6 binary and the
 parser tolerates the missing fields (degrades to "top-level stack");
 the next write persists `version: 6` silently. No `cdkd state
 migrate-schema` command, no env flag, no manual JSON edit. The
-[`tests/integration/schema-v5-to-v6-migration/`](../tests/integration/schema-v5-to-v6-migration/)
+[`tests/integration/schema-v5-to-v6-migration/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/schema-v5-to-v6-migration/)
 integ test proves the round-trip against real AWS.
 
 The v6 prep PR added the type bump alone. The
-[`NestedStackProvider`](../src/provisioning/providers/nested-stack-provider.ts)
+[`NestedStackProvider`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/nested-stack-provider.ts)
 that consumes the fields shipped in the [#459](https://github.com/go-to-k/cdkd/issues/459)
 main PR: when a parent stack contains an `AWS::CloudFormation::Stack`
 resource, the provider runs a recursive child deploy / destroy and the
@@ -517,7 +522,7 @@ The field is **sticky**: once a resource is `'cc-api'`, a later SDK-provider
 backfill does NOT migrate it back, because that would mean physical-ID churn
 (destroy + recreate) on every backfill release. **The stickiness has a narrow
 exemption**, `STICKY_CC_MIGRATION_EXEMPT` in
-[`src/provisioning/provider-registry.ts`](../src/provisioning/provider-registry.ts) —
+[`src/provisioning/provider-registry.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/provider-registry.ts) —
 consult the constant rather than a list here, since its membership changes.
 A type is admitted only when its Cloud Control routing is **broken** (not merely
 slower) AND the SDK provider addresses the resource by the SAME physicalId the
@@ -536,7 +541,7 @@ resource will keep being managed through Cloud Control.
 **v6 → v7 upgrade is fully transparent** — a v6 state file read by a v7 binary
 parses with the field undefined, and the next write persists `version: 7`
 silently. No command, no flag, no manual JSON edit. The
-[`tests/integration/schema-v6-to-v7-migration/`](../tests/integration/schema-v6-to-v7-migration/)
+[`tests/integration/schema-v6-to-v7-migration/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/schema-v6-to-v7-migration/)
 integ test proves the round-trip against real AWS.
 
 ### `version: 8` adds `outputReads`
@@ -569,7 +574,7 @@ of the two unrecorded kinds above — and for one that uses no
 pre-v8 record reads as "no `Fn::GetStackOutput` consumers known" and the
 enumeration degrades to imports-only (the v4-shipped behavior); the next deploy
 under a v8 binary repopulates the field and persists `version: 8` silently. The
-[`tests/integration/schema-v7-to-v8-migration/`](../tests/integration/schema-v7-to-v8-migration/)
+[`tests/integration/schema-v7-to-v8-migration/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/schema-v7-to-v8-migration/)
 integ test proves the round-trip against real AWS.
 
 ### `version: 9` adds `exportNames` (current writers)
@@ -619,7 +624,7 @@ record — adding or removing `Export.Name` equal to an output's own key rewrite
 the same key with the same value (byte-equal bag), and the effective-set
 comparison is what persists and re-indexes the flip so a newly-exported name
 becomes importable (and a newly-unexported one stops being served). The
-[`tests/integration/schema-v8-to-v9-migration/`](../tests/integration/schema-v8-to-v9-migration/)
+[`tests/integration/schema-v8-to-v9-migration/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/schema-v8-to-v9-migration/)
 integ test proves the round-trip against real AWS — and first reproduces the
 shadowing under the v8 binary (a consumer bound to a decoy stack's plain
 output) before the v9 binary rebinds it to the real export.
@@ -872,7 +877,7 @@ The composite value is what state records, what `cdkd state show` /
 `cdkd state resources` print, and what
 `cdkd import --resource <logicalId>=<physicalId>` expects. A few types also
 accept a looser form on import — see
-[import.md](./import.md#auto-resolved-no---resource-flag-needed) for the
+[import.md](./import.md#auto-resolved-no-resource-flag-needed) for the
 per-type notes.
 
 | Resource Type | physicalId format |

@@ -1,3 +1,8 @@
+---
+title: Supported Resources
+description: "Every AWS resource type cdkd can deploy and manage, grouped by category — SDK Provider vs Cloud Control API coverage per type."
+---
+
 # Supported AWS Resource Types
 
 This document lists every AWS resource type cdkd can deploy and manage,
@@ -48,7 +53,7 @@ with a rationale) sets. Any unhandled top-level property in the CFn schema
 triggers a fast-fail with the silently-dropped property name, the
 rationale, a 1-click GitHub issue link to request support, and the exact
 `--allow-unsupported-properties <ResourceType>:<PropertyName>` re-run
-command. See [docs/cli-reference.md `--allow-unsupported-properties`](cli-reference.md#--allow-unsupported-properties-deploy)
+command. See [docs/cli-reference.md `--allow-unsupported-properties`](cli-reference.md#allow-unsupported-properties-deploy)
 for the escape hatch.
 
 Coverage data is generated from the CFn schema fixtures + each SDK
@@ -342,7 +347,7 @@ new glue.CfnTable(this, 'IcebergTable', {
 Glue then writes the Iceberg metadata itself: the created table comes back with
 `Parameters.table_type = ICEBERG` and a populated `Parameters.metadata_location`.
 That shape has real-AWS coverage in the
-[`data-analytics`](../tests/integration/data-analytics/) integ fixture.
+[`data-analytics`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/data-analytics/) integ fixture.
 
 ### Glue table / database: AWS-managed `Parameters` survive an update
 
@@ -418,7 +423,7 @@ AWS-authored entries back into the payload. Four consequences worth knowing
   the database merge keeps this exposure; in practice nothing commits to a Glue
   *database* out of band the way an engine commits to a table.
 
-Real-AWS coverage: the [`data-analytics`](../tests/integration/data-analytics/)
+Real-AWS coverage: the [`data-analytics`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/data-analytics/)
 fixture's UPDATE phase re-asserts both Iceberg markers after an unrelated
 `Description` edit (having first pinned that the update was in-place, via an
 unchanged `Table.CreateTime`), asserts a user-removed parameter on the sibling

@@ -1,3 +1,8 @@
+---
+title: Troubleshooting
+description: "Common cdkd issues and their solutions — lock problems, state management, deploy failures, and debugging tips."
+---
+
 # cdkd Troubleshooting Guide
 
 This document summarizes common issues when using cdkd and their solutions.
@@ -1485,7 +1490,7 @@ cdkd rollback MyStack --force # skip the confirmation prompt
   success) or the process was killed before the journal was written (a
   SIGKILL before the PUT). In the latter case use `cdkd deploy` to resume or
   `cdkd destroy` to clean up.
-- See [docs/cli-reference.md](cli-reference.md#cdkd-rollback) for the full flag
+- See [docs/cli-reference.md](cli-reference.md#cdkd-rollback-revert-a-failed-deploy) for the full flag
   reference and known limitations.
 
 ### Issue: destroy reports `N skipped` and exits 2
@@ -1710,4 +1715,3 @@ https://github.com/YOUR_REPO/cdkd/discussions
 - [architecture.md](./architecture.md) - Overall architecture
 - [state-management.md](./state-management.md) - State management details
 - [provider-development.md](./provider-development.md) - Provider implementation methods
-- [implementation-plan.md](./implementation-plan.md) - Implementation plan and roadmap

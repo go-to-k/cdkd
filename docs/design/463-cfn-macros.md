@@ -1,3 +1,8 @@
+---
+title: "Design: CloudFormation Macros / `Fn::Transform` support"
+unlisted: true
+---
+
 # Design: CloudFormation Macros / `Fn::Transform` support
 
 Tracking issue: [#463](https://github.com/go-to-k/cdkd/issues/463). Status: **Design — not yet implemented.**

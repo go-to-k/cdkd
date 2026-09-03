@@ -1,3 +1,8 @@
+---
+title: "Design: WebSocket API support in `cdkd local start-api` (#462)"
+unlisted: true
+---
+
 # Design: WebSocket API support in `cdkd local start-api` (#462)
 
 Status: Draft (design, no implementation)

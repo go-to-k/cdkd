@@ -1,3 +1,8 @@
+---
+title: Provider Development
+description: "How to implement a cdkd SDK Provider — the Provider abstraction, registry, implementation steps, and best practices."
+---
+
 # cdkd Provider Development Guide
 
 ## Overview
@@ -212,7 +217,7 @@ guessed from key names, which is what keeps the on-demand ceilings (genuinely
 sent under that mode) from being swept up with it. Getting the
 UPDATE-side split wrong cost two review rounds in opposite directions, so the
 per-shape reasoning lives in
-[.claude/rules/providers.md](../.claude/rules/providers.md) rather than being
+[.claude/rules/providers.md](https://github.com/go-to-k/cdkd/blob/main/.claude/rules/providers.md) rather than being
 summarized twice. One arm logs no refusal at all: cross-region replication REQUIRES a stream, so the
 provider enables `NEW_AND_OLD_IMAGES` on a template that declared no
 `StreamSpecification`, on the ORDINARY template path. A provider is therefore
@@ -1570,7 +1575,7 @@ implementation. Three details are worth copying:
     added later, and text the leaf pass never sees). The mask is idempotent, so
     the layers compose.
     **Use `maskDeep` from
-    [src/provisioning/masked-retry-logger.ts](../src/provisioning/masked-retry-logger.ts)
+    [src/provisioning/masked-retry-logger.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/masked-retry-logger.ts)
     for the leaf pass — do NOT hand-roll one.** Issue
     [#2176](https://github.com/go-to-k/cdkd/issues/2176) found SIX private
     copies of that walk, FOUR of which had lost the depth cap. A walk that
@@ -1655,7 +1660,7 @@ implementation. Three details are worth copying:
     Threading the masker into the arm therefore looks like a fix and is inert on
     the path that actually fires, since for these types a FAILED operation is
     the NORMAL rejection route rather than an edge case. `pollOperation` in
-    [src/provisioning/providers/servicediscovery-provider.ts](../src/provisioning/providers/servicediscovery-provider.ts)
+    [src/provisioning/providers/servicediscovery-provider.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/servicediscovery-provider.ts)
     is the worked example (issue
     [#2063](https://github.com/go-to-k/cdkd/issues/2063)): it masks the raw
     `ErrorMessage` at construction, and it takes the masker from every
@@ -1666,10 +1671,10 @@ implementation. Three details are worth copying:
     physical id rather than a resolved property bag.
     The reference implementation
     is `buildMfaConfigRequest` in
-    [src/provisioning/providers/cognito-provider.ts](../src/provisioning/providers/cognito-provider.ts),
+    [src/provisioning/providers/cognito-provider.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/cognito-provider.ts),
     which routes every warning through one masked sink rather than masking at
     each call; `create()` in
-    [src/provisioning/providers/ssm-parameter-provider.ts](../src/provisioning/providers/ssm-parameter-provider.ts)
+    [src/provisioning/providers/ssm-parameter-provider.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/ssm-parameter-provider.ts)
     is the same shape for a whole operation (one `mask`, one `warn`, one
     `debug`, built at the top and used everywhere below).
     **Per-site masking DOES drift, and that is measured rather than
@@ -1685,9 +1690,9 @@ implementation. Three details are worth copying:
   (and, just as importantly, what it does NOT license — nothing about the
   properties' content, no relaxing of data-safety guards, no skipping the
   validation that protects the AWS call itself) is spelled out on `CreateContext`
-  in [src/types/resource.ts](../src/types/resource.ts), next to the
+  in [src/types/resource.ts](https://github.com/go-to-k/cdkd/blob/main/src/types/resource.ts), next to the
   `ResourceProvider` interface that consumes it. Its sibling `DeleteContext`
-  lives in [src/provisioning/region-check.ts](../src/provisioning/region-check.ts)
+  lives in [src/provisioning/region-check.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/region-check.ts)
   instead, because `expectedRegion` feeds that module's `assertRegionMatch`
   helper; `CreateContext` has no region-checking role, so it is not filed there
   for symmetry alone. A pointer next to `DeleteContext` links the two.
@@ -2948,7 +2953,7 @@ it('emits placeholders for every user-controllable top-level key on AWS minimum 
 });
 ```
 
-See [tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts](../tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts) and [tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts](../tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts) for canonical examples.
+See [tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts) and [tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts) for canonical examples.
 
 This is the **structural defense** against the "provider author forgets to emit a key" regression class. Without it, the bug only surfaces when a user runs drift on a resource configured exactly the way the test missed (and PR review missed). The test makes silent regression mechanically impossible — a refactor that drops a placeholder fails the key-set assertion immediately.
 
@@ -3015,7 +3020,7 @@ Two rules for this shape (issue [#1602](https://github.com/go-to-k/cdkd/issues/1
 
 #### `getDriftUnorderedPaths()` for unordered sets (strings AND objects)
 
-The drift comparator compares arrays **positionally**, and AWS does not guarantee element ordering across reads. The shared normalizer ([src/analyzer/drift-normalize.ts](../src/analyzer/drift-normalize.ts)) already auto-canonicalizes two shapes for every type — `{Key,...}[]` tag lists and arrays whose every element is an AWS resource id (`subnet-…`, `rtb-…`) or ARN — but **plain-string arrays and non-tag object arrays are deliberately left untouched**, because either can be order-significant.
+The drift comparator compares arrays **positionally**, and AWS does not guarantee element ordering across reads. The shared normalizer ([src/analyzer/drift-normalize.ts](https://github.com/go-to-k/cdkd/blob/main/src/analyzer/drift-normalize.ts)) already auto-canonicalizes two shapes for every type — `{Key,...}[]` tag lists and arrays whose every element is an AWS resource id (`subnet-…`, `rtb-…`) or ARN — but **plain-string arrays and non-tag object arrays are deliberately left untouched**, because either can be order-significant.
 
 When your `readCurrentState` emits such an array that is semantically an unordered SET, declare its path so the comparator sorts it on both sides:
 
@@ -3099,11 +3104,11 @@ believing the desired side is always an observed snapshot.
 
 `cdkd drift --revert` round-trips `observedProperties` (the snapshot `readCurrentState` produced) back through `provider.update`. That code path is what surfaces every shape-mismatch bug between the read side (`readCurrentState` output) and the write side (AWS create/update API input). Two failure classes have been observed; both must be designed around BEFORE adding a new `readCurrentState`.
 
-**Class 1 — type-discriminator-dependent fields.** A field is only valid on AWS when a sibling discriminator says so. Examples: SQS `DeduplicationScope` / `FifoThroughputLimit` (FIFO-only — `FifoQueue=true`), SNS `FifoThroughputScope` (`FifoTopic=true`), AppSync DataSource shape (`DynamoDBConfig` / `LambdaConfig` / `HttpConfig` discriminated by `Type`). Emitting a `''` placeholder for these on a discriminator-false resource means `--revert` pushes it back and AWS rejects with "You can specify X only when Y is set to true". **Fix:** guard the emit on the sibling discriminator — only emit when the discriminator is true. Pattern documented in `feedback_always_emit_check_type_discriminator.md`. Drift detection is not lost: the discriminator-false state cannot legally have the field on AWS, so console-side ADD is impossible. When the discriminator is **N-way rather than boolean** — a set of mutually-exclusive `<Variant>Configuration` blocks selected by a type field, as in AppSync's `Type` or FSx `FileSystem`'s `FileSystemType` (`LustreConfiguration` / `WindowsConfiguration` / `OntapConfiguration` / `OpenZFSConfiguration`) — the same rule reads: emit EXACTLY the one block the discriminator selects, and emit it **unconditionally** (so the always-emit contract still holds for the one legal block, `{}` included), never the others. The §3b key-set test is then written once per discriminator value, each asserting its own block is present and the rest absent — see [tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts](../tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts).
+**Class 1 — type-discriminator-dependent fields.** A field is only valid on AWS when a sibling discriminator says so. Examples: SQS `DeduplicationScope` / `FifoThroughputLimit` (FIFO-only — `FifoQueue=true`), SNS `FifoThroughputScope` (`FifoTopic=true`), AppSync DataSource shape (`DynamoDBConfig` / `LambdaConfig` / `HttpConfig` discriminated by `Type`). Emitting a `''` placeholder for these on a discriminator-false resource means `--revert` pushes it back and AWS rejects with "You can specify X only when Y is set to true". **Fix:** guard the emit on the sibling discriminator — only emit when the discriminator is true. Pattern documented in `feedback_always_emit_check_type_discriminator.md`. Drift detection is not lost: the discriminator-false state cannot legally have the field on AWS, so console-side ADD is impossible. When the discriminator is **N-way rather than boolean** — a set of mutually-exclusive `<Variant>Configuration` blocks selected by a type field, as in AppSync's `Type` or FSx `FileSystem`'s `FileSystemType` (`LustreConfiguration` / `WindowsConfiguration` / `OntapConfiguration` / `OpenZFSConfiguration`) — the same rule reads: emit EXACTLY the one block the discriminator selects, and emit it **unconditionally** (so the always-emit contract still holds for the one legal block, `{}` included), never the others. The §3b key-set test is then written once per discriminator value, each asserting its own block is present and the rest absent — see [tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts).
 
 **The "console-side ADD is impossible" clause holds ONLY when the discriminator is an INDEPENDENT sibling** (issue [#1565](https://github.com/go-to-k/cdkd/issues/1565)). Where the "discriminator" is really the field group's OWN presence — the group is all-or-nothing, and enabling it IS setting the fields — a console-side add is not merely possible, it is the whole drift you want to catch, and guarding the emit hides it FOREVER: the comparator's top-level walk is baseline-keys-only, so a key absent from the snapshot is never compared. `AWS::CloudTrail::Trail`'s `CloudWatchLogsLogGroupArn` / `CloudWatchLogsRoleArn` pair is that shape, and it was guarded on a rationale whose both halves later proved false: AWS was said to reject the `''` round-trip (the issue #1160 live probe accepts it and nulls the field out), and a console-side enable was said to surface as both fields appearing at once on the next read (it cannot — the walk never reaches an absent key). For this shape emit the group TOGETHER and UNCONDITIONALLY, with `''` placeholders, and keep the all-or-nothing invariant on the WRITE side instead — CloudTrail's update path decides both fields TOGETHER and forwards them on PRESENCE, so an explicit `''` CLEARS (which is what lets `drift --revert` undo a console-side enable) while an ABSENT pair is retained, and a half-populated or non-string shape is refused rather than coerced. Ask which one you have before guarding: *is there a sibling field whose value makes mine illegal (guard), or is my own presence the switch (always-emit)?*
 
-**Class 2 — structurally-incomplete-when-empty fields.** An empty-object / empty-array placeholder is structurally invalid as AWS input because a sub-field is required. Example: SQS `RedrivePolicy: {}` rejects with "Redrive policy does not contain mandatory attribute: maxReceiveCount" because `deadLetterTargetArn` and `maxReceiveCount` are required. Other Class 2 candidates: Lambda `DeadLetterConfig` (TargetArn required), Lambda `VpcConfig` (SubnetIds + SecurityGroupIds required), EventBridge / SNS `DeadLetterConfig`, ECS `NetworkConfiguration` (awsvpcConfiguration.subnets required), various `LoggingConfiguration` shapes. **Fix:** keep the placeholder on the read side (drift detection requires it), and **sanitize at the wire layer in `create()` / `update()`** by translating the empty placeholder to whatever AWS accepts as "clear this field" — usually empty string. Canonical pattern in `serializeRedrivePolicy` ([src/provisioning/providers/sqs-queue-provider.ts](../src/provisioning/providers/sqs-queue-provider.ts)):
+**Class 2 — structurally-incomplete-when-empty fields.** An empty-object / empty-array placeholder is structurally invalid as AWS input because a sub-field is required. Example: SQS `RedrivePolicy: {}` rejects with "Redrive policy does not contain mandatory attribute: maxReceiveCount" because `deadLetterTargetArn` and `maxReceiveCount` are required. Other Class 2 candidates: Lambda `DeadLetterConfig` (TargetArn required), Lambda `VpcConfig` (SubnetIds + SecurityGroupIds required), EventBridge / SNS `DeadLetterConfig`, ECS `NetworkConfiguration` (awsvpcConfiguration.subnets required), various `LoggingConfiguration` shapes. **Fix:** keep the placeholder on the read side (drift detection requires it), and **sanitize at the wire layer in `create()` / `update()`** by translating the empty placeholder to whatever AWS accepts as "clear this field" — usually empty string. Canonical pattern in `serializeRedrivePolicy` ([src/provisioning/providers/sqs-queue-provider.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/sqs-queue-provider.ts)):
 
 ```typescript
 function serializeRedrivePolicy(value: unknown): string {
@@ -3180,7 +3185,7 @@ The round-trip test catches all three classes mechanically:
 - **Class 2** — structurally-incomplete placeholders: assert the AWS API call does NOT contain the empty-object / empty-array shape AWS validates and rejects (e.g. `RedrivePolicy: '{}'`, `VpcConfig: {}`).
 - **Truthy gate** — assert that empty-string / 0 / false placeholder values DO reach the relevant AWS API call (e.g. `UpdateRoleCommand` input must contain `Description: ''` when `observedProperties.Description === ''`).
 
-See [tests/unit/provisioning/sqs-queue-provider-update.test.ts](../tests/unit/provisioning/sqs-queue-provider-update.test.ts) (Class 2 round-trip), [tests/unit/provisioning/iam-role-provider.test.ts](../tests/unit/provisioning/iam-role-provider.test.ts) (truthy-gate round-trip), and [tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts](../tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts) (Class 1 round-trip) for canonical examples.
+See [tests/unit/provisioning/sqs-queue-provider-update.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/sqs-queue-provider-update.test.ts) (Class 2 round-trip), [tests/unit/provisioning/iam-role-provider.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/iam-role-provider.test.ts) (truthy-gate round-trip), and [tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts) (Class 1 round-trip) for canonical examples.
 
 ### 3c. `handledProperties` ↔ CFn schema coverage check (issue #391)
 
@@ -3188,7 +3193,7 @@ Every SDK Provider declares a `handledProperties: Map<string, ReadonlySet<string
 
 That's a **runtime** safety net. It doesn't help during development. A provider author who simply forgets to list a property in `handledProperties` AND forgets to wire it in `create()` / `update()` ships a silent bug — exactly what PR #370 (ApiGateway::Method dropped 15+ fields) demonstrated.
 
-The structural prevention layer lives at [tests/unit/provisioning/property-coverage.test.ts](../tests/unit/provisioning/property-coverage.test.ts). It cross-references every registered provider's `handledProperties` against the canonical CFn schema (snapshotted to [tests/fixtures/cfn-schemas/](../tests/fixtures/cfn-schemas/)) and fails when a schema property is unaccounted for.
+The structural prevention layer lives at [tests/unit/provisioning/property-coverage.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/property-coverage.test.ts). It cross-references every registered provider's `handledProperties` against the canonical CFn schema (snapshotted to [tests/fixtures/cfn-schemas/](https://github.com/go-to-k/cdkd/tree/main/tests/fixtures/cfn-schemas/)) and fails when a schema property is unaccounted for.
 
 #### The four "OK" buckets
 
@@ -3198,7 +3203,7 @@ For each schema property the test classifies it into one of four buckets (in pri
 | --- | --- | --- |
 | `handled` | `provider.handledProperties.get(type)` | The provider's `create()` / `update()` actually wires the property to the SDK call. |
 | `by-design` | `provider.unhandledByDesign.get(type)` (with rationale string) | The provider INTENTIONALLY does not wire it — separate code path, deprecated, immutable post-create, AWS API doesn't accept it, etc. |
-| `backfill` | [tests/fixtures/cfn-schemas/_todo-backfill.json](../tests/fixtures/cfn-schemas/_todo-backfill.json) under `types[<type>]` | Auto-generated catch-all for incremental rollout. Each entry MUST be migrated to `handled` or `by-design` eventually. |
+| `backfill` | [tests/fixtures/cfn-schemas/_todo-backfill.json](https://github.com/go-to-k/cdkd/blob/main/tests/fixtures/cfn-schemas/_todo-backfill.json) under `types[<type>]` | Auto-generated catch-all for incremental rollout. Each entry MUST be migrated to `handled` or `by-design` eventually. |
 | `read-only` | `readOnlyProperties` in the schema fixture | AWS computes the value; cdkd cannot wire it on Create/Update by definition (e.g. `Arn`). Automatically excluded. |
 
 A property in NONE of the above → test fails with the offending type + property list + the three actions you can take.

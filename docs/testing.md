@@ -1,3 +1,8 @@
+---
+title: Testing
+description: "How to test cdkd — prerequisites, unit tests, and the real-AWS integration test workflow."
+---
+
 # How to Test cdkd
 
 ## Prerequisites
@@ -1025,7 +1030,7 @@ do not follow the `Cdkd…Example` convention, and probing the convention-derive
 name returns a clean-looking `0` for a key that does not exist.
 
 Use the shared helpers in
-[`tests/integration/s3-versions.sh`](../tests/integration/s3-versions.sh)
+[`tests/integration/s3-versions.sh`](https://github.com/go-to-k/cdkd/blob/main/tests/integration/s3-versions.sh)
 rather than open-coding a sweep — the three traps below are written down there
 once instead of once per fixture. Source it after the `cd` into the fixture dir:
 
@@ -2033,11 +2038,11 @@ Per-fixture annotations live in a `tests/integration/<fixture>/.scenarios.json` 
 }
 ```
 
-Empty `[]` means "intentionally no canonical scenario applies" (per-service smoke tests). Absent file means "not yet annotated" — surfaced in the un-annotated section of the report. The canonical taxonomy is defined as `KNOWN_SCENARIOS` in [scripts/build-scenario-coverage-matrix.ts](../scripts/build-scenario-coverage-matrix.ts); a sidecar tag outside the taxonomy is hard-rejected at parse time, so typos surface immediately.
+Empty `[]` means "intentionally no canonical scenario applies" (per-service smoke tests). Absent file means "not yet annotated" — surfaced in the un-annotated section of the report. The canonical taxonomy is defined as `KNOWN_SCENARIOS` in [scripts/build-scenario-coverage-matrix.ts](https://github.com/go-to-k/cdkd/blob/main/scripts/build-scenario-coverage-matrix.ts); a sidecar tag outside the taxonomy is hard-rejected at parse time, so typos surface immediately.
 
 **Visibility-only, NOT a CI gate** on per-fixture coverage. Same rationale as the CLI-flag matrix: many fixtures legitimately exercise no canonical scenario, and forcing per-commit annotation would add friction without proportional value. The intended consumer is the contributor reviewing "does THIS real-AWS pattern have an integ backstop?" — an orphan scenario in the matrix IS the value signal. **CI hard-fails on staleness**: the `check-build-test` job in `.github/workflows/ci.yml` runs `vp run scenario-coverage` and fails on a non-empty `git diff` of the regenerated `docs/scenario-coverage.md` / `docs/_generated/scenario-coverage.json`, so a forgotten regeneration or a typo'd tag cannot reach main.
 
-Adding a new scenario: (1) add an entry to `KNOWN_SCENARIOS` with a one-line description in [scripts/build-scenario-coverage-matrix.ts](../scripts/build-scenario-coverage-matrix.ts); (2) tag existing fixtures that exercise it (or write a new one); (3) `vp run scenario-coverage` to regenerate.
+Adding a new scenario: (1) add an entry to `KNOWN_SCENARIOS` with a one-line description in [scripts/build-scenario-coverage-matrix.ts](https://github.com/go-to-k/cdkd/blob/main/scripts/build-scenario-coverage-matrix.ts); (2) tag existing fixtures that exercise it (or write a new one); (3) `vp run scenario-coverage` to regenerate.
 
 ### Integ-run Ledger (normalized shape)
 

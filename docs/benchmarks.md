@@ -1,3 +1,8 @@
+---
+title: Benchmarks
+description: "The full benchmark suite — cdkd vs CloudFormation, CloudFormation Express mode, and Terraform, with per-stack deploy-time comparisons."
+---
+
 # Benchmarks
 
 **cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
@@ -51,7 +56,7 @@ Stack: SSM Document × 3 + Athena WorkGroup × 2 (no SDK provider — CC API fal
 | --- | ---: | ---: | ---: |
 | Deploy | **64.9s** | **40.9s** | **1.6x** |
 
-Reproduce the SDK Provider path and VPC + CloudFront + Lambda benchmarks with `./tests/benchmark/run-benchmark.sh all` (from the repo root). See [tests/benchmark/README.md](../tests/benchmark/README.md) for details.
+Reproduce the SDK Provider path and VPC + CloudFront + Lambda benchmarks with `./tests/benchmark/run-benchmark.sh all` (from the repo root). See [tests/benchmark/README.md](https://github.com/go-to-k/cdkd/blob/main/tests/benchmark/README.md) for details.
 
 ## Reference point: Terraform
 

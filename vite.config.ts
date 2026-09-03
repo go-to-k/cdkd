@@ -176,6 +176,21 @@ export default defineConfig({
         command: 'vp pack --watch',
         cache: false,
       },
+      // Documentation site (https://cdkd.dev, Ox Content SSG). Separate config
+      // file because this root config's buildApp hook claims every environment
+      // as built — see the header comment in vite.docs.config.ts.
+      'docs:dev': {
+        command: 'vp dev --config vite.docs.config.ts',
+        cache: false,
+      },
+      'docs:build': {
+        command: 'vp build --config vite.docs.config.ts',
+        cache: false,
+      },
+      'docs:preview': {
+        command: 'vp preview --config vite.docs.config.ts',
+        cache: false,
+      },
       // `vp run check` is CI's required step and `/check` step 1 calls it "the
       // EXACT command CI runs", so its verdict is evidence twice over. The task
       // cache did not invalidate on a `src/**` change for `typecheck` (verified,

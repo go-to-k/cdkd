@@ -1,3 +1,8 @@
+---
+title: Importing Existing Resources
+description: "The full cdkd import guide — three import modes, resource mappings, whole-stack CloudFormation migration, provider coverage, and cdk import parity."
+---
+
 # Importing existing resources
 
 `cdkd import` adopts AWS resources that are already deployed (e.g. via

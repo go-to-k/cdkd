@@ -1,3 +1,8 @@
+---
+title: "Issue #461 — `awsvpc` network mode decision"
+unlisted: true
+---
+
 # Issue #461 — `awsvpc` network mode decision
 
 ## TL;DR

@@ -1,3 +1,8 @@
+---
+title: "`cdkd migrate --from-cfn-stack`: adopt plain (non-CDK) CFn stacks"
+unlisted: true
+---
+
 # `cdkd migrate --from-cfn-stack`: adopt plain (non-CDK) CFn stacks
 
 **Issue**: [#465](https://github.com/go-to-k/cdkd/issues/465)

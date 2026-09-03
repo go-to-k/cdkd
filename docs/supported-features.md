@@ -1,3 +1,8 @@
+---
+title: Supported Features
+description: "CloudFormation feature parity in cdkd — which intrinsic functions, pseudo parameters, and template features are supported today."
+---
+
 # Supported Features
 
 CloudFormation feature parity for cdkd. For per-resource-type provisioning
@@ -55,7 +60,8 @@ per-type table.
 ## Other Features
 
 Rollback (`--no-rollback` opt-out) and Drift detection (`cdkd drift`) have
-their own sections in the [README](../README.md) — they're surfaced as
+their own pages — [Rollback](rollback.md) and
+[Drift Detection](drift.md) — they're surfaced as
 top-level features rather than table rows.
 
 | Feature | Status | Notes |

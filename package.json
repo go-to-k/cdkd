@@ -114,6 +114,8 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@ox-content/theme-swiss": "^2.90.0",
+    "@ox-content/vite-plugin": "3.0.0-alpha.18",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/exec": "^7.1.0",
     "@semantic-release/git": "^10.0.1",
@@ -125,6 +127,7 @@
     "@types/node": "^20.19.0",
     "@types/proxy-from-env": "^1.0.4",
     "@types/ws": "^8.18.1",
+    "playwright": "1.62.1",
     "semantic-release": "^25.0.0",
     "typescript": "^7.0.2",
     "typescript-v6": "npm:typescript@^6.0.3",

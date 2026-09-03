@@ -1,3 +1,8 @@
+---
+title: "PR 99 (future): Backwards-compat removal + final migration command"
+unlisted: true
+---
+
 # PR 99 (future): Backwards-compat removal + final migration command
 
 **Status**: planned (not yet — schedule for 1–2 minor releases after PR 1

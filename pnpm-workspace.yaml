@@ -1,5 +1,9 @@
 allowBuilds:
   esbuild: true
+  # Transitive via @mermaid-js/mermaid-cli (an ox-content dependency); no docs
+  # page uses mermaid, and the OG renderer runs on playwright (whose Chromium
+  # CI installs explicitly) — so skip puppeteer's per-install Chrome download.
+  puppeteer: false
 minimumReleaseAgeExclude:
   - '@aws-sdk/client-lambda-microvms@3.1092.0'
   - '@aws-sdk/core@3.976.0'

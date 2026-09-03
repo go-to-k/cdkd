@@ -1,9 +1,14 @@
+---
+title: CLI Reference
+description: "cdkd-specific CLI flags in depth — wait semantics, concurrency, --role-arn, rollback, exit codes, and the per-resource-type wait-semantics table."
+---
+
 # cdkd CLI Reference
 
 This document covers cdkd-specific CLI flags that need more detail than
 fits in the README. For the basic command invocations (`deploy`, `diff`,
-`destroy`, `synth`, `list`, `state`, etc.), see the
-[Usage](../README.md#usage) section of the README.
+`destroy`, `synth`, `list`, `state`, etc.), see
+[Installation & Quick Start](getting-started.md).
 
 ## Concurrency
 
@@ -329,8 +334,8 @@ are untouched):
 | `AWS::Lambda::Url` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
 | `AWS::Lambda::EventSourceMapping` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
 
-Implementation: [src/analyzer/cdk-defensive-deps.ts](../src/analyzer/cdk-defensive-deps.ts) +
-[src/analyzer/dag-builder.ts](../src/analyzer/dag-builder.ts) (gated by the
+Implementation: [src/analyzer/cdk-defensive-deps.ts](https://github.com/go-to-k/cdkd/blob/main/src/analyzer/cdk-defensive-deps.ts) +
+[src/analyzer/dag-builder.ts](https://github.com/go-to-k/cdkd/blob/main/src/analyzer/dag-builder.ts) (gated by the
 `relaxCdkVpcDefensiveDeps` `DagBuilderOptions` flag, set on the deploy
 code path only — destroy ordering is unaffected).
 
@@ -2695,7 +2700,7 @@ for stable comparison) and the result key is omitted entirely when AWS
 reports no user tags. IAM Role / User / Group inline-policy bodies are
 covered (paginated `List*Policies` + parallel `Get*Policy` round-trips
 with state-driven order reconciliation) since PR #175;
-see [src/types/resource.ts](../src/types/resource.ts) for the per-provider
+see [src/types/resource.ts](https://github.com/go-to-k/cdkd/blob/main/src/types/resource.ts) for the per-provider
 shape decisions.
 
 Still reporting `drift unknown` (deferred):

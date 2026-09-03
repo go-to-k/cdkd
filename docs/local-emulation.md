@@ -1,3 +1,8 @@
+---
+title: Local Execution
+description: "Run AWS workloads on your machine with cdkd local via Docker — invoke Lambda functions, serve API Gateway, and run ECS tasks with no AWS deploy."
+---
+
 # Local execution
 
 `cdkd local *` runs AWS workloads on the developer's machine via Docker
@@ -688,7 +693,7 @@ integration types end-to-end:
 | `HTTP` (non-proxy) | HTTP_PROXY + VTL on both directions: `RequestTemplates[<content-type>]` transforms the body before sending; `IntegrationResponses[].ResponseTemplates[<content-type>]` transforms the upstream body before returning. | Same `RequestParameters` semantics as HTTP_PROXY. |
 | `AWS` (Lambda non-proxy) | VTL request template synthesizes the Lambda event payload (parsed as JSON when the rendered template is valid JSON, otherwise passed through as a string — matches AWS-deployed behavior). The Lambda runs in the same warm RIE container pool as AWS_PROXY. Error envelope (`{errorMessage, errorType?, stackTrace?}`) routes through `SelectionPattern` against `errorMessage`. Response template runs with `$inputRoot = <parsed Lambda return value>`. | Direct AWS-service integrations (`Type: 'AWS'` with `Uri` pointing at `:s3:path/...` / `:sqs:action/...` / etc.) are NOT emulated locally — they surface as deferred-501 unsupported routes. Deploy to AWS or pin a public HTTP_PROXY to a mock service. |
 
-The VTL engine at [src/local/vtl-engine.ts](../src/local/vtl-engine.ts)
+The VTL engine at [src/local/vtl-engine.ts](https://github.com/go-to-k/cdkd/blob/main/src/local/vtl-engine.ts)
 implements a hand-rolled minimal subset of AWS API Gateway's VTL spec.
 Supported features:
 
@@ -1349,7 +1354,7 @@ value reaches neither the argv nor the spawn environment:
   and the AWS credential-helper vars `docker-credential-ecr-login` reads) plus
   the `LD_` / `DYLD_` / `AWS_ENDPOINT_URL_` prefix families; the authoritative
   list is `DOCKER_CLIENT_ENV_KEYS` / `DOCKER_CLIENT_ENV_PREFIXES` in
-  [src/utils/docker-cmd.ts](../src/utils/docker-cmd.ts). Forwarding such a name
+  [src/utils/docker-cmd.ts](https://github.com/go-to-k/cdkd/blob/main/src/utils/docker-cmd.ts). Forwarding such a name
   would let a template-controlled secret NAME redirect the docker client itself
   (e.g. a secret named `DOCKER_HOST` pointing the client at a different daemon).
 - **A malformed name** — empty, or containing `=` / NUL. A name containing `=`
@@ -1441,7 +1446,7 @@ crash-looping container does not hammer docker.
 
 Each replica gets its own per-task docker network on a UNIQUE
 `169.254.<N>.0/24` subnet (170, 171, 172, ...; see
-[src/local/ecs-network.ts](../src/local/ecs-network.ts)
+[src/local/ecs-network.ts](https://github.com/go-to-k/cdkd/blob/main/src/local/ecs-network.ts)
 `buildEndpointSubnet`) so concurrent replicas don't collide on a
 single /24 — the same metadata-endpoint sidecar starts at
 `169.254.<N>.2` per replica and every container's

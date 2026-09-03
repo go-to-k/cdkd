@@ -1,3 +1,8 @@
+---
+title: Deployment Events
+description: "Durable per-resource deployment event history via cdkd events — cdkd's equivalent of CloudFormation DescribeStackEvents, with S3 layout and pruning."
+---
+
 # Deployment Events (`cdkd events`)
 
 > Issue [#808](https://github.com/go-to-k/cdkd/issues/808)

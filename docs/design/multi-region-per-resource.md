@@ -1,3 +1,8 @@
+---
+title: "Design: Per-resource region (multi-region resources in a single stack)"
+unlisted: true
+---
+
 # Design: Per-resource region (multi-region resources in a single stack)
 
 Tracking issue: _none yet._ Status: **Shelved — design complete, deferred on positioning grounds (see §6). Reopen conditions in §7.**

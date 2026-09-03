@@ -1,3 +1,8 @@
+---
+title: Cross-Stack References
+description: "cdkd's two cross-stack reference mechanisms — strong Fn::ImportValue and weak Fn::GetStackOutput — and the exports index design behind them."
+---
+
 # Cross-Stack References
 
 cdkd supports two cross-stack reference mechanisms with deliberately
@@ -253,7 +258,7 @@ hand-written template can.
 
 ## State schema v4
 
-[`src/types/state.ts`](../src/types/state.ts) bumps the schema from
+[`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts) bumps the schema from
 v3 to v4 to add the optional `imports?` field:
 
 ```typescript
@@ -491,7 +496,7 @@ workload accounts).
 When `RoleArn` is set, cdkd's resolver:
 
 1. **Parses the role ARN** for the producer's account id via
-   [`parseIamRoleArn`](../src/utils/role-arn.ts). The regex accepts every
+   [`parseIamRoleArn`](https://github.com/go-to-k/cdkd/blob/main/src/utils/role-arn.ts). The regex accepts every
    published AWS partition (`aws`, `aws-us-gov`, `aws-cn`, `aws-iso`,
    `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` — matched loosely as
    `aws[a-z0-9-]*`, so a partition added upstream needs no code change here)
@@ -499,7 +504,7 @@ When `RoleArn` is set, cdkd's resolver:
    Malformed ARNs / IAM user ARNs / non-12-digit account ids are rejected
    up front with a clear error.
 2. **Calls `sts:AssumeRole`** via
-   [`assumeRoleForCrossAccountStateRead`](../src/utils/role-arn.ts).
+   [`assumeRoleForCrossAccountStateRead`](https://github.com/go-to-k/cdkd/blob/main/src/utils/role-arn.ts).
    Credentials are cached per-RoleArn for the deploy lifetime, so a
    stack with many `Fn::GetStackOutput` sites against the same producer
    pays exactly one STS hop. Concurrent first-time callers collapse to
@@ -507,7 +512,7 @@ When `RoleArn` is set, cdkd's resolver:
 3. **Derives the producer's state bucket name** as
    `cdkd-state-{producerAccountId}` (the canonical region-free
    convention since v0.10.0) via
-   [`resolveCrossAccountStateBucket`](../src/utils/aws-region-resolver.ts).
+   [`resolveCrossAccountStateBucket`](https://github.com/go-to-k/cdkd/blob/main/src/utils/aws-region-resolver.ts).
    The bucket's actual region is auto-detected via
    `s3:GetBucketLocation` using the assumed credentials.
 4. **Reads the producer's state** through a fresh, ephemeral
@@ -662,7 +667,7 @@ Design points:
 
 ## Exports index lifecycle
 
-Implemented in [`src/state/export-index-store.ts`](../src/state/export-index-store.ts).
+Implemented in [`src/state/export-index-store.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/export-index-store.ts).
 
 ### Cross-region state bucket
 
@@ -730,7 +735,7 @@ production cdkd usage does not modify `state.json` directly.
 
 ## Strong-reference scan at destroy
 
-Implemented in [`src/cli/commands/destroy-runner.ts`](../src/cli/commands/destroy-runner.ts)
+Implemented in [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts)
 via `scanActiveConsumers`. Steps:
 
 1. Only fires when the producing stack's `state.outputs` is non-empty
@@ -863,10 +868,10 @@ faithful to CFn.
 ## References
 
 - Issue: [#343 — Fn::ImportValue strong reference][#343]
-- Schema: [`src/types/state.ts`](../src/types/state.ts)
-- Index store: [`src/state/export-index-store.ts`](../src/state/export-index-store.ts)
-- Resolver: [`src/deployment/intrinsic-function-resolver.ts`](../src/deployment/intrinsic-function-resolver.ts)
-- Destroy scan: [`src/cli/commands/destroy-runner.ts`](../src/cli/commands/destroy-runner.ts)
-- Error class: [`src/utils/error-handler.ts`](../src/utils/error-handler.ts)
+- Schema: [`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts)
+- Index store: [`src/state/export-index-store.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/export-index-store.ts)
+- Resolver: [`src/deployment/intrinsic-function-resolver.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-function-resolver.ts)
+- Destroy scan: [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts)
+- Error class: [`src/utils/error-handler.ts`](https://github.com/go-to-k/cdkd/blob/main/src/utils/error-handler.ts)
 
 [#343]: https://github.com/go-to-k/cdkd/issues/343

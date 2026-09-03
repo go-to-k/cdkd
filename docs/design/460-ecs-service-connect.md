@@ -1,3 +1,8 @@
+---
+title: "cdkd local ECS Service Connect + Cloud Map emulation (Phase 3 of #262)"
+unlisted: true
+---
+
 # cdkd local ECS Service Connect + Cloud Map emulation (Phase 3 of #262)
 
 > Design doc — no implementation. Tracks [#460](https://github.com/go-to-k/cdkd/issues/460).
