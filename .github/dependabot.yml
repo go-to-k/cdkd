@@ -1,0 +1,41 @@
+# Dependabot version updates.
+#
+# Commit-message prefixes are chosen against this repo's semantic-release
+# rules (.releaserc): `chore(...)` / `ci(...)` do NOT cut a release, which is
+# deliberate — runtime deps use caret ranges, so users already pick up newer
+# AWS SDK clients on install; a lockfile/range bump only affects dev + CI.
+# All prefixes are in pr-title-check.yml's allowed types.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+      include: "scope"
+    groups:
+      # 55+ @aws-sdk/client-* deps release in lockstep; one PR, not dozens.
+      aws-sdk:
+        patterns:
+          - "@aws-sdk/*"
+      dev-dependencies:
+        dependency-type: "development"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Asia/Tokyo"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
