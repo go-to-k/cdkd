@@ -27,14 +27,11 @@ hero:
 features:
   - icon: ⚡
     title: Up to 15x faster deploys
-    details: Direct SDK calls, aggressive parallelization, and --no-wait to skip slow stabilization waits — faster than Terraform and CloudFormation Express mode too.
+    details: Direct AWS API calls, parallel deploys, and --no-wait — faster than Terraform and CloudFormation Express mode too.
   - icon: 🔌
     title: No code changes
-    details: Your existing CDK app runs as-is — replace cdk deploy with cdkd deploy and that's the whole migration. No new DSL, no rewrite, no lock-in.
+    details: Your CDK app runs as-is — just replace cdk deploy with cdkd deploy.
   - icon: 🤝
     title: Works alongside CDK CLI
-    details: You can keep using the CDK CLI as-is — cdkd for dev/test iteration, CloudFormation for staging and production. The same CDK app serves both, and cdkd import / export moves a stack between them anytime.
-  - icon: 🐳
-    title: Local execution
-    details: cdkd local runs your Lambdas, API Gateway routes, ECS tasks, ALBs, and CloudFront distributions on your machine — resolving env vars and secrets from your real deployed stack.
+    details: cdkd for dev/test, CloudFormation for staging and production — one CDK app serves both.
 ---

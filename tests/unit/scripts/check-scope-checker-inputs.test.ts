@@ -65,7 +65,7 @@ import { describe, expect, it } from 'vite-plus/test';
  *       what the fence knows about that reader is one file, not the subtree
  *       it really reads. (An earlier draft said rewriting that literal makes
  *       the docs root invisible; measured, it does not — two other REAL docs
- *       literals are read elsewhere, 'docs/cli-reference.md' and
+ *       literals are read elsewhere, 'docs/cli-deploy.md' and
  *       'docs/_generated/handled-property-wiring.json', beside several
  *       synthetic fixture names. The gap is the WALK, not the root.)
  *       The BARE floor names the literal so it cannot be rewritten silently,
@@ -463,7 +463,7 @@ const JOIN_FLOOR = [
   '.claude/agents/pr-security-reviewer.md',
   '.claude/hooks/integ-broad-gate.sh',
   '.claude/hooks/pr-review-gate.sh',
-  'docs/cli-reference.md',
+  'docs/cli-deploy.md',
   'docs/changelog-cdkd.md',
 ] as const;
 

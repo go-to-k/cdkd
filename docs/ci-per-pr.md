@@ -76,7 +76,7 @@ record alone, so it works even after the branch is gone.
 
 If the environment contains protection-enabled resources (RDS /
 DynamoDB deletion protection, EC2 termination protection, and more),
-add [`--remove-protection`](cli-reference.md#remove-protection-bypass-deletion-protection-on-destroy)
+add [`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
 to the destroy so the teardown completes in one pass — an ephemeral PR
 environment has nothing worth protecting, and without the flag those
 resources survive the job and linger until the next sweep.
@@ -84,7 +84,7 @@ resources survive the job and linger until the next sweep.
 Two more teardown-completeness flags matter for disposable
 environments: resources with `DeletionPolicy: Snapshot` leave a final
 snapshot behind on every PR close by default — add
-[`--skip-final-snapshot`](cli-reference.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot)
+[`--skip-final-snapshot`](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot)
 when the environment's data is disposable, so snapshots don't
 accumulate per closed PR. And `cdkd destroy --purge-events` also
 removes the stack's deployment-event history so the state bucket

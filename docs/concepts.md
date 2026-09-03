@@ -59,7 +59,7 @@ State is stored in S3 with optimistic locking via S3 Conditional Writes
 same stack deployed to two regions has two independent state files.
 
 **You do not create this bucket yourself** — `cdkd bootstrap` creates it once
-per account (see [`cdkd bootstrap`](cli-reference.md#cdkd-bootstrap)), with
+per account (see [`cdkd bootstrap`](cli-bootstrap-gc.md#cdkd-bootstrap)), with
 versioning, AES-256 encryption, and a deny-external-access bucket policy. The
 settings below are only for pointing cdkd at a non-default name; pass that same
 name to `cdkd bootstrap --state-bucket` so bootstrap creates it for you there too.
@@ -85,4 +85,4 @@ schema, legacy `version: 1` migration, bucket-name migration via
 - [Orphan vs Destroy](orphan-vs-destroy.md) — the two ways a resource leaves cdkd's management
 - [Wait Modes](wait-modes.md) — choose what "done" means per deploy
 - [CLI Reference](cli-reference.md) — every flag, including the
-  [VPC route DependsOn relaxation](cli-reference.md#vpc-route-dependson-relaxation-default-on)
+  [VPC route DependsOn relaxation](cli-deploy.md#vpc-route-dependson-relaxation-default-on)

@@ -29,7 +29,7 @@ describe('CC protection registry cross-site consistency', () => {
   for (const [label, rel] of [
     ['options.ts --remove-protection help', 'src/cli/options.ts'],
     ['state.ts state destroy --remove-protection help', 'src/cli/commands/state.ts'],
-    ['docs/cli-reference.md type table', 'docs/cli-reference.md'],
+    ['docs/cli-destroy.md type table', 'docs/cli-destroy.md'],
     ['README.md type table', 'README.md'],
   ] as const) {
     it(`every registry type appears in ${label}`, () => {

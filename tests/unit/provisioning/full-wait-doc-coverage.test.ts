@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 /**
  * Enforce that every SDK provider whose stabilization wait is gated on
  * `CDKD_FULL_WAIT` is documented in the `--full-wait` section of
- * `docs/cli-reference.md`. This is the `--full-wait`-side mirror of
+ * `docs/cli-deploy.md`. This is the `--full-wait`-side mirror of
  * `no-wait-doc-coverage.test.ts`: when a provider's default becomes
  * fire-and-forget with `--full-wait` opting into the wait, the resource type
  * MUST appear in that section — otherwise the user-facing "which resources
@@ -18,13 +18,13 @@ import { dirname, join } from 'node:path';
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const providersDir = join(repoRoot, 'src', 'provisioning', 'providers');
-const cliReferencePath = join(repoRoot, 'docs', 'cli-reference.md');
+const deployDocPath = join(repoRoot, 'docs', 'cli-deploy.md');
 
 /** Extract the `## `--full-wait`` section (up to the next `## ` heading). */
 function fullWaitSection(): string {
-  const md = readFileSync(cliReferencePath, 'utf8');
+  const md = readFileSync(deployDocPath, 'utf8');
   const start = md.indexOf('## `--full-wait`');
-  expect(start, 'cli-reference.md must have a `--full-wait` section').toBeGreaterThanOrEqual(0);
+  expect(start, 'cli-deploy.md must have a `--full-wait` section').toBeGreaterThanOrEqual(0);
   const rest = md.slice(start + 1);
   const next = rest.indexOf('\n## ');
   return next >= 0 ? rest.slice(0, next) : rest;
@@ -48,7 +48,7 @@ describe('--full-wait doc coverage', () => {
     expect(fullWaitProviders.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('documents each CDKD_FULL_WAIT provider in the cli-reference --full-wait section', () => {
+  it('documents each CDKD_FULL_WAIT provider in the cli-deploy.md --full-wait section', () => {
     const section = fullWaitSection();
     const undocumented = fullWaitProviders.filter((p) => {
       const types = handledTypes(p.source);
@@ -59,7 +59,7 @@ describe('--full-wait doc coverage', () => {
     });
     expect(
       undocumented.map((p) => p.file),
-      'these providers honor --full-wait but no handled type appears in the cli-reference --full-wait section; add it'
+      'these providers honor --full-wait but no handled type appears in the cli-deploy.md --full-wait section; add it'
     ).toEqual([]);
   });
 });

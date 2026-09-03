@@ -63,6 +63,6 @@ pre-deploy state and the new one deleted (for a stateful type the old
 data is unrecoverable — warned loudly). Exit codes: `0` = fully clean
 (journal deleted), `2` = partial (some ops failed / were skipped — the
 journal is kept so you can re-run), `1` = hard error. See
-[cli-reference.md](cli-reference.md#cdkd-rollback-revert-a-failed-deploy) for the
+[cli-rollback.md](cli-rollback.md#cdkd-rollback-revert-a-failed-deploy) for the
 full reference and known limitations (a DELETE that already happened
 cannot be restored).

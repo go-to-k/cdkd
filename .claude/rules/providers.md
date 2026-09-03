@@ -71,25 +71,25 @@ auto-loaded under `src/provisioning/providers/`.
    Adding an EXISTING type to `NESTED_KEY_TARGETS` needs a different refresh invocation: `node scripts/refresh-cfn-schemas.mjs '<AWS::Service::Type>'` with an explicit type argument, NOT `--only-missing`. `--only-missing` skips every type that already has a fixture file, and a fixture captured before the `definitionShapes` / `nestedPropertyPaths` extension does not carry the sections the generator reads — 14 of 134 fixtures had them as of 2026-08-12, i.e. exactly the then-current target set. `loadReport` throws naming the missing capture and the command rather than auditing zero paths, so the failure is loud; the point of this note is that the fix is not the command the previous paragraph names (issue #1699). The refresh is additive for an unchanged type — it rewrites `generatedAt` and adds the capture sections, leaving `properties` / `readOnlyProperties` / `createOnlyProperties` untouched — but re-run `vp run gen:all-matrices` afterwards, because `primaryIdentifier` also arrives with it and feeds `gen-enrichment-coverage` (opting `AWS::Lambda::EventSourceMapping` in this way retired a false `Id` enrichment gap the stale capture had been reporting; PR #1694).
 5. Write tests
 6. Add the resource type to [docs/supported-resources.md](../../docs/supported-resources.md) (deploy/manage capability table) AND to [docs/import.md](../../docs/import.md) (import-side coverage: auto-lookup vs override-only vs sub-resource)
-7. **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), add the resource type to the `--no-wait` docs in ALL of: the `--no-wait` table + intro in [docs/cli-reference.md](../../docs/cli-reference.md), the `--no-wait` feature bullet in [README.md](../../README.md), and the `noWaitOption` help string + JSDoc in [src/cli/options.ts](../../src/cli/options.ts). Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (fails CI if a `CDKD_NO_WAIT`-honoring provider has no handled type in the cli-reference table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — the test is the backstop.
+7. **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), add the resource type to the `--no-wait` docs in ALL of: the `--no-wait` table + intro in [docs/cli-deploy.md](../../docs/cli-deploy.md), the `--no-wait` feature bullet in [README.md](../../README.md), and the `noWaitOption` help string + JSDoc in [src/cli/options.ts](../../src/cli/options.ts). Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (fails CI if a `CDKD_NO_WAIT`-honoring provider has no handled type in the cli-deploy.md table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — the test is the backstop.
 
    The same 4-site rule applies to the opposite end of the axis,
    `process.env['CDKD_FULL_WAIT']` (`--full-wait`, issue
    [#1275](https://github.com/go-to-k/cdkd/issues/1275)): a provider that
    waits ONLY under `--full-wait` belongs in the same wait-semantics table AND
    in the `--full-wait` section of
-   [docs/cli-reference.md](../../docs/cli-reference.md). Enforced by
+   [docs/cli-deploy.md](../../docs/cli-deploy.md). Enforced by
    `tests/unit/provisioning/full-wait-doc-coverage.test.ts` (added when
    `AWS::CloudFront::Distribution` joined `AWS::ECS::Service` as the second
    such type, issue [#1282](https://github.com/go-to-k/cdkd/issues/1282)).
 
    Before adding EITHER kind of wait, settle the completion definition per
-   [docs/cli-reference.md](../../docs/cli-reference.md)'s wait-semantics rule:
+   [docs/cli-deploy.md](../../docs/cli-deploy.md)'s wait-semantics rule:
    where CloudFormation and Terraform agree, match them; where they disagree,
    the default takes the dev/test-friendly side and `--full-wait` opts into the
    CloudFormation one. A default may take the fast side even where BOTH
    engines wait, but only under the 3-condition fast-side clause (issue
-   #1282, recorded in the cli-reference wait-semantics intro): (a) no
+   #1282, recorded in the cli-deploy.md wait-semantics intro): (a) no
    in-deploy consumer of the waited-for state, (b) no failure signal in the
    wait, and (c) the comparison tool has both modes so the benchmark can
    report two like-for-like rows. Record the divergence in the table rather
