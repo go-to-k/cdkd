@@ -1,9 +1,14 @@
+---
+title: CLI Reference
+description: "cdkd-specific CLI flags in depth — wait semantics, concurrency, --role-arn, rollback, exit codes, and the per-resource-type wait-semantics table."
+---
+
 # cdkd CLI Reference
 
 This document covers cdkd-specific CLI flags that need more detail than
 fits in the README. For the basic command invocations (`deploy`, `diff`,
-`destroy`, `synth`, `list`, `state`, etc.), see the
-[Usage](../README.md#usage) section of the README.
+`destroy`, `synth`, `list`, `state`, etc.), see
+[Installation & Quick Start](getting-started.md).
 
 ## Concurrency
 
@@ -30,8 +35,7 @@ default takes the definition that suits dev/test iteration, and
 choosing completion definitions, not a promise to mirror any one engine.
 
 Even where both engines wait, cdkd's default may take the fast side —
-but only when ALL of these hold (issue
-[#1282](https://github.com/go-to-k/cdkd/issues/1282)):
+but only when ALL of these hold:
 
 1. **No in-deploy consumer**: nothing the same deploy creates or resolves
    (`Fn::GetAtt`, downstream Create calls, post-create verification)
@@ -59,8 +63,7 @@ wait for a broken deploy. Terraform users express the same wait as a
 separate `aws_acm_certificate_validation` resource, which cdkd has no
 equivalent of. When that wait runs out, cdkd DELETES the certificate it
 requested rather than abandoning it, so a failed deploy leaves nothing behind
-and repeated attempts do not accumulate certificates (issue
-[#2169](https://github.com/go-to-k/cdkd/issues/2169)). That costs nothing: ACM
+and repeated attempts do not accumulate certificates. That costs nothing: ACM
 reuses a domain's validation CNAME across certificates, so records you add after
 the failure validate the retry. `--no-wait` is the supported way to KEEP a
 `PENDING_VALIDATION` certificate instead — see
@@ -100,12 +103,12 @@ functional once AWS finishes the async deployment.
 
 | Resource type | `--no-wait` | Default | `--full-wait` | CloudFormation | Terraform |
 | --- | --- | --- | --- | --- | --- |
-| `AWS::CloudFront::Distribution` | same as default | Return after `CreateDistribution` / `UpdateDistribution` (issue #1282; propagation finishes in the background). Only the SDK provider takes the fast side — a Cloud-Control-routed distribution still polls to the CFn handler's terminal state | Wait for `Deployed` (3–15 min) | Waits | Waits (`wait_for_deployment`, default `true`) |
+| `AWS::CloudFront::Distribution` | same as default | Return after `CreateDistribution` / `UpdateDistribution` (propagation finishes in the background). Only the SDK provider takes the fast side — a Cloud-Control-routed distribution still polls to the CFn handler's terminal state | Wait for `Deployed` (3–15 min) | Waits | Waits (`wait_for_deployment`, default `true`) |
 | `AWS::RDS::DBCluster` / `AWS::RDS::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
 | `AWS::DocDB::DBCluster` / `AWS::DocDB::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
 | `AWS::Neptune::DBCluster` / `AWS::Neptune::DBInstance` | Return after Create call | Wait for `available` (5–10 min) | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after Create call | Wait for `available` | same as default | Waits | Waits |
-| `AWS::CertificateManager::Certificate` | Return after `RequestCertificate` (cert is `PENDING_VALIDATION` and RECORDED IN STATE; downstream CloudFront/ALB fail until it issues) | Wait for `ISSUED` (DNS/EMAIL validation); if the wait fails, the certificate this deploy requested is DELETED so nothing is orphaned (issue [#2169](https://github.com/go-to-k/cdkd/issues/2169)) | same as default | Waits | Does not wait (`aws_acm_certificate` returns while `PENDING_VALIDATION`; waiting is a separate `aws_acm_certificate_validation` resource) |
+| `AWS::CertificateManager::Certificate` | Return after `RequestCertificate` (cert is `PENDING_VALIDATION` and RECORDED IN STATE; downstream CloudFront/ALB fail until it issues) | Wait for `ISSUED` (DNS/EMAIL validation); if the wait fails, the certificate this deploy requested is DELETED so nothing is orphaned | same as default | Waits | Does not wait (`aws_acm_certificate` returns while `PENDING_VALIDATION`; waiting is a separate `aws_acm_certificate_validation` resource) |
 | `AWS::EC2::NatGateway` | Return after `CreateNatGateway` (gateway is `pending`; AWS finishes async) | Wait for `available` (1–2 min) | same as default | Waits | Waits |
 | `AWS::EC2::Instance` | Return after `RunInstances` (instance is `pending`; `PublicIp` / `PrivateIp` attributes may be empty, and the IAM instance profile association is not verified — see below) | Wait for `running` (30–60 s) | same as default | Waits for `running` | Waits for `running` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return after `CreateLoadBalancer` (LB is `provisioning`; `DNSName` 503s until active). Also skips the capacity-reservation stabilize poll below | Wait for `active` (90–180 s). When the template sets `MinimumLoadBalancerCapacity` with `EnableCapacityReservationProvisionStabilize: true`, additionally poll `DescribeCapacityReservation` until every zone is `provisioned` (bounded ~10 min; timeout warns and continues, a `failed` zone errors) | same as default | Waits for `active`; the stabilize flag is the CFn-native opt-in to the same reservation wait | Waits for `active` |
@@ -174,7 +177,7 @@ cdkd deploy --full-wait
 ```
 
 Two types are affected: `AWS::ECS::Service` (steady state) and
-`AWS::CloudFront::Distribution` (`Deployed`, issue #1282).
+`AWS::CloudFront::Distribution` (`Deployed`).
 
 ### `AWS::ECS::Service` — steady state
 
@@ -228,7 +231,7 @@ deletion by about an hour, so the evidence is still there.
 ### `AWS::CloudFront::Distribution` — `Deployed`
 
 cdkd's default returns once `CreateDistribution` / `UpdateDistribution`
-is accepted (issue #1282). Both CloudFormation and Terraform
+is accepted. Both CloudFormation and Terraform
 (`wait_for_deployment`, default `true`) wait for `Deployed` here, so
 this is the fast-side clause of the wait-semantics rule in action:
 `Fn::GetAtt` (Id / DomainName) is final in the Create/Update response so
@@ -284,7 +287,7 @@ consumers of a VPC Lambda accept it in `Pending` state:
 all succeed before ENI provisioning finishes, and cdkd's existing
 post-`CreateFunction` `State=Active` wait is already moved to
 `CustomResourceProvider.sendRequest` (the one consumer that synchronously
-invokes the function — see PR #121 follow-up).
+invokes the function).
 
 To opt out:
 
@@ -310,11 +313,11 @@ Lambda-ServiceToken case.
 Measured −54.6% on `tests/integration/bench-cdk-sample`
 (398.59s with `--no-aggressive-vpc-parallel` → 181.03s default).
 
-Note: the "CF 3 min" leg above is the `Deployed` wait, which since
-issue #1282 applies only under `--full-wait` — on the current default the
+Note: the "CF 3 min" leg above is the `Deployed` wait, which now
+applies only under `--full-wait` — on the current default the
 CloudFront leg returns in seconds and the critical path is NAT alone.
-The measured numbers predate #1282 (taken with the then-default
-`Deployed` wait); the relaxation still matters under `--full-wait` and
+The measured numbers were taken with the then-default
+`Deployed` wait; the relaxation still matters under `--full-wait` and
 for the in-background propagation start time.
 
 **Type-pair allowlist** (only DependsOn edges matching one of these
@@ -329,8 +332,8 @@ are untouched):
 | `AWS::Lambda::Url` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
 | `AWS::Lambda::EventSourceMapping` | `AWS::EC2::Route` / `AWS::EC2::SubnetRouteTableAssociation` |
 
-Implementation: [src/analyzer/cdk-defensive-deps.ts](../src/analyzer/cdk-defensive-deps.ts) +
-[src/analyzer/dag-builder.ts](../src/analyzer/dag-builder.ts) (gated by the
+Implementation: [src/analyzer/cdk-defensive-deps.ts](https://github.com/go-to-k/cdkd/blob/main/src/analyzer/cdk-defensive-deps.ts) +
+[src/analyzer/dag-builder.ts](https://github.com/go-to-k/cdkd/blob/main/src/analyzer/dag-builder.ts) (gated by the
 `relaxCdkVpcDefensiveDeps` `DagBuilderOptions` flag, set on the deploy
 code path only — destroy ordering is unaffected).
 
@@ -399,14 +402,14 @@ cdkd creates AWS resources with the **exact name you declared** in
 CDK code by default. `new iam.Role(this, 'CRRole', { roleName:
 'my-role' })` in stack `MyStack` produces an AWS resource named
 `my-role`, consistent across every resource type. This is the
-default since **v0.94.0** ([#299](https://github.com/go-to-k/cdkd/issues/299)).
+default since **v0.94.0**.
 
 Pre-v0.94.0 cdkd prepended the stack name to user-declared physical
 names on a subset of types only (Pattern B providers: IAM Role /
 User / Group / InstanceProfile / ELBv2 LoadBalancer / TargetGroup),
 while Pattern A providers (Lambda, S3, SNS, SQS, DynamoDB, etc.)
 used the user's name as-is. The inconsistency was opaque to users;
-`cdkd export` (PR #285) surfaced it because the CFn IMPORT identifier
+`cdkd export` surfaced it because the CFn IMPORT identifier
 check would reject a synth template whose `RoleName: 'my-role'`
 didn't match the AWS-deployed `MyStack-my-role`. Flipping the default
 brings every resource type into line out of the box.
@@ -501,9 +504,8 @@ the new template intent `my-role`. Three options, listed by preference:
    but the new name is then stable across future deploys.
 
 A state-side rename helper (`cdkd state rename-strip-prefix <stack>`)
-that would migrate state to match AWS without REPLACEMENT is tracked
-in [#300](https://github.com/go-to-k/cdkd/issues/300) and not yet
-implemented.
+that would migrate state to match AWS without REPLACEMENT is planned
+but not yet implemented.
 
 ### Migration: deploy-time warning when the flag flips an existing stack
 
@@ -719,7 +721,7 @@ When a CDK template uses a **top-level CFn property** that cdkd's SDK
 provider would silently drop on write (e.g. AWS adds `CapacityProviderConfig`
 to `AWS::Lambda::Function`, CDK adds support, you write it in your CDK code,
 but `LambdaFunctionProvider.create()` does not read it yet), cdkd **auto-routes
-the resource through Cloud Control API** by default (issue #614). Cloud
+the resource through Cloud Control API** by default. Cloud
 Control forwards the full property map to AWS verbatim, so the silent
 drop is closed without any user intervention — the field reaches AWS.
 
@@ -835,7 +837,7 @@ property coverage matches your needs.
 `--recreate-via-cc-api <LogicalId>` (repeatable, one flag per resource)
 destroys + recreates the named resource via Cloud Control API in this
 deploy, so a previously-silent-dropped top-level CFn property reaches
-AWS on the recreated copy. This is the mid-life counterpart to #614's
+AWS on the recreated copy. This is the mid-life counterpart to the
 default-on auto-route for fresh deploys.
 
 When to use it:
@@ -851,13 +853,13 @@ When to use it:
 When NOT to use it:
 
 - The resource is already `provisionedBy: 'cc-api'` (sticky). The
-  update path already routes via CC; the recreate is a no-op. As of
-  #665 cdkd refuses pre-flight with `blockedAlreadyCcApi` — the
+  update path already routes via CC; the recreate is a no-op.
+  cdkd refuses pre-flight with `blockedAlreadyCcApi` — the
   destroy + recreate cycle would produce identical end state at the
   cost of unnecessary downtime. Mirror of the `blockedAlreadySdk`
-  refusal on the reverse direction (#651). Fix: drop the flag for that
+  refusal on the reverse direction. Fix: drop the flag for that
   resource.
-- Fresh deploy (the resource is not yet in cdkd state). #614's
+- Fresh deploy (the resource is not yet in cdkd state). The default
   auto-route handles fresh silent-drop deploys automatically — no flag
   needed.
 
@@ -903,7 +905,7 @@ contains data):
 - `AWS::S3::Bucket` — guard fires when the bucket has at least one
   current version, prior version, or delete-marker. cdkd issues a
   single-page `s3:ListObjectVersions(MaxKeys=1)` against each S3 bucket
-  target at plan time (issue #648); empty buckets pass through,
+  target at plan time; empty buckets pass through,
   non-empty buckets (including versioned buckets whose current keys are
   soft-deleted but whose history is still retained) are refused unless
   `--force-stateful-recreation` is supplied. cdkd uses
@@ -968,7 +970,7 @@ Once a resource is `provisionedBy: 'cc-api'`, going back to the SDK
 Provider requires another flag (the inverse `--recreate-via-sdk`). NOT
 in scope for v1 — file an issue if you need this direction.
 
-When a backfill PR (issue #609) wires the property the user originally
+When a later cdkd release wires the property the user originally
 needed, the migrated resource stays on CC unless the user explicitly
 switches it back. Sticky-state semantics avoid SDK↔CC ping-pong on
 every backfill release.
@@ -1048,8 +1050,8 @@ on `cdkd deploy` with no flag.
 ## `--recreate-via-sdk-provider <LogicalId>` (deploy)
 
 `--recreate-via-sdk-provider <LogicalId>` (repeatable, one flag per
-resource) is the reverse direction of `--recreate-via-cc-api`
-(issue #651). It destroys + recreates the named resource via cdkd's
+resource) is the reverse direction of `--recreate-via-cc-api`.
+It destroys + recreates the named resource via cdkd's
 SDK Provider so a resource currently sticky on `provisionedBy: 'cc-api'`
 flips back to `provisionedBy: 'sdk'`.
 
@@ -1058,7 +1060,7 @@ When to use it:
 - A `provisionedBy: 'cc-api'`-sticky resource (landed on CC because
   the user originally needed a top-level CFn property cdkd's SDK
   Provider did not wire, e.g. Lambda `LoggingConfig`) is now eligible
-  for SDK Provider routing because a #609 backfill release has added
+  for SDK Provider routing because a later cdkd release has added
   SDK coverage for that property. The flag forces a destroy + recreate
   cycle so the new physical resource lands on SDK and benefits from
   SDK Provider performance / diagnostic clarity / narrower IAM scope.
@@ -1091,7 +1093,7 @@ stateful entries. The two flags are mutually exclusive on a per-resource
 basis — naming the same logical id in both is refused as ambiguous.
 
 ```bash
-# Mid-life CC→SDK migration after a #609 backfill landed SDK coverage
+# Mid-life CC→SDK migration after a backfill release landed SDK coverage
 # for Lambda's LoggingConfig:
 cdkd deploy MyStack --recreate-via-sdk-provider MyLambda --yes
 
@@ -1129,21 +1131,21 @@ When a template requests an attribute that is neither captured in state
 `attributes` nor constructible by the resolver's per-type mappings, cdkd
 falls back to the resource's **physical ID**:
 
-- **Knowably-wrong shapes hard-fail even without the flag** (issue #1106):
+- **Knowably-wrong shapes hard-fail even without the flag**:
   an attribute name ending in `Arn` whose fallback value is not
   `arn:`-shaped, or ending in `Url` whose fallback is not an http(s) URL,
   cannot be what CloudFormation would return — the deploy fails with an
   actionable error naming the resource, attribute, and an issue link. This
   applies to the resolver's final unknown-type fallback AND to every
-  per-type handler's unknown-attribute default branch (issue #1111).
+  per-type handler's unknown-attribute default branch.
 - **Every other suffix warns and returns the physical ID** (`Unknown
   attribute X for resource type Y, returning physical ID`) — an alias or
   endpoint is shape-indistinguishable from a plain name, so a hard-fail
   there would risk failing correct deploys.
-- **The same refusals apply inside `Fn::Sub`** (issue #1740). A
+- **The same refusals apply inside `Fn::Sub`**. A
   `${LogicalId.Attribute}` placeholder resolves through the same code path,
   so a reference that hard-fails as a resource property hard-fails there
-  too. Before that fix `Fn::Sub` downgraded EVERY resolution failure to a
+  too. Previously `Fn::Sub` downgraded EVERY resolution failure to a
   warning and kept the raw `${...}` text, so the identical reference shipped
   a literal `${MyResource.SomeArn}` to AWS on a green deploy. A variable
   that genuinely does not exist still warns and keeps its placeholder — the
@@ -1188,16 +1190,15 @@ from the parent deploy.
 ## `--allow-unaddressed` (deploy)
 
 A deploy that finishes without a single resource FAILING can still leave a
-resource cdkd was responsible for alive in AWS. Since issue
-[#1960](https://github.com/go-to-k/cdkd/issues/1960) that outcome exits `2`,
-matching what `cdkd destroy` has done for the identical case since
-[#1752](https://github.com/go-to-k/cdkd/issues/1752). Two cases produce it, and
+resource cdkd was responsible for alive in AWS. That outcome exits `2`,
+matching what `cdkd destroy` does for the identical
+case. Two cases produce it, and
 they differ in whether they heal themselves:
 
 | Summary row | Cause | Next `cdkd deploy` retries it? |
 |---|---|---|
-| `Skipped (not deleted): N` | a resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state (issue [#1762](https://github.com/go-to-k/cdkd/issues/1762)) | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
-| `of which left an orphaned predecessor: N` | a replacement whose new resource was created and whose OLD one could not be deleted (issue [#1819](https://github.com/go-to-k/cdkd/issues/1819)) | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
+| `Skipped (not deleted): N` | a resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
+| `of which left an orphaned predecessor: N` | a replacement whose new resource was created and whose OLD one could not be deleted | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
 
 ```bash
 cdkd deploy MyStack                       # exit 2 if either row is non-zero
@@ -1235,8 +1236,7 @@ one cause.
 
 ## `--no-cfn-fallback` (deploy / diff)
 
-By default (issue
-[#1697](https://github.com/go-to-k/cdkd/issues/1697)), a cross-stack
+By default, a cross-stack
 reference that is not found in cdkd state falls back to CloudFormation,
 so a cdkd-deployed consumer can reference a producer stack still managed
 by CloudFormation (`cdk deploy` / raw CFn):
@@ -1273,7 +1273,7 @@ design.
 ## CDK annotation messages (synth + deploy)
 
 `cdkd synth` and `cdkd deploy` surface CDK `Annotations` messages with the
-same semantics as the CDK CLI (issue #1228):
+same semantics as the CDK CLI:
 
 - `Annotations.of(scope).addError(...)` — the command prints every error as
   `[Error at /Construct/Path] message`, appends `Found errors`, and exits
@@ -1284,7 +1284,7 @@ same semantics as the CDK CLI (issue #1228):
 - `addWarning(...)` / `addInfo(...)` — printed as
   `[Warning at /path] ...` / `[Info at /path] ...`; the run proceeds.
 
-Two flags adjust the failure threshold (issue #1230, CDK CLI parity —
+Two flags adjust the failure threshold (CDK CLI parity —
 both accepted by `synth` and `deploy`):
 
 - `--strict` — additionally fail when any warning annotation exists
@@ -1308,10 +1308,8 @@ file (`additionalMetadataFile`) written by current versions.
 
 A `--json` flag was never what made a stream a payload stream -- it picks the
 payload's ENCODING. Five commands write a machine-consumable document to stdout
-with no flag involved, and since issues
-[#2410](https://github.com/go-to-k/cdkd/issues/2410) and
-[#2435](https://github.com/go-to-k/cdkd/issues/2435) each reserves stdout
-UNCONDITIONALLY, so their DEFAULT output contract is the one that changed:
+with no flag involved, and each reserves stdout
+UNCONDITIONALLY — their DEFAULT output contract is the one that changed:
 
 | Command | What stdout carries |
 | --- | --- |
@@ -1371,16 +1369,13 @@ Four consequences worth stating explicitly:
   1. **The container's own stdout**, piped through by `streamLogs`. The Lambda
      runtime emulator puts `START` / `END` / `REPORT` *and* every handler log
      line -- `console.error` included -- on the container's stdout, so any
-     handler that prints lands ahead of the response
-     ([#2419](https://github.com/go-to-k/cdkd/issues/2419)).
+     handler that prints lands ahead of the response.
   2. **cdk-local's own logger.** cdkd reuses cdk-local for the container-image
      build path, and cdk-local has a SEPARATE logger with no reservation
      concept, so `Building container image (platform=...)` and `Skipping
-     docker build ...` print on stdout for a container-image Lambda
-     ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
+     docker build ...` print on stdout for a container-image Lambda.
 
-  A THIRD was listed here until issue
-  [#2410](https://github.com/go-to-k/cdkd/issues/2410) and is now CLOSED, named
+  A THIRD was listed here and is now FIXED, named
   rather than deleted so it is not reported again: `docker pull` progress
   reached stdout because the pull runs with the child inheriting cdkd's
   descriptors, and cdkd runs it unconditionally for an image pulled from ECR --
@@ -1393,13 +1388,12 @@ Four consequences worth stating explicitly:
   costs nothing: both still write their view to stdout, so only interleaved
   prose moves -- to stderr, where an operator at a terminal still sees it and
   where it stops corrupting a redirect to a file. The alternative, a mode-aware
-  condition, is the flag-shaped gating issue #2435 exists to remove.
+  condition, is exactly the flag-shaped gating this contract exists to remove.
 - **`cdkd synth`'s stdout parses, and it parses back to the template.** This
   used to be the exception: the renderer left YAML indicator characters
   unquoted, so a template containing `"*"` -- any IAM policy `Resource` /
   `Action`, any CORS rule -- emitted a bare `- *` that a YAML parser rejects,
-  and reserving stdout did not change it. Issue
-  [#2421](https://github.com/go-to-k/cdkd/issues/2421) fixed it by handing the
+  and reserving stdout did not change it. This was fixed by handing the
   quoting to the `yaml` package -- the library the AWS CDK CLI uses for the
   same job -- and checking every string scalar against that library's own
   parser under BOTH a YAML 1.1 reader (which is what `yq` is) and a 1.2 one,
@@ -1433,8 +1427,7 @@ AWS client.** `--region US-EAST-1`, `AWS_REGION=US-EAST-1` and
 
 One known exception, pinned by a test rather than left implicit:
 `cdkd local start-api` folds the flag but not the env vars, so an upper-cased
-`AWS_REGION` still reaches the Lambda containers it starts — issue
-[#2103](https://github.com/go-to-k/cdkd/issues/2103). Its three sibling
+`AWS_REGION` still reaches the Lambda containers it starts. Its three sibling
 `cdkd local *` commands do fold both.
 
 This is not cosmetic. Everything downstream of the value is case-SENSITIVE, and
@@ -1447,9 +1440,8 @@ in different ways:
 | ARN region segments | an ARN no IAM policy matches and every SDK call rejects |
 | EC2 `region-name` filters | matches nothing, so `Fn::GetAZs` returns an EMPTY list |
 
-Before issue [#2065](https://github.com/go-to-k/cdkd/issues/2065) only the four
-`cdkd local *` commands folded (issue
-[#1795](https://github.com/go-to-k/cdkd/issues/1795)), so `cdkd deploy --region
+Previously only the four
+`cdkd local *` commands folded, so `cdkd deploy --region
 US-EAST-1` died at the state-bucket preflight before doing anything. DNS is
 case-insensitive, which is why such a deploy got far enough to fail confusingly
 rather than being rejected outright.
@@ -1458,8 +1450,8 @@ One value is deliberately NOT folded: the region `cdkd bootstrap` keys its
 **marker** off, and with it the asset bucket / ECR repo names it creates. That
 value stays verbatim because the marker READ that looks for an existing marker
 is paired with the marker WRITE, and both must use the same spelling or a
-recorded custom asset name stops being reused; aligning that pair is issue
-[#1820](https://github.com/go-to-k/cdkd/issues/1820)'s lane. The clients
+recorded custom asset name stops being reused; aligning that pair is
+future work. The clients
 `cdkd bootstrap` builds ARE folded.
 
 The marker reads on the TEARDOWN and DEPLOY paths therefore try the canonical
@@ -1477,8 +1469,7 @@ with only that variable set, the SDK resolves the *profile's* region instead).
 The AWS CLI honours it, so reading it here is what stops cdkd disagreeing with
 a CLI command you just ran.
 
-The profile step is issue
-[#2029](https://github.com/go-to-k/cdkd/issues/2029), and it removes an
+The profile step removes an
 incoherence rather than adding a preference: cdkd ALREADY consulted your
 profile, because every command builds its pre-flight AWS clients without a
 region and lets the SDK resolve one. Only the region *value* — the one that
@@ -1488,9 +1479,8 @@ One command, two regions.
 **Currently this applies to the bootstrap-marker family** (`cdkd bootstrap`,
 `cdkd gc`, `cdkd bootstrap --destroy`), which move together because one writes
 the key the other two read. The commands whose region keys the *state file*
-still use the `us-east-1` literal; moving them is issue
-[#2100](https://github.com/go-to-k/cdkd/issues/2100), and it needs its own
-migration answer for the same reason.
+still use the `us-east-1` literal; moving them is future work, and it
+needs its own migration answer for the same reason.
 
 ### The reconciliation
 
@@ -1580,8 +1570,7 @@ storage). Creates:
 
 1. The S3 **state bucket** (`cdkd-state-{accountId}`, or `--state-bucket
    <name>`) — versioned, AES-256 encrypted, account-only bucket policy.
-2. cdkd-owned **asset storage** for `--region` (issue
-   [#1002](https://github.com/go-to-k/cdkd/issues/1002)): the asset bucket
+2. cdkd-owned **asset storage** for `--region`: the asset bucket
    (default name `cdkd-assets-{accountId}-{region}`; AES-256, account-only
    policy, no versioning — assets are immutable content-addressed blobs) and
    the container-asset ECR repo (default name
@@ -1600,8 +1589,7 @@ Flags:
   Explicit opt-out for users who keep CDK bootstrap storage or use a custom
   synthesizer with their own asset destinations. Deploys in the region stay
   in legacy mode (publish to the `assets.json` destinations verbatim).
-- `--asset-bucket <name>` / `--container-repo <name>` (issue
-  [#1011](https://github.com/go-to-k/cdkd/issues/1011)) — custom names for
+- `--asset-bucket <name>` / `--container-repo <name>` — custom names for
   the asset bucket / container-asset ECR repo instead of the defaults above.
   The escape hatch when the predictable default S3 name is squatted by
   another account (S3 names are global), and the compliance knob for
@@ -1619,7 +1607,7 @@ Flags:
   `cdkd bootstrap --destroy --region <r>` first, then re-bootstrap with the
   new names. Rejected in combination with `--no-assets` (which skips the
   asset storage the flags name) and with `--destroy` (teardown reads the
-  names from the marker). The deploy-time auto-create (issue #1007) always
+  names from the marker). The deploy-time auto-create always
   uses the default names — custom names require the explicit
   `cdkd bootstrap`. Custom bucket names get the same squatting defense as
   the defaults (owned-elsewhere hard refusal, `ExpectedBucketOwner` on every
@@ -1659,8 +1647,8 @@ prerequisite again.
 Bucket-squatting defense: bootstrap refuses to adopt an asset bucket owned
 by another account (predictable-name defense), and cdkd's asset-bucket S3
 calls pass `ExpectedBucketOwner`. It also refuses a bucket this account owns
-that lives in **another region** (`ASSET_STORAGE_FOREIGN_REGION_BUCKET`,
-issue [#2240](https://github.com/go-to-k/cdkd/issues/2240)): S3 bucket names
+that lives in **another region**
+(`ASSET_STORAGE_FOREIGN_REGION_BUCKET`): S3 bucket names
 are globally unique, so both `BucketAlreadyOwnedByYou` and a cross-region
 `HeadBucket` redirect report ACCOUNT ownership rather than the bucket's
 region. The default name embeds the region, but `--asset-bucket <name>` is
@@ -1694,7 +1682,7 @@ Per-command behavior:
 | --- | --- |
 | `deploy` | redirect publishes + rewrite templates (incl. nested children); a post-resolution audit fails any resource whose resolved properties still name the CDK bootstrap storage |
 | `diff` (incl. `--recursive`) | rewrite, so the shown plan matches what deploy will do (incl. the one-time migration diff) |
-| `import` | rewrite the template, but record the **pre-rewrite** values in state so the first post-import `cdkd deploy` repoints the live resources (issue [#1652](https://github.com/go-to-k/cdkd/issues/1652)) |
+| `import` | rewrite the template, but record the **pre-rewrite** values in state so the first post-import `cdkd deploy` repoints the live resources |
 | `publish-assets` | redirect via the same table (reads the marker from the state bucket; falls back to legacy with an info line when no state bucket resolves) |
 | `synth` / `export` | **unrewritten** — synth prints the CDK app's template; export returns the stack to the CFn/cdk-assets world |
 | `destroy` / `state *` / `drift` / `events` | state-driven, unchanged |
@@ -1712,7 +1700,7 @@ region is opted in; `cdk.json` `context.cdkd.useCdkBootstrapAssets: true`
 pins it per app — for apps deployed via both CloudFormation and cdkd during
 a migration window. The pin also suppresses the legacy-mode `cdk gc` notice.
 
-### Auto-create on first deploy (issue #1007)
+### Auto-create on first deploy
 
 `cdkd deploy` into a region that has **no** bootstrap marker auto-creates
 the per-region asset storage (asset bucket + container-asset ECR repo +
@@ -1732,7 +1720,7 @@ back to legacy mode, so `cdkd bootstrap` stays a true once-per-account step.
   auto-creates — `diff` / `import` / `publish-assets` never create
   resources.
 
-### Teardown (`cdkd bootstrap --destroy`, issue #1010)
+### Teardown (`cdkd bootstrap --destroy`)
 
 `cdkd bootstrap --destroy --region <r>` is the reverse of bootstrap for ONE
 region's asset storage — the cdkd equivalent of deleting the CDK CLI's
@@ -1749,8 +1737,7 @@ delete-repository` / marker-delete sequence. It:
    naming convention — compatible with custom asset-storage names. A region
    named by `--region` OR by `AWS_REGION` is lower-cased before it reaches any
    AWS client or the marker key, and both spellings of the key are probed, as
-   in `cdkd gc` (issue
-   [#1995](https://github.com/go-to-k/cdkd/issues/1995)) — with a sharper
+   in `cdkd gc` — with a sharper
    consequence here: an unmatched marker made this command report "nothing to
    delete" and exit 0 while the bucket and repo stayed alive. The marker
    deleted in step 1 is the key the marker was actually READ from, so the
@@ -1796,8 +1783,8 @@ mode). "Other" is decided case-insensitively, so a region whose marker was
 written under a different spelling of its own name is not mistaken for a
 second region — but the refusal NAMES each one by the spelling its marker
 key actually uses, because that is the spelling
-`cdkd bootstrap --destroy --region <r>` needs in order to find it (issue
-[#1995](https://github.com/go-to-k/cdkd/issues/1995)). The same refusal covers
+`cdkd bootstrap --destroy --region <r>` needs in order to find
+it. The same refusal covers
 a marker for THIS region under another spelling: the teardown deletes one
 marker key, so deleting the state bucket while a sibling is still in it would
 remove that record while the asset storage it names survives, nameless.
@@ -1811,10 +1798,9 @@ the next `cdkd deploy` into the region unless you opt out
 
 `cdkd gc [--region <r>] [--older-than <dur>] [--dry-run] [-y]` deletes
 unreferenced objects / images from ONE region's cdkd-owned asset storage
-(the asset bucket + container-asset ECR repo created by `cdkd bootstrap`,
-issue #1012), **and abandoned custom-resource response placeholders from the
-state bucket** (issue
-[#2052](https://github.com/go-to-k/cdkd/issues/2052) — see
+(the asset bucket + container-asset ECR repo created by
+`cdkd bootstrap`), **and abandoned custom-resource response placeholders from the
+state bucket** (see
 [Custom-resource response placeholders](#custom-resource-response-placeholders)
 below). Assets are content-addressed and deliberately never deleted
 on `cdkd destroy` (another stack or a future rollback may reference the
@@ -1826,11 +1812,10 @@ exactly which assets are in use.
 `AWS_DEFAULT_REGION` → your AWS profile's region → `us-east-1`, with the
 reconciliation described under
 [`--region` / `AWS_REGION`](#--region--aws_region-every-command) — so a bare
-`cdkd gc` collects in the region you actually work in, not in `us-east-1`
-(issue [#2029](https://github.com/go-to-k/cdkd/issues/2029)). The region gc
+`cdkd gc` collects in the region you actually work in, not in
+`us-east-1`. The region gc
 reports, the region its clients target and the region its marker key is built
-from are **one value by construction** (issue
-[#2029](https://github.com/go-to-k/cdkd/issues/2029) — they used to be resolved
+from are **one value by construction** (they used to be resolved
 separately and could disagree, so gc read one region's marker and deleted
 against another region's endpoints), and the delete plan now names it
 explicitly, because with a custom `--asset-bucket` name the plan would
@@ -1838,17 +1823,14 @@ otherwise mention no region at all.
 
 `cdkd bootstrap` WRITES the marker through the same resolver and the same
 reconciliation, so the read and write sides cannot drift apart — which is why
-this could not be done for gc alone (issue
-[#1820](https://github.com/go-to-k/cdkd/issues/1820)). The resolved region is
+this could not be done for gc alone. The resolved region is
 lower-cased before it reaches any AWS client or the marker key, and the marker
 is looked up under the canonical spelling first and the spelling you passed
-second, so `--region US-EAST-1` finds the marker either way (issue
-[#1995](https://github.com/go-to-k/cdkd/issues/1995)); the second probe exists
+second, so `--region US-EAST-1` finds the marker either way; the second probe exists
 because `cdkd bootstrap` still keys the marker off its region verbatim. The
 asset bucket / repo names are read from the region's bootstrap marker, never
 recomputed from the naming convention (custom-name compatible). A region with
-no marker has no ASSET storage in scope, and gc says so — since issue
-[#2052](https://github.com/go-to-k/cdkd/issues/2052) it then continues to the
+no marker has no ASSET storage in scope, and gc says so — it then continues to the
 state bucket's response-placeholder sweep rather than returning, because those
 objects exist whether or not the region opted in to asset storage. With nothing
 to collect on either side it is still a friendly no-op. **CDK bootstrap storage
@@ -1866,16 +1848,14 @@ URLs (query strings stripped), and ECR image URIs by `:tag` and/or
 `cloud.adc-e.uk` / `csp.hci.ic.gov` / `amazonaws.eu`), not just the one
 the gc region uses — the scan reads state written by any cdkd binary for
 any region, and a suffix the matchers miss reads as UNREFERENCED and is
-DELETED (issue
-[#1781](https://github.com/go-to-k/cdkd/issues/1781)). ECR hosts
+DELETED. ECR hosts
 additionally match the FIPS (`<acct>.dkr.ecr-fips.<region>.<urlSuffix>`)
 and dual-stack (`<acct>.dkr-ecr.<region>.on.aws`,
 `<acct>.dkr-ecr-fips.<region>.on.aws`) endpoints — that list now comes from
 the single ECR host FORM TABLE in `src/utils/ecr-uri.ts` rather than a second
 copy here, which is what surfaced the dual-stack FIPS form gc had been
-missing (issue [#1793](https://github.com/go-to-k/cdkd/issues/1793)). ECR
-hosts are matched case-INSENSITIVELY, since DNS is (issue
-[#1792](https://github.com/go-to-k/cdkd/issues/1792)) — and a matched
+missing. ECR
+hosts are matched case-INSENSITIVELY, since DNS is — and a matched
 `@sha256:` DIGEST is normalized to lower case as it is collected, which the
 case-insensitive match alone does NOT give you: a collected digest is compared
 for EXACT equality against ECR's always-lower-case `imageDigest`, so an
@@ -1884,8 +1864,7 @@ would still be deleted. The `:tag` is deliberately kept verbatim, because ECR
 tags ARE case-sensitive.
 
 The three S3 shapes are matched case-insensitively across the HOST too, for the
-same DNS reason (issue
-[#1847](https://github.com/go-to-k/cdkd/issues/1847)): the `s3://` / `https`
+same DNS reason: the `s3://` / `https`
 scheme, the `s3` label, the region and the `<urlSuffix>` all fold. The BUCKET
 name folds only where it is a DNS label — the virtual-hosted
 `https://<bucket>.s3.<region>.<urlSuffix>/<key>` shape, where an upper-cased
@@ -1900,8 +1879,8 @@ collected-yet-unmatchable trap the ECR digest note above describes, in reverse.
 `CustomResourceProvider` PUTs an empty object at
 `custom-resource-responses/{requestId}.json` in the **state** bucket before each
 invocation, so the handler has a pre-signed URL to write its response to. The
-happy paths delete it again; three shapes leave it behind, and until issue
-[#2052](https://github.com/go-to-k/cdkd/issues/2052) nothing collected those:
+happy paths delete it again; three shapes leave it behind, and previously
+nothing collected those:
 
 - an interrupted deploy (Ctrl-C / SIGTERM / a cancelled CI job) between the PUT
   and any cleanup;
@@ -1924,8 +1903,7 @@ placeholder is the moment of the PUT that opened the invocation.
 Collection is not the whole answer on a VERSIONED bucket, which the state
 bucket is (`cdkd bootstrap` turns versioning on). A plain `DeleteObject` there
 writes a DELETE MARKER and leaves the body readable through `GetObject` with a
-`VersionId`, so until issue
-[#2340](https://github.com/go-to-k/cdkd/issues/2340) a collected placeholder
+`VersionId`, so previously a collected placeholder
 was not gone — for the late-PUT shape above, the handler's full `Data` payload
 stayed retrievable by anyone who could read the state bucket. `cdkd gc` now
 purges each collected key's noncurrent versions after deleting it, and the
@@ -1934,7 +1912,7 @@ provider's own cleanup does the same for the keys it deletes on the happy path.
 That purge needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion` on the
 state bucket, which the least-privilege policy in
 [state-management.md](state-management.md#security-and-best-practices) did not
-grant before #2340. It fails soft: without those actions the collection still
+previously grant. It fails soft: without those actions the collection still
 succeeds and `cdkd gc` still reports the reclaimed bytes, but a warning counts
 and names the affected keys, names the two grants, and the bodies stay
 retrievable by `VersionId`. Note the two fail differently — a missing
@@ -1974,8 +1952,7 @@ NOT deleting):
 - **Lock guard**: any stack lock (`lock.json`) in the state bucket aborts
   with a listing of the locked stack(s) — a deploy in flight may have
   published assets whose state write has not landed yet, and may be about to
-  write a custom-resource response placeholder. Since issue
-  [#2052](https://github.com/go-to-k/cdkd/issues/2052) this runs BEFORE the
+  write a custom-resource response placeholder. This runs BEFORE the
   bootstrap-marker check, so it also covers a region with no asset storage.
 - **Age guard**: `--older-than <dur>` (default `30d`, accepts `<n>d` /
   `<n>h`) — an object (`LastModified`) / image (`imagePushedAt`) newer
@@ -1997,7 +1974,7 @@ candidates → info line, exit 0, no prompt. Deletion is chunked
 any per-item failure is surfaced as a hard error.
 
 **Upgrade note for CI**: "zero candidates" is a WIDER question than it used
-to be. Since issue [#2052](https://github.com/go-to-k/cdkd/issues/2052) the
+to be. The
 count also includes the state bucket's abandoned custom-resource response
 placeholders, which accumulate account-wide and independently of whether any
 region opted in to cdkd asset storage. A non-interactive run without `-y`
@@ -2032,8 +2009,7 @@ them by digest in a deployed stack.
 per-resource CREATE / UPDATE / DELETE changes the next `cdkd deploy`
 would apply, comparing the synth template against cdkd's S3 state.
 
-- `--recursive` (issue [#555](https://github.com/go-to-k/cdkd/issues/555)
-  A5) — recurse into every `AWS::CloudFormation::Stack` row and diff each
+- `--recursive` — recurse into every `AWS::CloudFormation::Stack` row and diff each
   nested-stack child against its **own** deployed state
   (`cdkd/<parent>~<childLogicalId>/<region>/state.json`), in DFS order.
   Default is non-recursive, matching `cdk diff` (which shows the parent's
@@ -2046,9 +2022,7 @@ would apply, comparing the synth template against cdkd's S3 state.
   all-DELETE recursively.
 
   A child input parameter fed by a SECRET dynamic reference is **not
-  decrypted at plan time** (issues
-  [#1903](https://github.com/go-to-k/cdkd/issues/1903) /
-  [#2087](https://github.com/go-to-k/cdkd/issues/2087)). The parent's
+  decrypted at plan time**. The parent's
   `Parameters` value is carried down as its `{{resolve:...}}` expression,
   which is also what the child's state now holds, so the two sides compare
   expression-vs-expression and no plaintext appears in the output. Two
@@ -2073,15 +2047,13 @@ would apply, comparing the synth template against cdkd's S3 state.
     its parts all stay strings. The population is the FAMILY — any `List<...>`
     type, plus `CommaDelimitedList` itself — rather than a list of names;
     `List<AWS::EC2::Subnet::Id>`, `List<AWS::EC2::SecurityGroup::Id>` and
-    `List<String>` are examples of it (issue
-    [#2347](https://github.com/go-to-k/cdkd/issues/2347)). The AWS-specific
+    `List<String>` are examples of it. The AWS-specific
     SCALAR types, and the whole `AWS::SSM::Parameter::Value<…>` family — whose
     value is a Parameter Store KEY rather than the resolved list — keep the
     uncast token.
     A LIST-TYPED PARAMETER USED IN `Fn::Equals` CHANGES ANSWER, and this is
     not limited to the redacted-token case — it is a property of the deploy
-    path (issue
-    [#2347](https://github.com/go-to-k/cdkd/issues/2347)). A `Ref` to a
+    path. A `Ref` to a
     list-shaped parameter now resolves to an ARRAY, and `Fn::Equals` compares
     the two sides structurally, so `Fn::Equals: [{Ref: Envs}, 'prod']` over a
     `List<String>` parameter defaulting to `prod` was TRUE (`'prod'` vs
@@ -2129,8 +2101,8 @@ would apply, comparing the synth template against cdkd's S3 state.
   leaves back to their `{{resolve:...}}` expression. Casting the value to a
   number takes it out of that model, so the child stack's `state.json` would
   keep the DECRYPTED secret with nothing to redact it back to — the very
-  disclosure issue [#1903](https://github.com/go-to-k/cdkd/issues/1903)
-  closes. Refusing names the problem; silently persisting the plaintext does
+  disclosure this refusal exists to
+  prevent. Refusing names the problem; silently persisting the plaintext does
   not. CDK synthesizes every nested-stack cross-reference parameter as
   `Type: String`, so a CDK app never hits this.
 
@@ -2165,13 +2137,12 @@ would apply, comparing the synth template against cdkd's S3 state.
   plaintext for that key. Progress logging is suppressed so stdout carries
   only the JSON payload.
 
-**Outputs section** (issue
-[#1921](https://github.com/go-to-k/cdkd/issues/1921)): the diff also compares
+**Outputs section**: the diff also compares
 the template's `Outputs` against the outputs bag in state, so an
 **Outputs-only** change — one whose `Resources` section is byte-identical — is
 reported instead of printing `No changes detected`, and `--fail` exits `1` for
-it. This is the preview half of the Outputs-only persist `cdkd deploy` gained
-in [#875](https://github.com/go-to-k/cdkd/issues/875): when a downstream stack
+it. This is the preview half of the Outputs-only persist `cdkd deploy`
+performs: when a downstream stack
 starts referencing a producer, CDK synth adds an `Output` with an `Export.Name`
 to the producer while leaving its resources untouched, and without this the
 preview steered the user away from the deploy that publishes the export.
@@ -2221,8 +2192,7 @@ what keep the refusal off stacks that handle no secrets at all. For a nested
 child REMOVED from its parent's template there is no template left to account for
 anything, so the refusal applies to that child's whole stored bag whenever the
 parent's template proves a secret reference. That population is now REPAIRABLE by
-[`cdkd scrub`](#cdkd-scrub-state-secret-hygiene-clean--audit) (issue
-[#2005](https://github.com/go-to-k/cdkd/issues/2005)); the refusal here is
+[`cdkd scrub`](#cdkd-scrub-state-secret-hygiene-clean--audit); the refusal here is
 unchanged, because `diff` still cannot decide from a stored string alone whether
 a value is a plaintext. Second, output / export names and
 rendered values are stripped of control and bidi characters before display: an
@@ -2243,7 +2213,7 @@ template literal, so it is not attacker-selectable).
 **Routing annotation**: every CREATE / UPDATE line whose template uses a
 top-level CFn property cdkd's SDK provider does not yet wire is tagged
 `[via CC API: <prop list>]` so the routing decision is auditable at plan
-time — the same auto-fallback the deploy engine applies (#614). DELETE
+time — the same auto-fallback the deploy engine applies. DELETE
 lines are not annotated; deletes route via the recorded `provisionedBy`
 on each resource's state, not via template inspection.
 
@@ -2276,7 +2246,7 @@ cluster's `CapacityProviders`, a standalone
 standalone security-group ingress/egress rules) or by AWS itself, so
 comparing them reported permanent phantom drift on a freshly deployed
 stack — and `--revert` then stripped that sibling-managed configuration
-from AWS (issue #1498). CloudFormation's drift detection only compares
+from AWS. CloudFormation's drift detection only compares
 template-declared properties, so this matches its behavior for that
 class; an undeclared key captured with a real value (an AWS-side
 default) is still compared.
@@ -2325,8 +2295,7 @@ Flags:
   state in multiple regions (mirrors `cdkd state show`).
 - `--json` — emit a structured per-stack report (see below) on **stdout, and
   nothing else**. The resolution paths still print their plain-text plan,
-  prompt and summary, but under `--json` those go to **stderr** (issue
-  [#2230](https://github.com/go-to-k/cdkd/issues/2230)) — see "Streams under
+  prompt and summary, but under `--json` those go to **stderr** — see "Streams under
   `--json`" below.
 - `--accept` — write the AWS-current values back into cdkd state (state
   ← AWS) for every drifted property. By default this updates
@@ -2345,7 +2314,7 @@ Flags:
   comparator, so `--revert` undoes exactly the delta `cdkd drift`
   reported and leaves non-drifted attributes untouched. One exception:
   a drifted **top-level tag list** keeps any AWS-SERVICE-authored entry
-  instead of stripping it (issue #1501). Every ordinary tag still
+  instead of stripping it. Every ordinary tag still
   reverts exactly as before — one the baseline lost is re-added, a
   changed value is reset, and a user- or console-added tag AWS alone
   carries is still REMOVED — but a service-managed key
@@ -2361,9 +2330,8 @@ Flags:
   AWS side worth diffing. A tag list NESTED inside another property (an
   EC2 launch template's `TagSpecifications`) still reverts wholesale.
 
-  The plan also **names the AWS-authored values the revert leaves alone**
-  (issue [#1478](https://github.com/go-to-k/cdkd/issues/1478), semantics
-  settled by [#1626](https://github.com/go-to-k/cdkd/issues/1626)). A revert
+  The plan also **names the AWS-authored values the revert leaves
+  alone**. A revert
   overwrites each drifted top-level subtree from
   `observedProperties ?? properties`, so when a resource has NO
   `observedProperties` (older state, or a deploy-time capture that failed)
@@ -2375,8 +2343,7 @@ Flags:
   `[{Key, Value}]` list reports its missing entries in bracket form
   (`LoadBalancerAttributes[deletion_protection.enabled]`) — the bracket
   distinguishes a list entry from a nested path, since attribute keys contain
-  dots of their own. That keyed-list half was added by issue
-  [#1626](https://github.com/go-to-k/cdkd/issues/1626): the walk previously
+  dots of their own. That keyed-list half was a later addition: the walk previously
   skipped every array, which is exactly the shape with the most at stake, so
   a revert against an ELBv2 resource could touch ~18 untemplated attributes
   while the plan named none. A service-authored tag is NOT listed — the
@@ -2385,8 +2352,7 @@ Flags:
   identities, so it is neither reported nor narrowed.
 
   `--revert` normally leaves cdkd state alone — once the update succeeds,
-  AWS matches state by definition. The ONE exception (issue
-  [#1644](https://github.com/go-to-k/cdkd/issues/1644)) is a provider that
+  AWS matches state by definition. The ONE exception is a provider that
   reports a **narrowing**: some providers answer `update()` with the bag
   they ACTUALLY sent, because AWS only accepts a narrower form than the
   template declares (`AWS::EC2::Route`'s single destination, an
@@ -2422,17 +2388,17 @@ Flags:
 - `--state-bucket`, `--state-prefix`, `--profile`, `--verbose`,
   `--role-arn`, `--region` — same as on every other state-driven
   command. `--region` is deprecated (prefer `AWS_REGION` / your AWS
-  profile) but still honored if passed (PR 5).
+  profile) but still honored if passed.
 
 Exit codes:
 
 | Exit | Meaning |
 | --- | --- |
 | `0` (detection) | Every inspected stack has zero drift **and cdkd left no comparison incomplete** (nothing refused, and no read or comparison failed). Note a resource can be reported under `notCompared` and the run still exit `0` — that happens when the only reason it was not compared is a `{{resolve:...}}` spelling cdkd never resolves (see the `2 (detection)` row). |
-| `0` (`--accept` / `--revert`) | The remediation run completed: it resolved every drift cleanly, or there was no drift to resolve. **Unlike the detection row, this does NOT mean every comparison completed** — the remediation modes keep their documented exit codes, so a run whose reads were refused or failed still exits `0` (issue [#2108](https://github.com/go-to-k/cdkd/issues/2108) scoped its `2` to detection-only mode deliberately; changing it would alter what a remediation run means). It says so in WORDS instead: since issue [#2208](https://github.com/go-to-k/cdkd/issues/2208), a remediation run that found no drift but could not compare everything prints `Comparison INCOMPLETE — nothing to accept/revert, and that is NOT a clean bill of health`, names how many of the stack's resources were not compared and why, splits them into the ones cdkd is genuinely uncertain about (a failed read, a refused or unresolvable dynamic reference) and the ones it never drift-checks by design (`Custom::*`, and types no provider reads back yet — reported without any uncertainty claim), and points at the detection-only run — which DOES report it as exit `2`. Such resources are never touched by `--accept` / `--revert` (both act on drifted resources only), so nothing is written on the strength of a comparison that did not happen. `--accept` likewise exits `0` when it deliberately REFUSED a secret-bearing property whose AWS-current value it could not identify (see "Secret dynamic references" above) — the refusal is warned about by name and the drift is still reported on the next run. **If you gate CI on "everything was actually compared", run `cdkd drift` without `--accept` / `--revert` and read its exit code, or read `--json`'s `notCompared[].cause`.** |
+| `0` (`--accept` / `--revert`) | The remediation run completed: it resolved every drift cleanly, or there was no drift to resolve. **Unlike the detection row, this does NOT mean every comparison completed** — the remediation modes keep their documented exit codes, so a run whose reads were refused or failed still exits `0` (the `2` exit is scoped to detection-only mode deliberately; changing it would alter what a remediation run means). It says so in WORDS instead: a remediation run that found no drift but could not compare everything prints `Comparison INCOMPLETE — nothing to accept/revert, and that is NOT a clean bill of health`, names how many of the stack's resources were not compared and why, splits them into the ones cdkd is genuinely uncertain about (a failed read, a refused or unresolvable dynamic reference) and the ones it never drift-checks by design (`Custom::*`, and types no provider reads back yet — reported without any uncertainty claim), and points at the detection-only run — which DOES report it as exit `2`. Such resources are never touched by `--accept` / `--revert` (both act on drifted resources only), so nothing is written on the strength of a comparison that did not happen. `--accept` likewise exits `0` when it deliberately REFUSED a secret-bearing property whose AWS-current value it could not identify (see "Secret dynamic references" above) — the refusal is warned about by name and the drift is still reported on the next run. **If you gate CI on "everything was actually compared", run `cdkd drift` without `--accept` / `--revert` and read its exit code, or read `--json`'s `notCompared[].cause`.** |
 | `1` | Drift detected on at least one resource on at least one stack (detection-only mode), OR the command crashed (no state found, AWS error, bad arguments). Both go through the default error handler — drift detection emits the rich human report before throwing, so the report is the only output for the drift case. Drift OUTRANKS a partial comparison: a run that both detects drift and leaves something uncompared exits `1`, not `2`. |
-| `2` (detection) | Nothing drifted, but at least one resource's comparison did not happen for a reason **you can act on**. Two causes produce it. (a) cdkd **deliberately REFUSED** to compare a resource: a dynamic reference its state records could not be attributed to a region, so its secret-bearing properties were not compared (issue [#2108](https://github.com/go-to-k/cdkd/issues/2108)). (b) the **read or comparison FAILED** for a resource — an SDK or Cloud Control readback that rejected (a least-privilege role, a throttle), or a comparison that threw on a provider-authored bag (issues [#2151](https://github.com/go-to-k/cdkd/issues/2151) / [#1945](https://github.com/go-to-k/cdkd/issues/1945)). Before #2151 that second cause did not produce an exit code at all: it aborted the whole run with exit `1`, leaving every other resource in the stack unchecked while reporting the same code that means "drift detected", so a CI gate could not tell the two apart. Reporting that run as `0` would be a clean bill of health for a comparison that did not happen — and before #2108 the same population exited `1`, because cdkd resolved the reference in the wrong region and reported phantom drift, so a non-zero exit is what CI consumers already had. **This is narrower than `notCompared`, deliberately.** A resource whose only uncompared properties hold a surviving `{{resolve:ssm-secure:...}}` token is listed under `notCompared` and in the report's not-fully-compared block, but does **not** produce this exit code: cdkd has never resolved that spelling, so the condition is permanent and unclearable by any action you can take, and exiting non-zero for it would fail such a stack's CI forever over something unrelated. **A type Cloud Control has no READ handler for is excluded on the same grounds** and reports `drift unknown` instead, whether the fallback signals it by returning nothing or by throwing `UnsupportedActionException`. Fix a refusal by spelling the reference as a full ARN, which names its region; fix a read failure by granting the missing permission or re-running. Use `--json` and read each `notCompared` entry's `cause` to tell them apart per resource. |
-| `2` (`--revert`) | `--revert` finished but one or more resources did not revert (`PartialFailureError`): a `provider.update` call failed, threw `ResourceUpdateNotSupportedError`, or — counted and reported separately, since it never reached `provider.update` at all — cdkd could not re-resolve the dynamic reference(s) the resource's state records (grant the caller `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference). That same counter also covers a resource `--revert` REFUSED because its recorded baseline holds only the redaction mask and AWS reports nothing to preserve there (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274) — force that custom resource to update and re-deploy, so its handler supplies the value again; an ordinary re-deploy leaves it unchanged). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
+| `2` (detection) | Nothing drifted, but at least one resource's comparison did not happen for a reason **you can act on**. Two causes produce it. (a) cdkd **deliberately REFUSED** to compare a resource: a dynamic reference its state records could not be attributed to a region, so its secret-bearing properties were not compared. (b) the **read or comparison FAILED** for a resource — an SDK or Cloud Control readback that rejected (a least-privilege role, a throttle), or a comparison that threw on a provider-authored bag. Previously that second cause did not produce an exit code at all: it aborted the whole run with exit `1`, leaving every other resource in the stack unchecked while reporting the same code that means "drift detected", so a CI gate could not tell the two apart. Reporting that run as `0` would be a clean bill of health for a comparison that did not happen — and the refused population likewise used to exit `1`, because cdkd resolved the reference in the wrong region and reported phantom drift, so a non-zero exit is what CI consumers already had. **This is narrower than `notCompared`, deliberately.** A resource whose only uncompared properties hold a surviving `{{resolve:ssm-secure:...}}` token is listed under `notCompared` and in the report's not-fully-compared block, but does **not** produce this exit code: cdkd has never resolved that spelling, so the condition is permanent and unclearable by any action you can take, and exiting non-zero for it would fail such a stack's CI forever over something unrelated. **A type Cloud Control has no READ handler for is excluded on the same grounds** and reports `drift unknown` instead, whether the fallback signals it by returning nothing or by throwing `UnsupportedActionException`. Fix a refusal by spelling the reference as a full ARN, which names its region; fix a read failure by granting the missing permission or re-running. Use `--json` and read each `notCompared` entry's `cause` to tell them apart per resource. |
+| `2` (`--revert`) | `--revert` finished but one or more resources did not revert (`PartialFailureError`): a `provider.update` call failed, threw `ResourceUpdateNotSupportedError`, or — counted and reported separately, since it never reached `provider.update` at all — cdkd could not re-resolve the dynamic reference(s) the resource's state records (grant the caller `secretsmanager:GetSecretValue` / `ssm:GetParameter`, or fix the reference). That same counter also covers a resource `--revert` REFUSED because its recorded baseline holds only the redaction mask and AWS reports nothing to preserve there (force that custom resource to update and re-deploy, so its handler supplies the value again; an ordinary re-deploy leaves it unchanged). Successful resources are now in sync; re-run `cdkd drift <stack>` to see what's left, then either `cdkd drift <stack> --revert` (for the recoverable failures) or `cdkd deploy <stack> --replace` (for the update-not-supported ones). |
 
 The command produces four terminal states per resource:
 
@@ -2452,22 +2418,19 @@ The command produces four terminal states per resource:
     a re-run cannot clear it, which is why it alone does not affect the exit
     code.
   - `readFailed` — the read or the comparison THREW, so **none** of that
-    resource's properties were compared (issues
-    [#2151](https://github.com/go-to-k/cdkd/issues/2151) /
-    [#1945](https://github.com/go-to-k/cdkd/issues/1945)). Every OTHER resource
-    in the stack is still compared and reported; before #2151 one such throw
+    resource's properties were compared. Every OTHER resource
+    in the stack is still compared and reported; previously one such throw
     aborted the entire run.
 - **drift unknown** — the provider does not implement the optional
   `readCurrentState` method yet. Reported as `? <logicalId> (<type>)`
   in a separate block at the bottom of each stack's report, and — like
   everything else nothing was read for — **excluded from the summary's
-  "checked" count**, which reports it separately as `N unsupported`
-  (issue [#2141](https://github.com/go-to-k/cdkd/issues/2141)). A stack whose
+  "checked" count**, which reports it separately as `N unsupported`. A stack whose
   only resource is unsupported prints
   `⚠ ... no drift detected, but NOTHING was compared — 0 of 1 resource checked
   (1 unsupported)` — the glyph follows "was everything actually compared", so a
-  stack in which nothing was compared does not get the reassuring `✓` (issue
-  [#2154](https://github.com/go-to-k/cdkd/issues/2154)). The **exit code is
+  stack in which nothing was compared does not get the reassuring
+  `✓`. The **exit code is
   unchanged at `0`**: only the claim printed about coverage changed. The same
   applies to a stack whose resources are all Custom Resources (`skipped`).
 
@@ -2484,7 +2447,7 @@ attempted for. In the `N of M` spelling the unsupported total is reported
 outside the parenthetical (`1 of 3 resources fully checked (2 only partially
 compared), 1 unsupported`), so the bracketed figure accounts for exactly the
 gap between the two numbers rather than reading as a third share of `M`. A **clean** verdict never means anything but "compared
-and matched" (issue [#2135](https://github.com/go-to-k/cdkd/issues/2135)).
+and matched".
 
 Two different things land in that bucket, and only one of them changes the exit
 code:
@@ -2498,17 +2461,15 @@ code:
   left out of the exit code.
 
 The `--json` payload does not distinguish them today; if you need to, key on
-whether the run exited `2`. Issue
-[#2135](https://github.com/go-to-k/cdkd/issues/2135) tracks giving the two
-causes a single, explicit representation.
+whether the run exited `2`. Giving the two
+causes a single, explicit representation is planned.
 
 **Secret dynamic references** (`{{resolve:secretsmanager:...}}`, and
 `{{resolve:ssm:...}}` naming a `SecureString` parameter) are compared
 like-for-like. cdkd state stores the unresolved expression, never the
 plaintext, so `cdkd drift` re-resolves the baseline in memory before
 comparing it against the AWS-current snapshot — a comparison, and nothing
-else: the resolved value is never written to state (issue
-[#1914](https://github.com/go-to-k/cdkd/issues/1914)).
+else: the resolved value is never written to state.
 
 This means `cdkd drift` needs **read access to the referenced secrets**:
 `secretsmanager:GetSecretValue` for a `secretsmanager` reference, and
@@ -2549,8 +2510,7 @@ deliberately narrow:
   receives the concrete secret rather than the literal `{{resolve:...}}`
   token.
 
-**A REDACTED baseline is a different shape** (issue
-[#2274](https://github.com/go-to-k/cdkd/issues/2274)). Where a `NoEcho`
+**A REDACTED baseline is a different shape**. Where a `NoEcho`
 custom-resource `Data` value was resolved into a property, cdkd state holds the
 literal mask `***` rather than an expression — the value was generated by the
 handler, so there is nothing to re-resolve. The three arms above therefore
@@ -2631,7 +2591,7 @@ The following SDK Providers ship with first-class `readCurrentState`
 (no CC API round-trip):
 - `AWS::Lambda::Function`, `AWS::S3::Bucket`, `AWS::DynamoDB::Table`,
   `AWS::IAM::Role`, `AWS::SQS::Queue`, `AWS::SNS::Topic`,
-  `AWS::Logs::LogGroup` (PR D, batch 0)
+  `AWS::Logs::LogGroup`
 - `AWS::CloudFront::CloudFrontOriginAccessIdentity`,
   `AWS::Events::EventBus`, `AWS::Events::Rule`,
   `AWS::SSM::Parameter`, `AWS::SecretsManager::Secret`,
@@ -2640,7 +2600,7 @@ The following SDK Providers ship with first-class `readCurrentState`
   `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`,
   `AWS::RDS::DBSubnetGroup`, `AWS::KMS::Key`, `AWS::KMS::Alias`,
   `AWS::ApiGateway::Account`, `AWS::ApiGateway::Method`,
-  `AWS::ApiGatewayV2::Api`, `AWS::Cognito::UserPool` (batch 1)
+  `AWS::ApiGatewayV2::Api`, `AWS::Cognito::UserPool`
 - `AWS::AppSync::GraphQLApi`, `AWS::AppSync::DataSource`,
   `AWS::AppSync::Resolver`, `AWS::AppSync::ApiKey`,
   `AWS::EFS::FileSystem`, `AWS::EFS::AccessPoint`, `AWS::EFS::MountTarget`,
@@ -2656,17 +2616,17 @@ The following SDK Providers ship with first-class `readCurrentState`
   `AWS::CodeBuild::Project`,
   `AWS::ServiceDiscovery::PrivateDnsNamespace`,
   `AWS::ServiceDiscovery::Service`,
-  `AWS::SNS::Subscription` (batch 2)
+  `AWS::SNS::Subscription`
 - `AWS::IAM::Policy`, `AWS::Lambda::Permission`,
   `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Resource`,
   `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`,
   `AWS::ApiGatewayV2::Stage`, `AWS::ApiGatewayV2::Integration`,
   `AWS::ApiGatewayV2::Route`, `AWS::ApiGatewayV2::Authorizer`
-  (PR G — sub-resource batch; receives `properties` so the parent
+  (the sub-resource batch; receives `properties` so the parent
   `RestApiId` / `ApiId` / `FunctionName` / `Roles[]` is available to
   issue the matching `Get*` call)
 - `AWS::ServiceDiscovery::HttpNamespace`,
-  `AWS::ServiceDiscovery::PublicDnsNamespace` (issue #1044)
+  `AWS::ServiceDiscovery::PublicDnsNamespace`
 - `AWS::CloudFront::OriginAccessControl` (SDK provider added to take the
   type off the Cloud Control polling path; the CFn and SDK
   `OriginAccessControlConfig` field names are identical, so the reverse
@@ -2694,8 +2654,8 @@ user tags are normalized to CFn's `[{Key, Value}]` shape (sorted by `Key`
 for stable comparison) and the result key is omitted entirely when AWS
 reports no user tags. IAM Role / User / Group inline-policy bodies are
 covered (paginated `List*Policies` + parallel `Get*Policy` round-trips
-with state-driven order reconciliation) since PR #175;
-see [src/types/resource.ts](../src/types/resource.ts) for the per-provider
+with state-driven order reconciliation);
+see [src/types/resource.ts](https://github.com/go-to-k/cdkd/blob/main/src/types/resource.ts) for the per-provider
 shape decisions.
 
 Still reporting `drift unknown` (deferred):
@@ -2735,8 +2695,7 @@ cdkd drift MyStack --json --accept --yes > report.json 2> progress.log
 ```
 
 Without `--json` nothing moves **on `cdkd drift`** — its human modes keep
-printing to stdout as before. Before issue
-[#2230](https://github.com/go-to-k/cdkd/issues/2230) these lines shared stdout
+printing to stdout as before. Previously these lines shared stdout
 with the payload, so a `--json --accept` run produced a document a parser
 rejected while looking correct on screen.
 
@@ -2744,14 +2703,12 @@ The same contract holds for **every `--json` surface**, not just `drift`:
 `cdkd events --json` (and its `--format json` alias) and the four
 `cdkd state {list,resources,show,info} --json` subcommands route their
 `--verbose` debug output and the `Assumed role ...` notice from
-`--role-arn` / `CDKD_ROLE_ARN` runs to **stderr** while `--json` is in effect
-(issue [#2280](https://github.com/go-to-k/cdkd/issues/2280)).
+`--role-arn` / `CDKD_ROLE_ARN` runs to **stderr** while `--json` is in effect.
 `cdkd diff --json` predates the mechanism and instead demotes the logger to
 `warn`, which suppresses rather than moves its info-level lines.
 
 **`cdkd list` is no longer in that list, because its reservation is no longer
-conditional**: since issue
-[#2410](https://github.com/go-to-k/cdkd/issues/2410) it reserves stdout in
+conditional**: it reserves stdout in
 EVERY mode, `--json` or not, along with `cdkd synth`, `cdkd local invoke` and
 `cdkd local invoke-agentcore` -- see
 [Output streams: when stdout is a payload](#output-streams-when-stdout-is-a-payload).
@@ -2813,14 +2770,11 @@ deliberately REFUSES to resolve — a dynamic reference a resource's state
 records, that resource's secret-bearing properties are not compared at
 all. The comparator skips those leaves, so nothing is reported as
 drifted, which on its own is indistinguishable from "compared and
-matched". Since issues
-[#2151](https://github.com/go-to-k/cdkd/issues/2151) /
-[#1945](https://github.com/go-to-k/cdkd/issues/1945) the array also carries a
+matched". The array also carries a
 resource whose read or comparison THREW, for which **nothing at all** was
 compared.
 
-Such a resource appears under `notCompared` and **not** under `clean`
-(issue [#2135](https://github.com/go-to-k/cdkd/issues/2135)): `clean`
+Such a resource appears under `notCompared` and **not** under `clean`: `clean`
 means compared-and-matched and nothing else, so its entries always carry
 `referencesUnresolved: false`. A `drifted` entry can carry
 `referencesUnresolved: true` — the changes it reports are real, but they
@@ -2835,7 +2789,7 @@ Each `notCompared` entry carries two keys of its own:
   clearable cause but cannot say which resource.
 - `referencesUnresolved` — `true` for the two reference-related causes and
   `false` for `readFailed`, whose references are beside the point. It was the
-  constant `true` before #2151 widened the array's population, so **a consumer
+  constant `true` before `readFailed` entries widened the array's population, so **a consumer
   written as `notCompared.filter(n => n.referencesUnresolved)` silently drops
   `readFailed` entries** where it previously matched everything in the array.
   Gate on `notCompared.length` (unchanged, and the documented predicate) or on
@@ -2938,8 +2892,8 @@ matches the intent:
   snapshot — and on that baseline cdkd cannot tell an AWS-authored value
   from an out-of-band change, because neither appears in the template.
 
-  So on that baseline the revert **leaves every untemplated value alone**
-  (issue [#1626](https://github.com/go-to-k/cdkd/issues/1626)): cdkd merges
+  So on that baseline the revert **leaves every untemplated value
+  alone**: cdkd merges
   those paths into the bag it actually SENDS, instead of overlaying the
   drifted subtree wholesale. Merging on the desired side (rather than trimming
   `previousProperties`) is what makes this hold for both provider shapes — one
@@ -2994,14 +2948,13 @@ never produced a `PropertyDrift` for them.
 
 `cdkd destroy` (and `cdkd state destroy`) matches CloudFormation's
 fail-and-protect behavior for the two resource types whose delete API
-refuses by default while they still hold data (issue
-[#1340](https://github.com/go-to-k/cdkd/issues/1340)):
+refuses by default while they still hold data:
 
 | Resource type | Without an opt-in | With the opt-in |
 | --- | --- | --- |
 | `AWS::S3::Bucket` | A non-empty bucket fails the destroy with an actionable "bucket is not empty" error (CloudFormation: `DELETE_FAILED`; Terraform: requires `force_destroy`). The bucket and every object survive. | CDK `autoDeleteObjects: true` (the `aws-cdk:auto-delete-objects` tag) — cdkd auto-empties all object versions + delete markers before `DeleteBucket`, which also absorbs the race where objects (e.g. ALB access logs) land between the auto-delete custom resource's cleanup and the bucket deletion. |
 | `AWS::ECR::Repository` | A repository that still contains images fails the destroy with an actionable "still contains images" error (CloudFormation: `DELETE_FAILED` unless `EmptyOnDelete: true`; Terraform: requires `force_delete`). The repository and images survive. | CDK `emptyOnDelete: true` (`EmptyOnDelete: true` in the template) or the legacy `autoDeleteImages` (`aws-cdk:auto-delete-images` tag) — cdkd deletes with `force: true`. |
-| `AWS::S3Express::DirectoryBucket` | A non-empty directory bucket fails the destroy with an actionable "is not empty" error (CloudFormation: `DELETE_FAILED`, live-A/B-verified 2026-08-03; issue [#1344](https://github.com/go-to-k/cdkd/issues/1344)). The bucket and objects survive. | Add the `aws-cdk:auto-delete-objects` tag with value `true` to the bucket's `Tags` (a handled property since issue [#609](https://github.com/go-to-k/cdkd/issues/609); CDK has no `autoDeleteObjects` sugar for directory buckets, so declare the tag explicitly on the L1). The opted-in auto-empty absorbs concurrent-write races with the same bounded empty-retry loop as the standard bucket. Alternatively empty the bucket manually (`aws s3 rm s3://<bucket> --recursive` — directory buckets have no versioning) and destroy again. `--force-stateful-recreation` replacement deletes are authorized as for the other types. |
+| `AWS::S3Express::DirectoryBucket` | A non-empty directory bucket fails the destroy with an actionable "is not empty" error (CloudFormation: `DELETE_FAILED`, live-A/B-verified 2026-08-03). The bucket and objects survive. | Add the `aws-cdk:auto-delete-objects` tag with value `true` to the bucket's `Tags` (a handled property; CDK has no `autoDeleteObjects` sugar for directory buckets, so declare the tag explicitly on the L1). The opted-in auto-empty absorbs concurrent-write races with the same bounded empty-retry loop as the standard bucket. Alternatively empty the bucket manually (`aws s3 rm s3://<bucket> --recursive` — directory buckets have no versioning) and destroy again. `--force-stateful-recreation` replacement deletes are authorized as for the other types. |
 
 To destroy anyway without redeploying, empty the data first (`aws s3 rm
 s3://<bucket> --recursive` — for versioned buckets delete all object
@@ -3023,11 +2976,8 @@ identical behavior for those types is parity, not a divergence.
 CloudFormation creates a **final snapshot before deleting** a resource whose
 `DeletionPolicy` is `Snapshot` — and the CDK RDS L2 (`DatabaseInstance` /
 `DatabaseCluster`) defaults `removalPolicy` to `SNAPSHOT`, so plain CDK
-database stacks rely on it. cdkd matches this on every delete path (issues
-[#1352](https://github.com/go-to-k/cdkd/issues/1352) /
-[#1353](https://github.com/go-to-k/cdkd/issues/1353) /
-[#1354](https://github.com/go-to-k/cdkd/issues/1354) /
-[#1358](https://github.com/go-to-k/cdkd/issues/1358)): `cdkd destroy`,
+database stacks rely on it. cdkd matches this on every delete
+path: `cdkd destroy`,
 `cdkd state destroy`, the `cdkd deploy` DELETE of a resource removed from
 the template, the rollback of a CREATE (automatic after a failed deploy, or
 `cdkd rollback`), and — for `UpdateReplacePolicy: Snapshot` — the deploy
@@ -3041,8 +2991,8 @@ engine's replacement / recreate deletes of the OLD resource.
 | `AWS::DocDB::DBCluster` | `DeleteDBCluster(...FinalDBSnapshotIdentifier)` (DocDB SDK) |
 | `AWS::ElastiCache::CacheCluster` | `DeleteCacheCluster(FinalSnapshotIdentifier=<generated>)` — Redis engine only; a Memcached cluster under `Snapshot` surfaces AWS's rejection, matching CFn's `DELETE_FAILED` |
 | `AWS::EC2::Volume` | Pre-delete `CreateSnapshot` (tagged `cdkd:final-snapshot-of: <volumeId>`), **waited to `completed`**, then the normal delete — the type is Cloud-Control-routed and `DeleteVolume` has no snapshot parameter. Idempotent: a destroy re-run reuses the tagged snapshot instead of creating a second one. |
-| `AWS::Redshift::Cluster` | Pre-delete `CreateClusterSnapshot` (`<clusterId>-final-<ts>`), **waited to `available`**, then a bounded wait for the CLUSTER itself to settle (the fresh snapshot leaves it busy and the delete would otherwise 400 with "There is an operation running on the Cluster"), then the CC-routed delete (issue #1353). |
-| `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the CC-routed delete (issue #1353). The snapshot source depends on cluster mode: a cluster-mode-ENABLED (sharded) group is snapshotted by `ReplicationGroupId`, while the cluster-mode-DISABLED default must name its PRIMARY member cache cluster instead (AWS rejects the group form with "Please specify a cache cluster instead") — cdkd resolves this automatically. Redis only; Memcached / snapshot-incapable node types surface AWS's rejection, matching CFn's `DELETE_FAILED`. |
+| `AWS::Redshift::Cluster` | Pre-delete `CreateClusterSnapshot` (`<clusterId>-final-<ts>`), **waited to `available`**, then a bounded wait for the CLUSTER itself to settle (the fresh snapshot leaves it busy and the delete would otherwise 400 with "There is an operation running on the Cluster"), then the CC-routed delete. |
+| `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the CC-routed delete. The snapshot source depends on cluster mode: a cluster-mode-ENABLED (sharded) group is snapshotted by `ReplicationGroupId`, while the cluster-mode-DISABLED default must name its PRIMARY member cache cluster instead (AWS rejects the group form with "Please specify a cache cluster instead") — cdkd resolves this automatically. Redis only; Memcached / snapshot-incapable node types surface AWS's rejection, matching CFn's `DELETE_FAILED`. |
 
 Generated snapshot identifiers are deterministic and logged:
 `<physicalId>-final-<utcTimestamp>` (sanitized to the snapshot-identifier
@@ -3061,12 +3011,12 @@ Notes:
   redeploy records the attribute (`cdkd destroy` also falls back to the
   synth template's `DeletionPolicy` for pre-v5 state).
 - A Cloud-Control-routed resource of an atomic-parameter type (state
-  records `provisionedBy: cc-api` — the #614 silent-drop routing) is
+  records `provisionedBy: cc-api` — the silent-drop auto-routing) is
   **refused**: Cloud Control's `DeleteResource` has no final-snapshot
   parameter, so cdkd cannot honor the policy on that route. Snapshot
   manually, then re-run with `--skip-final-snapshot`.
 - `UpdateReplacePolicy: Snapshot` is honored on the deploy engine's
-  replacement / recreate delete sites (issue #1354) with the same mechanism
+  replacement / recreate delete sites with the same mechanism
   matrix; the `--force-stateful-recreation` stateful guard still applies
   first where the replacement is data-losing. Failure handling differs by
   site, deliberately: the delete-first / recreate paths surface a snapshot
@@ -3082,17 +3032,16 @@ Notes:
   cdkd creates the final snapshot and then deletes, using the same mechanism
   matrix as the table above, and REFUSES (counting the op as a rollback
   failure, so the journal is kept for a re-run) any shape it cannot snapshot
-  — pass `--skip-final-snapshot` to `cdkd rollback` to delete without it
-  (issue #1358). Before #1358 such a resource was ORPHANED — dropped from
+  — pass `--skip-final-snapshot` to `cdkd rollback` to delete without
+  it. Previously such a resource was ORPHANED — dropped from
   state and left running in AWS — which silently handed you an untracked,
   billing resource. `DeletionPolicy: Retain` still orphans (that is what the
   policy asks for).
 - `cdkd rollback --revert-failed`'s delete of a resource whose CREATE FAILED
-  mid-flight applies the SAME policy matrix (issue
-  [#1362](https://github.com/go-to-k/cdkd/issues/1362)): `Retain` leaves it in
+  mid-flight applies the SAME policy matrix: `Retain` leaves it in
   AWS, `Snapshot` snapshots then deletes (refusing what it cannot snapshot),
-  `RetainExceptOnCreate` / `Delete` / absent delete plainly. That branch read
-  no policy at all before #1362. It only engages when AWS actually provisioned
+  `RetainExceptOnCreate` / `Delete` / absent delete plainly. That branch
+  previously read no policy at all. It only engages when AWS actually provisioned
   the resource — the action requires a recorded physical id AND a matching
   state record — so the policy is never applied to a resource that never
   existed. A refusal here is recoverable rather than final: the op stays in
@@ -3103,8 +3052,7 @@ Notes:
 - On a ROLLBACK's delete-of-the-NEW-resource (reversing a replacement, i.e.
   `UpdateReplacePolicy`), only the atomic SDK-routed types get a final
   snapshot — the other shapes deliberately keep the plain delete (that
-  delete is load-bearing for same-name re-creation; recorded on issue
-  #1354).
+  delete is load-bearing for same-name re-creation).
 - Snapshot reuse across a re-run resumes only an IN-FLIGHT snapshot for the
   name-keyed APIs (Redshift / ElastiCache): their identifiers are
   user-chosen and reusable, so adopting an already-`available` snapshot
@@ -3141,13 +3089,13 @@ types:
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | attribute `deletion_protection.enabled` | `ModifyLoadBalancerAttributes([{Key: 'deletion_protection.enabled', Value: 'false'}])` |
 | `AWS::Cognito::UserPool` | `DeletionProtection` (`ACTIVE` / `INACTIVE`) | `UpdateUserPool(DeletionProtection='INACTIVE')` |
 | `AWS::AutoScaling::AutoScalingGroup` | `DeletionProtection` (`none` / `prevent-force-deletion` / `prevent-all-deletion`) | `UpdateAutoScalingGroup(DeletionProtection='none')` followed by `DeleteAutoScalingGroup(ForceDelete=true)` so AWS terminates running instances as part of the delete |
-| `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` — the generic CC-routed protection flip (issue #1312); more CC-routed types with a top-level protection property can join the registry in `src/provisioning/cc-protection-properties.ts` once live-verified (remaining candidates tracked in issue #1315) |
-| `AWS::NeptuneGraph::Graph` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1314) |
-| `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1314) |
-| `AWS::VerifiedPermissions::PolicyStore` | `DeletionProtection` (`{Mode: ENABLED\|DISABLED}`) | Same generic CC patch flip with `value: {Mode: DISABLED}` then `DeleteResource` (issue #1314) |
-| `AWS::EKS::Cluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1315) |
-| `AWS::RDS::GlobalCluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1315) |
-| `AWS::DocDB::GlobalCluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` (issue #1315) |
+| `AWS::DSQL::Cluster` | `DeletionProtectionEnabled` | Cloud Control `UpdateResource` patch (`[{op: add, path: /DeletionProtectionEnabled, value: false}]`), waited to completion, then `DeleteResource` — the generic CC-routed protection flip; more CC-routed types with a top-level protection property can join the registry in `src/provisioning/cc-protection-properties.ts` once live-verified |
+| `AWS::NeptuneGraph::Graph` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
+| `AWS::SMSVOICE::ProtectConfiguration` | `DeletionProtectionEnabled` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
+| `AWS::VerifiedPermissions::PolicyStore` | `DeletionProtection` (`{Mode: ENABLED\|DISABLED}`) | Same generic CC patch flip with `value: {Mode: DISABLED}` then `DeleteResource` |
+| `AWS::EKS::Cluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
+| `AWS::RDS::GlobalCluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
+| `AWS::DocDB::GlobalCluster` | `DeletionProtection` | Same generic CC patch flip (`value: false`) then `DeleteResource` |
 
 Behavior:
 
@@ -3164,7 +3112,7 @@ Behavior:
   flip — is **compensated**: cdkd re-enables
   `DeletionProtectionEnabled` before reporting the failure, so a
   destroy that did not happen does not leave a live table with
-  its guard stripped (issue #1978). Four limits are deliberate:
+  its guard stripped. Four limits are deliberate:
   it only ever restores a guard cdkd itself turned off in this
   run (a table whose protection was already disabled beforehand,
   or one whose pre-flip read failed, is left alone); it does not
@@ -3180,15 +3128,15 @@ Behavior:
   separate ERROR line naming the table plus the
   `aws dynamodb update-table --deletion-protection-enabled`
   command that restores it by hand. A re-enable that fails with
-  `ResourceNotFoundException` is reported at **warn** instead
-  (issue #2224), because cdkd cannot tell which case it is:
+  `ResourceNotFoundException` is reported at **warn**
+  instead, because cdkd cannot tell which case it is:
   DynamoDB returns that error both for a table that is gone and
   for one whose status is merely not `ACTIVE`. So the line drops
   the claim that the table is LIVE — which would be false in the
   first case — while staying visible, and names a
   `describe-table` check before the restore command. Every other
   re-enable failure keeps the ERROR line.
-- The compensation survives a long retry sequence (issue #2211).
+- The compensation survives a long retry sequence.
   It latches per table for the duration of the destroy, and that
   latch's reuse window is **sliding** — every re-entry restarts
   it — so what is bounded is idle time since the last attempt
@@ -3209,7 +3157,7 @@ Behavior:
 - A **terminal** delete failure releases the latch once the
   compensation above has run — UNLESS that compensating re-enable
   itself failed, in which case the latch is kept so a later delete
-  can retry the re-enable cdkd still owes (issue #2244). Retention
+  can retry the re-enable cdkd still owes. Retention
   exists so a re-entered delete keeps the same record, and only a
   retryable failure is re-entered; holding it past a terminal one
   left `flippedOffByThisRun` true for a full sliding window after
@@ -3289,14 +3237,12 @@ its own handler yet, which is not the same as whether a stack is "running":
   lock to name.
 
 CI cancellation delivers
-SIGTERM rather than Ctrl-C, and it is routed through the identical path (issue
-[#1342](https://github.com/go-to-k/cdkd/issues/1342)).
+SIGTERM rather than Ctrl-C, and it is routed through the identical path.
 
 Under `--all`, the interrupt also stops the run **before the next stack
 starts** — including a signal that lands between two stacks, or while the
 interrupted stack was finishing its own teardown, which are windows the
-per-stack teardown cannot observe at all (issue
-[#2117](https://github.com/go-to-k/cdkd/issues/2117)). Previously a Ctrl-C
+per-stack teardown cannot observe at all. Previously a Ctrl-C
 there was either swallowed, letting `--all` delete the next stack, or taken by
 a last-resort force-quit that exited 130 with the lock stranded.
 
@@ -3320,7 +3266,7 @@ consults stdin at all.
 ### The PER-STACK destroy prompt is interactive-only too
 
 **Upgrade note — this is a behaviour change, and it adds an exit-code
-contract** (issue [#2259](https://github.com/go-to-k/cdkd/issues/2259)). The
+contract**. The
 per-stack confirmation — the `Are you sure you want to destroy stack "X" ...`
 prompt that `cdkd destroy <stack>`, `cdkd destroy --all` and
 `cdkd state destroy <stack>` all share — now follows the same rule as the batch
@@ -3363,11 +3309,10 @@ is why `--purge-events` below is skipped on an interrupted run.
 
 ## Every other mutating confirmation prompt is interactive-only too
 
-**Upgrade note — this is a behaviour change on nine more prompts** (issue
-[#2275](https://github.com/go-to-k/cdkd/issues/2275)). `rl.question` never
+**Upgrade note — this is a behaviour change on nine more prompts**. `rl.question` never
 settles once stdin is at EOF, and EOF delivers no signal, so a command that
 prompted without a non-TTY guard **hung until its own timeout** in CI rather
-than failing. Issue #2259 closed that for the destroy prompts above; these nine
+than failing. That was closed first for the destroy prompts above; these nine
 were the rest of the class:
 
 | Command | Prompt | Flag that avoids it |
@@ -3381,7 +3326,7 @@ were the rest of the class:
 | `cdkd drift --accept` / `--revert` | `Update cdkd state...?` / `Push cdkd state values back into AWS...?` | `-y` / `--yes` |
 | `cdkd import --migrate-from-cloudformation`, `cdkd migrate --retire-cfn-stack` | `Set DeletionPolicy=Retain ... then delete the stack?` | `-y` / `--yes` |
 | `cdkd state migrate` | `Copy N object(s) from <bucket> -> <bucket>...?` | `-y` / `--yes` |
-| `cdkd events prune` (the tenth, issue [#2454](https://github.com/go-to-k/cdkd/issues/2454)) | `Prune deployment-event history for <stack> (<region>): <scope>?` | `-y` / `--yes` |
+| `cdkd events prune` (the tenth) | `Prune deployment-event history for <stack> (<region>): <scope>?` | `-y` / `--yes` |
 
 On a non-TTY stdin each now refuses **before** creating the prompt, throwing
 `CdkdError` with the code `NON_INTERACTIVE_CONFIRM` and exiting **1**. The
@@ -3432,14 +3377,13 @@ deploy is recoverable.
 
 All TEN now share ONE implementation — `confirmOrRefuse` in
 `src/cli/commands/confirm-prompt.ts` — nine folded here and `cdkd events
-prune` folded by issue
-[#2454](https://github.com/go-to-k/cdkd/issues/2454) below, so the guard
+prune` folded last (see below), so the guard
 cannot be missed by the next prompt added. Each site keeps its own prompt wording and its own refusal
 message; nothing about the interactive experience changed, including the two
 prompts that render `(y/N): ` where the other seven render ` [y/N] `.
 
-**`cdkd events prune` was the tenth, and it now follows the same contract**
-(issue [#2454](https://github.com/go-to-k/cdkd/issues/2454)). It had carried a
+**`cdkd events prune` was the tenth, and it now follows the same
+contract**. It had carried a
 non-TTY guard since it shipped, so it never hung and it pruned nothing without
 a TTY — but the guard sat at its CALLER rather than in a helper, and it refused
 by logging a line and returning, which exits **0**. A CI job branching on exit
@@ -3455,10 +3399,9 @@ case, so the remedy is the same as for the other nine — pass `-y` / `--yes`.
 ## `--purge-events`: also delete deployment-event history on destroy
 
 By default `cdkd destroy` removes `state.json` / `lock.json` but **keeps** the
-stack's deployment-event history (the issue #808 `deployments/` store) as
+stack's deployment-event history (the `deployments/` store) as
 post-mortem context — so the state bucket does not return fully empty after a
-teardown. `cdkd destroy <stack> --purge-events` (issue
-[#885](https://github.com/go-to-k/cdkd/issues/885)) opts into purging that
+teardown. `cdkd destroy <stack> --purge-events` opts into purging that
 history too, so the bucket returns to empty:
 
 ```bash
@@ -3549,14 +3492,13 @@ rotation invalidates the stale value; a redeploy rewrites the record with the
 expression). Exit codes: 0 (scrubbed / nothing to do), 1 (`--fail` found
 plaintext: with `--dry-run` any plaintext at all, and on a REAL run a leak
 scrub cannot rewrite — a state KEY holding a secret, which needs an
-`Export.Name` change plus a redeploy, issue
-[#1919](https://github.com/go-to-k/cdkd/issues/1919)), 2 (error).
+`Export.Name` change plus a redeploy), 2 (error).
 
 **A cross-stack read that cannot be resolved is now a REFUSAL, not a silent
-pass** (issue [#2133](https://github.com/go-to-k/cdkd/issues/2133)). `scrub`
+pass**. `scrub`
 learns which plaintexts to hunt for by re-resolving the template, so a leaf that
 arrives through `Fn::ImportValue` / `Fn::GetStackOutput` yields a needle only if
-the producer's state can actually be read. Until #2133 it could not be: no
+the producer's state can actually be read. Previously it could not be: no
 resolve context carried a state backend, the read threw, and the throw was
 absorbed by the per-item best-effort handler that exists so a partially
 resolvable template still gets scrubbed for everything else. With no needle
@@ -3575,8 +3517,7 @@ is not taken: the pre-pass walks `Fn::If` the way the resolver does, selected
 branch only, and neither does a `Fn::ImportValue` inside an output that this
 run's conditions SUPPRESS -- such an output wrote no state key, so there is
 nothing behind it to protect. The same branch selection now decides whether the
-PRODUCER's export counts as secret-bearing at all (issue
-[go-to-k/cdkd#2150](https://github.com/go-to-k/cdkd/issues/2150)): that test
+PRODUCER's export counts as secret-bearing at all: that test
 used to scan the whole output node as text, so an `Fn::If` whose UNTAKEN arm
 held a `{{resolve:...}}` expression made the export look secret-bearing while
 the deployed value was the plain branch -- and the refusal below then fired over
@@ -3617,7 +3558,7 @@ multi-stack app that imports anything. That half is taken from the app's
 TEMPLATES, and the refusal fires only when they say the value carries a secret:
 either the producer declares that export from a `{{resolve:...}}` expression, or
 the producer RE-EXPORTS a value that a stack further up the chain declares from
-one (issue [go-to-k/cdkd#2146](https://github.com/go-to-k/cdkd/issues/2146)).
+one.
 Both arms read the export through the SAME `Fn::If` branch selection described
 above, so an expression sitting only in a branch this run does not select
 answers neither of them -- and the residual is stated rather than implied: a
@@ -3659,8 +3600,8 @@ expression in the consumer. `--dry-run` writes nothing, so the producer is never
 rewritten -- a dry run over a not-yet-scrubbed producer is exactly where this
 refusal is expected.
 
-**An ASSEMBLED secret reference is handed to the resolver rather than refused**
-(issue [go-to-k/cdkd#2157](https://github.com/go-to-k/cdkd/issues/2157)). A
+**An ASSEMBLED secret reference is handed to the resolver rather than
+refused**. A
 reference the intrinsics build out of parts -- an `Fn::Sub` placeholder inside
 it, an `Fn::Join` that splits it -- does not exist as a complete expression
 until it is resolved, so `scrub`'s region pre-pass cannot classify it and hands
@@ -3670,8 +3611,7 @@ outright (exit 2, no bypass flag) whenever the stack also had a foreign producer
 region on record, which made the whole stack unscrubbable over a reference cdkd
 can now resolve correctly.
 
-Known residual, tracked by issue
-[go-to-k/cdkd#2166](https://github.com/go-to-k/cdkd/issues/2166): if the
+Known residual: if the
 downstream lookup then FAILS, the stack can still be summarised as CLEAN. Two
 shapes reach it and they are not equally quiet -- a region that refuses the read
 (a denied `GetSecretValue`, a deleted secret) is reported only at
@@ -3679,8 +3619,8 @@ shapes reach it and they are not equally quiet -- a region that refuses the read
 `--parameters`) does print a `keeping placeholder` warning at default verbosity.
 Neither stops the summary line.
 The COMPLETE-token spelling of the first is loud
-(`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`, exit 2), so the two disagree until that
-issue lands. Run `cdkd scrub --verbose` when a stack you expect findings from
+(`SCRUB_CROSS_REGION_SECRET_UNRESOLVED`, exit 2), so the two disagree for
+now. Run `cdkd scrub --verbose` when a stack you expect findings from
 reports clean.
 
 **A read cdkd declines BY DESIGN is a finding, not a refusal.** The
@@ -3698,8 +3638,7 @@ refuse the stack (exit 2) with the resolver's own message, and a re-run after
 the fix scrubs it. They are reachable here whenever the reference's export name
 is built by an `Fn::Sub` over one of them.
 
-**SSM parameters are redacted by TYPE, not by spelling** (issue
-[#1901](https://github.com/go-to-k/cdkd/issues/1901)). The plain
+**SSM parameters are redacted by TYPE, not by spelling**. The plain
 `{{resolve:ssm:...}}` form resolves with `WithDecryption`, so it yields a real
 secret whenever the parameter is a `SecureString` — the same disclosure class
 as `{{resolve:secretsmanager:...}}`. cdkd reads the parameter's `Type` off the
@@ -3725,13 +3664,11 @@ which is keyed by the resolved value, so both sites persisted whichever
 expression was recorded last and the stack reported a spurious UPDATE on every
 deploy. No plaintext was ever exposed; the wrong EXPRESSION was stored. cdkd
 now redacts by POSITION as well as by value: each leaf is matched against the
-UNRESOLVED template at the same path, so it keeps its own expression (issues
-[#1904](https://github.com/go-to-k/cdkd/issues/1904) /
-[#1910](https://github.com/go-to-k/cdkd/issues/1910)). Where the template leaf
+UNRESOLVED template at the same path, so it keeps its own
+expression. Where the template leaf
 is an intrinsic (`Fn::Join` / `Fn::Sub` — what CDK emits whenever the secret's
 ARN is a `Ref`, so the common case) the reference is identified by the shape of
-that intrinsic instead
-([#1916](https://github.com/go-to-k/cdkd/issues/1916)).
+that intrinsic instead.
 
 A narrow residual remains, and it degrades to the old behavior rather than to
 anything worse: when the intrinsic's literal parts cannot tell the two
@@ -3741,8 +3678,8 @@ applies to a pair of `{{resolve:ssm:...}}` references whose parameter `Type`
 AWS did not report. If you hit a spurious UPDATE on a resource holding two
 spellings of one secret, make the differing part a literal in the template.
 
-**Stack OUTPUTS are scrubbed too, including an output you have since DELETED**
-(issue [#2005](https://github.com/go-to-k/cdkd/issues/2005)). A stored output
+**Stack OUTPUTS are scrubbed too, including an output you have since
+DELETED**. A stored output
 key today's template can still name — a declared output, or an `Export.Name`
 alias this run can fully resolve — is redacted by POSITION against that
 template, like any resource property. A key the template can no longer name is
@@ -3797,12 +3734,12 @@ ships a literal `{{resolve:...}}` token into a CONSUMER stack's AWS call:
   is not repaired by `scrub` either — a redeploy rewrites it.
 
 Until this shipped, such a record was correctly WITHHELD from `cdkd diff`'s
-display ([#1948](https://github.com/go-to-k/cdkd/issues/1948)) and not
+display and not
 repairable; the diff-side refusal is unchanged, since it still cannot decide
 from a stored string alone whether a value is a plaintext.
 
 **Secrets inside a LIST are redacted too, including on a resource that did not
-change** (issue [#1915](https://github.com/go-to-k/cdkd/issues/1915)). A
+change**. A
 reference nested in an array — an ECS task definition's
 `ContainerDefinitions[].Environment[]` is the usual shape — used to keep its
 resolved plaintext in the record's `observedProperties` (the drift baseline)
@@ -3814,8 +3751,8 @@ redacted like any other. Elements that carry no such identity field are left
 alone rather than guessed at, so nothing is ever written onto the wrong
 element; a redaction cdkd cannot place falls back to matching by value.
 
-**A secret whose value is itself a `{{resolve:...}}` string is redacted**
-(issue [#1917](https://github.com/go-to-k/cdkd/issues/1917)). Such a value is
+**A secret whose value is itself a `{{resolve:...}}` string is
+redacted**. Such a value is
 byte-identical to an already-redacted expression, and cdkd used to keep any
 such leaf verbatim — which persisted the plaintext. cdkd now asks a narrower
 question: does the reference it is being compared against describe the SAME
@@ -3827,7 +3764,7 @@ exactly as it is. A legacy leaf of this shape is cleaned the next time either
 `cdkd deploy` or `cdkd scrub` resolves that secret.
 
 **A value match never rewrites a fragment INSIDE a complete `{{resolve:...}}`
-reference** (issue [#1935](https://github.com/go-to-k/cdkd/issues/1935)). A
+reference**. A
 stored value can hold a reference inside surrounding text —
 `jdbc://appdb:{{resolve:secretsmanager:appdb/creds:SecretString:password}}@host`
 is what a joined connection string looks like after redaction — and a LATER
@@ -3879,7 +3816,7 @@ covers the drift baseline: `observedProperties` keeps the reference AWS was
 last seen holding, so `cdkd drift --revert` cannot push an undeployed one.
 
 **A value AWS reports at a position your template does not name is redacted
-too** (issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)). The drift
+too**. The drift
 baseline in `observedProperties` is whatever AWS returned, so it routinely
 carries fields the template never set and list elements the template does not
 have — and a secret can land in one of them (a copied environment variable, an
@@ -3905,8 +3842,7 @@ they resolve a reference through a context that does not record secrets:
   to CloudFormation.
 
 Both apply to `{{resolve:secretsmanager:...}}` as well as to a `SecureString`
-parameter, and are tracked as issue
-[#1903](https://github.com/go-to-k/cdkd/issues/1903).
+parameter.
 
 ## `cdkd rollback` (revert a failed deploy)
 
@@ -3915,7 +3851,7 @@ deploy that failed with `--no-rollback`, was interrupted with Ctrl+C, or
 whose automatic rollback died partway. It is the cdkd equivalent of
 `cdk rollback` / CloudFormation `RollbackStack`, and the third option (next
 to fix-forward `cdkd deploy` and clean-up `cdkd destroy`) after such a
-failure. Issue [#1183](https://github.com/go-to-k/cdkd/issues/1183).
+failure.
 
 **Synth-free.** Everything it needs lives in cdkd state plus a **rollback
 journal** — the exact `CompletedOperation[]` of the failed deploy, persisted
@@ -3941,8 +3877,8 @@ Flags:
 | --- | --- |
 | `--force` | Skip the confirmation prompt (`-y` / `--yes` also works). |
 | `--orphan <logicalId>` | Repeatable. Skip the resource during replay, like `cdk rollback --orphan`. An orphaned CREATE is left in AWS and removed from state; an orphaned UPDATE is left at its new properties with state kept as-is. |
-| `--revert-failed` | Also attempt to revert the resource whose operation **FAILED** mid-deploy (issue [#1198](https://github.com/go-to-k/cdkd/issues/1198)). Off by default because the failed resource's remote state is unknown (the op died partway): a failed UPDATE is force-reverted to its pre-deploy properties (the journal records the *attempted* properties, so patch-based providers generate a real undo diff); a failed CREATE that recorded no physical id is skipped with a warning; a failed DELETE needs no revert (the resource is still in place). A failed CREATE that DID get provisioned honors its `DeletionPolicy` on the way out (issue [#1362](https://github.com/go-to-k/cdkd/issues/1362)): `Retain` leaves it in AWS, `Snapshot` snapshots then deletes (`--skip-final-snapshot` opts out of the snapshot). Each handled failed op is stripped from the journal segment immediately (per-op), so a later completed-op failure that keeps the segment for a re-run only re-attempts what is genuinely outstanding — never a revert that already succeeded. |
-| `--skip-final-snapshot` | Delete a rolled-back CREATE (completed, or failed in-flight under `--revert-failed`) whose `DeletionPolicy` is `Snapshot` WITHOUT the final snapshot the policy promises (DATA LOSS — explicit opt-out of CloudFormation parity). By default the rollback creates the snapshot first, and refuses the delete for a shape it cannot snapshot; see [`DeletionPolicy: Snapshot`](#deletionpolicy-snapshot-final-snapshots-on-delete---skip-final-snapshot). Issue [#1358](https://github.com/go-to-k/cdkd/issues/1358). |
+| `--revert-failed` | Also attempt to revert the resource whose operation **FAILED** mid-deploy. Off by default because the failed resource's remote state is unknown (the op died partway): a failed UPDATE is force-reverted to its pre-deploy properties (the journal records the *attempted* properties, so patch-based providers generate a real undo diff); a failed CREATE that recorded no physical id is skipped with a warning; a failed DELETE needs no revert (the resource is still in place). A failed CREATE that DID get provisioned honors its `DeletionPolicy` on the way out: `Retain` leaves it in AWS, `Snapshot` snapshots then deletes (`--skip-final-snapshot` opts out of the snapshot). Each handled failed op is stripped from the journal segment immediately (per-op), so a later completed-op failure that keeps the segment for a re-run only re-attempts what is genuinely outstanding — never a revert that already succeeded. |
+| `--skip-final-snapshot` | Delete a rolled-back CREATE (completed, or failed in-flight under `--revert-failed`) whose `DeletionPolicy` is `Snapshot` WITHOUT the final snapshot the policy promises (DATA LOSS — explicit opt-out of CloudFormation parity). By default the rollback creates the snapshot first, and refuses the delete for a shape it cannot snapshot; see [`DeletionPolicy: Snapshot`](#deletionpolicy-snapshot-final-snapshots-on-delete---skip-final-snapshot). |
 | `--stack-region <region>` | Disambiguate when the same stack name has state in multiple regions (same UX as the `state` subcommands). |
 | `--role-arn <arn>` | Assume-role before touching AWS. If the journal recorded a role and the flag is not passed, an informational note is printed. |
 | `--state-bucket <bucket>` | Same resolution as other commands. |
@@ -3969,19 +3905,18 @@ credentials, etc.).
   mid-deploy failure has not deleted anything yet.
 - The resource whose operation **failed** is left as-is by default. The
   journal records the failed op (its pre-op state + the attempted
-  properties), and `--revert-failed` opts in to reverting it (issue
-  [#1198](https://github.com/go-to-k/cdkd/issues/1198)) — opt-in because the
+  properties), and `--revert-failed` opts in to reverting it — opt-in because the
   failed resource's remote state is genuinely unknown. A failed CREATE that
   recorded no physical id still cannot be acted on (skipped with a warning).
   Note: after a **clean automatic** rollback the journal is settled to a
-  **failed-only** segment (`operations: []` plus the failed op records —
-  issue [#1208](https://github.com/go-to-k/cdkd/issues/1208)): the completed
+  **failed-only** segment (`operations: []` plus the failed op
+  records): the completed
   ops are already reverted, but the failed resource's record is kept so
   `cdkd rollback --revert-failed` works in the DEFAULT deploy flow too. A
   plain `cdkd rollback` on such a journal is a no-op replay that clears it;
   the next successful deploy also deletes it.
-- **Replacements** are reverted by **reversing the replacement** (issue
-  [#1199](https://github.com/go-to-k/cdkd/issues/1199)): the old resource is
+- **Replacements** are reverted by **reversing the
+  replacement**: the old resource is
   re-CREATEd from its journaled pre-deploy state and the new resource is
   deleted (create-first; a user-supplied physical name still held by the new
   resource falls back to delete-new-first with a bounded name-release retry).
@@ -3997,16 +3932,14 @@ credentials, etc.).
   matching CloudFormation: `Retain` leaves the resource in AWS and drops it
   from state (the plan labels it `orphan`); `Snapshot` takes the final
   snapshot and THEN deletes, refusing (as a per-op failure, journal kept) any
-  shape cdkd cannot snapshot unless `--skip-final-snapshot` is passed (issue
-  [#1358](https://github.com/go-to-k/cdkd/issues/1358)). The plan preview says
+  shape cdkd cannot snapshot unless `--skip-final-snapshot` is
+  passed. The plan preview says
   which of the two will happen BEFORE you confirm — a shape cdkd cannot
   snapshot on the route the delete will take is labelled
   `cdkd cannot snapshot this resource; the rollback will REFUSE it` rather
-  than promising a final snapshot (issue
-  [#1366](https://github.com/go-to-k/cdkd/issues/1366)); `RetainExceptOnCreate`
+  than promising a final snapshot; `RetainExceptOnCreate`
   and the default `Delete` delete plainly. `--revert-failed`'s delete of a
-  resource whose CREATE FAILED mid-flight applies the SAME matrix since issue
-  [#1362](https://github.com/go-to-k/cdkd/issues/1362) — it acts only on a
+  resource whose CREATE FAILED mid-flight applies the SAME matrix — it acts only on a
   failed CREATE that AWS did provision (recorded physical id + matching state
   record), so `Retain` no longer deletes what the policy says to keep and
   `Snapshot` no longer destroys the data un-snapshotted.
@@ -4029,7 +3962,7 @@ CI / bench scripts can react without grepping log output:
 | --- | --- | --- |
 | `0` | Success — command completed and no resources are in an error state | All commands |
 | `1` | Command-level failure — auth error, bad arguments, synth crash, unhandled exception. **`cdkd drift` also exits `1` when drift is detected**, and **`cdkd diff --fail` exits `1` when any change is detected** (the operative meaning is "non-zero outcome", not "command crashed") | All commands (default for any thrown error) |
-| `2` | **Partial failure** — work completed but one or more resources failed, was SKIPPED, or was only partially COMPARED; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures, and per-resource **skips** — issue #1752), `cdkd deploy` (resources left UNADDRESSED — a skipped DELETE or a replacement's surviving predecessor; issue [#1960](https://github.com/go-to-k/cdkd/issues/1960), suppressible with `--allow-unaddressed`), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run), `cdkd drift` (nothing drifted, but cdkd REFUSED to compare a secret-bearing property — issue [#2108](https://github.com/go-to-k/cdkd/issues/2108); re-running does not clear it, but spelling the reference as a full ARN does — see the drift section) |
+| `2` | **Partial failure** — work completed but one or more resources failed, was SKIPPED, or was only partially COMPARED; state.json is preserved and re-running typically resolves it | `cdkd destroy`, `cdkd state destroy` (per-resource delete failures, and per-resource **skips**), `cdkd deploy` (resources left UNADDRESSED — a skipped DELETE or a replacement's surviving predecessor; suppressible with `--allow-unaddressed`), `cdkd publish-assets` (per-stack asset publish failures), `cdkd rollback` (per-op failures / skipped-with-warning ops; the journal is kept for re-run), `cdkd drift` (nothing drifted, but cdkd REFUSED to compare a secret-bearing property — re-running does not clear it, but spelling the reference as a full ARN does — see the drift section) |
 
 The implementation hangs off a `PartialFailureError` class in
 `src/utils/error-handler.ts`. `handleError` reads the error's
@@ -4046,7 +3979,7 @@ also switches glyphs:
 ⚠ Stack X partially destroyed (N deleted, S skipped, 0 errors). cdkd could not address the skipped resource(s) ...   # exit 2
 ```
 
-`cdkd deploy` switches the same way (issue #1960) — a run that left a resource
+`cdkd deploy` switches the same way — a run that left a resource
 unaddressed no longer claims to have completed successfully:
 
 ```text
@@ -4062,7 +3995,7 @@ The warning is printed in both cases where a resource survived — the second an
 third lines above; only the exit code differs between them. See [`--allow-unaddressed` (deploy)](#--allow-unaddressed-deploy)
 for which two cases produce it and how they differ in recoverability.
 
-### Skipped resources on destroy (issue #1752)
+### Skipped resources on destroy
 
 A **skipped** resource is one cdkd could not ADDRESS, so it may still exist
 and still be billing. Three causes today:
@@ -4072,8 +4005,7 @@ and still be billing. Three causes today:
   `AWS::EC2::NetworkAclEntry`) — no AWS call is issued at all, and the
   per-resource warning names the expected format;
 - a state record missing the id or the property the delete call is addressed
-  BY, in EVERY source cdkd can read it from (issue
-  [#1770](https://github.com/go-to-k/cdkd/issues/1770)) — also no AWS call at
+  BY, in EVERY source cdkd can read it from — also no AWS call at
   all. A malformed `AWS::Lambda::LayerVersion` version ARN (the layer version
   stays published); an `AWS::Lambda::Permission` with neither a `FunctionName`
   property nor a function ARN in its physicalId (the statement stays on the
@@ -4108,8 +4040,7 @@ It is deliberately distinct from the neighbouring outcomes:
 | failed | may still exist | kept | `N errors`, exit `2` |
 
 `N unverified` is a FIFTH figure on the same summary line and deliberately not
-a row in that table (issue
-[#2301](https://github.com/go-to-k/cdkd/issues/2301)). It is not an outcome:
+a row in that table. It is not an outcome:
 the resource was deleted and its record dropped exactly as the `deleted` row
 says. What it counts is **pre-flight safety guards that ran, could not reach a
 verdict, and were therefore not enforced** — cdkd proceeded anyway, which is
@@ -4129,12 +4060,12 @@ The state record is kept on purpose: without it you would have neither
 the AWS resource deleted nor an id to go and delete it with. To finish
 the destroy, repair whatever the per-resource warning names — the
 `physicalId` for the decode failures, the missing property (`FunctionName`,
-`ServiceToken`, `GroupName` / `Users`) for the #1770 causes — in state
+`ServiceToken`, `GroupName` / `Users`) for the missing-field causes — in state
 (`cdkd state show <stack>` to inspect) and re-run, or delete the resource by
 hand and drop the record with `cdkd state orphan <stack>`. The summary line names the exact
 state file(s) to open, which for a nested-stack skip is the child's.
 
-#### A skip on `cdkd deploy`, not just on destroy (issue #1762)
+#### A skip on `cdkd deploy`, not just on destroy
 
 The same provider outcome reaches `cdkd deploy`, which issues a DELETE for
 every resource removed from the template plus one for the old resource of a
@@ -4142,13 +4073,12 @@ replacement. Each site handles it in the way that resource's situation allows:
 
 | Deploy-side site | On a skip |
 | --- | --- |
-| a resource removed from the template | warns, prints `⚠ <id> (<type>) skipped (<reason>)`, **keeps the state record**, and counts it under `Skipped (not deleted)` in the summary. Because the record is kept, the resource is still a pending DELETE and the next `cdkd deploy` re-attempts it — but the run exits `2` (issue #1960), since the template as written was not applied |
+| a resource removed from the template | warns, prints `⚠ <id> (<type>) skipped (<reason>)`, **keeps the state record**, and counts it under `Skipped (not deleted)` in the summary. Because the record is kept, the resource is still a pending DELETE and the next `cdkd deploy` re-attempts it — but the run exits `2`, since the template as written was not applied |
 | the old resource of a replacement (`--replace`, `--recreate-via-*`, an UPDATE the type does not support in place) | **fails the resource** — the replacement create would otherwise run beside a live old one, or collide with its name |
 | the cleanup delete after a create-first replacement | warns; the new resource is already created and recorded, so the old one is untracked whether the delete failed or was skipped. Delete it by hand |
 | a rollback delete (automatic, or `cdkd rollback`) | counted as a per-op **failure** at four of the five arms, so the journal segment is kept and re-running `cdkd rollback` re-attempts it. The exception is the delete of the NEW resource AFTER the old one was re-created: that arm's delete is already best-effort (the revert itself succeeded and state points at the old resource), so a skip warns and counts as a warning — the new resource is left untracked and must be deleted by hand |
 
-A deploy-side skip changes the exit code too, since issue
-[#1960](https://github.com/go-to-k/cdkd/issues/1960). This reverses the earlier
+A deploy-side skip changes the exit code too. This reverses the earlier
 rule recorded here — that a skip on deploy stayed exit `0` because a kept record
 means the next run heals it, while `cdkd destroy` has no next run. Self-healing
 is still the real difference between the two verbs, and the table above keeps
@@ -4157,7 +4087,7 @@ did not apply the template it was given, and a pipeline reading only the exit
 code was being told it had. `--allow-unaddressed` restores exit `0` for callers
 who accept that (see [`--allow-unaddressed` (deploy)](#--allow-unaddressed-deploy)).
 
-#### A nested stack whose child FAILED is an error, not a skip (issue #1777)
+#### A nested stack whose child FAILED is an error, not a skip
 
 The third outcome a child stack's destroy can report is a resource that was
 ATTEMPTED and FAILED. That is **not** a skip — a skip asserts no AWS call was
@@ -4230,8 +4160,7 @@ cdkd export                                       # auto-detect single-stack app
    if any template resource is in the **blocked** set (template
    resources without a cdkd state entry; resources whose recorded
    properties hold the redaction mask `***`, i.e. a `NoEcho`
-   custom-resource value cdkd cannot re-derive — issue
-   [#2274](https://github.com/go-to-k/cdkd/issues/2274). Forcing that
+   custom-resource value cdkd cannot re-derive. Forcing that
    custom resource to update does NOT clear this block: the handler
    supplies the value to the DEPLOY and cdkd re-masks it on the way into
    state, which is what the export reads. Stop setting `NoEcho` on that
@@ -4245,8 +4174,7 @@ cdkd export                                       # auto-detect single-stack app
    run the 2-phase flow described below. `AWS::CloudFormation::Stack`
    rows whose parent state has a matching nested-stack entry are
    classified into a dedicated `nestedStackRows` list and exported via
-   the **per-stack IMPORT loop** (issue
-   [#464](https://github.com/go-to-k/cdkd/issues/464) PR B2): the
+   the **per-stack IMPORT loop**: the
    orchestrator recursively walks the cdkd state tree via
    `buildCdkdStateStackTree` and submits IMPORT changesets per
    cdkd-managed stack in leaf-first order. Leaf stacks get a single
@@ -4336,8 +4264,7 @@ cdkd export                                       # auto-detect single-stack app
 
    **Types whose cdkd physical id is composite while the CFn identifier
    is a single field** are resolved from the value cdkd RECORDED, not
-   from the id (issue
-   [#1659](https://github.com/go-to-k/cdkd/issues/1659)). CFn identifies
+   from the id. CFn identifies
    an `AWS::S3Tables::Table` by its `TableARN` and an
    `AWS::AppSync::DataSource` / `::Resolver` by its `DataSourceArn` /
    `ResolverArn`, while cdkd's physical id for each is the
@@ -4352,8 +4279,7 @@ cdkd export                                       # auto-detect single-stack app
    [state-management.md](state-management.md#the-composite-id-is-not-what-ref-returns)
    describes). `AWS::EC2::SecurityGroupIngress` is the fourth member and
    works the same way: CFn identifies a rule by the `sgr-...` id AWS
-   mints, which cdkd records as the rule's `Id` attribute (issue
-   [#1761](https://github.com/go-to-k/cdkd/issues/1761)) while its
+   mints, which cdkd records as the rule's `Id` attribute while its
    physical id stays the `<groupId>|<ipProtocol>|<fromPort>|<toPort>`
    tuple the revoke path needs. Its remedies differ from the other
    three, because there are two ways to lack the attribute. A rule
@@ -4361,11 +4287,10 @@ cdkd export                                       # auto-detect single-stack app
    one resource) makes AWS mint one rule per source, and cdkd records
    neither id — neither is "the" identifier — so re-deploying never
    heals it; split it into one ingress resource per source. A rule
-   simply **older than #1761** carries no `Id` at all, and a *no-op*
+   whose record simply **predates that recording** carries no `Id` at all, and a *no-op*
    re-deploy does not heal that one either, since AWS returns the rule
    id only from `AuthorizeSecurityGroupIngress` itself. **`cdkd export`
-   recovers it for you** (issue
-   [#1791](https://github.com/go-to-k/cdkd/issues/1791)): a row with no
+   recovers it for you**: a row with no
    usable recorded `Id` triggers a paginated
    `DescribeSecurityGroupRules` on the group the physical id names, and
    the rule is adopted only when EXACTLY ONE ingress rule on that group
@@ -4469,16 +4394,16 @@ cdkd export                                       # auto-detect single-stack app
        post-import CFn template; the next `cdk deploy` proposes
        REPLACE — same caveat as upstream `cdk import` with
        mismatched-name CDK code (see the "Replacement risk on next
-       deploy" caveat below). The prefix-migration pre-flight (PR #300)
+       deploy" caveat below). The prefix-migration pre-flight
        is meant to surface this before export. v0.94.0+ stacks with the
        default `--no-prefix-user-supplied-names` flip are NOT in this
        case — `Properties.RoleName` matches the AWS name without
        override.
      - **Unrepresentable** (a list carrying an intrinsic, a nested
        list, or an empty list): the export REFUSES, naming the
-       resource, the property and the scalar to declare instead. Issue
-       [#1787](https://github.com/go-to-k/cdkd/issues/1787) widened
-       "literal" past `typeof === 'string'` for the three cases above,
+       resource, the property and the scalar to declare instead.
+       "Literal" was widened
+       past `typeof === 'string'` for the three cases above,
        because a field the template carries as an ARRAY is neither
        absent nor an intrinsic and used to survive into the phase-1
        template, where CFn answered with an opaque rejection — reachable
@@ -4494,7 +4419,7 @@ cdkd export                                       # auto-detect single-stack app
        actually carries an object element has an intrinsic to discard, so
        the message says which reason applies.
 
-     Closes [issue #319]: pre-v0.95 cdkd unconditionally injected
+     Pre-v0.95 cdkd unconditionally injected
      `ResourceIdentifier` values into `Properties` even when the synth
      had no value for that field, baking cdkd-prefixed auto-gen names
      AND composite-id literals into the post-export CFn template →
@@ -4520,8 +4445,7 @@ cdkd export                                       # auto-detect single-stack app
   template — a YAML-authored CFn stack stays YAML on the wire.
 - **Cross-stack consumer scan** runs at synth time when other stacks in
   the same CDK app reference the exporting stack via
-  `Fn::GetStackOutput`. Since issue
-  [#1697](https://github.com/go-to-k/cdkd/issues/1697) those consumers
+  `Fn::GetStackOutput`. Those consumers
   keep resolving after the migration via the CloudFormation fallback
   (weak reference), so by default cdkd warns that the references become
   fallback-dependent (they break only for consumers deployed with
@@ -4560,8 +4484,7 @@ cdkd export                                       # auto-detect single-stack app
   return-only Lambda will time out at the CFn 1-hour Custom Resource
   ceiling. Without the flag, the CR types in the template cause the
   command to abort. `AWS::CloudFormation::Stack` (nested stacks) is
-  fully supported as of issue [#464](https://github.com/go-to-k/cdkd/issues/464)
-  PR B2: the dedicated branch + `buildCdkdStateStackTree` walker
+  fully supported: the dedicated branch + `buildCdkdStateStackTree` walker
   recursively loads every child state file, validates the tree shape,
   and `runPerStackImportLoop` submits one IMPORT changeset per
   cdkd-managed stack in the tree in leaf-first order. Non-leaf parents
@@ -4609,7 +4532,7 @@ Two ways forward:
 **Caveats**:
 
 - **Replacement risk on next deploy** (post-v0.95, only one residual
-  case — closes [issue #319]):
+  case):
   - **Pre-v0.94.0 prefix legacy** (`--prefix-user-supplied-names` opt-in,
     or stacks deployed before v0.94.0 flipped the default): cdkd's deploy
     prefixed user-declared physical names with the stack name for
@@ -4622,10 +4545,10 @@ Two ways forward:
     as a property change on an immutable name field → REPLACEMENT.
     Before the first post-export deploy, either change the CDK code to
     the prefixed value (`roleName: 'MyStack-my-role'`) or accept the
-    replacement. The prefix-migration pre-flight (PR #300 /
-    `prefix-migration-check.ts`) is meant to surface this before export.
+    replacement. The prefix-migration pre-flight
+    (`prefix-migration-check.ts`) is meant to surface this before export.
 
-  **No longer in this category as of v0.95** (closes [issue #319]):
+  **No longer in this category as of v0.95**:
   - Auto-generated names (user did NOT declare `bucketName: '...'` etc.):
     cdkd's overlay used to bake the cdkd-prefixed name into the
     post-export CFn template, causing every auto-named resource to be
@@ -4644,12 +4567,11 @@ Two ways forward:
   (`aws cloudformation create-change-set --change-set-type UPDATE`) for
   surprises before executing your first post-export `cdk deploy`.
 - **Cross-stack `Fn::GetStackOutput` consumers** in other cdkd stacks
-  keep working after the export via the CloudFormation fallback (issue
-  [#1697](https://github.com/go-to-k/cdkd/issues/1697)): the exported
+  keep working after the export via the CloudFormation fallback: the exported
   stack's outputs move to CloudFormation, and the consumers' next
   resolve reads them from there (`DescribeStacks`) after the cdkd-state
   miss. The reference stays weak either way. Only when deploying
-  consumers with `--no-cfn-fallback` does the pre-#1697 constraint
+  consumers with `--no-cfn-fallback` does the pre-fallback constraint
   return — plan multi-stack migrations from the leaves up in that case.
 
 Exits `0` on success, `1` on any failure (changeset rejection, AWS
@@ -4687,8 +4609,7 @@ read directly. Same dual semantics as `cdkd deploy`. Re-using a
 pre-synthesized assembly is therefore covered by `-a <dir>` and
 `publish-assets` does NOT have its own `--path <manifest>` flag.
 
-Asset destinations follow the region's asset mode (issue
-[#1002](https://github.com/go-to-k/cdkd/issues/1002)): the command reads the
+Asset destinations follow the region's asset mode: the command reads the
 per-region bootstrap marker from the state bucket (resolved via the standard
 `--state-bucket` / `CDKD_STATE_BUCKET` / `cdk.json` / default chain — the
 command never writes state) and, when the region is opted in, publishes to
@@ -4750,7 +4671,7 @@ cdkd events MyStack --stack-region <r>    # disambiguate multi-region history
 The store self-bounds to the last 20 runs at write time, but `cdkd destroy`
 deliberately keeps event history as post-mortem context, so it never returns
 the bucket to empty on its own. `cdkd events prune <stack>` is the explicit
-purge (issue [#885](https://github.com/go-to-k/cdkd/issues/885)):
+purge:
 
 ```bash
 cdkd events prune MyStack                 # keep the newest 20 (default)

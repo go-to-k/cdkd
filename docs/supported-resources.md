@@ -1,3 +1,8 @@
+---
+title: Supported Resources
+description: "Every AWS resource type cdkd can deploy and manage, grouped by category — SDK Provider vs Cloud Control API coverage per type."
+---
+
 # Supported AWS Resource Types
 
 This document lists every AWS resource type cdkd can deploy and manage,
@@ -48,7 +53,7 @@ with a rationale) sets. Any unhandled top-level property in the CFn schema
 triggers a fast-fail with the silently-dropped property name, the
 rationale, a 1-click GitHub issue link to request support, and the exact
 `--allow-unsupported-properties <ResourceType>:<PropertyName>` re-run
-command. See [docs/cli-reference.md `--allow-unsupported-properties`](cli-reference.md#--allow-unsupported-properties-deploy)
+command. See [docs/cli-reference.md `--allow-unsupported-properties`](cli-reference.md#allow-unsupported-properties-deploy)
 for the escape hatch.
 
 Coverage data is generated from the CFn schema fixtures + each SDK
@@ -215,8 +220,8 @@ catalog with Tier 2 and Tier 3 entries included.
 | **AI/ML** | AWS::BedrockAgentCore::Evaluator (LLM-as-a-Judge / code-based agent-quality evaluators; `EvaluatorName` is createOnly → replacement, tags reconciled via `TagResource`/`UntagResource`) | SDK Provider | ✅ |
 | **Compute** | AWS::AutoScaling::AutoScalingGroup | SDK Provider | ✅ |
 | **Cost Management** | AWS::Budgets::Budget (global API served from us-east-1; `update` reconciles `NotificationsWithSubscribers` in place instead of CloudFormation's whole-budget replacement) | SDK Provider | ✅ |
-| **CloudFormation** | AWS::CloudFormation::Stack (nested stacks; fresh deploy + recursive `cdkd import --migrate-from-cloudformation` adoption + recursive `cdkd export` per-stack IMPORT loop via [#464](https://github.com/go-to-k/cdkd/issues/464) PR B2; the original "one atomic `--include-nested-stacks` IMPORT" design was found infeasible by 2026-05-24 AWS spike, redesigned per [design §4.0/§4.3](design/464-nested-stacks-export-import.md) — each cdkd-managed stack becomes its own CFn stack via a separate IMPORT changeset in leaf-first order; non-leaf parents adopt their just-imported children via the AWS-docs "Nest an existing stack" pattern) | SDK Provider | ✅ |
-| **CloudFormation** | AWS::CloudFormation::WaitConditionHandle (no-op placeholder — outside CloudFormation the real pre-signed signal URL cannot exist, so cdkd synthesizes an opaque placeholder physical id and calls no AWS API; sufficient for the empty-template-placeholder usage e.g. `cdk-multi-region-stack`, issue [#1020](https://github.com/go-to-k/cdkd/issues/1020). `AWS::CloudFormation::WaitCondition` — the blocking signal-wait — remains unsupported) | SDK Provider | ✅ |
+| **CloudFormation** | AWS::CloudFormation::Stack (nested stacks; fresh deploy + recursive `cdkd import --migrate-from-cloudformation` adoption + recursive `cdkd export` per-stack IMPORT loop; the original "one atomic `--include-nested-stacks` IMPORT" design was found infeasible by 2026-05-24 AWS spike, redesigned per [design §4.0/§4.3](design/464-nested-stacks-export-import.md) — each cdkd-managed stack becomes its own CFn stack via a separate IMPORT changeset in leaf-first order; non-leaf parents adopt their just-imported children via the AWS-docs "Nest an existing stack" pattern) | SDK Provider | ✅ |
+| **CloudFormation** | AWS::CloudFormation::WaitConditionHandle (no-op placeholder — outside CloudFormation the real pre-signed signal URL cannot exist, so cdkd synthesizes an opaque placeholder physical id and calls no AWS API; sufficient for the empty-template-placeholder usage e.g. `cdk-multi-region-stack`. `AWS::CloudFormation::WaitCondition` — the blocking signal-wait — remains unsupported) | SDK Provider | ✅ |
 | **Custom** | Custom::* (Lambda/SNS-backed) | SDK Provider | ✅ |
 | **Other** | All other resource types | Cloud Control | ✅ |
 
@@ -227,9 +232,7 @@ Destroying an `AWS::FSx::FileSystem` keeps CloudFormation parity: cdkd calls
 Windows and ONTAP file systems the API default is to TAKE a final backup on
 delete (observed on OpenZFS as well; SCRATCH Lustre deployments take none), so
 a destroy that reports 0 errors can still leave a **chargeable backup** that
-outlives the stack (issue
-[#1113](https://github.com/go-to-k/cdkd/issues/1113)). Two traps to know
-about:
+outlives the stack. Two traps to know about:
 
 - `AutomaticBackupRetentionDays: 0` does NOT prevent the final backup. That
   setting only disables *scheduled* backups.
@@ -258,8 +261,7 @@ storage capacity.
 On **create**, cdkd **refuses** a template whose
 `OpenTableFormatInput.IcebergInput` carries the nested table spec
 `IcebergTableInput` (or its SDK spelling `CreateIcebergTableInput`), failing at
-pre-flight before any AWS call with an error naming the working shape (issue
-[#1454](https://github.com/go-to-k/cdkd/issues/1454)).
+pre-flight before any AWS call with an error naming the working shape.
 
 **A `cdkd rollback` never hits that refusal.** A rollback replays from cdkd
 state rather than from your template, so refusing would leave you with no
@@ -272,10 +274,9 @@ in `state.json`. Both rollback paths therefore WARN and continue:
   can reach AWS from that path.
 - **Reverse-replacement create** — the arm that revives the OLD table after a
   failed replacement calls `provider.create(...)` with the previous state's
-  properties, flagged as a state replay (issue
-  [#1463](https://github.com/go-to-k/cdkd/issues/1463)). Here the value IS
+  properties, flagged as a state replay. Here the value IS
   forwarded, so the restored table is degraded exactly as the original was:
-  under the CFn spelling the AWS SDK drops the unknown member (the #1390 silent
+  under the CFn spelling the AWS SDK drops the unknown member (the same silent
   drop that produced these state records) and the table comes back without its
   Iceberg metadata; under the SDK spelling Glue rejects the call and that one
   rollback operation fails. Either way the warning names `cdkd deploy` with the
@@ -284,8 +285,7 @@ in `state.json`. Both rollback paths therefore WARN and continue:
 
 This is a deliberate **parity divergence**: CloudFormation does not validate the
 property, it forwards it and then rolls the stack back. No working deployment is
-lost by refusing it, because a live probe (issue
-[#1408](https://github.com/go-to-k/cdkd/issues/1408), 2026-08-09, `us-east-1`,
+lost by refusing it, because a live probe (2026-08-09, `us-east-1`,
 5 raw `glue:CreateTable` shapes + 5 CloudFormation stacks) showed the spec is
 undeployable on **both** paths:
 
@@ -342,32 +342,32 @@ new glue.CfnTable(this, 'IcebergTable', {
 Glue then writes the Iceberg metadata itself: the created table comes back with
 `Parameters.table_type = ICEBERG` and a populated `Parameters.metadata_location`.
 That shape has real-AWS coverage in the
-[`data-analytics`](../tests/integration/data-analytics/) integ fixture.
+[`data-analytics`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/data-analytics/) integ fixture.
 
 ### Glue table / database: AWS-managed `Parameters` survive an update
 
 Glue's `UpdateTable` / `UpdateDatabase` replace `TableInput` / `DatabaseInput`
 **wholesale** — whatever the payload omits is erased. `Parameters` is a
 general-purpose bag that AWS itself writes into, so entries with no template
-representation used to disappear on the first unrelated edit (issue
-[#1461](https://github.com/go-to-k/cdkd/issues/1461)). For an Iceberg table
+representation used to disappear on the first unrelated edit. For an Iceberg
+table
 that was not cosmetic: a deploy changing only `TableInput.Description` cleared
 `table_type` and `metadata_location`, silently degrading the table to a plain
 external table pointing at Iceberg data files, with the deploy reporting
 success. The same exposure covered a crawler's `classification`, `EXTERNAL`,
 `comment`, and Lake Formation markers.
 
-Since issue [#1479](https://github.com/go-to-k/cdkd/issues/1479) the same
-exposure is closed one level down, for the `StorageDescriptor` subtree: a Glue
+The same exposure is also closed one level down, for the
+`StorageDescriptor` subtree: a Glue
 crawler authors `Columns`, `InputFormat` / `OutputFormat`, `SerdeInfo` (and
 its `Parameters` bag) and `StorageDescriptor.Parameters`, and Glue re-derives
 an Iceberg table's catalog `Columns` from table metadata — all of which an
 unrelated update used to wipe (`Columns` -> `[]`, `SerdeInfo` gone; probed
-live 2026-08-10, recorded on the issue). The preservation rule is the same
+live 2026-08-10). The preservation rule is the same
 "present in neither template side" test, applied per SD *member* (with the
 two nested `Parameters` bags merged per key — including when a whole bag is
-removed from the template, which keeps the top-level #1461 semantics: your
-keys are removed, AWS-authored keys survive). `SerdeInfo` is structural, not
+removed from the template, which keeps the top-level `Parameters` semantics:
+your keys are removed, AWS-authored keys survive). `SerdeInfo` is structural, not
 a bag: removing the whole block from the template removes it on AWS, since a
 partial serde carrying only crawler-authored entries would be incoherent. A
 template that never declared `StorageDescriptor` at all carries the whole
@@ -418,12 +418,12 @@ AWS-authored entries back into the payload. Four consequences worth knowing
   the database merge keeps this exposure; in practice nothing commits to a Glue
   *database* out of band the way an engine commits to a table.
 
-Real-AWS coverage: the [`data-analytics`](../tests/integration/data-analytics/)
+Real-AWS coverage: the [`data-analytics`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/data-analytics/)
 fixture's UPDATE phase re-asserts both Iceberg markers after an unrelated
 `Description` edit (having first pinned that the update was in-place, via an
 unchanged `Table.CreateTime`), asserts a user-removed parameter on the sibling
 plain table is still gone, and runs the same removal-plus-preservation pair
-against the database. For the #1479 subtree it injects crawler-equivalent
+against the database. For the `StorageDescriptor` subtree it injects crawler-equivalent
 out-of-band members (`StorageDescriptor.Parameters` and
 `SerdeInfo.Parameters` entries) via a raw `UpdateTable`, asserts they survive
 the unrelated Phase-2 deploy, and that template-declared SD members

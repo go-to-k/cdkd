@@ -270,6 +270,11 @@ gates:
       # repo builds via vp/tsdown and lints/formats via Oxlint/Oxfmt,
       # all configured in vite.config.ts).
       - "vite.config.ts"
+      # vite.docs.config.ts is a checker INPUT the way README.md is:
+      # tests/unit/scripts/docs-site-links.test.ts reads its `navigation`
+      # entries and asserts each points at an existing docs/ page, so an
+      # edit to the sidebar must stale a marker recorded before it.
+      - "vite.docs.config.ts"
       # .mise.toml pins the BINARY that runs those definitions (`vp`), so
       # it has strictly more claim to this scope than the file describing
       # them — and it was the only one missing (issue #1954, the #1592

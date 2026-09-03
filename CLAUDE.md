@@ -43,6 +43,12 @@ vp run format:check
 
 # Type check
 vp run typecheck
+
+# Documentation site (https://cdkd.dev — Ox Content SSG over docs/, separate
+# vite.docs.config.ts; see that file's header for why it is not in this config)
+vp run docs:dev
+vp run docs:build
+vp run docs:preview
 ```
 
 ## State Schema
@@ -169,6 +175,7 @@ high.
 ### Dev Dependencies
 
 - `vite-plus` - Unified dev toolchain (`vp`): bundles Vitest (tests), Oxlint (linting), Oxfmt (formatting), and the tsdown-based `vp pack` bundler
+- `@ox-content/vite-plugin` - Ox Content SSG for the cdkd.dev documentation site (config in `vite.docs.config.ts`, brand assets + OG template in `docs-site/`, deployed by `.github/workflows/docs-deploy.yml`)
 - `typescript` - TypeScript 7 native compiler (`tsc`) for typecheck
 - `typescript-v6` - npm alias of typescript@6; provides the stable JS compiler API for the codegen scripts (TS7 ships it only under `typescript/unstable/*`)
 - `semantic-release` - Automated releases

@@ -1,0 +1,83 @@
+name: docs-deploy
+
+# Build the cdkd.dev documentation site (Ox Content SSG, vite.docs.config.ts)
+# and deploy it to GitHub Pages. PRs only build (deploy job is main-only) so a
+# broken site config fails the PR instead of production.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "docs-site/**"
+      - "vite.docs.config.ts"
+      - ".github/workflows/docs-deploy.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+  pull_request:
+    # Keep in sync with the push paths (minus nothing): a dependency bump that
+    # breaks the docs build must fail on the PR, not after merge.
+    paths:
+      - "docs/**"
+      - "docs-site/**"
+      - "vite.docs.config.ts"
+      - ".github/workflows/docs-deploy.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # ssg.lastUpdated reads per-page git commit timestamps; a shallow
+          # clone would silently drop them.
+          fetch-depth: 0
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        with:
+          node-version: "24"
+      - run: vp install --frozen-lockfile
+      # OG image generation needs a Playwright-managed Chromium; without it the
+      # build still succeeds but silently skips every og-image.png and the
+      # og:image/twitter:image meta tags ("Chromium not available" warning).
+      # The guard step below turns that silent degradation into a hard failure.
+      # Direct .bin path: setup-vp does not put pnpm on PATH.
+      - run: ./node_modules/.bin/playwright install --with-deps chromium
+      - run: vp run docs:build
+      - name: Assert OG images were generated
+        # The root og-image.png catches a missing Chromium; the count catches a
+        # template regression that fails per-page rendering (each failure only
+        # warns). 30 is a floor well under the current ~45 pages.
+        run: |
+          test -f dist/site/og-image.png
+          count=$(find dist/site -name og-image.png | wc -l)
+          echo "og images: $count"
+          test "$count" -ge 30
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist/site
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

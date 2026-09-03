@@ -1,3 +1,8 @@
+---
+title: Architecture
+description: "cdkd's layered architecture — CDK synthesis, asset publishing, analysis, state, and SDK/Cloud Control provisioning — with deploy flows and design principles."
+---
+
 # cdkd Architecture Documentation
 
 ## Overview
@@ -677,7 +682,7 @@ the minimal patch.
 
 **Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API.
 
-**Implemented Providers**: IAM, S3, SQS, SNS, Lambda, DynamoDB, CloudWatch, Secrets Manager, SSM, EventBridge, EC2 (VPC/Subnet/SecurityGroup etc.), API Gateway, CloudFront, StepFunctions, ECS, ELBv2, RDS, Route53, WAFv2, Cognito, BedrockAgentCore, Custom Resources. See `src/provisioning/providers/` and [README](../README.md) for full list.
+**Implemented Providers**: IAM, S3, SQS, SNS, Lambda, DynamoDB, CloudWatch, Secrets Manager, SSM, EventBridge, EC2 (VPC/Subnet/SecurityGroup etc.), API Gateway, CloudFront, StepFunctions, ECS, ELBv2, RDS, Route53, WAFv2, Cognito, BedrockAgentCore, Custom Resources. See `src/provisioning/providers/` and [supported-resources.md](./supported-resources.md) for the full list.
 
 **How to Add Providers**: See [provider-development.md](./provider-development.md)
 
@@ -1042,7 +1047,7 @@ Each layer has clear responsibilities
   whose parameter is a `SecureString` (issue
   [#1901](https://github.com/go-to-k/cdkd/issues/1901)). A `String` /
   `StringList` parameter is public config and stays resolved in state. See
-  [docs/cli-reference.md](cli-reference.md#cdkd-scrub-state-secret-hygiene-clean--audit).
+  [docs/cli-reference.md](cli-reference.md#cdkd-scrub-state-secret-hygiene-clean-audit).
 - A **custom-resource `Data` value has no reference behind it**, so it takes a
   second channel: a handler that sets `NoEcho: true` on its cfn-response has
   every string in its `Data` persisted as `***` — in the custom resource's own
@@ -1076,7 +1081,6 @@ Each layer has clear responsibilities
 
 ## References
 
-- [Implementation Plan](./implementation-plan.md)
 - [State Management Specification](./state-management.md)
 - [Provider Development Guide](./provider-development.md)
 - [Troubleshooting](./troubleshooting.md)

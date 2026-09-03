@@ -1,3 +1,8 @@
+---
+title: Benchmarks
+description: "The full benchmark suite — cdkd vs CloudFormation, CloudFormation Express mode, and Terraform, with per-stack deploy-time comparisons."
+---
+
 # Benchmarks
 
 **cdkd deploys up to 15x faster than AWS CDK (CloudFormation)** on SDK-Provider-handled stacks; the per-stack speedup widens with size and parallelism.
@@ -19,10 +24,10 @@ CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/
 | SQS | 83 | 22 | **9** | 9 |
 | SQS + CloudWatch | 87 | 44 | 30 | 31 |
 
-Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3): since #1282 the default no longer waits for CloudFront `Deployed`, so NAT stabilization is the critical path. The other cells are from the original campaign.
+Best of 3 runs, deploy-phase only, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3): the default no longer waits for CloudFront `Deployed`, so NAT stabilization is the critical path. The other cells are from the original campaign.
 
 - **~1.5–2x faster than Express on most stacks** — e.g. SQS finishes in 9s vs Express's 22s (~2.4x).
-- **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack the cdkd default finishes in 96s vs Express's 366s (~3.8x) — since #1282 the default already leaves CloudFront propagation to complete in the background — and `--no-wait` (40s, ~9x) additionally skips the NAT stabilization wait.
+- **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack the cdkd default finishes in 96s vs Express's 366s (~3.8x) — the default already leaves CloudFront propagation to complete in the background — and `--no-wait` (40s, ~9x) additionally skips the NAT stabilization wait.
 - **S3 is the one case where Express edges cdkd's default** (22s vs 23s). On a near-instant single-resource stack there is little left to parallelize, and `--no-wait` makes no difference there.
 
 ## SDK Provider path — **5.5x faster** (17.0s vs 94.4s)
@@ -41,7 +46,7 @@ Real-world stack: 1 VPC (2 AZs, NAT Gateway, public + private subnets) + Lambda 
 | --- | ---: | ---: | ---: |
 | Deploy | **599s** | 96s (~6x) | **40s (15.0x)** |
 
-The 15x figure requires `cdkd deploy --no-wait`, which returns as soon as each Create call returns and lets AWS finish NAT Gateway stabilization in the background too. Since #1282, cdkd's default already leaves CloudFront's ~5min propagation to finish in the background, and the default scheduler parallelizes `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda with NAT Gateway propagation (pass `--no-aggressive-vpc-parallel` to opt out) — on this stack the default gives ~6x, with NAT stabilization as the remaining critical path. The cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3); the CFn and `--no-wait` cells are from the original campaign, so read the ~6x ratio as approximate across campaigns.
+The 15x figure requires `cdkd deploy --no-wait`, which returns as soon as each Create call returns and lets AWS finish NAT Gateway stabilization in the background too. cdkd's default already leaves CloudFront's ~5min propagation to finish in the background, and the default scheduler parallelizes `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda with NAT Gateway propagation (pass `--no-aggressive-vpc-parallel` to opt out) — on this stack the default gives ~6x, with NAT stabilization as the remaining critical path. The cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3); the CFn and `--no-wait` cells are from the original campaign, so read the ~6x ratio as approximate across campaigns.
 
 ## Cloud Control API fallback path — **1.6x faster** (40.9s vs 64.9s)
 
@@ -51,7 +56,7 @@ Stack: SSM Document × 3 + Athena WorkGroup × 2 (no SDK provider — CC API fal
 | --- | ---: | ---: | ---: |
 | Deploy | **64.9s** | **40.9s** | **1.6x** |
 
-Reproduce the SDK Provider path and VPC + CloudFront + Lambda benchmarks with `./tests/benchmark/run-benchmark.sh all` (from the repo root). See [tests/benchmark/README.md](../tests/benchmark/README.md) for details.
+Reproduce the SDK Provider path and VPC + CloudFront + Lambda benchmarks with `./tests/benchmark/run-benchmark.sh all` (from the repo root). See [tests/benchmark/README.md](https://github.com/go-to-k/cdkd/blob/main/tests/benchmark/README.md) for details.
 
 ## Reference point: Terraform
 
@@ -67,8 +72,8 @@ We also raced cdkd against Terraform: the same logical stacks expressed both as 
 | cloudfront — created (fire and forget) | S3 origin + CloudFront + OAC | 11.1 | no such mode (see `Deployed` row) | no such mode | 10.4 | 10.3 (`wait_for_deployment = false`) |
 | cloudfront — `Deployed` | S3 origin + CloudFront + OAC | 174.0 (`--full-wait`) | 166.4 | 232.3 | n/a | n/a |
 
-The cloudfront scenario is two rows because since issue #1282 the tools'
-DEFAULTS differ in what "done" means there: cdkd's default returns once
+The cloudfront scenario is two rows because the tools' DEFAULTS differ in
+what "done" means there: cdkd's default returns once
 `CreateDistribution` is accepted (the fire-and-forget row) while Terraform's
 default (`wait_for_deployment = true`) and CloudFormation wait for `Deployed`
 (the second row). Each row compares tools held to the SAME completion
@@ -89,4 +94,4 @@ Cold end-to-end wall clock, median of **7 runs** per scenario, seconds, `us-east
 - **Skipping waits is not a like-for-like capability.** cdkd's `--no-wait` is one global flag covering every resource type. Terraform has no global equivalent -- the AWS provider exposes a per-resource argument only where its authors added one, here `aws_cloudfront_distribution.wait_for_deployment` and `aws_ecs_service.wait_for_steady_state` (already false by default, so that cell repeats the default number). `aws_nat_gateway`, `aws_instance`, and every type in wide / serverless have none. On cloudfront, where both tools have both modes, the fire-and-forget row (cdkd default 11.1 / `--no-wait` 10.4 vs Terraform `wait_for_deployment = false` 10.3) is a tie by the noise rule below.
 - **This is not cdkd waiting for less.** Every comparison is held to a matching completion definition: `cdkd --full-wait` against Terraform's `wait_for_steady_state=true` on ecs is 227.7s vs 282.7s (1.24x), and the two cloudfront rows are same-definition pairs by construction (`--full-wait` 174.0 vs Terraform default 166.4 -- a tie). See [docs/cli-reference.md](cli-reference.md) for the per-resource-type wait semantics.
 - **Differences of a few seconds are not meaningful.** Re-running a scenario with the same binary hours later moved the cdkd median by 1.1s on wide and 4.5s on serverless, with Terraform moving too. Single-digit-second gaps are ties regardless of which side they favour, which is why both cloudfront rows are reported as ties rather than a win either way.
-- **This benchmark also made cdkd faster.** Chasing the initial webapp / cloudfront losses surfaced four real deploy-speed bugs (longest-pole scheduling, a missing EIP SDK provider, NAT Gateway and CloudFront polling intervals), fixed in [#1175](https://github.com/go-to-k/cdkd/pull/1175) and [#1177](https://github.com/go-to-k/cdkd/pull/1177). The numbers above are from the fixed version.
+- **This benchmark also made cdkd faster.** Chasing the initial webapp / cloudfront losses surfaced four real deploy-speed bugs (longest-pole scheduling, a missing EIP SDK provider, NAT Gateway and CloudFront polling intervals), all fixed before the final measurements. The numbers above are from the fixed version.

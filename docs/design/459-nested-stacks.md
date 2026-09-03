@@ -1,3 +1,8 @@
+---
+title: "Nested Stacks (`AWS::CloudFormation::Stack`) — Design"
+unlisted: true
+---
+
 # Nested Stacks (`AWS::CloudFormation::Stack`) — Design
 
 Tracking: [#459](https://github.com/go-to-k/cdkd/issues/459)
