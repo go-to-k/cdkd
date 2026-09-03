@@ -1,3 +1,10 @@
+## [0.285.12](https://github.com/go-to-k/cdkd/compare/v0.285.11...v0.285.12) (2026-09-03)
+
+
+### Bug Fixes
+
+* **secretsmanager:** send SecretString on update only when the value source changed ([#2472](https://github.com/go-to-k/cdkd/issues/2472)) ([#2476](https://github.com/go-to-k/cdkd/issues/2476)) ([68107b6](https://github.com/go-to-k/cdkd/commit/68107b6ecbb0aa188679dc35f7c5b10d92e5bd1d))
+
 ## [0.285.11](https://github.com/go-to-k/cdkd/compare/v0.285.10...v0.285.11) (2026-09-03)
 
 
