@@ -4,7 +4,7 @@ title: cdkd
 description: Deploy AWS CDK apps directly via AWS APIs — up to 15x faster, no CloudFormation.
 hero:
   name: cdkd
-  text: Deploy CDK apps directly. Skip CloudFormation.
+  text: The fastest way to deploy CDK.
   tagline: Drop-in CDK CLI for existing CDK apps — up to 15x faster dev/test deploys via direct AWS SDK calls instead of CloudFormation.
   image:
     src: /brand/logo-dark.svg

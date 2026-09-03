@@ -48,7 +48,7 @@ export default function ogTemplate(props: OgTemplateProps): string {
   // Compare unescaped values — the escaped siteName would never match a raw
   // title containing & < >.
   const isHome = rawTitle === rawSiteName || rawTitle === 'cdkd';
-  const displayTitle = isHome ? 'Deploy CDK apps directly. Skip CloudFormation.' : rawTitle;
+  const displayTitle = isHome ? 'The fastest way to deploy CDK.' : rawTitle;
   // Measure BEFORE escaping — entities like &amp; would inflate the length
   // and spuriously shrink the font.
   const titleIsLong = displayTitle.length > 60;

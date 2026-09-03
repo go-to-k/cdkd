@@ -127,12 +127,16 @@ const theme = defineTheme({
     // (2) the tagline full-width under them, (3) the action buttons. The
     // theme's markup nests everything but the image inside .hero-content, so
     // display:contents lifts its children into the hero grid.
-    '.hero { display: grid; grid-template-columns: auto 1fr; column-gap: 3rem; justify-content: start; align-items: center; }',
+    // width:fit-content + auto margins center the whole block on the page
+    // while its interior stays left-aligned; rows 1fr/1fr stretch the title
+    // column to the logo's height so "cdkd" tops out level with the logo and
+    // the headline bottoms out level with it.
+    '.hero { display: grid; grid-template-columns: auto auto; grid-template-rows: 4.5rem 4.5rem auto auto; column-gap: 3rem; align-content: center; width: fit-content; margin-inline: auto; }',
     '.hero-content { display: contents; }',
     '.hero-image { grid-column: 1; grid-row: 1 / span 2; margin: 0; align-self: center; }',
-    '.hero-image img { width: 9rem; height: 9rem; }',
-    '.hero-name { grid-column: 2; grid-row: 1; }',
-    '.hero-text { grid-column: 2; grid-row: 2; margin-bottom: 0; }',
+    '.hero-image img { width: 9rem; height: 9rem; display: block; }',
+    '.hero-name { grid-column: 2; grid-row: 1; align-self: start; margin: 0; line-height: 1; text-align: left; }',
+    '.hero-text { grid-column: 2; grid-row: 2; align-self: end; margin: 0; text-align: left; }',
     '.hero-tagline { grid-column: 1 / -1; grid-row: 3; margin: 1.75rem 0 0; max-width: 42rem; }',
     '.hero-actions { grid-column: 1 / -1; grid-row: 4; }',
     '@media (max-width: 768px) {',
