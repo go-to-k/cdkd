@@ -5,9 +5,8 @@
 **When a fix round produces the NEXT round's blocker twice, stop reviewing the
 patch and question its SHAPE.** One lane ran FIVE rounds (2026-08-20) in which
 every blocker was created by the previous round's fix — each locally correct,
-moving the failure one layer out — and every one was found by executing a
-probe or tracing a window, never by re-reading the diff (twice a comment
-confidently asserted the opposite).
+moving the failure one layer out — and every one was found by executing a probe
+or tracing a window, never by re-reading the diff.
 
 - **After round two, ask what the rounds have in common.** There it was one
   structural absence (`destroy.ts` registers no command-level SIGINT handler
@@ -18,17 +17,16 @@ confidently asserted the opposite).
   fix, file the structural one, and reference it from the narrow fix so the
   choice reads as made, not missed.
 - **But filing the structural fix does not STOP the cascade.** In
-  go-to-k/cdk-local#596 (2026-08-27) it was filed at round five and the
-  rounds ran to TWELVE (eleven instances of one class, five introduced by
-  fixes). What ended it was making the artifact **CLAIM LESS**. The tell:
-  each round's fix is more SOPHISTICATED than the last, while the plain
-  rc-only sweeps nearby were correct the whole time — `grep -q 'does not exist'`
-  also matches botocore's `The source_profile ... does not exist`, raised
-  before any network call, so a broken profile reported CLEAN having queried
-  nothing. The sophistication WAS the defect; the sweep now prints raw output
-  and names both outcomes instead of emitting a verdict — a command that
-  claims nothing cannot claim something false. Expect it to feel like a
-  retreat; it is one, and it converges.
+  go-to-k/cdk-local#596 (2026-08-27) it was filed at round five and the rounds
+  ran to TWELVE (eleven instances of one class, five introduced by fixes). What
+  ended it was making the artifact **CLAIM LESS**: the tell
+  is that each round's fix is more SOPHISTICATED than the last while the plain
+  rc-only sweeps nearby were right all along (a `grep -q 'does not exist'` also
+  matched botocore's own `source_profile ... does not exist`, raised before any
+  network call, so a broken profile reported CLEAN having queried nothing). The
+  sweep now prints raw output and names both outcomes instead of emitting a
+  verdict — a command that claims nothing cannot claim something false. Expect
+  it to feel like a retreat; it is one, and it converges.
   - **Fence the REMEDIATION, not just the detection.** The last instance was
     in the repair: `cdk destroy` on names built without the required suffix
     exits 0 SILENTLY, and every fence pinned the DETECTION, so restoring that
@@ -47,6 +45,21 @@ confidently asserted the opposite).
   that every round's finding is a new INPUT CLASS the code got wrong rather
   than a new place the logic was wrong — when that is the shape, stop
   patching instances.
+- **When the shape is "THE FENCE COVERS ONE ROW OF A MULTI-DIMENSIONAL
+  GUARANTEE", widen it to the CROSS PRODUCT before the next fix.** Unlike the
+  shapes around it this is a defect in what can OBSERVE the fix, so a fix can be
+  wholly INERT with every signal green. The tell: the guarantee ranges over two
+  independent things (position AND reader, mode AND platform) while the suite
+  varies one at a time. Count the cells; if the fence has fewer assertions than
+  cells, name the uncovered ones and probe one. **The uncovered cell is not
+  random** — a hazard lives there BECAUSE that cell behaves differently, which
+  is why a "representative case per dimension" skips it. Measured 2026-09-03,
+  go-to-k/cdkd#2466: "every scalar round-trips" spans 4 positions x 2 YAML
+  readers; the suite covered 4 under 1.2 plus ONE under 1.1, and `<<` (the 1.1
+  merge key, special only as a KEY, only under 1.1) sat in the missing cell — so
+  its fix shipped inert through a full 3-axis round, the library's merge tag
+  discarding a correctly-set style. Widening the 1.1 arm to four positions reds
+  it; nothing did before.
 - **When the shape is "TWO SPELLINGS OF ONE QUESTION", the fix is to make both
   sites use ONE predicate verbatim — not to write a better second spelling.**
   A better spelling looks like a fix and passes its own test.
@@ -75,22 +88,19 @@ confidently asserted the opposite).
   written, passed, mutation-probed and reverted, so none of it is rebuilt.
 
 **When the fix WIDENS what a guard catches, the thing you removed may have been
-load-bearing — and the instrument you own for measuring that can be
-structurally blind to it.** Ask before believing a widening safe: *what was
-the thing I am deleting actually doing?* go-to-k/cdkd#2333 (2026-08-27,
-WITHDRAWN after four review rounds): dequoting structural tokens closed a real
-bypass (`git "commit"` evaded every gate), but go-to-k/cdkd#2156 had widened
-`GATE_FLAGS` so after a `-C` any later token can occupy the verb slot — the
-only brake was that a QUOTED later token happened not to match. Removing it
-made `git show "commit"` and 15 more ordinary commands BLOCK, `check-gate` on
-a feature worktree included. The bypass was real and the fix was worse.
-
-**The survey could not have told you.** `false-refusal-survey.sh` returned
-`NEWLY CONSIDERED 0` because every text it probes lands in ARGUMENT position,
-never the flag PREFIX — where the change acted. A measurement taken in the
-wrong position is not weak evidence, it is none, and it reads identically to
-the real thing. Name the POSITION your change acts in, confirm the instrument
-probes it, and build the arm that does before quoting a zero.
+load-bearing — and your instrument for measuring that can be structurally blind
+to it.** Ask before believing a widening safe: *what was the thing I am
+deleting actually doing?* go-to-k/cdkd#2333 (2026-08-27, WITHDRAWN after four
+rounds): dequoting structural tokens closed a real bypass, but go-to-k/cdkd#2156
+had widened `GATE_FLAGS` so after a `-C` any later token can occupy the verb
+slot, and the only brake was that a QUOTED later token happened not to match,
+so removing it BLOCKED `git show "commit"` and 15 more ordinary commands. The
+bypass was real and the fix was worse — and the survey could not have told you,
+returning `NEWLY CONSIDERED 0` because every text it probes lands in ARGUMENT
+position, never the flag PREFIX where the change acted. A measurement taken in
+the wrong position is not weak evidence, it is none, and it reads identically
+to the real thing: name the POSITION your change acts in, confirm the
+instrument probes it, and build the arm that does before quoting a zero.
 
 - **Derive the reader population before patching readers.** Four rounds each
   found one more consumer deciding a gate outcome from the same text; one
@@ -135,8 +145,8 @@ correct, the gate doing its job. Sequencing: dispatch reviewers, apply EVERY
 finding including the nits, THEN rebase, THEN run the integ, THEN set the
 markers.
 
-- **Before starting an integ, ask what is still outstanding.** A reviewer
-  still running, an unapplied nit, a coming rebase each stale the marker.
+- **Before starting an integ, ask what is still outstanding.** A reviewer still
+  running, an unapplied nit, a coming rebase each stale the marker;
   `git diff origin/main...HEAD --name-only` against the gate's include list
   answers it in one command.
 - **A rebase can stale a `hash: diff` marker on its own** — the merge base
@@ -225,11 +235,11 @@ go-to-k/cdkd#2108 / go-to-k/cdkd#2109; none visible by reading the script):
 - **The host has the trigger but not the EVIDENCE, or the reverse.** A fix
   keying on recorded state needs the state AND the thing it describes in the
   SAME unit. `cdkd scrub` classifies only a literal `{{resolve:...}}` in the
-  TEMPLATE, so the producer stack (literal, no cross-stack read on record)
-  and the consumer (evidence, no literal) each had half — every fixture would
-  have passed with the fix reverted. Adding one small resource to the stack
-  already carrying the evidence made the arm real — cheaper than a new
-  fixture, so check for it before calling a live arm `next`.
+  TEMPLATE, so the producer stack (literal, no cross-stack read on record) and
+  the consumer (evidence, no literal) each had half — every fixture would have
+  passed with the fix reverted. Adding one small resource to the stack already
+  carrying the evidence made the arm real, cheaper than a new fixture: check
+  for that before calling a live arm `next`.
 - **The arm is INERT because the command returns early.** When the fix SKIPS
   something, a fixture whose only difference is the skipped thing gives the
   command no work: a `drift --revert` arm tampered exactly the now-skipped
@@ -307,32 +317,30 @@ indistinguishable from any other crash. Pair it with a `Monitor` that emits on
 phase lines AND on log-growth stalling.
 
 **ANCHOR the predicate the poller waits on, or it reports DONE while the job
-runs.** A loose predicate fails in the direction that matters: a premature
-DONE is acted on. Two shapes (2026-08-26): a non-empty test (`[ -s "$f" ]`)
-on a file the job ECHOES INTO before starting — the first `PWD=...` line
-satisfied it; and an unanchored substring — `grep -q "test_rc="` matches
-`typecheck_test_rc=` from an EARLIER step. Wait on a line the job writes only
-at the END, anchored (`grep -q "^suite_rc="`), and where the job has a
-process, confirm it is gone (`pgrep -f`) rather than inferring from the file.
+runs** — a premature DONE is acted on. Two shapes (2026-08-26): a non-empty
+test (`[ -s "$f" ]`) on a file the job ECHOES INTO before starting, satisfied
+by the first `PWD=...` line; and an unanchored substring, `grep -q "test_rc="`
+matching `typecheck_test_rc=` from an EARLIER step. Wait on a line the job
+writes only at the END, anchored (`grep -q "^suite_rc="`), and where the job
+has a process, confirm it is gone (`pgrep -f`) rather than inferring from the
+file.
 
 **The harness's "completed, exit 0" is the exit code of the command you
-BACKGROUNDED, which is not always the job you care about.** With
-`nohup <long job> > log 2>&1 & echo started` the wrapper returns immediately:
-measured 2026-08-21, a suite reported "completed (exit code 0)" while still
-executing 90 seconds later. Run the long job as the SOLE command of the
-backgrounded call (no trailing `&`) and read the log's own terminal line, not
-the notification. Two nearby traps: a `cd` inside the backgrounded compound
-leaves the parent's `$VAR` unset, so a follow-up `grep "$LOG"` reads a path
-that never existed; and `grep -c` exits 1 on a count of zero, so a
-verification command ending in one reports FAILED for the very case it was
-checking for.
+BACKGROUNDED, which is not always the job you care about.** With `nohup <long
+job> > log 2>&1 & echo started` the wrapper returns immediately: measured
+2026-08-21, a suite reported "completed (exit code 0)" while still executing 90
+seconds later. Run the long job as the SOLE command of the backgrounded call
+(no trailing `&`) and read the log's own terminal line, not the notification.
+Two nearby traps: a `cd` inside the backgrounded compound leaves the parent's
+`$VAR` unset, so a follow-up `grep "$LOG"` reads a path that never existed; and
+`grep -c` exits 1 on a count of zero, so a verification command ending in one
+reports FAILED for the very case it checks for.
 
 **Check a fixture's unstated PRECONDITIONS before spending a run on it.**
 Fixtures guard themselves and refuse rather than explain, so a wrong region
 costs a full round-trip each time: `asset-bootstrap` took three attempts on
-2026-08-20 — it needs a region that is **CDK-bootstrapped** (its legacy-mode
-phase publishes to the CDK bootstrap bucket) AND has **no cdkd marker** (its
-own guard refuses otherwise). Both conditions are two commands:
+2026-08-20 — it needs a region that is **CDK-bootstrapped** AND has **no cdkd
+marker** (its own guard refuses otherwise). Both are two commands:
 
 ```bash
 aws s3api head-bucket --bucket "cdk-hnb659fds-assets-<acct>-<region>"   # CDK-bootstrapped?
@@ -349,14 +357,14 @@ under a 120s cap — because `docker version` answering says nothing about
 registry networking, and that is the half that fails.
 
 **Do NOT restart Docker to fix a hang — on Docker Desktop the restart IS the
-likelier cause.** The daemon routes registry traffic through
-`http.docker.internal:3128`, a proxy the Docker Desktop **application**
-serves. Quit-and-reopen can leave the self-respawning `com.docker.backend`
-watchdog up while the app never finishes launching — every pull then waits on
-a proxy that is not there, while `docker version` keeps answering over the
-local socket (measured 2026-08-20: four consecutive pulls hung, `pkill` could
-not clear it, only a manual app restart recovered). Diagnose in this order
-and STOP at the first line that explains the symptom:
+likelier cause.** The daemon routes registry traffic through a proxy the
+Docker Desktop **application** serves, so a quit-and-reopen can leave the
+SELF-RESPAWNING `com.docker.backend` watchdog up (a `pkill` does not clear it)
+while the app never finishes launching: every
+pull then waits on a proxy that is not there while `docker version` keeps
+answering over the local socket (2026-08-20, four consecutive hung pulls; only
+a manual app restart recovered). Diagnose in this order and STOP at the first
+line that explains the symptom:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/  # 401 = HOST networking is fine
@@ -453,12 +461,12 @@ by hand — otherwise the next reader concludes the merged fix is broken.
 
 **A fixture that establishes its precondition on the HAPPY path cannot test the
 arm where the FAILING path creates it — and it stays green while the fix is
-inert.** Every signal says pass. The go-to-k/cdkd#2057 lane (2026-08-20)
-shipped a refusal that could not fire: its evidence (`state.imports[]` /
-`outputReads[]`) was persisted only by the SUCCESS path, so a deploy that both
-INTRODUCES a cross-region read and fails recorded none of it — yet the fixture
-passed, having established the read with a successful deploy first. Four
-diff-reading reviewers passed it; a fifth found it by tracing the evidence.
+inert.** The go-to-k/cdkd#2057 lane (2026-08-20) shipped a refusal that could
+not fire: its evidence (`state.imports[]` / `outputReads[]`) was persisted only
+by the SUCCESS path, so a deploy that both INTRODUCES a cross-region read and
+fails recorded none of it — yet the fixture passed, having established the read
+with a successful deploy first. Four diff-reading reviewers passed it; a fifth
+found it by tracing the evidence.
 When a fix keys on state some earlier step wrote, ask **which step wrote it in
 the fixture, and which step writes it in the reachable case**. If the answer
 is "an earlier, successful one", add the arm where one operation does both —
@@ -663,9 +671,9 @@ service rather than a file, stop reading code and go measure.
 **Fresh deploys: UNIQUE stack names only** (e.g. `Cdkd<Issue>Verify`), never a
 shared fixed name and never a real prod stack — the account may hold the
 maintainer's production stacks. Tear down with `cdkd destroy … --force`, then
-SWEEP for orphans it can't reach (auto-created `/aws/lambda/*` log groups from
-`autoDeleteObjects` custom-resource Lambdas, RETAIN stateful resources,
-Secrets in recovery, KMS keys pending deletion). Confirm state is gone:
+SWEEP for orphans it cannot reach (auto-created `/aws/lambda/*` log groups from
+`autoDeleteObjects` custom-resource Lambdas, RETAIN stateful resources, Secrets
+in recovery, KMS keys pending deletion). Confirm state is gone:
 `aws s3 ls s3://cdkd-state-$(aws sts get-caller-identity --query Account --output text)/cdkd/`
 should show no leftover stack (the `deployments/` events store legitimately
 survives — it is not an orphan). If destroy failed or left orphans, delete
@@ -709,20 +717,17 @@ the lane's assumptions, not about the diff.
 **A reviewer's scratch COPY of a worktree is not detached from git, so its
 `git add -A` writes to the LIVE tree.** A linked worktree's `.git` is a FILE
 holding `gitdir: <repo>/.git/worktrees/<name>`, and `cp -R` carries the
-pointer: every git command inside the copy reads and WRITES the real
-worktree's index and HEAD. Measured 2026-08-29: a read-only code reviewer
-copied a lane's worktree, ran `git add -A` there, and staged three tracked
-DELETIONS under `tests/integration/local-invoke-layers/` in the live tree,
-which the lane's next commit would have shipped. Nothing announced it — the
-reviewer believed it was on a copy. So two lines belong in every read-only
-reviewer's brief, on top of §5's peer-probe rules: **run no WRITING git verb**
-(`add` / `commit` / `restore` / `checkout` / `stash` / `clean`) anywhere, copy
-included — and if you must copy, copy OUTSIDE every repository, since deleting
-the `.git` file does not detach the copy, it only makes discovery walk UPWARD
-into whatever encloses it; and **report the TARGET worktree's
-`git status --porcelain` before AND after the round.** The before/after pair is
-what makes damage attributable rather than a mystery a later agent finds: that incident surfaced only because the NEXT
-reviewer volunteered "the tree went dirty mid-review, not mine", after which
-the responsible one self-reported and repaired the index with `git restore
---staged` (index only, never the working tree). Every reviewer given these two
-lines in that run reported clean both ways.
+pointer, so every git command inside the copy reads and WRITES the real
+worktree's index and HEAD. Measured 2026-08-29: a read-only reviewer copied a
+lane's worktree, ran `git add -A`, and staged three tracked DELETIONS in the
+live tree — surfaced only because the NEXT reviewer volunteered that the tree
+had gone dirty mid-review. So two lines belong in every read-only reviewer's
+brief, on top of §5's peer-probe rules: **run no WRITING git verb** (`add` /
+`commit` / `restore` / `checkout` / `stash` / `clean`) anywhere, copy included —
+and if you must copy, copy OUTSIDE every repository, since deleting the `.git`
+file does not detach the copy, it only makes discovery walk UPWARD; and
+**report the TARGET worktree's `git status --porcelain` before AND after the
+round**, which is what makes damage attributable rather than a mystery. Every
+reviewer given these two lines in that run reported clean both ways. If one
+does cause it, the repair is `git restore --staged` — the INDEX only, never the
+working tree, and the one carve-out to the no-writing-verb rule above.
