@@ -5931,6 +5931,11 @@ export function findStaleTerminalRenames(
 
 function renderMarkdown(report: NestedKeyCoverageReport): string {
   const lines: string[] = [];
+  lines.push('---');
+  lines.push('title: "Nested key-divergence coverage matrix"');
+  lines.push('unlisted: true');
+  lines.push('---');
+  lines.push('');
   lines.push('# Nested CFn->SDK key-divergence coverage matrix');
   lines.push('');
   lines.push(
