@@ -23,5 +23,5 @@ cdkd is a drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via
 ## Next steps
 
 - [Getting Started](getting-started.md) — install cdkd and run your first deploy
-- [Benchmarks](benchmarks.md) — the full numbers vs CloudFormation, Express mode, and Terraform
+- [Benchmarks](benchmarks.md) — vs CloudFormation, Express mode, and Terraform
 - [Core Concepts](concepts.md) — how cdkd works under the hood

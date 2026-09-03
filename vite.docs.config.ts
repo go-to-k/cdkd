@@ -133,17 +133,36 @@ const theme = defineTheme({
     // the headline bottoms out level with it.
     // min-height:unset kills the skin's min(100vh, 56rem) hero, which left a
     // screenful of dead space between the actions and the feature cards.
-    '.hero { display: grid; grid-template-columns: auto auto; grid-template-rows: 4.5rem 4.5rem auto auto; column-gap: 1.75rem; align-content: center; width: fit-content; margin-inline: auto; min-height: unset; padding-block: calc(var(--octc-header-height) + 3.5rem) 4rem; }',
+    '.hero { display: grid; grid-template-columns: auto auto; grid-template-rows: 4.5rem 4.5rem auto auto; column-gap: 1.1rem; align-content: center; width: fit-content; margin-inline: auto; min-height: unset; padding-block: calc(var(--octc-header-height) + 3.5rem) 4rem; }',
     '.hero-content { display: contents; }',
     '.hero-image { grid-column: 1; grid-row: 1 / span 2; margin: 0; align-self: center; }',
-    '.hero-image img { width: 9rem; height: 9rem; display: block; }',
+    '.hero-image img { width: 9rem; height: 9rem; }',
+    // The entry layout's own `.hero-image img { display: block }` outranks
+    // the core `.theme-asset--dark { display: none }` toggle, so LIGHT mode
+    // showed both logo variants stacked. Restate the three theme states at
+    // higher specificity.
+    '.hero-image img.theme-asset--dark { display: none; }',
+    '[data-theme="dark"] .hero-image img.theme-asset--dark { display: block; }',
+    '[data-theme="dark"] .hero-image img.theme-asset--light { display: none; }',
+    '@media (prefers-color-scheme: dark) {',
+    '  :root:not([data-theme="light"]) .hero-image img.theme-asset--dark { display: block; }',
+    '  :root:not([data-theme="light"]) .hero-image img.theme-asset--light { display: none; }',
+    '}',
     '.hero-name { grid-column: 2; grid-row: 1; align-self: start; margin: 0; line-height: 1; text-align: left; }',
-    '.hero-text { grid-column: 2; grid-row: 2; align-self: end; margin: 0; text-align: left; }',
+    '.hero-name::after { content: "CDK Direct"; display: inline-block; margin-left: 0.4rem; font-size: 0.85rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--octc-color-text-muted); transform: translateY(-0.9rem); }',
+    '.hero-text { grid-column: 2; grid-row: 2; align-self: end; margin: 0; text-align: left; font-size: 1.35rem; }',
     '.hero-tagline { grid-column: 1 / -1; grid-row: 3; margin: 1.75rem 0 0; max-width: 36.5rem; }',
     '.hero-actions { grid-column: 1 / -1; grid-row: 4; }',
     // One skin layer draws .hero{border-bottom:2px} while the first feature
     // card draws its own border-top — a double rule between hero and cards.
+    // Its ::after paints a bottom fade sized for the full-height hero, which
+    // on the compact hero overlaps the action buttons and reads as the
+    // section going transparent — drop it. Feature cards keep no hover
+    // motion (the skin slides them 8px right) and no scroll-rise animation.
     '.hero { border-bottom: 0; }',
+    '.hero::after { display: none; }',
+    '.feature-card { animation: none; }',
+    '.feature-card:hover { transform: none; }',
     // The entry page sets ox-hide-edit-link (editLink: false) but the skin
     // carries no matching rule.
     '.ox-hide-edit-link .ox-edit-this-page { display: none; }',
