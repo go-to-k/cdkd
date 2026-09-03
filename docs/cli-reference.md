@@ -1400,10 +1400,10 @@ Four consequences worth stating explicitly:
   `Action`, any CORS rule -- emitted a bare `- *` that a YAML parser rejects,
   and reserving stdout did not change it. Issue
   [#2421](https://github.com/go-to-k/cdkd/issues/2421) fixed it by handing the
-  quoting to the `yaml` package -- with the same options the AWS CDK CLI uses,
-  and with every string scalar checked against the library's own parser under
-  BOTH a YAML 1.1 reader (which is what `yq` is) and a 1.2 one, quoting
-  anything that would not come back unchanged. Two visible consequences, both
+  quoting to the `yaml` package -- the library the AWS CDK CLI uses for the
+  same job -- and checking every string scalar against that library's own
+  parser under BOTH a YAML 1.1 reader (which is what `yq` is) and a 1.2 one,
+  quoting anything that would not come back unchanged. Two visible consequences, both
   of which make the output MATCH the template rather than diverge from it:
   - **Scalars keep their type.** A number stays a number (`ExpirationInDays:
     90`, not `"90"`) and a numeric string stays a string (`schemaVersion:

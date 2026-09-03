@@ -15,11 +15,12 @@
  * The fix is a change of INSTRUMENT rather than a wider predicate: quoting a
  * YAML scalar correctly is a solved problem with an unbounded number of
  * spellings to get wrong one at a time, and the `yaml` package is already a
- * runtime dependency. The emit options are the ones the AWS CDK CLI passes
- * for the same job (`@aws-cdk/toolkit-lib/lib/util/yaml-cfn.ts`:
- * `yaml.stringify(obj, { schema: 'yaml-1.1' })` with the fold width at 0), so
- * "CDK CLI compatible" is now produced by the library CDK CLI uses rather
- * than approximated.
+ * runtime dependency — the same library the AWS CDK CLI does this job with
+ * (`@aws-cdk/toolkit-lib/lib/util/yaml-cfn.ts`: `yaml.stringify(obj, {
+ * schema: 'yaml-1.1' })` at fold width 0). So "CDK CLI compatible" is now
+ * produced by the library CDK CLI uses rather than approximated. The schema
+ * differs deliberately and the output does not; `EMIT_OPTIONS` below carries
+ * the measurement and the reason.
  *
  * Measured consequence on `tests/integration/basic` (2026-09-03): of 182
  * lines, only the defect and its mirror move — `- *` becomes `- "*"`, numbers
@@ -43,32 +44,43 @@
 import { Document, Scalar, isScalar, parse, stringify, visit } from 'yaml';
 
 /**
- * The emit options, and the readers the output has to survive.
+ * The emit options, and the READERS the output has to survive.
  *
- * `yaml-1.1` is what the AWS CDK CLI emits under, and it is the wider
- * resolver of the two: it also resolves `yes` / `no` / `on` / `off` and
- * timestamps, so emitting under it quotes the strings a 1.1 reader (`yq`)
- * would otherwise hand back as a boolean or a Date.
+ * The correctness here comes from `READER_SCHEMAS` — the oracle below quotes
+ * anything EITHER reader would hand back changed — and NOT from the emitting
+ * schema. That split matters, because neither schema resolves a superset of
+ * the other:
  *
- * It is NOT a superset of 1.2 core, which is why both are listed rather than
- * only the emitting one. 1.2 added `0o` octal, for which 1.1 has no resolver
- * — so `'0o17'` emits BARE under 1.1 and the default (1.2 core) reader hands
- * back the number 15. That was found by review rather than by enumeration,
- * which is exactly why the decision below is delegated to the library instead
- * of written out as a rule.
+ * - 1.2 core added `0o` octal, for which 1.1 has no resolver, so `'0o17'`
+ *   emits bare under 1.1 and a default reader returns the number 15;
+ * - 1.1 resolves `yes` / `no` / `on` / `off` and timestamps, which 1.2 leaves
+ *   alone, so those must be quoted for `yq`'s sake even though a 1.2 reader
+ *   would not have re-typed them.
  *
- * Which makes the emitting schema NOT load-bearing for correctness, and it is
- * described that way rather than as a guarantee: the oracle already forces
- * quotes on anything EITHER reader would re-type, so the schema only decides
- * which of the two does the quoting. Measured 2026-09-03 — emitting the
- * `tests/integration/basic` template under `core` instead produces a
- * BYTE-IDENTICAL document, as do all 16 targeted probes (`yes` / `on` /
- * `2026-09-03` / `0o17` / `<<` / `012` / `0x1f` / `.inf` / ...), and the unit
- * suite stays 69/69 green. It is kept for parity with the CDK CLI's own
- * choice, and because it keeps the guarantee standing if the reader list is
- * ever narrowed.
+ * Emitting under `core` rather than the CDK CLI's `yaml-1.1` is therefore a
+ * deliberate choice and not a drift from parity, because 1.1 carries one tag
+ * that DEFEATS the oracle: `<<` is the MERGE key, and its tag's `stringify`
+ * returns the literal `<<` while ignoring the node's style, so the
+ * `QUOTE_DOUBLE` the oracle sets on that key is silently discarded and
+ * `{'<<': 'v'}` still emits `<<: v` — which a 1.1 reader rejects with `Merge
+ * sources must be maps`. Under `core` there is no merge tag, the forced
+ * quotes survive, and the output is `"<<": v`.
+ *
+ * Parity is preserved in fact rather than by the option name, and it was
+ * MEASURED rather than argued (2026-09-03): with the oracle in place, both
+ * this repo's real templates — `tests/integration/basic` and
+ * `tests/integration/local-invoke` — render BYTE-IDENTICALLY under the two
+ * schemas, as does every probe tried except `<<` itself. What changes is only
+ * which layer does the quoting: under `core` the library emits `yes` bare and
+ * the oracle quotes it; under 1.1 the library quoted it directly.
+ *
+ * This was found by a review round, after a first cut had `yaml-1.1` here and
+ * a test suite that could not see the difference — the four-position
+ * round-trip loop parses under 1.2, where `<<:` is an ordinary key, and the
+ * 1.1 arm covered only the map-VALUE position. Both now run all four
+ * positions under both readers.
  */
-const EMIT_OPTIONS = { schema: 'yaml-1.1', lineWidth: 0, aliasDuplicateObjects: false } as const;
+const EMIT_OPTIONS = { schema: 'core', lineWidth: 0, aliasDuplicateObjects: false } as const;
 const READER_SCHEMAS = ['yaml-1.1', 'core'] as const;
 
 /**
@@ -109,6 +121,13 @@ const valueRoundTripsPlain = memoize((value: string): boolean => {
     try {
       return parse(emitted, { schema }) === value;
     } catch {
+      // Defensive, and measured as such rather than assumed: no probe has
+      // reached it (21 hostile strings x both readers, 0 hits), because the
+      // library does not emit a plain VALUE scalar that fails to parse. It
+      // stays so that a future library change degrades into quoting rather
+      // than into a thrown error, and it is called out because no test can
+      // fence it — the KEY oracle's identical-looking catch below is the
+      // opposite, and IS fenced.
       return false;
     }
   });
@@ -124,6 +143,10 @@ const keyRoundTripsPlain = memoize((key: string): boolean => {
     try {
       back = parse(emitted, { schema });
     } catch {
+      // LOAD-BEARING, unlike its twin above: this is the path `<<` takes.
+      // Under a 1.1 reader `<<: v` throws `Merge sources must be maps`, and
+      // that throw is the whole signal that the key needs quoting. Flipping
+      // this to `true` reds the suite.
       return false;
     }
     if (back === null || typeof back !== 'object' || Array.isArray(back)) return false;
@@ -151,6 +174,11 @@ export function toYaml(obj: unknown): string {
     Scalar(key, node) {
       // A pair's KEY also arrives here, under the literal key `'key'`; it is
       // handled by the Pair visitor below, which asks the other question.
+      // Measured NOT load-bearing (removing it reds nothing): both oracles
+      // only ever ADD quotes, and they disagree on no string in either
+      // direction except `<<`, where the Pair visitor is the stricter one and
+      // runs anyway. It stays because it expresses which question owns which
+      // position, and because it halves the oracle calls on every key.
       if (key === 'key') return;
       if (typeof node.value === 'string' && !valueRoundTripsPlain(node.value)) {
         node.type = Scalar.QUOTE_DOUBLE;

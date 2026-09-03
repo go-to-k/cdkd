@@ -113,21 +113,27 @@ node --input-type=module -e "
 import { readFileSync } from 'node:fs';
 const YAML = await import('yaml');
 const text = readFileSync(process.argv[1], 'utf8');
-let parsed;
-try {
-  parsed = YAML.parse(text);
-} catch (err) {
-  console.error('FAIL: cdkd synth stdout is not valid YAML: ' + err.name + ' ' + (err.code ?? '') + ' -- ' + err.message.split('\n')[0]);
-  process.exit(1);
-}
 const json = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-if (JSON.stringify(parsed) !== JSON.stringify(json)) {
-  console.error('FAIL: cdkd synth stdout parses but does not equal the assembly template');
-  console.error('--- parsed YAML ---'); console.error(JSON.stringify(parsed, null, 2).slice(0, 2000));
-  console.error('--- template JSON ---'); console.error(JSON.stringify(json, null, 2).slice(0, 2000));
-  process.exit(1);
+// BOTH readers, because that is the guarantee: the emitter quotes anything
+// either resolver would hand back changed, and \`yq\` is the 1.1 one. A
+// default-reader-only arm cannot see a 1.1-specific hazard -- the \`<<\` merge
+// key shipped past a whole review round for exactly that reason.
+for (const schema of ['core', 'yaml-1.1']) {
+  let parsed;
+  try {
+    parsed = YAML.parse(text, { schema });
+  } catch (err) {
+    console.error('FAIL: cdkd synth stdout is not valid YAML under the ' + schema + ' reader: ' + err.name + ' ' + (err.code ?? '') + ' -- ' + err.message.split('\n')[0]);
+    process.exit(1);
+  }
+  if (JSON.stringify(parsed) !== JSON.stringify(json)) {
+    console.error('FAIL: cdkd synth stdout parses under ' + schema + ' but does not equal the assembly template');
+    console.error('--- parsed YAML ---'); console.error(JSON.stringify(parsed, null, 2).slice(0, 2000));
+    console.error('--- template JSON ---'); console.error(JSON.stringify(json, null, 2).slice(0, 2000));
+    process.exit(1);
+  }
 }
-console.log('    stdout parses and deep-equals ' + process.argv[2]);
+console.log('    stdout parses under both readers and deep-equals ' + process.argv[2]);
 " "${SYNTH_OUT}" "${TEMPLATE_JSON}"
 
 # Same contract on `cdkd list`, which had even less live coverage than synth:

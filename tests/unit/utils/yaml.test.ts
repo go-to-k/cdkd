@@ -88,8 +88,10 @@ const HOSTILE_SCALARS: readonly string[] = [
   // readers. Found by review; the reason the emitter delegates the question
   // to the library rather than carrying a list like this one.
   '0o17',
-  // The 1.1 MERGE key. Ordinary in value position, special as a KEY, which
-  // is why the emitter asks a different question for each position.
+  // The 1.1 MERGE key: ordinary in value position, special as a KEY, which is
+  // why the emitter asks a different question per position. It is also why
+  // the emitter emits under `core` — under `yaml-1.1` the merge tag's own
+  // `stringify` discards the forced quotes and this case reds.
   '<<',
   // Multi-line content: a plain scalar cannot hold a line break at all.
   'line1\nline2',
@@ -131,9 +133,19 @@ describe('toYaml', () => {
     // `yq` is — gets the same values back. Asserting only under the default
     // (1.2 core) parser would leave `yes` / `on` / `2026-09-03` unfenced,
     // since 1.2 does not resolve them implicitly in the first place.
-    it('round-trips under a YAML 1.1 reader too (`yq` semantics)', () => {
+    it('round-trips under a YAML 1.1 reader too, at every position (`yq` semantics)', () => {
+      // ALL FOUR positions, not just the map value. Covering one position was
+      // how the `<<` blocker shipped through a whole review round: `<<` is the
+      // 1.1 MERGE key and is hazardous ONLY as a key, while the loop above
+      // parses under 1.2 where `<<:` is an ordinary key — so the one position
+      // that differs was the one position not asserted, under the one reader
+      // that resolves it.
       for (const value of [...HOSTILE_SCALARS, ...PLAIN_SCALARS]) {
-        expect(parseYaml(toYaml({ Key: value }), { schema: 'yaml-1.1' })).toEqual({ Key: value });
+        const opts = { schema: 'yaml-1.1' } as const;
+        expect(parseYaml(toYaml(value), opts)).toBe(value);
+        expect(parseYaml(toYaml({ Key: value }), opts)).toEqual({ Key: value });
+        expect(parseYaml(toYaml([value]), opts)).toEqual([value]);
+        expect(parseYaml(toYaml({ [value]: 'v' }), opts)).toEqual({ [value]: 'v' });
       }
     });
 
@@ -203,6 +215,9 @@ describe('toYaml', () => {
     const shared = { Ref: 'Bucket' };
     const emitted = toYaml({ Outputs: { A: { Value: shared }, B: { Value: shared } } });
 
+    // Sound because THIS fixture's content contains no `&` and no `*` — the
+    // template 20 lines above deliberately does, so widening this fixture
+    // would make the assertion fail for the wrong reason.
     // NOT a regex over the default `anchorPrefix` ('a'): that binds the
     // assertion to a library default, and the same aliased output scores
     // clean under `anchorPrefix: 'x'`. The deep-equality below cannot carry
@@ -233,7 +248,10 @@ describe('toYaml', () => {
     // next reader finds it asserted rather than inferred: this is what makes
     // the YAML and `--json` spellings of `cdkd list` agree.
     expect(toYaml({ a: undefined, b: 1 })).toBe('b: 1\n');
-    expect(JSON.parse(JSON.stringify({ a: undefined, b: 1 }))).toEqual({ b: 1 });
+    // An undefined ARRAY item is NOT omitted — it renders `- null`, since a
+    // sequence has no key to drop. Pinned so the asymmetry is asserted rather
+    // than discovered.
+    expect(toYaml([undefined, 1])).toBe('- null\n- 1\n');
   });
 
   it('renders undefined as null', () => {
