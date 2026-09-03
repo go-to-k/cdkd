@@ -281,6 +281,7 @@
       "resourceType": "AWS::ApiGatewayV2::Api",
       "integs": [
         "apigatewayv2-update-removal",
+        "cc-api-fallback",
         "drift-revert",
         "export",
         "local-start-api",
@@ -291,6 +292,10 @@
       ],
       "signals": {
         "apigatewayv2-update-removal": [
+          "l1",
+          "literal"
+        ],
+        "cc-api-fallback": [
           "l1",
           "literal"
         ],
@@ -4070,7 +4075,6 @@
         "bench-cdk-sample",
         "bootstrap-free-region",
         "cache-streaming",
-        "cc-api-fallback",
         "cc-api-fallback-transitions",
         "cloudfront-function-url",
         "codedeploy-lambda-deployment-group",
@@ -4199,9 +4203,6 @@
         ],
         "cache-streaming": [
           "l2"
-        ],
-        "cc-api-fallback": [
-          "l1"
         ],
         "cc-api-fallback-transitions": [
           "l1",

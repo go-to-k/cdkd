@@ -33,7 +33,7 @@ bootstrap-free-region	2026-09-01T14:50:59Z	PASS	240	verify.sh	PR#2398 arm 2/6: b
 bucket-deployment	2026-08-12T10:09:17Z	PASS	121	verify.sh	#1687 final; 10 del/0 err, 0 orph
 budgets	2026-08-13T11:19:53Z	PASS	-	verify.sh	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 cache-streaming	2026-08-10T04:52:34Z	PASS	527	verify.sh	0810 sweep b4; elasticache-provider re-verify, GetAtt redis endpoint, 0 orph
-cc-api-fallback	2026-09-03T12:07:16Z	FAIL	44	verify.sh	stale fixture premise NOT a PR-2465 defect: RuntimeManagementConfig SDK-wired by 1621 a day after last pass, auto-route no longer fires; issue 2473; cleanup clean
+cc-api-fallback	2026-09-03T17:24:30Z	PASS	44	verify.sh	issue 2473 fix: trigger moved to ApiGatewayV2 Api.Body (architectural exclusion) + step-0 premise guard; route read-back OK, 2 del 0 err 0 orph
 cc-api-fallback-transitions	2026-08-01T10:00:06Z	PASS	123	verify.sh	0801 regression sweep; #634 items 3+4 ok, 0 orphans
 cc-getatt-readback	2026-09-02T10:32:07Z	PASS	260	verify.sh	2 phases passed; 8 deleted 0 errors, 0 orphans (S3 AccessPoint, not EFS)
 cc-protection-flip	2026-07-31T03:56:21Z	PASS	1250	verify.sh	5 CC types incl. RDS/DocDB GlobalCluster shells (#1315); orph clean
