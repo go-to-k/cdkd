@@ -18,9 +18,10 @@
  * runtime dependency — the same library the AWS CDK CLI does this job with
  * (`@aws-cdk/toolkit-lib/lib/util/yaml-cfn.ts`: `yaml.stringify(obj, {
  * schema: 'yaml-1.1' })` at fold width 0). So "CDK CLI compatible" is now
- * produced by the library CDK CLI uses rather than approximated. The schema
- * differs deliberately and the output does not; `EMIT_OPTIONS` below carries
- * the measurement and the reason.
+ * produced by the library CDK CLI uses rather than approximated. The SCHEMA
+ * differs from CDK CLI's deliberately; `EMIT_OPTIONS` below carries the
+ * measurement and the reason, including the one input class whose rendering
+ * that choice does change.
  *
  * Measured consequence on `tests/integration/basic` (2026-09-03): of 182
  * lines, only the defect and its mirror move — `- *` becomes `- "*"`, numbers
@@ -52,7 +53,14 @@ import { Document, Scalar, isScalar, parse, stringify, visit } from 'yaml';
  * the other:
  *
  * - 1.2 core added `0o` octal, for which 1.1 has no resolver, so `'0o17'`
- *   emits bare under 1.1 and a default reader returns the number 15;
+ *   emitted bare under 1.1 would come back as the number 15 from a default
+ *   reader — the finding that produced this oracle, and the reason the list
+ *   is a list. It is currently INERT, because emitting under `core` means the
+ *   library has already applied core's own resolvers: measured, dropping
+ *   `'core'` from this list reds nothing while dropping `'yaml-1.1'` reds. It
+ *   stays because the emit schema has already moved once in this file's
+ *   history, and this list is what would keep the guarantee standing if it
+ *   moves again;
  * - 1.1 resolves `yes` / `no` / `on` / `off` and timestamps, which 1.2 leaves
  *   alone, so those must be quoted for `yq`'s sake even though a 1.2 reader
  *   would not have re-typed them.
@@ -82,6 +90,20 @@ import { Document, Scalar, isScalar, parse, stringify, visit } from 'yaml';
  */
 const EMIT_OPTIONS = { schema: 'core', lineWidth: 0, aliasDuplicateObjects: false } as const;
 const READER_SCHEMAS = ['yaml-1.1', 'core'] as const;
+
+/**
+ * The oracle PARSES, and a parse can warn as well as throw — so the probe
+ * reads have to be silenced or the probe becomes an output side effect.
+ *
+ * Measured: a date-shaped map KEY emits bare under `core`, and probing it
+ * under the 1.1 reader resolves it to a `Date`, at which point `yaml` calls
+ * `process.emitWarning` (`Keys with collection values will be stringified`).
+ * That reached the real stderr — 254 bytes on a GREEN unit run, against this
+ * repo's "a green run must print nothing" rule, and on `cdkd synth` for any
+ * template carrying such a key. The oracle only ever reads the parsed VALUE,
+ * so it has no use for the diagnostics at all.
+ */
+const READER_OPTIONS = { logLevel: 'silent' } as const;
 
 /**
  * Templates repeat their scalars heavily (`AWS::S3::Bucket`, a region, a
@@ -119,10 +141,10 @@ const valueRoundTripsPlain = memoize((value: string): boolean => {
   const emitted = stringify(value, EMIT_OPTIONS);
   return READER_SCHEMAS.every((schema) => {
     try {
-      return parse(emitted, { schema }) === value;
+      return parse(emitted, { schema, ...READER_OPTIONS }) === value;
     } catch {
       // Defensive, and measured as such rather than assumed: no probe has
-      // reached it (21 hostile strings x both readers, 0 hits), because the
+      // reached it — 0 hits over 461 strings x both readers in review — as the
       // library does not emit a plain VALUE scalar that fails to parse. It
       // stays so that a future library change degrades into quoting rather
       // than into a thrown error, and it is called out because no test can
@@ -141,7 +163,7 @@ const keyRoundTripsPlain = memoize((key: string): boolean => {
   return READER_SCHEMAS.every((schema) => {
     let back: unknown;
     try {
-      back = parse(emitted, { schema });
+      back = parse(emitted, { schema, ...READER_OPTIONS });
     } catch {
       // LOAD-BEARING, unlike its twin above: this is the path `<<` takes.
       // Under a 1.1 reader `<<: v` throws `Merge sources must be maps`, and
@@ -157,14 +179,13 @@ const keyRoundTripsPlain = memoize((key: string): boolean => {
 });
 
 export function toYaml(obj: unknown): string {
-  // `stringify` returns the JS value `undefined` — not a string — for an
-  // input with no YAML representation, which among the inputs these two
-  // consumers can produce means `undefined` itself. Keep the previous
-  // rendering for it. (A function or a symbol THROWS instead of returning
-  // undefined, so the fallback would not catch one; neither consumer can
-  // produce either, both passing JSON-sourced data.)
-  if (obj === undefined) return 'null\n';
-
+  // No `undefined` special case: `new Document(undefined).toString()` already
+  // yields `null\n`, which is what the hand-rolled emitter returned. (An
+  // earlier revision guarded it, because the flat `stringify` call it then
+  // used returns the JS value `undefined` rather than a string. The Document
+  // form does not, and the guard was dead.) A function or a symbol THROWS at
+  // this point either way; neither consumer can produce one, both passing
+  // JSON-sourced data.
   const doc = new Document(obj, EMIT_OPTIONS);
 
   // Force quotes on the scalars the round-trip oracle rejects, and leave
@@ -174,7 +195,8 @@ export function toYaml(obj: unknown): string {
     Scalar(key, node) {
       // A pair's KEY also arrives here, under the literal key `'key'`; it is
       // handled by the Pair visitor below, which asks the other question.
-      // Measured NOT load-bearing (removing it reds nothing): both oracles
+      // Measured NOT load-bearing (removing it reds nothing; the key oracle's
+      // own structural guards below are unprobed in the same way): both oracles
       // only ever ADD quotes, and they disagree on no string in either
       // direction except `<<`, where the Pair visitor is the stricter one and
       // runs anyway. It stays because it expresses which question owns which

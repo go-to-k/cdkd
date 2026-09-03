@@ -83,10 +83,11 @@ const HOSTILE_SCALARS: readonly string[] = [
   'off',
   '2026-09-03',
   '12:30:00',
-  // Resolves under YAML 1.2 core but NOT under 1.1, which is the schema we
-  // emit under -- so this one goes out bare unless the emitter asks BOTH
-  // readers. Found by review; the reason the emitter delegates the question
-  // to the library rather than carrying a list like this one.
+  // Resolves under YAML 1.2 core but NOT under 1.1. It went out bare while
+  // the emitter still used the 1.1 schema, and a default reader handed back
+  // the number 15 -- the finding that produced the dual-reader oracle. Found
+  // by review, which is the reason the emitter delegates the question to the
+  // library rather than carrying a list like this one.
   '0o17',
   // The 1.1 MERGE key: ordinary in value position, special as a KEY, which is
   // why the emitter asks a different question per position. It is also why
@@ -129,10 +130,14 @@ describe('toYaml', () => {
       });
     }
 
-    // Emitted under the 1.1 schema precisely so a 1.1 reader — which is what
-    // `yq` is — gets the same values back. Asserting only under the default
-    // (1.2 core) parser would leave `yes` / `on` / `2026-09-03` unfenced,
-    // since 1.2 does not resolve them implicitly in the first place.
+    // `yq` is a 1.1 reader, so 1.1 is where the guarantee has to hold.
+    // Asserting only under the default (1.2 core) parser would leave `yes` /
+    // `on` / `2026-09-03` unfenced, since 1.2 does not resolve them
+    // implicitly in the first place. These four lines are the LIVE half of
+    // the 4x2 grid: measured, each of them reds on its own, while the four
+    // core-reader lines above are currently implied by the emit schema
+    // (the library applies core's resolvers before the oracle sees the
+    // value). They are kept because that schema has already moved once.
     it('round-trips under a YAML 1.1 reader too, at every position (`yq` semantics)', () => {
       // ALL FOUR positions, not just the map value. Covering one position was
       // how the `<<` blocker shipped through a whole review round: `<<` is the
@@ -216,7 +221,7 @@ describe('toYaml', () => {
     const emitted = toYaml({ Outputs: { A: { Value: shared }, B: { Value: shared } } });
 
     // Sound because THIS fixture's content contains no `&` and no `*` — the
-    // template 20 lines above deliberately does, so widening this fixture
+    // template earlier in this file deliberately does, so widening this fixture
     // would make the assertion fail for the wrong reason.
     // NOT a regex over the default `anchorPrefix` ('a'): that binds the
     // assertion to a library default, and the same aliased output scores
