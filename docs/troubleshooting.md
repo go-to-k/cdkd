@@ -37,8 +37,8 @@ Locked by: user@hostname:12345, operation: deploy
 - Another process is deploying the same stack
 - Previous process crashed and lock remains
 
-> **A lock is only reclaimed once its holder stops renewing it.** Since issue
-> [#2168](https://github.com/go-to-k/cdkd/issues/2168) the holding process
+> **A lock is only reclaimed once its holder stops renewing it.** The holding
+> process
 > re-writes the lock's `expiresAt` every couple of minutes while it runs, so
 > the 30-minute TTL measures **silence, not duration**. A long deploy no longer
 > loses its lock partway through, and conversely a lock you find expired really
@@ -75,8 +75,7 @@ Locked by: user@hostname:12345, operation: deploy
 > same-named stack's lock in a different account.
 
 > **Note:** A first `Ctrl-C` during `cdkd destroy` / `cdkd state destroy` no
-> longer strands the lock — the graceful-SIGINT handler (issue
-> [#816](https://github.com/go-to-k/cdkd/issues/816)) finishes any in-flight
+> longer strands the lock — the graceful-SIGINT handler finishes any in-flight
 > delete, flushes the incremental state, and **releases the lock** before
 > exiting non-zero. A re-run resumes immediately without waiting out the lock
 > TTL. `cdkd deploy` behaves the same way on a first `Ctrl-C`: in-flight
@@ -165,8 +164,7 @@ Cancellation is not a clean `Ctrl-C`. GitHub Actions escalates
 `SIGINT` → `SIGTERM` (~7.5 s later) → `SIGKILL` (~2.5 s after that); other CI
 systems (GitLab CI, `docker stop`, Kubernetes) typically send `SIGTERM`
 directly. cdkd's `deploy` / `destroy` / `state destroy` / `rollback` commands
-handle **both `SIGINT` and `SIGTERM`** gracefully (issue
-[#1342](https://github.com/go-to-k/cdkd/issues/1342)): the first signal
+handle **both `SIGINT` and `SIGTERM`** gracefully: the first signal
 finishes in-flight operations, saves state, and releases the lock; a second
 signal force-quits with a best-effort lock release. But `SIGKILL` cannot be
 handled by any process — under GitHub Actions the whole escalation completes
@@ -386,11 +384,11 @@ cleanly — the protocol parser falls through and produces a synthetic
 
 #### Solution
 
-cdkd resolves this automatically: the state backend (PR #60, shipped
-v0.10.0), the lock manager (issue #803 — between PR #60 and that fix,
+cdkd resolves this automatically: the state backend (since
+v0.10.0), the lock manager (previously
 state operations succeeded against a cross-region bucket but lock
 acquisition failed with the PermanentRedirect error above), and the
-custom-resource response path (issue #1195 — before that fix, deploying
+custom-resource response path (previously deploying
 a stack with a Lambda-backed Custom Resource to a region different from
 the state bucket's region failed with the same 301 on the pre-signed
 `ResponseURL`) look up the bucket region via `GetBucketLocation` (a GET
@@ -401,7 +399,7 @@ with the full stack trace.
 
 You no longer need to set the region to match the bucket region (the
 state-bucket client auto-detects it via `GetBucketLocation`). As of
-PR #63 (v0.12.0), `--region` is a first-class option only on
+v0.12.0, `--region` is a first-class option only on
 `cdkd bootstrap` (where it picks the new bucket's region); on every
 other command it is deprecated (prefer `AWS_REGION` / your AWS profile)
 but still honored if passed. Use `AWS_REGION` or your AWS profile to
@@ -614,9 +612,7 @@ repository ...
 
 **Cause:**
 
-`cdkd destroy` matches CloudFormation's fail-and-protect behavior (issues
-[#1340](https://github.com/go-to-k/cdkd/issues/1340) /
-[#1344](https://github.com/go-to-k/cdkd/issues/1344)): an S3 bucket (standard
+`cdkd destroy` matches CloudFormation's fail-and-protect behavior: an S3 bucket (standard
 or S3 Express directory bucket) that still contains objects, or an ECR
 repository that still contains images, is NOT force-cleaned unless the
 resource opted in.
@@ -626,8 +622,7 @@ resource opted in.
 1. Opt in from the CDK app and redeploy, then destroy:
    - S3: `autoDeleteObjects: true` (with `removalPolicy: DESTROY`)
    - S3 Express directory bucket: CDK has no `autoDeleteObjects` sugar —
-     declare the opt-in tag on the L1 (`Tags` is a handled property since
-     issue [#609](https://github.com/go-to-k/cdkd/issues/609)):
+     declare the opt-in tag on the L1 (`Tags` is a handled property):
      `tags: [{ key: 'aws-cdk:auto-delete-objects', value: 'true' }]`
    - ECR: `emptyOnDelete: true` (or the legacy `autoDeleteImages: true`)
 2. Or empty the data manually and re-run the destroy:
@@ -657,12 +652,10 @@ final-snapshot delete parameter ...
 **Cause:**
 
 CloudFormation creates a final snapshot before deleting a
-`DeletionPolicy: Snapshot` resource, and cdkd matches that (issues
-[#1352](https://github.com/go-to-k/cdkd/issues/1352) /
-[#1353](https://github.com/go-to-k/cdkd/issues/1353)) for the FULL
+`DeletionPolicy: Snapshot` resource, and cdkd matches that for the FULL
 CFn-documented Snapshot-capable type list. The delete is refused only when
 cdkd cannot create the snapshot: the resource is an atomic-parameter type
-routed via Cloud Control (`provisionedBy: cc-api`, the #614 silent-drop
+routed via Cloud Control (`provisionedBy: cc-api`, the silent-drop
 routing — Cloud Control's `DeleteResource` has no final-snapshot
 parameter), or the template carries `Snapshot` on a type CloudFormation
 itself would refuse the attribute on.
@@ -696,13 +689,12 @@ before any AWS call. (A `cdkd rollback` only ever WARNS, on both of its paths �
 the update replay and the reverse-replacement re-create — because a rollback
 replays from cdkd state rather than from your template, so refusing there would
 leave you no remedy but hand-editing `state.json`. That matters for tables
-created by a cdkd build older than the #1390 fix, whose state records still
+created by an older cdkd build, whose state records still
 carry the key. See "Glue table Iceberg support" in
 [supported-resources.md](supported-resources.md) for what the restored table
 looks like.) It is a
 deliberate parity divergence — CloudFormation forwards the property instead of
-validating it, but a live probe (issue
-[#1408](https://github.com/go-to-k/cdkd/issues/1408)) showed the spec is
+validating it, but a live probe showed the spec is
 undeployable either way: the raw `glue:CreateTable` API cdkd calls rejects every
 shape of it, and CloudFormation rolls the same template back. The handler asks
 for `IcebergTableInputProperties`, a name that exists in neither the CFn
@@ -759,12 +751,11 @@ AllowedFirstAuthFactors: [PASSWORD]).
 **Cause:**
 
 `UpdateUserPool` treats an omitted `Policies` sub-key as "keep the live value",
-not as "reset it" -- measured us-east-1 2026-08-19 (issue
-[#1968](https://github.com/go-to-k/cdkd/issues/1968)). There is no input that
+not as "reset it" -- measured us-east-1 2026-08-19. There is no input that
 expresses a removal, so a template that stops declaring the sub-key sends
 nothing for it and AWS changes nothing. **CloudFormation behaves identically**
 on the same template edit -- measured us-east-1 2026-09-02 on all three removal
-shapes (issue [#1979](https://github.com/go-to-k/cdkd/issues/1979)) -- so this
+shapes -- so this
 is template-compatibility parity, not a cdkd defect, and cdkd deliberately does
 not send a reset that CloudFormation would not.
 
@@ -823,7 +814,7 @@ cdkd bootstrap --region us-east-1
 ```
 
 Normally this is automatic — the first `cdkd deploy` into a region
-auto-creates the storage (issue #1007), so this error usually means the
+auto-creates the storage, so this error usually means the
 auto-create was declined / opted out (`--no-auto-asset-storage`), failed
 (check the deploy output for the auto-create warning), or someone deleted
 the bucket/repo after opt-in. Deploys that stay in **legacy mode** publish
@@ -1317,12 +1308,12 @@ cdkd includes built-in retry logic for CREATE operations, with the backoff shape
   That line is how you tell the cases apart without reading cdkd's source:
 
   - **`(the full propagation budget)` present** — the retry ran to exhaustion and IAM genuinely took longer than 47.75s in that account. Re-running usually succeeds; if it recurs, please [open an issue](https://github.com/go-to-k/cdkd/issues) with the line, since the budget's shape is then the thing that needs changing. Note the retry COUNT on such a line can be below 26: a throttle mid-race consumes an attempt without counting as a propagation retry, so the budget can run out at 25 or fewer.
-  - **No budget note, and a low count** — something terminal ended the race early: a non-retryable error such as an explicit deny, or an error cdkd's classifier could not read. The seconds figure tells you how much of the 47.75s was actually spent, which is what distinguishes "IAM was too slow" from "the retry was cut short", and the bracketed `[name=... http=...]` names what ended it. This shape is worth reporting when the status is a 5xx other than 500 / 502 / 503 / 504, or when the bracket shows `no-$metadata`: those are the cases cdkd does not currently treat as transient, and one of them (a plain HTTP 500 answered mid-propagation with an empty body) was a real defect — [#2026](https://github.com/go-to-k/cdkd/issues/2026), where a single 500 ended an otherwise healthy sequence at 12% of its budget.
+  - **No budget note, and a low count** — something terminal ended the race early: a non-retryable error such as an explicit deny, or an error cdkd's classifier could not read. The seconds figure tells you how much of the 47.75s was actually spent, which is what distinguishes "IAM was too slow" from "the retry was cut short", and the bracketed `[name=... http=...]` names what ended it. This shape is worth reporting when the status is a 5xx other than 500 / 502 / 503 / 504, or when the bracket shows `no-$metadata`: those are the cases cdkd does not currently treat as transient, and one of them (a plain HTTP 500 answered mid-propagation with an empty body) was a real, since-fixed defect, where a single 500 ended an otherwise healthy sequence at 12% of its budget.
   - **No such line at all** — the retry never engaged, and there are two reasons, which need different responses. Either the failure was never classified as propagation (a missing pattern in `retryable-errors.ts`, worth reporting), OR the failing resource is served by a provider that opts out of the outer retry by design — `Custom::*` / `AWS::CloudFormation::CustomResource` and `AWS::CloudFormation::Stack` set `disableOuterRetry`, so the dense outer schedule never wraps them and no give-up line is produced for them. A custom resource's Lambda HANDLER is an ordinary `AWS::Lambda::Function` and does retry on the outer schedule. Check which of the two the failing logical id is before filing.
 
-    There used to be a THIRD reason, and it is worth knowing it is gone (issue [#2032](https://github.com/go-to-k/cdkd/issues/2032)). A rollback's reverse-replacement re-create — the arm that revives the OLD resource after a replacement failed — could never produce this line at all, whatever the error: it wrapped the create in a retry carrying an explicit schedule and a name-collision classifier, and either of those alone makes the propagation counters inert. So a rollback that hit `The role defined for the function cannot be assumed by Lambda.` printed the bare AWS sentence, retried zero times, and was indistinguishable from a build with no propagation retry at all. Since #2032 that path retries on the same dense schedule and prints the same give-up line, so **you can now see this line during `cdkd rollback` and during an automatic rollback**, not only during `cdkd deploy`. The two reasons above are once again the complete set.
+    There used to be a THIRD reason, and it is worth knowing it is gone. A rollback's reverse-replacement re-create — the arm that revives the OLD resource after a replacement failed — could never produce this line at all, whatever the error: it wrapped the create in a retry carrying an explicit schedule and a name-collision classifier, and either of those alone makes the propagation counters inert. So a rollback that hit `The role defined for the function cannot be assumed by Lambda.` printed the bare AWS sentence, retried zero times, and was indistinguishable from a build with no propagation retry at all. That path now retries on the same dense schedule and prints the same give-up line, so **you can now see this line during `cdkd rollback` and during an automatic rollback**, not only during `cdkd deploy`. The two reasons above are once again the complete set.
 
-    Opting out of the OUTER retry is not the same as having no retry, which is what this bullet used to say (issue [#2033](https://github.com/go-to-k/cdkd/issues/2033)). `CustomResourceProvider` retries internally instead, and since #2033 that covers both error shapes rather than one: a handler that RETURNS `FAILED` with an authz-shaped reason, and — new — an authz-shaped error THROWN by an SDK call the provider itself makes before the request reaches the handler. The two draw on SEPARATE budgets, because they cost different things. A re-invoke after a FAILED response re-runs your handler, so it stays small (`CDKD_CR_AUTHZ_MAX_RETRIES`, default 2, clamped to 10). A pre-delivery THROW reached no handler at all, so it gets the same 26 retries over 47.75s the outer schedule gives every other resource type — which is the whole point, since the propagation window this covers is measured in seconds and 0.75s of coverage would not have closed the reported failure. `CDKD_CR_AUTHZ_MAX_RETRIES=0` therefore disables re-invocations of your handler only; it does not disable the pre-delivery retry or the response-placeholder `PutObject` retry, neither of which can reach a handler. A throw that lands AFTER the invoke was accepted is never replayed regardless of its wording — the handler is running and will write to that attempt's response URL — so a `Custom::*` failure can still be genuinely single-shot; the readiness waiters are likewise never replayed — they have already polled `lambda:GetFunction` for their own 600s — so a permanent denial there surfaces after one waiter timeout rather than three. `AWS::CloudFormation::Stack` is unchanged and has no internal retry.
+    Opting out of the OUTER retry is not the same as having no retry, which is what this bullet used to say. `CustomResourceProvider` retries internally instead, and that now covers both error shapes rather than one: a handler that RETURNS `FAILED` with an authz-shaped reason, and — new — an authz-shaped error THROWN by an SDK call the provider itself makes before the request reaches the handler. The two draw on SEPARATE budgets, because they cost different things. A re-invoke after a FAILED response re-runs your handler, so it stays small (`CDKD_CR_AUTHZ_MAX_RETRIES`, default 2, clamped to 10). A pre-delivery THROW reached no handler at all, so it gets the same 26 retries over 47.75s the outer schedule gives every other resource type — which is the whole point, since the propagation window this covers is measured in seconds and 0.75s of coverage would not have closed the reported failure. `CDKD_CR_AUTHZ_MAX_RETRIES=0` therefore disables re-invocations of your handler only; it does not disable the pre-delivery retry or the response-placeholder `PutObject` retry, neither of which can reach a handler. A throw that lands AFTER the invoke was accepted is never replayed regardless of its wording — the handler is running and will write to that attempt's response URL — so a `Custom::*` failure can still be genuinely single-shot; the readiness waiters are likewise never replayed — they have already polled `lambda:GetFunction` for their own 600s — so a permanent denial there surfaces after one waiter timeout rather than three. `AWS::CloudFormation::Stack` is unchanged and has no internal retry.
 
   The seconds count PROPAGATION backoff only, so an interleaved throttle's own wait is excluded — the figure is meant to be compared against the 47.75s budget, not read as total elapsed time.
 
@@ -1354,7 +1345,7 @@ cdkd uses a multi-layered approach to prevent orphaned resources:
 
 4. **Post-rollback state save**: After rollback completes (or is skipped with `--no-rollback`), state is saved again to reflect the rolled-back resource state.
 
-5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed (issue #1183). This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted (issue #1208): the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it.
+5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed. This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted: the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it.
 
 ### Issue: `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
 
@@ -1362,7 +1353,7 @@ cdkd retries a `CreateDistribution` that answered HTTP 500 / 502 / 504, because
 those are usually transient. Some of them are not: the request can SUCCEED
 server-side and lose only the response. `CallerReference` is CloudFront's
 idempotency key, so cdkd sends a value that is stable across every attempt of
-one logical create (issue [#2079](https://github.com/go-to-k/cdkd/issues/2079)) —
+one logical create —
 the replay is then REFUSED by CloudFront rather than quietly creating a second
 distribution that no state file knows about and that `cdkd destroy` can never
 reach.
@@ -1408,8 +1399,7 @@ out. This is a real failure, not a cosmetic one: anything downstream
 (CloudFront, an ALB listener) cannot use a certificate that has not issued.
 
 **The certificate is not orphaned.** cdkd deletes the certificate it requested
-before the error is reported (issue
-[#2169](https://github.com/go-to-k/cdkd/issues/2169)), so a failed deploy leaves
+before the error is reported, so a failed deploy leaves
 nothing behind and repeated attempts do not accumulate certificates in your
 account. Before this, each failed attempt left one that nothing tracked.
 
@@ -1512,8 +1502,7 @@ shape it expected.
 **What cdkd did**: nothing. No AWS call was issued for that resource, so it may
 still exist and still be billing. cdkd deliberately does NOT count it as
 deleted and does NOT drop its state record — without the record you would have
-neither the resource deleted nor an id to go and delete it with (issue
-[#1752](https://github.com/go-to-k/cdkd/issues/1752)). `state.json` is
+neither the resource deleted nor an id to go and delete it with. `state.json` is
 preserved and the command exits `2`.
 
 **Fix**, either way round:
@@ -1690,7 +1679,7 @@ A: On next deployment, all resources will be treated as CREATE. If existing reso
 
 ### Q: Is there a rollback feature?
 
-A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff. To revert a `--no-rollback` (or interrupted) deploy back to its pre-deploy state instead of fixing forward, run the standalone `cdkd rollback <stack>` command (issue #1183) — it replays a rollback journal cdkd persisted at failure time, with no synth needed.
+A: Yes. By default, cdkd rolls back on failure. Use `--no-rollback` to skip rollback and keep partial state (Terraform-style). On next execution, remaining changes are applied as diff. To revert a `--no-rollback` (or interrupted) deploy back to its pre-deploy state instead of fixing forward, run the standalone `cdkd rollback <stack>` command — it replays a rollback journal cdkd persisted at failure time, with no synth needed.
 
 ### Q: Are custom resources supported?
 

@@ -28,18 +28,17 @@ const escapeHtml = (value: string): string =>
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
 
-// Horizontal orientation ("|→||"): vertical bars with the direct-line arrow
-// running left-to-right — the stacked-bars variant read as a hamburger menu in
-// the header's top-left slot.
+// The "|→‖" mark (maintainer's pick): one layer, the direct arrow, then the
+// two-layer stack it lands in — horizontal so the header top-left slot never
+// reads as a hamburger menu, three stems so it never reads as an "H".
 const logoSvg = `
 <svg width="72" height="72" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
   <rect x="2" y="2" width="60" height="60" rx="14" fill="#171b30" stroke="#2c3254" stroke-width="2"/>
-  <rect x="11" y="13" width="8" height="38" rx="3" fill="${BRAND.primary}"/>
-  <rect x="28" y="13" width="8" height="10" rx="3" fill="${BRAND.primaryDim}"/>
-  <rect x="28" y="41" width="8" height="10" rx="3" fill="${BRAND.primaryDim}"/>
-  <rect x="45" y="13" width="8" height="38" rx="3" fill="${BRAND.primary}"/>
-  <path d="M20 32 L34 32" stroke="${BRAND.accent}" stroke-width="5.5" stroke-linecap="round"/>
-  <path d="M31.5 25.5 L40.5 32 L31.5 38.5" fill="none" stroke="${BRAND.accent}" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="9" y="13" width="8" height="38" rx="3" fill="${BRAND.primary}"/>
+  <rect x="41" y="13" width="7" height="38" rx="3" fill="${BRAND.primaryDim}"/>
+  <rect x="51" y="13" width="7" height="38" rx="3" fill="${BRAND.primary}"/>
+  <path d="M19 32 L27 32" stroke="${BRAND.accent}" stroke-width="6" stroke-linecap="round"/>
+  <path d="M25 24.5 L34.5 32 L25 39.5" fill="none" stroke="${BRAND.accent}" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 
 export default function ogTemplate(props: OgTemplateProps): string {

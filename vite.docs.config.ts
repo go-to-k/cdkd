@@ -20,10 +20,10 @@ const navigation: SsgNavigationGroup[] = [
     title: 'Guide',
     items: [
       { title: 'Introduction', path: '/introduction' },
-      { title: 'Benchmarks', path: '/benchmarks' },
       { title: 'Getting Started', path: '/getting-started' },
       { title: 'Using with AI Agents', path: '/ai-agents' },
       { title: 'Core Concepts', path: '/concepts' },
+      { title: 'Benchmarks', path: '/benchmarks' },
     ],
   },
   {
@@ -112,8 +112,22 @@ const theme = defineTheme({
     '.header-actions .search-button,',
     '.header-actions .theme-toggle {',
     '  border: none; background: transparent; box-shadow: none;',
+    '  border-radius: 8px !important;',
+    '}',
+    // The skin's hover paints these controls background=rule / text=page-bg,
+    // which in light mode is white-on-white — restate the hover as the same
+    // tint treatment the sidebar uses so it stays visible in both themes.
+    '.header-actions .social-link:hover,',
+    '.header-actions .search-button:hover,',
+    '.header-actions .theme-toggle:hover {',
+    '  background: color-mix(in srgb, var(--octc-color-primary) 12%, transparent);',
+    '  color: var(--octc-color-primary);',
     '}',
     '.nav-title, .toc-title { border-top: none; }',
+    // The sidebar/outline column rules run the full viewport height and cut
+    // across the header nav items above them — drop both.
+    '.sidebar { border-right: none; }',
+    '.toc { border-left: none; }',
     '.nav-link {',
     '  border-bottom: none;',
     '  border-radius: 8px !important;',

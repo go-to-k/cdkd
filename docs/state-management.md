@@ -39,7 +39,7 @@ see [Default Bucket Name](#default-bucket-name) below.
 
 ### Directory Layout
 
-State and lock keys are region-scoped (since PR 1, schema `version: 2`).
+State and lock keys are region-scoped (since schema `version: 2`).
 The same `stackName` deployed to two different regions has two independent
 state files; changing `env.region` no longer silently overwrites the prior
 region's record.
@@ -51,12 +51,12 @@ s3://{STATE_BUCKET}/{STATE_PREFIX}/
           ├── lock.json               # Exclusive lock information (region-scoped)
           ├── state.json              # Resource state (region-scoped)
           └── rollback-journal.json   # Transient — present only between a failed
-                                      #   deploy and its `cdkd rollback` (issue #1183)
+                                      #   deploy and its `cdkd rollback`
 s3://{STATE_BUCKET}/cdkd-bootstrap/
-  └── {Region}.json          # Asset-storage bootstrap marker (issue #1002)
+  └── {Region}.json          # Asset-storage bootstrap marker
 s3://{STATE_BUCKET}/custom-resource-responses/
   └── {RequestId}.json       # Transient — one placeholder per Custom Resource
-                             #   invocation, collected by `cdkd gc` (issue #2052)
+                             #   invocation, collected by `cdkd gc`
 ```
 
 The `custom-resource-responses/{requestId}.json` placeholders are written by
@@ -65,9 +65,8 @@ pre-signed URL to PUT its `cfn-response` to. They are transient and the happy
 paths delete them again, but three shapes strand one: an interrupted deploy
 between the PUT and any cleanup, a throw on a path that reaches no cleanup
 call, and a LATE handler PUT landing after cdkd stopped polling (the only one
-that leaves real `Data` content rather than an empty body). Since issue
-[#2052](https://github.com/go-to-k/cdkd/issues/2052) `cdkd gc` collects the
-stranded ones — see
+that leaves real `Data` content rather than an empty body). `cdkd gc` collects
+the stranded ones — see
 [`cdkd gc`](cli-reference.md#custom-resource-response-placeholders) for the
 staleness rule and why an in-flight run's key is never taken.
 
@@ -77,8 +76,8 @@ writes a DELETE MARKER and every earlier version of the key stays readable
 through `GetObject` with a `VersionId`. That matters here more than anywhere
 else under the state bucket: the object at this key is the handler's FULL
 `cfn-response`, `Data` included, so a handler that mints a secret (a generated
-password, an issued API key) put that value in the state bucket. Until issue
-[#2340](https://github.com/go-to-k/cdkd/issues/2340) both delete paths — the
+password, an issued API key) put that value in the state bucket. Previously
+both delete paths — the
 provider's own cleanup and `cdkd gc`'s collection — left it retrievable after
 reporting the object gone. Both now purge the key's noncurrent versions as
 well, scoped to that exact key so a concurrent deploy's live placeholder under
@@ -89,7 +88,7 @@ secret returned in `Data` also flows into `state.json` — into the custom
 resource's own `attributes`, and into the resolved `properties` of every
 resource that consumed it through `Fn::GetAtt`. That is a separate object with
 a separate lifetime, and purging the response sidecar does nothing for it.
-Since issue [#2274](https://github.com/go-to-k/cdkd/issues/2274) a handler can
+A handler can
 opt those values out of the state file, by declaring the response sensitive —
 see [`NoEcho` custom-resource responses](#noecho-custom-resource-responses)
 below. Without that declaration the state file still carries the value.
@@ -98,20 +97,18 @@ That purge is conditional on `s3:ListBucketVersions` and
 `s3:DeleteObjectVersion` on the state bucket — as is every other
 noncurrent-version purge cdkd runs (the rollback journal and the bootstrap
 marker below, and the transient CFn template upload) — see
-[Bucket Policy with Least Privilege](#recommended-bucket-policy-with-least-privilege),
-which did not grant either before #2340. It fails soft by design, because it
+[Bucket Policy with Least Privilege](#recommended-bucket-policy-with-least-privilege)
+— older recommended policies did not grant either. It fails soft by design, because it
 runs on a cleanup path that must never abort the operation it follows: without
 those actions the deploy, destroy or `cdkd gc` run still succeeds, a warning
 names the two grants, and the body stays retrievable by `VersionId`.
 
-The `rollback-journal.json` sibling (issue
-[#1183](https://github.com/go-to-k/cdkd/issues/1183)) is written whenever a
+The `rollback-journal.json` sibling is written whenever a
 deploy ends **without a completed rollback** — a `--no-rollback` failure, a
 Ctrl+C interruption, or before an automatic rollback (so a rollback that
 dies partway is resumable). It records the exact operations the failed
 deploy completed (one `segment` per failed attempt) so `cdkd rollback` can
-revert them with no synth. Since issue
-[#1198](https://github.com/go-to-k/cdkd/issues/1198) each segment also
+revert them with no synth. Each segment also
 carries the op(s) that **FAILED** mid-deploy (`failedOperations[]` — pre-op
 state + attempted properties; an additive field, no `journalVersion` bump)
 so `cdkd rollback --revert-failed` can optionally revert them too. It is deliberately **not** part of the state
@@ -122,8 +119,7 @@ deploy and before an auto-rollback; each replayed segment is popped; the
 object is deleted on the next **successful deploy**, after a **clean
 `cdkd rollback`**, and by `cdkd destroy` / `cdkd state destroy`. A **clean
 automatic rollback** settles it to a failed-only segment instead of
-deleting it (issue [#1208](https://github.com/go-to-k/cdkd/issues/1208):
-`operations: []` plus the failed op records, `reason:
+deleting it (`operations: []` plus the failed op records, `reason:
 auto-rollback-clean`) so `cdkd rollback --revert-failed` works in the
 default deploy flow too. It carries
 resolved properties, the **same sensitivity class as `state.json`** (no new
@@ -131,8 +127,7 @@ secret-exposure class). Every writer holds the stack lock, so no optimistic
 locking is needed.
 
 **Deleting the journal purges its noncurrent versions too**, on every one of
-those paths (issue
-[#2346](https://github.com/go-to-k/cdkd/issues/2346)). The bucket is
+those paths. The bucket is
 versioned, so a plain `DeleteObject` would leave each earlier body readable
 through `GetObject` with a `VersionId` — and `failedOperations[]` holds the
 attempted properties of the FAILED write verbatim, which is where a literal
@@ -148,19 +143,20 @@ The `cdkd-bootstrap/{region}.json` marker is written by `cdkd bootstrap`
 asset storage — its body names the region's asset bucket
 (default `cdkd-assets-{accountId}-{region}`) and container-asset ECR repo
 (default `cdkd-container-assets-{accountId}-{region}`; custom names via
-`cdkd bootstrap --asset-bucket <name>` / `--container-repo <name>`, issue
-[#1011](https://github.com/go-to-k/cdkd/issues/1011) — every consumer reads
+`cdkd bootstrap --asset-bucket <name>` / `--container-repo <name>` —
+every consumer reads
 the names from the marker, never from the naming convention). Deploys read
 the marker per
 (account, region) to pick the asset mode: absent → legacy (publish to the
-CDK bootstrap destinations verbatim, byte-identical to pre-#1002 behavior);
+CDK bootstrap destinations verbatim, byte-identical to the behavior before
+cdkd-owned asset storage existed);
 present → cdkd-assets mode (asset publishing redirects to the cdkd storage
 and template references are rewritten to match — see the asset-destinations
 section in [docs/cli-reference.md](cli-reference.md); no state schema
 change, the deployed `properties` simply carry the cdkd names); present but
 bucket/repo deleted → hard error
-(never a silent fallback). `cdkd bootstrap --destroy` removes the marker and, since issue
-[#2346](https://github.com/go-to-k/cdkd/issues/2346), purges its noncurrent
+(never a silent fallback). `cdkd bootstrap --destroy` removes the marker and
+purges its noncurrent
 versions as well — the marker carries no secret (it names the region's asset
 bucket and container repo), so that is class completeness rather than a
 disclosure fix. The marker deliberately lives OUTSIDE the
@@ -174,7 +170,7 @@ down the region's asset bucket + ECR repo and deletes the marker last
 (the reverse of the create-side marker-written-last ordering); add
 `--include-state-bucket` to also delete the state bucket once every stack
 is destroyed. See the teardown section in
-[docs/cli-reference.md](cli-reference.md#teardown-cdkd-bootstrap-destroy-issue-1010).
+[docs/cli-reference.md](cli-reference.md#teardown-cdkd-bootstrap-destroy).
 
 Because assets are content-addressed and never deleted on `cdkd destroy`,
 the asset bucket / ECR repo grow over time; `cdkd gc` reclaims
@@ -289,23 +285,22 @@ glitch on empty-body 301 HEAD responses) and rebuilds its state-bucket
 S3 client to that region before any state operation.
 
 All four S3 consumers of the state bucket do this: the state backend
-(`state.json` reads/writes, since PR #60), the lock manager
-(`lock.json` acquire/release, since issue #803 — before that fix, state
+(`state.json` reads/writes), the lock manager
+(`lock.json` acquire/release — previously state
 operations succeeded against a cross-region bucket but every lock
 acquisition failed with S3's 301 PermanentRedirect), the exports
 index store (`_index/{region}/exports.json` writes/removes for
-`Fn::ImportValue` tracking, since issue #819 — before that fix the index
+`Fn::ImportValue` tracking — previously the index
 write/remove also hit the 301; non-fatal, so the cross-region index was
 silently never maintained), and the custom-resource response path
 (`custom-resource-responses/*.json` placeholder writes + the pre-signed
-`ResponseURL` the Lambda handler PUTs its cfn-response to, since
-issue #1195 — before that fix a cross-region deploy of any stack carrying a
+`ResponseURL` the Lambda handler PUTs its cfn-response to —
+previously a cross-region deploy of any stack carrying a
 Lambda-backed Custom Resource failed hard with the 301, because the
 pre-signed URL was signed against the deploy region's endpoint). A
 SUCCESSFUL bucket-region lookup is cached per bucket name for the process
 lifetime, so all four consumers share a single `GetBucketLocation`
-call. A FAILED probe is deliberately not cached (issue
-[#1763](https://github.com/go-to-k/cdkd/issues/1763)): the resolver never
+call. A FAILED probe is deliberately not cached: the resolver never
 throws, so a failure degrades to a best guess, and caching that guess
 pinned every later consumer in the process to one transient error's
 answer with no way to heal.
@@ -315,8 +310,8 @@ the AWS SDK's region chain (`AWS_REGION`, the shared config profile) and
 only then to `us-east-1`. `GetBucketLocation` is answered by any regional
 S3 endpoint for a bucket in the same partition, so the probe never needs
 to know the answer to ask the question; it does have to REACH the right
-partition, and the hardcoded `us-east-1` endpoint it used before issue
-#1763 is unreachable from `aws-cn` / `us-iso*` — so outside the
+partition, and the hardcoded `us-east-1` endpoint it previously used
+is unreachable from `aws-cn` / `us-iso*` — so outside the
 commercial partition the probe could not run at all and every consumer
 above silently proceeded against the commercial default.
 
@@ -344,7 +339,7 @@ s3://cdkd-state-myteam-1234567890/cdkd/
 
 ### Legacy layout (`version: 1`) — read path only
 
-State files written by cdkd before PR 1 used a flat per-stack layout:
+State files written by early cdkd versions used a flat per-stack layout:
 
 ```
 s3://{STATE_BUCKET}/{STATE_PREFIX}/
@@ -356,8 +351,8 @@ s3://{STATE_BUCKET}/{STATE_PREFIX}/
 cdkd still **reads** this layout (looking up the legacy key only when its
 embedded `region` field matches the requested region), and the next write
 auto-migrates: it writes the new region-scoped key, then deletes the legacy
-key. The legacy read path is temporary and will be removed in a future PR
-(see `docs/plans/99-future-bc-removal.md`).
+key. The legacy read path is temporary and will be removed in a future
+release (see `docs/plans/99-future-bc-removal.md`).
 
 An older cdkd binary that only knows an earlier version will **fail with
 a clear error** if it sees a higher-versioned blob (e.g. `Unsupported
@@ -386,7 +381,7 @@ comparator — such keys are typically populated AFTER the capture by a
 sibling resource in the same stack (capacity-provider associations,
 standalone lifecycle hooks / security-group rules) or by AWS itself,
 and comparing them produced permanent phantom drift that
-`drift --revert` then destructively "fixed" (issue #1498). An
+`drift --revert` then destructively "fixed". An
 undeclared key captured with a real value is still compared.
 
 **v2 → v3 upgrade is automatic on the next `cdkd deploy`.** When the
@@ -433,7 +428,7 @@ state destroy` is template-less by design and reads `state.deletionPolicy`
 only — pre-v5 state therefore behaves as before (every resource is
 deleted, since there is no signal to skip on; redeploy under v5 to
 populate the field). `DeletionPolicy: Snapshot` is honored on the same
-paths (issue #1352): cdkd creates the final snapshot CloudFormation
+paths: cdkd creates the final snapshot CloudFormation
 promises before deleting (see the "DeletionPolicy: Snapshot" section in
 [cli-reference.md](cli-reference.md) for the per-type mechanics and the
 `--skip-final-snapshot` opt-out).
@@ -454,8 +449,7 @@ promises before deleting (see the "DeletionPolicy: Snapshot" section in
 Schema `version: 6` adds three optional stack-level fields to `StackState`:
 `parentStack`, `parentLogicalId`, `parentRegion`. They are populated **only on
 nested-stack child state records** — the
-`AWS::CloudFormation::Stack` adoption shipped in
-[#459](https://github.com/go-to-k/cdkd/issues/459). Top-level stack state
+`AWS::CloudFormation::Stack` adoption. Top-level stack state
 files leave all three undefined; a v6 reader treats absence as "I am a
 top-level stack" (= the default semantics for every state file v1..v5
 binaries wrote).
@@ -473,10 +467,9 @@ migrate-schema` command, no env flag, no manual JSON edit. The
 [`tests/integration/schema-v5-to-v6-migration/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/schema-v5-to-v6-migration/)
 integ test proves the round-trip against real AWS.
 
-The v6 prep PR added the type bump alone. The
-[`NestedStackProvider`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/nested-stack-provider.ts)
-that consumes the fields shipped in the [#459](https://github.com/go-to-k/cdkd/issues/459)
-main PR: when a parent stack contains an `AWS::CloudFormation::Stack`
+The fields are consumed by
+[`NestedStackProvider`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/nested-stack-provider.ts):
+when a parent stack contains an `AWS::CloudFormation::Stack`
 resource, the provider runs a recursive child deploy / destroy and the
 child's state file lives at
 `cdkd/{parentStackName}~{NestedStackLogicalId}/{region}/state.json`
@@ -485,23 +478,21 @@ leave the three fields undefined on every write — the v6 reader treats
 absence as "I am a top-level stack" and degrades cleanly.
 
 `cdkd import --migrate-from-cloudformation` recursively adopts existing
-CFn-managed nested-stack hierarchies as of [#464](https://github.com/go-to-k/cdkd/issues/464)
-PR A — each nested child gets its own v6-keyed state file with all three
+CFn-managed nested-stack hierarchies — each nested child gets its own v6-keyed state file with all three
 parent-link fields populated, and the source CFn stacks are retired via a
 single parent-side `DeleteStack` cascade after recursive `DeletionPolicy: Retain`
 injection. `cdkd export` of a cdkd-managed nested stack back into
-CloudFormation is supported as of [#464](https://github.com/go-to-k/cdkd/issues/464)
-PR B2 — the orchestrator submits one IMPORT changeset per cdkd-managed
+CloudFormation is supported as well — the orchestrator submits one IMPORT changeset per cdkd-managed
 stack in leaf-first order, non-leaf parents adopt their just-imported
 children via the AWS-docs "Nest an existing stack" pattern, and cdkd
 state for every stack in the tree is deleted leaf-first after the
 CFn-side IMPORT loop completes. Fresh `cdkd deploy` of new nested
-stacks has been supported since #459.
+stacks is supported too.
 
 ### `version: 7` adds `provisionedBy` (v7+ writers)
 
 Schema `version: 7` adds an optional `provisionedBy` field to each
-`ResourceState` ([#614](https://github.com/go-to-k/cdkd/issues/614)): `'sdk'`
+`ResourceState`: `'sdk'`
 (cdkd's preferred fast path — direct synchronous AWS SDK calls) or `'cc-api'`
 (the Cloud Control API fallback), i.e. which provisioning layer owns the
 resource. A Custom Resource is recorded `'sdk'` too, so the field is always
@@ -509,11 +500,11 @@ populated on a v7+ write; it has no SDK-vs-Cloud-Control dichotomy of its own,
 so read the value there as "not Cloud Control" rather than as a literal claim
 about synchronous SDK calls.
 
-Pre-#614 every resource was implicitly SDK-managed, so a v7 reader treats the
+Pre-v7 every resource was implicitly SDK-managed, so a v7 reader treats the
 absent field on a
 v6-and-earlier record as the legacy SDK default. Precisely, an absent field
 means the record is not PINNED: routing re-decides from scratch, so such a
-resource can still be auto-routed to Cloud Control by the #614 silent-drop
+resource can still be auto-routed to Cloud Control by the silent-drop
 check — the same decision it got before v7 existed. Only a recorded
 `'cc-api'` pins. v7+ writers (`cdkd deploy` and `cdkd import` alike) emit the
 field explicitly so the decision is durable across deploys.
@@ -529,8 +520,8 @@ slower) AND the SDK provider addresses the resource by the SAME physicalId the
 CC path stored, so the re-route costs no churn and the record flips to
 `'sdk'` transparently on its next write. Without the exemption, pinning such a
 record to `cc-api` would keep the bug alive for every pre-existing resource.
-`AWS::Scheduler::Schedule` ([#961](https://github.com/go-to-k/cdkd/issues/961) —
-a schedule in a custom `ScheduleGroup` is unaddressable via Cloud Control) is
+`AWS::Scheduler::Schedule` (a schedule in a custom `ScheduleGroup` is
+unaddressable via Cloud Control) is
 the member today. So a `provisionedBy: 'cc-api'` record is NOT proof the
 resource will keep being managed through Cloud Control.
 
@@ -548,13 +539,12 @@ integ test proves the round-trip against real AWS.
 
 Schema `version: 8` adds an optional stack-level `outputReads` array — one
 `StateOutputReadEntry` per `Fn::GetStackOutput` resolution that was served from
-a **cdkd state record** during the consumer stack's deploy
-([#668](https://github.com/go-to-k/cdkd/issues/668)). Two resolutions are
+a **cdkd state record** during the consumer stack's deploy. Two resolutions are
 deliberately NOT recorded, so the array is a subset of the references a
 template carries rather than an inventory of them: a **cross-account**
 (`RoleArn`) read (deferred to a future bump alongside a `sourceAccountId`
 field), and one served by the **CloudFormation fallback**
-([#1697](https://github.com/go-to-k/cdkd/issues/1697) — the producer is not
+(the producer is not
 cdkd-managed, so cdkd never recreates it and there is no warning to attach the
 consumer to). Same-account cross-REGION reads ARE recorded (`sourceRegion`
 carries the producer's region). It is the sibling of v4's
@@ -581,8 +571,7 @@ integ test proves the round-trip against real AWS.
 
 Schema `version: 9` adds a stack-level `exportNames` array: the keys of
 `outputs` that are `Export.Name` aliases, i.e. the ONLY names an
-`Fn::ImportValue` may bind to
-([#2193](https://github.com/go-to-k/cdkd/issues/2193)). The `outputs` bag has
+`Fn::ImportValue` may bind to. The `outputs` bag has
 always held plain Output names and export aliases side by side, and nothing in
 the record said which was which — so the exports index (on update and on
 rebuild) and the resolver's `state.json` scan treated EVERY key as an export. A
@@ -755,8 +744,7 @@ without it fall back to `properties` (the pre-`version: 3` behavior).
 
 A Lambda-backed custom resource's handler can declare its response `Data`
 sensitive by setting the documented `NoEcho: true` field on the cfn-response
-envelope. Since issue
-[#2274](https://github.com/go-to-k/cdkd/issues/2274) cdkd honours it: every
+envelope. cdkd honours it: every
 string value in that `Data` is stored as `***` instead of the value itself —
 in the custom resource's own `attributes`, in the resolved `properties` and
 `observedProperties` of every resource that consumed it through `Fn::GetAtt`,
@@ -826,15 +814,13 @@ consumer, which then masks it in its OWN state record. Outside that:
 
 Giving the state file a durable per-attribute `NoEcho` flag — which would let a
 later deploy know WHY the mask is there rather than inferring it from the value
-— is a schema bump tracked by issue
-[#2449](https://github.com/go-to-k/cdkd/issues/2449).
+— is a possible future schema bump, not yet implemented.
 
 **Known bound.** The mask replaces a WHOLE stored value. A template that
 EMBEDS the attribute inside a longer string (`Fn::Sub` / `Fn::Join` around the
 `Fn::GetAtt`) persists that string with the value still in it, because an
 inline `***` would be indistinguishable from a literal `***` and nothing
-downstream could recognise it — see issue
-[#2453](https://github.com/go-to-k/cdkd/issues/2453).
+downstream could recognise it.
 
 #### physicalId Format
 
@@ -983,13 +969,12 @@ only one of them is healed by re-deploying:
   split the resource into one `AWS::EC2::SecurityGroupIngress` per
   source, which is also the shape CloudFormation manages after the
   export.
-- **The rule predates [#1761](https://github.com/go-to-k/cdkd/issues/1761),**
-  which is when cdkd started recording the id at all. This is the one
+- **The rule predates id recording** — it was created by a cdkd older
+  than the one that started recording the id at all. This is the one
   exception to "re-deploy once": AWS returns the `sgr-…` id only from
   `AuthorizeSecurityGroupIngress` itself, so a no-op deploy issues no
   call and records nothing. **You do not have to do anything about this
-  one** — since [#1791](https://github.com/go-to-k/cdkd/issues/1791)
-  `cdkd export` recovers the id itself, by looking the rule up in AWS
+  one** — `cdkd export` recovers the id itself, by looking the rule up in AWS
   (see below). Only if that lookup cannot answer do you need the manual
   remedy: cdkd updates this type by revoking and re-authorizing, so
   changing ANY property of the rule mints a fresh id — as does
@@ -1065,8 +1050,8 @@ Two more types **accept** a composite id without producing one:
 > database `mydb`, table `a` — both halves non-empty, so nothing downstream can
 > tell it is wrong. Rather than record an id that names a different resource,
 > `cdkd deploy` **refuses at pre-flight** with a message naming the offending
-> segment. Rename the resource, or manage it with the CDK CLI. Tracked in
-> [#1672](https://github.com/go-to-k/cdkd/issues/1672).
+> segment. Rename the resource, or manage it with the CDK CLI. This is a
+> known limitation.
 
 #### Purpose of attributes
 
@@ -1174,7 +1159,7 @@ Lightweight lock system using S3 Conditional Writes.
 Like the state backend, the lock manager resolves the state bucket's
 actual region via `GetBucketLocation` before its first S3 operation and
 rebuilds its S3 client when the bucket lives in a different region from
-the CLI's base region (issue #803), so locking works against a
+the CLI's base region, so locking works against a
 cross-region state bucket too. The per-bucket region lookup is cached, so
 this adds no extra API call when the state backend already resolved the
 same bucket.
@@ -1266,7 +1251,7 @@ be in one.
 `cdkd force-unlock` is deliberately **not** conditional: it exists precisely to
 remove a lock this process does not own.
 
-Before issue [#2168](https://github.com/go-to-k/cdkd/issues/2168) this was an
+In older cdkd versions this was an
 owner-blind unconditional delete, which is what turned a single lapsed lock
 into a cascade -- a process whose lock had been taken over deleted the *new*
 owner's lock on its way out, freeing the stack for a third writer.
@@ -1334,7 +1319,7 @@ Without that check the process would declare a lock it still owns lost, warn
 about a concurrent writer that does not exist, and then refuse to release its
 own lock.
 
-Before issue [#2168](https://github.com/go-to-k/cdkd/issues/2168) there was no
+In older cdkd versions there was no
 renewal at all, so any operation slower than the TTL silently stopped being
 mutually exclusive while it was still running. That is reachable without
 anything exotic: `AWS::FSx::FileSystem`, `AWS::EMR::Cluster` and Custom
@@ -1357,8 +1342,7 @@ Two consequences worth knowing:
   object version. A 30-minute deploy writes about fifteen, and they go
   noncurrent the moment the next renewal lands. A `DeleteObject` on a versioned
   bucket writes a DELETE MARKER and leaves every earlier version readable
-  through `GetObject` with a `VersionId`, so before issue
-  [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 5 the release left
+  through `GetObject` with a `VersionId`, so previously the release left
   the whole chain behind and the count grew for the life of the bucket -- 452
   versions on a single measured key, invisible to `aws s3 ls`, still billed,
   and still paged through by every version listing the other purge sites issue.
@@ -1419,13 +1403,13 @@ Two consequences worth knowing:
   `rollback-journal.json` and `deployments/`. S3 lifecycle filters support
   `Prefix`, `Tag` and `ObjectSize` only, so no rule can select the lock keys and
   spare `state.json`; the one expressible prefix rule, `cdkd/`, would expire
-  `state.json`'s noncurrent versions too -- the recovery capability sites 1-3
-  are deliberately held open to protect, done in bucket configuration instead
-  of in code. A tag-scoped rule would need `s3:PutObjectTagging` on the lock
-  write, i.e. on the hot path.
+  `state.json`'s noncurrent versions too -- the recovery capability the
+  exempted keys are deliberately held open to protect, done in bucket
+  configuration instead of in code. A tag-scoped rule would need `s3:PutObjectTagging` on the
+  lock write, i.e. on the hot path.
 
   Still deliberately NOT purged: `state.json` itself and the v1 -> v2 migration
-  delete (sites 1-3 of the same issue), because those noncurrent versions ARE
+  delete, because those noncurrent versions ARE
   the state-recovery capability versioning is enabled for.
 
 If the holding process dies without releasing, the lock stops being renewed and
@@ -1448,14 +1432,13 @@ immediately with `cdkd force-unlock <stack>`.
   cleared with `cdkd force-unlock`).
 
 `SIGTERM` (what CI runners, `docker stop`, and Kubernetes send on
-cancellation) is forwarded to the same path (issue
-[#1342](https://github.com/go-to-k/cdkd/issues/1342)): the first `SIGTERM`
+cancellation) is forwarded to the same path: the first `SIGTERM`
 behaves like the first Ctrl-C, a subsequent signal like the second.
 
 ### Destroy interruption (Ctrl-C)
 
 `cdkd destroy` and `cdkd state destroy` handle the first `Ctrl-C` (SIGINT)
-gracefully (issue [#816](https://github.com/go-to-k/cdkd/issues/816)),
+gracefully,
 mirroring Terraform:
 
 - **First Ctrl-C** stops scheduling new deletes. Any provider delete already
@@ -1473,15 +1456,14 @@ mirroring Terraform:
 This is why an interrupted destroy no longer strands the lock for its full
 TTL: only an ungraceful kill (`SIGKILL`, a second Ctrl-C, or a crash) leaves a
 stale lock. As with deploy, `SIGTERM` is forwarded to the same graceful path
-(issue [#1342](https://github.com/go-to-k/cdkd/issues/1342)) — the first
+— the first
 `SIGTERM` drains like the first Ctrl-C, a second one force-quits.
 
 ### CI job cancellation
 
 A cancelled CI job (e.g. GitHub Actions `cancel-in-progress: true`) can still
 strand the lock: cdkd's `deploy` / `destroy` / `state destroy` / `rollback`
-commands handle both `SIGINT` and `SIGTERM` gracefully (issue
-[#1342](https://github.com/go-to-k/cdkd/issues/1342)), but CI runners
+commands handle both `SIGINT` and `SIGTERM` gracefully, but CI runners
 escalate to `SIGKILL` — which no process can handle — after a short grace
 period (~10 s total on GitHub Actions), so a long in-flight AWS operation
 can still die before the lock release runs. The lock is then reclaimed after
@@ -1701,7 +1683,7 @@ async destroy(stackName: string) {
 
         logger.info(`Deleted resource: ${logicalId}`);
 
-        // 4b. Incremental state persistence (issue #804): remove the
+        // 4b. Incremental state persistence: remove the
         // deleted resource and write the trimmed state back to S3 so an
         // interrupted destroy leaves a state file that only lists
         // resources that still exist. The persisted snapshot also CLEARS
@@ -1749,8 +1731,7 @@ async destroy(stackName: string) {
 }
 ```
 
-**Incremental state persistence during destroy** (issue
-[#804](https://github.com/go-to-k/cdkd/issues/804)): the destroy path
+**Incremental state persistence during destroy**: the destroy path
 mirrors deploy's per-resource state saves. Each successfully deleted
 resource (including resources found already deleted on a re-run) is removed
 from the state object and the trimmed state is written back to S3
@@ -1875,8 +1856,8 @@ stays readable through `GetObject` with a `VersionId`.
   above it, so the `arn:aws:s3:::cdkd-state-bucket/*` ARN covers it. Lets cdkd
   remove them.
 
-**Five kinds of object need these two actions, not one.** The set grew with
-issue [#2346](https://github.com/go-to-k/cdkd/issues/2346), and the ordinary
+**Five kinds of object need these two actions, not one.** The set has grown
+over time, and the ordinary
 commands are now in it:
 
 | object | purged by | what its previous versions hold |
@@ -2048,8 +2029,8 @@ Flat output is preserved as the default so scripts that grep
 (parent destroyed out-of-band, or state hand-deleted) surface at the root
 level — they stay visible rather than vanishing.
 
-**`cdkd state list`'s stdout is a PAYLOAD, with or without `--json`** (issue
-[#2435](https://github.com/go-to-k/cdkd/issues/2435)): the default mode's one
+**`cdkd state list`'s stdout is a PAYLOAD, with or without `--json`**: the
+default mode's one
 `Stack (region)` reference per line is exactly what a `while read -r ref` loop
 consumes, so every line cdkd's own logger prints goes to stderr instead. The
 other `state` subcommands with a `--json` mode (`resources`, `show`, `info`)

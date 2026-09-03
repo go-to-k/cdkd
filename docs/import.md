@@ -39,10 +39,8 @@ naming physical ids by hand. Per resource, cdkd tries two lookups in order:
 > (`Tag keys beginning with aws: are reserved for system use`), and
 > CloudFormation keeps the value in the template's resource `Metadata` without
 > promoting it to a tag. cdkd once carried such a walk as a stage-3 fallback;
-> because it could never match, issue
-> [#1134](https://github.com/go-to-k/cdkd/issues/1134) removed it from every
-> provider. Stage 2 (added in
-> [#1128](https://github.com/go-to-k/cdkd/issues/1128)) is what resolves a
+> because it could never match, it was removed from every
+> provider. Stage 2 is what resolves a
 > CFn-generated physical name — the usual CDK shape, which stage 1 alone cannot
 > find.
 
@@ -172,7 +170,7 @@ No `--resource <id>=<physical>` flags are needed — cdkd recovers each
 resource's physical id directly from CloudFormation via
 `DescribeStackResources`, so it works for both `cdk deploy`-managed and
 `cdkd deploy`-managed stacks. (This same `DescribeStackResources` recovery
-is what plain `auto` mode uses too, since #1128 — see Mode 1. `aws:cdk:path`
+is what plain `auto` mode uses too — see Mode 1. `aws:cdk:path`
 could never have helped here: upstream `cdk deploy` keeps the path in the
 template's `Metadata`, and AWS reserves the `aws:` tag prefix so it is never
 a real AWS tag on the resource.)
@@ -209,7 +207,7 @@ cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
 ### Nested stacks (recursive walk)
 
 Source CloudFormation stacks that contain `AWS::CloudFormation::Stack`
-children are walked **recursively** (issue [#464](https://github.com/go-to-k/cdkd/issues/464)):
+children are walked **recursively**:
 
 - Step 1 (`DescribeStackResources`) becomes a recursive tree walk:
   for every nested-stack row, cdkd calls `DescribeStackResources(<child
@@ -259,8 +257,7 @@ Limitations:
   `TemplateURL`; the transient object is deleted in a `finally`
   immediately after `UpdateStack`, and its noncurrent versions are
   purged with it (the state bucket is versioned, so the delete alone
-  would leave the template body readable by `VersionId` — issue
-  [#2346](https://github.com/go-to-k/cdkd/issues/2346)). That purge
+  would leave the template body readable by `VersionId`). That purge
   FAILS SOFT: it needs `s3:ListBucketVersions` and
   `s3:DeleteObjectVersion` on the state bucket, and without them the
   migration still succeeds while a warning names the two grants and the
@@ -356,18 +353,15 @@ when one of these applies:
 1. the template sets an explicit physical-name property (`BucketName`,
    `RoleName`, `TopicName`, ...) — cdkd verifies / lists by that name; or
 2. a CloudFormation stack of the same name exists — cdkd recovers every
-   physical id from its `DescribeStackResources` (issue
-   [#1128](https://github.com/go-to-k/cdkd/issues/1128) /
-   [#1130](https://github.com/go-to-k/cdkd/issues/1130)), which is how a
+   physical id from its `DescribeStackResources`, which is how a
    `cdk deploy`-managed stack is adopted.
 
 > [!NOTE]
 > There is **no** `aws:cdk:path` tag lookup. AWS reserves the `aws:` tag
 > prefix, so that tag never exists on a real resource and a walk keyed on it
 > could not match — CloudFormation keeps the construct path in the template's
-> `Metadata`, never as a tag. Issue
-> [#1134](https://github.com/go-to-k/cdkd/issues/1134) removed the former tag
-> walk from every provider. A CDK app that sets no explicit physical names and
+> `Metadata`, never as a tag. The former tag
+> walk was removed from every provider. A CDK app that sets no explicit physical names and
 > has no same-named CloudFormation stack must adopt those resources with
 > `--resource <logicalId>=<physicalId>`.
 
@@ -583,11 +577,11 @@ table to predict behavior when migrating from `cdk import`.
 | Selective mode (`--resource <id>=<physical>` repeatable) | Not supported (upstream uses interactive prompts or a mapping file). | Supported as cdkd's CLI-friendly equivalent. |
 | `--resource-mapping-inline '<json>'` | Supported (use in non-TTY environments). | Supported. Same shape as `--resource-mapping <file>` but supplied as a string — useful for non-TTY CI scripts that do not want a separate file. Mutually exclusive with `--resource-mapping`. |
 | `--record-resource-mapping <file>` | Supported (writes the mapping the user typed at the prompt to a file for re-use). | Supported. Writes the resolved `{logicalId: physicalId}` map (covers explicit overrides AND auto-mode name / CloudFormation resolution) to the file before the confirmation prompt. The file is produced even if the user says "no" or under `--dry-run`, so the resolved data is never thrown away. |
-| Interactive prompt for missing IDs | Default in TTY — prompts for every resource not covered by a mapping file. | **Not supported.** cdkd is non-interactive: missing logical IDs are resolved from the template's physical-name property, then from a same-named CloudFormation stack's `DescribeStackResources` (#1128), in `auto` / `hybrid` modes, or skipped as `out of scope` in selective mode. The only prompt is the final "write state?" confirmation, which `--yes` skips. |
+| Interactive prompt for missing IDs | Default in TTY — prompts for every resource not covered by a mapping file. | **Not supported.** cdkd is non-interactive: missing logical IDs are resolved from the template's physical-name property, then from a same-named CloudFormation stack's `DescribeStackResources`, in `auto` / `hybrid` modes, or skipped as `out of scope` in selective mode. The only prompt is the final "write state?" confirmation, which `--yes` skips. |
 | Typo'd logical ID | Aborts with a clear error before any AWS calls. | Aborts with a clear error before any AWS calls — checked against the synthesized template. |
-| Whole-stack import with no per-resource ids | **Not supported.** | **cdkd-specific.** With no flags cdkd resolves each resource from the template's physical-name property, then from a same-named CloudFormation stack's `DescribeStackResources` (#1128). Use `--migrate-from-cloudformation` when you also want the source CloudFormation stack retired. |
+| Whole-stack import with no per-resource ids | **Not supported.** | **cdkd-specific.** With no flags cdkd resolves each resource from the template's physical-name property, then from a same-named CloudFormation stack's `DescribeStackResources`. Use `--migrate-from-cloudformation` when you also want the source CloudFormation stack retired. |
 | Hybrid mode (overrides + auto-resolution) | **Not supported.** | **cdkd-specific.** `--auto` together with `--resource` lets listed resources use the explicit physical id while everything else still goes through auto-resolution (name property + CloudFormation lookup). |
-| Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Supported via `cdkd import --migrate-from-cloudformation` (issue [#464](https://github.com/go-to-k/cdkd/issues/464)): recursively walks the tree via `DescribeStackResources`, writes one v6-keyed state file per child (`cdkd/<parent>~<childLogicalId>/<region>/state.json`), recursively injects `DeletionPolicy: Retain` into every leaf resource template, then retires the whole tree via a single parent-side `DeleteStack` cascade. Bare `cdkd import` (auto / selective / hybrid mode) still reports each nested-stack row as `unsupported`. CDK Stages (separate top-level stacks) are also fine: pass the stack's display path or physical name as the positional argument. |
+| Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Supported via `cdkd import --migrate-from-cloudformation`: recursively walks the tree via `DescribeStackResources`, writes one v6-keyed state file per child (`cdkd/<parent>~<childLogicalId>/<region>/state.json`), recursively injects `DeletionPolicy: Retain` into every leaf resource template, then retires the whole tree via a single parent-side `DeleteStack` cascade. Bare `cdkd import` (auto / selective / hybrid mode) still reports each nested-stack row as `unsupported`. CDK Stages (separate top-level stacks) are also fine: pass the stack's display path or physical name as the positional argument. |
 | Bootstrap requirement | Bootstrap v12+ (deploy role needs to read the encrypted staging bucket). | cdkd's own state bucket; no CDK bootstrap version requirement. |
 | Resource-type coverage | Whatever [CloudFormation supports for import](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-supported-resources.html). | The set of cdkd providers that implement `import()` — see [Provider coverage](#provider-coverage) above. For any other CC-API-supported type, use `--resource <id>=<physical>` to drive the Cloud Control API fallback. The two lists overlap heavily but are not identical. |
 | Confirmation prompt before writing state | n/a (CloudFormation operates atomically). | Yes — cdkd asks before writing the state file. Skip with `--yes`. |

@@ -156,13 +156,43 @@ describe('published docs cross-links', () => {
   });
 });
 
+// Nav groups parsed from vite.docs.config.ts: [group title, page paths].
+const navGroups = (): Array<[string, string[]]> => {
+  const config = readFileSync(join(ROOT, 'vite.docs.config.ts'), 'utf8');
+  const groups: Array<[string, string[]]> = [];
+  for (const g of config.matchAll(/title: '([^']+)',\s*\n\s*items: \[([\s\S]*?)\],\s*\n\s*\}/g)) {
+    const paths = [...g[2].matchAll(/path: '\/([^']+)'/g)].map((m) => m[1]);
+    if (paths.length > 0) groups.push([g[1], paths]);
+  }
+  return groups;
+};
+
 describe('site navigation config', () => {
   it('every sidebar navigation path points at an existing docs page', () => {
-    const config = readFileSync(join(ROOT, 'vite.docs.config.ts'), 'utf8');
-    const paths = [...config.matchAll(/path: '\/([^']+)'/g)].map((m) => m[1]);
+    const paths = navGroups().flatMap(([, p]) => p);
     // Anti-vacuity floor: the sidebar carries ~23 entries today.
     expect(paths.length).toBeGreaterThanOrEqual(20);
     const missing = paths.filter((p) => !existsSync(join(DOCS, `${p}.md`)));
     expect(missing).toEqual([]);
+  });
+
+  // Maintainer policy (2026-09-03): user-facing pages must not surface GitHub
+  // issue/PR references — they are internal provenance. Contributor-facing
+  // pages (the Contributing group) and unlisted internal docs may keep them.
+  it('user-facing pages carry no issue/PR references', () => {
+    const groups = navGroups();
+    expect(groups.map(([t]) => t)).toContain('Contributing');
+    const userFacing = groups.filter(([t]) => t !== 'Contributing').flatMap(([, p]) => p);
+    expect(userFacing.length).toBeGreaterThanOrEqual(15);
+    const failures: string[] = [];
+    for (const p of userFacing) {
+      const body = stripFences(readFileSync(join(DOCS, `${p}.md`), 'utf8'))
+        // Inline code spans may legitimately show a literal # token.
+        .replace(/`[^`\n]*`/g, '');
+      for (const m of body.matchAll(/issue #\d+|github\.com\/[^\s)]*\/issues\/\d+|\(#\d{3,5}\)|PR #\d+/g)) {
+        failures.push(`docs/${p}.md: ${m[0]}`);
+      }
+    }
+    expect(failures).toEqual([]);
   });
 });

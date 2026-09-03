@@ -32,13 +32,11 @@ An error occurred (ValidationError): Export Producer:BucketArn cannot
 be deleted as it is in use by stack Consumer.
 ```
 
-Until [Issue #343], cdkd silently allowed producer destruction even
+cdkd once silently allowed producer destruction even
 when consumers referenced its outputs. The consumer's next deploy
 would then fail at resolve time with `export 'BucketArn' not found in
 any stack`. This violated user expectations and was inconsistent with
 CloudFormation's safety model.
-
-[Issue #343]: https://github.com/go-to-k/cdkd/issues/343
 
 cdkd now matches CFn: `cdkd destroy <producer>` refuses with a clear
 error that names every consumer still referencing the producer.
@@ -129,15 +127,13 @@ NAME, and an output carrying `Export:` is additionally aliased under its
 export name in that same bag. The two key spaces are therefore ONE
 namespace, unlike CloudFormation, where exports live in a namespace of
 their own. Two consequences follow, both of them cdkd behavior a
-CloudFormation user would not predict (issue
-[#1919](https://github.com/go-to-k/cdkd/issues/1919)).
+CloudFormation user would not predict.
 
 **An `Export.Name` equal to another published output's name is skipped.**
 The template is asking cdkd to store two different values under one key.
 cdkd keeps the output's own value, drops the export alias, and warns on
 the producer's deploy naming both outputs. Before this the winner
-depended on template ORDER, and the secret redaction (issue
-[#1910](https://github.com/go-to-k/cdkd/issues/1910)), which positions
+depended on template ORDER, and the secret redaction, which positions
 each persisted leaf by its own unresolved template value, could then
 store one output's `{{resolve:...}}` reference as the other's value.
 
@@ -298,7 +294,7 @@ to v4 cdkd:
 
 1. Producer destroy attempts before the consumer is re-deployed see
    no `imports[]` for that consumer → strong-ref check finds nothing
-   → producer destroy proceeds (= pre-PR behavior, no regression).
+   → producer destroy proceeds (= the previous behavior, no regression).
 2. Once the consumer is re-deployed under v4, its `imports[]` is
    populated.
 3. Subsequent producer destroy attempts correctly refuse.
@@ -306,7 +302,7 @@ to v4 cdkd:
 This means the enforcement activates **gradually as consumers are
 re-deployed**, with no explicit migration step from the user.
 
-### A FAILED consumer deploy used to leave the same hole (issue [#2057](https://github.com/go-to-k/cdkd/issues/2057) lane)
+### A FAILED consumer deploy used to leave the same hole
 
 Until 2026-08-20 the gap above had a second, permanent instance. Only the
 terminal SUCCESS save persisted the imports this session recorded. Every other
@@ -365,7 +361,7 @@ resolveImportValue(exportName):
       recordImport(exportName, ref.stackName, ref.region)
       return reresolve(value, ref.region)
 
-  if cfnFallback:                                      ← issue #1697 (default on)
+  if cfnFallback:                                      ← CFn fallback (default on)
     export = await cloudformation.ListExports().find(exportName)
     if export:
       return export.value        ← WEAK reference: recordImport NOT called
@@ -376,10 +372,9 @@ resolveImportValue(exportName):
 
 ### `reresolve` — a redacted secret is resolved before the consumer sees it
 
-Issue [#1934](https://github.com/go-to-k/cdkd/issues/1934). A
-secret-bearing output is PERSISTED as its unresolved
+A secret-bearing output is PERSISTED as its unresolved
 `{{resolve:secretsmanager:...}}` expression (the GHSA-p5qg-v9gv-hc7w
-fix, PR #1899), so what the index / `state.outputs` hands back for such
+fix), so what the index / `state.outputs` hands back for such
 an export is the expression, not the value. Returning it verbatim made
 the consumer stack ship the literal token to AWS as a property value, so
 the three cross-stack reads the intrinsic resolver owns — `Fn::ImportValue`'s
@@ -423,8 +418,8 @@ provisioning and persists it to `state.imports`.
 
 #### A REDACTION MASK is not re-resolvable, and only ONE run can bridge it
 
-Issue [#2274](https://github.com/go-to-k/cdkd/issues/2274). The re-resolution
-above works because a secret-bearing output persists its EXPRESSION, which names
+The re-resolution above works because a secret-bearing output persists
+its EXPRESSION, which names
 a value cdkd can fetch again. A `NoEcho` custom resource's `Data` has no
 expression — the handler minted the value — so an output carrying one persists
 the literal mask `***` instead, and there is nothing to re-resolve.
@@ -460,8 +455,7 @@ succeed; only what cdkd writes down changes. See
 Weak-reference by design. The producer stays deletable independently;
 recording the consumer's reference into `recordedImports` would defeat
 that (and `state.imports` IS the destroy-time refusal source). However,
-schema v8 (issue
-[#668](https://github.com/go-to-k/cdkd/issues/668)) adds a SEPARATE
+schema v8 adds a SEPARATE
 `recordedOutputReads` bag that the resolver pushes into on every
 successful **same-account** `Fn::GetStackOutput` resolution. The
 DeployEngine persists this bag to `state.outputReads` at save time.
@@ -575,8 +569,7 @@ trust-policy setup applies.
 
 #### A redacted secret output is refused, not resolved
 
-Issue [#1934](https://github.com/go-to-k/cdkd/issues/1934). When the
-requested output is stored as a `{{resolve:...}}` expression (what cdkd
+When the requested output is stored as a `{{resolve:...}}` expression (what cdkd
 persists for a secret-bearing output), the same-account path re-resolves
 it before handing it to the consumer — but the cross-account path
 REFUSES with an `IntrinsicResolutionRefusalError` naming the output and
@@ -615,8 +608,7 @@ ListExports across accounts; no strong-reference protection).
 
 ## CloudFormation fallback (mixed cdkd / CloudFormation estates)
 
-Issue [#1697](https://github.com/go-to-k/cdkd/issues/1697). A
-cdkd-deployed consumer can reference a producer stack that is still
+A cdkd-deployed consumer can reference a producer stack that is still
 managed by CloudFormation (`cdk deploy` / raw CFn) — the typical
 mixed-estate scenario where shared infrastructure stays on the CDK CLI
 while app stacks deploy via cdkd:
@@ -677,15 +669,13 @@ resolves the bucket's actual region via `GetBucketLocation` (cached
 process-wide, shared with the state backend's / lock manager's resolution)
 and, if it differs from the supplied client's region, builds a private
 replacement S3 client for the bucket's region — reusing the caller's
-credentials and leaving the shared client untouched. Without this (issue
-[#819](https://github.com/go-to-k/cdkd/issues/819)) every index write /
+credentials and leaving the shared client untouched. Without this, every index write /
 remove against a cross-region bucket hit S3's 301 PermanentRedirect
 (`Exports index ... failed (non-retryable): ... must be addressed using
 the specified endpoint`) — non-fatal (the canonical `state.json` was
 unaffected and the index self-heals), so the index was silently never
 maintained cross-region. This mirrors the same region resolution
-`S3StateBackend` (PR #60) and `LockManager` (issue
-[#803](https://github.com/go-to-k/cdkd/issues/803)) already perform.
+`S3StateBackend` and `LockManager` already perform.
 
 ### Triggers
 
@@ -693,7 +683,7 @@ maintained cross-region. This mirrors the same region resolution
 |---|---|---|
 | Initial build | First `lookup()` call after the index file is absent (404) | 1 `listStacks` + N parallel `getState`, persisted as 1 PUT |
 | Patch on miss | `lookup()` miss → fallback scan succeeds → patches single entry | 1 PUT |
-| Update for stack | After successful deploy save — including a no-resource-diff deploy whose only change is an added/removed Output (issue [#875](https://github.com/go-to-k/cdkd/issues/875)), so a producer that gains an export because a downstream stack started referencing it still publishes it | 1 PUT (read-modify-write with If-Match) |
+| Update for stack | After successful deploy save — including a no-resource-diff deploy whose only change is an added/removed Output, so a producer that gains an export because a downstream stack started referencing it still publishes it | 1 PUT (read-modify-write with If-Match) |
 | Remove for stack | After successful destroy | 1 PUT (read-modify-write with If-Match) |
 | Rebuild on corruption | Index file JSON parse fails | Same as initial build |
 
@@ -814,7 +804,7 @@ Workload: `Fn::ImportValue` resolution during `cdkd deploy` /
 
 ### Cold-start (first invocation after binary upgrade)
 
-| N (stacks) | Pre-#343 (no index) | Post-#343 (rebuild required) |
+| N (stacks) | Without the index (older cdkd) | With the index (rebuild required) |
 |---|---|---|
 | 10 | ~200ms × K imports | ~200ms (one-time rebuild) |
 | 50 | ~1s × K imports | ~500ms |
@@ -822,7 +812,7 @@ Workload: `Fn::ImportValue` resolution during `cdkd deploy` /
 | 1000 | ~25s × K imports | ~8s |
 
 Where K is the number of `Fn::ImportValue` references in the template.
-Pre-#343 paid K×N because each import re-scanned the bucket.
+Without the index, resolution paid K×N because each import re-scanned the bucket.
 
 ### Warm (index file already exists)
 
@@ -867,11 +857,8 @@ faithful to CFn.
 
 ## References
 
-- Issue: [#343 — Fn::ImportValue strong reference][#343]
 - Schema: [`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts)
 - Index store: [`src/state/export-index-store.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/export-index-store.ts)
 - Resolver: [`src/deployment/intrinsic-function-resolver.ts`](https://github.com/go-to-k/cdkd/blob/main/src/deployment/intrinsic-function-resolver.ts)
 - Destroy scan: [`src/cli/commands/destroy-runner.ts`](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/destroy-runner.ts)
 - Error class: [`src/utils/error-handler.ts`](https://github.com/go-to-k/cdkd/blob/main/src/utils/error-handler.ts)
-
-[#343]: https://github.com/go-to-k/cdkd/issues/343

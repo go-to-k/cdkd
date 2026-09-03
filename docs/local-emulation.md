@@ -63,7 +63,7 @@ Shared across all three subcommands:
   Region CASE is not significant: the value is matched against the state
   record's own spelling case-insensitively, so `--stack-region US-EAST-1`
   reads the `us-east-1` record instead of silently falling back to no
-  state (issue #1836). A record spelled exactly the way you TYPED the
+  state. A record spelled exactly the way you TYPED the
   flag always wins, so with both `us-east-1` and `US-EAST-1` records
   present each flag spelling reads its own; that collision is reported at
   warn, naming the record read and which of the two rules chose it.
@@ -110,7 +110,7 @@ compiled for the other architecture runs instead of failing with
 `Runtime.InvalidEntrypoint`. The same pinning applies to `cdkd local
 start-api`'s warm-container pool.
 
-**Container Lambdas (PR 5 of #224)** — `lambda.DockerImageFunction(...)` /
+**Container Lambdas** — `lambda.DockerImageFunction(...)` /
 `Code.ImageUri` is supported in addition to ZIP Lambdas. cdkd reads the
 function's local `Dockerfile` from `cdk.out` (via the asset manifest
 keyed off the `:<hash>` suffix on `Code.ImageUri`) and runs `docker build`
@@ -154,7 +154,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). |
 | `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkd-local-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkd local invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. Same-account / same-region pulls do not need this flag; cross-account without the flag falls back to the caller's credentials (succeeds when an IAM resource policy on the ECR repo grants the caller directly, else AWS surfaces `AccessDenied`). No-op when `--no-pull` is set. |
-| `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers` (issue [#448](https://github.com/go-to-k/cdkd/issues/448)). Use only when the developer's own credentials cannot read the layer — typically a cross-account layer. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. No-op for stacks whose layers are all same-stack `AWS::Lambda::LayerVersion` references. |
+| `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Use only when the developer's own credentials cannot read the layer — typically a cross-account layer. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. No-op for stacks whose layers are all same-stack `AWS::Lambda::LayerVersion` references. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from cdkd state (requires `--from-state`); (3) `--no-assume-role` explicitly opts out (forces dev creds even with `--from-state`). Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
@@ -384,8 +384,7 @@ Same-stack `AWS::Lambda::LayerVersion` references in
    `/opt/nodejs/...`, `/opt/lib/...`, etc.) is the user's
    responsibility — cdkd does NOT inspect the contents.
 
-**Literal-ARN layer entries** (issue
-[#448](https://github.com/go-to-k/cdkd/issues/448)): a `Layers` entry
+**Literal-ARN layer entries**: a `Layers` entry
 that is the string
 `arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>` is
 resolved by downloading that layer version's ZIP and unzipping it into a
@@ -401,8 +400,7 @@ layers are readable from every account and need no role.
 The ARN's **partition is derived from its region** rather than matched
 against a hardcoded list, so the ARN in any of the eight partitions —
 commercial, `aws-cn`, `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`,
-`aws-iso-f`, `aws-eusc` — now PARSES; before issue
-[#2143](https://github.com/go-to-k/cdkd/issues/2143) only three did, and
+`aws-iso-f`, `aws-eusc` — now PARSES; previously only three did, and
 the other five were refused outright at resolution. The two segments must
 also AGREE: `arn:aws-cn:lambda:us-east-1:...` is refused, naming the
 disagreement, because `us-east-1` does not belong to `aws-cn`. A region
@@ -420,9 +418,8 @@ partition, so a brand-new commercial region keeps working with `arn:aws:`.
 > for the five that did not (`aws-iso`, `aws-iso-b`, `aws-iso-e`,
 > `aws-iso-f`, `aws-eusc`) what changed is WHICH failure you get — an
 > AWS-side error naming the real blocker, rather than cdkd refusing to read
-> the ARN at all. End-to-end support for those partitions needs the fix
-> tracked in
-> [go-to-k/cdk-local#575](https://github.com/go-to-k/cdk-local/issues/575).
+> the ARN at all. End-to-end support for those partitions needs an
+> upstream cdk-local fix.
 
 **Out of scope (v1)** — hard-errors with a clear pointer at the
 offending entry:
@@ -482,7 +479,7 @@ Lambdas get an `[info]` log line at startup so users notice the
 
 When `EphemeralStorage` is absent, no `--tmpfs` is emitted and the
 container's `/tmp` is whatever the base image provides (AWS Lambda
-base images don't mount a sized tmpfs themselves, so the pre-#440
+base images don't mount a sized tmpfs themselves, so the existing
 behavior is preserved). Templates over the AWS 10240 MiB (10 GiB)
 ceiling hard-error at resolve time with an actionable message rather
 than hanging on a `docker run` that AWS would have refused anyway.
@@ -508,8 +505,7 @@ to `cdkd local start-service` / `cdkd local start-alb`.
 
 ### `local invoke` / `local invoke-agentcore` output streams
 
-**Everything cdkd's own logger prints goes to stderr.** Since issue
-[#2410](https://github.com/go-to-k/cdkd/issues/2410) both commands reserve
+**Everything cdkd's own logger prints goes to stderr.** Both commands reserve
 stdout unconditionally, so every cdkd status line -- `Synthesizing CDK
 app...`, `Target: ...`, `Starting container ...`, layer resolution notices,
 and cdkd's `--verbose` debug output -- goes to **stderr**, the way
@@ -524,18 +520,17 @@ things still reach it, neither routed by cdkd's logger:
    runtime emulator puts `START` / `END` / `REPORT` *and* every handler log
    line on the container's stdout -- `console.error` included, which is
    measured rather than assumed -- so any handler that prints lands ahead of
-   the response ([#2419](https://github.com/go-to-k/cdkd/issues/2419)).
+   the response.
 2. **cdk-local's own logger.** The container-image build path is reused from
    cdk-local, which has a separate logger with no reservation concept, so
    `Building container image (platform=...)` and `Skipping docker build ...`
-   print on stdout for a container-image Lambda
-   ([#2429](https://github.com/go-to-k/cdkd/issues/2429)).
+   print on stdout for a container-image Lambda.
 
 A third used to be listed here and is now closed: `docker pull` progress
 reached stdout because `runDockerForeground` passes `stdio: 'inherit'`, and
 `cdkd` runs it unconditionally for an ECR image, so it needed no flag at all.
 While a command holds the reservation that child's fd 1 is now redirected to
-fd 2. go-to-k/cdkd#2419's remaining scope is `streamLogs` alone.
+fd 2. The remaining gap is `streamLogs` alone.
 
 ```bash
 # Safe today: the response payload is always the LAST line on stdout.
@@ -607,8 +602,7 @@ multiple APIs (admin + public, internal + external) with different
 authorizer setups, different CORS configs, and overlapping paths.
 Lumping them into one server forced an awkward "first-match-wins"
 semantic that didn't mirror AWS Lambda's actual routing. Pre-v0.81
-versions did this — see [issue #260](https://github.com/go-to-k/cdkd/issues/260)
-for the background.
+versions did this.
 
 Port assignment:
 
@@ -671,8 +665,8 @@ unsupportedness):
 | --- | --- | --- |
 | Normal AWS_PROXY | AWS_PROXY integration with a resolvable Lambda Arn | Dispatched to the Lambda via the container pool. |
 | Synthetic CORS preflight | REST v1 `HttpMethod: OPTIONS` + `Integration.Type: MOCK` + `IntegrationResponses[].ResponseParameters` carries literal `method.response.header.*` pairs (the shape CDK's `defaultCorsPreflightOptions` synthesizes) | Captured at boot. The HTTP server returns the captured status + headers directly on OPTIONS without invoking any Lambda. |
-| Streaming Function URL | `AWS::Lambda::Url` with `InvokeMode: RESPONSE_STREAM` (issue #467) | Dispatched via the RIE streaming protocol: the request goes out with `Lambda-Runtime-Function-Response-Mode: streaming` and the response body's JSON prelude (`{statusCode, headers, cookies?}` + an 8-NULL-byte separator + raw body) is parsed; the body Readable is piped to the HTTP client with `Transfer-Encoding: chunked`. Note: AWS's local RIE buffers the response (verified empirically against `public.ecr.aws/lambda/nodejs:20`), so curl observes the chunks in one block locally even though cdkd's pipe / chunked-encoding machinery works correctly — real incremental delivery only manifests against the deployed Lambda runtime. |
-| REST v1 non-AWS_PROXY (closes #457) | `Integration.Type` is one of `MOCK` (non-CORS-preflight), `HTTP_PROXY`, `HTTP`, or `AWS` (Lambda non-proxy). | Dispatched via the per-kind handler in `src/local/rest-v1-integrations.ts`. MOCK / HTTP / AWS apply VTL request + response templates via the hand-rolled engine at `src/local/vtl-engine.ts`. HTTP_PROXY forwards verbatim with `RequestParameters` mappings. AWS Lambda non-proxy uses the same container pool as AWS_PROXY but transforms event payload + response via VTL and routes errors through `IntegrationResponses[].SelectionPattern`. |
+| Streaming Function URL | `AWS::Lambda::Url` with `InvokeMode: RESPONSE_STREAM` | Dispatched via the RIE streaming protocol: the request goes out with `Lambda-Runtime-Function-Response-Mode: streaming` and the response body's JSON prelude (`{statusCode, headers, cookies?}` + an 8-NULL-byte separator + raw body) is parsed; the body Readable is piped to the HTTP client with `Transfer-Encoding: chunked`. Note: AWS's local RIE buffers the response (verified empirically against `public.ecr.aws/lambda/nodejs:20`), so curl observes the chunks in one block locally even though cdkd's pipe / chunked-encoding machinery works correctly — real incremental delivery only manifests against the deployed Lambda runtime. |
+| REST v1 non-AWS_PROXY | `Integration.Type` is one of `MOCK` (non-CORS-preflight), `HTTP_PROXY`, `HTTP`, or `AWS` (Lambda non-proxy). | Dispatched via the per-kind handler in `src/local/rest-v1-integrations.ts`. MOCK / HTTP / AWS apply VTL request + response templates via the hand-rolled engine at `src/local/vtl-engine.ts`. HTTP_PROXY forwards verbatim with `RequestParameters` mappings. AWS Lambda non-proxy uses the same container pool as AWS_PROXY but transforms event payload + response via VTL and routes errors through `IntegrationResponses[].SelectionPattern`. |
 | Deferred-error unsupported | REST v1 AWS integration targeting a non-Lambda service (`:s3:path/...` / `:sqs:action/...` etc.); HTTP_PROXY / HTTP with a non-literal `Uri` (cdkd does not resolve Fn::Sub / Fn::Join in HTTP Uris); HTTP API v2 service integrations (`IntegrationSubtype` set); WebSocket APIs (`ProtocolType: WEBSOCKET`); Function URLs with an unrecognized `AuthType` (anything other than `'NONE'` / `'AWS_IAM'`); routes whose Lambda Arn intrinsic cannot be resolved against the same template (cross-stack / imported references) | Boot continues. The route appears in the route table tagged `[501 Not Implemented]` and a `[warn]` line per route is printed up front. When the route is hit at request time, the HTTP server returns HTTP 501 with `{"message": "Not Implemented", "reason": "<the discovery reason>"}` in the JSON body, without invoking any Lambda. |
 | Hard error | Template-structural problems the discovery layer cannot generate a meaningful route from: missing `Integration` on a Method, non-Ref `RestApiId` / `ApiId`, malformed Route `Target`, ParentId chain failures, missing `PathPart`, unresolvable `TargetFunctionArn` on a Function URL | Boot aborts via `RouteDiscoveryError` with every offending route listed in a single message. |
 
@@ -681,7 +675,7 @@ locally even when the CDK app contains direct AWS-service integrations,
 WebSocket routes, or other unimplemented shapes — only the unsupported
 routes themselves return 501; everything else dispatches as normal.
 
-### REST v1 non-AWS_PROXY integrations (#457)
+### REST v1 non-AWS_PROXY integrations
 
 `cdkd local start-api` emulates all four non-AWS_PROXY REST v1
 integration types end-to-end:
@@ -746,7 +740,7 @@ the same tier; cdkd uses literal-segment count as a heuristic).
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkd local invoke` — the function-specific key may also be a **CDK display path** (`MyStack/MyHandler`). |
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > (`--assume-role-auto` OR global default) > unset (developer creds passed through). |
 | `--assume-role-auto` | off | Auto-resolve EACH routed Lambda's OWN execution role per-Lambda instead of a single global default: tries the synthesized template's literal-ARN `Properties.Role`, then a deployed-state lookup (pair with `--from-state` / `--from-cfn-stack`), then warns-and-passes-through dev creds on a miss. Slower boot (one STS call per Lambda) but the right shape when each Lambda's deployed role differs. **Mutually exclusive** with the global-default `--assume-role <arn>` form (errors at boot); **compatible** with per-Lambda `--assume-role <LogicalId>=<arn>` overrides (the map wins for named Lambdas, auto-resolve handles the rest). |
-| `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers` (issue [#448](https://github.com/go-to-k/cdkd/issues/448)). Use only when the developer's own credentials cannot read the layer — typically a cross-account layer. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. No-op for stacks whose layers are all same-stack `AWS::Lambda::LayerVersion` references. |
+| `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Use only when the developer's own credentials cannot read the layer — typically a cross-account layer. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. No-op for stacks whose layers are all same-stack `AWS::Lambda::LayerVersion` references. |
 | `--watch` | off | Hot reload: watch the CDK app **source tree** (the synth working directory, where `cdk.json` lives) and re-synth + re-discover routes on a source edit, mirroring `cdk watch`. `cdk.out` / `node_modules` / `.git` are excluded and `cdk.json`'s `watch.include` / `watch.exclude` are honored. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
 | `--from-state` | off | Read cdkd S3 state for every routed stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in Lambda env vars with the deployed physical IDs / attributes. Off by default — keeps the pre-PR literal-only / warn-and-drop behavior. Mirrors `cdkd local invoke --from-state` and `cdkd local run-task --from-state`. Re-runs against fresh state on every hot-reload firing (`--watch`). State load failures degrade per-stack to warn-and-fall-back so a missing or unreadable state file never aborts the server. |
@@ -836,7 +830,7 @@ error 501 class.
 
 Other REST v1 MOCK shapes (non-OPTIONS methods, MOCK without literal
 header parameters, MOCK with VTL `RequestTemplates` that produce custom
-bodies) are dispatched via the full MOCK handler in #457 — see the
+bodies) are dispatched via the full MOCK handler — see the
 "REST v1 non-AWS_PROXY integrations" section above.
 
 ### Stage variables
@@ -996,7 +990,7 @@ forged ones.
 
 `AWS_IAM` authorization is supported with **signature-verification-only**
 semantics on BOTH REST v1 (`AuthorizationType: 'AWS_IAM'`) and Function
-URLs (`AuthType: 'AWS_IAM'`, issue #621) — see the next section. mTLS
+URLs (`AuthType: 'AWS_IAM'`) — see the next section. mTLS
 authorizers and any non-TOKEN/REQUEST/COGNITO_USER_POOLS Type /
 non-REQUEST/JWT AuthorizerType still hard-error at discovery with the
 offending route's location named.
@@ -1200,12 +1194,12 @@ curl --cacert ca.pem \
 
 | Out of scope | Deferred to |
 | --- | --- |
-| AWS_IAM authorizer (REST v1 + Function URL) — IAM policy evaluation (resource/action/condition). Signature verification IS implemented on both surfaces (#447 for REST v1, #621 for Function URL). | Out of scope (the local server has no IAM data plane) |
-| REST v1 AWS integration with non-Lambda service backend (`:s3:path/...` / `:sqs:action/...` / `:dynamodb:action/...` / etc.) | Future PR — requires per-service SDK clients, IAM credential threading, and a per-service compatibility matrix. v1 emulates Lambda non-proxy AWS integrations only (#457). |
+| AWS_IAM authorizer (REST v1 + Function URL) — IAM policy evaluation (resource/action/condition). Signature verification IS implemented on both surfaces (REST v1 and Function URL). | Out of scope (the local server has no IAM data plane) |
+| REST v1 AWS integration with non-Lambda service backend (`:s3:path/...` / `:sqs:action/...` / `:dynamodb:action/...` / etc.) | Future work — requires per-service SDK clients, IAM credential threading, and a per-service compatibility matrix. v1 emulates Lambda non-proxy AWS integrations only. |
 | VTL features outside the supported subset (arithmetic outside literal concat, `#macro` / `#parse` / `#include`, range operator, `$velocityCount`, JSONPath filter expressions) | Surface as `VtlEvaluationError` → HTTP 502 + reason body. Hand-roll the missing feature in `src/local/vtl-engine.ts` if a real workload needs it. |
 | WebSocket APIs | Never (different protocol) |
 | Throttling / quotas / usage plans / API keys | Never |
-| Per-Lambda concurrency above 4 | Future PR if a real workload needs it |
+| Per-Lambda concurrency above 4 | Future work if a real workload needs it |
 
 ## `local run-task` (run an ECS task definition locally)
 
@@ -1248,7 +1242,7 @@ resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. **Mutually exclusive with `--from-state`**. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `DescribeStackResources` does not return per-attribute values), except a same-stack ECR repository's `Arn` / `RepositoryUri` in a container image URI, which is synthesized from the recovered physical name + pseudo parameters. |
 | `--stack-region <region>` | unset | Region of the state record to read. Used with `--from-state` when the same stack name has state in multiple regions, and with `--from-cfn-stack` as the CFn client region. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
-| `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR for cross-account / centralized registry pulls. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull` on every container whose `Image` resolves to an ECR registry host — the plain `<acct>.dkr.ecr.<region>.<urlSuffix>/...`, its FIPS sibling `<acct>.dkr.ecr-fips.<region>.<urlSuffix>/...`, or the dual-stack `<acct>.dkr-ecr[-fips].<region>.on.aws/...` (the partition suffix is derived from the region, so the partitions `derivePartitionAndUrlSuffix` knows — commercial, `aws-cn`, `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` — are matched too; issues [#1758](https://github.com/go-to-k/cdkd/issues/1758) / [#1764](https://github.com/go-to-k/cdkd/issues/1764) / [#1793](https://github.com/go-to-k/cdkd/issues/1793)). Required when the caller's identity does not already have cross-account access to the target repository. Same-account / same-region pulls do not need this flag. No-op when `--no-pull` is set. |
+| `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR for cross-account / centralized registry pulls. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull` on every container whose `Image` resolves to an ECR registry host — the plain `<acct>.dkr.ecr.<region>.<urlSuffix>/...`, its FIPS sibling `<acct>.dkr.ecr-fips.<region>.<urlSuffix>/...`, or the dual-stack `<acct>.dkr-ecr[-fips].<region>.on.aws/...` (the partition suffix is derived from the region, so the partitions `derivePartitionAndUrlSuffix` knows — commercial, `aws-cn`, `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` — are matched too). Required when the caller's identity does not already have cross-account access to the target repository. Same-account / same-region pulls do not need this flag. No-op when `--no-pull` is set. |
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | `linux/amd64` or `linux/arm64`. Threaded into every container's `docker run --platform`. |
 | `--keep-running` | off | Don't `docker rm -f` user containers on task exit (network + sidecar are still torn down). Use when you want to `docker exec` into a stopped container for post-mortems. |
 | `--detach` | off | Start the containers and return without streaming logs or auto-tearing them down. Useful in CI smoke tests; caller manages container lifecycle. |
@@ -1280,8 +1274,8 @@ container still reach public AWS endpoints via the developer network.
 `ContainerDefinitions[].Image` is parsed in three tiers:
 
 1. **Public images** — `public.ecr.aws/...`, `docker.io/...`, `nginx:latest`, etc. → plain `docker pull` (subject to `--no-pull`).
-2. **Direct ECR URIs** — `<account>.dkr.ecr.<region>.<urlSuffix>/<repo>:<tag>` and the other served registry-host forms listed below (flat string, no intrinsics) → `pullEcrImage` (STS check + ECR auth + `docker pull`). The host suffix is matched against the one the URI's region actually uses — one suffix per region prefix: commercial and `us-gov-*` → `amazonaws.com`, `cn-*` → `amazonaws.com.cn`, `us-iso-*` → `c2s.ic.gov`, `us-isob-*` → `sc2s.sgov.gov`, `eu-isoe-*` → `cloud.adc-e.uk`, `us-isof-*` → `csp.hci.ic.gov`, `eusc-*` → `amazonaws.eu` (issues [#1758](https://github.com/go-to-k/cdkd/issues/1758) / [#1764](https://github.com/go-to-k/cdkd/issues/1764)). A look-alike host whose suffix does not belong to that region is deliberately NOT treated as ECR. The FIPS (`<account>.dkr.ecr-fips.<region>.<urlSuffix>`) and dual-stack (`<account>.dkr-ecr.<region>.on.aws`, `<account>.dkr-ecr-fips.<region>.on.aws`) registry endpoints are RECOGNIZED as ECR since issue [#1793](https://github.com/go-to-k/cdkd/issues/1793) unified this grammar with `cdkd gc`'s — before that only the plain form matched here, so a genuine FIPS or dual-stack registry classified as a public image (anonymous pull, no `docker login`). The dual-stack forms carry the fixed `on.aws` suffix instead of the region's partition suffix, and a form spelled with the other's suffix is refused. **Recognition is not yet a working pull for those three forms**: `ecrLogin` authenticates against the PLAIN host (`<account>.dkr.ecr.<region>.<urlSuffix>`, which is what `GetAuthorizationToken` reports) while the pull targets the host the template names, and docker's credential store is keyed on the hostname verbatim — so the pull fails with `no basic auth credentials`. Tracked as issue [#1855](https://github.com/go-to-k/cdkd/issues/1855); until it ships, only the plain form (in any casing) is end-to-end pull-capable. The case fold is unaffected, since an upper-cased plain host is reconciled to the same lower-case spelling on both sides. Every segment is matched case-INSENSITIVELY, since DNS is (issue [#1792](https://github.com/go-to-k/cdkd/issues/1792)); docker accepts an upper-cased registry host but requires a lower-case repository path, and cdkd folds only the host. Cross-account / cross-region supported: cdkd builds the ECR client for the URI's region and (when `--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to gain credentials in the target account. Without `--ecr-role-arn`, cdkd falls through to the caller's credentials (succeeds when an IAM resource policy grants the caller direct cross-account access).
-3. **CDK-asset images** (`ContainerImage.fromAsset` / `DockerImageAsset`) → `cdk.out/<stack>.assets.json` lookup → `docker build` via the shared `src/assets/docker-build.ts` helper, tagged `cdkd-local-run-task-<asset-hash>`. An image URI is recognized as a CDK asset when it embeds a container-assets ECR repo — either the CDK-bootstrap repo `cdk-<qualifier>-container-assets-<acct>-<region>` (any qualifier, not only the `hnb659fds` default) or the cdkd-owned repo `cdkd-container-assets-<acct>-<region>` that `cdkd deploy` publishes into once a bootstrap marker exists (issue [#1002](https://github.com/go-to-k/cdkd/issues/1002)); a migrated stack's rewritten template / `--from-state` state carries the latter, so both classify identically. Custom-named cdkd asset repos (`cdkd bootstrap --container-repo <name>`, issue [#1011](https://github.com/go-to-k/cdkd/issues/1011)) are recognized too under `--from-state` (issue [#1025](https://github.com/go-to-k/cdkd/issues/1025)): when a container's Image is an ECR-hosted URI whose repo component does not match the conventional shapes (recognized here by a THIRD, narrower host test than tier 2's — a literal `.dkr.ecr.` substring, so today it sees only the plain lower-case form and neither the FIPS / dual-stack endpoints nor a mixed-case host; tracked as issue [#1846](https://github.com/go-to-k/cdkd/issues/1846). A miss is a slow path, not a wrong pull: the image falls through to the tier-2 ECR-pull route), cdkd lazily reads the region's bootstrap marker from the state bucket and classifies the image as a CDK asset when its repo component equals the marker's `containerRepo` (best-effort — a missing/unreadable marker falls back to the prefix match, and without `--from-state` no marker read happens, so the image routes through the ECR-pull tier instead: correct, just slower).
+2. **Direct ECR URIs** — `<account>.dkr.ecr.<region>.<urlSuffix>/<repo>:<tag>` and the other served registry-host forms listed below (flat string, no intrinsics) → `pullEcrImage` (STS check + ECR auth + `docker pull`). The host suffix is matched against the one the URI's region actually uses — one suffix per region prefix: commercial and `us-gov-*` → `amazonaws.com`, `cn-*` → `amazonaws.com.cn`, `us-iso-*` → `c2s.ic.gov`, `us-isob-*` → `sc2s.sgov.gov`, `eu-isoe-*` → `cloud.adc-e.uk`, `us-isof-*` → `csp.hci.ic.gov`, `eusc-*` → `amazonaws.eu`. A look-alike host whose suffix does not belong to that region is deliberately NOT treated as ECR. The FIPS (`<account>.dkr.ecr-fips.<region>.<urlSuffix>`) and dual-stack (`<account>.dkr-ecr.<region>.on.aws`, `<account>.dkr-ecr-fips.<region>.on.aws`) registry endpoints are RECOGNIZED as ECR (the grammar is unified with `cdkd gc`'s — previously only the plain form matched here, so a genuine FIPS or dual-stack registry classified as a public image: anonymous pull, no `docker login`). The dual-stack forms carry the fixed `on.aws` suffix instead of the region's partition suffix, and a form spelled with the other's suffix is refused. **Recognition is not yet a working pull for those three forms**: `ecrLogin` authenticates against the PLAIN host (`<account>.dkr.ecr.<region>.<urlSuffix>`, which is what `GetAuthorizationToken` reports) while the pull targets the host the template names, and docker's credential store is keyed on the hostname verbatim — so the pull fails with `no basic auth credentials`. This is a known limitation; today only the plain form (in any casing) is end-to-end pull-capable. The case fold is unaffected, since an upper-cased plain host is reconciled to the same lower-case spelling on both sides. Every segment is matched case-INSENSITIVELY, since DNS is; docker accepts an upper-cased registry host but requires a lower-case repository path, and cdkd folds only the host. Cross-account / cross-region supported: cdkd builds the ECR client for the URI's region and (when `--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to gain credentials in the target account. Without `--ecr-role-arn`, cdkd falls through to the caller's credentials (succeeds when an IAM resource policy grants the caller direct cross-account access).
+3. **CDK-asset images** (`ContainerImage.fromAsset` / `DockerImageAsset`) → `cdk.out/<stack>.assets.json` lookup → `docker build` via the shared `src/assets/docker-build.ts` helper, tagged `cdkd-local-run-task-<asset-hash>`. An image URI is recognized as a CDK asset when it embeds a container-assets ECR repo — either the CDK-bootstrap repo `cdk-<qualifier>-container-assets-<acct>-<region>` (any qualifier, not only the `hnb659fds` default) or the cdkd-owned repo `cdkd-container-assets-<acct>-<region>` that `cdkd deploy` publishes into once a bootstrap marker exists; a migrated stack's rewritten template / `--from-state` state carries the latter, so both classify identically. Custom-named cdkd asset repos (`cdkd bootstrap --container-repo <name>`) are recognized too under `--from-state`: when a container's Image is an ECR-hosted URI whose repo component does not match the conventional shapes (recognized here by a THIRD, narrower host test than tier 2's — a literal `.dkr.ecr.` substring, so today it sees only the plain lower-case form and neither the FIPS / dual-stack endpoints nor a mixed-case host — a known limitation. A miss is a slow path, not a wrong pull: the image falls through to the tier-2 ECR-pull route), cdkd lazily reads the region's bootstrap marker from the state bucket and classifies the image as a CDK asset when its repo component equals the marker's `containerRepo` (best-effort — a missing/unreadable marker falls back to the prefix match, and without `--from-state` no marker read happens, so the image routes through the ECR-pull tier instead: correct, just slower).
 
 For `Fn::Sub` / `Fn::GetAtt` shapes pointing at AWS pseudo parameters or a same-stack ECR repository (the typical `ContainerImage.fromEcrRepository(repo)` synthesis), two additional resolution tiers fire **before** the URI is fed to tier 2:
 
@@ -1423,7 +1417,7 @@ torn down. Use to `docker exec` into a stopped container post-mortem.
 | --- | --- |
 | `AWS::ECS::Service` / `DesiredCount` / `LaunchType` | Use `cdkd local start-service` instead |
 | ALB / NLB target group registration / listener rules | Deferred follow-up — needs an HTTP proxy emulator |
-| Service Connect / Cloud Map | Implemented for `cdkd local start-service` via `--add-host` DNS overlay ([#460](https://github.com/go-to-k/cdkd/issues/460)). `cdkd local run-task` is single-task by design; cross-service discovery is meaningful only with multiple long-running services, so it stays out of scope here. |
+| Service Connect / Cloud Map | Implemented for `cdkd local start-service` via `--add-host` DNS overlay. `cdkd local run-task` is single-task by design; cross-service discovery is meaningful only with multiple long-running services, so it stays out of scope here. |
 | Auto Scaling / Deployment Strategy | Not meaningful locally |
 | Fargate vs EC2 launch-type differences (PID namespace, `awsvpc`-only, ephemeral storage cap) | Local Docker can't enforce these |
 | EFS / FSx volumes | Need real AWS NFS / SMB; hard-error with a routing hint |
@@ -1499,12 +1493,12 @@ error.
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name (per target when multiple `<targets...>` are supplied). **Mutually exclusive with `--from-state`**. `Fn::GetAtt` is warn-and-dropped in v1, except a same-stack ECR repository's `Arn` / `RepositoryUri` in a container image URI (synthesized from the recovered physical name + pseudo parameters). Same shape as `cdkd local run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Used with `--from-state` when the same stack name has state in multiple regions, and with `--from-cfn-stack` as the CFn client region. |
 | `--host-port <containerPort=hostPort>` | host port == container port | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Use this on macOS to map a privileged container port (< 1024) to a non-privileged host port and avoid the Docker Desktop admin-password prompt. **Single-replica services only** — multi-replica services do not publish host ports. |
-| `--watch` | off | Hot reload: re-synth + per-replica reload when the CDK source changes (`cdk.json watch.include` / `watch.exclude` honored; `cdk.out` / `node_modules` / `.git` always excluded). A per-firing classifier picks the per-replica primitive: source-only edits on interpreted-language handlers (Node / Python / Ruby / shell) take a bind-mount **FAST PATH** (`docker cp` the new source into each replica + `docker restart`; no `docker build`, sub-second). Dockerfile / dependency manifest / compiled-language source / ambiguous edits fall through to the rebuild rolling primitive — boot a shadow under a bumped generation suffix, wait for its container port to accept a TCP connection, atomically swap Service Connect / Cloud Map registrations, then retire the old container. Either path rolls one replica at a time, so peer services see zero connection refusals across the reload even on multi-replica services. Off by default; existing replica(s) keep serving when synth fails mid-reload. (cdk-local 0.69.0 / [#214](https://github.com/go-to-k/cdk-local/issues/214) Phase 4.) Source-only TypeScript edits classify as a **rebuild** (not soft-reload) so precompiled handler setups are not left stale (cdk-local 0.77 / [cdk-local#236](https://github.com/go-to-k/cdk-local/pull/236)). |
-| `--image-override <target=ref>` | — | Pin or locally build a replica's container image instead of using the deployed registry tag. `<target>` is a service / container selector; `<ref>` is an image reference, a build directory, or a `Dockerfile` path (`~` is tilde-expanded). Repeatable. Compose with the per-service `--image-build-arg` / `--image-build-secret` / `--image-target` variants for local builds. On `--watch`, a covered override re-builds when its source changes. (cdk-local 0.77 / [cdk-local#241](https://github.com/go-to-k/cdk-local/pull/241), [cdk-local#244](https://github.com/go-to-k/cdk-local/pull/244).) |
-| `--shadow-ready-timeout <ms>` | `60000` | Per-invocation override of the shadow-replica TCP-ready probe budget used by the rebuild rolling primitive (and the initial boot). Raise it for slow-starting containers. Also settable via `CDKD_SHADOW_READY_TIMEOUT_MS`. (cdk-local 0.77 / [cdk-local#266](https://github.com/go-to-k/cdk-local/pull/266).) |
+| `--watch` | off | Hot reload: re-synth + per-replica reload when the CDK source changes (`cdk.json watch.include` / `watch.exclude` honored; `cdk.out` / `node_modules` / `.git` always excluded). A per-firing classifier picks the per-replica primitive: source-only edits on interpreted-language handlers (Node / Python / Ruby / shell) take a bind-mount **FAST PATH** (`docker cp` the new source into each replica + `docker restart`; no `docker build`, sub-second). Dockerfile / dependency manifest / compiled-language source / ambiguous edits fall through to the rebuild rolling primitive — boot a shadow under a bumped generation suffix, wait for its container port to accept a TCP connection, atomically swap Service Connect / Cloud Map registrations, then retire the old container. Either path rolls one replica at a time, so peer services see zero connection refusals across the reload even on multi-replica services. Off by default; existing replica(s) keep serving when synth fails mid-reload. (cdk-local 0.69.0.) Source-only TypeScript edits classify as a **rebuild** (not soft-reload) so precompiled handler setups are not left stale (cdk-local 0.77). |
+| `--image-override <target=ref>` | — | Pin or locally build a replica's container image instead of using the deployed registry tag. `<target>` is a service / container selector; `<ref>` is an image reference, a build directory, or a `Dockerfile` path (`~` is tilde-expanded). Repeatable. Compose with the per-service `--image-build-arg` / `--image-build-secret` / `--image-target` variants for local builds. On `--watch`, a covered override re-builds when its source changes. (cdk-local 0.77.) |
+| `--shadow-ready-timeout <ms>` | `60000` | Per-invocation override of the shadow-replica TCP-ready probe budget used by the rebuild rolling primitive (and the initial boot). Raise it for slow-starting containers. Also settable via `CDKD_SHADOW_READY_TIMEOUT_MS`. (cdk-local 0.77.) |
 
 Each replica's container stdout / stderr is streamed live to the host
-terminal while the service runs (cdk-local 0.77 / [cdk-local#231](https://github.com/go-to-k/cdk-local/pull/231)).
+terminal while the service runs (cdk-local 0.77).
 
 ### `local start-service` lifecycle
 
@@ -1519,8 +1513,8 @@ hangs.
 
 | Deferred | Tracked in / Why |
 | --- | --- |
-| Local load-balancer emulator (listener + round-robin + target-group health check) | Follow-up PR — needs an HTTP/TCP proxy emulator. Today's start-service does NOT register replicas to a local listener; reach a single-replica service via its published container ports, or any replica via its docker network IP / alias (multi-replica services skip the host-port publish — see the host-port note above). |
-| Envoy sidecar (L7 routing / retries / circuit breaking / mTLS) | Deferred follow-up — Cloud Map DNS overlay (closed via [#460](https://github.com/go-to-k/cdkd/issues/460)) covers ~80% of debugging use cases; the missing 20% requires the AWS-published Envoy image (~120MB / task). DNS-only mode is the default; an opt-in `--envoy` flag will ship with the sidecar. |
+| Local load-balancer emulator (listener + round-robin + target-group health check) | Follow-up — needs an HTTP/TCP proxy emulator. Today's start-service does NOT register replicas to a local listener; reach a single-replica service via its published container ports, or any replica via its docker network IP / alias (multi-replica services skip the host-port publish — see the host-port note above). |
+| Envoy sidecar (L7 routing / retries / circuit breaking / mTLS) | Deferred follow-up — the Cloud Map DNS overlay covers ~80% of debugging use cases; the missing 20% requires the AWS-published Envoy image (~120MB / task). DNS-only mode is the default; an opt-in `--envoy` flag will ship with the sidecar. |
 | Rolling deployment strategy (`DeploymentConfiguration.MaximumPercent` etc.) | Follow-up — meaningful only with the LB emulator. |
 | `HealthCheckGracePeriodSeconds` runtime semantics | Field is parsed and surfaced on `ResolvedEcsService` but not yet acted on. Becomes load-bearing when the LB emulator ships (today's restart policy fires on essential-container exit code, not health-check failure). |
 
@@ -1533,8 +1527,7 @@ rationale at [design/461-awsvpc-decision.md](design/461-awsvpc-decision.md).
 
 ## `local start-alb` (run an Application Load Balancer locally)
 
-`cdkd local start-alb <Stack/Alb...>` (Issue
-[#86](https://github.com/go-to-k/cdkd/issues/86)) is the long-running
+`cdkd local start-alb <Stack/Alb...>` is the long-running
 local Application Load Balancer front-door. It names one or more
 `AWS::ElasticLoadBalancingV2::LoadBalancer` resources from the
 synthesized template, discovers the ECS / Lambda targets behind each
@@ -1587,14 +1580,13 @@ underlying engine owns the container boot + Cloud Map plumbing.
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` intrinsics. For CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Mutually exclusive with `--from-state`. Same shape as `local start-service --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Used with `--from-state` when the same stack name has state in multiple regions, and with `--from-cfn-stack` as the CFn client region. |
-| `--watch` | off | Hot reload: re-synth + per-replica reload of every ECS service behind the ALB when the CDK source changes (`cdk.json watch.include` / `watch.exclude` honored; `cdk.out` / `node_modules` / `.git` always excluded). A per-firing classifier picks the per-replica primitive: source-only edits on interpreted-language handlers (Node / Python / Ruby / shell) take a bind-mount **FAST PATH** (`docker cp` + `docker restart`; no `docker build`, sub-second; the front-door pool entry is unchanged since the IP/port are preserved). Dockerfile / dependency manifest / compiled-language source / ambiguous edits fall through to the rebuild rolling primitive — boot a shadow, wait for TCP-ready, atomically register it in the front-door pool, drop the old entry. Either path rolls one replica at a time, so a continuous external request stream against the listener port sees zero connection refusals across the reload. The host front-door (TLS, JWKS cache, Lambda-target containers, listener sockets) stays up across the reload. Lambda target groups behind the ALB are a no-op on reload (the warm RIE container keeps its boot-time image). Off by default; existing replica(s) keep serving when synth fails mid-reload. (cdk-local 0.69.0 / [#214](https://github.com/go-to-k/cdk-local/issues/214) Phase 4.) |
-| `--image-override <target=ref>` | — | Pin or locally build a backing service's container image instead of using the deployed registry tag. Same grammar + per-service `--image-build-arg` / `--image-build-secret` / `--image-target` variants as `local start-service`. (cdk-local 0.77 / [cdk-local#241](https://github.com/go-to-k/cdk-local/pull/241), [cdk-local#244](https://github.com/go-to-k/cdk-local/pull/244).) |
-| `--shadow-ready-timeout <ms>` | `60000` | Per-invocation override of the shadow-replica TCP-ready probe budget. Same shape as `local start-service`. (cdk-local 0.77 / [cdk-local#266](https://github.com/go-to-k/cdk-local/pull/266).) |
+| `--watch` | off | Hot reload: re-synth + per-replica reload of every ECS service behind the ALB when the CDK source changes (`cdk.json watch.include` / `watch.exclude` honored; `cdk.out` / `node_modules` / `.git` always excluded). A per-firing classifier picks the per-replica primitive: source-only edits on interpreted-language handlers (Node / Python / Ruby / shell) take a bind-mount **FAST PATH** (`docker cp` + `docker restart`; no `docker build`, sub-second; the front-door pool entry is unchanged since the IP/port are preserved). Dockerfile / dependency manifest / compiled-language source / ambiguous edits fall through to the rebuild rolling primitive — boot a shadow, wait for TCP-ready, atomically register it in the front-door pool, drop the old entry. Either path rolls one replica at a time, so a continuous external request stream against the listener port sees zero connection refusals across the reload. The host front-door (TLS, JWKS cache, Lambda-target containers, listener sockets) stays up across the reload. Lambda target groups behind the ALB are a no-op on reload (the warm RIE container keeps its boot-time image). Off by default; existing replica(s) keep serving when synth fails mid-reload. (cdk-local 0.69.0.) |
+| `--image-override <target=ref>` | — | Pin or locally build a backing service's container image instead of using the deployed registry tag. Same grammar + per-service `--image-build-arg` / `--image-build-secret` / `--image-target` variants as `local start-service`. (cdk-local 0.77.) |
+| `--shadow-ready-timeout <ms>` | `60000` | Per-invocation override of the shadow-replica TCP-ready probe budget. Same shape as `local start-service`. (cdk-local 0.77.) |
 
 When no listener rule matches an inbound request, the local front-door's
 404 now explains which listener fields (path / host / header / method)
-were evaluated, instead of a bare 404 (cdk-local 0.77 /
-[cdk-local#229](https://github.com/go-to-k/cdk-local/pull/229)).
+were evaluated, instead of a bare 404 (cdk-local 0.77).
 
 ### `local start-alb` listener / action support
 
@@ -1650,11 +1642,11 @@ cdk-local's inherited `--from-cfn-stack` / `--stack-region` /
 `--assume-role` (CloudFormation-deployed stacks). The two state sources
 are mutually exclusive.
 
-As of cdk-local 0.128.0 (cdk-local#426) the start-cloudfront factory
+As of cdk-local 0.128.0 the start-cloudfront factory
 accepts the `extraStateProviders` seam, so cdkd threads its `--from-state`
 factory in and layers `--from-state` / `--state-bucket` / `--state-prefix`
 on top — the same wiring as `start-agentcore` / `start-alb` /
-`start-service` (issue #766; `start-cloudfront` was `--from-state`-exempt
+`start-service` (`start-cloudfront` was `--from-state`-exempt
 before the seam landed).
 
 ### `local start-cloudfront` target resolution
@@ -1732,7 +1724,7 @@ return 502).
 
 `cdkd local invoke-agentcore <target>` runs one Bedrock AgentCore Runtime container locally and invokes it once over the AgentCore protocol declared by the target. Supports the container artifact (`fromContainerAsset` / `fromEcr`) and the `CodeConfiguration` managed-runtime artifact (`fromCodeAsset`, built from source) on the HTTP, MCP, A2A, and AGUI protocols, plus a bidirectional `--ws` mode for streaming. Models cdk-local's `cdkl invoke-agentcore`, ported into cdkd's command tree as a shim over `cdk-local/internal`.
 
-> **`CodeConfiguration` builds run the bundle as-is (no dependency install).** The `fromCodeAsset` / `fromS3` source build matches the AWS managed runtime: it does **not** `pip install` (`requirements.txt` / `pyproject.toml`) or `npm install` your dependencies — the deployed runtime resolves deps vendored into the bundle at deploy time (e.g. arm64 wheels via `uv pip install --target`). So a bundle that declares a dependency manifest **without vendored deps** now fails locally with `ModuleNotFoundError` the same way it fails deployed (instead of passing locally only because of a local install), and cdkd emits a warning with the vendoring recipe. Vendor your deps into the bundle — which a successful deploy already requires. Container artifacts (`fromContainerAsset` / `fromEcr`) are unaffected. Inherited from cdk-local (follows [cdk-local#455](https://github.com/go-to-k/cdk-local/issues/455) / cdk-local#456); applies to `start-agentcore` too (same `buildAgentCoreCodeImage` build).
+> **`CodeConfiguration` builds run the bundle as-is (no dependency install).** The `fromCodeAsset` / `fromS3` source build matches the AWS managed runtime: it does **not** `pip install` (`requirements.txt` / `pyproject.toml`) or `npm install` your dependencies — the deployed runtime resolves deps vendored into the bundle at deploy time (e.g. arm64 wheels via `uv pip install --target`). So a bundle that declares a dependency manifest **without vendored deps** now fails locally with `ModuleNotFoundError` the same way it fails deployed (instead of passing locally only because of a local install), and cdkd emits a warning with the vendoring recipe. Vendor your deps into the bundle — which a successful deploy already requires. Container artifacts (`fromContainerAsset` / `fromEcr`) are unaffected. Inherited from cdk-local; applies to `start-agentcore` too (same `buildAgentCoreCodeImage` build).
 
 ### Target resolution
 
@@ -1769,8 +1761,8 @@ Same shape as `cdkd local invoke`. The container receives the developer's AWS cr
 - `--session-id <id>` — value of the AgentCore session-id header (auto-generated when omitted).
 - `--jwt <bearer-token>` — verified + forwarded when the runtime declares `customJwtAuthorizer`.
 - `--timeout <ms>` — per-request timeout (default 120000 / 120s).
-- `--ws` — bidirectional `/ws` WebSocket mode (HTTP protocol only). Auto-detects a TTY, and the two halves read DIFFERENT streams (issue [#2410](https://github.com/go-to-k/cdkd/issues/2410)). Whether the REPL runs depends on **stdin**: an interactive terminal enters a multi-turn REPL (each stdin line is sent as a follow-up frame until Ctrl-D / agent close), while piped / redirected / CI stdin stays a wire-faithful one-shot (force one-shot in a TTY with `--ws </dev/null`). Whether the `> ` prompt is written depends on **stdout**, because that is the payload stream: with stdout redirected the frames stay raw and unprompted even from a terminal, so `--ws > frames.txt` and `--ws | tail -1` mean what they look like.
-- `--watch` — re-synth + reload the agent container on CDK source edits (follows [cdk-local#270](https://github.com/go-to-k/cdk-local/pull/270)). See [Hot reload (`--watch`)](#hot-reload---watch-1) below. Off by default. Supported on the HTTP / AGUI protocols; a no-op WARN for MCP / A2A (their single shot runs once and exits).
+- `--ws` — bidirectional `/ws` WebSocket mode (HTTP protocol only). Auto-detects a TTY, and the two halves read DIFFERENT streams. Whether the REPL runs depends on **stdin**: an interactive terminal enters a multi-turn REPL (each stdin line is sent as a follow-up frame until Ctrl-D / agent close), while piped / redirected / CI stdin stays a wire-faithful one-shot (force one-shot in a TTY with `--ws </dev/null`). Whether the `> ` prompt is written depends on **stdout**, because that is the payload stream: with stdout redirected the frames stay raw and unprompted even from a terminal, so `--ws > frames.txt` and `--ws | tail -1` mean what they look like.
+- `--watch` — re-synth + reload the agent container on CDK source edits. See [Hot reload (`--watch`)](#hot-reload---watch-1) below. Off by default. Supported on the HTTP / AGUI protocols; a no-op WARN for MCP / A2A (their single shot runs once and exits).
 - `--sigv4` — sign `/invocations` with SigV4 (for SigV4-protected runtimes).
 - `--from-state` / `--from-cfn-stack [name]` / `--state-bucket` / `--state-prefix` / `--stack-region` — state-source flags.
 - `--assume-role [arn]` / `--no-assume-role` / `--ecr-role-arn <arn>` — role-assumption flags.
@@ -1778,7 +1770,7 @@ Same shape as `cdkd local invoke`. The container receives the developer's AWS cr
 
 ### Hot reload (`--watch`)
 
-When `--watch` is set, cdkd watches the CDK app **source tree** (the synth working directory, where `cdk.json` lives), honoring `cdk.json`'s `watch.include` / `watch.exclude` and excluding `cdk.out` / `node_modules` / `.git`. On a source edit it re-synths and reloads the agent container, mirroring `cdk watch` (follows [cdk-local#270](https://github.com/go-to-k/cdk-local/pull/270)).
+When `--watch` is set, cdkd watches the CDK app **source tree** (the synth working directory, where `cdk.json` lives), honoring `cdk.json`'s `watch.include` / `watch.exclude` and excluding `cdk.out` / `node_modules` / `.git`. On a source edit it re-synths and reloads the agent container, mirroring `cdk watch`.
 
 A per-firing classifier picks the reload primitive:
 
@@ -1814,11 +1806,8 @@ runtime's native protocol contract so a client can hit it repeatedly:
   (these have no `/ws` bridge, and print a `Server listening on http://...`
   ready line plus a `<PROTOCOL> contract served on http://...` line).
 
-Runs until `^C`. Models cdk-local's `cdkl start-agentcore`
-([cdk-local#420](https://github.com/go-to-k/cdk-local/pull/420); the warm
-HTTP serve + all four protocols + per-request inbound JWT + `--sigv4` +
-`--watch` follow [cdk-local#454](https://github.com/go-to-k/cdk-local/issues/454)
-slices 1/2/4a/4b), inherited into cdkd's command tree as a thin
+Runs until `^C`. Models cdk-local's `cdkl start-agentcore`,
+inherited into cdkd's command tree as a thin
 pass-through to cdk-local's command factory. Requires Docker.
 
 ### `local start-agentcore` target resolution
@@ -1831,7 +1820,7 @@ over the discovered AgentCore Runtimes.
 ### `local start-agentcore` state-source flags
 
 `start-agentcore` is one of the factory pass-throughs that bind deployed
-state via the `extraStateProviders` seam (issue #766): cdk-local's
+state via the `extraStateProviders` seam: cdk-local's
 start-agentcore factory accepts it, so cdkd threads its S3-backed
 `--from-state` factory in and layers the cdkd-specific `--from-state` /
 `--state-bucket` / `--state-prefix` flags on top of cdk-local's inherited
