@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { UpdateSecretCommand } from '@aws-sdk/client-secrets-manager';
+import { CreateSecretCommand, UpdateSecretCommand } from '@aws-sdk/client-secrets-manager';
 
 const mockSend = vi.fn();
 
@@ -287,6 +287,67 @@ describe('SecretsManagerSecretProvider update() value source (issue #2472)', () 
     expect(message).not.toMatch(/super-secret-value/);
     const calls = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateSecretCommand);
     expect(calls).toHaveLength(0);
+  });
+
+  it('a CHANGED GenerateSecretString block beside a literal mints a value (precedence, changed polarity)', async () => {
+    // The unchanged-block direction is pinned above; this is the other
+    // polarity: the block wins, so its change is what gets sent — not the
+    // (ignored) literal. A PRECEDENCE PIN, not a regression fence: the
+    // provider already behaved this way before this test was added (PR
+    // #2476 review, nit 6) — it kills a literal-first mutant, nothing else.
+    const prev = generated({ SecretString: 'ignored' });
+    const next = generated({
+      SecretString: 'ignored',
+      GenerateSecretString: {
+        ...(prev['GenerateSecretString'] as Record<string, unknown>),
+        PasswordLength: 40,
+      },
+    });
+
+    await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    const sent = updateInput().SecretString;
+    expect(sent).toBeDefined();
+    expect(sent).not.toBe('ignored');
+    expect((JSON.parse(sent!) as { password: string }).password).toHaveLength(40);
+  });
+
+  it('a legacy record holding a NON-STRING SecretString still takes a Tags-only update', async () => {
+    // A pre-#2472 create() forwarded a non-string through a cast and state
+    // persisted it. UNCHANGED is decided before the shape is judged, so an
+    // unrelated update keeps succeeding; nothing is sent.
+    const legacy = { nested: 'legacy-value' };
+    const prev = literal({ SecretString: legacy, Tags: [{ Key: 'env', Value: 'dev' }] });
+    const next = literal({ SecretString: { ...legacy }, Tags: [{ Key: 'env', Value: 'prod' }] });
+
+    await provider.update('L', SECRET_ARN, TYPE, next, prev);
+
+    expect(updateInput().SecretString).toBeUndefined();
+  });
+
+  it('create() refuses a non-string SecretString by shape, without echoing the value', async () => {
+    let message = '';
+    try {
+      await provider.create('L', TYPE, literal({ SecretString: { nested: 'super-secret-value' } }));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/SecretString must be a string, got object/);
+    expect(message).not.toMatch(/super-secret-value/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('create() refuses a null SecretString too, while still skipping the empty string', async () => {
+    await expect(provider.create('L', TYPE, literal({ SecretString: null }))).rejects.toThrow(
+      /SecretString must be a string, got null/
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+
+    mockSend.mockResolvedValue({ ARN: SECRET_ARN });
+    await provider.create('L', TYPE, literal({ SecretString: '' }));
+    const created = mockSend.mock.calls.find((c) => c[0] instanceof CreateSecretCommand);
+    expect(created).toBeDefined();
+    expect((created![0].input as { SecretString?: string }).SecretString).toBeUndefined();
   });
 
   it('a null SecretString is refused as "null"', async () => {

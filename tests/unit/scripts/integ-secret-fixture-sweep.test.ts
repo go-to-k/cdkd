@@ -136,7 +136,7 @@ const SECRET_MATERIAL: readonly Pattern[] = [
   {
     what: 'SecretValue.unsafePlainText(...) — a literal secret in the template',
     re: /unsafePlainText/,
-    floor: 6,
+    floor: 7,
     sample: `secretStringValue: cdk.SecretValue.unsafePlainText('x')`,
   },
   {
@@ -148,7 +148,7 @@ const SECRET_MATERIAL: readonly Pattern[] = [
   {
     what: 'a hand-supplied Secret value (secretStringValue / secretObjectValue / secretStringBeta1)',
     re: /secretString(Value|Beta1)|secretObjectValue/,
-    floor: 6,
+    floor: 7,
     sample: 'secretObjectValue: { username: x }',
   },
   {
@@ -433,7 +433,7 @@ const EXEMPT_SHAPES: readonly Exemption[] = [
     // carry a COMMENT saying generateSecretString is deliberately NOT used, and
     // the floor was counting those. A floor derived from comments is a floor on
     // prose.
-    floor: 5,
+    floor: 6,
     sample: 'generateSecretString: { generateStringKey: "password" },',
     why:
       'SecretsManagerSecretProvider.generateSecretString() mints the value with crypto.getRandomValues into a ' +

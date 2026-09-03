@@ -43,6 +43,18 @@ function asJson(value: unknown): unknown {
 }
 
 /**
+ * A `SecretString` about to go on the wire must be a string. Pre-#2472 a
+ * non-string was forwarded through a cast and left to AWS; a silent drop is
+ * the worse failure for a value the user wrote, so the SHAPE is named — never
+ * the value. Shared by `create()` and `update()` so the two cannot disagree.
+ */
+function requireSecretStringShape(literal: unknown): string {
+  if (typeof literal === 'string') return literal;
+  const shape = literal === null ? 'null' : Array.isArray(literal) ? 'array' : typeof literal;
+  throw new Error(`SecretString must be a string, got ${shape}`);
+}
+
+/**
  * AWS Secrets Manager Secret Provider
  *
  * Implements resource provisioning for AWS::SecretsManager::Secret using the Secrets Manager SDK.
@@ -97,12 +109,16 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
 
       if (generateConfig) {
         secretString = this.generateSecretString(generateConfig);
-      } else if (properties['SecretString']) {
-        // Truthy gate: a `SecretString: ''` creates a secret with NO version.
-        // `update()` deliberately treats `''` as a value (issue #2472, see
-        // `changedSecretValue`); the two gates differ on purpose, so a later
-        // change TO `''` on a secret created empty is a no-op there.
-        secretString = properties['SecretString'] as string;
+      } else if (properties['SecretString'] !== undefined && properties['SecretString'] !== '') {
+        // `''` is skipped: a `SecretString: ''` creates a secret with NO
+        // version. `update()` deliberately treats `''` as a value (issue
+        // #2472, see `changedSecretValue`); the two gates differ on purpose,
+        // so a later change TO `''` on a secret created empty is a no-op
+        // there. Every OTHER non-string — `null`, `false`, `0`, an object —
+        // is refused by the SHAPE check shared with `update()`, so a record
+        // that would trip that refusal on every later update can no longer
+        // be created.
+        secretString = requireSecretStringShape(properties['SecretString']);
       }
 
       const createParams: import('@aws-sdk/client-secrets-manager').CreateSecretCommandInput = {
@@ -392,6 +408,12 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * new source is `undefined`), and a bag that carries NEITHER source keeps
    * the live value untouched, as CloudFormation does.
    *
+   * One consequence of the precedence: a PREVIOUS bag carrying both a block
+   * and an ignored `SecretString: 'x'` masks a block-to-literal switch whose
+   * literal is still `'x'` (the literal compares equal, nothing is sent).
+   * CloudFormation rejects a template declaring both, so such a record is
+   * cdkd-created only and the miss is accepted.
+   *
    * THE PREVIOUS BAG IS WHAT STATE PERSISTED, so the block is compared in
    * that spelling. On the deploy path a `{{resolve:...}}` inside
    * `SecretStringTemplate` reaches this method as plaintext while state holds
@@ -407,9 +429,19 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
    * in `SecretStringTemplate` does NOT regenerate (the expression is the same
    * on both sides), where CloudFormation, which re-resolves at update time,
    * would. That is the intended trade for the generated source: the harmful
-   * direction is the unrequested re-roll. (Two references collapsing onto one
-   * plaintext persist the LAST expression recorded, so that rarer shape can
-   * still read as changed once.)
+   * direction is the unrequested re-roll.
+   *
+   * RESIDUAL, permanent rather than one-shot: two references in the block
+   * that resolve to the SAME plaintext. The resolver records one pair per
+   * plaintext (last expression wins), so this value scan rewrites BOTH leaves
+   * to the survivor expression, while the persisted previous holds each
+   * leaf's own expression (the state writer redacts by POSITION, with the
+   * template as its source) — the two spellings differ on every in-place
+   * update, and that shape re-rolls on every Tags-only deploy. Threading a
+   * position source through here would close it, but the only source this
+   * method holds is the PREVIOUS block, and substituting its leaves would
+   * also erase a genuine reference switch in a secret leaf; left open for a
+   * shape that is rare (two secrets with identical plaintext in one block).
    *
    * A LITERAL IS DELIBERATELY NOT REDACTED BEFORE COMPARING. A
    * `SecretString: '{{resolve:...}}'` (a secret mirroring another one) is
@@ -451,12 +483,13 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     }
     const literal = properties['SecretString'];
     if (literal === undefined) return undefined;
-    if (typeof literal !== 'string') {
-      // Pre-#2472 this was forwarded and left to AWS; a silent drop is the
-      // worse failure for a value the user wrote, so name the shape (never
-      // the value) instead.
-      const shape = literal === null ? 'null' : Array.isArray(literal) ? 'array' : typeof literal;
-      throw new Error(`SecretString must be a string, got ${shape}`);
+    // UNCHANGED is decided before the shape is judged: a record written by a
+    // pre-#2472 binary may hold a non-string the old `create()` forwarded via
+    // a cast, and an unrelated (Tags-only) update of that record must keep
+    // succeeding as it always did — the refusal below applies only to a value
+    // that would actually be SENT.
+    if (isDeepStrictEqual(asJson(literal), asJson(previousProperties['SecretString']))) {
+      return undefined;
     }
     // An empty string is a VALUE here, not "absent": a literal changed to
     // `''` (or a switch from `GenerateSecretString` to `SecretString: ''`)
@@ -464,7 +497,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     // or rejects it, rather than silently keeping the old value. (`create()`
     // still skips `''` with its truthy gate, so a secret created empty has no
     // version at all; a later change TO `''` then reads as a no-op here.)
-    return literal === previousProperties['SecretString'] ? undefined : literal;
+    return requireSecretStringShape(literal);
   }
 
   /**
