@@ -115,23 +115,23 @@
   },
   "devDependencies": {
     "@ox-content/theme-swiss": "^2.90.0",
-    "@ox-content/vite-plugin": "3.0.0-alpha.18",
-    "@semantic-release/changelog": "^6.0.3",
+    "@ox-content/vite-plugin": "3.0.0-beta.1",
+    "@semantic-release/changelog": "^7.0.0",
     "@semantic-release/exec": "^7.1.0",
-    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/git": "^11.0.1",
     "@semantic-release/github": "^12.0.0",
     "@semantic-release/npm": "^13.0.0",
     "@types/adm-zip": "^0.5.8",
     "@types/archiver": "^6.0.0",
     "@types/graphlib": "^2.1.12",
-    "@types/node": "^20.19.0",
+    "@types/node": "^26.4.0",
     "@types/proxy-from-env": "^1.0.4",
     "@types/ws": "^8.18.1",
     "playwright": "1.62.1",
     "semantic-release": "^25.0.0",
     "typescript": "^7.0.2",
     "typescript-v6": "npm:typescript@^6.0.3",
-    "vite-plus": "^0.2.5"
+    "vite-plus": "^0.3.0"
   },
   "peerDependencies": {
     "aws-cdk-lib": "^2.0.0",
