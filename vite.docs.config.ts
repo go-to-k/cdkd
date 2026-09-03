@@ -38,8 +38,21 @@ const navigation: SsgNavigationGroup[] = [
       { title: 'Mixed Estates', path: '/mixed-estates' },
       { title: 'Stack Outputs', path: '/stack-outputs' },
       { title: 'Deployment Events', path: '/deployment-events' },
-      { title: 'Local Execution', path: '/local-emulation' },
       { title: 'CI: Per-PR Environments', path: '/ci-per-pr' },
+    ],
+  },
+  {
+    title: 'Local Execution',
+    items: [
+      { title: 'Overview', path: '/local-emulation' },
+      { title: 'local invoke', path: '/local-invoke' },
+      { title: 'local start-api', path: '/local-start-api' },
+      { title: 'local run-task', path: '/local-run-task' },
+      { title: 'local start-service', path: '/local-start-service' },
+      { title: 'local start-alb', path: '/local-start-alb' },
+      { title: 'local start-cloudfront', path: '/local-start-cloudfront' },
+      { title: 'local invoke-agentcore', path: '/local-invoke-agentcore' },
+      { title: 'local start-agentcore', path: '/local-start-agentcore' },
     ],
   },
   {
