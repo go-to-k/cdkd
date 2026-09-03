@@ -5,10 +5,11 @@ Thank you for your interest in contributing to cdkd!
 The full contributor guide — project structure, PR flow, the
 integration-test policy (which verification each PR needs, and why you are
 never required to run the AWS-charging tests yourself), and code style —
-lives at **[cdkd.dev/contributing](https://cdkd.dev/contributing/)**, next
-to the [Architecture](https://cdkd.dev/architecture/),
-[Provider Development](https://cdkd.dev/provider-development/), and
-[Testing](https://cdkd.dev/testing/) deep dives.
+lives in **[docs/contributing.md](docs/contributing.md)**, next to the
+[Architecture](docs/architecture.md),
+[Provider Development](docs/provider-development.md), and
+[Testing](docs/testing.md) deep dives (rendered at
+[cdkd.dev/contributing](https://cdkd.dev/contributing/)).
 
 ## Development Setup
 
@@ -43,6 +44,32 @@ vp run build
 vp test run
 vp run check
 ```
+
+## Project Structure
+
+See [docs/architecture.md](docs/architecture.md) for the layer-by-layer
+walkthrough (also summarized in [CLAUDE.md](CLAUDE.md)).
+
+## Making Changes
+
+1. Create a feature branch from `main`
+2. Make your changes
+3. Run `vp run check && vp test run && vp run build`
+4. Commit with a descriptive message
+5. Open a Pull Request
+
+## Adding a New SDK Provider
+
+See [docs/provider-development.md](docs/provider-development.md) for a
+step-by-step guide.
+
+## Integration Tests
+
+Integration tests deploy and destroy **real AWS resources**, and you are
+never required to run them yourself — say so in your PR and the maintainer
+runs the required ones before merging. Which verification a PR needs (and
+the full policy) is in
+[docs/contributing.md](docs/contributing.md#running-integration-tests).
 
 ## License
 
