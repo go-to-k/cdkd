@@ -30,13 +30,14 @@ const navigation: SsgNavigationGroup[] = [
     title: 'Features',
     items: [
       { title: 'Wait Modes', path: '/wait-modes' },
-      { title: 'Stack Outputs', path: '/stack-outputs' },
       { title: 'Rollback', path: '/rollback' },
       { title: 'Drift Detection', path: '/drift' },
       { title: 'Orphan vs Destroy', path: '/orphan-vs-destroy' },
       { title: 'Import & CFn Migration', path: '/import' },
       { title: 'Export to CloudFormation', path: '/export' },
       { title: 'Mixed Estates', path: '/mixed-estates' },
+      { title: 'Stack Outputs', path: '/stack-outputs' },
+      { title: 'Deployment Events', path: '/deployment-events' },
       { title: 'Local Execution', path: '/local-emulation' },
       { title: 'CI: Per-PR Environments', path: '/ci-per-pr' },
     ],
@@ -48,7 +49,6 @@ const navigation: SsgNavigationGroup[] = [
       { title: 'Supported Resources', path: '/supported-resources' },
       { title: 'Feature Parity', path: '/supported-features' },
       { title: 'State Management', path: '/state-management' },
-      { title: 'Deployment Events', path: '/deployment-events' },
       { title: 'Cross-Stack References', path: '/cross-stack-references' },
     ],
   },
@@ -168,9 +168,6 @@ const theme = defineTheme({
     '.hero::after { display: none; }',
     '.feature-card { animation: none; }',
     '.feature-card:hover { transform: none; }',
-    // The entry page sets ox-hide-edit-link (editLink: false) but the skin
-    // carries no matching rule.
-    '.ox-hide-edit-link .ox-edit-this-page { display: none; }',
     '@media (max-width: 768px) {',
     '  .hero { grid-template-columns: 1fr; }',
     '  .hero-image { grid-column: 1; grid-row: 1; justify-self: center; }',
@@ -237,10 +234,6 @@ export default defineConfig({
         height: 630,
         cache: true,
         concurrency: 4,
-      },
-      editThisPage: {
-        repoUrl: 'https://github.com/go-to-k/cdkd',
-        branch: 'main',
       },
       // The JSDoc-derived API docs generator is off: cdkd's public surface is
       // its CLI, documented by hand in cli-reference.md.

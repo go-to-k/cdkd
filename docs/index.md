@@ -1,6 +1,5 @@
 ---
 layout: entry
-editLink: false
 lastUpdated: false
 title: cdkd
 description: Deploy AWS CDK apps directly via AWS APIs — up to 15x faster, no CloudFormation.

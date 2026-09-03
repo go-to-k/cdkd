@@ -13,10 +13,15 @@ modes, least to most waiting:
   AWS finish in the background.
 - **default** waits where the wait is load-bearing (something the same
   deploy resolves or verifies needs the settled state, or the wait can
-  surface a failure) — in practice, where CloudFormation and Terraform
-  agree, with one measured exception: CloudFront Distribution returns
-  as soon as `CreateDistribution` is accepted (nothing in-deploy needs
-  the 3–15 min edge propagation, and the wait cannot detect a failure).
+  surface a failure). The rule of thumb: where CloudFormation and
+  Terraform agree on what "done" means, cdkd matches them; where they
+  disagree, cdkd's default takes the faster side — so, for example, ECS
+  Service steady state is NOT waited for by default (Terraform does not
+  wait either; `--full-wait` restores the CloudFormation behavior). The
+  one case where both engines wait and cdkd still returns early is
+  CloudFront Distribution: it returns as soon as `CreateDistribution`
+  is accepted (nothing in-deploy needs the 3–15 min edge propagation,
+  and the wait cannot detect a failure).
 - **`--full-wait`** additionally waits everywhere CloudFormation does —
   the exact per-type set is the wait-semantics table in the
   [CLI reference](cli-reference.md#wait-semantics).
@@ -35,11 +40,11 @@ opposite ends of one axis and cannot be combined.
 **Deploy-only**: `cdkd destroy` always waits (NAT in `deleting` state
 holds ENIs and would `DependencyViolation` sibling deletes).
 
-## Per-resource-type table
+## What "done" means per resource type
 
-See [cli-reference.md](cli-reference.md#wait-semantics) for
-the per-resource table (what each mode does, next to what
-CloudFormation and Terraform do) and caveats (NAT egress, RDS
-final-snapshot timing, etc.). cdkd is template-compatible with
-CloudFormation but not wait-semantics-identical; that table is the
-single source of truth for what "done" means per resource type.
+The single source of truth is the wait-semantics table in the
+[CLI reference](cli-reference.md#wait-semantics): what each mode does
+per resource type, next to what CloudFormation and Terraform do, plus
+the caveats (NAT egress, RDS final-snapshot timing, etc.). cdkd is
+template-compatible with CloudFormation but not
+wait-semantics-identical.
