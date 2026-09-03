@@ -112,6 +112,15 @@ const theme = defineTheme({
     message: 'Released under the Apache-2.0 License.',
     copyright: 'Copyright © go-to-k',
   },
+  // The SSG's active-state matching does not fire for hand-authored
+  // `navigation` items (no .active lands on the current page's link), so
+  // mark it client-side by comparing pathnames.
+  js: [
+    "document.querySelectorAll('.sidebar .nav-link').forEach(function (a) {",
+    "  var norm = function (p) { return p.replace(/index\\.html$/, '').replace(/\\/$/, ''); };",
+    "  if (norm(a.getAttribute('href') || '') === norm(location.pathname)) a.classList.add('active');",
+    "});",
+  ].join('\n'),
   embed: {
     head: '<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">',
   },
