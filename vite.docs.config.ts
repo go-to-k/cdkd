@@ -77,6 +77,9 @@ const theme = defineTheme({
     primary: '#818cf8',
     primaryHover: '#a5b0fb',
   },
+  fonts: {
+    sans: '-apple-system, "system-ui", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+  },
   aside: true,
   headingPermalink: 'hover',
   header: {
@@ -108,6 +111,8 @@ const theme = defineTheme({
   //   rounded pill, and restyle the active item to the same pill shape.
   css: [
     '.header-nav { margin-left: 1.5rem; }',
+    '.header-title { gap: 0.4rem; }',
+    '.header-logo { margin-right: 0; }',
     '.header-actions .social-link,',
     '.header-actions .search-button,',
     '.header-actions .theme-toggle {',
@@ -174,6 +179,12 @@ const theme = defineTheme({
     '  .hero-tagline { grid-column: 1; grid-row: 4; margin-top: 1rem; }',
     '  .hero-actions { grid-column: 1; grid-row: 5; }',
     '}',
+    // Content pages: the skin caps paragraphs at 68ch while lists run the
+    // full column — mixed measures that read as the source's line wrapping
+    // leaking through. Let paragraphs use the full column like GitHub does,
+    // and thin the heavy 2px heading rules to a hairline.
+    '.content p { max-width: none; }',
+    '.content h2 { border-bottom-width: 1px; }',
     '.nav-title, .toc-title { border-top: none; }',
     // The sidebar/outline column rules run the full viewport height and cut
     // across the header nav items above them — drop both.
