@@ -759,6 +759,15 @@ opg checkout -q main
 # `applying` sentinel red-lined the `am` row (correctly) and then cherry-pick,
 # revert, merge and bisect (cascade) -- 6 rows for a defect that touches 1. A
 # tally that cannot be attributed to a row is not a fence, it is noise.
+#
+# It also VERIFIES that it cleaned up, because `git am` and `git rebase --apply`
+# SHARE `.git/rebase-apply`: if an abort leaves that directory behind, the next
+# `git am` refuses to start ("previous rebase directory ... still exists") and
+# the row that follows measures the RESIDUE instead of its own operation. That
+# is not hypothetical -- it is how this suite went green on git 2.53 locally and
+# red on the CI runner's older git, where the printed `am --abort` exited 128
+# against a rebase-apply directory no am session owned. A fixture that cannot
+# assert its own precondition reports the wrong defect.
 op_reset() {
   opg rebase --abort >/dev/null 2>&1
   opg am --abort >/dev/null 2>&1
@@ -767,7 +776,35 @@ op_reset() {
   opg merge --abort >/dev/null 2>&1
   opg bisect reset >/dev/null 2>&1
   opg checkout -q --force main >/dev/null 2>&1
+  # DEFENCE, not a fence: no mutation on this machine reddens the two lines
+  # below, because git 2.53's own `--abort` already removes them. They exist for
+  # the git the CI runner has, where it did not. Labelled rather than counted.
+  rm -rf "$op_repo/.git/rebase-apply" "$op_repo/.git/rebase-merge" 2>/dev/null
+  rm -f "$op_repo/.git/CHERRY_PICK_HEAD" "$op_repo/.git/REVERT_HEAD" \
+        "$op_repo/.git/MERGE_HEAD" "$op_repo/.git/BISECT_LOG" 2>/dev/null
   :
+}
+
+# Assert that a row's fixture actually entered the operation it is about. Called
+# right after the setup and before the hook runs, so a fixture that silently did
+# not start reports ITSELF rather than blaming the hook's remedy.
+op_assert_inflight() {
+  local want="$1" label="$2" found=""
+  [ -d "$op_repo/.git/rebase-merge" ] && found="rebase"
+  [ -d "$op_repo/.git/rebase-apply" ] && {
+    if [ -f "$op_repo/.git/rebase-apply/applying" ]; then found="am"; else found="rebase"; fi
+  }
+  [ -f "$op_repo/.git/CHERRY_PICK_HEAD" ] && found="cherry-pick"
+  [ -f "$op_repo/.git/REVERT_HEAD" ] && found="revert"
+  [ -f "$op_repo/.git/MERGE_HEAD" ] && found="merge"
+  [ -f "$op_repo/.git/BISECT_LOG" ] && found="bisect"
+  if [ "$found" != "$want" ]; then
+    fail=$((fail + 1))
+    printf 'FAIL %s: fixture did not enter a %s (git reports: %s)\n' \
+      "$label" "$want" "${found:-nothing}" >&2
+    return 1
+  fi
+  return 0
 }
 
 # 1. rebase (merge backend) started FROM `main`: the ONE arm where `--abort`
@@ -810,6 +847,7 @@ op_reset
 # an ALREADY-detached tree, and `--abort` restores exactly that.
 opg checkout -q --detach main
 opg am "$TMPDIR/op-patches"/*.patch >/dev/null 2>&1
+op_assert_inflight am "mid-AM fixture"
 run_case_head "mid-AM: 'am --abort' leaves HEAD DETACHED, and says so" \
   "$op_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
@@ -818,6 +856,7 @@ op_reset
 
 opg checkout -q --detach main
 opg cherry-pick other >/dev/null 2>&1
+op_assert_inflight cherry-pick "mid-CHERRY-PICK fixture"
 run_case_head "mid-CHERRY-PICK: 'cherry-pick --abort' leaves HEAD DETACHED, and says so" \
   "$op_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
@@ -826,6 +865,7 @@ op_reset
 
 opg checkout -q --detach main
 opg revert --no-edit other >/dev/null 2>&1
+op_assert_inflight revert "mid-REVERT fixture"
 run_case_head "mid-REVERT: 'revert --abort' leaves HEAD DETACHED, and says so" \
   "$op_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
@@ -834,6 +874,7 @@ op_reset
 
 opg checkout -q --detach main
 opg merge other >/dev/null 2>&1
+op_assert_inflight merge "mid-MERGE fixture"
 run_case_head "mid-MERGE: 'merge --abort' leaves HEAD DETACHED, and says so" \
   "$op_repo" \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
