@@ -101,7 +101,24 @@ const READER_SCHEMAS = ['yaml-1.1', 'core'] as const;
  * That reached the real stderr — 254 bytes on a GREEN unit run, against this
  * repo's "a green run must print nothing" rule, and on `cdkd synth` for any
  * template carrying such a key. The oracle only ever reads the parsed VALUE,
- * so it has no use for the diagnostics at all.
+ * so it has no use for the diagnostics.
+ *
+ * `silent` is NOT diagnostics-only, though, and the difference is recorded
+ * here because it changes what the `catch`es below mean. `parse` re-throws
+ * `doc.errors[0]` only when the level is not `silent` (`yaml`'s
+ * `public-api.js`), so under it a `DUPLICATE_KEY` / `TAB_AS_INDENT` /
+ * `BLOCK_AS_IMPLICIT_KEY` document RETURNS a partially-composed value instead
+ * of throwing. The oracle's answer is unaffected — it degrades "threw" into
+ * "came back different", which is the same `false` — and that was measured
+ * rather than argued: over a 91,033-string corpus in review, 0 verdicts flip,
+ * and of the 487 strings whose emission fails a loud parse, none has a silent
+ * parse returning the ORIGINAL value, which is the only shape that could
+ * produce a wrong `true`.
+ *
+ * What still throws under `silent` is a `toJS`-time error, because that runs
+ * AFTER the error check — which is exactly the `<<` merge failure the key
+ * oracle depends on. Verified: `parse('<<: v', { schema: 'yaml-1.1',
+ * logLevel: 'silent' })` still raises `Merge sources must be maps`.
  */
 const READER_OPTIONS = { logLevel: 'silent' } as const;
 
@@ -143,13 +160,14 @@ const valueRoundTripsPlain = memoize((value: string): boolean => {
     try {
       return parse(emitted, { schema, ...READER_OPTIONS }) === value;
     } catch {
-      // Defensive, and measured as such rather than assumed: no probe has
-      // reached it — 0 hits over 461 strings x both readers in review — as the
-      // library does not emit a plain VALUE scalar that fails to parse. It
-      // stays so that a future library change degrades into quoting rather
-      // than into a thrown error, and it is called out because no test can
-      // fence it — the KEY oracle's identical-looking catch below is the
-      // opposite, and IS fenced.
+      // Defensive, and measured as such rather than assumed: 0 hits over 461
+      // strings x both readers, and 0 again over a 91,033-string corpus after
+      // `logLevel: 'silent'` narrowed what can reach it at all (see
+      // READER_OPTIONS — a parse error no longer throws here; only a
+      // `toJS`-time one does, and none arises in VALUE position). Kept as the
+      // fail-safe direction, and called out because no test can fence it —
+      // the KEY oracle's identical-looking catch below is the opposite, and
+      // IS fenced, by the `<<` merge error that survives `silent`.
       return false;
     }
   });
@@ -183,9 +201,10 @@ export function toYaml(obj: unknown): string {
   // yields `null\n`, which is what the hand-rolled emitter returned. (An
   // earlier revision guarded it, because the flat `stringify` call it then
   // used returns the JS value `undefined` rather than a string. The Document
-  // form does not, and the guard was dead.) A function or a symbol THROWS at
-  // this point either way; neither consumer can produce one, both passing
-  // JSON-sourced data.
+  // form does not, and the guard was dead.) A function or a symbol survives
+  // the `Document` construction and throws from `toString()` below (`Tag not
+  // resolved for Function value`); neither consumer can produce one, both
+  // passing JSON-sourced data.
   const doc = new Document(obj, EMIT_OPTIONS);
 
   // Force quotes on the scalars the round-trip oracle rejects, and leave
