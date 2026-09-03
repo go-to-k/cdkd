@@ -942,9 +942,14 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
     expect(escapes.bareSinkSites).toBe(0);
 
     // The measured population that makes the escape empty TODAY: the corpus
-    // has exactly two calls taking a bare `JSON.stringify` outside the sink
-    // set, and neither builds a message. Re-derived here rather than quoted,
-    // so the bound's "measured zero" fails if the corpus grows a third.
+    // has exactly three calls taking a bare `JSON.stringify` outside the sink
+    // set, and none builds a message — two hashing / encoding sinks, plus the
+    // `JSON.parse(JSON.stringify(...))` round-trip `asJson` in
+    // `secretsmanager-secret-provider.ts` uses to normalize a
+    // `GenerateSecretString` block for an in-memory comparison (issue #2472;
+    // the result is compared and dropped, never logged or thrown). Re-derived
+    // here rather than quoted, so the bound's "measured zero" fails if the
+    // corpus grows a fourth.
     const files: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir).sort()) {
@@ -979,7 +984,11 @@ describe('secret-mask recognition — the bound (5) factory set is COMPLETE, not
       };
       visit(source);
     }
-    expect(nonSinkCallees.sort()).toEqual(["Buffer.from", "createHash('sha256').update"]);
+    expect(nonSinkCallees.sort()).toEqual([
+      'Buffer.from',
+      'JSON.parse',
+      "createHash('sha256').update",
+    ]);
   });
 
   it('the factory predicate accepts a `wrap<X>Error` nobody listed, and refuses a near-miss', () => {

@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from 'node:util';
+import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
+import { redactSecretsForState } from '../../deployment/secret-redaction.js';
 import {
   SecretsManagerClient,
   CreateSecretCommand,
@@ -26,6 +29,30 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
 } from '../../types/resource.js';
+
+/**
+ * `value` after a JSON round-trip: `undefined` members dropped, exactly the
+ * shape state.json can hold. Used so the two sides of the issue-#2472
+ * comparison in {@link SecretsManagerSecretProvider.changedSecretValue} are
+ * spelled the same way, and so a null-prototype object (what
+ * `redactSecretsForState` builds) compares equal to a plain one —
+ * `isDeepStrictEqual` checks prototypes. `undefined` round-trips to `undefined`.
+ */
+function asJson(value: unknown): unknown {
+  return value === undefined ? undefined : (JSON.parse(JSON.stringify(value)) as unknown);
+}
+
+/**
+ * A `SecretString` about to go on the wire must be a string. Pre-#2472 a
+ * non-string was forwarded through a cast and left to AWS; a silent drop is
+ * the worse failure for a value the user wrote, so the SHAPE is named — never
+ * the value. Shared by `create()` and `update()` so the two cannot disagree.
+ */
+function requireSecretStringShape(literal: unknown): string {
+  if (typeof literal === 'string') return literal;
+  const shape = literal === null ? 'null' : Array.isArray(literal) ? 'array' : typeof literal;
+  throw new Error(`SecretString must be a string, got ${shape}`);
+}
 
 /**
  * AWS Secrets Manager Secret Provider
@@ -82,8 +109,16 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
 
       if (generateConfig) {
         secretString = this.generateSecretString(generateConfig);
-      } else if (properties['SecretString']) {
-        secretString = properties['SecretString'] as string;
+      } else if (properties['SecretString'] !== undefined && properties['SecretString'] !== '') {
+        // `''` is skipped: a `SecretString: ''` creates a secret with NO
+        // version. `update()` deliberately treats `''` as a value (issue
+        // #2472, see `changedSecretValue`); the two gates differ on purpose,
+        // so a later change TO `''` on a secret created empty is a no-op
+        // there. Every OTHER non-string — `null`, `false`, `0`, an object —
+        // is refused by the SHAPE check shared with `update()`, so a record
+        // that would trip that refusal on every later update can no longer
+        // be created.
+        secretString = requireSecretStringShape(properties['SecretString']);
       }
 
       const createParams: import('@aws-sdk/client-secrets-manager').CreateSecretCommandInput = {
@@ -144,21 +179,25 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
     this.logger.debug(`Updating secret ${logicalId}: ${physicalId}`);
 
     try {
-      let secretString: string | undefined;
-      const generateConfig = properties['GenerateSecretString'] as
-        | Record<string, unknown>
-        | undefined;
-
-      if (generateConfig) {
-        secretString = this.generateSecretString(generateConfig);
-      } else if (properties['SecretString']) {
-        secretString = properties['SecretString'] as string;
-      }
+      // The secret VALUE is sent only when its SOURCE changed (issue #2472).
+      // `UpdateSecret` with a `SecretString` creates a new version and moves
+      // `AWSCURRENT` to it, so re-sending the value on every in-place update
+      // — a Tags-only or Description-only deploy, or a rollback replay — used
+      // to mint a fresh random password for a `GenerateSecretString` secret
+      // (a database seeded from the old value then rejects every consumer
+      // that reads the new one), and to stack a redundant version for an
+      // unchanged literal (advancing `AWSPREVIOUS` off the real previous
+      // value). CloudFormation regenerates only when the `GenerateSecretString`
+      // block itself changes and re-sends a literal only when it changes; the
+      // comparison against `previousProperties` below is that semantics.
+      // `UpdateSecret` has merge semantics, so omitting `SecretString` leaves
+      // the current version untouched.
+      const secretString = this.changedSecretValue(properties, previousProperties);
 
       const updateParams: import('@aws-sdk/client-secrets-manager').UpdateSecretCommandInput = {
         SecretId: physicalId,
       };
-      if (secretString) updateParams.SecretString = secretString;
+      if (secretString !== undefined) updateParams.SecretString = secretString;
       // `Description`: pass-through is `!== undefined` (not truthy) —
       // readCurrentState emits `Description: ''` as a placeholder for "no
       // description set" so the drift comparator can detect a console-side
@@ -352,6 +391,127 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         cause
       );
     }
+  }
+
+  /**
+   * The `SecretString` an in-place update must send, or `undefined` when the
+   * value's SOURCE is unchanged (issue #2472).
+   *
+   * The source is `GenerateSecretString` when present (CloudFormation gives it
+   * precedence over a literal) and `SecretString` otherwise. A generated value
+   * is minted only when the `GenerateSecretString` block differs from the
+   * previous one — every in-place update re-runs this method, so comparing
+   * the block rather than the (never persisted, never read back) value is
+   * the only way to keep an unrelated update from re-rolling the password. A
+   * literal is sent only when it differs from the previous literal. Switching
+   * source in either direction counts as a change (the previous side of the
+   * new source is `undefined`), and a bag that carries NEITHER source keeps
+   * the live value untouched, as CloudFormation does.
+   *
+   * One consequence of the precedence: a PREVIOUS bag carrying both a block
+   * and an ignored `SecretString: 'x'` masks a block-to-literal switch whose
+   * literal is still `'x'` (the literal compares equal, nothing is sent).
+   * CloudFormation rejects a template declaring both, so such a record is
+   * cdkd-created only and the miss is accepted.
+   *
+   * THE PREVIOUS BAG IS WHAT STATE PERSISTED, so the block is compared in
+   * that spelling. On the deploy path a `{{resolve:...}}` inside
+   * `SecretStringTemplate` reaches this method as plaintext while state holds
+   * the redacted expression (GHSA-p5qg-v9gv-hc7w); compared raw, such a block
+   * ALWAYS differs and every Tags-only update re-rolls the password — the
+   * defect this method exists to close, for exactly the shape that embeds a
+   * secret. {@link asPersisted} rewrites the desired block through the same
+   * redaction the state writer uses, so the two sides meet. A pre-GHSA record
+   * still holding plaintext matches the raw comparison instead; either match
+   * means "unchanged".
+   *
+   * The same rewrite means an upstream ROTATION behind an unchanged reference
+   * in `SecretStringTemplate` does NOT regenerate (the expression is the same
+   * on both sides), where CloudFormation, which re-resolves at update time,
+   * would. That is the intended trade for the generated source: the harmful
+   * direction is the unrequested re-roll.
+   *
+   * RESIDUAL, permanent rather than one-shot: two references in the block
+   * that resolve to the SAME plaintext. The resolver records one pair per
+   * plaintext (last expression wins), so this value scan rewrites BOTH leaves
+   * to the survivor expression, while the persisted previous holds each
+   * leaf's own expression (the state writer redacts by POSITION, with the
+   * template as its source) — the two spellings differ on every in-place
+   * update, and that shape re-rolls on every Tags-only deploy. Threading a
+   * position source through here would close it, but the only source this
+   * method holds is the PREVIOUS block, and substituting its leaves would
+   * also erase a genuine reference switch in a secret leaf; left open for a
+   * shape that is rare (two secrets with identical plaintext in one block).
+   *
+   * A LITERAL IS DELIBERATELY NOT REDACTED BEFORE COMPARING. A
+   * `SecretString: '{{resolve:...}}'` (a secret mirroring another one) is
+   * re-sent on every in-place update: cdkd cannot tell whether the REFERENCED
+   * value changed since the last deploy — state holds only the expression —
+   * and CloudFormation re-applies it when the resolved value changed. A
+   * redundant version is the milder failure; a stale copy is a wrong value.
+   *
+   * `isDeepStrictEqual` over a JSON round-trip rather than `JSON.stringify`
+   * equality: the previous bag comes back from state.json while the new one
+   * comes from the resolver, so a key-order difference is not a change, and
+   * an explicit `undefined` member (which state.json cannot hold) must not
+   * read as one either — that failure direction is a silent re-roll.
+   *
+   * KNOWN EDGE, accepted: the redaction is a VALUE scan, so a literal in the
+   * block that happens to EQUAL a plaintext this resource resolved from a
+   * reference elsewhere in its bag is rewritten to that reference's
+   * expression too. Replacing a `{{resolve:...}}` in the template with the
+   * literal it currently resolves to therefore compares equal and does NOT
+   * regenerate, where CloudFormation would. This is the same rewrite the
+   * state writer applies to that literal when it persists the record, so the
+   * two sides stay consistent, and the miss is in the safe direction (no
+   * unrequested re-roll) for an edit that puts a secret's plaintext into a
+   * template.
+   */
+  private changedSecretValue(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): string | undefined {
+    const generateConfig = properties['GenerateSecretString'] as
+      | Record<string, unknown>
+      | undefined;
+    if (generateConfig) {
+      const previous = previousProperties['GenerateSecretString'];
+      const unchanged =
+        isDeepStrictEqual(asJson(generateConfig), asJson(previous)) ||
+        isDeepStrictEqual(asJson(this.asPersisted(generateConfig)), asJson(previous));
+      return unchanged ? undefined : this.generateSecretString(generateConfig);
+    }
+    const literal = properties['SecretString'];
+    if (literal === undefined) return undefined;
+    // UNCHANGED is decided before the shape is judged: a record written by a
+    // pre-#2472 binary may hold a non-string the old `create()` forwarded via
+    // a cast, and an unrelated (Tags-only) update of that record must keep
+    // succeeding as it always did — the refusal below applies only to a value
+    // that would actually be SENT.
+    if (isDeepStrictEqual(asJson(literal), asJson(previousProperties['SecretString']))) {
+      return undefined;
+    }
+    // An empty string is a VALUE here, not "absent": a literal changed to
+    // `''` (or a switch from `GenerateSecretString` to `SecretString: ''`)
+    // is a change the user wrote, so it goes on the wire and AWS accepts
+    // or rejects it, rather than silently keeping the old value. (`create()`
+    // still skips `''` with its truthy gate, so a secret created empty has no
+    // version at all; a later change TO `''` then reads as a no-op here.)
+    return requireSecretStringShape(literal);
+  }
+
+  /**
+   * `bag` as the state writer would persist it: every plaintext this
+   * provider call resolved from a `{{resolve:...}}` reference is rewritten
+   * back to its expression. The pairs come from the per-resource scope the
+   * deploy engine / rollback executor bind around the provider call
+   * (`resource-secrets-scope.ts`); absent (drift `--revert`, import, tests)
+   * the bag is returned as-is. The map is handed to the redaction helper
+   * only — never enumerated, never logged.
+   */
+  private asPersisted<T>(bag: T): T {
+    const secrets = getCurrentResourceSecrets();
+    return secrets !== undefined && secrets.size > 0 ? redactSecretsForState(bag, secrets) : bag;
   }
 
   /**

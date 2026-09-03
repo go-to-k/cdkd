@@ -1899,6 +1899,11 @@
       "scenarios": []
     },
     {
+      "name": "secretsmanager-update-value-source",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "serverless-api",
       "annotated": true,
       "scenarios": []
@@ -2860,6 +2865,7 @@
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
     "secrets-rotation-schedule",
+    "secretsmanager-update-value-source",
     "servicediscovery",
     "sns-event-source",
     "sns-inline-subscription",
