@@ -228,9 +228,15 @@ run_case_head() {
   if [ -z "$line" ]; then
     ok=0; why="${why:+$why; }no remedy line to run"
   else
-    eval "$line" >/dev/null 2>&1
+    remedy_out=$(eval "$line" 2>&1)
     rc=$?
-    if [ "$rc" != 0 ]; then ok=0; why="${why:+$why; }the printed remedy exited $rc"; fi
+    # Capture the remedy's own words. An exit code alone cannot be diagnosed from
+    # a CI log on a machine you do not have -- and this row has already cost one
+    # wrong diagnosis for exactly that reason.
+    if [ "$rc" != 0 ]; then
+      ok=0
+      why="${why:+$why; }the printed remedy exited $rc: ${remedy_out}"
+    fi
   fi
   got_head=$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo "")
   if [ -n "$got_head" ]; then got_head="branch $got_head"; else got_head="DETACHED"; fi
