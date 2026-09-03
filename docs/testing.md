@@ -1358,9 +1358,13 @@ the exemption fails loudly rather than rotting if any of them stops being true â
 if that test goes red, re-open #2212 instead of relaxing it. The exemption is
 also CONDITIONAL: it self-revokes for any fixture that ALSO consumes the
 secret's value into a template property, which is rule 2 above. The four
-fixtures it currently covers (`composite-stack`, `event-driven`,
+fixtures it covers on its own (`composite-stack`, `event-driven`,
 `full-stack-demo`, `secrets-rotation-schedule`) reference their secret by ARN
-alone, which is why three of them legitimately have no `verify.sh` at all.
+alone, which is why three of them legitimately have no `verify.sh` at all. A
+fifth, `secretsmanager-update-value-source` (issue #2472), also carries a
+`generateSecretString` secret but sweeps regardless: it declares a literal
+`unsafePlainText` beside it, so rule 1 applies and it sits in the audited
+seeding set.
 
 It exists because a hand audit is not enough, and that is measured rather than
 assumed: the #2096 audit read every fixture's `verify.sh` and still missed

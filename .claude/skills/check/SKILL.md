@@ -26,6 +26,19 @@ Run these sequentially and report results:
 1. `vp check --fix` — typecheck + lint + Prettier formatting, with auto-fix. Then `vp run check` — the EXACT command CI's `check-build-test` job runs. The two are NOT equivalent: `vp check --fix` has passed 0-errors while `vp run check` failed with a TS7053 error on the same tree (observed 2026-08-09 on PR #1372 — an implicit-any union index the --fix invocation never surfaced, plus a `no-base-to-string` that --fix reported as a warning but CI failed as an error). Run both; CI parity comes from the second. **Use this, not `vp run lint:fix`**: the CI workflow runs `vp check` (which includes Prettier), and `lint:fix` does NOT touch Prettier formatting — so a `lint:fix`-only run passes locally but CI fails with `Formatting issues found` on the same branch. See memory rule `feedback_vp_check_vs_lint_fix.md` for the underlying gotcha and PR #363 for a concrete trap.
 2. `vp run typecheck:test` — type-checks `tsconfig.test.json` (the `tests/**` project). **`vp check` above only type-checks `tsconfig.json` (src/** + types/**), which excludes `**/*.test.ts`** — so a wrong `import type` or a stale mock shape in a test file would pass `vp check` AND `vp test` (whose "Type Errors" line only covers `*.test-d.ts`). This step is what makes test-file type errors fail locally the same way CI now fails them (issue #1133).
 3. `vp run build`
+
+   **Before step 4, regenerate the generated artifacts — UNCONDITIONALLY, it
+   is offline and takes seconds**: `vp run gen:all-matrices && vp run audit:coverage:check && vp run format`.
+   The suite carries a byte-for-byte guard per generated matrix, and the
+   trigger set is wider than any one condition you would write — adding or
+   renaming a PRIVATE method in a provider stales
+   `docs/_generated/handled-property-wiring.json` (issue #1417's class), and
+   a `verify.sh` edit with no src change stales `cli-flag-coverage`. Measured
+   2026-09-03 on the issue-#2472 lane: a provider gained one private helper,
+   nothing else in `docs/_generated/` was touched, and the full ~10-minute
+   suite went red on exactly two `gen-handled-property-wiring` cases before
+   the regeneration made it green. `/verify-pr` step 5 says the same for the
+   PR gate; this copy exists because `/check` is the run that pays the suite.
 4. `vp test run` — the whole unit suite. **Prefer this over `vp run test`**, even though that is the spelling CI uses and the `test` task delegates to exactly this command: nothing sits between the caller and the verdict. Measured on this repo 2026-08-31, both spellings on the same 17,497 tests: `vp test run` prints **15 lines / 617 bytes**, `vp run test` **17 lines / 651 bytes**.
    The gap used to be 260x, and closing it is what the `cache: false` change bought. While the `test` task still cached, `vp run test` gave the child a TTY, so vitest switched to its per-file reporter with console interception on: **1,981 lines / 171 KB** for a green run. It could also exit 0 having run NOTHING, when the cache encoder overflowed while serialising the task's inputs (`Cache lookup failed: Encoded sequence length exceeded preallocation limit`, no `Test Files` line, rc=0). Both are gone with the cache; `vp test run` never had either.
    Read the summary line, not just the exit code: a run that reports no `Test Files` count did not run.

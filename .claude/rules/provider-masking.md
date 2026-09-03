@@ -160,8 +160,11 @@ providers see. The idiom is the one that provider already lives in
 
 **A provider reading it MUST NOT enumerate or log its KEYS**: they are secret
 plaintext, and the only sanctioned use is handing the map on as a redaction
-seed. Do not reach for this accessor in a new provider — if a provider needs to
-mask, it needs `maskSecrets`, which is the whole point of the paragraph above.
+seed. One other reader does exactly that: `SecretsManagerSecretProvider.asPersisted`
+(issue [#2472](https://github.com/go-to-k/cdkd/issues/2472)) passes the map to
+`redactSecretsForState` to spell a desired bag the way state persists it before
+COMPARING it — a masker cannot substitute, since `***` never equals the
+persisted expression. A provider that merely needs to mask takes `maskSecrets`.
 
 What it does NOT cover: cdkd's dynamic-reference secret model only
 (`{{resolve:secretsmanager:...}}`, `SecureString` ssm). A `NoEcho: true`

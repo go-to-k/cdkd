@@ -5834,7 +5834,8 @@
         "replacement-immutable-name",
         "secrets-array-nested",
         "secrets-dynamic-ref",
-        "secrets-rotation-schedule"
+        "secrets-rotation-schedule",
+        "secretsmanager-update-value-source"
       ],
       "signals": {
         "composite-stack": [
@@ -5873,6 +5874,10 @@
           "l2"
         ],
         "secrets-rotation-schedule": [
+          "l2",
+          "literal"
+        ],
+        "secretsmanager-update-value-source": [
           "l2",
           "literal"
         ]

@@ -17475,9 +17475,11 @@
             "AWS::SecretsManager::Secret"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
+            "changedSecretValue",
             "create",
             "update"
           ]
@@ -17530,9 +17532,11 @@
             "AWS::SecretsManager::Secret"
           ],
           "evidence": [
+            "delegated",
             "element-read"
           ],
           "seededBy": [
+            "changedSecretValue",
             "create",
             "update"
           ]

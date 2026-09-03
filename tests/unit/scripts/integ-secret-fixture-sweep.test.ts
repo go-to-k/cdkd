@@ -357,6 +357,7 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'local-run-task-from-state',
       'secrets-array-nested',
       'secrets-dynamic-ref',
+      'secretsmanager-update-value-source',
     ]);
   });
 
