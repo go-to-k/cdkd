@@ -123,12 +123,26 @@ const theme = defineTheme({
     '  background: color-mix(in srgb, var(--octc-color-primary) 12%, transparent);',
     '  color: var(--octc-color-primary);',
     '}',
-    // Entry-page hero: the theme stacks the image centered above the text;
-    // put the logo BESIDE the title block instead (left of "cdkd ...").
-    '.hero { display: flex; flex-direction: row; align-items: center; gap: 3.5rem; }',
-    '.hero-image { margin: 0; flex-shrink: 0; }',
-    '.hero-image img { width: 10rem; height: 10rem; }',
-    '@media (max-width: 768px) { .hero { flex-direction: column; gap: 1.5rem; } }',
+    // Entry-page hero, three tiers: (1) logo beside the title + headline,
+    // (2) the tagline full-width under them, (3) the action buttons. The
+    // theme's markup nests everything but the image inside .hero-content, so
+    // display:contents lifts its children into the hero grid.
+    '.hero { display: grid; grid-template-columns: auto 1fr; column-gap: 3rem; justify-content: start; align-items: center; }',
+    '.hero-content { display: contents; }',
+    '.hero-image { grid-column: 1; grid-row: 1 / span 2; margin: 0; align-self: center; }',
+    '.hero-image img { width: 9rem; height: 9rem; }',
+    '.hero-name { grid-column: 2; grid-row: 1; }',
+    '.hero-text { grid-column: 2; grid-row: 2; margin-bottom: 0; }',
+    '.hero-tagline { grid-column: 1 / -1; grid-row: 3; margin: 1.75rem 0 0; max-width: 42rem; }',
+    '.hero-actions { grid-column: 1 / -1; grid-row: 4; }',
+    '@media (max-width: 768px) {',
+    '  .hero { grid-template-columns: 1fr; }',
+    '  .hero-image { grid-column: 1; grid-row: 1; justify-self: center; }',
+    '  .hero-name { grid-column: 1; grid-row: 2; }',
+    '  .hero-text { grid-column: 1; grid-row: 3; }',
+    '  .hero-tagline { grid-column: 1; grid-row: 4; margin-top: 1rem; }',
+    '  .hero-actions { grid-column: 1; grid-row: 5; }',
+    '}',
     '.nav-title, .toc-title { border-top: none; }',
     // The sidebar/outline column rules run the full viewport height and cut
     // across the header nav items above them — drop both.
