@@ -63,16 +63,28 @@ describe('release-please v0 fence', () => {
     const publish = workflow.jobs?.publish;
     expect(publish).toBeDefined();
     // Publish only runs on an actual release (the release-PR merge), never on
-    // the ordinary pushes that merely update the release PR.
-    expect(publish.if).toContain("release_created == 'true'");
+    // the ordinary pushes that merely update the release PR. Exact match, not
+    // toContain — an `always() || ...` weakening must fail here.
+    expect(publish.if).toBe("${{ needs.release-please.outputs.release_created == 'true' }}");
+    // npm OIDC trusted publishing needs the id-token permission on THIS job.
+    expect(publish.permissions?.['id-token']).toBe('write');
 
     const steps: Array<{ run?: string; name?: string }> = publish.steps;
     const guard = steps.find((s) => s.run?.includes('"$MAJOR" != "0"'));
     expect(guard, 'v0 guard step missing from the publish job').toBeDefined();
-    expect(guard?.run).toContain('exit 1');
+    // Pin each guard arm with its own exit 1 — the run block carries several
+    // `exit 1`s, so a bare toContain('exit 1') would stay green if one arm
+    // were softened to a warning.
+    expect(guard?.run).toMatch(
+      /if \[ "\$PKG_VERSION" != "\$VERSION" \]; then\n[^]*?\bexit 1\n\s*fi/,
+    );
+    expect(guard?.run).toMatch(/if \[ "\$MAJOR" != "0" \]; then\n[^]*?\bexit 1\n\s*fi/);
+    // The 0.* case arm is the third, independent spelling of the same fence.
+    expect(guard?.run).toContain('0.*)');
+    expect(guard?.run).toMatch(/\*\)\n[^]*?\bexit 1\n/);
 
     const guardIndex = steps.indexOf(guard!);
-    const publishIndex = steps.findIndex((s) => s.run?.includes('npm publish'));
+    const publishIndex = steps.findIndex((s) => s.run?.trim() === 'npm publish');
     expect(publishIndex, 'npm publish step missing').toBeGreaterThan(-1);
     expect(guardIndex, 'v0 guard must run before npm publish').toBeLessThan(publishIndex);
   });

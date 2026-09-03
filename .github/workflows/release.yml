@@ -15,6 +15,12 @@ name: Release
 # npm auth is OIDC trusted publishing (id-token: write + registry-url), bound
 # to THIS workflow filename on npmjs.com — do not rename release.yml without
 # updating the trusted publisher config.
+#
+# Known behavior: the release PR is created with GITHUB_TOKEN, and GitHub does
+# not trigger `pull_request` workflows for such PRs — so the release PR shows
+# NO CI checks (and ci-green-gate blocks an agent-side `gh pr merge` on it).
+# Its diff is only version/CHANGELOG/manifest; the maintainer merges it via
+# the web UI. To get CI on release PRs, hand the release-please step a PAT.
 
 on:
   push:

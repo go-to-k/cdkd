@@ -190,7 +190,11 @@ not wait for a version bump after a merge, and never merge the release PR
 without the maintainer asking for a release. cdkd deliberately stays at major
 version 0: `bump-minor-pre-major: true` maps breaking changes to MINOR bumps,
 and the publish job in `.github/workflows/release.yml` hard-fails on any tag
-whose major is not 0.
+whose major is not 0. The release PR is created with `GITHUB_TOKEN`, so it
+carries NO CI checks (GitHub does not trigger `pull_request` workflows for
+such PRs) and `ci-green-gate` blocks an agent-side merge of it — the
+maintainer merges the release PR via the web UI (its diff is only
+version/CHANGELOG/manifest, already CI-covered on main).
 
 ## Node.js Version
 
