@@ -304,7 +304,7 @@ function renderMarkdown(report: FlagCoverageReport): string {
   lines.push('|---|---|');
   for (const entry of report.covered) {
     const fixtures = entry.integs
-      .map((f) => `[\`${f}\`](../tests/integration/${f}/)`)
+      .map((f) => `[\`${f}\`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/${f}/)`)
       .join('<br>');
     lines.push(`| \`${entry.flag}\` | ${fixtures} |`);
   }
