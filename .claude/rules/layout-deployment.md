@@ -47,10 +47,12 @@ Index of every area: [code-layout.md](code-layout.md).
   `maskSecretsInText` is not (feeding a detected-but-unmaskable name to that
   helper printed the secret under a `masked:` label); the refusal message
   omits the name entirely if masking left it unchanged. NOT import-free (takes
-  `secret-redaction.ts`). Known residual: an ssm reference whose `Type` came
-  back unclassifiable is never pinned (#1901), so a later cache hit can
-  substitute that plaintext into a name with nothing recorded and the refusal
-  cannot fire.
+  `secret-redaction.ts`). An ssm reference whose `Type` came back
+  unclassifiable is never pinned (#1901) but is also never CACHED
+  (`cacheable = false`), so each resolution re-asks AWS and records again;
+  since #1933 a cached secret carries its verdict beside the value and the
+  hit arm re-records it too. No name resolution substitutes a plaintext
+  with nothing recorded.
 
 - **src/deployment/dag-executor.ts** - Generic event-driven DAG dispatcher
   (schedules each resource as soon as its deps complete; no level barriers)

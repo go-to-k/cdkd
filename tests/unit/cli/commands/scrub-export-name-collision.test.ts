@@ -90,8 +90,12 @@ const STAGED_EXPR = '{{resolve:secretsmanager:beta:SecretString:password:AWSPREV
 // shape that makes the value-scan fallback's cost a wrong-SECRET reference
 // rather than a lost precision bound.
 const TWIN_EXPR = '{{resolve:secretsmanager:gamma:SecretString:password:AWSCURRENT}}';
-// An `ssm` reference the resolver never PINS (issue #1901): recorded on its
-// FIRST resolution only, exactly as the cache-hit arm behaves.
+// An `ssm` reference the resolver never PINS (issue #1901). The mock records it
+// on its FIRST resolution only — a MODEL of "a plaintext a later resolution
+// will not record again", which is what makes the name loop's own recording
+// observable in the cases below. It is not how the real resolver behaves: an
+// unclassifiable-`Type` reference is never cached (`cacheable = false`), so
+// every real resolution re-asks AWS and records again.
 const UNPINNED_PLAINTEXT = 'unpinned-securestring-value';
 const UNPINNED_EXPR = '{{resolve:ssm:/p/unclassifiable}}';
 const alreadyRecorded = vi.hoisted(() => new Set<string>());
@@ -100,6 +104,56 @@ const alreadyRecorded = vi.hoisted(() => new Set<string>());
 // flag unrelated keys and fail the CI gate repo-wide.
 const TINY_PLAINTEXT = 'abc';
 const TINY_EXPR = '{{resolve:secretsmanager:tiny:SecretString:pin:AWSCURRENT}}';
+// A reference whose value MOVES between resolutions inside one run (issue
+// #2531): the real resolver never caches an `ssm` reference whose `Type` came
+// back unclassifiable, so the `Export.Name` loop (which runs FIRST) and the
+// value loop each ask AWS, and a rotation in between shows the two a different
+// plaintext. Modelled by returning `MOVING_FIRST` from the FIRST resolution and
+// `MOVING_PLAINTEXT` afterwards, recording the entry AND the resolved pair the
+// way the real seam does. `MOVING_EXPR_V1` is a second spelling of the same
+// parameter resolving to the settled plaintext — the same-plaintext sibling
+// that makes the value-keyed map collapse.
+const MOVING_PLAINTEXT = 'moving-securestring-settled-value';
+const MOVING_FIRST = 'moving-securestring-first-value';
+const MOVING_EXPR = '{{resolve:ssm:/p/moving}}';
+const MOVING_EXPR_V1 = '{{resolve:ssm:/p/moving:1}}';
+const movingResolutions = vi.hoisted(() => new Map<string, number>());
+/** A join part that makes the mock throw AFTER the parts before it recorded. */
+const THROW_PART = '__THROW__';
+/** ...and one that throws `undefined`, a legal thrown value the warn path must survive. */
+const THROW_UNDEFINED_PART = '__THROW_UNDEFINED__';
+/**
+ * ...and one that resolves the unpinned reference LATE: it records only when
+ * the resolver's NEXT call begins (the mock releases it there), so a sibling
+ * part that rejects first ends the name's resolution — and the block around
+ * it — before this part has recorded. That is the concurrent `Promise.all`
+ * shape the real `Fn::Join` has, made deterministic: the late record lands
+ * after the failed name's block and before the next resolution's own work.
+ */
+const LATE_PART = '__LATE_UNPINNED__';
+const pendingLate = vi.hoisted(() => ({ release: undefined as (() => void) | undefined }));
+/**
+ * The plaintext KEYS the mock resolver saw in its context map at each call —
+ * what the pin and the cross-stack pre-pass mask against inside the name loop.
+ */
+const contextKeysAtResolve = vi.hoisted(
+  () =>
+    [] as Array<{
+      input: string;
+      keys: string[];
+      // Every READ surface of the map, captured separately: the name loop's
+      // map is a VIEW whose reads must all reach the pass map, and the pin,
+      // the pre-pass and the resolver read it through different methods
+      // (`size` first, then `has` / `get` / iteration).
+      size: number;
+      hasUnpinned: boolean;
+      getUnpinned: string | undefined;
+      spread: string[];
+      entries: string[];
+      values: string[];
+      forEach: string[];
+    }>
+);
 
 /** Conditions scrub's best-effort re-evaluation returns; per-test knob. */
 const conditionValues: { value: Record<string, boolean> } = { value: {} };
@@ -110,7 +164,31 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
     evaluateConditions: vi.fn().mockImplementation(() => Promise.resolve(conditionValues.value)),
     resolve: vi
       .fn()
-      .mockImplementation((value: unknown, ctx: { recordedSecretValues?: Map<string, string> }) => {
+      .mockImplementation(async (value: unknown, ctx: { recordedSecretValues?: Map<string, string> }) => {
+        // A pending LATE part of an EARLIER call records now, before this
+        // call looks at its own context — deterministic "after that block,
+        // before this one".
+        if (pendingLate.release) {
+          const release = pendingLate.release;
+          pendingLate.release = undefined;
+          release();
+          await Promise.resolve();
+          await Promise.resolve();
+        }
+        const map = ctx.recordedSecretValues;
+        const forEachKeys: string[] = [];
+        map?.forEach((_v, k) => forEachKeys.push(k));
+        contextKeysAtResolve.push({
+          input: JSON.stringify(value),
+          keys: [...(map?.keys() ?? [])],
+          size: map?.size ?? -1,
+          hasUnpinned: map?.has(UNPINNED_PLAINTEXT) ?? false,
+          getUnpinned: map?.get(UNPINNED_PLAINTEXT),
+          spread: map ? [...map].map(([k]) => k) : [],
+          entries: [...(map?.entries() ?? [])].map(([k]) => k),
+          values: [...(map?.values() ?? [])],
+          forEach: forEachKeys,
+        });
         const record = (plaintext: string, expr: string): void => {
           // An unpinned ssm reference is recorded only on its FIRST resolution.
           if (expr === UNPINNED_EXPR) {
@@ -119,7 +197,17 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
           }
           ctx.recordedSecretValues?.set(plaintext, expr);
         };
+        // The moving reference: entry AND pair, like the real recording seam.
+        const resolveMoving = (expr: string): string => {
+          const n = (movingResolutions.get(expr) ?? 0) + 1;
+          movingResolutions.set(expr, n);
+          const plaintext = expr === MOVING_EXPR && n === 1 ? MOVING_FIRST : MOVING_PLAINTEXT;
+          ctx.recordedSecretValues?.set(plaintext, expr);
+          if (ctx.recordedSecretValues) recordResolvedPair(ctx.recordedSecretValues, expr, plaintext);
+          return plaintext;
+        };
         const walk = (v: unknown): unknown => {
+          if (v === MOVING_EXPR || v === MOVING_EXPR_V1) return resolveMoving(v);
           if (v === SECRET_EXPR || v === STAGED_EXPR || v === TWIN_EXPR) {
             record(SECRET_PLAINTEXT, v as string);
             return SECRET_PLAINTEXT;
@@ -163,13 +251,44 @@ vi.mock('../../../../src/deployment/intrinsic-function-resolver.js', () => ({
             for (const [k, val] of entries) out[k] = walk(val);
             return out;
           }
+          if (typeof v === 'string' && v.includes(MOVING_EXPR)) {
+            return v.split(MOVING_EXPR).join(resolveMoving(MOVING_EXPR));
+          }
           if (typeof v === 'string' && v.includes(UNPINNED_EXPR)) {
             record(UNPINNED_PLAINTEXT, UNPINNED_EXPR);
             return v.split(UNPINNED_EXPR).join(UNPINNED_PLAINTEXT);
           }
           return v;
         };
-        return Promise.resolve(walk(value));
+        // A top-level `Fn::Join` resolves its parts CONCURRENTLY, as the real
+        // resolver does (`Promise.all`): a part that rejects ends the whole
+        // resolution while a slower sibling is still pending.
+        const join = value as { 'Fn::Join'?: [string, unknown[]] } | null;
+        if (join && typeof join === 'object' && Array.isArray(join['Fn::Join'])) {
+          const [delimiter, parts] = join['Fn::Join'];
+          const resolvedSoFar: string[] = [];
+          return Promise.all(
+            parts.map(async (part) => {
+              // A resolver error ECHOES its input, resolved so far — the
+              // shape that makes the warn path's masking load-bearing.
+              if (part === THROW_PART) {
+                throw new Error(`Fn::Join sibling rejected during scrub: ${resolvedSoFar.join('')}`);
+              }
+              if (part === THROW_UNDEFINED_PART) throw undefined;
+              if (part === LATE_PART) {
+                await new Promise<void>((resolve) => {
+                  pendingLate.release = resolve;
+                });
+                record(UNPINNED_PLAINTEXT, UNPINNED_EXPR);
+                return UNPINNED_PLAINTEXT;
+              }
+              const resolved = String(walk(part));
+              resolvedSoFar.push(resolved);
+              return resolved;
+            })
+          ).then((resolved) => resolved.join(delimiter));
+        }
+        return walk(value);
       }),
   })),
 }));
@@ -184,6 +303,7 @@ import {
   exportAliasCollisionScrubWarning,
   secretBearingStateKeyWarning,
 } from '../../../../src/deployment/outputs-export-alias.js';
+import { recordResolvedPair } from '../../../../src/deployment/secret-redaction.js';
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -253,6 +373,9 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     vi.clearAllMocks();
     conditionValues.value = {};
     alreadyRecorded.clear();
+    movingResolutions.clear();
+    contextKeysAtResolve.length = 0;
+    pendingLate.release = undefined;
     stateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag-2') };
     lockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(undefined),
@@ -408,12 +531,11 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
   });
 
   it('the export-name resolve RECORDS into the pass map, so a later value is not left in plaintext', async () => {
-    // The export-name loop runs BEFORE the value loop, so a dynamic reference
-    // first resolved there warms the resolver's cache — and the cache-hit arm
-    // re-records only what it can still prove is secret. An unpinned ssm
-    // reference (#1901) resolved first for a collision test and NOT recorded
-    // would be invisible when the value loop meets it, so its plaintext would
-    // survive `cdkd scrub` and `--dry-run --fail` would report the state CLEAN.
+    // The export-name loop runs BEFORE the value loop. Whatever it records
+    // must reach the pass map: a plaintext recorded ONLY there (modelled by
+    // the record-once reference) would otherwise be invisible when the value
+    // loop meets the same token, so its plaintext would survive `cdkd scrub`
+    // and `--dry-run --fail` would report the state CLEAN.
     stateBackend.getState.mockResolvedValue({
       state: makeState({ Leaky: UNPINNED_PLAINTEXT }),
       etag: 'etag-1',
@@ -427,6 +549,169 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     expect(secretsFound).toBeGreaterThan(0);
     expect(saved!.outputs['Leaky']).toBe(UNPINNED_EXPR);
     expect(JSON.stringify(saved)).not.toContain(UNPINNED_PLAINTEXT);
+  });
+
+  it('does NOT merge the export-name resolution PAIRS: a value that moved there cannot conflict the evidence the value loop earns (issue #2531)', async () => {
+    // The name loop runs FIRST and re-asks AWS for a reference the resolver
+    // never caches; if the value moved since, its resolved pair disagrees with
+    // the one the value loop records for the same token. Through a shared map
+    // that marks the pair conflicting, and the literal Output embedding the
+    // token falls to the value scan — the sibling's `:1` spelling, the #2485
+    // defect re-opened for this one shape. With the name's own map and an
+    // ENTRIES-only copy, the value loop's pair stands and the leaf keeps its
+    // own token.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({
+        Exporter: PUBLIC_VALUE,
+        Dsn: `pre-${MOVING_PLAINTEXT}-post`,
+        Whole: MOVING_PLAINTEXT,
+        // A key today's template cannot account for: the widened pass value-
+        // scans it, so it shows which expression holds the collapsed slot.
+        Orphan: MOVING_PLAINTEXT,
+      }),
+      etag: 'etag-1',
+    });
+
+    const { saved } = await scrub({
+      Exporter: { Value: PUBLIC_VALUE, Export: { Name: { 'Fn::Sub': `x-${MOVING_EXPR}` } as never } },
+      // The embedded leaf FIRST, so the whole-value sibling holds the
+      // collapsed map slot — the order the value scan gets wrong.
+      Dsn: { Value: `pre-${MOVING_EXPR}-post` },
+      Whole: { Value: MOVING_EXPR_V1 },
+    });
+
+    // The premise: the name loop saw the moved value, the value loop the settled one.
+    expect(movingResolutions.get(MOVING_EXPR)).toBe(2);
+    // ...and the collapsed slot really is the sibling's spelling — the
+    // value scan of a key no source positions writes the survivor. Without
+    // this guard a reorder of `Dsn` / `Whole` would let the case pass with
+    // the shared map, silently.
+    expect(saved!.outputs['Orphan']).toBe(MOVING_EXPR_V1);
+    expect(saved!.outputs['Dsn']).toBe(`pre-${MOVING_EXPR}-post`);
+    expect(saved!.outputs['Whole']).toBe(MOVING_EXPR_V1);
+    expect(JSON.stringify(saved)).not.toContain(MOVING_PLAINTEXT);
+    expect(JSON.stringify(saved)).not.toContain(MOVING_FIRST);
+  });
+
+  it('...but the export-name resolution\'s ENTRIES still reach the pass map when that resolution THROWS part-way, so the error it warns with is MASKED (issue #2531)', async () => {
+    // `Fn::Join` records its first part before its second throws — and the
+    // resolver's error ECHOES what it resolved, so the warn that reports it
+    // prints that plaintext unless the entry recorded before the throw has
+    // reached the map the warn masks against. That is the invariant this
+    // case pins: the entry is forwarded on the throwing exit too, BEFORE the
+    // warn. (The `Leaky`
+    // assertion rides on this file's record-once modelling of an unpinned
+    // reference; the real resolver would re-record it in the value loop, so
+    // the masked warn is the discriminating assertion, not `Leaky`.)
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ Leaky: UNPINNED_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const { saved, secretsFound } = await scrub({
+      Exporter: {
+        Value: PUBLIC_VALUE,
+        Export: { Name: { 'Fn::Join': ['', [UNPINNED_EXPR, THROW_PART]] } as never },
+      },
+      Leaky: { Value: UNPINNED_EXPR },
+    });
+
+    const warns = logger.warn.mock.calls.map((c) => String(c[0]));
+    const nameWarn = warns.find((w) => w.includes('could not be resolved during scrub'));
+    expect(nameWarn).toBeDefined();
+    expect(nameWarn).toContain('***');
+    expect(nameWarn).not.toContain(UNPINNED_PLAINTEXT);
+    expect(secretsFound).toBeGreaterThan(0);
+    expect(saved!.outputs['Leaky']).toBe(UNPINNED_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(UNPINNED_PLAINTEXT);
+  });
+
+  it('...and an entry recorded AFTER the name resolution already failed (a slower Fn::Join part) still reaches the pass map AND a later name, which a copy or a seeded snapshot would miss (issue #2531)', async () => {
+    // `Fn::Join` resolves its parts concurrently. A part that rejects ends
+    // the name's resolution — and the block around it — while a secret part
+    // is still pending; that part records afterwards (here: when the NEXT
+    // resolution begins). Two things must hold that neither a copy at the end
+    // of the block nor a private map seeded from the pass map gives: the
+    // late entry reaches the pass map (`Leaky` is scrubbed — an assertion
+    // that rides on this file's record-once modelling, since the real
+    // resolver would re-record the reference in the value loop), and the
+    // LATER name's resolution already sees it (its context carries the
+    // plaintext — the discriminating assertion), because the pin and the
+    // pre-pass mask against exactly that context.
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ Leaky: UNPINNED_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const { saved, secretsFound } = await scrub({
+      Exporter: {
+        Value: PUBLIC_VALUE,
+        Export: { Name: { 'Fn::Join': ['', [LATE_PART, THROW_PART]] } as never },
+      },
+      Later: { Value: PUBLIC_VALUE, Export: { Name: { 'Fn::Sub': `y-${MOVING_EXPR}` } as never } },
+      Leaky: { Value: UNPINNED_EXPR },
+    });
+
+    const laterName = contextKeysAtResolve.find((c) => c.input.includes(`y-${MOVING_EXPR}`));
+    expect(laterName).toBeDefined();
+    expect(laterName!.keys).toContain(UNPINNED_PLAINTEXT);
+    expect(secretsFound).toBeGreaterThan(0);
+    expect(saved!.outputs['Leaky']).toBe(UNPINNED_EXPR);
+    expect(JSON.stringify(saved)).not.toContain(UNPINNED_PLAINTEXT);
+  });
+
+  it('resolves each export name against every entry recorded SO FAR — the name map is a VIEW of the pass map, not a fresh one (issue #2531)', async () => {
+    // The name loop runs before any value, so what an earlier NAME recorded
+    // is the only thing a later name's resolution can be handed — and the
+    // cross-region pin and the cross-stack pre-pass mask their own messages
+    // against the map they are handed. This case pins that at the resolver
+    // seam only: the context the second name is resolved with must carry the
+    // first name's plaintext (a fresh private map fails it). It does not
+    // drive those two callers' messages; their masking against the map they
+    // receive is pinned by the cross-region and import-value scrub suites.
+    stateBackend.getState.mockResolvedValue({ state: makeState({}), etag: 'etag-1' });
+
+    await scrub({
+      First: { Value: PUBLIC_VALUE, Export: { Name: { 'Fn::Sub': `x-${UNPINNED_EXPR}` } as never } },
+      Second: { Value: PUBLIC_VALUE, Export: { Name: { 'Fn::Sub': `y-${MOVING_EXPR}` } as never } },
+    });
+
+    const secondName = contextKeysAtResolve.find((c) => c.input.includes(`y-${MOVING_EXPR}`));
+    expect(secondName).toBeDefined();
+    // Every read surface, because each has its own production reader: the
+    // masking helpers check `size` before scanning (a view reporting 0 would
+    // return their text UNMASKED), the resolver's cross-stack seam asks `has`,
+    // and the scans iterate. A view delegating any one of these to its own
+    // empty storage would pass the others.
+    expect(secondName!.keys).toContain(UNPINNED_PLAINTEXT);
+    expect(secondName!.size).toBeGreaterThan(0);
+    expect(secondName!.hasUnpinned).toBe(true);
+    expect(secondName!.getUnpinned).toBe(UNPINNED_EXPR);
+    expect(secondName!.spread).toContain(UNPINNED_PLAINTEXT);
+    expect(secondName!.entries).toContain(UNPINNED_PLAINTEXT);
+    expect(secondName!.values).toContain(UNPINNED_EXPR);
+    expect(secondName!.forEach).toContain(UNPINNED_PLAINTEXT);
+  });
+
+  it('still warns when the name resolution throws `undefined` (a legal thrown value)', async () => {
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ PublicAlpha: SECRET_PLAINTEXT }),
+      etag: 'etag-1',
+    });
+
+    const { saved } = await scrub({
+      PublicAlpha: { Value: OWNER_EXPR },
+      SecretBeta: {
+        Value: SECRET_EXPR,
+        Export: { Name: { 'Fn::Join': ['', [THROW_UNDEFINED_PART]] } as never },
+      },
+    });
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not be resolved during scrub')
+    );
+    // ...and the bag is value-scanned as on any other failed name.
+    expect(saved!.outputs['PublicAlpha']).toBe(SECRET_EXPR);
   });
 
   it('a resolved intrinsic name is COMPARED, never WRITTEN as a source key', async () => {

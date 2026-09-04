@@ -5863,16 +5863,18 @@ export class DeployEngine {
         // threshold, and no coincidental match against a sibling's secret.
         //
         // The isolation is for the DECISION only, and the RECORDING side
-        // effect is merged back below — do not re-isolate it. Recording is
-        // process-global in effect: the resolver caches a resolved dynamic
-        // reference, and its cache-hit arm re-records only what it can still
-        // PROVE is secret (a `secretsmanager` spelling, or a PINNED
-        // SecureString). An `ssm` reference whose `Type` came back
-        // unclassifiable is deliberately never pinned (issue #1901), so if
-        // this resolution is the FIRST to touch it and its record dies here,
-        // a LATER output resolving the same reference cache-hits, records
-        // nothing, and its plaintext is persisted — a regression against the
-        // shared-context behavior this replaced.
+        // effect is merged back below — do not re-isolate it. Every plaintext
+        // this resolution records must stay a needle of the PASS map: for the
+        // exposure refusal masked right below, and for every later consumer
+        // that never resolves the reference itself (a value re-using the
+        // same token records its own entry; one that does not, does not). An
+        // earlier version of this comment grounded the merge on the cache-hit
+        // arm re-recording "only what it can still prove is secret" for an
+        // unpinned `ssm` reference (issue #1901); since issue #1933 the cache
+        // carries the verdict beside the value, so a hit re-records a cached
+        // secret, and an unclassifiable-`Type` reference is never cached at
+        // all (`cacheable = false`) — it re-asks AWS and records again. The
+        // merge keeps this resolution's entries either way.
         const nameSecrets: RecordedSecretValues = new Map();
         let exportName: unknown;
         try {
@@ -5890,11 +5892,12 @@ export class DeployEngine {
             // `finally`, and that is the load-bearing part rather than a style
             // choice: the resolver records and caches AS IT GOES, so a
             // resolution that records one element and then throws on the next
-            // (an `Fn::Join` whose `Promise.all` has a sibling reject) leaves
-            // the module-global cache WARM with nothing recorded here. Every
-            // later consumer then cache-hits, the hit arm re-records only what
-            // it can still prove is secret, and an unpinned ssm reference
-            // (#1901) is persisted in plaintext. Any exit that skips this merge
+            // (an `Fn::Join` whose `Promise.all` has a sibling reject) has
+            // already put a plaintext in this map that a success-path merge
+            // would drop — and that plaintext must be a needle for the
+            // failure's own message and for the rest of the pass. (Not, as an
+            // earlier version said, because a later cache hit "records
+            // nothing": see the note above the map.) Any exit that skips this merge
             // — `throw` here, `continue`, a discarded local — reopens that hole,
             // so the invariant is: this recording survives EVERY exit from this
             // block. Unconditional for the same reason: a name that resolved to

@@ -2274,6 +2274,90 @@ interface CrossStackPrePassFindings {
  *   returns. Defensible: a SUPPRESSED output writes no state key, so there is
  *   no persisted plaintext for a missing needle to leave behind.
  */
+/**
+ * A secrets map with its OWN identity whose entries ARE `target`'s (issue
+ * #2531): every read and write goes to `target`; nothing is stored here.
+ *
+ * The outputs pass resolves each `Export.Name` through one of these rather
+ * than through the pass map itself. The resolver records the uncollapsed
+ * `expression -> plaintext` PAIR beside each entry, keyed by the map INSTANCE
+ * (`recordResolvedPair`), and a second write of one expression with a
+ * different plaintext marks that pair conflicting — so a name's resolution
+ * recording straight into the pass map could conflict the pair a literal
+ * Output embedding the same token needs. Pairs recorded through this view
+ * hang off THIS instance and are discarded with it (a name never positions a
+ * leaf); the entries are the pass map's, live, in both directions. The
+ * cross-stack associations the pre-pass records (`recordCrossStackExpression`)
+ * are keyed by instance the same way and die with the view too — consistent
+ * with the pairs: a value leaf re-resolves and records its own.
+ *
+ * Live sharing rather than a private map with a copy: the resolver records
+ * as it goes and `Fn::Join` resolves its parts concurrently, so a part that
+ * rejects while a secret part is still pending ends the name's block before
+ * that part records — a copy at the end of the block misses the late entry,
+ * and a private map SEEDED from the pass map is a snapshot that a LATER
+ * name's resolution would not see the late entry through either. Every
+ * reader in the block (the cross-region pin, the cross-stack pre-pass, the
+ * resolver, the masking of their messages) needs exactly what the pass map
+ * holds at the moment it reads, which is what a view gives.
+ */
+class SharedEntriesSecrets extends Map<string, string> {
+  private readonly target: RecordedSecretValues;
+
+  constructor(target: RecordedSecretValues) {
+    super();
+    this.target = target;
+  }
+
+  override get size(): number {
+    return this.target.size;
+  }
+
+  override get(plaintext: string): string | undefined {
+    return this.target.get(plaintext);
+  }
+
+  override has(plaintext: string): boolean {
+    return this.target.has(plaintext);
+  }
+
+  override set(plaintext: string, expression: string): this {
+    this.target.set(plaintext, expression);
+    return this;
+  }
+
+  override delete(plaintext: string): boolean {
+    return this.target.delete(plaintext);
+  }
+
+  override clear(): void {
+    this.target.clear();
+  }
+
+  override keys(): MapIterator<string> {
+    return this.target.keys();
+  }
+
+  override values(): MapIterator<string> {
+    return this.target.values();
+  }
+
+  override entries(): MapIterator<[string, string]> {
+    return this.target.entries();
+  }
+
+  override forEach(
+    callback: (value: string, key: string, map: Map<string, string>) => void,
+    thisArg?: unknown
+  ): void {
+    this.target.forEach((value, key) => callback.call(thisArg, value, key, this));
+  }
+
+  override [Symbol.iterator](): MapIterator<[string, string]> {
+    return this.target[Symbol.iterator]();
+  }
+}
+
 function isRegionAmbiguousRefusal(err: unknown): boolean {
   return (
     err instanceof Error &&
@@ -3191,32 +3275,45 @@ export async function scrubStack(
       const declaredExportName = (output as { Export?: { Name?: unknown } }).Export?.Name;
       let exportName: unknown = declaredExportName;
       if (declaredExportName !== undefined && typeof declaredExportName !== 'string') {
-        // Issue #2109, same treatment as the resource bag above and outside the
-        // catch for the same reason. An `Export.Name` is rarely secret-bearing,
-        // but the region question is the expression's, not the position's — and
-        // this resolution's RESULT becomes a state key, so a wrong-region answer
-        // here mis-keys the whole positioned outputs pass.
+        // Resolved through a VIEW of the pass map (issue #2531): the entries
+        // are the pass map's, live, but the resolved PAIRS the resolver
+        // records beside them hang off this instance and die with it — see
+        // `SharedEntriesSecrets` for why both halves matter. This loop runs
+        // FIRST and re-asks AWS for a reference the resolver never caches (an
+        // unclassifiable-`Type` `ssm` parameter), so a value that moves
+        // between this resolution and the value loop's would, recorded
+        // straight into the pass map, conflict the pair a literal Output
+        // embedding the token needs. (An earlier comment here grounded the
+        // shared map on the cache-hit arm re-recording "only what it can
+        // still prove is secret"; since issue #1933 the cache carries the
+        // verdict beside the value, so the hit arm re-records a cached secret
+        // too, and the never-cached reference above re-asks AWS regardless.
+        // The entries are shared either way, without leaning on that.)
+        const nameSecrets: RecordedSecretValues = new SharedEntriesSecrets(outputSecrets);
+        // Whether the name's resolution threw (a swallowed, best-effort
+        // failure). A boolean rather than the error's presence: `undefined`
+        // is a legal thrown value, and the old catch warned for it too.
+        let nameFailed = false;
+        let nameError: unknown;
+        // Issue #2109, same treatment as the resource bag above and outside
+        // the catch for the same reason. An `Export.Name` is rarely
+        // secret-bearing, but the region question is the expression's, not
+        // the position's — and this resolution's RESULT becomes a state key,
+        // so a wrong-region answer here mis-keys the whole positioned outputs
+        // pass.
         const nameSource = await pinCrossRegionSecrets(declaredExportName, stack.stackName, {
           stackRegion: region,
           producerRegions,
           resolvers,
-          recordedSecretValues: outputSecrets,
+          recordedSecretValues: nameSecrets,
           origin: `Export.Name of output '${name}'`,
         });
-        // Records into the SAME map the value loop below fills, and that is
-        // load-bearing rather than tidiness: this loop runs FIRST, so a
-        // dynamic reference first resolved here warms the resolver's cache,
-        // and its cache-hit arm re-records only what it can still prove is
-        // secret. An unpinned ssm reference (#1901) would then be invisible
-        // when the value loop meets it, and its plaintext would survive the
-        // command that exists to remove it — `--dry-run --fail` reporting
-        // CLEAN on a leaking stack.
-        const nameContext = resolverContext(outputSecrets);
+        const nameContext = resolverContext(nameSecrets);
         // Issue #2133, same treatment and same placement as the resource bag
         // above: a name assembled from a cross-stack read that scrub cannot
-        // perform is a name it cannot reproduce, and swallowing that is how the
-        // whole outputs pass came to be positioned against a key the deploy
-        // never wrote.
+        // perform is a name it cannot reproduce, and swallowing that is how
+        // the whole outputs pass came to be positioned against a key the
+        // deploy never wrote.
         await resolveCrossStackReads(nameSource, nameContext, `Export.Name of output '${name}'`, {
           canRefuse: !isOutputSuppressed(name, output, conditions, state.outputs ?? {}),
         });
@@ -3226,6 +3323,10 @@ export async function scrubStack(
           // A region-AMBIGUOUS refusal is not best-effort -- see
           // `isRegionAmbiguousRefusal`.
           if (isRegionAmbiguousRefusal(err)) throw err;
+          nameFailed = true;
+          nameError = err;
+        }
+        if (nameFailed) {
           // No key to mark ambiguous — the name the deploy used is unknown and
           // could be any output's — so the whole source bag becomes untrusted.
           outputsSourceUntrusted = true;
@@ -3233,11 +3334,12 @@ export async function scrubStack(
           // verbosity: `nameSource` is a bag `pinCrossRegionSecrets` may
           // already have substituted a foreign plaintext into, so a resolver
           // error echoing its input reaches the terminal of a command whose
-          // entire subject is removing that plaintext. `outputSecrets` is the
-          // map that pin recorded into, so it is the right needle set.
+          // entire subject is removing that plaintext. `outputSecrets` holds
+          // everything the pin and the resolution recorded (the view writes
+          // through), so it is the right needle set.
           logger.warn(
             `Export.Name of output ${name} could not be resolved during scrub ` +
-              `(${maskSecretsInText(err instanceof Error ? err.message : String(err), outputSecrets)}) — ` +
+              `(${maskSecretsInText(nameError instanceof Error ? nameError.message : String(nameError), outputSecrets)}) — ` +
               `redacting this stack's outputs by value match instead of by template position, since state may be keyed under a name this run cannot reproduce.`
           );
         }
