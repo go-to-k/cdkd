@@ -20,3 +20,7 @@ Two `orphan` variants at different granularities:
 
 Both `cdkd destroy` (synth-driven) and `cdkd state destroy`
 (state-driven, no synth) delete AWS resources + state.
+
+See [`cdkd state`](cli-state.md) for the flags, prompts, and exit codes of the
+two state-driven commands, and [State Store](state-store.md) for why they can
+run without a CDK app at all.

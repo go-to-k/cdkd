@@ -39,6 +39,8 @@ The detailed per-command / per-flag reference is split across these pages:
 - **[`cdkd publish-assets`](cli-publish-assets.md)** — synth + build + publish
   without deploying.
 - **[`cdkd events`](cli-events.md)** — reading deployment-event history.
+- **[`cdkd state`](cli-state.md)** — inspecting and operating on the S3
+  state store directly, with no CDK app.
 
 The sections below cover the cross-command behaviours: output streams,
 `--region`, `--role-arn`, exit codes, and the `local *` command family.

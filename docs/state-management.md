@@ -1996,96 +1996,17 @@ aws s3api get-object \
 # }
 ```
 
-#### List Stacks Stored in S3
+#### Inspect and Operate on the Store with `cdkd state`
 
-```bash
-# Display all stacks present in the state bucket (cdkd-native)
-cdkd state list
-cdkd state ls --long          # include resource count, last-modified, lock status
-cdkd state list --tree        # parent → child stack tree for nested stacks
-cdkd state list --tree --json # tree as nested JSON for tooling
+The `cdkd state` command family reads and writes this store directly, with no
+CDK app: `cdkd state list` enumerates the records (`--tree` for the
+nested-stack hierarchy), `cdkd state show` prints one record in full,
+`cdkd state info` reports which bucket was resolved and how, and the mutating
+subcommands act on one stack, several, or the whole bucket with `--all`.
 
-# Or, low-level via the AWS CLI:
-aws s3 ls s3://cdkd-state-bucket/cdkd/ --recursive \
-  | grep state.json \
-  | awk '{print $4}' \
-  | sed 's|cdkd/||; s|/state.json||'
-# Output: <stackName>/<region>, one row per (stackName, region) pair.
-```
-
-`--tree` walks each state record's v6 `parentStack` / `parentRegion` fields
-(populated by `NestedStackProvider.create` and recursive
-`cdkd import --migrate-from-cloudformation`) to render `tree(1)`-style
-box-drawing of the parent → child hierarchy:
-
-```text
-NestedStackDeep (us-east-1)
-└── NestedStackDeep~Child (us-east-1)
-    └── NestedStackDeep~Child~Grandchild (us-east-1)
-```
-
-Flat output is preserved as the default so scripts that grep
-`cdkd state list` still work. Children whose parent state record is missing
-(parent destroyed out-of-band, or state hand-deleted) surface at the root
-level — they stay visible rather than vanishing.
-
-**`cdkd state list`'s stdout is a PAYLOAD, with or without `--json`**: the
-default mode's one
-`Stack (region)` reference per line is exactly what a `while read -r ref` loop
-consumes, so every line cdkd's own logger prints goes to stderr instead. The
-other `state` subcommands with a `--json` mode (`resources`, `show`, `info`)
-keep the `--json` gate, because their flagless output is a formatted human view
-rather than a record set. See
-[Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
-
-Note: `cdkd list` (alias `ls`) lists stacks from the local CDK app via
-synthesis (CDK CLI parity — see README), which is a different question
-from `cdkd state list` (what is registered in the S3 state bucket).
-
-#### Show a Stack's Full State Record (with Nested Children)
-
-```bash
-# Single-stack output: metadata, lock, outputs, every resource
-# (incl. properties — the deepest state subcommand).
-cdkd state show MyStack
-cdkd state show MyStack --json
-
-# Recursively show every nested-stack child under the target stack.
-# Each child's block is appended after the parent's, separated by a
-# blank line and a `Nested stack: <name>` header.
-cdkd state show MyParent --show-nested
-cdkd state show MyParent --show-nested --json
-```
-
-`--show-nested` reuses the same recursive cdkd-state walker as `cdkd export`
-(`buildCdkdStateStackTree`): for every `AWS::CloudFormation::Stack` row in
-the target's `state.resources`, it derives the child key
-(`<parent>~<childLogicalId>`) and loads the child's state file from
-`cdkd/<parent>~<childLogicalId>/<region>/state.json`, recursing. The walk
-fails fast on a torn tree (a parent that lists a nested-stack row but
-whose child state file is missing) with a pointer to remediation
-(`cdkd state orphan <parent>` + re-deploy, or finish whatever partial
-operation tore the tree). The `--json` shape is recursive
-`{state, lock, children: [...]}` so machine consumers see the full tree
-in one document; `children` is always present (empty array on leaves) so
-the key set is stable. Default (no `--show-nested`) preserves the
-single-stack `{state, lock}` shape verbatim — tooling that already
-consumes `cdkd state show --json` keeps working.
-
-#### Inspect the State Bucket Itself
-
-```bash
-# Bucket name, region (auto-detected via GetBucketLocation), source
-# (cli-flag / env / cdk.json / default), schema version, stack count.
-cdkd state info
-cdkd state info --json
-```
-
-Routine commands (`deploy`, `destroy`, `diff`, etc.) no longer print the
-bucket banner by default — the bucket name includes the AWS account id,
-which would leak via screenshots and public CI logs. Pass `--verbose` to
-surface it in those commands' debug logs, or use `cdkd state info` for an
-explicit on-demand answer.
+Every subcommand, its flags, and its exit codes are documented on
+[`cdkd state`](cli-state.md); [State Store](state-store.md) is the shorter
+first read.
 
 ## State Migration and Version Management
 
@@ -2169,34 +2090,6 @@ If you manually changed AWS resources, state file and actual resources will dive
    cdkd destroy --stack MyStack --force
    cdkd deploy --app "..." --stack MyStack
    ```
-
-## Future Extensions
-
-### State Drift Detection
-
-Feature to detect differences between actual AWS resources and state file:
-
-```bash
-cdkd detect-drift --stack MyStack
-```
-
-### State Import
-
-Feature to import existing AWS resources into cdkd state:
-
-```bash
-cdkd import --stack MyStack \
-  --resource MyBucket=s3://existing-bucket-name
-```
-
-### State Locking Backend Extensions
-
-Support for other backends like DynamoDB or Consul:
-
-```bash
-cdkd deploy --state-backend dynamodb \
-  --state-table cdkd-locks
-```
 
 ## References
 

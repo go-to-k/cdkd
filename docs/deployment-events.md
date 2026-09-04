@@ -18,6 +18,15 @@ This makes post-hoc troubleshooting possible — especially handing failure
 context to an AI agent on a different machine / session: one command gives
 the full ordered run history.
 
+```bash
+cdkd events MyStack                    # list recorded runs, newest first
+cdkd events MyStack --run <id>         # one run's full ordered event stream
+cdkd events MyStack --format json      # machine-readable, for tooling
+cdkd events MyStack --stack-region us-east-1   # disambiguate a multi-region name
+cdkd events prune MyStack              # keep the newest 20 runs, delete the rest
+cdkd events prune MyStack --all --yes  # purge all history for the stack
+```
+
 ## What gets recorded
 
 Each deploy / destroy run appends one **JSONL** line per lifecycle event:
@@ -187,7 +196,8 @@ Two mechanisms keep the `deployments/` prefix from growing without bound:
 
 Event recording can **never fail or block** a deploy / destroy:
 
-- `record()` is synchronous and only buffers in memory.
+- Events are buffered in memory as the run proceeds; nothing is written
+  to S3 inline with a resource operation.
 - Flushes are asynchronous (debounced timer + a size threshold) and
   serialized on a write chain.
 - A failed S3 write warns **at most once** and then degrades to

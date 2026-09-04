@@ -71,7 +71,7 @@ jobs:
 ```
 
 The destroy job has no checkout, `npm ci`, or synth —
-[`cdkd state destroy`](orphan-vs-destroy.md) deletes from the state
+[`cdkd state destroy`](cli-state.md#cdkd-state-destroy) deletes from the state
 record alone, so it works even after the branch is gone.
 
 If the environment contains protection-enabled resources (RDS /

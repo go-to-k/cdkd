@@ -33,6 +33,7 @@ const navigation: SsgNavigationGroup[] = [
       { title: 'Rollback', path: '/rollback' },
       { title: 'Drift Detection', path: '/drift' },
       { title: 'Orphan vs Destroy', path: '/orphan-vs-destroy' },
+      { title: 'State Store', path: '/state-store' },
       { title: 'Import & CFn Migration', path: '/import' },
       { title: 'Export to CloudFormation', path: '/export' },
       { title: 'Mixed Estates', path: '/mixed-estates' },
@@ -58,6 +59,7 @@ const navigation: SsgNavigationGroup[] = [
       { title: 'cdkd scrub', path: '/cli-scrub' },
       { title: 'cdkd publish-assets', path: '/cli-publish-assets' },
       { title: 'cdkd events', path: '/cli-events' },
+      { title: 'cdkd state', path: '/cli-state' },
     ],
   },
   {

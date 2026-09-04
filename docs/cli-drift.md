@@ -58,7 +58,7 @@ those the comparator falls back to `properties`, the user-templated intent.
 The difference matters: the observed baseline is what makes a console-side
 change to a key you never templated surface as drift, while the fallback only
 catches changes to keys you did template. Run
-[`cdkd state refresh-observed <stack>`](state-management.md) or redeploy to
+[`cdkd state refresh-observed <stack>`](cli-state.md#cdkd-state-refresh-observed) or redeploy to
 populate an observed baseline in place.
 
 The comparator only looks at keys present in cdkd state. AWS-managed fields
