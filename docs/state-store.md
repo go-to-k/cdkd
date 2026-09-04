@@ -58,10 +58,9 @@ shape silently. Upgrading cdkd never asks you to migrate a record's *contents*.
 Two things around the record are not covered by that. A record still written
 under the original key layout, from before keys carried a region, is rewritten
 under the current one by the next `cdkd deploy` into that region. And the
-bucket *name* changed once:
-installations predating the region-free default need a one-time
-`cdkd state migrate` per region, which both the deprecation warning and
-`cdkd state info` point at.
+bucket *name* changed once: installations predating the region-free default
+need a one-time `cdkd state migrate` per region, which both the deprecation
+warning and `cdkd state info` point at.
 
 See **[`cdkd state`](cli-state.md)** for the full reference: every subcommand,
 its flags, the confirmation and lock behavior, and the exit codes. The record

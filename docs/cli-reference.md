@@ -299,6 +299,7 @@ collapse it into the general `1` bucket.
 | --- | --- |
 | `cdkd destroy`, `cdkd state destroy` | Per-resource delete failures, and per-resource **skips**. |
 | `cdkd deploy` | Resources left **unaddressed** — a skipped DELETE, or a replacement's surviving predecessor. Suppressible with `--allow-unaddressed`. |
+| `cdkd state refresh-observed` | Per-resource read-back failures; the affected resources keep their previous baseline. |
 | `cdkd publish-assets` | Per-stack asset publish failures. |
 | `cdkd rollback` | Per-op failures, or ops skipped with a warning. The journal is kept so the run can be repeated. |
 | `cdkd drift` | Nothing drifted, but cdkd **refused to compare** a secret-bearing property. |

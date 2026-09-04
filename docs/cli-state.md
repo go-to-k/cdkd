@@ -133,10 +133,10 @@ subcommands with a `--json` mode (`resources`, `show`, `info`) keep the
 than a record set. See
 [Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
 
-`--tree` walks each record's v6 `parentStack` / `parentRegion` fields —
-populated by `NestedStackProvider.create` and by the recursive
-`cdkd import --migrate-from-cloudformation` — to draw `tree(1)`-style
-box-drawing:
+`--tree` walks each record's v6 `parentStack` / `parentRegion` fields, which a
+nested-stack deploy and the recursive
+`cdkd import --migrate-from-cloudformation` both populate, to draw
+`tree(1)`-style box-drawing:
 
 ```text
 NestedStackDeep (us-east-1)
@@ -207,7 +207,19 @@ with its properties, attributes, dependencies, and `provisionedBy` routing.
 `--show-nested` reuses the same recursive walker as `cdkd export`: for every
 `AWS::CloudFormation::Stack` row in the target's resources it derives the child
 key `<parent>~<childLogicalId>`, loads
-`cdkd/<parent>~<childLogicalId>/<region>/state.json`, and recurses. It fails
+`cdkd/<parent>~<childLogicalId>/<region>/state.json`, and recurses. Each
+descendant's block follows the parent's in depth-first order, flat at column
+zero rather than indented, behind its own header:
+
+```text
+Stack: MyParent
+  ...
+
+Nested stack: MyParent~Child
+Stack: MyParent~Child
+  ...
+```
+ It fails
 fast on a torn tree — a parent listing a nested-stack row whose child record
 does not exist — rather than printing a partial tree. Repair it by re-deploying
 the parent, by finishing whatever partial operation tore it, or, failing both,
@@ -290,8 +302,7 @@ Three differences from `cdkd destroy` are worth knowing before you script it:
 - **No `--purge-events`.** Use [`cdkd events prune`](cli-events.md) to drop
   deployment-event history for a stack instead.
 
-Naming a stack that has no record is an error, not a silent skip. A name with
-records in several regions is an error too unless `--stack-region` picks one.
+Naming a stack that has no record at all is an error, not a silent skip.
 
 `--all` raises a single batch prompt listing every stack before anything is
 touched, and the per-stack prompts are then skipped. Interrupting at that
@@ -333,9 +344,6 @@ no record body is rewritten.
 | `--dry-run` | off | Stop before any mutation, after reporting what would be copied. |
 | `--remove-legacy` | off | Delete the source bucket after the copy is verified. Irreversible: it empties every object version and delete marker first, so the source bucket's version history is gone. |
 
-It takes no `--state-bucket` / `--state-prefix`, and its `--region` is a real
-selector rather than the deprecated global option.
-
 `migrate --dry-run` prints its plan — the two bucket names, the source
 bucket's real region, and the object count — and then still raises the
 confirmation prompt before stopping. [`refresh-observed --dry-run`](#cdkd-state-refresh-observed)
@@ -347,10 +355,8 @@ each object copy is idempotent per key, and the post-copy verification tolerates
 a destination that already holds objects, so a re-run resumes a partial
 migration. The source bucket is kept unless `--remove-legacy` is passed, and it
 is only deleted after the object count at the destination has been verified.
-That deletion is not recoverable: emptying the bucket removes every prior
-object version and delete marker, so the copy at the destination becomes the
-only history you have. Leave the source in place until you are satisfied with
-the migrated bucket.
+Leave it in place until you are satisfied with the migrated bucket — that
+deletion is the one step here you cannot undo.
 
 It refuses to start while any `lock.json` exists in the source bucket, naming
 the offending keys — wait for the in-flight operation, or clear a stale lock
