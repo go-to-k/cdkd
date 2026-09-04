@@ -30,7 +30,7 @@ Docker is required — see [Local Execution](local-emulation.md#requirements).
 | --- | --- | --- |
 | `[targets...]` | interactive picker | One or more CDK display paths or stack-qualified logical ids of `AWS::ECS::Service` resources. Omit in a TTY to multi-select. |
 | `--cluster <name>` | `cdkd-local` | Cluster name reported by the metadata endpoint, and the prefix of the shared Docker network and per-replica cluster names. |
-| `--max-tasks <n>` | `3` | Hard cap on the local replica count, applied over the template's `DesiredCount`. Must be between `1` and `83` — the range of the per-replica link-local subnet allocator. |
+| `--max-tasks <n>` | `3` | Hard cap on the local replica count, applied over the template's `DesiredCount`. Must be between `1` and `83` — the ceiling the local address allocator can serve. |
 | `--restart-policy <policy>` | `on-failure` | How to react when a replica's essential container exits: `on-failure`, `always`, or `none`. |
 | `--host-port <containerPort=hostPort...>` | host port equals container port | Publish a container port on a specific host port, e.g. `80=8080`. Repeatable. Single-replica services only. |
 | `--no-logs` | off (logs stream) | Stop streaming each replica's container output to your terminal. `docker logs -f <id>` stays available. |
@@ -53,7 +53,7 @@ Docker is required — see [Local Execution](local-emulation.md#requirements).
 | `--from-state` | off | Substitute deployed values from cdkd's S3 state into images, environment variables, secrets, role ARNs and volumes — see [Local Execution](local-emulation.md#common-flags). |
 | `--from-cfn-stack [name]` | off | Substitute from a CloudFormation-deployed stack instead. Bare form uses the cdkd stack name. Mutually exclusive with `--from-state`. |
 | `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local Execution](local-emulation.md#common-flags). |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state, for `--from-state`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state, for `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly — see [Local Execution](local-emulation.md#common-flags). |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |

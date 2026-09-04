@@ -90,7 +90,8 @@ cdkd has three command families:
 - **`cdkd local ...` subcommands** (`local invoke` / `start-api` /
   `run-task` / `start-service` / `start-alb` / `start-cloudfront` /
   `invoke-agentcore` / `start-agentcore`) run synthesized workloads
-  locally inside Docker containers — no AWS deploy needed. Modeled on
+  locally, most of them in Docker containers — no AWS deploy needed.
+  Modeled on
   `sam local *` but reads CDK state directly via `--from-state`
   (cdkd-managed) or `--from-cfn-stack` (CFn-managed). See
   [Local Execution](local-emulation.md).

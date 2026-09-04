@@ -50,12 +50,11 @@ cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed s
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--cluster <name>` | `cdkd-local` | Cluster name surfaced in `ECS_CONTAINER_METADATA_URI_V4`, and the prefix of the docker network. |
-| `--max-tasks <n>` | `3` | Hard cap on local replicas per service, overriding the template's `DesiredCount`. Cannot exceed 83. |
+| `--max-tasks <n>` | `3` | Hard cap on local replicas per service, overriding the template's `DesiredCount`. Cannot exceed 83 — the ceiling the local address allocator can serve. |
 | `--restart-policy <policy>` | `on-failure` | What happens when an essential container exits: `on-failure`, `always`, or `none` (run degraded). |
 | `--no-logs` | off | Stop streaming each replica's container output to the terminal. |
 | `--assume-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or an explicit ARN) and forward temporary credentials through the metadata sidecar. |
 | `--assume-task-role [arn]` | off | Deprecated alias of `--assume-role` on this command. Both forms work here; note that `cdkd local run-task` accepts only `--assume-task-role`. |
-| `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR, for cross-account or centralized registries. |
 | `--platform <platform>` | task `RuntimePlatform` | Force `linux/amd64` or `linux/arm64` for every container. |
 
 ### Container images
@@ -63,10 +62,11 @@ cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed s
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
+| `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR, for cross-account or centralized registries. |
 | `--no-build` | off | Skip `docker build` on the local CDK-asset path and reuse the previously built tag. Errors when that tag is missing. |
 | `--image-override <service=dockerfile>` | — | Build a service's image locally from the named Dockerfile instead of pulling its deployed registry tag. Repeatable; a bare `<dockerfile>` opens a picker. |
-| `--image-build-arg <KEY=VAL>` | — | `docker build --build-arg` pair applied to every `--image-override` build. Repeatable. |
-| `--image-build-secret <id=src>` | — | `docker build --secret id=<id>,src=<src>` entry applied to every `--image-override` build, for `RUN --mount=type=secret`. Repeatable. |
+| `--image-build-arg <KEY=VAL>` | — | `docker build --build-arg` pair for every `--image-override` build. Repeatable. `<service>:KEY=VAL` scopes it to one service. |
+| `--image-build-secret <id=src>` | — | `docker build --secret id=<id>,src=<src>` entry for every `--image-override` build, for `RUN --mount=type=secret`. Repeatable. `<service>:id=src` scopes it to one service. |
 | `--image-target <stage>` | — | Multi-stage build stage for `--image-override` builds (docker's `--target`). `<service>=<stage>` scopes it to one service; a bare `<stage>` applies globally. |
 | `--no-interactive-overrides` | off | Suppress the boot prompt that asks for a Dockerfile per pinned target, and the `--image-override <dockerfile>` picker. |
 | `--strict-overrides` | off | Fail at boot when any registry-pinned target is still uncovered after overrides and prompts resolve. |
@@ -83,7 +83,7 @@ cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed s
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--from-state` | off | Resolve intrinsics in the backing services from cdkd's S3 state. Mutually exclusive with `--from-cfn-stack`. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only meaningful with `--from-state`. |
 | `--from-cfn-stack [name]` | off | Resolve intrinsics from a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the cdkd stack name. |
 | `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region under `--from-cfn-stack`. |
@@ -129,7 +129,7 @@ The front door reads the synthesized template and serves these shapes. Anything
 outside them is skipped with a warning at boot, and the rest of the load
 balancer still serves.
 
-| Shape | Supported |
+| Shape | What is served |
 | --- | --- |
 | Listener protocols | `HTTP` and `HTTPS`. `TCP` / `UDP` / `TLS` (NLB-style) listeners are skipped. |
 | Rule conditions | All six ALB fields: `path-pattern`, `host-header`, `http-header`, `http-request-method`, `query-string`, `source-ip`. |
@@ -194,7 +194,7 @@ Each firing is classified per target, which picks the per-replica primitive:
 | Change | Primitive |
 | --- | --- |
 | Source-only edits to an interpreted-language handler (Node, Python, Ruby, shell) | Fast path: the new source is copied into each replica and the container is restarted. No rebuild; the front-door pool entry is unchanged because the IP and port are preserved. |
-| Dockerfile, dependency manifest, compiled-language source, or an ambiguous edit | Rebuild: cdkd boots a shadow replica, probes its port for TCP readiness, swaps it into the front-door pool atomically, then drops the old replica. |
+| Dockerfile, dependency manifest, TypeScript or compiled-language source, or an ambiguous edit | Rebuild: cdkd boots a shadow replica, probes its port for TCP readiness, swaps it into the front-door pool atomically, then drops the old replica. |
 
 Both paths roll one replica at a time, so a continuous request stream against a
 listener port sees no connection refusals across the reload. The host front door
@@ -224,8 +224,8 @@ requested host ports each time.
 - `--watch` rolls the existing replicas onto the new image but does not scale the
   replica count up or down when `DesiredCount` or the `--max-tasks` clamp changes
   mid-run. A warning names it; restart to pick up the new count.
-- `--max-tasks` cannot exceed 83, the range of the per-replica link-local subnet
-  allocator.
+- `--max-tasks` cannot exceed 83, the ceiling the local address allocator can
+  serve.
 - Under `--from-cfn-stack`, an `Fn::GetAtt` in a container's `Environment[].Value`
   is dropped with a warning: CloudFormation's resource listing does not return
   per-attribute values, and no ECS-side call recovers them from a deployed task.

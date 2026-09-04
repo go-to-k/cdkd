@@ -37,16 +37,16 @@ accept `--env-vars` or `--container-host`, and its `--from-state` is inert — s
 | `--host <host>` | `127.0.0.1` | Bind address. |
 | `--origin <originId=dir>` | — | Serve one origin from a local directory. Repeatable. `<originId>` is the distribution's own `Origins[].Id` — see [Origins](#origins). |
 | `--kvs-file <key=file.json>` | — | Back a CloudFront Function's `cf.kvs()` reads with a flat local JSON map. Repeatable. |
-| `--tls` | off | Terminate real HTTPS, using `--tls-cert` / `--tls-key` when supplied and an auto-generated self-signed certificate otherwise. |
-| `--tls-cert <path>` | — | PEM server certificate. Implies `--tls`. |
-| `--tls-key <path>` | — | PEM private key. Implies `--tls`. |
+| `--tls` | off | Terminate real HTTPS. With `--tls-cert` / `--tls-key` it uses your PEM pair; otherwise it generates a self-signed certificate, which needs `openssl` on `PATH`. |
+| `--tls-cert <path>` | — | PEM server certificate. Implies `--tls`; must be paired with `--tls-key`. |
+| `--tls-key <path>` | — | PEM private key. Implies `--tls`; must be paired with `--tls-cert`. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda origin's base image and use the cached one. No-op for a distribution with no Lambda. |
 | `--cache-origin` | off | Keep objects fetched from a deployed S3 origin in memory for the session instead of re-reading each request. |
 | `--from-state` | off | Accepted, but **does nothing on this command**, and still conflicts with `--from-cfn-stack` — see [State sources](#state-sources). |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Inert here, like `--from-state`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Inert here, like `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Inert here, like `--from-state`. |
 | `--from-cfn-stack [name]` | off | Bind the same values to a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the resolved stack name. |
-| `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region under `--from-cfn-stack`. |
+| `--stack-region <region>` | — | The CloudFormation client region under `--from-cfn-stack`. The state-record half does not apply here. |
 | `--assume-role [arn]` | off | Assume a Lambda origin's deployed execution role and forward temporary credentials into its container. Omit the flag to keep your own shell credentials in the container. |
 | `--watch` | off | Re-synth and re-resolve the distribution when the CDK source changes. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly. |

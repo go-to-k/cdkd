@@ -51,9 +51,9 @@ source) are supported.
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for cross-account or centralized registries. Same-account, same-region pulls need no role. |
 | `--from-state` | off | Substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::ImportValue` in env vars from cdkd's S3 state. Mutually exclusive with `--from-cfn-stack`. See [Environment variables](#environment-variables). |
 | `--from-cfn-stack [cfn-stack-name]` | off | Substitute `Ref` / `Fn::ImportValue` in env vars from a deployed CloudFormation stack, for apps deployed via the upstream CDK CLI. Mutually exclusive with `--from-state`. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Used only with `--from-state`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Used only with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Used only with `--from-state`. |
-| `--stack-region <region>` | auto | Region of the state record to read, and the CFn client region for `--from-cfn-stack`. See [Local Execution](local-emulation.md#common-flags). |
+| `--stack-region <region>` | — | Region of the state record to read, and the CFn client region for `--from-cfn-stack`. See [Local Execution](local-emulation.md#common-flags). |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud-assembly directory. |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
@@ -232,7 +232,7 @@ invoke`](local-invoke.md#output-streams), which shares the same reservation.
 | Code | Meaning |
 | --- | --- |
 | `0` | The agent answered and the response was printed. |
-| `1` | The agent answered with an error, or cdkd could not get as far as an answer. |
+| `1` | The agent answered with an error, or cdkd could not get as far as an answer. Unlike [`cdkd local invoke`](local-invoke.md#exit-codes), an error *answer* is a non-zero exit here. |
 | `130` | `^C` (SIGINT). The container is stopped and removed before the process exits. |
 
 Exit `1` covers both an unhappy answer and a failure to reach one:

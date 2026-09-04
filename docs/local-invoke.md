@@ -43,7 +43,7 @@ reuse the cached one.
 | `--from-cfn-stack [cfn-stack-name]` | off | Substitute env-var intrinsics from a deployed CloudFormation stack. Mutually exclusive with `--from-state`. See [`--from-cfn-stack`: recover env vars from CloudFormation](#from-cfn-stack-recover-env-vars-from-cloudformation). |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Used only with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Used only with `--from-state`. |
-| `--stack-region <region>` | auto | Region of the state record to read, and the CFn client region for `--from-cfn-stack`. See [Local Execution](local-emulation.md#common-flags). |
+| `--stack-region <region>` | — | Region of the state record to read, and the CFn client region for `--from-cfn-stack`. See [Local Execution](local-emulation.md#common-flags). |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud-assembly directory. Pass `-a cdk.out` to skip synthesis while iterating. |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |

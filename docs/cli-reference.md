@@ -140,10 +140,9 @@ without passing through cdkd's logger, so take the **last** line
    `END` / `REPORT` *and* every handler log line — `console.error` included —
    on the container's stdout, so any handler that prints lands ahead of the
    response.
-2. **cdk-local's own logger.** cdkd reuses cdk-local for the container-image
-   build path, and cdk-local has a separate logger with no reservation concept,
-   so `Building container image (platform=...)` and `Skipping docker build ...`
-   print on stdout for a container-image Lambda.
+2. **The container-image build path.** For a container-image Lambda,
+   `Building container image (platform=...)` and `Skipping docker build ...`
+   print on stdout rather than stderr.
 
 ## `--region` / `AWS_REGION` (every command)
 
@@ -205,7 +204,11 @@ so cdkd reads it too and stays in step with a CLI command you just ran.
 The last three steps — `AWS_DEFAULT_REGION`, the profile, and the `us-east-1`
 fallback — apply to the **bootstrap-marker family**: `cdkd bootstrap`,
 `cdkd gc`, and `cdkd bootstrap --destroy`. These three move together because one
-writes the key the other two read. Every other command resolves `--region` →
+writes the key the other two read.
+
+The `cdkd local` family has its own chain and never falls back to a literal:
+`--region`, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the synthesized
+stack's own `env.region`. Every remaining command resolves `--region` →
 `AWS_REGION` and falls back to the `us-east-1` literal.
 
 ### The reconciliation

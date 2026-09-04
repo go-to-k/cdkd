@@ -30,7 +30,7 @@ cdkd local start-api --from-state --stage prod  # resolve env vars from deployed
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[target]` | every discovered API | Serve only the named API. See [Target selection](#target-selection). |
+| `[target]` | every discovered API | Serve only the named API. See [Target selection](#target-resolution). |
 | `--port <port>` | `0` (auto-allocate) | Port for the first server; later servers take `port+1`, `port+2`, and so on. |
 | `--host <host>` | `127.0.0.1` | Bind address for every API server — the address **you** connect to. |
 | `--stack <name>` | single-stack auto-detect | Stack to serve, when neither the target nor `--from-cfn-stack` identifies one. |
@@ -48,7 +48,7 @@ cdkd local start-api --from-state --stage prod  # resolve env vars from deployed
 | `--layer-role-arn <arn>` | — | Role to assume before reading literal-ARN entries in `Properties.Layers`. See [Lambda layers](#lambda-layers). |
 | `--from-state` | off | Substitute deployed physical ids from cdkd's S3 state into Lambda env vars. See [`--from-state`](#from-state). |
 | `--from-cfn-stack [cfn-stack-name]` | off | Substitute deployed physical ids from a CloudFormation stack. See [`--from-cfn-stack`](#from-cfn-stack). |
-| `--stack-region <region>` | auto-discovered | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local Execution](local-emulation.md#common-flags). |
+| `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local Execution](local-emulation.md#common-flags). |
 | `--mtls-truststore <path>` | — | PEM CA bundle that switches the server to HTTPS with client-certificate verification. See [Mutual TLS](#mutual-tls). |
 | `--mtls-cert <path>` | — | PEM server certificate. Must be set together with the other two `--mtls-*` flags. |
 | `--mtls-key <path>` | — | PEM server private key matching `--mtls-cert`. Must be set together with the other two `--mtls-*` flags. |
@@ -60,10 +60,15 @@ cdkd local start-api --from-state --stage prod  # resolve env vars from deployed
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory — see [Local Execution](local-emulation.md#common-flags). |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value...>` | — | Set a CDK context value. Repeatable. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Read only with `--from-state`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Read only with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Read only with `--from-state`. |
 
-## Target selection
+The region used for AWS API calls is taken from `AWS_REGION`, then
+`AWS_DEFAULT_REGION`, then the synthesized stack's own `env.region`. A
+deprecated `--region` flag, hidden from `--help`, still overrides all three;
+prefer the environment variable or your AWS profile.
+
+## Target resolution
 
 Passing a positional target launches exactly one server, for the named API.
 The same target syntax works across `cdkd local invoke`, `cdkd local run-task`
@@ -455,7 +460,9 @@ principal and an empty claims map.
 
 The failure entry has a short TTL of about 60s, so a transient network blip does
 not lock pass-through in for the full success TTL — the next minute's request
-retries the fetch. The warn fires at most once per JWKS URL per server run.
+retries the fetch. The warn is throttled rather than one-shot: it re-fires at
+most once every five minutes per JWKS URL, so a proxy that stays down keeps
+saying so instead of going quiet after the first request.
 
 This is a deliberate trade for a dev tool: a surprising deny is worse than a
 warn plus allow when you are iterating on a handler and a corporate proxy is
@@ -708,14 +715,16 @@ layers are all same-stack references.
 
 ## Container image Lambdas
 
-`lambda.DockerImageFunction` and `Code.ImageUri` are supported on the same terms
-as [`cdkd local invoke`](local-invoke.md). At server boot — and on every
-`--watch` reload — cdkd resolves each container Lambda's image once:
+`lambda.DockerImageFunction` and `Code.ImageUri` are supported. At server boot —
+and on every `--watch` reload — cdkd resolves each container Lambda's image
+once:
 
 - **Local build**, from the `cdk.out` asset manifest when the synthesizer
   produced a matching `dockerImages` entry. `docker build` then runs against the
   recorded build context.
-- **ECR pull**, when no asset matches. Same-account and same-region only.
+- **ECR pull**, when no asset matches. Same-account and same-region only —
+  this command has no `--ecr-role-arn`, so a cross-account registry needs
+  [`cdkd local invoke`](local-invoke.md#container-image-lambdas), which does.
 
 The resulting deterministic `cdkd-local-invoke-<hash>` tag goes into the warm
 pool, which runs it verbatim: no `/var/task` bind mount, no base-image pull, and
@@ -852,7 +861,7 @@ The full cross-command table is in the [CLI Reference](cli-reference.md#exit-cod
 - [`cdkd local start-alb`](local-start-alb.md) — a local Application Load
   Balancer in front of ECS and Lambda backing services
 - [`cdkd local start-cloudfront`](local-start-cloudfront.md) — a local
-  CloudFront distribution over S3 origins and Lambda Function URLs
+  CloudFront distribution over S3 origins, Lambda Function URLs and Lambda@Edge
 - [`cdkd local run-task`](local-run-task.md) — run one ECS task definition
   locally
 - [CLI Reference](cli-reference.md) — every command and the full exit-code table

@@ -76,7 +76,9 @@ Every `cdkd local` subcommand accepts these.
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 
-Two more are accepted by every subcommand **except `local start-cloudfront`**:
+`--from-state` and its two bucket flags are accepted everywhere but do nothing on
+`local start-cloudfront`, which reads deployed values only through
+`--from-cfn-stack`. Two more flags are not accepted there at all:
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -120,8 +122,8 @@ URL — has no value to resolve to, because nothing has been deployed.
 
 | Flag | Reads | Use when |
 | --- | --- | --- |
-| `--from-state` | cdkd's S3 state for the stack | The stack was deployed with `cdkd deploy`. |
-| `--from-cfn-stack [name]` | A deployed CloudFormation stack's resources | The stack was deployed with the AWS CDK CLI. |
+| `--from-state` | cdkd's S3 state for the stack | The stack was deployed with `cdkd deploy`. Not on `local start-cloudfront`. |
+| `--from-cfn-stack [name]` | A deployed CloudFormation stack's resources | The stack was deployed with the AWS CDK CLI, or the command is `local start-cloudfront`. |
 
 `--from-cfn-stack` resolves `Ref` and `Fn::ImportValue` from the deployed
 physical IDs and exports. `Fn::GetAtt` is not universally recoverable, because a

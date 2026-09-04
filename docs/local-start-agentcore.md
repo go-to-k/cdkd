@@ -45,7 +45,7 @@ cdkd local start-agentcore MyStack/MyAgent --from-state --watch  # bind cdkd sta
 | `--assume-role [arn]` | off | Assume the runtime's execution role — bare form uses its literal `RoleArn` — and forward temporary credentials into the container. Omit the flag to keep your own shell credentials in the container. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR, for cross-account or centralized registries. |
 | `--from-state` | off | Resolve intrinsics in the runtime's container image and environment variables from cdkd's S3 state. Mutually exclusive with `--from-cfn-stack`. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only meaningful with `--from-state`. |
 | `--from-cfn-stack [name]` | off | Resolve the same values from a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the resolved stack name. |
 | `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region under `--from-cfn-stack`. |
@@ -167,7 +167,7 @@ Each firing is classified to pick the primitive:
 
 | Change | Primitive |
 | --- | --- |
-| Source-only edits an existing container can absorb | Soft reload: cdkd `docker cp`s the new source into the container and restarts it. |
+| Source-only edits an existing container can absorb | Soft reload: cdkd `docker cp`s the new source into the container and restarts it, keeping the container id and host port. See [`cdkd local invoke-agentcore`](local-invoke-agentcore.md#watch-reload-on-source-edits) for the exact predicate. |
 | Anything requiring a new image | Rebuild: a fresh container boots and the server is re-pointed at it. |
 
 Either way the new container is re-probed for readiness under `--timeout` before

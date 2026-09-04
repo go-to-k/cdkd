@@ -10,7 +10,8 @@ app and starts every one of its containers on your Docker host — no AWS deploy
 required. It is the ECS counterpart of [`cdkd local invoke`](local-invoke.md):
 one synchronous task run, each container's stdout/stderr streamed with a
 `[<name>]` prefix, and the essential container's exit code propagated to your
-shell.
+shell. For a service that stays up and restarts its replicas instead, use
+[`cdkd local start-service`](local-start-service.md).
 
 ```bash
 cdkd local run-task MyStack/MyService/TaskDef              # run one task definition
@@ -34,7 +35,7 @@ alongside each container image; see
 | `--cluster <name>` | `cdkd-local` | Cluster name reported by the metadata endpoint, and the prefix of the per-task Docker network name. |
 | `--env-vars <file>` | — | SAM-shape JSON env-var overrides, keyed by container name — see [Local Execution](local-emulation.md#common-flags). |
 | `--container-host <ip>` | `127.0.0.1` | Host IP that published container ports bind to. Must be numeric — see [Local Execution](local-emulation.md#common-flags). |
-| `--assume-task-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or the ARN you pass) and serve those credentials through the metadata sidecar. |
+| `--assume-task-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or the ARN you pass) and serve those credentials through the metadata sidecar. This command accepts only this spelling — its siblings also take `--assume-role`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and for the metadata sidecar — see [Local Execution](local-emulation.md#common-flags). |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for cross-account or centralized registries. No-op with `--no-pull`. |
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | Force `docker run --platform`. Accepts `linux/amd64` or `linux/arm64`. |
@@ -43,7 +44,7 @@ alongside each container image; see
 | `--from-state` | off | Substitute deployed values from cdkd's S3 state into image URIs, environment variables and secrets — see [Local Execution](local-emulation.md#common-flags). |
 | `--from-cfn-stack [name]` | off | Substitute from a CloudFormation-deployed stack instead. Bare form uses the cdkd stack name. Mutually exclusive with `--from-state`. |
 | `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local Execution](local-emulation.md#common-flags). |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state, for `--from-state`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state, for `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly — see [Local Execution](local-emulation.md#common-flags). |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
@@ -124,7 +125,7 @@ privileged port and lets `--host-port <containerPort=hostPort>` pin the result.
 | Neither `--assume-task-role` nor `--profile` | The sidecar serves whatever the default credential chain resolves on the host. |
 | `--assume-task-role` (bare) | `sts:AssumeRole` against the task definition's resolved `TaskRoleArn`, once at startup; the temporary credentials are served by the sidecar. |
 | `--assume-task-role <arn>` | Same, against the ARN you supplied. |
-| `--profile <p>` without an effective `--assume-task-role` | The profile is resolved through the SDK chain (SSO, IAM Identity Center, `fromIni`, role assumption) and the resulting credentials are both served by the sidecar and written into a read-only shared-credentials file bind-mounted into every container under `[<p>]`. |
+| `--profile <p>` without an effective `--assume-task-role` | Resolved through the SDK chain, then both served by the sidecar and written into a read-only credentials file mounted into every container under `[<p>]`. |
 
 `--assume-task-role` beats the profile file, which beats the plain sidecar
 pass-through. Bare `--assume-task-role` resolves a flat-string `TaskRoleArn`
@@ -170,7 +171,6 @@ The same region-to-partition mapping drives `${AWS::Partition}` and
 
 | Region prefix | Partition | URL suffix |
 | --- | --- | --- |
-| everything else | `aws` | `amazonaws.com` |
 | `us-gov-*` | `aws-us-gov` | `amazonaws.com` |
 | `cn-*` | `aws-cn` | `amazonaws.com.cn` |
 | `us-iso-*` | `aws-iso` | `c2s.ic.gov` |
@@ -178,6 +178,7 @@ The same region-to-partition mapping drives `${AWS::Partition}` and
 | `eu-isoe-*` | `aws-iso-e` | `cloud.adc-e.uk` |
 | `us-isof-*` | `aws-iso-f` | `csp.hci.ic.gov` |
 | `eusc-*` | `aws-eusc` | `amazonaws.eu` |
+| everything else | `aws` | `amazonaws.com` |
 
 Cross-account and cross-region pulls are supported: cdkd builds the ECR client
 for the URI's own region, and with `--ecr-role-arn <arn>` issues `sts:AssumeRole`
@@ -224,9 +225,11 @@ in [Which registry hosts count as ECR](#which-registry-hosts-count-as-ecr).
 With neither state flag, a same-stack repository reference fails with an error
 naming them as the way forward; the stack must have been deployed first.
 
-This ECR case is the one exception to `--from-cfn-stack`'s "`Fn::GetAtt` is
-dropped" rule below: the repository ARN and URI are rebuilt from the recovered
-physical name plus the pseudo parameters, so no per-attribute lookup is needed.
+Under `--from-cfn-stack`, an `Fn::GetAtt` elsewhere in the task definition is
+dropped with a warning — a stack's resource listing carries no per-attribute
+values. This ECR case is its one exception: the repository ARN and URI are
+rebuilt from the recovered physical name plus the pseudo parameters, so no
+per-attribute lookup is needed.
 
 ## Environment variables and secrets
 
@@ -370,9 +373,13 @@ container cleanup.
 | Code | Meaning |
 | --- | --- |
 | `0` | The essential container exited `0`, or `--detach` started the containers and returned. |
-| `N` | The essential container exited `N`; cdkd propagates the code verbatim. |
-| `1` | cdkd-side failure — Docker unavailable, target not found, network creation failed, secret resolution failed, an unsupported volume type. |
+| `1` | Either the essential container exited `1`, or cdkd failed before running it — Docker unavailable, target not found, network creation failed, secret resolution failed, an unsupported volume type. |
 | `130` | `^C`. A first `^C` tears the task down and then exits; a second exits immediately without container cleanup. |
+| `N` | Any other code the essential container exited with; cdkd propagates it verbatim. |
+
+`1` is the one ambiguous code, because it is both a container exit and cdkd's
+own default failure code. A cdkd-side failure always prints an error before it
+exits, and no container output precedes it — that is the discriminator.
 
 The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
 
