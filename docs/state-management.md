@@ -177,7 +177,7 @@ the asset bucket / ECR repo grow over time; `cdkd gc` reclaims
 unreferenced objects / images by scanning every state file in the state
 bucket for asset references (with a 30d default age guard). See the gc
 section in
-[`cdkd gc`](cli-gc.md#cdkd-gc-garbage-collect-cdkd-owned-storage).
+[`cdkd gc`](cli-gc.md).
 
 ### Configuration Example
 

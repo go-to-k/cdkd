@@ -47,7 +47,7 @@ const navigation: SsgNavigationGroup[] = [
       { title: 'Overview', path: '/cli-reference' },
       { title: 'Deploy: waits & concurrency', path: '/cli-deploy' },
       { title: 'Deploy: tuning', path: '/cli-deploy-tuning' },
-      { title: 'Deploy: safety flags', path: '/cli-deploy-safety' },
+      { title: 'Deploy: safety & compatibility flags', path: '/cli-deploy-safety' },
       { title: 'cdkd diff', path: '/cli-diff' },
       { title: 'cdkd drift', path: '/cli-drift' },
       { title: 'Destroy flags & guards', path: '/cli-destroy' },

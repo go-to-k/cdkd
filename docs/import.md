@@ -3,7 +3,7 @@ title: Importing Existing Resources
 description: "The full cdkd import guide — three import modes, resource mappings, whole-stack CloudFormation migration, provider coverage, and cdk import parity."
 ---
 
-# Importing existing resources
+# Importing Existing Resources
 
 `cdkd import` adopts AWS resources that are already deployed (e.g. via
 `cdk deploy`, manual creation, or another tool) into cdkd state, so the
@@ -138,13 +138,13 @@ counterpart) but you want cdkd to find the rest automatically.
 
 ## Common flags
 
-| Flag | Purpose |
+| Flag | Description |
 | --- | --- |
 | `--dry-run` | Preview what would be imported. State is NOT written. |
 | `--yes` | Skip the confirmation prompt before writing state (and the CloudFormation retirement prompt under `--migrate-from-cloudformation`). **Required in CI**: both prompts REFUSE a non-interactive stdin (`NON_INTERACTIVE_CONFIRM`, exit 1) rather than hanging on it — see [Destroy flags & guards](cli-destroy.md#every-other-mutating-confirmation-prompt-is-interactive-only-too). |
 | `--force` | Confirm a destructive write to existing state — see below. |
 | `--migrate-from-cloudformation [name]` | After cdkd state is written, retire the source CloudFormation stack: inject `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every resource via `UpdateStack`, then `DeleteStack`. AWS resources are NOT deleted. See [Migrating from `cdk deploy` (CloudFormation) to cdkd](#migrating-from-cdk-deploy-cloudformation-to-cdkd) below. |
-| `--use-cdk-bootstrap-assets` | Keep the CDK bootstrap asset destinations verbatim (skip the cdkd asset-storage rewrite) even when the region is opted in via `cdkd bootstrap`. Without it, import rewrites asset references (Lambda `Code`, image URIs, …) to the cdkd-owned storage — but records the **pre-rewrite** values in state, so the first post-import `cdkd deploy` repoints the live resources. See [Importing a stack into a cdkd-assets region](#importing-a-stack-into-a-cdkd-assets-region) below and the asset-destinations section in [`cdkd bootstrap`](cli-bootstrap.md#asset-destinations-after-opt-in-cdkd-assets-mode). |
+| `--use-cdk-bootstrap-assets` | Keep the CDK bootstrap asset destinations verbatim, even in a region opted into cdkd-assets mode. See [Importing a stack into a cdkd-assets region](#importing-a-stack-into-a-cdkd-assets-region). |
 
 `--force` is only needed when the import would lose data:
 
@@ -597,7 +597,7 @@ table to predict behavior when migrating from `cdk import`.
 | Typo'd logical ID | Aborts with a clear error before any AWS calls. | Aborts with a clear error before any AWS calls — checked against the synthesized template. |
 | Whole-stack import with no per-resource ids | **Not supported.** | **cdkd-specific.** With no flags cdkd resolves each resource from the template's physical-name property, then from a same-named CloudFormation stack's `DescribeStackResources`. Use `--migrate-from-cloudformation` when you also want the source CloudFormation stack retired. |
 | Hybrid mode (overrides + auto-resolution) | **Not supported.** | **cdkd-specific.** `--auto` together with `--resource` lets listed resources use the explicit physical id while everything else still goes through auto-resolution (name property + CloudFormation lookup). |
-| Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Supported via `cdkd import --migrate-from-cloudformation`: recursively walks the tree via `DescribeStackResources`, writes one v6-keyed state file per child (`cdkd/<parent>~<childLogicalId>/<region>/state.json`), recursively injects `DeletionPolicy: Retain` into every leaf resource template, then retires the whole tree via a single parent-side `DeleteStack` cascade. Bare `cdkd import` (auto / selective / hybrid mode) still reports each nested-stack row as `unsupported`. CDK Stages (separate top-level stacks) are also fine: pass the stack's display path or physical name as the positional argument. |
+| Nested stacks (`AWS::CloudFormation::Stack`) | Explicitly unsupported. | Supported via `--migrate-from-cloudformation`, which walks the tree recursively; bare `cdkd import` still reports each nested-stack row as `unsupported`. See [Nested stacks (recursive walk)](#nested-stacks-recursive-walk). |
 | Bootstrap requirement | Bootstrap v12+ (deploy role needs to read the encrypted staging bucket). | cdkd's own state bucket; no CDK bootstrap version requirement. |
 | Resource-type coverage | Whatever [CloudFormation supports for import](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resource-import-supported-resources.html). | The set of cdkd providers that implement `import()` — see [Provider coverage](#provider-coverage) above. For any other CC-API-supported type, use `--resource <id>=<physical>` to drive the Cloud Control API fallback. The two lists overlap heavily but are not identical. |
 | Confirmation prompt before writing state | n/a (CloudFormation operates atomically). | Yes — cdkd asks before writing the state file. Skip with `--yes`. |

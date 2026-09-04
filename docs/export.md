@@ -3,7 +3,7 @@ title: Exporting to CloudFormation
 description: Hand a cdkd-managed stack back to CloudFormation with cdkd export — IMPORT changesets, Custom Resource 2-phase migration, and nested-stack support.
 ---
 
-# Exporting a stack back to CloudFormation
+# Exporting to CloudFormation
 
 `cdkd export` is the mirror of [`cdkd import`](import.md): it hands a
 cdkd-managed stack back to CloudFormation via a `ChangeSetType=IMPORT`
@@ -43,6 +43,11 @@ cdkd export MyApp                             # nested-stack tree: leaf-first pe
 
 ### Types CloudFormation refuses to import
 
+These are the types seen so far. The check itself is derived from each type's
+CloudFormation registry schema rather than from a fixed list, so it catches
+types not named here — and stops catching one the moment AWS makes it
+importable.
+
 | Resource type | What to do instead |
 | --- | --- |
 | `AWS::Glue::Table` | Remove it from the stack before exporting — it stays in AWS and can be re-declared in CloudFormation afterwards — or destroy it and let CloudFormation create it fresh. |
@@ -53,7 +58,7 @@ cdkd export MyApp                             # nested-stack tree: leaf-first pe
 | `AWS::SQS::QueuePolicy` | Same. |
 | `AWS::SNS::TopicPolicy` | Same. |
 
-## Where to go next
+## Related
 
 - [`cdkd export`](cli-export.md) — the full reference: every flag, the blocked
   set, identifier resolution, template preprocessing, the Custom Resource

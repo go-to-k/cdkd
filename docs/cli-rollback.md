@@ -3,7 +3,7 @@ title: cdkd rollback
 description: "Revert a failed deploy to the last known-good state with cdkd rollback."
 ---
 
-# cdkd rollback (revert a failed deploy)
+# cdkd rollback
 
 `cdkd rollback [STACK]` reverts a stack to its pre-deploy state after a deploy
 that failed with `--no-rollback`, was interrupted with Ctrl-C, or whose
@@ -15,10 +15,10 @@ next to fixing forward with `cdkd deploy` and cleaning up with `cdkd destroy`.
 cdkd rollback MyStack                         # roll back one stack
 cdkd rollback                                 # the single journaled stack, if there is exactly one
 cdkd rollback MyStack --force                 # skip the confirmation prompt
-cdkd rollback MyStack --orphan MyBucket --orphan MyTable
+cdkd rollback MyStack --orphan MyBucket           # leave a resource out of the replay
 cdkd rollback MyStack --revert-failed         # also revert the resource that failed mid-deploy
 cdkd rollback MyStack --skip-final-snapshot   # DeletionPolicy: Snapshot -> delete without the snapshot
-cdkd rollback MyStack --stack-region us-west-2
+cdkd rollback MyStack --stack-region us-west-2 # disambiguate a multi-region stack
 ```
 
 ## Options

@@ -136,7 +136,10 @@ phases, and lets CloudFormation re-`CREATE` it in phase 2.
 Pass `--no-recreate-import-unsupported` to block instead. The pre-delete is
 fatal on failure — phase 2 would otherwise collide with the still-present AWS
 resource — and cdkd state plus the post-phase-1 CloudFormation stack are
-preserved so you can fix the cause (usually permissions) and re-run.
+preserved so you can fix the cause and re-run. The cause is usually a missing
+permission: the pre-delete issues `apigatewayv2:DeleteStage` for the stage, and
+`iam:DeleteRolePolicy` / `iam:DeleteUserPolicy` / `iam:DeleteGroupPolicy` for an
+inline policy, depending on what it is attached to.
 
 ## How cdkd resolves each resource's identifier
 
@@ -514,5 +517,5 @@ be re-run. The full cross-command table is in the
 - [Exporting to CloudFormation](export.md) — the short guide to this command
 - [`cdkd import`](import.md) — the opposite direction, CloudFormation to cdkd
 - [State Management](state-management.md) — state records, composite physical ids, locks
-- [Cross-stack references](cross-stack-references.md) — what happens to `Fn::GetStackOutput` consumers
+- [Cross-Stack References](cross-stack-references.md) — what happens to `Fn::GetStackOutput` consumers
 - [Destroy flags & guards](cli-destroy.md#every-other-mutating-confirmation-prompt-is-interactive-only-too) — the non-interactive prompt rule

@@ -13,20 +13,11 @@ redaction fix, and as a standing CI gate. It touches no AWS resources — only
 `state.json` is rewritten.
 
 ```bash
-# Rewrite state so plaintext secrets become their {{resolve:...}} expression
-cdkd scrub MyStack
-
-# Report what would change without writing state
-cdkd scrub MyStack --dry-run
-
-# CI gate: exit 1 if any plaintext secret remains in state
-cdkd scrub MyStack --dry-run --fail
-
-# Every stack in the synthesized app, producers before consumers
-cdkd scrub --all
-
-# Explain a stack that reports clean when you expected findings
-cdkd scrub MyStack --verbose
+cdkd scrub MyStack                        # rewrite plaintext secrets to {{resolve:...}}
+cdkd scrub MyStack --dry-run              # report what would change, write nothing
+cdkd scrub MyStack --dry-run --fail       # CI gate: exit 1 if any plaintext remains
+cdkd scrub --all                          # every stack in the app, producers first
+cdkd scrub MyStack --verbose              # explain a stack that reports clean
 ```
 
 ## Options
@@ -373,6 +364,9 @@ known to be `SecureString`, later comparisons short-circuit with no AWS call
 at all.
 
 ## What gets redacted inside a record
+
+Scrub rewrites the leaves that hold secret material, not whole records. Two
+cases decide what a leaf becomes.
 
 ### Two spellings of one secret value
 

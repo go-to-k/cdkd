@@ -3,7 +3,7 @@ title: cdkd gc
 description: "Garbage-collect cdkd-owned storage — unreferenced assets and abandoned custom-resource response placeholders — with cdkd gc."
 ---
 
-# cdkd gc (garbage-collect cdkd-owned storage)
+# cdkd gc
 
 `cdkd gc` deletes unreferenced objects and images from ONE region's cdkd-owned
 asset storage — the asset bucket and container-asset ECR repo created by

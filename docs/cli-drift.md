@@ -692,7 +692,7 @@ Each `notCompared` entry carries two keys of its own:
   `false` for `readFailed`, whose references are beside the point. A consumer
   written as `notCompared.filter(n => n.referencesUnresolved)` therefore drops
   `readFailed` entries. Gate on `notCompared.length` — the documented
-  predicate — or on `cause`; the run exits `2` either way.
+  predicate — or on `cause`.
 
 So a CI job that gates on drift should read `notCompared`, not just `drifted`:
 

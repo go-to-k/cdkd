@@ -23,7 +23,7 @@ cdkd bootstrap --destroy --region us-west-2       # tear that region's asset sto
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--region <region>` | `AWS_REGION`, else `us-east-1` | Region to bootstrap, or to tear down with `--destroy`. Not deprecated on this command. |
+| `--region <region>` | see below | Region to bootstrap, or to tear down with `--destroy`. Not deprecated on this command. |
 | `--state-bucket <name>` | `cdkd-state-{accountId}` | Name of the state bucket to create. |
 | `--no-assets` | off | Skip the asset storage entirely — no asset bucket, ECR repo or marker. |
 | `--asset-bucket <name>` | `cdkd-assets-{accountId}-{region}` | Custom asset-bucket name, recorded in the region's marker. |
@@ -35,6 +35,11 @@ cdkd bootstrap --destroy --region us-west-2       # tear that region's asset sto
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `--verbose` | off | Verbose logging. |
+
+The region is resolved as `--region` -> `AWS_REGION` -> `AWS_DEFAULT_REGION` ->
+your AWS profile's region -> `us-east-1`. Naming it explicitly is worth the
+keystrokes here: the region decides which marker is written, and a bootstrap
+that lands in an unintended region opts THAT region in.
 
 ## What bootstrap creates
 
@@ -234,7 +239,7 @@ opt out (`--no-auto-asset-storage`, or `context.cdkd.autoAssetStorage: false`).
 
 The region named by `--region` or by `AWS_REGION` is lower-cased before it
 reaches any AWS client or the marker key, and both spellings of the key are
-probed — as in [`cdkd gc`](cli-gc.md#cdkd-gc-garbage-collect-cdkd-owned-storage).
+probed — as in [`cdkd gc`](cli-gc.md).
 The marker deleted in step 1 is the key the names were actually read from, so
 the teardown cannot delete the wrong one.
 
