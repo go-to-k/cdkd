@@ -48,6 +48,7 @@ import {
   splitGetAttStringForm,
   recordCrossStackExpression,
   isSecretExpressionByVerdictOrSpelling,
+  recordResolvedPair,
   isSingleDynamicReferenceToken,
   inheritedParameterExpression,
   clearRecoverableMaskedOutputs,
@@ -6976,6 +6977,11 @@ export class IntrinsicFunctionResolver {
         // (issue #1916).
         if (cached.secret && cached.value) {
           context?.recordedSecretValues?.set(cached.value, fullMatch);
+          // The uncollapsed twin of that entry (issue #2485) — see the
+          // fresh-resolution seam below.
+          if (context?.recordedSecretValues) {
+            recordResolvedPair(context.recordedSecretValues, fullMatch, cached.value);
+          }
         }
         // Replacer FUNCTION, not a string: `String.replace` interprets `$&`,
         // "$`", `$'` and `$1` inside a replacement STRING, so a resolved value
@@ -7099,6 +7105,15 @@ export class IntrinsicFunctionResolver {
       }
       if (isSecret && resolved) {
         context?.recordedSecretValues?.set(resolved, fullMatch);
+        // The same pair keyed by EXPRESSION, per map instance (issue #2485):
+        // the map above keeps one expression per plaintext, and the redaction
+        // path needs to know what THIS token resolved to in THIS pass to
+        // position a literal leaf that embeds it beside a sibling sharing the
+        // value. Recorded here, beside the `set`, so the two cannot disagree
+        // about which pass the evidence belongs to.
+        if (context?.recordedSecretValues) {
+          recordResolvedPair(context.recordedSecretValues, fullMatch, resolved);
+        }
         // The value-keyed map above COLLAPSES a group of expressions sharing a
         // resolved value down to its last member; this set does not, which is
         // what lets the redaction path name the losing member (issue #1916).
@@ -7109,8 +7124,11 @@ export class IntrinsicFunctionResolver {
         // sets `isSecret` for THIS resolution and is deliberately NOT pinned,
         // so that the next pass re-asks AWS instead of inheriting a transient
         // answer — recording it here would pin it for the process and undo
-        // exactly that (issue #1901). Such a pair therefore still falls back to
-        // the value scan, i.e. to today's behavior. `ssm-secure` is secret by
+        // exactly that (issue #1901). It IS recorded above as pass-local
+        // evidence, though: the redaction path positions a literal leaf that
+        // embeds such a token — or a whole-token leaf this store cannot vouch
+        // for — by that record, for THIS pass only; what the unclassifiable
+        // verdict does not get is the process-wide pin. `ssm-secure` is secret by
         // spelling exactly like `secretsmanager` (issue #2482), so it is
         // recorded here for the same reason: `positionByIntrinsicSkeleton`
         // enumerates this set to name a LOSING member, and without the entry

@@ -13,15 +13,17 @@
 # `Environment` is not on CloudFormation's `ssm-secure` destination allowlist
 # — see the stack docstring.
 #
-# Two parameters are seeded, one per value: the whole and embedded forms
-# reference the first, the `<name>:<version>` form references the second. The
-# versioned form does NOT reuse the first parameter because two expressions in
-# one resource resolving to the SAME plaintext make the embedded leaf's
-# persisted spelling ambiguous (the value scan carries one expression per
-# plaintext, so the embedded leaf came back spelled `NAME:1` for a template
-# that says `NAME`, and the next deploy diffs it forever). That is a
-# pre-existing limitation of the value scan, tracked as issue
-# go-to-k/cdkd#2485, and this fixture stays out of it.
+# Two parameters are seeded, one per value: the whole, embedded and
+# `SSM_SECURE_VERSIONED_SAME` forms reference the first, `SSM_SECURE_VERSIONED`
+# references the second. The same-parameter versioned form is the collision
+# this fixture's first real-AWS run measured (issue go-to-k/cdkd#2485): two
+# expressions in one resource resolving to the SAME plaintext, where the
+# embedded leaf came back spelled `NAME:1` for a template that says `NAME`.
+# Since #2485 the embedded leaf is positioned by its own span; the EXACT state
+# assertion on SSM_SECURE_EMBEDDED below is what fails without that fix, and
+# `SSM_SECURE_VERSIONED_SAME` being declared after `SSM_SECURE_EMBEDDED` (the
+# template keeps declaration order; asserted below) is what makes the
+# value-keyed map's survivor the `:1` spelling.
 #
 # Phases:
 #   0. Seed the SecureString parameters out of band (CloudFormation cannot
@@ -103,6 +105,7 @@ MARKER="cdkd-2482-ssm-secure-pw"
 MARKER_VERSIONED="cdkd-2482-ssm-secure-versioned-pw"
 TOKEN_WHOLE="{{resolve:ssm-secure:${PARAM_NAME}}}"
 TOKEN_VERSIONED="{{resolve:ssm-secure:${PARAM_NAME_VERSIONED}:1}}"
+TOKEN_VERSIONED_SAME="{{resolve:ssm-secure:${PARAM_NAME}:1}}"
 EXPECTED_EMBEDDED="postgres://app-svc:${MARKER}@db.internal:5432/app"
 EXPECTED_EMBEDDED_EXPR="postgres://app-svc:${TOKEN_WHOLE}@db.internal:5432/app"
 
@@ -227,13 +230,19 @@ lambda_env_from_state() { # lambda_env_from_state <state json>
 }
 # assert_live_env <phase>: the three references reached AWS RESOLVED.
 assert_live_env() {
-  local phase="$1" env whole embedded versioned control
+  local phase="$1" env whole embedded versioned versioned_same control
   env="$(read_function_env)"
   whole="$(env_var "${env}" SSM_SECURE_WHOLE)"
   embedded="$(env_var "${env}" SSM_SECURE_EMBEDDED)"
   versioned="$(env_var "${env}" SSM_SECURE_VERSIONED)"
+  versioned_same="$(env_var "${env}" SSM_SECURE_VERSIONED_SAME)"
   control="$(env_var "${env}" PUBLIC_CONTROL)"
   local fail=0
+  if [ "${versioned_same}" != "${MARKER}" ]; then
+    echo "FAIL (${phase}, issue #2482): SSM_SECURE_VERSIONED_SAME (the :<version> selector on the FIRST parameter) is not the SecureString value" >&2
+    case "${versioned_same}" in *'{{resolve:'*) echo "      the LITERAL TOKEN reached AWS:" >&2; diag_output "${versioned_same}" ;; *) diag_output "${versioned_same}" ;; esac
+    fail=1
+  fi
   if [ "${whole}" != "${MARKER}" ]; then
     echo "FAIL (${phase}, issue #2482): SSM_SECURE_WHOLE is not the SecureString value" >&2
     case "${whole}" in *'{{resolve:'*) echo "      the LITERAL TOKEN reached AWS:" >&2; diag_output "${whole}" ;; *) diag_output "${whole}" ;; esac
@@ -268,8 +277,16 @@ assert_state_redacted() {
   whole="$(env_var "${env}" SSM_SECURE_WHOLE)"
   embedded="$(env_var "${env}" SSM_SECURE_EMBEDDED)"
   versioned="$(env_var "${env}" SSM_SECURE_VERSIONED)"
+  local versioned_same
+  versioned_same="$(env_var "${env}" SSM_SECURE_VERSIONED_SAME)"
   control="$(env_var "${env}" PUBLIC_CONTROL)"
   local fail=0
+  # The #2485 collision partner: its own expression, and — the load-bearing
+  # half — the EMBEDDED assertion below must still hold beside it.
+  [ "${versioned_same}" = "${TOKEN_VERSIONED_SAME}" ] || { echo "FAIL (${phase}): state SSM_SECURE_VERSIONED_SAME is not the expression" >&2; diag_output "${versioned_same}"; fail=1; }
+  case "${embedded}" in *':1}}@'*)
+    echo "FAIL (${phase}, issue #2485): state SSM_SECURE_EMBEDDED took the version-pinned sibling's expression — the embedded leaf collapsed onto the map's survivor" >&2; fail=1 ;;
+  esac
   [ "${whole}" = "${TOKEN_WHOLE}" ] || { echo "FAIL (${phase}): state SSM_SECURE_WHOLE is not the expression" >&2; diag_output "${whole}"; fail=1; }
   [ "${embedded}" = "${EXPECTED_EMBEDDED_EXPR}" ] || { echo "FAIL (${phase}): state SSM_SECURE_EMBEDDED is not the composed string with the EXPRESSION" >&2; diag_output "${embedded}"; fail=1; }
   [ "${versioned}" = "${TOKEN_VERSIONED}" ] || { echo "FAIL (${phase}): state SSM_SECURE_VERSIONED is not the expression" >&2; diag_output "${versioned}"; fail=1; }
@@ -343,6 +360,44 @@ if [ -z "${FN_NAME}" ]; then
   exit 1
 fi
 echo "    Consumer function: ${FN_NAME}"
+
+# PREMISE for the #2485 arm: the synthesized env must list
+# SSM_SECURE_VERSIONED_SAME AFTER SSM_SECURE_EMBEDDED, or the collision cannot
+# collapse onto the `:1` spelling and the embedded assertion is vacuous.
+SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
+if [ ! -f "${SYNTH_TEMPLATE}" ]; then
+  echo "FAIL: premise: no synthesized template at ${SYNTH_TEMPLATE}" >&2
+  exit 1
+fi
+EMB_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("SSM_SECURE_EMBEDDED")] | first' "${SYNTH_TEMPLATE}")
+SAME_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("SSM_SECURE_VERSIONED_SAME")] | first' "${SYNTH_TEMPLATE}")
+case "${EMB_IDX}${SAME_IDX}" in *null*|"")
+  echo "FAIL: premise: could not locate SSM_SECURE_EMBEDDED / SSM_SECURE_VERSIONED_SAME in the synthesized env (${EMB_IDX} / ${SAME_IDX})" >&2
+  exit 1 ;;
+esac
+# ...and it must be the LAST of EVERY key resolving to this parameter, not just
+# later than the embedded one. The map keeps one expression per PLAINTEXT, so
+# the survivor is decided by whichever of the colliding keys resolves last --
+# `SSM_SECURE_WHOLE` reads the same parameter and sits at index 0 today, but
+# moving it below `SSM_SECURE_VERSIONED_SAME` would make the survivor the
+# embedded leaf's OWN token and the exact assertion below vacuous, with a
+# pairwise guard still green. Matched on the token boundary (`}}` or `:`) so
+# `cdkd-test-ssm-secure-versioned-<acct>` cannot count as this parameter.
+MAX_SAME_PARAM_IDX=$(jq -r --arg p "${PARAM_NAME}" '
+  [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
+  | to_entries | to_entries
+  | map(select(.value.value | type == "string"
+        and (contains("ssm-secure:" + $p + "}}") or contains("ssm-secure:" + $p + ":"))))
+  | map(.key) | max' "${SYNTH_TEMPLATE}")
+case "${MAX_SAME_PARAM_IDX}" in ''|null)
+  echo "FAIL: premise: found no env key referencing ${PARAM_NAME} in the synthesized template" >&2
+  exit 1 ;;
+esac
+if [ "${SAME_IDX}" -le "${EMB_IDX}" ] || [ "${SAME_IDX}" -ne "${MAX_SAME_PARAM_IDX}" ]; then
+  echo "FAIL: premise: SSM_SECURE_VERSIONED_SAME (index ${SAME_IDX}) must follow SSM_SECURE_EMBEDDED (index ${EMB_IDX}) AND be the LAST key resolving to ${PARAM_NAME} (last index ${MAX_SAME_PARAM_IDX}); otherwise the collision does not collapse onto the :1 spelling and the embedded assertion is vacuous (#2485)" >&2
+  exit 1
+fi
+echo "    OK: premise: SSM_SECURE_VERSIONED_SAME (index ${SAME_IDX}) follows SSM_SECURE_EMBEDDED (index ${EMB_IDX}) and is the last key resolving to ${PARAM_NAME}"
 
 assert_live_env "Phase 1"
 assert_state_redacted "Phase 1"

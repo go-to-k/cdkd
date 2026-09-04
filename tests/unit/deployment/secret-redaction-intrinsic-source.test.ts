@@ -725,4 +725,55 @@ describe('IntrinsicFunctionResolver - records every secret expression (issue #19
     }) as Record<string, string>;
     expect(redacted['P']).toBe('plain-config');
   });
+
+  // The other half of that contract (issue #2485): NOT pinned is not the same
+  // as NOT recorded. The unclassifiable verdict is still pass-local evidence,
+  // so a literal leaf embedding such a token beside a whole-value sibling that
+  // shares the plaintext is positioned by its own span for THIS pass, where the
+  // value scan alone would write the sibling's expression. Both orders, because
+  // they exercise DIFFERENT arms for the whole-value leaf: when it resolves
+  // last it holds the collapsed slot and the whole-token arm copies it (it is
+  // a recorded expression of the map); when it resolves FIRST it loses the slot
+  // to the embedded token, the whole-token arm cannot vouch for it (unpinned
+  // spelling, not the survivor), and it is the empty-frame shape the span arm
+  // writes back as itself by the same evidence.
+  for (const [label, order] of [
+    ['the whole-value sibling resolved LAST (holds the slot)', ['DSN', 'PW']],
+    ['the whole-value sibling resolved FIRST (lost the slot)', ['PW', 'DSN']],
+  ] as const) {
+    it(`positions a literal leaf embedding an unclassifiable-Type ssm reference by its own span when ${label}`, async () => {
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: SHARED, Type: undefined } });
+
+      const recordedSecretValues: RecordedSecretValues = new Map();
+      const context: ResolverContext = { template, resources: {}, recordedSecretValues };
+      const embedded = '{{resolve:ssm:/app/unknown-type/embedded}}';
+      const whole = '{{resolve:ssm:/app/unknown-type/whole}}';
+      const dsnSource = `postgres://app-svc:${embedded}@db.internal:5432/app`;
+      const leaves = { DSN: dsnSource, PW: whole };
+      const source = { Variables: Object.fromEntries(order.map((k) => [k, leaves[k]])) };
+
+      const resolved = (await resolver.resolve(source, context)) as {
+        Variables: Record<string, string>;
+      };
+      expect(resolved.Variables['DSN']).toBe(`postgres://app-svc:${SHARED}@db.internal:5432/app`);
+      expect(resolved.Variables['PW']).toBe(SHARED);
+      expect(recordedSecretValues.size).toBe(1);
+      // The premise: the collapsed slot belongs to whichever resolved LAST.
+      expect(recordedSecretValues.get(SHARED)).toBe(order[1] === 'PW' ? whole : embedded);
+
+      const redacted = redactSecretsForState(resolved, recordedSecretValues, source) as {
+        Variables: Record<string, string>;
+      };
+
+      expect(redacted.Variables['DSN']).toBe(dsnSource);
+      expect(redacted.Variables['PW']).toBe(whole);
+      expect(JSON.stringify(redacted)).not.toContain(SHARED);
+      // Still not pinned: a later pass with an EMPTY map (no pass-local
+      // evidence) walking a plain bag against the same expression has nothing
+      // to say about it, which is the #1901 contract.
+      expect(redactSecretsForState({ P: 'plain-config' }, new Map(), { P: whole })).toEqual({
+        P: 'plain-config',
+      });
+    });
+  }
 });

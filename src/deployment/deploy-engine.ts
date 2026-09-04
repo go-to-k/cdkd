@@ -31,6 +31,7 @@ import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import {
   redactSecretsForState,
+  mergeResolvedPairs,
   scrubResourceRecord,
   maskSecretsInText,
   maskSecretsInError,
@@ -5783,6 +5784,17 @@ export class DeployEngine {
             for (const [plaintext, expression] of nameSecrets) {
               context.recordedSecretValues?.set(plaintext, expression);
             }
+            // The ENTRIES only — not the resolved pairs beside them (issue
+            // #2485). A name never positions a leaf, and a value re-using the
+            // same token already recorded its own pair at the seam, so the
+            // merge could add nothing; what it COULD do is mark a pair
+            // conflicting — an `ssm` reference whose `Type` came back
+            // unclassifiable is never cached (the resolver's `cacheable =
+            // false`), so a name resolving it re-asks AWS and can see a value
+            // that moved since the value pass — and destroy the positioning
+            // the value pass had earned. The outputs-bag merge
+            // below is the one that carries evidence, because that bag
+            // positions.
           }
         } catch (error) {
           this.handleOutputResolutionFailure(error, outputKey, outputs);
@@ -5896,6 +5908,11 @@ export class DeployEngine {
         for (const [value, expr] of context.recordedSecretValues) {
           this.outputSecrets.set(value, expr);
         }
+        // ...and the uncollapsed evidence beside the entries (issue #2485):
+        // without it a literal Output embedding one of two same-plaintext
+        // references would lose its span positioning and persist the sibling's
+        // expression.
+        mergeResolvedPairs(context.recordedSecretValues, this.outputSecrets);
       }
       // ...and the POSITION source must GO, for the same reason it now matters.
       // The post-loop pass below never ran, so this bag holds only the alias

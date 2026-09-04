@@ -47,6 +47,13 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     // Simple (non-hierarchical) name: a leading-slash hierarchical name with
     // an unresolved account token makes CDK fail ARN-separator derivation.
     const paramName = `cdkd-test-dynref-param-${account}`;
+    // The SAME secret name with the account CONCRETE (issue #2485): `account`
+    // above is a CDK token, so every env var built from it synthesizes as an
+    // `Fn::Join`, and the leaf this issue is about must be a plain STRING in
+    // the template. cdkd's synth exports `CDK_DEFAULT_ACCOUNT` to the app
+    // (`src/synthesis/app-executor.ts`); verify.sh guards the premise by
+    // asserting the synthesized leaf really is a string.
+    const literalSecretName = `cdkd-test-dynref-secret-${process.env['CDK_DEFAULT_ACCOUNT'] ?? account}`;
     // SecureString counterpart (issue #1901). NOT declared as a CDK resource:
     // CloudFormation cannot CREATE a SecureString parameter, so verify.sh
     // creates and deletes it out of band with `aws ssm put-parameter
@@ -113,6 +120,24 @@ export class SecretsDynamicRefStack extends cdk.Stack {
         SECRET_PASSWORD: `{{resolve:secretsmanager:${secretName}:SecretString:password}}`,
         // Whole-secret form (no JSON key): resolve the full SecretString.
         SECRET_FULL: `{{resolve:secretsmanager:${secretName}:SecretString}}`,
+        // A LITERAL string EMBEDDING the same `:password` reference SECRET_PASSWORD
+        // holds whole (issue #2485). No CDK token is interpolated on purpose:
+        // the template must carry this as a plain string, not an `Fn::Join`
+        // (DB_URL below is the intrinsic shape), because the defect is in how a
+        // literal leaf is redacted (hence `literalSecretName`). It shares its plaintext with
+        // SECRET_PASSWORD_STAGED. ORDER IS LOAD-BEARING: cdkd resolves env
+        // vars in the template's key order, the value-keyed map keeps the
+        // LAST expression recorded for a plaintext, and pre-#2485 the embedded
+        // leaf was redacted by that map — so with STAGED resolving later, state
+        // spelled this leaf `...:password:AWSCURRENT}}@...` for a template
+        // that says `:password}}@`, and every later deploy diffed it. The
+        // template keeps this object's DECLARATION order (CDK's
+        // `renderEnvironment` sorts env keys only when `currentVersion` is in
+        // play, which this fixture never uses), so the position of this key
+        // above SECRET_PASSWORD_STAGED is what decides. Move it below and the
+        // assertion passes with or without the fix; verify.sh asserts the
+        // synthesized order for exactly that reason.
+        DB_DSN_LITERAL: `postgres://app-svc:{{resolve:secretsmanager:${literalSecretName}:SecretString:password}}@db.internal:5432/app`,
         // Explicit AWSCURRENT version-stage form (cdkd supports the
         // 6-field grammar; this exercises the version-stage slot).
         //

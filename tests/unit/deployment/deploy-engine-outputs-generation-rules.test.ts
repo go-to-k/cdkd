@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
+  recordResolvedPair,
   redactSecretsForState,
   TEMPLATE_DERIVED_RULES,
   TEMPLATE_SOURCED_RULES,
@@ -31,10 +32,33 @@ const PLAINTEXT_B = 'resolved-secret-value-b';
 // POSITIONAL descent from today's template, which is the bug.
 const CARRIED_LITERAL = 'a-literal-from-the-previous-generation';
 
+// The PLAIN spelling of EXPR_A's key, resolving to the SAME plaintext (issue
+// #2485): the collision an embedded Output has to survive.
+const EXPR_A_PLAIN = '{{resolve:secretsmanager:db:SecretString:password}}';
 const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_A]: PLAINTEXT_A,
   [EXPR_B]: PLAINTEXT_B,
+  [EXPR_A_PLAIN]: PLAINTEXT_A,
 };
+
+// A reference whose value MOVES between resolutions inside one deploy. The
+// real resolver reaches that state only for an `ssm` reference whose `Type`
+// came back unclassifiable (`cacheable = false`), so an `Export.Name` resolving
+// it after the value pass re-asks AWS and can see a rotated value. The stub
+// models the SHAPE, not that resolver state: the expression it moves is this
+// file's `secretsmanager` spelling (the plain/staged collision the case needs
+// is inherently `secretsmanager`-shaped, and the real resolver would cache it),
+// and it caches nothing, returning a different plaintext from the SECOND
+// resolution of an expression the test lists here; empty for every other test.
+const MOVED_PLAINTEXT_A = 'moved-secret-value-a';
+const movesAfterFirst = new Set<string>();
+const resolutionsOf = new Map<string, number>();
+function plaintextFor(expr: string): string {
+  const n = (resolutionsOf.get(expr) ?? 0) + 1;
+  resolutionsOf.set(expr, n);
+  const pt = SECRET_BY_EXPRESSION[expr]!;
+  return movesAfterFirst.has(expr) && n > 1 ? MOVED_PLAINTEXT_A : pt;
+}
 
 function resolveWithSecrets(
   value: unknown,
@@ -42,9 +66,22 @@ function resolveWithSecrets(
 ): unknown {
   if (typeof value === 'string') {
     const plaintext = SECRET_BY_EXPRESSION[value];
-    if (plaintext === undefined) return value;
-    ctx.recordedSecretValues?.set(plaintext, value);
-    return plaintext;
+    if (plaintext !== undefined) {
+      ctx.recordedSecretValues?.set(plaintext, value);
+      if (ctx.recordedSecretValues) recordResolvedPair(ctx.recordedSecretValues, value, plaintext);
+      return plaintext;
+    }
+    // An EMBEDDED expression (issue #2485): substitute it inside the string
+    // and record the pair the way the real resolver's seam does.
+    let out = value;
+    for (const expr of Object.keys(SECRET_BY_EXPRESSION)) {
+      if (!out.includes(expr)) continue;
+      const pt = plaintextFor(expr);
+      ctx.recordedSecretValues?.set(pt, expr);
+      if (ctx.recordedSecretValues) recordResolvedPair(ctx.recordedSecretValues, expr, pt);
+      out = out.split(expr).join(pt);
+    }
+    return out;
   }
   if (Array.isArray(value)) return value.map((v) => resolveWithSecrets(v, ctx));
   if (value && typeof value === 'object') {
@@ -181,6 +218,8 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
       getExecutionLevels: vi.fn().mockReturnValue([['Fn']]),
       getDirectDependencies: vi.fn().mockReturnValue([]),
     };
+    movesAfterFirst.clear();
+    resolutionsOf.clear();
     mockDiffCalculator = {
       calculateDiff: vi.fn().mockResolvedValue(new Map<string, ResourceChange>()),
       hasChanges: vi.fn().mockReturnValue(false),
@@ -194,7 +233,11 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
       validateResourceProperties: vi.fn(),
     };
     mockStateBackend = {
-      getState: vi.fn().mockResolvedValue({ state: currentState, etag: 'etag-1' }),
+      // A fresh COPY per test: the engine mutates the record it loads (the
+      // auto-refresh writes `observedProperties` onto it), and a second test
+      // handed the same object would find the refresh already done and never
+      // reach the save the assertions read.
+      getState: vi.fn().mockResolvedValue({ state: structuredClone(currentState), etag: 'etag-1' }),
       saveState: vi.fn().mockResolvedValue('etag-new'),
       loadRollbackJournal: vi.fn().mockResolvedValue(null),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
@@ -214,6 +257,75 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
       'us-east-1'
     );
   }
+
+  it('carries the resolved-pair evidence into outputSecrets, so a literal Output embedding a token keeps its own expression (issue #2485)', async () => {
+    const DSN = `pre-${EXPR_A_PLAIN}-post`;
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
+      },
+      Outputs: {
+        // The embedded leaf FIRST, so the whole-value sibling below is the
+        // one the collapsed map keeps for the shared plaintext.
+        Dsn: { Value: DSN },
+        Whole: { Value: EXPR_A },
+      },
+    };
+
+    await makeEngine().deploy(stackName, template);
+
+    const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    // Without `mergeResolvedPairs` into `outputSecrets` the entry-by-entry copy
+    // keeps the collapsed survivor and the value scan writes
+    // `pre-{{...:AWSCURRENT}}-post` here.
+    expect(saved.outputs['Dsn']).toBe(DSN);
+    expect(saved.outputs['Whole']).toBe(EXPR_A);
+    expect(JSON.stringify(saved)).not.toContain(PLAINTEXT_A);
+  });
+
+  it('does NOT merge the Export.Name resolution\'s pairs into the pass map: a value that moved there cannot conflict the evidence the value pass earned (issue #2485)', async () => {
+    // The name embeds the SAME token as `Dsn`, and its resolution sees a
+    // rotated value (the reference re-asks AWS). Its ENTRIES are still merged
+    // into the pass map — that is the "survives every exit" invariant — but
+    // merging its PAIRS would mark `EXPR_A_PLAIN` conflicting, and the arm that
+    // positions `Dsn` would refuse and fall to the value scan: the sibling's
+    // spelling, `pre-{{...:AWSCURRENT}}-post`. Re-adding
+    // `mergeResolvedPairs(nameSecrets, ...)` in the engine fails this case.
+    movesAfterFirst.add(EXPR_A_PLAIN);
+    const DSN = `pre-${EXPR_A_PLAIN}-post`;
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
+      },
+      Outputs: {
+        Dsn: { Value: DSN },
+        Whole: { Value: EXPR_A },
+        // A public value whose export NAME resolves the token — the name is
+        // refused (it resolves a secret) and is not what this case is about;
+        // only the recording side effect of resolving it is.
+        Exporter: {
+          Value: 'public-endpoint',
+          Export: { Name: { 'Fn::Sub': `x-${EXPR_A_PLAIN}` } as never },
+        },
+      },
+    };
+
+    await makeEngine().deploy(stackName, template);
+
+    const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    // The name's resolution really did see the moved value (the premise).
+    expect(resolutionsOf.get(EXPR_A_PLAIN)).toBe(2);
+    expect(saved.outputs['Dsn']).toBe(DSN);
+    expect(saved.outputs['Whole']).toBe(EXPR_A);
+    // No plaintext reaches state. The second line is a plain leak guard, not a
+    // pin of the entries copy: the name is REFUSED (it resolves a secret), so
+    // the moved value never enters a bag and this holds with the entries loop
+    // deleted. That copy is pinned where it is observable — the "a REFUSED
+    // export name still RECORDS its secret" case in
+    // `deploy-engine-outputs-export-name-collision.test.ts`.
+    expect(JSON.stringify(saved)).not.toContain(PLAINTEXT_A);
+    expect(JSON.stringify(saved)).not.toContain(MOVED_PLAINTEXT_A);
+  });
 
   it('does NOT descend positionally into a PREVIOUS generation outputs list', async () => {
     const template: CloudFormationTemplate = {
