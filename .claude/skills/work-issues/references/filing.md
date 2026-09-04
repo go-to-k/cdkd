@@ -17,7 +17,17 @@ cannot sit open while site 1's fix drifts away. Two boundaries:
 
 - **A sweep that would make the PR unreviewable is a genuine `next`** — file an
   explicit umbrella naming every site (§3 sorts umbrellas last), and say which
-  sites this lane DID close, so the residue is unambiguous.
+  sites this lane DID close, so the residue is unambiguous. **"Unreviewable" is
+  never reached by drifting into it**, because each widening is small and real:
+  go-to-k/cdkd#2514 asked for a guard hoist at one site and shipped a 2036 LOC
+  PR, successive rounds each finding another data-destroying type the same
+  guard failed open on — all verified, none requested, and the maintainer asked
+  twice whether the run was taking too long. Two tripwires, either one: a SECOND
+  unrequested widening in a lane, or a PR TITLE needing a clause the issue does
+  not name. On a trip, STATE the call in one line — LOC so far, what the next
+  widening adds, in-PR versus filed — before taking it, and `AskUserQuestion`
+  when it would more than double the diff. Not "never fix a data-loss bug you
+  find": the second one is a DECISION made out loud, not a continuation.
 - **Sweep the same ROOT CAUSE, not the same AREA.** Two unrelated bugs in one
   provider are two issues; one wrong assumption at five call sites is one. The
   test: a single sentence describes the fix at every site.

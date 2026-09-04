@@ -131,6 +131,17 @@ fresh shell whose cwd may have silently reset to the main checkout (appendix,
 `$(git rev-parse --show-toplevel)` or from `pwd` answers "the main checkout"
 in precisely the case the value exists to guard.
 
+**The same fault arrives through commands that never MENTION the values** — a
+`sed -n` / `grep` / `cat` on a RELATIVE path, or a bare
+`git branch --show-current` / `git diff`. Read every file this run owns under
+the recorded absolute `<LANE_TREE>`, and treat an answer CONTRADICTING those
+values as a cwd fault, not a finding: in go-to-k/cdkd#2514's run a `main` from
+`git branch --show-current` plus an EMPTY `git diff --stat origin/main..HEAD`
+were read as "the branch was switched, the PR maybe merged", and two "unfixed
+prose" defects were reported that were main's copies of text the lane had
+already fixed. Nothing was re-derived; nothing was read under `<LANE_TREE>`
+either.
+
 **`<LANE_TREE>` and `<MAIN_CHECKOUT>` in a later stage are SUBSTITUTION
 PLACEHOLDERS, not shell variables.** Paste the absolute path from the opening
 report into the command text. Do NOT write `git -C "$LANE_TREE"`: the

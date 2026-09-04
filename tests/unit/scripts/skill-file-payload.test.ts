@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_641,
-    corpusBytes: 168_089,
-    largest: { file: 'implement.md', bytes: 26_541 },
-    runnerUp: { file: 'verify.md', bytes: 26_455 },
+    corpusBytes: 170_960,
+    largest: { file: 'verify.md', bytes: 27_294 },
+    runnerUp: { file: 'implement.md', bytes: 26_541 },
   },
 };
 
@@ -137,13 +137,20 @@ const MIN_REFERENCE_FILES = 6;
 // RE-DERIVED DOWNWARD 208_000 -> 145_000 by the 2026-09-04 corpus compression
 // pass, exactly the move the assertion's failure message prescribes for a
 // genuine compression ("re-derive it DOWNWARD in the same commit"). Inputs are
-// in MEASURED and asserted: corpus 168,089 B, largest implement.md 26,541 B,
-// runner-up verify.md 26,455 B. The floor must clear `corpus - largest`
-// (141,548) and `corpus - runnerUp` (141,634, the binding direction);
-// 145,000 clears them by 3,452 and 3,366 B and leaves ~23 KB of further
-// compression headroom below the corpus. Growth in a NON-leader file erodes
+// in MEASURED and asserted: corpus 170,960 B, largest verify.md 27,294 B,
+// runner-up implement.md 26,541 B. The floor must clear `corpus - largest`
+// (143,666) and `corpus - runnerUp` (144,419, the binding direction);
+// 145,000 clears them by 1,334 and 581 B. Growth in a NON-leader file erodes
 // the either-largest margin first -- MEASURED's failure message reports both
 // margins, so the next lapse reds this file at the commit that causes it.
+// The 2026-09-04 retro (go-to-k/cdkd#2514's run) spent most of the 3,366 B the
+// compression pass had left: it added rules to filing.md, launch-mode.md,
+// retro.md, ship.md and verify.md, paid for them by merging a duplicated count
+// rule, relocating a repo-wide one to `.claude/rules/hooks.md`, and
+// compressing, and left 581 B. The next addition here has to be
+// paid for by compression FIRST -- retro.md section 10-c forbids buying the
+// room by raising this floor, and note that SPLITTING a stage file makes this
+// bound tighter, not looser (a smaller runner-up raises `corpus - runnerUp`).
 // History worth keeping: the floor was RAISED 206_000 -> 208_000 by the
 // 2026-09-02 retro (go-to-k/cdkd#2459) to fit its additions; retro.md
 // section 10-c now forbids that direction outright -- a retro pays for its
