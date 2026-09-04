@@ -1118,9 +1118,8 @@ async function stateOrphanCommand(
       //
       // Unreachable defence in depth since issue #2556: `parseStackRegion`
       // refuses an empty value before any command runs, so nothing can drive
-      // this branch with one. Kept because it is the correct test either way,
-      // and because a programmatic caller building this command directly does
-      // not go through `buildProgram`'s sweep.
+      // this branch with one. Kept because it is the correct test either
+      // way.
       const targets =
         options.stackRegion !== undefined
           ? stackRefs.filter((r) => r.region === options.stackRegion)

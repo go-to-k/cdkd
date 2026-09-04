@@ -890,6 +890,18 @@ describe('parseStackRegion (issue #2556)', () => {
       expect(unguarded).toEqual([]);
     });
 
+    it('leaves no --stack-region carrying a default value', () => {
+      // A parser only runs on a value the user supplied. An option declared
+      // with `.default('')` would hand every consumer the empty string
+      // without `parseArg` ever being called, so the attachment fence would
+      // stay green while the hole was open. Nothing declares one today; this
+      // fails if something starts to.
+      const defaulted = collect(buildProgram())
+        .filter(([, o]) => o.defaultValue !== undefined)
+        .map(([where]) => where);
+      expect(defaulted).toEqual([]);
+    });
+
     it('finds enough declarations for that to mean something', () => {
       // Guards the guard: an `expect([]).toEqual([])` over an empty walk would
       // pass on a broken collector. The floor is deliberately well under the
@@ -925,9 +937,33 @@ describe('parseStackRegion (issue #2556)', () => {
       });
     }
 
-    it('passes a real region through to the command', () => {
-      // The polarity that keeps the guard from being a blanket refusal.
-      expect(parseStackRegion('us-east-1')).toBe('us-east-1');
+    it('passes a real region through to an INHERITED declaration', () => {
+      // The polarity that keeps the guard from being a blanket refusal, driven
+      // through commander after the sweep rather than by calling the helper —
+      // and on one of the four options cdkd does not declare, since those are
+      // the ones the sweep is responsible for.
+      const program = buildProgram();
+      program.exitOverride();
+      let seen: string | undefined;
+      const stub = (cmd: Command): void => {
+        cmd.exitOverride();
+        if (cmd.name() === 'start-cloudfront') {
+          cmd.action(() => {
+            seen = cmd.opts()['stackRegion'] as string | undefined;
+          });
+        } else {
+          cmd.action(() => {});
+        }
+        cmd.commands.forEach(stub);
+      };
+      program.commands.forEach(stub);
+
+      program.parse(
+        ['local', 'start-cloudfront', 'Foo', '--from-cfn-stack', 'S', '--stack-region', 'us-east-1'],
+        { from: 'user' }
+      );
+
+      expect(seen).toBe('us-east-1');
     });
   });
 });
