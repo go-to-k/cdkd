@@ -728,14 +728,13 @@ The same contract holds for **every `--json` surface**: `cdkd events --json`
 `cdkd state {resources,show,info} --json` route their
 `--verbose` debug output and the `Assumed role ...` notice from `--role-arn` /
 `CDKD_ROLE_ARN` runs to stderr while `--json` is in effect.
-[`cdkd state list`](cli-state.md#cdkd-state-list) does the same, but
-unconditionally — its default output is a payload too, so it never depends on
-`--json`. `cdkd diff --json`
+`cdkd diff --json`
 instead demotes the logger to `warn`, which suppresses rather than moves its
 info-level lines.
 
-`cdkd list` is not in that list, because its reservation is not conditional:
-it reserves stdout in EVERY mode, `--json` or not, along with `cdkd synth`,
+Neither `cdkd list` nor [`cdkd state list`](cli-state.md#cdkd-state-list) is in
+that set, because their reservation is not conditional: they reserve stdout in
+EVERY mode, `--json` or not, along with `cdkd synth`,
 `cdkd local invoke` and `cdkd local invoke-agentcore` — see
 [Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
 

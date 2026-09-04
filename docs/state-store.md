@@ -16,7 +16,8 @@ resources to delete.
 The consequence worth knowing is that this store is addressable on its own.
 CloudFormation ties every operation to a stack you name; the cdkd state store
 holds the whole estate in one place, so `cdkd state` can enumerate it, act on
-several stacks at once, or act on every stack in the bucket with `--all`:
+several stacks at once, or — with `cdkd state destroy --all` and
+`cdkd state refresh-observed --all` — act on every stack in the bucket:
 
 ```bash
 cdkd state info                     # which bucket cdkd is using, and how much is in it
@@ -56,10 +57,10 @@ shape silently. Upgrading cdkd never asks you to migrate a record's *contents*.
 
 Two things around the record are not covered by that. A record still on the
 original pre-region key layout is upgraded by the next `cdkd deploy` — until
-then, the subcommands that read a single record refuse it and say so. And the
-bucket *name* changed once: installations predating the region-free default
-need a one-time `cdkd state migrate` per region, which both the deprecation
-warning and `cdkd state info` point at.
+then, `cdkd state resources`, `show`, and `refresh-observed` refuse it and say
+so. And the bucket *name* changed once: installations predating the region-free
+default need a one-time `cdkd state migrate` per region, which both the
+deprecation warning and `cdkd state info` point at.
 
 See **[`cdkd state`](cli-state.md)** for the full reference: every subcommand,
 its flags, the confirmation and lock behavior, and the exit codes. The record

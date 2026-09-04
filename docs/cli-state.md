@@ -38,10 +38,11 @@ cdkd state refresh-observed MyStack      # repopulate the drift baseline without
 | [`migrate`](#cdkd-state-migrate) | the bucket the records live in | Copies a legacy region-suffixed state bucket into the region-free one. |
 | [`refresh-observed`](#cdkd-state-refresh-observed) | the state record | Repopulates `observedProperties` — the drift baseline — from live AWS. |
 
-## Options shared by every subcommand
+## Shared options
 
-These rows are identical everywhere below, so each subcommand's own table lists
-only what is specific to it.
+These rows are identical across the subcommands below — with the two
+exceptions noted after the table — so each subcommand's own table lists only
+what is specific to it.
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -62,11 +63,14 @@ takes neither `--state-bucket` nor `--state-prefix`, naming its two buckets
 with its own flags instead, and its `--region` is a real selector rather than
 the deprecated one.
 
-Every subcommand that touches a specific record — all of them except `info`,
-`list`, and `migrate` — also takes `--stack-region <region>`, which is required
-when one stack name has records in more than one region. It is deliberately not
-spelled `--region`: the deprecated global option picks the AWS client's region,
-whereas `--stack-region` picks *which record* to act on.
+Every subcommand that acts on a named record — all of them except `info`,
+`list`, and `migrate` — also takes `--stack-region <region>`, which selects
+which of a name's records to use. What happens without it when a name has
+records in several regions differs by subcommand: `resources`, `show`,
+`destroy`, and `refresh-observed` refuse and tell you to pick one, while
+`orphan` removes the record in *every* region. It is deliberately not spelled
+`--region`: the deprecated global option picks the AWS client's region, whereas
+`--stack-region` picks which record to act on.
 
 ## `cdkd state info`
 
@@ -333,9 +337,11 @@ no record body is rewritten.
 It takes no `--state-bucket` / `--state-prefix`, and its `--region` is a real
 selector rather than the deprecated global option.
 
-Unlike [`refresh-observed --dry-run`](#cdkd-state-refresh-observed), which
-skips the prompt, `migrate --dry-run` still asks for confirmation before
-printing the plan, so an unattended preview needs `-y` alongside it.
+`migrate --dry-run` prints its plan — the two bucket names, the source
+bucket's real region, and the object count — and then still raises the
+confirmation prompt before stopping. [`refresh-observed --dry-run`](#cdkd-state-refresh-observed)
+skips its prompt; this one does not, so an unattended preview needs `-y`
+alongside it.
 
 The migration is idempotent: the destination is reused when it already exists,
 each object copy is idempotent per key, and the post-copy verification tolerates
@@ -375,14 +381,19 @@ defaults and keys your template never set.
 | `--dry-run` | off | Print the per-stack refresh count without taking a lock, reading resources back from AWS, or writing state. The records themselves are still read from S3. |
 | `--stack-region <region>` | — | Region of the record to refresh. Required when one stack name has state in more than one region. |
 
-Why it exists: `cdkd deploy` fills in a *missing* baseline for you — it reads
-back every resource that has none, including ones the deploy itself skipped as
-unchanged — but it never re-reads a resource that already has one. A baseline
-captured months ago therefore stays as it was. This command re-reads the whole
-stack on demand, which is also the only way to establish a baseline at all
-without deploying: on a stack deployed with
+Why it exists: `cdkd deploy` already maintains the baseline in two ways — it
+captures a fresh one for every resource it creates, updates, or replaces, and
+it reads back any resource whose baseline is missing, including ones that
+deploy left unchanged. Both paths cover only the resources whose provider can
+read state back, the same set this command reports as `unsupported`. What it never does is re-read a resource that was
+unchanged *and* already had a baseline. That one keeps whatever was captured
+the last time the resource was touched, however long ago.
+
+This command re-reads the whole stack on demand, so it covers that case, and
+it is how you refresh a baseline without deploying at all — including on a
+stack deployed with
 [`--no-capture-observed-state`](cli-deploy-tuning.md#no-capture-observed-state),
-or when you simply do not want to deploy.
+where nothing was captured in the first place.
 
 The baseline is what makes the comparison thorough. With one present,
 `cdkd drift` walks the union of the recorded and the live keys, so a
