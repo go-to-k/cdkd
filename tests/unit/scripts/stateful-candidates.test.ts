@@ -367,8 +367,24 @@ describe('the pure derivation functions', () => {
     // #2571 restored. A regression there is caught at the producer's own
     // fence, so this only records that the consumer guard is redundant rather
     // than load-bearing.
-    const raw = JSON.parse(readFileSync(COVERAGE_JSON, 'utf8')) as { tier2: string[] };
+    const raw = JSON.parse(readFileSync(COVERAGE_JSON, 'utf8')) as {
+      tier1: string[];
+      tier2: string[];
+      tier3: string[];
+    };
     expect(raw.tier2.length).toBe(real.length);
+    // All THREE lists, not just the one this derivation reads: the producer
+    // fence in `audit-provider-coverage.test.ts` covers the code path, and
+    // this covers the artifact actually committed.
+    for (const [label, list] of [
+      ['tier1', raw.tier1],
+      ['tier2', raw.tier2],
+      ['tier3', raw.tier3],
+    ] as const) {
+      expect([...list].sort(), `committed ${label} is not a set`).toEqual(
+        [...new Set(list)].sort()
+      );
+    }
     expect(() => loadTier2(REPORT_JSON)).toThrow(/No tier2 entries/);
   });
 

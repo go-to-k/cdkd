@@ -17,6 +17,7 @@ import {
   paginateListTypes,
   parseCliArgs,
   parseRegisteredTypes,
+  assertReportIsComplete,
   isRetryableDescribeTypeError,
   partitionCoverage,
   renderMarkdown,
@@ -231,26 +232,107 @@ describe('describeTypeWithRetry', () => {
 describe('isRetryableDescribeTypeError', () => {
   it('accepts throttles and transient transport failures, refuses the rest', () => {
     const named = (name: string, message = 'x') => Object.assign(new Error(message), { name });
-    for (const err of [
-      named('ThrottlingException'),
-      named('Throttling'),
-      named('TimeoutError'),
-      // The measured shape: a plain Error whose NAME carries nothing.
-      new Error('socket hang up'),
-      Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
-      Object.assign(new Error('getaddrinfo EAI_AGAIN'), { code: 'EAI_AGAIN' }),
-    ]) {
-      expect(isRetryableDescribeTypeError(err), `${err.name}: ${err.message}`).toBe(true);
+    // Each accepted shape reaches the classifier through ONE arm only. The
+    // first cut used `Object.assign(new Error('read ECONNRESET'), { code:
+    // 'ECONNRESET' })`, where the message ALSO matches — so deleting either
+    // arm stayed green and neither was independently fenced.
+    for (const [label, err] of [
+      ['name: ThrottlingException', named('ThrottlingException')],
+      ['name: Throttling', named('Throttling')],
+      ['name: TimeoutError', named('TimeoutError')],
+      ['name: RequestTimeout', named('RequestTimeout')],
+      ['name: AbortError', named('AbortError')],
+      // MESSAGE arm only — no `code`, and a name of plain `Error`. This is the
+      // measured shape (issue #2571).
+      ['message only: socket hang up', new Error('socket hang up')],
+      ['message only: ECONNRESET', new Error('read ECONNRESET')],
+      ['message only: EAI_AGAIN', new Error('getaddrinfo EAI_AGAIN')],
+      // CODE arm only — the message deliberately says nothing the regex knows.
+      ['code only: EPIPE', Object.assign(new Error('write failed'), { code: 'EPIPE' })],
+      [
+        'code only: ECONNREFUSED',
+        Object.assign(new Error('connect failed'), { code: 'ECONNREFUSED' }),
+      ],
+      ['code only: ENOTFOUND', Object.assign(new Error('lookup failed'), { code: 'ENOTFOUND' })],
+      ['code only: ETIMEDOUT', Object.assign(new Error('gave up'), { code: 'ETIMEDOUT' })],
+    ] as const) {
+      expect(isRetryableDescribeTypeError(err), label).toBe(true);
     }
-    for (const err of [
-      named('AccessDeniedException', 'User is not authorized'),
-      named('ValidationException', 'Type not found'),
-      named('TypeNotFoundException'),
-      'not an error',
-      undefined,
-    ]) {
-      expect(isRetryableDescribeTypeError(err)).toBe(false);
+    for (const [label, err] of [
+      ['permission denial', named('AccessDeniedException', 'User is not authorized')],
+      ['validation', named('ValidationException', 'Type not found')],
+      ['type not found', named('TypeNotFoundException')],
+      // The reason the message arm is NOT `/network|timeout/i`: AWS's own
+      // permanent text carries those words through the TYPE NAME, and 48 of
+      // the audited types are named `*Network*`. Retrying them burns the whole
+      // backoff and lands where it started.
+      [
+        'a permanent not-found naming a Network type',
+        named(
+          'TypeNotFoundException',
+          "Type with name 'AWS::EC2::NetworkInterface' (RESOURCE) cannot be found."
+        ),
+      ],
+      [
+        'a permanent denial naming a NetworkFirewall type',
+        named(
+          'AccessDeniedException',
+          'not authorized to perform: cloudformation:DescribeType on resource: ' +
+            'arn:aws:cloudformation:us-east-1::type/resource/AWS-NetworkFirewall-Firewall'
+        ),
+      ],
+      ['a property called timeout', named('ValidationException', 'Invalid property: timeout')],
+      ['not an error at all', 'not an error'],
+      ['undefined', undefined],
+    ] as const) {
+      expect(isRetryableDescribeTypeError(err), label).toBe(false);
     }
+  });
+
+  it('a non-Error value is refused before any property read', () => {
+    // The `instanceof Error` guard: without it the `code` read and the message
+    // regex both run against whatever was thrown.
+    for (const v of [null, undefined, 42, { code: 'ECONNRESET' }, { message: 'socket hang up' }]) {
+      expect(isRetryableDescribeTypeError(v)).toBe(false);
+    }
+  });
+});
+
+describe('assertReportIsComplete', () => {
+  const base = {
+    schemaVersion: 1,
+    generatedAt: 'x',
+    summary: { tier1Count: 0, tier2Count: 0, tier3Count: 0, totalCount: 0 },
+    tier1: [],
+    tier2: [],
+    tier3: [],
+  };
+
+  it('refuses a report that could not classify a type, naming each one', () => {
+    // The mechanism issue #2571 exists for, and it had NO test: `regenerate`
+    // is unexported and only reachable through live AWS calls, so extracting
+    // the assertion is what makes both polarities pinnable offline.
+    expect(() =>
+      assertReportIsComplete({ ...base, undetermined: ['AWS::Foo::Bar', 'AWS::Baz::Qux'] })
+    ).toThrow(/AWS::Foo::Bar[\s\S]*AWS::Baz::Qux/);
+    expect(() => assertReportIsComplete({ ...base, undetermined: ['AWS::Foo::Bar'] })).toThrow(
+      /2 type|1 type\(s\) could not be classified/
+    );
+  });
+
+  it('accepts a complete report — both the ABSENT and the EMPTY spelling', () => {
+    // Two arms of the same conjunction: `undefined` (the field is omitted when
+    // empty) and `[]` (a hand-written or future report that emits it anyway).
+    expect(() => assertReportIsComplete(base)).not.toThrow();
+    expect(() => assertReportIsComplete({ ...base, undetermined: [] })).not.toThrow();
+  });
+
+  it('--allow-undetermined suppresses the refusal without hiding the types', () => {
+    const report = { ...base, undetermined: ['AWS::Foo::Bar'] };
+    expect(() => assertReportIsComplete(report, true)).not.toThrow();
+    // ...and the escape hatch does not strip the record, so `--check` still
+    // refuses it. That is what makes it a declared gap rather than a hidden one.
+    expect(report.undetermined).toEqual(['AWS::Foo::Bar']);
   });
 });
 
@@ -420,6 +502,58 @@ describe('partitionCoverage', () => {
     expect(report.summary).toMatchObject({ tier2Count: 0, tier3Count: 0, totalCount: 0 });
   });
 
+  it('undetermined types are sorted, and progress still advances for them', async () => {
+    // Sorting keeps the artifact diff-stable like every other list here; the
+    // `done` bump keeps `regenerate`'s progress line from stalling when the
+    // last-finishing task is the one that could not be classified.
+    const seen: Array<[number, string, string | undefined]> = [];
+    const client = {
+      send: async () => {
+        throw new Error('socket hang up');
+      },
+    } as unknown as CfnClientLike;
+    const report = await partitionCoverage(
+      client,
+      new Set(),
+      ['AWS::Zulu::Z', 'AWS::Alpha::A'],
+      {
+        concurrency: 1,
+        retryDelaysMs: [1],
+        sleep: async () => {},
+        onProgress: (done, _total, typeName, tier) => seen.push([done, typeName, tier]),
+      }
+    );
+    expect(report.undetermined).toEqual(['AWS::Alpha::A', 'AWS::Zulu::Z']);
+    expect(seen.map((r) => r[0])).toEqual([1, 2]);
+    expect(seen.every((r) => r[2] === undefined)).toBe(true);
+  });
+
+  it('a caller-supplied onError returning undefined is still RECORDED', async () => {
+    // The recording lives at the call site, not inside the default handler: a
+    // custom handler returning `undefined` would otherwise drop the type from
+    // every tier with nothing written down, and `regenerate`'s refusal would
+    // never fire for it.
+    const client = {
+      send: async () => {
+        throw Object.assign(new Error('nope'), { name: 'AccessDeniedException' });
+      },
+    } as unknown as CfnClientLike;
+    const report = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1],
+      sleep: async () => {},
+      onError: () => undefined,
+    });
+    expect(report.undetermined).toEqual(['AWS::Foo::Bar']);
+    // ...while a custom handler that DOES pick a tier keeps working.
+    const forced = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1],
+      sleep: async () => {},
+      onError: () => 'tier3-unsupported' as const,
+    });
+    expect(forced.tier3).toEqual(['AWS::Foo::Bar']);
+    expect(forced.undetermined).toBeUndefined();
+  });
+
   it('a NON-retryable failure is still undetermined, not Tier 3', async () => {
     // The polarity that matters for the guess: a missing IAM permission is
     // permanent, but it is still not evidence that the type is
@@ -500,7 +634,7 @@ describe('partitionCoverage', () => {
       'AWS::A::A': 'FULLY_MUTABLE',
       'AWS::B::B': 'NON_PROVISIONABLE',
     });
-    const events: Array<{ done: number; total: number; tier: string }> = [];
+    const events: Array<{ done: number; total: number; tier: string | undefined }> = [];
     await partitionCoverage(client, new Set(), ['AWS::A::A', 'AWS::B::B'], {
       sleep: async () => {},
       onProgress: (done, total, _name, tier) => {
@@ -700,7 +834,7 @@ describe('parseCliArgs', () => {
   });
 
   it('returns regenerate / check / summary modes', () => {
-    expect(parseCliArgs(['--regenerate'])).toEqual({ kind: 'regenerate' });
+    expect(parseCliArgs(['--regenerate'])).toEqual({ kind: 'regenerate', allowUndetermined: false });
     expect(parseCliArgs(['--check'])).toEqual({ kind: 'check' });
     expect(parseCliArgs([])).toEqual({ kind: 'summary' });
   });

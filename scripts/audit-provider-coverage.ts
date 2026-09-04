@@ -207,7 +207,18 @@ function isTransientTransportError(err: unknown): boolean {
   ) {
     return true;
   }
-  return /socket hang up|ECONNRESET|EPIPE|ETIMEDOUT|EAI_AGAIN|network|timeout/i.test(err.message);
+  // The message arm exists for errors that carry NEITHER a useful name nor a
+  // `code` — a socket hang-up is the measured one. It is deliberately narrow:
+  // bare `network` / `timeout` substrings matched AWS's own PERMANENT text
+  // ("Type with name 'AWS::EC2::NetworkInterface' (RESOURCE) cannot be found",
+  // and the `not authorized ... type/resource/AWS-NetworkFirewall-Firewall`
+  // denial), which would burn the whole 63-second backoff on each of the 48
+  // audited types whose name contains `Network` before landing where they
+  // started. The `errno`-shaped tokens stay because they appear verbatim in
+  // Node's message when `code` is absent.
+  return /socket hang up|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/.test(
+    err.message
+  );
 }
 
 /** Retryable: the answer could differ on a later attempt. */
@@ -227,12 +238,14 @@ export interface DescribeTypeRetryOptions {
 }
 
 /**
- * Wrap `DescribeType` with exponential backoff on `ThrottlingException`.
+ * Wrap `DescribeType` with exponential backoff on the failures a later attempt
+ * could answer differently — throttles AND transient transport errors (see
+ * {@link isRetryableDescribeTypeError}).
  *
  * Returns the raw `ProvisioningType` string (or `undefined` if AWS responded
  * without one — treated as Tier 3 upstream). Non-throttling errors propagate
- * to the caller, which decides whether to fail the whole audit or flag the
- * single type as Tier 3.
+ * to the caller, which records the type as undetermined rather than guessing a
+ * tier for it.
  */
 export async function describeTypeWithRetry(
   client: CfnClientLike,
@@ -278,12 +291,17 @@ export interface PartitionOptions {
     done: number,
     total: number,
     typeName: string,
-    tier: CoverageTier
+    /** `undefined` when the type could not be classified at all. */
+    tier: CoverageTier | undefined
   ) => void;
   /**
-   * Optional per-type error handler. Defaults to logging the error to
-   * stderr and classifying the type as Tier 3 (safer than silently
-   * dropping it). Throws bubble up to abort the whole audit.
+   * Optional per-type error handler. The DEFAULT logs to stderr and returns
+   * `undefined`, which records the type under `undetermined` and keeps it out
+   * of every tier — a failed lookup is not evidence that a type is
+   * NON_PROVISIONABLE, and Tier 3 is codegen'd into a pre-flight refusal
+   * (issue [#2571]). Returning a tier from a custom handler still works;
+   * returning `undefined` records the type. Throws bubble up and abort the
+   * whole audit.
    */
   readonly onError?: (typeName: string, err: unknown) => CoverageTier | undefined;
 }
@@ -315,7 +333,6 @@ export async function partitionCoverage(
     ((typeName: string, err: unknown): CoverageTier | undefined => {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[audit] DescribeType could not be resolved for ${typeName}: ${msg}`);
-      undetermined.push(typeName);
       return undefined;
     });
 
@@ -360,8 +377,13 @@ export async function partitionCoverage(
           const handled = onError(typeName, err);
           if (handled === undefined) {
             // Undetermined: excluded from every tier rather than guessed into
-            // one. `regenerate` refuses to write a report that has any.
+            // one, and recorded HERE rather than inside the default handler —
+            // a caller-supplied `onError` returning `undefined` would otherwise
+            // drop the type from every tier with nothing written down, and
+            // `regenerate`'s refusal would never fire for it.
+            undetermined.push(typeName);
             done++;
+            options.onProgress?.(done, nonTier1.length, typeName, undefined);
             return;
           }
           tier = handled;
@@ -457,7 +479,10 @@ export function renderMarkdown(report: CoverageReport): string {
   lines.push('## Tier 3 — Not provisionable by cdkd today');
   lines.push('');
   lines.push(
-    '`ProvisioningType` is `NON_PROVISIONABLE` (or DescribeType failed). ' +
+    '`ProvisioningType` is `NON_PROVISIONABLE`. (A type whose `DescribeType` ' +
+      'could not be resolved is NOT here — it is recorded under `undetermined` ' +
+      'and the regeneration refuses to write the report at all, because a guess ' +
+      'in this tier becomes a pre-flight refusal.) ' +
       'Cloud Control API cannot create / update / delete these types; cdkd ' +
       'cannot support them at all without a dedicated SDK Provider. Most entries ' +
       'here are inherently read-only or registry-only types (`AWS::*::*Type`, ' +
@@ -476,6 +501,42 @@ export function renderMarkdown(report: CoverageReport): string {
  * audit's output from being half-written if the process is killed
  * mid-write (the CFn API calls take long enough for ^C to be plausible).
  */
+/**
+ * Refuse to write a report carrying an undetermined type.
+ *
+ * The tier lists are consumed as FACTS — tier 3 is codegen'd into
+ * `src/provisioning/unsupported-types.generated.ts`, where the pre-flight
+ * REFUSES the type — so a partial walk must not become the committed answer.
+ * The retry in {@link describeTypeWithRetry} already absorbs the transient
+ * cases; what reaches here is either a permanent failure (a scoped IAM deny, a
+ * region-restricted registry entry) or a run that should simply be repeated.
+ *
+ * Exported because it is the mechanism issue [#2571] exists for and
+ * `regenerate` is unreachable without live AWS calls: extracting it is what
+ * lets both polarities be pinned offline.
+ *
+ * `allowUndetermined` is the escape hatch for the permanent case — it keeps
+ * the types in the report's `undetermined` list (so they stay visible and
+ * `--check` still refuses) rather than silently dropping the refusal.
+ */
+export function assertReportIsComplete(
+  report: CoverageReport,
+  allowUndetermined = false
+): void {
+  const unresolved = report.undetermined ?? [];
+  if (unresolved.length === 0 || allowUndetermined) {
+    return;
+  }
+  throw new Error(
+    `[audit] ${unresolved.length} type(s) could not be classified, so the report was NOT ` +
+      `written (a guess here becomes a committed pre-flight refusal):\n` +
+      unresolved.map((t) => `  ${t}`).join('\n') +
+      `\nRe-run \`vp run audit:coverage:regenerate\`. If a type is PERMANENTLY ` +
+      `unresolvable in this account, re-run with --allow-undetermined; it stays listed in ` +
+      `the report and \`--check\` keeps refusing it.`
+  );
+}
+
 export function atomicWriteFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
@@ -531,7 +592,7 @@ const REGISTER_PROVIDERS_PATH = resolve(REPO_ROOT, 'src/provisioning/register-pr
 const OUTPUT_JSON = resolve(REPO_ROOT, 'docs/_generated/provider-coverage.json');
 const OUTPUT_MARKDOWN = resolve(REPO_ROOT, 'docs/_generated/provider-coverage.md');
 
-async function regenerate(): Promise<void> {
+async function regenerate(allowUndetermined = false): Promise<void> {
   const source = readFileSync(REGISTER_PROVIDERS_PATH, 'utf8');
   const registered = parseRegisteredTypes(source);
   console.error(`[audit] parsed ${registered.size} registered SDK Providers`);
@@ -563,18 +624,7 @@ async function regenerate(): Promise<void> {
       },
     });
 
-    // REFUSE to write a report carrying an undetermined type. The tier lists
-    // are consumed as facts — tier 3 is codegen'd into a pre-flight refusal —
-    // so a partial walk must not become the committed answer. Re-run; the
-    // retry above already absorbs the transient cases.
-    if (report.undetermined !== undefined && report.undetermined.length > 0) {
-      throw new Error(
-        `[audit] ${report.undetermined.length} type(s) could not be classified, so the ` +
-          `report was NOT written (a guess here becomes a committed pre-flight refusal):\n` +
-          report.undetermined.map((t) => `  ${t}`).join('\n') +
-          `\nRe-run \`vp run audit:coverage:regenerate\`.`
-      );
-    }
+    assertReportIsComplete(report, allowUndetermined);
 
     atomicWriteFile(OUTPUT_JSON, JSON.stringify(report, null, 2) + '\n');
     atomicWriteFile(OUTPUT_MARKDOWN, renderMarkdown(report));
@@ -660,6 +710,22 @@ export function runCheck(
     io.setExitCode(1);
     return;
   }
+  // An UNDETERMINED type in the committed report is a CI failure in its own
+  // right: the write-side refusal is skippable with --allow-undetermined, so
+  // without this the gate would pass over a report that admits it could not
+  // classify something. The tier lists are read as facts downstream.
+  const unresolved = report.undetermined ?? [];
+  if (unresolved.length > 0) {
+    io.error(
+      `[audit] the cached report lists ${unresolved.length} type(s) it could not classify:`
+    );
+    for (const t of unresolved) {
+      io.error(`  ${t}`);
+    }
+    io.error('[audit] re-run `vp run audit:coverage:regenerate`');
+    io.setExitCode(1);
+    return;
+  }
   const source = readFileSync(sourcePath, 'utf8');
   const registered = parseRegisteredTypes(source);
   const result = checkCachedAgainstSource(report.tier1, registered);
@@ -693,7 +759,7 @@ export function runCheck(
 export type CliMode =
   | { kind: 'help' }
   | { kind: 'summary' }
-  | { kind: 'regenerate' }
+  | { kind: 'regenerate'; allowUndetermined: boolean }
   | { kind: 'check' }
   | { kind: 'error'; message: string };
 
@@ -707,7 +773,14 @@ export function parseCliArgs(args: readonly string[]): CliMode {
       message: '--regenerate and --check are mutually exclusive; pass at most one',
     };
   }
-  if (wantRegenerate) return { kind: 'regenerate' };
+  const allowUndetermined = args.includes('--allow-undetermined');
+  if (allowUndetermined && !wantRegenerate) {
+    return {
+      kind: 'error',
+      message: '--allow-undetermined is only meaningful with --regenerate',
+    };
+  }
+  if (wantRegenerate) return { kind: 'regenerate', allowUndetermined };
   if (wantCheck) return { kind: 'check' };
   return { kind: 'summary' };
 }
@@ -721,6 +794,11 @@ const HELP_TEXT = [
   '                 rewrite docs/_generated/provider-coverage.{json,md}.',
   '                 Requires AWS credentials with cloudformation:ListTypes',
   '                 and cloudformation:DescribeType. ~10-30 minutes cold.',
+  '  --allow-undetermined',
+  '                 With --regenerate only: write the report even though some',
+  '                 types could not be classified. They stay listed under',
+  '                 `undetermined` and --check keeps refusing them, so this',
+  '                 records a permanent gap rather than hiding one.',
   '  --check        Verify the cached Tier 1 list matches the current',
   '                 src/provisioning/register-providers.ts. Exits 1 on',
   '                 drift; intended for CI gates / pre-commit hooks.',
@@ -739,7 +817,7 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     case 'regenerate':
-      await regenerate();
+      await regenerate(mode.allowUndetermined);
       return;
     case 'check':
       runCheck();
