@@ -8,7 +8,7 @@ import {
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { setAwsClients, AwsClients } from '../../utils/aws-clients.js';
@@ -68,6 +68,13 @@ async function forceUnlockCommand(
   const region = namedCliRegion(options.region) ?? 'us-east-1';
   const stateBucket = await resolveStateBucketWithDefault(options.stateBucket, region);
 
+  // Every lock this run could not delete, so the walk can finish the remaining
+  // stacks and regions and STILL report failure. Reporting a failed unlock only
+  // on stderr while exiting 0 made `cdkd force-unlock && cdkd deploy` proceed
+  // against a stack whose lock was still there, and a CI cleanup step record an
+  // unlock that never happened (issue #2575).
+  const failures: string[] = [];
+
   try {
     const stateConfig = {
       bucket: stateBucket,
@@ -107,12 +114,24 @@ async function forceUnlockCommand(
             logger.info(`No lock found for stack: ${where}`);
           } else {
             logger.error(`Failed to unlock stack ${where}: ${message}`);
+            failures.push(`${where}: ${message}`);
           }
         }
       }
     }
   } finally {
     awsClients.destroy();
+  }
+
+  // After the walk, not inside it: one unreachable stack must not stop the
+  // others being attempted, which is the whole reason the per-region catch
+  // above continues rather than rethrowing.
+  if (failures.length > 0) {
+    throw new CdkdError(
+      `Failed to release ${failures.length} lock(s):\n` +
+        failures.map((f) => `  - ${f}`).join('\n'),
+      'FORCE_UNLOCK_FAILED'
+    );
   }
 }
 

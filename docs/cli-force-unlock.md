@@ -105,18 +105,21 @@ events are all left as they were.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | The walk completed. Every lock it reached was deleted, there was none to delete, or a delete failed — see below. |
-| `1` | No stack was named; credentials or state-bucket resolution failed; or listing the stack's regions failed. |
+| `0` | Every lock the walk reached was deleted, or there was none to delete. |
+| `1` | A lock could not be deleted; no stack was named; credentials or state-bucket resolution failed; or listing a stack's regions failed. |
 
-The two failures are not symmetric, and the difference matters when scripting
-this command:
+A lock that was **already absent** is a success, not a failure — the command's
+job is that no lock remains, and an absent one already satisfies it.
 
-- **Failing to LIST a stack's regions** aborts the run and exits `1`, leaving
-  any later stack in the same invocation unattempted.
-- **Failing to DELETE a lock** is reported on stderr, the walk carries on with
-  that stack's remaining regions and then the next stack, and the run still
-  exits `0` — so a `cdkd force-unlock && cdkd deploy` chain proceeds against a
-  stack whose lock is still there. Read the output, not the exit code.
+The two failure kinds differ in how much of the walk still runs:
+
+- **Failing to DELETE a lock** does not stop the walk. The error is reported,
+  the remaining regions of that stack and then the remaining stacks are still
+  attempted, and the run exits `1` at the end naming every lock it could not
+  release. One unreachable stack therefore does not cost you the others.
+- **Failing to LIST a stack's regions** aborts immediately with `1`, leaving any
+  later stack in the same invocation unattempted.
+
 
 The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
 
