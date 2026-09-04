@@ -763,8 +763,8 @@ function renderMarkdown(report: CoverageReport): string {
     lines.push('');
     lines.push(
       'Registered without an integ fixture, with an explicit `// allow-no-integ: <rationale>` comment on the register line in [src/provisioning/register-providers.ts](' +
-      githubBlob('src/provisioning/register-providers.ts') +
-      '). The hook accepts these — but each is a deliberate verification gap and should be revisited if a real-AWS bug surfaces against the type.'
+        githubBlob('src/provisioning/register-providers.ts') +
+        '). The hook accepts these — but each is a deliberate verification gap and should be revisited if a real-AWS bug surfaces against the type.'
     );
     lines.push('');
     lines.push('| Resource Type | Rationale |');
