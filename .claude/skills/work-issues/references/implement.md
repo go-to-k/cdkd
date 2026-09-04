@@ -132,16 +132,14 @@ measured miss:
   A fix that REMOVES a behaviour owes a SECOND population: the assertions
   that the behaviour happens, which do not go red when it stops
   (`references/verify.md` §8-d).
-- **Paste the command with the number, and re-run it before you ship** — a
-  sweep claimed "88 hits across 13 files"; the reviewer's grep returned 47
-  and nothing reproduced 88. A right conclusion with an unreproducible
-  measurement reads as evidence and is not.
-- **Any CLAIM relayed from a subagent's report is unearned the same way** —
-  and harder, because you never ran a command. One run published FOUR relayed
-  counts, every one wrong ("nine sites" — grep found 78; "nine probes" —
-  fourteen), two into GitHub artifacts. The tell is grammatical: a number
-  arriving as a WORD was counted by an agent, one arriving as OUTPUT by a
-  machine. Run the query yourself and put its output in the text.
+- **A sweep's number is unearned until you paste the command that produced
+  it** — one claimed "88 hits across 13 files" and the reviewer's grep
+  returned 47. A count RELAYED from a subagent is the same failure without
+  even a command (FOUR published in one run, every one wrong — "nine sites",
+  grep found 78), and the tell is grammatical: a number arriving as a WORD
+  was counted by an agent, one arriving as OUTPUT by a machine. Run the query
+  yourself, put its output in the text, and give the number one of
+  `references/verify.md` §8-g's three dispositions before it ships.
 - **Grep the repo for the SYMPTOM before deriving a fix** — something may
   already have solved the same QUESTION (the SDK region-redirect mechanism a
   lane spent a real-AWS round trip rediscovering already sat verbatim in
@@ -253,6 +251,16 @@ both directions (a suite can `skipIf` itself when `dist/` is absent; a run
 whose every test passes can still exit non-zero, §6's rc rule). A load error
 or a short test count VOIDS the probe.
 
+**When you REJECT part of a prescribed fix, make the rejection a PROBE by
+APPLYING it.** The usual probe breaks the code to prove a test discriminates;
+this one applies the alternative you turned down and proves a test REFUSES
+it — the only artifact that keeps a deliberate rejection from reading as an
+omission. go-to-k/cdkd#2578 asked for an absent S3 `Versions` /
+`DeleteMarkers` to count as a non-answer, by analogy with its log-group twin;
+applied literally that refuses every EMPTY bucket, so the third probe applied
+the issue's own prescription and one test went red. Write that control before
+writing the paragraph that explains why you did not do what was asked.
+
 **Choose the probe's INPUT to discriminate too** — a mask-before-stringify
 fix probed with a SCALAR secret came back green under its own motivating
 mutation; only a JSON-document secret makes the needle stop occurring. Ask
@@ -261,11 +269,6 @@ what property of the INPUT the defect depends on.
 **Publishing a probe MATRIX re-measures it on the tree you are about to
 merge** (`references/verify.md` §8-g); carrying one forward across rounds is
 wrong even when every row was true when written.
-
-**Run probes with `vp test run <path>`, never `vp run test <path>`** — the
-wrapped form puts the task runner between caller and verdict
-(`.claude/hooks/vp-run-test-path-gate.sh` blocks it). Read the OUTPUT as well
-as the rc.
 
 **A VALUE import from a module other suites `vi.mock` reds those suites** —
 the failure names the EXPORT, reading as a missing symbol rather than a

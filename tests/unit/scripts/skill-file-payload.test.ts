@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_641,
-    corpusBytes: 171_399,
+    corpusBytes: 171_711,
     largest: { file: 'verify.md', bytes: 27_036 },
-    runnerUp: { file: 'implement.md', bytes: 26_541 },
+    runnerUp: { file: 'implement.md', bytes: 26_865 },
   },
 };
 
@@ -154,7 +154,16 @@ const MIN_REFERENCE_FILES = 6;
 // by DISPLACING two blocks verify.md was carrying for another skill -- the
 // Docker-hang diagnosis and the real-AWS watchdog recipe now live in
 // .claude/skills/run-integ/SKILL.md, where the commands they wrap are run --
-// plus a de-duplicated blocked-run rule, leaving 142 B.
+// plus a de-duplicated blocked-run rule, leaving 142 B. The 2026-09-05
+// go-to-k/cdkd#2578 + go-to-k/cdkd#2566 retro added a rejected-alternative
+// probe rule to implement.md and a `gh pr checks --watch` correction to
+// ship.md, and paid for both by DELETING three restatements of rules that live
+// elsewhere -- implement.md's `vp test run` bullet (CLAUDE.md plus
+// vp-run-test-path-gate.sh), ship.md's release-flow paragraph and its
+// squash-only code comment (both CLAUDE.md) -- plus merging implement.md's two
+// unearned-count bullets into one. Margin 142 -> 154 B: a retro is allowed to
+// LEAVE more room than it found, and that is the only direction this number
+// may move without a compression pass.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this
