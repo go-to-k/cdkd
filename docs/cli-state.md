@@ -40,9 +40,9 @@ cdkd state refresh-observed MyStack      # repopulate the drift baseline without
 
 ## Shared options
 
-These rows are identical across the subcommands below — with the two
-exceptions noted after the table — so each subcommand's own table lists only
-what is specific to it.
+These rows are identical across the subcommands below, apart from
+`state migrate`, which takes neither `--state-bucket` nor `--state-prefix`. Each
+subcommand's own table lists only what is specific to it.
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -56,21 +56,23 @@ what is specific to it.
 `--region` is deprecated — prefer `AWS_REGION` or your AWS profile — but it is
 still honored if passed, and it is not a no-op.
 
-Two subcommands break that pattern. [`cdkd state info`](#cdkd-state-info)
-does not accept `--region` at all — it reports the bucket's own region, so
-there is nothing for the flag to select. [`cdkd state migrate`](#cdkd-state-migrate)
-takes neither `--state-bucket` nor `--state-prefix`, naming its two buckets
-with its own flags instead, and its `--region` is a real selector rather than
-the deprecated one.
+Two subcommands treat `--region` differently.
+[`cdkd state info`](#cdkd-state-info) does not accept it at all — it reports
+the bucket's own region, so there is nothing to select. On
+[`cdkd state migrate`](#cdkd-state-migrate) it is a real selector rather than
+the deprecated option: it names which legacy bucket to migrate.
 
 Every subcommand that acts on a named record — all of them except `info`,
 `list`, and `migrate` — also takes `--stack-region <region>`, which selects
 which of a name's records to use. What happens without it when a name has
 records in several regions differs by subcommand: `resources`, `show`,
 `destroy`, and `refresh-observed` refuse and tell you to pick one, while
-`orphan` removes the record in *every* region. It is deliberately not spelled
-`--region`: the deprecated global option picks the AWS client's region, whereas
-`--stack-region` picks which record to act on.
+`orphan` removes the record in *every* region. Under `--all` the flag stops
+being a disambiguator and becomes a filter — `refresh-observed --all` without
+it refreshes every region.
+
+It is deliberately not spelled `--region`: the deprecated global option picks
+the AWS client's region, whereas `--stack-region` picks which record to act on.
 
 ## `cdkd state info`
 
@@ -239,7 +241,7 @@ resources become untracked rather than deleted.
 | --- | --- | --- |
 | `<stacks...>` | — | Stack name(s) to orphan, as physical CloudFormation names. At least one is required. |
 | `-f`, `--force` | off | Skip the confirmation prompt **and** remove the record even when the stack is locked. |
-| `--stack-region <region>` | — | Orphan only the record in this region. Without it, every region's record for the name is removed. |
+| `--stack-region <region>` | — | Orphan only the record in this region. Without it, every region-scoped record for the name is removed. |
 
 `-y` / `--yes` skips the prompt but does *not* bypass the lock guard; only
 `--force` does both. A locked stack otherwise fails with the exact
@@ -379,13 +381,13 @@ defaults and keys your template never set.
 | `[stacks...]` | — | Stack name(s) to refresh, as physical CloudFormation names. Required unless `--all` is given. |
 | `--all` | off | Refresh every stack in the state bucket. |
 | `--dry-run` | off | Print the per-stack refresh count without taking a lock, reading resources back from AWS, or writing state. The records themselves are still read from S3. |
-| `--stack-region <region>` | — | Region of the record to refresh. Required when one stack name has state in more than one region. |
+| `--stack-region <region>` | — | Region of the record to refresh. Required when a named stack has state in more than one region; under `--all` it instead filters which regions are refreshed. |
 
 Why it exists: `cdkd deploy` already maintains the baseline in two ways — it
 captures a fresh one for every resource it creates, updates, or replaces, and
 it reads back any resource whose baseline is missing, including ones that
-deploy left unchanged. Both paths cover only the resources whose provider can
-read state back, the same set this command reports as `unsupported`. What it never does is re-read a resource that was
+deploy left unchanged. Both paths only reach resources whose provider can read
+state back; the rest keep whatever they had. What it never does is re-read a resource that was
 unchanged *and* already had a baseline. That one keeps whatever was captured
 the last time the resource was touched, however long ago.
 
