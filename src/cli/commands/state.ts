@@ -16,6 +16,7 @@ import {
   warnIfDeprecatedRegion,
   validateResourceTimeouts,
   type ResourceTimeoutOption,
+  parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
@@ -1113,8 +1114,12 @@ async function stateOrphanCommand(
       // Presence, not truthiness: `--stack-region ''` is falsy, so a truthy
       // test skipped the filter and silently widened the removal to EVERY
       // region — the opposite of what the caller asked for, on a destructive
-      // command. An empty value now matches nothing and lands in the error
-      // below, like any other region with no record.
+      // command.
+      //
+      // Unreachable defence in depth since issue #2556: `parseStackRegion`
+      // refuses an empty value before any command runs, so nothing can drive
+      // this branch with one. Kept because it is the correct test either
+      // way.
       const targets =
         options.stackRegion !== undefined
           ? stackRefs.filter((r) => r.region === options.stackRegion)
@@ -1251,7 +1256,7 @@ function stackRegionOption(): Option {
   return new Option(
     '--stack-region <region>',
     'Region of the stack record to operate on. Required when the same stack name has state in multiple regions.'
-  );
+  ).argParser(parseStackRegion);
 }
 
 /**

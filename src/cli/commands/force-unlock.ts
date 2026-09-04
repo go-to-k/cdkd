@@ -5,6 +5,7 @@ import {
   stateOptions,
   stackOptions,
   warnIfDeprecatedRegion,
+  parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -127,7 +128,7 @@ export function createForceUnlockCommand(): Command {
         '--stack-region <region>',
         'Stack region whose lock to release (use when the same stack name has locks in multiple regions). ' +
           'Defaults to all regions where the stack has state.'
-      )
+      ).argParser(parseStackRegion)
     )
     .action(withErrorHandling(forceUnlockCommand));
 

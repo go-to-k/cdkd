@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 
 import { getCdkdVersion } from '../version.js';
+import { guardStackRegionOptions } from './options.js';
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
@@ -81,6 +82,12 @@ export function buildProgram(): Command {
   program.addCommand(createLocalCommand());
   program.addCommand(createExportCommand());
   program.addCommand(createMigrateCommand());
+
+  // Issue #2556: the four `local start-*` commands inherit `--stack-region`
+  // from cdk-local, so there is no declaration in this repo to attach the
+  // parser to. Sweeping the built tree covers those, and any future option
+  // that arrives the same way, without each command having to know.
+  guardStackRegionOptions(program);
 
   return program;
 }

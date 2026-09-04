@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vite-plus/test';
-import { Command } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -10,6 +10,7 @@ import {
   effectiveResourceTimeoutMs,
   parseContextOptions,
   parseDuration,
+  parseStackRegion,
   resourceTimeoutOptions,
   validateResourceTimeouts,
   warnIfDeprecatedRegion,
@@ -24,6 +25,7 @@ import { createListCommand } from '../../../src/cli/commands/list.js';
 import { createForceUnlockCommand } from '../../../src/cli/commands/force-unlock.js';
 import { createPublishAssetsCommand } from '../../../src/cli/commands/publish-assets.js';
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { buildProgram } from '../../../src/cli/program.js';
 import { getLogger } from '../../../src/utils/logger.js';
 
 /**
@@ -819,5 +821,149 @@ describe('applyWaitFlagEnv (issue #1291 items 1 + 6)', () => {
     );
     expect(deploySrc).toMatch(/applyWaitFlagEnv\(options\)/);
     expect(deploySrc).not.toMatch(/process\.env\['CDKD_(NO_WAIT|FULL_WAIT|WAIT_FLAGS_AVAILABLE)'\]\s*=/);
+  });
+});
+
+describe('parseStackRegion (issue #2556)', () => {
+  // `--stack-region ''` is falsy, so every consumer that tested the option for
+  // truthiness read it as ABSENT. Absent means "all regions" on the commands
+  // that take `--all`, so a flag passed to NARROW a destructive operation
+  // silently WIDENED it — `drift --all --revert --stack-region ''` wrote state
+  // values into AWS across every stack in every region. The guard lives at
+  // parse time so no consumer has to know.
+  it('rejects an empty value', () => {
+    // Commander prefixes its own `option '--stack-region <region>' argument
+    // '' is invalid.` — the helper supplies only the reason, which is why the
+    // assertion does not name the flag.
+    expect(() => parseStackRegion('')).toThrow(/expected a region name/);
+    expect(() => parseStackRegion('')).toThrow(/an empty value/);
+  });
+
+  it('rejects a whitespace-only value, and says which it was', () => {
+    // Truthy, so it would take the filter branch and match no ref — which
+    // reads as "no state in that region" rather than as the typo it is. The
+    // message distinguishes it from the empty case so the user can see the
+    // difference their shell hid.
+    expect(() => parseStackRegion('   ')).toThrow(/whitespace only/);
+    expect(() => parseStackRegion('   ')).not.toThrow(/an empty value/);
+  });
+
+  it('names the remedy, since omitting the flag is what the user meant', () => {
+    expect(() => parseStackRegion('')).toThrow(/Omit the flag entirely/);
+  });
+
+  it('throws commander\'s InvalidArgumentError, not a bare Error', () => {
+    // A bare Error escapes parseAsync to the top-level handler, which prints
+    // `Fatal error:` and a Node stack trace at the user. InvalidArgumentError
+    // is what commander converts into a one-line `... is invalid` and exit 1.
+    expect(() => parseStackRegion('')).toThrow(InvalidArgumentError);
+  });
+
+  it('passes a real region through unchanged', () => {
+    expect(parseStackRegion('us-east-1')).toBe('us-east-1');
+  });
+
+  it('does not trim — a padded value is the caller\'s, not ours to reinterpret', () => {
+    expect(parseStackRegion(' us-east-1')).toBe(' us-east-1');
+  });
+
+  describe('is wired to every --stack-region in the built program', () => {
+    // A TREE WALK, not a table of commands. The first version of this fence
+    // drove five `state` subcommands — which all share one `stackRegionOption()`
+    // factory, so it proved one declaration five times while ten others,
+    // including four the CLI inherits from cdk-local and never declares here,
+    // had no parser at all and no case to say so. Enumerating what the program
+    // actually carries is the only form that can catch a declaration nobody
+    // wrote in this repo.
+    const collect = (cmd: Command, path: string[] = []): Array<[string, Option]> => {
+      const here = [...path, cmd.name()];
+      const found: Array<[string, Option]> = cmd.options
+        .filter((o) => o.long === '--stack-region')
+        .map((o) => [here.join(' '), o]);
+      return [...found, ...cmd.commands.flatMap((sub) => collect(sub, here))];
+    };
+
+    it('leaves no --stack-region unguarded', () => {
+      const unguarded = collect(buildProgram())
+        .filter(([, o]) => o.parseArg !== parseStackRegion)
+        .map(([where]) => where);
+      expect(unguarded).toEqual([]);
+    });
+
+    it('leaves no --stack-region carrying a default value', () => {
+      // A parser only runs on a value the user supplied. An option declared
+      // with `.default('')` would hand every consumer the empty string
+      // without `parseArg` ever being called, so the attachment fence would
+      // stay green while the hole was open. Nothing declares one today; this
+      // fails if something starts to.
+      const defaulted = collect(buildProgram())
+        .filter(([, o]) => o.defaultValue !== undefined)
+        .map(([where]) => where);
+      expect(defaulted).toEqual([]);
+    });
+
+    it('finds enough declarations for that to mean something', () => {
+      // Guards the guard: an `expect([]).toEqual([])` over an empty walk would
+      // pass on a broken collector. The floor is deliberately well under the
+      // real count so adding a command does not fail the suite.
+      expect(collect(buildProgram()).length).toBeGreaterThanOrEqual(12);
+    });
+  });
+
+  describe('refuses an empty value on the real commands', () => {
+    // The walk above proves the parser is ATTACHED; these prove it fires
+    // through commander's own parsing, including the `--flag=` spelling a
+    // `--stack-region=$UNSET_VAR` script produces.
+    const argvs: Array<[string, string[]]> = [
+      ['space-separated', ['state', 'show', 'Foo', '--stack-region', '']],
+      ['equals form', ['state', 'show', 'Foo', '--stack-region=']],
+      ['whitespace only', ['state', 'show', 'Foo', '--stack-region', '   ']],
+    ];
+
+    for (const [name, argv] of argvs) {
+      it(`rejects the ${name} spelling`, () => {
+        const program = buildProgram();
+        program.exitOverride();
+        // `parse` RUNS the registered handler, so stub every action: a lost
+        // parser must surface as the missing throw, not as the real handler's
+        // rejection crashing the worker.
+        const stub = (cmd: Command): void => {
+          cmd.exitOverride();
+          cmd.action(() => {});
+          cmd.commands.forEach(stub);
+        };
+        program.commands.forEach(stub);
+        expect(() => program.parse(argv, { from: 'user' })).toThrow(/is invalid/);
+      });
+    }
+
+    it('passes a real region through to an INHERITED declaration', () => {
+      // The polarity that keeps the guard from being a blanket refusal, driven
+      // through commander after the sweep rather than by calling the helper —
+      // and on one of the four options cdkd does not declare, since those are
+      // the ones the sweep is responsible for.
+      const program = buildProgram();
+      program.exitOverride();
+      let seen: string | undefined;
+      const stub = (cmd: Command): void => {
+        cmd.exitOverride();
+        if (cmd.name() === 'start-cloudfront') {
+          cmd.action(() => {
+            seen = cmd.opts()['stackRegion'] as string | undefined;
+          });
+        } else {
+          cmd.action(() => {});
+        }
+        cmd.commands.forEach(stub);
+      };
+      program.commands.forEach(stub);
+
+      program.parse(
+        ['local', 'start-cloudfront', 'Foo', '--from-cfn-stack', 'S', '--stack-region', 'us-east-1'],
+        { from: 'user' }
+      );
+
+      expect(seen).toBe('us-east-1');
+    });
   });
 });

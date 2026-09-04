@@ -8,6 +8,7 @@ import {
   parseContextOptions,
   stateOptions,
   warnIfDeprecatedRegion,
+  parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
@@ -483,7 +484,8 @@ export function createOrphanCommand(): Command {
     )
     .option(
       '--stack-region <region>',
-      'Region of the stack record to operate on. Required when the same stack name has state in multiple regions.'
+      'Region of the stack record to operate on. Required when the same stack name has state in multiple regions.',
+      parseStackRegion
     )
     .option(
       '--dry-run',

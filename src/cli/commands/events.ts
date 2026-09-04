@@ -5,6 +5,7 @@ import {
   parseDuration,
   stateOptions,
   warnIfDeprecatedRegion,
+  parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { bold, cyan, gray, green, red, yellow } from '../../utils/colors.js';
@@ -457,7 +458,8 @@ export function createEventsCommand(): Command {
     .option('--run <runId>', "Read a single run's full event stream instead of the run listing")
     .option(
       '--stack-region <region>',
-      'Disambiguate a stack with event history in multiple regions'
+      'Disambiguate a stack with event history in multiple regions',
+      parseStackRegion
     )
     .option('--json', 'Output as JSON', false)
     .option('--format <format>', "Output format ('json' is equivalent to --json)")

@@ -569,23 +569,22 @@ describe('cdkd state orphan', () => {
     it('treats an EMPTY --stack-region as a value, not as absent', async () => {
       // `--stack-region ''` is falsy. A truthy test skipped the region filter
       // outright, so the flag the user passed to NARROW a destructive command
-      // silently widened it to every region. It must match nothing instead.
-      mockListStacks.mockResolvedValue([
-        { stackName: 'LegacyStack' },
-        { stackName: 'LegacyStack', region: 'us-east-1' },
-      ]);
-      mockIsLocked.mockResolvedValue(false);
-
+      // silently widened it to every region.
+      //
+      // The guard moved to parse time (issue #2556) once the same defect was
+      // found at fourteen more declarations, so the run now fails before any
+      // ref is read. No `listStacks` result is primed on purpose: priming one
+      // would suggest the walk happens, and the assertion below is that it
+      // does not. What the case pins is unchanged — an empty value never
+      // reaches a delete.
       await expect(
         runStateOrphan(['orphan', 'LegacyStack', '--stack-region', '', '--yes'])
-      ).rejects.toThrow();
+      ).rejects.toThrow(/is invalid/);
 
-      // Pin the message: `runStateOrphan` rejects via the process.exit mock on
-      // ANY failure, so a bare toThrow() would also accept a commander parse
-      // error and prove nothing about the branch.
-      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain("in region ''");
       expect(mockDeleteLegacyState).not.toHaveBeenCalled();
       expect(mockDeleteState).not.toHaveBeenCalled();
+      // Rejected before the bucket was even listed.
+      expect(mockListStacks).not.toHaveBeenCalled();
     });
 
     it('still uses the region-scoped delete when the ref carries a region', async () => {

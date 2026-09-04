@@ -10,6 +10,7 @@ import {
   parseContextOptions,
   stateOptions,
   warnIfDeprecatedRegion,
+  parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
@@ -2181,7 +2182,7 @@ export function createLocalInvokeAgentCoreCommand(): Command {
       new Option(
         '--stack-region <region>',
         'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
-      )
+      ).argParser(parseStackRegion)
     )
     .action(
       withErrorHandling(
