@@ -14,9 +14,14 @@ import { dirname, join } from 'node:path';
  * where sixteen are registered, so a reader would have concluded four
  * exportable types were not.
  *
- * Both lists are set-equal to the source today. These tests are what keeps
- * them that way — the alternative is a generator owning the whole page, which
- * these pages cannot be, since they are prose with the list embedded in it.
+ * These tests are what keeps them in step — the alternative is a generator
+ * owning the whole page, which these pages cannot be, since they are prose
+ * with the list embedded in it.
+ *
+ * The two comparisons differ on purpose. The drift table is set-EQUAL to the
+ * source, so it is asserted both ways: a phantom row is the same staleness as
+ * a missing one. `cli-export.md` legitimately names more types than it has
+ * splitters (31 against 16), so that one only asserts nothing is missing.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const providersDir = join(repoRoot, 'src', 'provisioning', 'providers');
@@ -58,8 +63,8 @@ function registeredTypes(): Map<string, string> {
  *
  * The table groups by service to stay readable —
  * `` | `AWS::ApiGateway` | `Account`, `Authorizer`, ... | `` — so a plain
- * `AWS::X::Y` scan of the page finds none of them. Reconstruct the full type
- * from the two columns.
+ * `AWS::X::Y` scan of the page finds 27 strings where the table holds 129
+ * types. Reconstruct the full type from the two columns instead.
  */
 function driftTableTypes(): Set<string> {
   const out = new Set<string>();
@@ -111,11 +116,19 @@ describe('docs lists derived from source', () => {
     );
     expect(expected.size).toBeGreaterThanOrEqual(120);
 
+    // Set equality, not one-directional. The two sides are exactly equal today,
+    // so the stricter form is free — and without it a phantom row on the page
+    // passes green, which is the same staleness in the other direction.
     const page = driftTableTypes();
     const missing = [...expected].filter((t) => !page.has(t)).sort();
     expect(
       missing,
       'these types have a readCurrentState but are absent from cli-drift.md — the coverage table went stale'
+    ).toEqual([]);
+    const extra = [...page].filter((t) => !expected.has(t)).sort();
+    expect(
+      extra,
+      'cli-drift.md names these types as having a drift read-back, but no registered provider implements one for them'
     ).toEqual([]);
   });
 
@@ -124,10 +137,18 @@ describe('docs lists derived from source', () => {
     const start = source.indexOf('const COMPOSITE_ID_SPLITTERS');
     expect(start, 'COMPOSITE_ID_SPLITTERS moved or was renamed').toBeGreaterThanOrEqual(0);
     const table = source.slice(start, source.indexOf('\n};', start));
-    const splitters = typesIn(table);
+    // KEYS only. A whole-slice type scan reads the block's comments too, which
+    // is how it found 18 types for 16 keys — including `AWS::ApiGatewayV2::Stage`,
+    // which the block's own note says is deliberately NOT a splitter. Both
+    // extras happened to be named elsewhere on the page, so two assertions were
+    // passing for the wrong reason and would have failed with a message
+    // asserting something false.
+    const splitters = new Set(
+      [...table.matchAll(/^\s*'(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+)':/gm)].map((m) => m[1]!)
+    );
     expect(
       splitters.size,
-      'parsed no splitter types — the constant changed shape and this fence measures nothing'
+      'parsed no splitter KEYS — the constant changed shape and this fence measures nothing'
     ).toBeGreaterThanOrEqual(12);
 
     const page = typesIn(docs('cli-export.md'));
