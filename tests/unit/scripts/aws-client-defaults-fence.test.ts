@@ -504,7 +504,31 @@ describe('SDK client construction critic', () => {
      * sharing between them changes no verdict.
      */
     let scanned: ReturnType<typeof textScan> | undefined;
-    const scanOnce = (): ReturnType<typeof textScan> => (scanned ??= textScan());
+    function scanOnce(): ReturnType<typeof textScan> {
+      scanned ??= textScan();
+      // THE OTHER METHOD'S FLOOR. `the real tree > still sees the population`
+      // floors the AST walk for exactly this reason, and the text scan --
+      // the half that makes this block a reconciliation rather than a second
+      // green run -- had none: a `CONSTRUCTION` regex that stops matching, or
+      // a `walk()` rooted at the wrong directory, empties BOTH cases below
+      // and they pass with nothing to report, while the AST floor stays green
+      // because that side is unharmed. Measured 171 hits across 83 files;
+      // round numbers below it, per the sibling floor's reasoning.
+      //
+      // Asserted on EVERY call, not once at population: the memo would
+      // otherwise hand the SECOND case a cached empty array with no check,
+      // so a collapsed scan would fail one case and pass the other -- and
+      // "one of the two reconciliation cases is green" is the reading this
+      // block exists to make impossible.
+      expect(
+        scanned.length,
+        'the text scan found almost nothing -- it is the independent half of this ' +
+          'reconciliation, so a collapsed scan makes both cases below vacuous. Check ' +
+          '`CONSTRUCTION` and the directory `walk()` starts from.'
+      ).toBeGreaterThanOrEqual(100);
+      expect(new Set(scanned.map((h) => h.file)).size).toBeGreaterThanOrEqual(50);
+      return scanned;
+    }
     const siteCache = new Map<string, ReturnType<typeof findClientSites>>();
     function sitesOnce(file: string): ReturnType<typeof findClientSites> {
       let found = siteCache.get(file);
