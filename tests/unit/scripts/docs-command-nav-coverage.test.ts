@@ -77,11 +77,15 @@ import { buildProgram } from '../../../src/cli/program.js';
  *     proves a page is titled after the command; the frontmatter check proves a
  *     topic page declares the command part of its subject. Neither grades the
  *     prose, and neither can tell a thorough page from a stub.
- *   - That a topic mapping points at the BEST page for the command. `local`
- *     has sibling subcommand pages whose frontmatter also names `cdkd local`,
- *     so the overview could be swapped for one of them and stay green. They do
- *     document the command family, so this is a worse-page risk rather than a
- *     no-page one -- the class this fence is for.
+ *   - That a topic mapping points at the BEST page for the command. Several
+ *     commands have more than one page whose frontmatter names them -- `local`
+ *     its subcommand pages, `deploy` its other flag-family pages, `destroy` the
+ *     orphan comparison -- so a mapping could be swapped between them and stay
+ *     green. Those pages do document the command, so this is a worse-page risk
+ *     rather than the no-page one this fence is for.
+ *   - That an `UNDOCUMENTED` reason is still TRUE beyond the narrow check
+ *     below: nothing re-reads the pages its prose describes, so a reason can
+ *     go stale in every way except the command acquiring a page of its own.
  *   - Anything about SUBCOMMANDS. `cdkd state *`, `cdkd local *` and
  *     `cdkd events prune` are out of scope, so one of those can still ship
  *     undocumented -- the same class as the `migrate` incident, one level down.
@@ -94,8 +98,36 @@ const DOCS_CONFIG = join(repoRoot, 'vite.docs.config.ts');
 const HUB_PAGE = '/cli-reference';
 
 /**
+ * Pages linked from the hub's own index of per-command reference pages.
+ *
+ * That index is a second hand-maintained list, and nothing fenced it: this
+ * change had to add its `cdkd force-unlock` line by hand, one level over from
+ * the omission the whole fence exists to catch. Checked one way only -- every
+ * mapped `/cli-*` page must be indexed -- because the index legitimately holds
+ * pages that are not commands (`cli-deploy-tuning`, `cli-deploy-safety` are
+ * deploy's other flag families).
+ */
+function hubIndexedPages(): Set<string> {
+  const file = docFileFor(HUB_PAGE);
+  const text = readFileSync(file, 'utf8');
+  const start = text.indexOf(HUB_INDEX_HEADING);
+  expect(
+    start,
+    `${file}: could not find the "${HUB_INDEX_HEADING}" section. It was renamed or ` +
+      `removed; update this extractor rather than letting it silently index nothing.`
+  ).toBeGreaterThanOrEqual(0);
+  const rest = text.slice(start + HUB_INDEX_HEADING.length);
+  const end = rest.indexOf('\n## ');
+  const section = end === -1 ? rest : rest.slice(0, end);
+  return new Set([...section.matchAll(/\]\((cli-[a-z0-9-]+)\.md\)/g)].map((m) => `/${m[1]}`));
+}
+
+/**
  * Pages that discuss commands at length without being any one command's
- * documentation. None of them may qualify as a topic page for any command.
+ * documentation. None of them may qualify as a topic page for any command that
+ * HAS a topic mapping -- the check iterates `COMMAND_TOPIC_PAGES`, deliberately
+ * not the reference commands, whose stronger H1 claim these pages cannot meet
+ * anyway.
  *
  * This is the discrimination claim as an assertion. Body mentions cannot tell
  * these apart from a real topic page, so what makes the frontmatter rule worth
@@ -212,6 +244,24 @@ const UNDOCUMENTED: Readonly<Record<string, string>> = {
 const MIN_COMMANDS = 15;
 const MIN_NAV_PATHS = 30;
 
+/**
+ * Floors on the two CHECKED structures, and on the decoy list.
+ *
+ * Without them a command can be moved from a checked structure into
+ * `UNDOCUMENTED` with a plausible reason, and the assertions that would have
+ * inspected its page stop having anything to inspect while every test stays
+ * green -- the same collapse the parser floors guard, reached by editing the
+ * data instead of breaking the parse. `NON_DOCUMENTING_PAGES` needs one for the
+ * same reason: emptied, its loop runs zero times and the discrimination claim
+ * the header rests on becomes silently unasserted.
+ */
+const MIN_REFERENCE_PAGES = 8;
+const MIN_TOPIC_PAGES = 3;
+const MIN_NON_DOCUMENTING_PAGES = 4;
+
+/** The hub section that indexes the per-command reference pages. */
+const HUB_INDEX_HEADING = '## CLI reference pages';
+
 /** The minimum length of a recorded reason, in either structure that takes one. */
 const MIN_REASON_LENGTH = 20;
 
@@ -236,7 +286,10 @@ function topLevelCommandNames(): string[] {
  * Scoped to that array, with both comment forms stripped first: a whole-file
  * scan would accept a `path:` in an example, and an unstripped one would accept
  * a commented-out entry -- either way reporting a page as reachable that the
- * built site does not link to. Line comments were the spelling a review caught;
+ * built site does not link to. TRAILING comments are stripped as well as
+ * whole-line ones: `{ ..., path: '/x' }, // was path: '/old'` would otherwise
+ * put `/old` into the set and let a stale mapping pass. The `[^:]` guard keeps
+ * a `://` in a future URL from being read as the start of one. Line comments were the spelling a review caught;
  * block comments are the same defect one spelling over. Line comments are
  * dropped FIRST, because a `/*` written inside one would otherwise open a
  * spurious block and swallow the real entries after it. The captured region
@@ -248,6 +301,11 @@ function topLevelCommandNames(): string[] {
  * as missing from the navigation -- a true failure with a misleading reason.
  */
 function navPaths(): Set<string> {
+  expect(
+    existsSync(DOCS_CONFIG),
+    `${DOCS_CONFIG} does not exist. The site config was renamed or moved; point this ` +
+      `extractor at it rather than letting readFileSync raise a bare ENOENT.`
+  ).toBe(true);
   const source = readFileSync(DOCS_CONFIG, 'utf8');
   const block = /const navigation\b[^=]*=\s*\[([\s\S]*?)\n\];/.exec(source);
   expect(
@@ -261,6 +319,7 @@ function navPaths(): Set<string> {
     .split('\n')
     .filter((line) => !line.trimStart().startsWith('//'))
     .join('\n')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
     .replace(/\/\*[\s\S]*?\*\//g, '');
   return new Set([...uncommented.matchAll(/path:\s*'([^']+)'/g)].map((m) => m[1] as string));
 }
@@ -279,7 +338,8 @@ function docFileFor(navPath: string): string {
  * and stay green.
  */
 function namesCommand(text: string, command: string): boolean {
-  return new RegExp(`cdkd ${command}\\b`).test(text);
+  const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`cdkd ${escaped}\\b`).test(text);
 }
 
 /** The page's frontmatter block, or `null` when it has none. */
@@ -288,9 +348,17 @@ function frontmatterOf(file: string): string | null {
   return m ? (m[1] as string) : null;
 }
 
-/** The page's first `# ` heading, or `null` when it has none. */
+/**
+ * The page's first `# ` heading, or `null` when it has none.
+ *
+ * Fenced blocks are removed first: a shell example's `# comment` is not a
+ * heading, and `docs/cli-reference.md` already contains one (`# or`, inside a
+ * bash fence). It is harmless there -- the real H1 comes earlier -- but a page
+ * whose fence preceded its H1 would be read wrong.
+ */
 function h1Of(file: string): string | null {
-  const m = /^# (.+)$/m.exec(readFileSync(file, 'utf8'));
+  const body = readFileSync(file, 'utf8').replace(/^```[\s\S]*?^```/gm, '');
+  const m = /^# (.+)$/m.exec(body);
   return m ? (m[1] as string).trim() : null;
 }
 
@@ -318,6 +386,54 @@ describe('docs command/nav coverage', () => {
         `stopped seeing its input -- an empty set makes every "is this path in the ` +
         `navigation" assertion below fail for the wrong reason.`
     ).toBeGreaterThanOrEqual(MIN_NAV_PATHS);
+  });
+
+  it('keeps a plausible amount of each structure', () => {
+    expect(
+      Object.keys(COMMAND_REFERENCE_PAGES).length,
+      `COMMAND_REFERENCE_PAGES holds fewer than ${MIN_REFERENCE_PAGES} entries. Moving ` +
+        `commands out of a checked structure and into UNDOCUMENTED is how this fence ` +
+        `goes quiet without any test failing.`
+    ).toBeGreaterThanOrEqual(MIN_REFERENCE_PAGES);
+    expect(
+      Object.keys(COMMAND_TOPIC_PAGES).length,
+      `COMMAND_TOPIC_PAGES holds fewer than ${MIN_TOPIC_PAGES} entries. Same collapse as ` +
+        `above, reached through the other checked structure.`
+    ).toBeGreaterThanOrEqual(MIN_TOPIC_PAGES);
+    expect(
+      NON_DOCUMENTING_PAGES.length,
+      `NON_DOCUMENTING_PAGES holds fewer than ${MIN_NON_DOCUMENTING_PAGES} entries. Its ` +
+        `loop is what turns "the frontmatter rule discriminates" into an assertion; ` +
+        `emptied, that claim is prose again.`
+    ).toBeGreaterThanOrEqual(MIN_NON_DOCUMENTING_PAGES);
+  });
+
+  it('rejects an inflected verb as a frontmatter mention', () => {
+    // Pinned here rather than only through `docs/concepts.md`, whose description
+    // is the tree's one witness for the boundary: rewording that page would
+    // leave the load-bearing arm of `namesCommand` unfalsifiable.
+    expect(namesCommand('How cdkd deploys CDK apps without CloudFormation', 'deploy')).toBe(false);
+    expect(namesCommand('Deploy-time flags for cdkd deploy.', 'deploy')).toBe(true);
+    expect(namesCommand('cdkd force-unlock clears a stale lock', 'force-unlock')).toBe(true);
+  });
+
+  it('indexes every mapped reference page from the hub', () => {
+    const indexed = hubIndexedPages();
+    expect(
+      indexed.size,
+      `${docFileFor(HUB_PAGE)}: the "${HUB_INDEX_HEADING}" section yielded fewer than ` +
+        `${MIN_REFERENCE_PAGES} links. The extractor stopped seeing its input.`
+    ).toBeGreaterThanOrEqual(MIN_REFERENCE_PAGES);
+    const missing = Object.entries(allMapped)
+      .filter(([, navPath]) => navPath.startsWith('/cli-') && !indexed.has(navPath))
+      .map(([name, navPath]) => `${name} -> ${navPath}`)
+      .sort();
+    expect(
+      missing,
+      `These pages document a command but are not linked from the hub's index of ` +
+        `per-command reference pages, so a reader who starts at the CLI Reference never ` +
+        `finds them. Add the bullet to ${HUB_INDEX_HEADING} in docs/cli-reference.md.`
+    ).toEqual([]);
   });
 
   it('accounts for every registered top-level command', () => {
@@ -466,16 +582,25 @@ describe('docs command/nav coverage', () => {
     ).toEqual([]);
   });
 
-  it('gives every undocumented command a reason', () => {
-    const empty = Object.entries(UNDOCUMENTED)
+  it('gives every undocumented command a reason, and none of them a page', () => {
+    const problems = Object.entries(UNDOCUMENTED)
       .filter(([, reason]) => reason.trim().length < MIN_REASON_LENGTH)
-      .map(([name]) => name)
-      .sort();
+      .map(([name]) => `${name}: no reason recorded`)
+      .concat(
+        // The reason says the command has no page of its own. Nothing else
+        // re-reads the prose, so at least check the one claim every entry
+        // makes: if `docs/cli-<command>.md` now exists, the entry is a lie and
+        // the command belongs in COMMAND_REFERENCE_PAGES.
+        Object.keys(UNDOCUMENTED)
+          .filter((name) => existsSync(docFileFor(`/cli-${name}`)))
+          .map((name) => `${name}: docs/cli-${name}.md now exists, so the entry is stale`)
+      );
     expect(
-      empty,
+      problems.sort(),
       `An entry in UNDOCUMENTED records a decision, so it needs the reason the command ` +
-        `ships without a page. A bare name is an omission wearing an exclusion list's ` +
-        `clothes.`
+        `ships without a page -- a bare name is an omission wearing an exclusion list's ` +
+        `clothes -- and the decision must still hold: a command that has since been ` +
+        `given docs/cli-<command>.md belongs in COMMAND_REFERENCE_PAGES.`
     ).toEqual([]);
   });
 });

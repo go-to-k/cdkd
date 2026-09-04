@@ -36,13 +36,13 @@ errors rather than guessing.
 
 ## Usually you do not need this
 
-A lock is not permanent. It carries a 30-minute TTL, and a live cdkd process
-renews it well inside that window, so an abandoned lock stops being honoured 30
-minutes after its owner's last renewal. The next `cdkd deploy` takes an expired
-lock over on its own and prints a warning naming the previous owner and how long
-ago it expired.
+A lock usually clears itself. It carries a 30-minute TTL, and a live cdkd
+process renews it well inside that window, so an abandoned lock is expired 30
+minutes after its owner's last renewal — and the next `cdkd deploy` normally
+takes an expired lock over on its own, printing a warning that names the
+previous owner and how long ago it expired.
 
-So `cdkd force-unlock` is for the two cases that outlast that:
+`cdkd force-unlock` is for the cases where that does not happen:
 
 - You do not want to wait out the remaining TTL.
 - The lock object is unreadable — truncated, or holding something that is not a
@@ -50,6 +50,12 @@ So `cdkd force-unlock` is for the two cases that outlast that:
   to read `expiresAt` to decide the lock is expired, while every attempt to
   acquire still fails on the object's presence. `force-unlock` deletes it
   regardless of whether it could be parsed.
+- The takeover was refused. cdkd removes an expired lock only when it can
+  delete the exact version it just read; if that version cannot be identified,
+  or the S3 endpoint will not evaluate the conditional delete, it declines
+  rather than risk deleting a lock some other process has since taken. It says
+  so and names this command. Such a lock does not clear on its own, however
+  long you wait.
 
 ## The delete is unconditional
 
@@ -107,10 +113,10 @@ this command:
 
 - **Failing to LIST a stack's regions** aborts the run and exits `1`, leaving
   any later stack in the same invocation unattempted.
-- **Failing to DELETE a lock** is reported on stderr, the walk continues to the
-  next stack, and the run still exits `0` — so a
-  `cdkd force-unlock && cdkd deploy` chain proceeds against a stack whose lock
-  is still there. Read the output, not the exit code.
+- **Failing to DELETE a lock** is reported on stderr, the walk carries on with
+  that stack's remaining regions and then the next stack, and the run still
+  exits `0` — so a `cdkd force-unlock && cdkd deploy` chain proceeds against a
+  stack whose lock is still there. Read the output, not the exit code.
 
 The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
 
