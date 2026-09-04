@@ -662,7 +662,7 @@ it holds no data.
 
 | Type | Guard fires when | Guard does not fire when |
 | --- | --- | --- |
-| `AWS::S3::Bucket` | The bucket has at least one current version, prior version, or delete-marker | The bucket is empty — but see the per-path note below |
+| `AWS::S3::Bucket` | The bucket has at least one current version, prior version, or delete-marker, or the probe page was truncated | The bucket is provably empty — but see the per-path note below |
 | `AWS::Logs::LogGroup` | `RetentionInDays > 0` on the recorded state, or the log group has at least one log stream | The log group has no retention recorded AND no log streams — but see the per-path note below |
 
 **Retention is not an emptiness signal.** An unset or zero `RetentionInDays`
@@ -687,6 +687,18 @@ buckets pass through; non-empty ones are refused. cdkd uses
 matches what the destroy-and-recreate cycle would actually wipe — a versioned
 bucket whose current keys are all soft-deleted still holds prior versions and
 delete-markers.
+
+A page carrying a continuation marker with no entry in either list does not
+settle the question — the listing is unfinished, so that page's emptiness is
+not the bucket's — and such a bucket is refused rather than passed. A page
+that simply OMITS the version and delete-marker lists is different, and does
+count as empty: S3 omits an empty collection rather than sending an empty
+list, so omission is how an empty bucket answers.
+
+Both emptiness probes retry a rate limit (three attempts, exponential
+backoff) and nothing else. Every other failure here is either an answer or
+something an identical retry will not change, so it goes straight to the
+per-type failure behaviour described below.
 
 If the probe itself fails — permission denied, bucket not found mid-flight, a
 transient network error — cdkd logs a warning and leaves the target
