@@ -80,13 +80,14 @@ cdkd has three command families:
   `scrub` / `publish-assets`) require a CDK app — they synthesize a template to
   learn what they're operating on. A few operate on the state bucket /
   AWS directly and need no app: `cdkd bootstrap`, `cdkd drift`,
-  `cdkd rollback`, `cdkd events`, `cdkd gc`, `cdkd force-unlock`.
+  `cdkd rollback`, `cdkd events`, `cdkd gc`, `cdkd force-unlock`. See
+  [CLI Reference](cli-reference.md).
 - **`cdkd state ...` subcommands** (`state info` / `list` / `resources`
   / `show` / `orphan` / `destroy` / `migrate` / `refresh-observed`)
   operate on the S3 state bucket only and do NOT need the CDK app —
   use them to inspect / clean up state when the source is gone or
   you don't want to synth. `cdkd state destroy` is the CDK-app-free
-  counterpart of `cdkd destroy`.
+  counterpart of `cdkd destroy`. See [`cdkd state`](cli-state.md).
 - **`cdkd local ...` subcommands** (`local invoke` / `start-api` /
   `run-task` / `start-service` / `start-alb` / `start-cloudfront` /
   `invoke-agentcore` / `start-agentcore`) run synthesized workloads
