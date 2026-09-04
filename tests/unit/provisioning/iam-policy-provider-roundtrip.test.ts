@@ -51,7 +51,7 @@ describe('IAMPolicyProvider read-update round-trip', () => {
 
   it('round-trip on no-drift snapshot does not emit AWS-rejection-shaped inputs (Roles target)', async () => {
     // Mechanical guard for the read-update round-trip per
-    // docs/provider-development.md § 3b. AWS::IAM::Policy is an inline
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection. AWS::IAM::Policy is an inline
     // policy attached via PutRolePolicy / PutGroupPolicy / PutUserPolicy.
     // The observed snapshot readCurrentState produces echoes back the
     // state-recorded target lists plus the AWS-current PolicyDocument

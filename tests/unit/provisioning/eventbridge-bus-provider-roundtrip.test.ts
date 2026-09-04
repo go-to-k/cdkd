@@ -48,7 +48,7 @@ describe('EventBridgeBusProvider read-update round-trip', () => {
   it('Class 2 — DeadLetterConfig {Arn:""} placeholder never reaches AWS on round-trip', async () => {
     // Mechanical guard for Class 2 placeholder regression on
     // structurally-incomplete-when-empty fields. See
-    // docs/provider-development.md § 3b "Read-update round-trip test".
+    // docs/provider-rules.md#read-update-round-trip-test-mandatory-for-any-provider-with-readcurrentstate.
     //
     // readCurrentState always-emits DeadLetterConfig: { Arn: '' } on
     // buses without a DLQ (the comparator's top-level walk is
@@ -147,8 +147,7 @@ describe('EventBridgeBusProvider read-update round-trip', () => {
 
   it('truthy-gate guard — empty-string Description ("") reaches UpdateEventBus on revert', async () => {
     // Mechanical guard for the truthy-gate regression class. See
-    // docs/provider-development.md § 3b "update() must gate optional
-    // fields on `!== undefined`, not truthy".
+    // docs/provider-rules.md#update-must-gate-optional-fields-on-undefined-not-truthy.
     //
     // When state has Description: '' (deployed with no description)
     // and AWS has Description: 'some desc' (console-edit), --revert

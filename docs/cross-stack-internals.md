@@ -1,0 +1,681 @@
+---
+title: Cross-stack reference internals
+description: "How cdkd resolves Fn::ImportValue and Fn::GetStackOutput — the exports index, the state schema that backs it, the resolver flow, and the measured cost of each path."
+unlisted: true
+---
+
+# Cross-stack reference internals
+
+How the two cross-stack mechanisms are implemented: the exports index and its
+lifecycle, the state schema that backs it, the resolver's decision flow, and
+what each path costs.
+
+For what a user sees — which intrinsic to reach for, what a refused destroy
+means, and how to resolve one — see
+[Cross-Stack References](cross-stack-references.md).
+
+## Architecture
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Source of truth: per-stack state.json                       │
+│  s3://{bucket}/{prefix}/{stackName}/{region}/state.json      │
+│                                                              │
+│   {                                                          │
+│     "version": 4,                                            │
+│     "stackName": "Consumer",                                 │
+│     "region": "us-east-1",                                   │
+│     "resources": { ... },                                    │
+│     "outputs": { "ConsumerEndpoint": "..." },                │
+│     "imports": [                                             │
+│       { "sourceStack": "Producer",                           │
+│         "sourceRegion": "us-east-1",                         │
+│         "exportName": "BucketArn" }                          │
+│     ],                                                       │
+│     "lastModified": 1234567890                               │
+│   }                                                          │
+└─────────────────────────────────────────────────────────────┘
+                          ▲
+                          │ (canonical, atomic per-stack writes)
+                          │
+┌─────────────────────────────────────────────────────────────┐
+│  Derived view: per-region exports index                      │
+│  s3://{bucket}/{prefix}/_index/{region}/exports.json         │
+│                                                              │
+│   {                                                          │
+│     "indexVersion": 1,                                       │
+│     "region": "us-east-1",                                   │
+│     "exports": {                                             │
+│       "BucketArn": {                                         │
+│         "value": "arn:aws:s3:::my-bucket",                   │
+│         "producerStack": "Producer",                         │
+│         "producerRegion": "us-east-1"                        │
+│       }                                                      │
+│     },                                                       │
+│     "lastModified": 1234567890                               │
+│   }                                                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Roles
+
+- **`state.json` (per-stack)** is the canonical source of truth for
+  outputs and imports. Always written / read with optimistic locking.
+  Strong-reference safety checks read from here directly.
+
+- **`exports.json` (per-region, index)** is a derived view used only as
+  a performance hint for `Fn::ImportValue` resolution. Resolves in O(1)
+  per lookup. Rebuildable from state.json at any time.
+
+The asymmetry matches user priorities: deploy speed must be fast
+(perf-hot via index), destroy correctness must be safe (canonical scan
+without index trust).
+
+### Two consumers of the exports index
+
+| Caller | Trust the index? | Why |
+|---|---|---|
+| `IntrinsicFunctionResolver.resolveImportValue` | **Yes**, with state.json fallback on miss | Deploy hot path; stale index just degrades to scan-once-and-patch |
+| `runDestroyForStack` strong-ref check | **No**, always scan state.json | Safety boundary; a stale index could let a destructive destroy through |
+
+The index is therefore **not load-bearing for correctness** — it can
+disappear entirely without affecting cdkd's safety guarantees, only
+its performance.
+
+### Export names share one namespace with output names
+
+`state.outputs` — the bag the index is built from — is keyed by output
+NAME, and an output carrying `Export:` is additionally aliased under its
+export name in that same bag. The two key spaces are therefore ONE
+namespace, unlike CloudFormation, where exports live in a namespace of
+their own. Two consequences follow, both of them cdkd behavior a
+CloudFormation user would not predict.
+
+**An `Export.Name` equal to another published output's name is skipped.**
+The template is asking cdkd to store two different values under one key.
+cdkd keeps the output's own value, drops the export alias, and warns on
+the producer's deploy naming both outputs. Before this the winner
+depended on template ORDER, and the secret redaction, which positions
+each persisted leaf by its own unresolved template value, could then
+store one output's `{{resolve:...}}` reference as the other's value.
+
+This is a **consumer-visible change, and the warning does not reach the
+person who feels it**. Where the alias previously won the key, an
+`Fn::ImportValue` on that name now resolves to the colliding OUTPUT's
+value instead of the exporting one's — silently, on the CONSUMER's next
+deploy, while the warning was printed on the PRODUCER's. It is also a
+deliberate **CloudFormation-parity divergence**: CFn publishes both,
+because its export namespace is separate; cdkd's exports index is derived
+from the outputs bag and cannot hold two values under one key, so it
+fails closed on the one it can prove is ambiguous. (The CROSS-stack
+version of the same collision — a plain output in one stack shadowing an
+export of the same name in another — is closed by schema v9's
+`exportNames`, which narrows what the index derives from the bag to the
+aliases the producer actually declared; see the v9 section in
+[State Management](state-management.md#version-9-adds-exportnames-current-writers).) Rename the export (or
+the colliding output) and redeploy the producer — there is no
+configuration that restores the old behavior, and the old behavior was
+order-dependent anyway.
+
+**A condition-suppressed output does NOT reserve its name.** It publishes
+no value on this deploy, so an export alias may take the name and is
+positioned by its own template value. Reserving names for suppressed
+outputs would DROP a working export because an unrelated condition went
+false — and the next producer deploy would then delete that export's
+index entry, leaving the consumer with `export 'X' not found in any
+stack`. An output exporting under its OWN name is not a collision either:
+the alias is the same key holding the same value.
+
+**An `Export.Name` that resolves to secret plaintext is refused.**
+`Export.Name` may be an intrinsic (`Fn::Sub` / `Fn::Join`), and those
+substitute dynamic references — so the resolved name can contain a
+resolved secret. That name would become a KEY in `state.json` and in the
+exports index, and redaction rewrites VALUES only, so nothing downstream
+would ever scrub it. cdkd skips such an alias and warns with the name
+masked.
+
+**Two outputs sharing ONE `Export.Name`** (with no output of that name) is
+NOT guarded, deliberately. Both bags stay consistent there — one iteration
+writes the value and its source together — so it is not the corruption
+above; the later output simply wins the key, where CloudFormation would
+reject the template outright. cdkd is not a template validator and a
+warning here would fire on a shape that cannot reach a real CFn deploy,
+so it is documented rather than diagnosed.
+
+`cdkd scrub` applies the same collision rule to the source it rebuilds
+from the template, with two deliberate differences, both forced by what it
+can know about state an EARLIER binary wrote:
+
+- It drops the position source for the colliding key entirely, rather than
+  letting the owning output keep it. The alias may have WON that key, so
+  "the owner's template value positions it" is an assumption that is wrong
+  exactly when the state is corrupted — the case scrub exists for. The key
+  is redacted by value match instead. That is exact unless two DISTINCT
+  secrets resolve to the same value, in which case the key can end up
+  holding a reference naming the other one: a smaller blast radius than
+  the alternative (one key, and only when two secrets coincide) but the
+  same kind of error, so it is stated rather than glossed.
+- It tests collisions against every DECLARED output name, ignoring
+  conditions, and resolves an intrinsic `Export.Name` best-effort for that
+  test alone. Scrub re-evaluates conditions best-effort from template
+  defaults (it takes no parameters) and assumes false on failure, so
+  trusting them would let it miss a collision the deploy really made — and
+  a missed collision writes a wrong-secret reference, while an
+  over-approximated one costs a spurious warning and one key redacted by
+  value instead of by position.
+- If an intrinsic `Export.Name` does not fully resolve, scrub redacts that
+  stack's outputs by value match ENTIRELY and warns. "Not fully" covers
+  three shapes, not just a throw: a resolution error, a non-string result,
+  and — the common one — a returned string that still contains an
+  unsubstituted `${Placeholder}`, because `Fn::Sub` warns and keeps the
+  placeholder rather than throwing, and scrub takes no parameters. In all
+  three the deploy keyed state under a name this run cannot reproduce, and
+  that name could be any output's, so there is no single key to distrust. A
+  name that resolves to a DIFFERENT but complete string than the deploy
+  produced remains undetectable and is a known residual.
+
+`cdkd diff` previews this same bag through `src/analyzer/outputs-diff.ts`,
+the fourth writer of the key space, and it has to agree ROW BY ROW: an
+alias the preview publishes and the deploy refuses (or the reverse) is a
+phantom change on every run and `cdkd diff --fail` red forever. Two rows
+are worth naming because they read as inconsistent otherwise. A LITERAL
+`Export.Name` spelled as a `{{resolve:...}}` token is PUBLISHED by both —
+the deploy never substitutes a string name, so the key holds the
+expression, which is what state stores anyway. And a LITERAL name in a
+stack that resolves a secret makes `cdkd diff` omit its Outputs section
+entirely for that run: the deploy refuses such a name only when it CONTAINS
+the resolved plaintext, which the preview never resolves, so it declines to
+guess rather than print a row whose key may hold that plaintext. The
+omission is reported as the usual could-not-resolve notice, and the alias
+key is recorded so that notice does not fire on the alias alone.
+
+**A state KEY that already holds plaintext cannot be scrubbed.** State
+written by a pre-fix binary can carry `state.outputs["pre-<secret>"]`, and
+every redaction pass rewrites values only. `cdkd scrub` REPORTS such a key
+(and `--fail` exits 1 on it — under `--dry-run` as part of the standing CI
+gate, and on a REAL run too, since that is the one finding class a real run
+cannot fix) but never rewrites it: the key is
+the export name consumers resolve by, so renaming it would silently retire
+a live export. The remedy is a template change — give the output a
+non-secret `Export.Name` and redeploy, which replaces `state.outputs` and
+the exports index wholesale — plus rotating the exposed secret. Such a
+finding is counted and reported SEPARATELY from the stacks scrub actually
+rewrote, so the summary never claims to have removed a value it could not
+reach. Reporting is bounded the same way cdkd's substring redaction is: a
+secret of three characters or fewer is matched only as a whole key, since
+an unbounded scan over so short a value flags unrelated keys and fails the
+CI gate everywhere.
+
+CDK's AUTO-generated export names cannot collide — they are of the form
+`StackName:ExportsOutputRefResourceABC123` and a `:` is not legal in a
+logical id — but `Stack.exportValue(value, { name })` takes a
+caller-chosen name, so a CDK app can produce this shape just as a
+hand-written template can.
+
+---
+
+## State schema v4
+
+[`src/types/state.ts`](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts) bumps the schema from
+v3 to v4 to add the optional `imports?` field:
+
+```typescript
+export interface StackState {
+  version: 1 | 2 | 3 | 4;
+  stackName: string;
+  region?: string;
+  resources: Record<string, ResourceState>;
+  outputs: Record<string, unknown>;
+  imports?: StateImportEntry[];   // NEW in v4
+  lastModified: number;
+}
+
+export interface StateImportEntry {
+  sourceStack: string;
+  sourceRegion: string;
+  exportName: string;
+}
+```
+
+### Migration: v3 → v4
+
+| Reader → State | Behavior |
+|---|---|
+| v4 cdkd → v3 state | `imports` is undefined → treated as empty. Works transparently. |
+| v4 cdkd → v4 state | Full v4 semantics. |
+| v3 cdkd → v3 state | Unchanged. |
+| v3 cdkd → v4 state | `Upgrade cdkd` error (matches every prior schema bump). |
+
+Migration is **fully transparent for forward upgrades**: the next
+deploy of a stack rewrites it as v4 automatically.
+
+### Gradual strong-reference activation
+
+A consumer deployed under v3 has no `imports[]` field. After upgrading
+to v4 cdkd:
+
+1. Producer destroy attempts before the consumer is re-deployed see
+   no `imports[]` for that consumer → strong-ref check finds nothing
+   → producer destroy proceeds (= the previous behavior, no regression).
+2. Once the consumer is re-deployed under v4, its `imports[]` is
+   populated.
+3. Subsequent producer destroy attempts correctly refuse.
+
+This means the enforcement activates **gradually as consumers are
+re-deployed**, with no explicit migration step from the user.
+
+### A FAILED consumer deploy used to leave the same hole
+
+Until 2026-08-20 the gap above had a second, permanent instance. Only the
+terminal SUCCESS save persisted the imports this session recorded. Every other
+save in `deploy-engine.ts` wrote the PRE-deploy `imports[]` / `outputReads[]`
+snapshot beside the POST-deploy resource records -- the diff-clean no-change
+save, the per-resource partial save, the pre-rollback save, the two
+post-rollback saves (primary and ETag retry) and
+`persistStateAfterOutputFailure`, which looked like a success save because
+provisioning WAS clean, yet writes a rollback journal segment and rethrows.
+
+So a consumer deploy that ADDED an `Fn::ImportValue` and then failed persisted
+the consumer's new resources while recording no import for them. The producer's
+strong-ref pre-flight (`findActiveImportConsumers`) then found nothing and
+`cdkd destroy <producer>` proceeded -- deleting a producer whose consumer was
+live and importing from it. Unlike the v3-to-v4 case above this never healed on
+its own, because nothing re-recorded the import until the consumer's next
+SUCCESSFUL deploy.
+
+Every save except the terminal success one now UNIONS this session's recorded
+reads with the snapshot; only that one replaces the list wholesale. The
+enumeration above is history, not a maintained list: it drifted twice while
+this lane was open (once undercounting the saves, once overcounting the
+post-rollback ones), so the live rule is enforced by
+`tests/unit/deployment/deploy-engine-cross-stack-read-writers.test.ts`, which
+scans `deploy-engine.ts` for direct `imports:` / `outputReads:` writes and
+fails on any that is not the allow-listed success-path one. A union never
+drops, so a stack that stops reading cross-stack keeps a stale entry until its
+next successful deploy -- refusing a destroy that would in fact be safe. That
+direction is deliberate: a refusal names the consumer and is overridable, while
+the other direction deletes a producer out from under a live consumer.
+
+`state.outputReads[]` (`Fn::GetStackOutput`, v8) is unioned by the same rule,
+though it is informational and never destroy-blocking -- see the section above.
+
+---
+
+## Resolver flow: `Fn::ImportValue`
+
+```text
+resolveImportValue(exportName):
+  if exportIndex:
+    entry = await exportIndex.lookup(exportName)
+    if entry and entry.producerStack != context.stackName:
+      recordImport(exportName, entry.producerStack, entry.producerRegion)
+      return reresolve(entry.value, entry.producerRegion)  ← O(1) hot path
+    // else fall through to scan (cache miss or self-ref)
+
+  allStacks = await stateBackend.listStacks()          ← O(N) cold path
+  for ref in allStacks:
+    if ref.stackName == context.stackName: continue
+    state = await stateBackend.getState(ref.stackName, ref.region)
+    if state.outputs[exportName]:
+      value = state.outputs[exportName]
+      if exportIndex:
+        exportIndex.patchEntry(exportName, ...)        ← write-through
+      recordImport(exportName, ref.stackName, ref.region)
+      return reresolve(value, ref.region)
+
+  if cfnFallback:                                      ← CFn fallback (default on)
+    export = await cloudformation.ListExports().find(exportName)
+    if export:
+      return export.value        ← WEAK reference: recordImport NOT called
+                                   NOT re-resolved (see below)
+
+  throw "export not found"
+```
+
+### `reresolve` — a redacted secret is resolved before the consumer sees it
+
+A secret-bearing output is PERSISTED as its unresolved
+`{{resolve:secretsmanager:...}}` expression (the GHSA-p5qg-v9gv-hc7w
+fix), so what the index / `state.outputs` hands back for such
+an export is the expression, not the value. Returning it verbatim made
+the consumer stack ship the literal token to AWS as a property value, so
+the three cross-stack reads the intrinsic resolver owns — `Fn::ImportValue`'s
+index arm and its state-scan arm, and `Fn::GetStackOutput` — now run the value
+back through dynamic-reference resolution first:
+
+- **Resolved in the PRODUCER's region** (`entry.producerRegion` / the
+  state ref's region / `Fn::GetStackOutput`'s `Region`). A Secrets
+  Manager secret or an SSM parameter of the same NAME in two regions is
+  two independent values, so only the producer's region reproduces what
+  the producer exported. **One case does fall back to a guess**: a
+  pre-v2 state record carries no `region`, so the index-miss scan reads
+  it as the consumer's own region (itself defaulted from `AWS_REGION`,
+  then `us-east-1`). That is the same region the state READ used, so the
+  re-resolution cannot disagree with the record it was handed — but if
+  the producer really lived elsewhere the lookup asks the wrong region
+  and fails loudly (or resolves a same-named secret in the consumer's
+  region). Every record written since schema v2 carries its region.
+- **Under the consumer's credentials**, which are the producer's too:
+  the exports index and the state bucket are account-scoped, so a
+  producer cdkd can see on this path is in the same account.
+- **The consumer's own state stays redacted.** The resolved plaintext is
+  recorded as a secret for the deploy's redaction pass, so the
+  consumer's `state.json` stores the same expression the producer's
+  does.
+- **`cdkd diff` still compares expression-vs-expression** — the
+  comparison path leaves secret references unresolved, so no value is
+  fetched or printed there.
+- **The CloudFormation fallbacks are NOT re-resolved** (`ListExports`
+  for `Fn::ImportValue`, `DescribeStacks` outputs for
+  `Fn::GetStackOutput`). Those values never passed through cdkd's
+  redaction, so a token there is a literal the producer chose to
+  publish, and resolving it would diverge from what a CloudFormation
+  consumer of the same export receives.
+- **Cross-account `Fn::GetStackOutput` REFUSES** a redacted value rather
+  than resolving it — see the cross-account section below.
+
+`recordImport` pushes a `StateImportEntry` into the resolver context's
+`recordedImports` bag — the DeployEngine reads this after resource
+provisioning and persists it to `state.imports`.
+
+#### A REDACTION MASK is not re-resolvable, and only ONE run can bridge it
+
+The re-resolution above works because a secret-bearing output persists
+its EXPRESSION, which names
+a value cdkd can fetch again. A `NoEcho` custom resource's `Data` has no
+expression — the handler minted the value — so an output carrying one persists
+the literal mask `***` instead, and there is nothing to re-resolve.
+
+All three cross-stack reads land on that mask, plus a nested stack's
+`Fn::GetAtt [<Child>, 'Outputs.<Key>']`, which reads the child's persisted
+outputs the same way. cdkd bridges exactly the case where the plaintext still
+exists:
+
+- **Same run → the real value.** While the producer was deployed by the SAME
+  cdkd process — a nested-stack child, or another stack in the same
+  `cdkd deploy --all` — the plaintext behind the mask is still in memory, keyed
+  by `(producer stack, region, output key)`, and the consumer is given it. The
+  consumer then records it as a mask-only needle in its OWN bag, so its
+  `state.json` stores `***` too. Nothing is keyed by the bare value: keyed that
+  way, one stack's answer would be served to another stack's identically
+  spelled read.
+- **Any other run → REFUSED.** A consumer deploy whose producer was deployed
+  earlier reads the mask and cdkd fails that resource rather than writing `***`
+  to the live resource.
+- **Re-deploying the producer alone does not help.** It re-masks the value on
+  the way into its own state, so the consumer's next run reads the mask again.
+  Deploy producer and consumer in ONE run with the producer's custom resource
+  actually running (force it to update), or stop marking that response
+  `NoEcho`.
+
+The values themselves are still delivered to AWS in the clear on the runs that
+succeed; only what cdkd writes down changes. See
+[State Management](state-management.md#noecho-custom-resource-responses).
+
+### `Fn::GetStackOutput` does NOT recordImport — it records to a separate bag
+
+Weak-reference by design. The producer stays deletable independently;
+recording the consumer's reference into `recordedImports` would defeat
+that (and `state.imports` IS the destroy-time refusal source). However,
+schema v8 adds a SEPARATE
+`recordedOutputReads` bag that the resolver pushes into on every
+successful **same-account** `Fn::GetStackOutput` resolution. The
+DeployEngine persists this bag to `state.outputReads` at save time.
+
+`state.outputReads` is **informational only** — used by
+`findDownstreamConsumers` to name `Fn::GetStackOutput` consumers in
+the `--recreate-via-cc-api` / `--recreate-via-sdk-provider` warn
+block. There is NO destroy-time refusal for these references; the
+producer remains deletable independently, matching the v1 weak-ref
+contract. Cross-account `RoleArn`-based reads do NOT push entries
+into `state.outputReads` in v8 (deferred to a future schema bump
+alongside a `sourceAccountId` field).
+
+### Cross-account `Fn::GetStackOutput` (`RoleArn` argument)
+
+`Fn::GetStackOutput` accepts an optional `RoleArn` to read outputs from
+a producer stack in a sibling AWS account — the canonical multi-account
+pattern (shared-services account exporting platform outputs consumed by
+workload accounts).
+
+```json
+{
+  "Fn::GetStackOutput": {
+    "StackName": "PlatformVpc",
+    "OutputName": "SharedVpcId",
+    "Region": "us-east-1",
+    "RoleArn": "arn:aws:iam::111122223333:role/cdkd-state-reader"
+  }
+}
+```
+
+When `RoleArn` is set, cdkd's resolver:
+
+1. **Parses the role ARN** for the producer's account id via
+   [`parseIamRoleArn`](https://github.com/go-to-k/cdkd/blob/main/src/utils/role-arn.ts). The regex accepts every
+   published AWS partition (`aws`, `aws-us-gov`, `aws-cn`, `aws-iso`,
+   `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` — matched loosely as
+   `aws[a-z0-9-]*`, so a partition added upstream needs no code change here)
+   and role-name path shapes including service-linked roles.
+   Malformed ARNs / IAM user ARNs / non-12-digit account ids are rejected
+   up front with a clear error.
+2. **Calls `sts:AssumeRole`** via
+   [`assumeRoleForCrossAccountStateRead`](https://github.com/go-to-k/cdkd/blob/main/src/utils/role-arn.ts).
+   Credentials are cached per-RoleArn for the deploy lifetime, so a
+   stack with many `Fn::GetStackOutput` sites against the same producer
+   pays exactly one STS hop. Concurrent first-time callers collapse to
+   the same in-flight promise.
+3. **Derives the producer's state bucket name** as
+   `cdkd-state-{producerAccountId}` (the canonical region-free
+   convention since v0.10.0) via
+   [`resolveCrossAccountStateBucket`](https://github.com/go-to-k/cdkd/blob/main/src/utils/aws-region-resolver.ts).
+   The bucket's actual region is auto-detected via
+   `s3:GetBucketLocation` using the assumed credentials.
+4. **Reads the producer's state** through a fresh, ephemeral
+   `S3StateBackend` pointed at the producer's bucket with the assumed
+   credentials. Reuses the full state-parsing + schema-version-tolerance
+   machinery (legacy v1 keys, migration warnings, region key layout).
+5. **Returns the requested output value**.
+
+#### Constraints
+
+- **`RoleArn` must be a LITERAL string in the template.** `Ref` /
+  `Fn::GetAtt` / `Fn::Sub` chains are intentionally rejected at the
+  resolver layer: the context isn't guaranteed to have the producer's
+  account id available at intrinsic-resolution time, and a typo'd role
+  lookup is far worse than a clear template-author-time error. Inline
+  the ARN.
+- **Producer must be on the canonical region-free bucket layout**
+  (`cdkd-state-{accountId}`). Legacy region-suffixed buckets
+  (`cdkd-state-{accountId}-{region}`) are not consulted on the
+  cross-account read path because account-wide `s3:ListAllMyBuckets` in
+  the assumed role would be required to disambiguate, for no
+  real-world benefit on long-since-migrated accounts.
+- **Assumed credentials are scoped to the state read.** The consumer's
+  normal provisioning credentials are untouched — unlike the CLI-wide
+  `--role-arn` flag, which writes assumed creds into `AWS_*` env vars
+  for every later SDK client. Cross-account `Fn::GetStackOutput` is a
+  narrow read-only operation.
+
+#### IAM permissions
+
+The assumed role in the producer account needs:
+
+- `s3:GetBucketLocation` on the producer's state bucket.
+- `s3:GetObject` on `cdkd/{stackName}/{region}/state.json` keys for any
+  stack the consumer references.
+
+A minimal producer-side policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::cdkd-state-111122223333"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::cdkd-state-111122223333/cdkd/*"
+    }
+  ]
+}
+```
+
+The role's trust policy must allow the consumer account's principal
+(or a specific consumer role) to `sts:AssumeRole`. Standard cross-account
+trust-policy setup applies.
+
+#### A redacted secret output is refused, not resolved
+
+When the requested output is stored as a `{{resolve:...}}` expression (what cdkd
+persists for a secret-bearing output), the same-account path re-resolves
+it before handing it to the consumer — but the cross-account path
+REFUSES with an `IntrinsicResolutionRefusalError` naming the output and
+the `RoleArn`. The expression names a secret in the PRODUCER's account,
+and the only credentials available for a lookup are the consumer's, so
+resolving would silently answer from a same-named secret in the WRONG
+account. (The assumed role is scoped to the state read and carries no
+promise of `secretsmanager:GetSecretValue` / `ssm:GetParameter`;
+widening it is a permission-model change, not a silent fallback.)
+
+Workaround: export a non-secret value — typically the secret's ARN —
+and resolve it inside the consumer stack, or reference the producer
+from within its own account.
+
+#### Strong-reference semantics
+
+`Fn::GetStackOutput` is a weak reference, including in the
+cross-account case. A `cdkd destroy` against the producer succeeds even
+while a consumer in another account holds an outstanding reference —
+the next consumer deploy will surface the broken reference. This
+matches CFn's behavior for cross-account references (no shared
+ListExports across accounts; no strong-reference protection).
+
+#### What's not supported (yet)
+
+- A cross-account integration test (`tests/integration/cross-stack-cross-account/`)
+  is gated by `CDKD_INTEG_CROSS_ACCOUNT=1` + `CDKD_PRODUCER_ACCOUNT_ID=<id>` +
+  `CDKD_PRODUCER_ROLE_ARN=<arn>` env vars and ships in a follow-up.
+- `Fn::ImportValue` does NOT accept a `RoleArn` argument. Cross-account
+  strong references are not a CFn-supported pattern — CFn's
+  `Fn::ImportValue` is same-account only — so cdkd does not extend
+  beyond that. Use `Fn::GetStackOutput` with `RoleArn` for cross-account
+  reads.
+
+---
+
+## Exports index lifecycle
+
+Implemented in [`src/state/export-index-store.ts`](https://github.com/go-to-k/cdkd/blob/main/src/state/export-index-store.ts).
+
+### Cross-region state bucket
+
+The index store tolerates a state bucket that lives in a different AWS
+region from the CLI's base region. Before its first S3 read or write it
+resolves the bucket's actual region via `GetBucketLocation` (cached
+process-wide, shared with the state backend's / lock manager's resolution)
+and, if it differs from the supplied client's region, builds a private
+replacement S3 client for the bucket's region — reusing the caller's
+credentials and leaving the shared client untouched. Without this, every index write /
+remove against a cross-region bucket hit S3's 301 PermanentRedirect
+(`Exports index ... failed (non-retryable): ... must be addressed using
+the specified endpoint`) — non-fatal (the canonical `state.json` was
+unaffected and the index self-heals), so the index was silently never
+maintained cross-region. This mirrors the same region resolution
+`S3StateBackend` and `LockManager` already perform.
+
+### Triggers
+
+| Operation | Trigger | Cost |
+|---|---|---|
+| Initial build | First `lookup()` call after the index file is absent (404) | 1 `listStacks` + N parallel `getState`, persisted as 1 PUT |
+| Patch on miss | `lookup()` miss → fallback scan succeeds → patches single entry | 1 PUT |
+| Update for stack | After successful deploy save — including a no-resource-diff deploy whose only change is an added/removed Output, so a producer that gains an export because a downstream stack started referencing it still publishes it | 1 PUT (read-modify-write with If-Match) |
+| Remove for stack | After successful destroy | 1 PUT (read-modify-write with If-Match) |
+| Rebuild on corruption | Index file JSON parse fails | Same as initial build |
+
+There is **no periodic rebuild, defrag, or vacuum**. The only events
+that trigger a full rebuild are the absence or corruption of the
+index file — both essentially one-time events.
+
+### Concurrency: optimistic locking
+
+Two concurrent deploys (`--stack-concurrency > 1`) might both attempt
+to write the index after their respective state saves. Each writer
+uses `S3 PutObject` with `If-Match` against the etag observed at
+read-time:
+
+1. Reader A: GET → etag=X
+2. Reader B: GET → etag=X
+3. A: PutObject IfMatch=X → etag=Y, succeeds
+4. B: PutObject IfMatch=X → **412 Precondition Failed**
+5. B: re-reads (etag=Y), applies its update, PutObject IfMatch=Y → etag=Z
+
+Up to 5 retries with exponential backoff. After exhaustion the writer
+logs a warning and continues — the canonical `state.json` is
+unaffected, and the index self-heals on the next operation (next
+deploy of any stack, or the next `lookup()` miss-and-patch).
+
+### Failure modes
+
+| Failure | Effect | Recovery |
+|---|---|---|
+| Index file absent | `lookup()` 404 | Auto-rebuild on first access |
+| Index file corrupt (JSON parse) | `lookup()` errors | Auto-rebuild on first access |
+| Index stale (post-deploy update failed) | `lookup()` returns stale or missing entry | Fallback scan retrieves correct value, patches entry incrementally |
+| Index drift from out-of-band edit (`aws s3 cp` against `state.json` directly) | `lookup()` may return stale value | Next deploy of any affected stack repopulates correctly |
+
+The drift case (out-of-band edits) is an accepted limitation;
+production cdkd usage does not modify `state.json` directly.
+
+---
+
+## Performance characteristics
+
+Workload: `Fn::ImportValue` resolution during `cdkd deploy` /
+`cdkd diff` at varying scale (N = number of stacks in the bucket).
+
+### Cold-start (first invocation after binary upgrade)
+
+| N (stacks) | Without the index (older cdkd) | With the index (rebuild required) |
+|---|---|---|
+| 10 | ~200ms × K imports | ~200ms (one-time rebuild) |
+| 50 | ~1s × K imports | ~500ms |
+| 200 | ~5s × K imports | ~2s |
+| 1000 | ~25s × K imports | ~8s |
+
+Where K is the number of `Fn::ImportValue` references in the template.
+Without the index, resolution paid K×N because each import re-scanned the bucket.
+
+### Warm (index file already exists)
+
+| N (stacks) | Cold-start of new cdkd process | Per-resolve cost |
+|---|---|---|
+| Any | 1 GET of index file (~100-300ms) | 0ms (in-memory hit after first lookup) |
+
+Subsequent cdkd invocations against the same state bucket pay only
+the single index GET, regardless of N.
+
+### Destroy (strong-ref scan)
+
+| N (stacks) | Wall time |
+|---|---|
+| 10 | ~200ms |
+| 200 | ~1-3s |
+| 1000 | ~5-10s |
+
+Linear with N. Acceptable because destroy is not the perf-critical
+path and is dominated by AWS-side resource deletion latency anyway.
+
+---
+
+## Related
+
+- [Cross-Stack References](cross-stack-references.md) — the user-facing guide
+- [State Management](state-management.md) — the state record these mechanisms
+  read and write
+- [Mixed Estates](mixed-estates.md) — referencing a CloudFormation-managed stack

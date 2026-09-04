@@ -47,7 +47,7 @@ import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js
 /**
  * Read-update round-trip property tests for ECRProvider.
  *
- * See docs/provider-development.md § 3b for the convention. The
+ * See docs/provider-rules.md#readcurrentstate-for-drift-detection for the convention. The
  * mechanical guard is: "if state is already exactly what AWS reports
  * (the no-drift case), update() must produce zero mutating SDK calls."
  *

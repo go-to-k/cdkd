@@ -47,7 +47,7 @@ describe('CognitoUserPoolProvider read-update round-trip', () => {
 
   // Mechanical guard for Class 2 placeholder regression on
   // structurally-incomplete-when-empty sub-objects. See
-  // docs/provider-development.md § 3b.
+  // docs/provider-rules.md#read-update-round-trip-test-mandatory-for-any-provider-with-readcurrentstate.
   //
   // `SmsConfiguration: {}` would be rejected by UpdateUserPool with
   // "Required attribute SnsCallerArn missing" because SnsCallerArn is
@@ -128,8 +128,7 @@ describe('CognitoUserPoolProvider read-update round-trip', () => {
 
   // Mechanical guard for the truthy-gate failure mode on string fields
   // where empty-string is a legal AWS-clear value. See
-  // docs/provider-development.md § 3b "update() must gate optional
-  // fields on `!== undefined`, not truthy".
+  // docs/provider-rules.md#update-must-gate-optional-fields-on-undefined-not-truthy.
   //
   // When state has `EmailVerificationMessage: ''` (placeholder for "no
   // override") and AWS-side has a real message, `cdkd drift --revert`

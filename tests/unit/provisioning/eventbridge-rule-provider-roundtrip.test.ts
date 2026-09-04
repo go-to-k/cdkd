@@ -41,7 +41,7 @@ const RULE_ARN = `arn:aws:events:us-east-1:123456789012:rule/${RULE_NAME}`;
 /**
  * Read-update round-trip tests for EventBridgeRuleProvider.
  *
- * See docs/provider-development.md § 3b "Read-update round-trip test" —
+ * See docs/provider-rules.md#readcurrentstate-for-drift-detection —
  * `cdkd drift --revert` ships `observedProperties` (= a previous
  * `readCurrentState` snapshot) back through `provider.update`. These
  * tests are the structural guard against the three latent bug classes:

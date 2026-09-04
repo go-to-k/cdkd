@@ -133,7 +133,7 @@ entirely. `(exit N)` sets `$?` to the signal's code, so `rc=$?` and `${1:-$?}`
 cleanups both tear down correctly.
 
 Enforced by `tests/unit/scripts/integ-verify-signal-traps.test.ts` (issue
-#1097); user-facing writeup in [docs/testing.md](../../docs/testing.md).
+#1097); user-facing writeup in [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` gone-probes (mandatory)
 
@@ -177,7 +177,7 @@ spans (bounded by the enclosing function); mark cleanup helpers with `set +eu` i
 (`fn() { ( set +eu; ... ) }`) so calling them from a `set +eu` cleanup trap
 never re-arms strict mode mid-sweep. Enforced by
 `tests/unit/scripts/integ-verify-probe-not-found.test.ts`; user-facing writeup
-in [docs/testing.md](../../docs/testing.md).
+in [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` CLI flags (mandatory)
 
@@ -214,7 +214,7 @@ qualifiers (`:live`, `:$LATEST`), variable qualifiers, relative compares, and
 cross-account layer ARNs) take `# allow-version-literal: <reason>`. Enforced by
 `tests/unit/scripts/integ-verify-version-literals.test.ts` (classifier:
 `scripts/check-integ-version-literals.ts`); user-facing writeup in
-[docs/testing.md](../../docs/testing.md).
+[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` must not call an `aws` verb the CLI does not have (mandatory)
 
@@ -278,7 +278,7 @@ A pager invoked non-interactively is a SEPARATE route to a hang, so
 `export AWS_PAGER=""` near the top of a fixture is cheap insurance — a
 recommendation for NEW and affected fixtures, not a tree-wide invariant.
 Mechanically enforced since issue #1402; user-facing writeup in
-[docs/testing.md](../../docs/testing.md).
+[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` upstream-cdk callers must pin AND resolve a fixture-local CLI (mandatory)
 
@@ -310,7 +310,7 @@ closed the class PR #1253 had fixed per-fixture). Enforced by
 `tests/unit/scripts/integ-cdk-cli-pins.test.ts` (classifier:
 `scripts/check-integ-cdk-cli-pins.ts` — strips heredocs and comments, walks
 quote-aware, so no signal is read out of an `echo` argument or `grep` pattern).
-User-facing writeup in [docs/testing.md](../../docs/testing.md).
+User-facing writeup in [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` `state destroy` must pass `--state-bucket` (mandatory)
 
@@ -346,7 +346,7 @@ because nothing enforced it). Enforced by
 `tests/unit/scripts/integ-state-bucket.test.ts` (classifier:
 `scripts/check-integ-state-bucket.ts`, which strips heredocs, comments and
 `echo` arguments). User-facing writeup in
-[docs/testing.md](../../docs/testing.md).
+[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` list readbacks must be order-insensitive (mandatory)
 
@@ -369,7 +369,7 @@ IS order-significant (DNS resolver lists, preference orders — see
 `getDriftUnorderedPaths`) must stay unsorted, because sorting would HIDE a real
 regression. NOT mechanically enforced by design: whether a list is
 order-significant is a judgment a lint cannot make. User-facing writeup in
-[docs/testing.md](../../docs/testing.md).
+[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### A mode-gated fixture resource DISAPPEARS in every later step that omits the token (mandatory)
 
@@ -444,7 +444,7 @@ out of scope (their template default is `Delete`).
 
 Enforced by `tests/unit/scripts/integ-fixture-removal-policy.test.ts`
 (classifier: `scripts/check-fixture-removal-policy.ts`); user-facing writeup in
-[docs/testing.md](../../docs/testing.md).
+[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### A `local-*` fixture's Lambdas must declare the HOST architecture (mandatory)
 
@@ -504,7 +504,7 @@ the tree for the blocker before building around it — a sibling fixture may
 already have disproven it. See also
 `feedback_verify_issue_root_cause_before_building_tooling` and
 `feedback_umbrella_issue_row_can_be_already_fixed`. User-facing writeup in
-[docs/testing.md](../../docs/testing.md).
+[docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` must sweep S3 OBJECT VERSIONS and assert zero (mandatory for secret-seeding fixtures)
 
@@ -653,7 +653,7 @@ seeded by the SCRIPT rather than the app (`dynamic-ref-cross-region` writes a
 plaintext state record with `aws s3 cp`); and service-generated credentials
 with no source marker (Cognito's `ClientSecret`, found by grepping the BUCKET).
 The per-fixture zero-assertion plus periodic bucket inspection stay the
-backstop. User-facing writeup in [docs/testing.md](../../docs/testing.md).
+backstop. User-facing writeup in [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### A fixture that greps cdkd's OWN output must fail loudly when the format drifts
 

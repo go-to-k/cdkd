@@ -56,7 +56,7 @@ describe('WAFv2WebACLProvider read-update round-trip', () => {
   it('Class 2 — empty Description placeholder is sanitized to undefined on update() round-trip', async () => {
     // Mechanical guard for Class 2 placeholder regression on
     // structurally-incomplete-when-empty fields. See
-    // docs/provider-development.md § 3b "Read-update round-trip test".
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection.
     //
     // readCurrentState always-emits `Description: ''` on a WebACL with
     // no description (state-keys-only top-level walk requires the

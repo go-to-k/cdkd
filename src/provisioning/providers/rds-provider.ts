@@ -1656,7 +1656,7 @@ export class RDSProvider implements ResourceProvider {
     // which AWS rejects with "ServerlessV2ScalingConfiguration is only
     // supported on Aurora Serverless v2 clusters", and (b) fire a
     // false-positive drift on every non-serverless cluster (state has no
-    // such key). See docs/provider-development.md § 3b.
+    // such key). See docs/provider-rules.md#readcurrentstate-for-drift-detection.
     if (
       cluster.ServerlessV2ScalingConfiguration?.MinCapacity !== undefined ||
       cluster.ServerlessV2ScalingConfiguration?.MaxCapacity !== undefined

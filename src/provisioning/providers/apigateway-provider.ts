@@ -2447,7 +2447,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         result['AuthorizationType'] = resp.authorizationType;
       }
       // Class 1 (type-discriminator-dependent fields, see
-      // docs/provider-development.md § 3b). AuthorizerId is only valid
+      // docs/provider-rules.md#readcurrentstate-for-drift-detection). AuthorizerId is only valid
       // when AuthorizationType is CUSTOM or COGNITO_USER_POOLS — AWS
       // rejects PutMethod with "Invalid authorizer ID specified" or
       // "Authorizer not found" when sent on AuthorizationType=NONE /

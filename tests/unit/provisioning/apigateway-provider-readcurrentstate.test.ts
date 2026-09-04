@@ -79,7 +79,7 @@ describe('ApiGatewayProvider.readCurrentState', () => {
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetMethodCommand);
     // Class 1: AuthorizerId is NOT emitted on AuthorizationType=NONE
     // because it is only valid on CUSTOM / COGNITO_USER_POOLS. See
-    // docs/provider-development.md § 3b.
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection.
     expect(result).toEqual({
       RestApiId: 'api-1',
       ResourceId: 'res-1',

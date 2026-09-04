@@ -741,7 +741,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       const result: Record<string, unknown> = {};
       if (found.logGroupName !== undefined) result['LogGroupName'] = found.logGroupName;
       result['KmsKeyId'] = found.kmsKeyId ?? '';
-      // Always-emit per docs/provider-development.md § 3b: a console-side
+      // Always-emit per docs/provider-rules.md#readcurrentstate-for-drift-detection: a console-side
       // attach of a retention policy on a previously-unbounded log group
       // must surface as drift. `0` is the semantic "never expire"
       // placeholder — it maps to `DeleteRetentionPolicyCommand` in

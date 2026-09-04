@@ -66,7 +66,7 @@ describe('LambdaFunctionProvider read-update round-trip', () => {
   it('Class 2 — non-VPC observed snapshot round-trips without AWS-rejection-shape input', async () => {
     // Mechanical guard for Class 2 placeholder regression on
     // structurally-incomplete-when-empty fields (VpcConfig). See
-    // docs/provider-development.md § 3b "Read-update round-trip test".
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection.
     //
     // readCurrentState always-emits VpcConfig with empty arrays for
     // non-VPC functions (the placeholder is required so the comparator's

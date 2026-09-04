@@ -43,7 +43,7 @@ describe('LambdaUrlProvider read-update round-trip', () => {
   it('Class 2 — URL with no CORS does not send all-empty Cors to AWS on round-trip', async () => {
     // Mechanical guard for Class 2 placeholder regression on
     // structurally-incomplete-when-empty fields. See
-    // docs/provider-development.md § 3b "Read-update round-trip test".
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection.
     //
     // `readCurrentState` always-emits a `Cors` placeholder with empty
     // arrays for every sub-list so a console-side CORS toggle on a URL

@@ -709,7 +709,7 @@ export interface CreateContext extends SecretMaskingContext {
    * template-side remedy for whatever the properties contain. A state record
    * was written by some earlier cdkd build against some earlier AWS API, and
    * the only way a user could edit it is by hand-editing `state.json`. So a
-   * PRE-FLIGHT REFUSAL (see `docs/provider-development.md` §1a) must downgrade
+   * PRE-FLIGHT REFUSAL (see `docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards`) must downgrade
    * to a WARNING here: refusing would leave the old resource unrestorable with
    * no action the user can take. This is the create-side twin of the
    * refuse-on-template / warn-on-replay asymmetry `update()` already has — the
@@ -925,7 +925,7 @@ export interface ResourceProvider {
    *   STATE record instead of the template — a provider PRE-FLIGHT REFUSAL
    *   must downgrade to a warning in that case, because the user has no
    *   template-side remedy (issue #1463). See `CreateContext` in
-   *   this file for the full contract, and `docs/provider-development.md` §1a
+   *   this file for the full contract, and `docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards`
    *   for when a refusal is allowed at all. It ALSO carries `maskSecrets` (see
    *   {@link SecretMaskingContext}) — a provider that interpolates a resolved
    *   property value into a log line MUST run the message through it.

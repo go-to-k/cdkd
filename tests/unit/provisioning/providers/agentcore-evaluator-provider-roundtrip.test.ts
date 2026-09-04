@@ -46,7 +46,7 @@ describe('AgentCoreEvaluatorProvider read-update round-trip', () => {
 
   it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {
     // Mechanical guard for the latent bug classes documented in
-    // docs/provider-development.md § "Read-update round-trip test":
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection:
     // a `cdkd drift --revert` feeds a readCurrentState snapshot back
     // through update(), so every always-emit placeholder must produce
     // a valid UpdateEvaluator input.

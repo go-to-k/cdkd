@@ -42,7 +42,7 @@ describe('CloudFrontOAIProvider read-update round-trip', () => {
 
   it('round-trip on empty Comment passes Comment: "" through to AWS (truthy-gate guard)', async () => {
     // Mechanical guard for the truthy-gate failure mode. See
-    // docs/provider-development.md § 3b "Read-update round-trip test".
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection.
     //
     // If `update()` ever regresses to `if (config?.Comment) { ... }`,
     // an empty string would be silently dropped — and the

@@ -33,7 +33,7 @@ const TYPE = 'AWS::CloudFront::OriginAccessControl';
 const OAC_ID = 'E1ABCDEF123456';
 
 /**
- * Round-trip guard (docs/provider-development.md § 3b): the snapshot
+ * Round-trip guard (docs/provider-rules.md#readcurrentstate-for-drift-detection): the snapshot
  * `readCurrentState()` produces is what `cdkd drift --revert` feeds back into
  * `update()`. A placeholder the reverse-mapper emits (`Description: ''`) must
  * therefore survive the trip to `UpdateOriginAccessControl` in a shape AWS

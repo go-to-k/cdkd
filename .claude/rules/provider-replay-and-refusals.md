@@ -16,7 +16,7 @@ so most providers need no change, and it carries exactly one field today.
 STATE record rather than the template — set ONLY by the rollback executor's
 reverse-replacement arm (`rollback-executor.ts`), which revives the OLD
 resource from `previousState.properties`. A provider PRE-FLIGHT REFUSAL
-(see [docs/provider-development.md](../../docs/provider-development.md) §1a)
+(see [docs/provider-rules.md](../../docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards))
 MUST downgrade to a warning when it is set: the user cannot edit a state
 record from the template, so refusing would leave the old resource
 unrestorable with only a hand-edit of `state.json` as a remedy. It licenses

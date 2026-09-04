@@ -64,4 +64,4 @@ than merely written.
   failure replay another test's writes. This repo uses none, and
   `tests/unit/stream-fence.test.ts` fails if that changes.
 
-End-user-facing detail lives in [docs/testing.md](../../docs/testing.md).
+End-user-facing detail lives in [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).

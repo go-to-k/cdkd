@@ -46,7 +46,7 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
 const API_ID = 'abcd1234';
 
 /**
- * Read-update round-trip test (docs/provider-development.md § 3b).
+ * Read-update round-trip test (docs/provider-rules.md#readcurrentstate-for-drift-detection).
  *
  * Every AWS::ApiGatewayV2::* type now has an in-place update path via
  * its matching `Update*Command`. The tests below cover, per type:

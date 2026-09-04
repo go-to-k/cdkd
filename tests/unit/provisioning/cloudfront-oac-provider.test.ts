@@ -361,7 +361,7 @@ describe('CloudFrontOACProvider', () => {
     });
 
     it('emits placeholders for every user-controllable key on AWS minimum response', async () => {
-      // docs/provider-development.md § 3b: an omitted key never reaches
+      // docs/provider-rules.md#readcurrentstate-for-drift-detection: an omitted key never reaches
       // observedProperties, so the comparator's keys-from-state walk could
       // never see a console-side edit to it. Description is optional AND
       // mutable, so it must always be emitted.

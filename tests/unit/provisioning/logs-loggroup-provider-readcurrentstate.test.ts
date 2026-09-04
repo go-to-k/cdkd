@@ -212,7 +212,7 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
   });
 
   it('emits placeholders for every user-controllable top-level key on AWS minimum response', async () => {
-    // Mandatory always-emit test per docs/provider-development.md § 3b.
+    // Mandatory always-emit test per docs/provider-rules.md#readcurrentstate-for-drift-detection.
     // Required field only (logGroupName + arn) — every optional
     // undefined. Keys must include the placeholder defaults so a
     // console-side change to a previously-default field surfaces as
