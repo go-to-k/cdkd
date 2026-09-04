@@ -216,9 +216,19 @@ function isTransientTransportError(err: unknown): boolean {
   // audited types whose name contains `Network` before landing where they
   // started. The `errno`-shaped tokens stay because they appear verbatim in
   // Node's message when `code` is absent.
-  return /socket hang up|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/.test(
-    err.message
-  );
+  // Case-SENSITIVE deliberately: every token here is an errno spelling Node
+  // emits in upper case, and `/i` would re-admit prose ("... network ...").
+  if (
+    /socket hang up|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/.test(err.message)
+  ) {
+    return true;
+  }
+  // One hop down the cause chain: `fetch failed` hides the errno in `cause`,
+  // and this repo's other classifiers walk it rather than reading the top
+  // frame alone. Bounded to one hop — a deeper walk needs a `visited` set, and
+  // nothing here produces one.
+  const cause = (err as { cause?: unknown }).cause;
+  return cause !== undefined && cause !== err ? isTransientTransportError(cause) : false;
 }
 
 /** Retryable: the answer could differ on a later attempt. */
@@ -243,7 +253,8 @@ export interface DescribeTypeRetryOptions {
  * {@link isRetryableDescribeTypeError}).
  *
  * Returns the raw `ProvisioningType` string (or `undefined` if AWS responded
- * without one — treated as Tier 3 upstream). Non-throttling errors propagate
+ * without one — treated as Tier 3 upstream). A failure that is not retryable,
+ * or one whose retry budget is exhausted, propagates
  * to the caller, which records the type as undetermined rather than guessing a
  * tier for it.
  */
@@ -482,7 +493,7 @@ export function renderMarkdown(report: CoverageReport): string {
     '`ProvisioningType` is `NON_PROVISIONABLE`. (A type whose `DescribeType` ' +
       'could not be resolved is NOT here — it is recorded under `undetermined` ' +
       'and the regeneration refuses to write the report at all, because a guess ' +
-      'in this tier becomes a pre-flight refusal.) ' +
+      'in this tier becomes a committed pre-flight refusal.) ' +
       'Cloud Control API cannot create / update / delete these types; cdkd ' +
       'cannot support them at all without a dedicated SDK Provider. Most entries ' +
       'here are inherently read-only or registry-only types (`AWS::*::*Type`, ' +
@@ -497,11 +508,6 @@ export function renderMarkdown(report: CoverageReport): string {
 }
 
 /**
- * Atomic write: stage to `<path>.tmp`, fsync via rename. Prevents the
- * audit's output from being half-written if the process is killed
- * mid-write (the CFn API calls take long enough for ^C to be plausible).
- */
-/**
  * Refuse to write a report carrying an undetermined type.
  *
  * The tier lists are consumed as FACTS — tier 3 is codegen'd into
@@ -515,28 +521,32 @@ export function renderMarkdown(report: CoverageReport): string {
  * `regenerate` is unreachable without live AWS calls: extracting it is what
  * lets both polarities be pinned offline.
  *
- * `allowUndetermined` is the escape hatch for the permanent case — it keeps
- * the types in the report's `undetermined` list (so they stay visible and
- * `--check` still refuses) rather than silently dropping the refusal.
+ * Deliberately NO escape hatch. A `--allow-undetermined` flag was drafted and
+ * withdrawn: `runCheck` refuses any committed report that lists one and runs
+ * on every PR, so a report written through the hatch would leave `main`
+ * permanently red — the flag could not reach green, and a switch whose only
+ * outcome is a red build is worse than the refusal it bypasses. A type that is
+ * PERMANENTLY unresolvable in an account needs a decision recorded in code, not
+ * a flag on one operator's shell.
  */
-export function assertReportIsComplete(
-  report: CoverageReport,
-  allowUndetermined = false
-): void {
+export function assertReportIsComplete(report: CoverageReport): void {
   const unresolved = report.undetermined ?? [];
-  if (unresolved.length === 0 || allowUndetermined) {
+  if (unresolved.length === 0) {
     return;
   }
   throw new Error(
     `[audit] ${unresolved.length} type(s) could not be classified, so the report was NOT ` +
       `written (a guess here becomes a committed pre-flight refusal):\n` +
       unresolved.map((t) => `  ${t}`).join('\n') +
-      `\nRe-run \`vp run audit:coverage:regenerate\`. If a type is PERMANENTLY ` +
-      `unresolvable in this account, re-run with --allow-undetermined; it stays listed in ` +
-      `the report and \`--check\` keeps refusing it.`
+      `\nRe-run \`vp run audit:coverage:regenerate\`.`
   );
 }
 
+/**
+ * Atomic write: stage to `<path>.tmp`, fsync via rename. Prevents the
+ * audit's output from being half-written if the process is killed
+ * mid-write (the CFn API calls take long enough for ^C to be plausible).
+ */
 export function atomicWriteFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
@@ -592,7 +602,7 @@ const REGISTER_PROVIDERS_PATH = resolve(REPO_ROOT, 'src/provisioning/register-pr
 const OUTPUT_JSON = resolve(REPO_ROOT, 'docs/_generated/provider-coverage.json');
 const OUTPUT_MARKDOWN = resolve(REPO_ROOT, 'docs/_generated/provider-coverage.md');
 
-async function regenerate(allowUndetermined = false): Promise<void> {
+async function regenerate(): Promise<void> {
   const source = readFileSync(REGISTER_PROVIDERS_PATH, 'utf8');
   const registered = parseRegisteredTypes(source);
   console.error(`[audit] parsed ${registered.size} registered SDK Providers`);
@@ -624,7 +634,7 @@ async function regenerate(allowUndetermined = false): Promise<void> {
       },
     });
 
-    assertReportIsComplete(report, allowUndetermined);
+    assertReportIsComplete(report);
 
     atomicWriteFile(OUTPUT_JSON, JSON.stringify(report, null, 2) + '\n');
     atomicWriteFile(OUTPUT_MARKDOWN, renderMarkdown(report));
@@ -698,7 +708,8 @@ export function checkCachedAgainstSource(
 export function runCheck(
   io: CliIO = consoleIO,
   jsonPath: string = OUTPUT_JSON,
-  sourcePath: string = REGISTER_PROVIDERS_PATH
+  sourcePath: string = REGISTER_PROVIDERS_PATH,
+  markdownPath: string = OUTPUT_MARKDOWN
 ): void {
   let report: CoverageReport;
   try {
@@ -711,9 +722,13 @@ export function runCheck(
     return;
   }
   // An UNDETERMINED type in the committed report is a CI failure in its own
-  // right: the write-side refusal is skippable with --allow-undetermined, so
-  // without this the gate would pass over a report that admits it could not
-  // classify something. The tier lists are read as facts downstream.
+  // right. `assertReportIsComplete` should have stopped it being written, so
+  // reaching here means the report was hand-edited or produced by an older
+  // build — and the tier lists are read as FACTS downstream, with tier 3
+  // codegen'd into a pre-flight refusal. Checked BEFORE the tier-1 drift
+  // compare because an unclassifiable type makes every other verdict in the
+  // report provisional; both are reported, so a run does not have to be
+  // repeated to see the second one.
   const unresolved = report.undetermined ?? [];
   if (unresolved.length > 0) {
     io.error(
@@ -724,12 +739,34 @@ export function runCheck(
     }
     io.error('[audit] re-run `vp run audit:coverage:regenerate`');
     io.setExitCode(1);
-    return;
+    // fall through: a tier-1 drift found in the same run is reported too
+  }
+  // The committed MARKDOWN must be what `renderMarkdown` produces from the
+  // committed JSON. Nothing checked that before, and the gap bit immediately:
+  // this PR corrected a false sentence in `renderMarkdown` ("or DescribeType
+  // failed") and shipped the artifact still carrying it, because editing the
+  // generator does not touch its output. `renderMarkdown` is pure over the
+  // JSON, so the check is offline and exact.
+  let markdown: string | undefined;
+  try {
+    markdown = readFileSync(markdownPath, 'utf8');
+  } catch {
+    io.error(`[audit] cannot read ${markdownPath}`);
+    io.setExitCode(1);
+  }
+  if (markdown !== undefined && markdown !== renderMarkdown(report)) {
+    io.error(
+      '[audit] docs/_generated/provider-coverage.md does not match what renderMarkdown ' +
+        'produces from the committed JSON — the generator was edited without re-rendering ' +
+        'its output, or the file was hand-edited.'
+    );
+    io.error('[audit] re-run `vp run audit:coverage:regenerate`, or re-render offline');
+    io.setExitCode(1);
   }
   const source = readFileSync(sourcePath, 'utf8');
   const registered = parseRegisteredTypes(source);
   const result = checkCachedAgainstSource(report.tier1, registered);
-  if (result.ok) {
+  if (result.ok && unresolved.length === 0 && markdown === renderMarkdown(report)) {
     io.log(
       `Cached Tier 1 (${report.tier1.length} types) matches register-providers.ts (${registered.size} types).`
     );
@@ -759,7 +796,7 @@ export function runCheck(
 export type CliMode =
   | { kind: 'help' }
   | { kind: 'summary' }
-  | { kind: 'regenerate'; allowUndetermined: boolean }
+  | { kind: 'regenerate' }
   | { kind: 'check' }
   | { kind: 'error'; message: string };
 
@@ -773,14 +810,7 @@ export function parseCliArgs(args: readonly string[]): CliMode {
       message: '--regenerate and --check are mutually exclusive; pass at most one',
     };
   }
-  const allowUndetermined = args.includes('--allow-undetermined');
-  if (allowUndetermined && !wantRegenerate) {
-    return {
-      kind: 'error',
-      message: '--allow-undetermined is only meaningful with --regenerate',
-    };
-  }
-  if (wantRegenerate) return { kind: 'regenerate', allowUndetermined };
+  if (wantRegenerate) return { kind: 'regenerate' };
   if (wantCheck) return { kind: 'check' };
   return { kind: 'summary' };
 }
@@ -794,11 +824,6 @@ const HELP_TEXT = [
   '                 rewrite docs/_generated/provider-coverage.{json,md}.',
   '                 Requires AWS credentials with cloudformation:ListTypes',
   '                 and cloudformation:DescribeType. ~10-30 minutes cold.',
-  '  --allow-undetermined',
-  '                 With --regenerate only: write the report even though some',
-  '                 types could not be classified. They stay listed under',
-  '                 `undetermined` and --check keeps refusing them, so this',
-  '                 records a permanent gap rather than hiding one.',
   '  --check        Verify the cached Tier 1 list matches the current',
   '                 src/provisioning/register-providers.ts. Exits 1 on',
   '                 drift; intended for CI gates / pre-commit hooks.',
@@ -817,7 +842,7 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     case 'regenerate':
-      await regenerate(mode.allowUndetermined);
+      await regenerate();
       return;
     case 'check':
       runCheck();

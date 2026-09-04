@@ -245,16 +245,32 @@ describe('isRetryableDescribeTypeError', () => {
       // MESSAGE arm only — no `code`, and a name of plain `Error`. This is the
       // measured shape (issue #2571).
       ['message only: socket hang up', new Error('socket hang up')],
-      ['message only: ECONNRESET', new Error('read ECONNRESET')],
-      ['message only: EAI_AGAIN', new Error('getaddrinfo EAI_AGAIN')],
       // CODE arm only — the message deliberately says nothing the regex knows.
-      ['code only: EPIPE', Object.assign(new Error('write failed'), { code: 'EPIPE' })],
+      // Every errno token gets BOTH shapes. The first split fixed the mutual
+      // masking between the two arms but left each TOKEN in one arm only, so
+      // dropping an individual entry from either list stayed green.
+      ...(
+        ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND'] as const
+      ).flatMap(
+        (code) =>
+          [
+            [`code only: ${code}`, Object.assign(new Error('operation failed'), { code })],
+            [`message only: ${code}`, new Error(`connect ${code} 10.0.0.1:443`)],
+          ] as const
+      ),
+      // ...and one row in the REAL Node shape, where both are set at once.
       [
-        'code only: ECONNREFUSED',
-        Object.assign(new Error('connect failed'), { code: 'ECONNREFUSED' }),
+        'both: read ECONNRESET with code',
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
       ],
-      ['code only: ENOTFOUND', Object.assign(new Error('lookup failed'), { code: 'ENOTFOUND' })],
-      ['code only: ETIMEDOUT', Object.assign(new Error('gave up'), { code: 'ETIMEDOUT' })],
+      // The undici shape: the top frame says nothing and the errno is one hop
+      // down in `cause`.
+      [
+        'cause: fetch failed wrapping ECONNRESET',
+        Object.assign(new Error('fetch failed'), {
+          cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+        }),
+      ],
     ] as const) {
       expect(isRetryableDescribeTypeError(err), label).toBe(true);
     }
@@ -282,6 +298,16 @@ describe('isRetryableDescribeTypeError', () => {
         ),
       ],
       ['a property called timeout', named('ValidationException', 'Invalid property: timeout')],
+      // A cause chain whose bottom is still permanent must stay refused, or the
+      // hop becomes a way in for every wrapped AccessDenied.
+      [
+        'cause: a wrapped permission denial',
+        Object.assign(new Error('request failed'), {
+          cause: Object.assign(new Error('User is not authorized'), {
+            name: 'AccessDeniedException',
+          }),
+        }),
+      ],
       ['not an error at all', 'not an error'],
       ['undefined', undefined],
     ] as const) {
@@ -315,9 +341,14 @@ describe('assertReportIsComplete', () => {
     expect(() =>
       assertReportIsComplete({ ...base, undetermined: ['AWS::Foo::Bar', 'AWS::Baz::Qux'] })
     ).toThrow(/AWS::Foo::Bar[\s\S]*AWS::Baz::Qux/);
+    // The COUNT, pinned exactly: `/2 type|1 type\(s\)/` accepted a wrong count
+    // of 2 for a one-element list.
     expect(() => assertReportIsComplete({ ...base, undetermined: ['AWS::Foo::Bar'] })).toThrow(
-      /2 type|1 type\(s\) could not be classified/
+      /^\[audit\] 1 type\(s\) could not be classified/
     );
+    expect(() =>
+      assertReportIsComplete({ ...base, undetermined: ['AWS::A::A', 'AWS::B::B', 'AWS::C::C'] })
+    ).toThrow(/^\[audit\] 3 type\(s\) could not be classified/);
   });
 
   it('accepts a complete report — both the ABSENT and the EMPTY spelling', () => {
@@ -327,12 +358,15 @@ describe('assertReportIsComplete', () => {
     expect(() => assertReportIsComplete({ ...base, undetermined: [] })).not.toThrow();
   });
 
-  it('--allow-undetermined suppresses the refusal without hiding the types', () => {
+  it('has no escape hatch — a second argument cannot suppress the refusal', () => {
+    // A `--allow-undetermined` flag was drafted and withdrawn: `runCheck`
+    // refuses any committed report listing one and runs on every PR, so a
+    // report written through the hatch would have left `main` permanently red.
+    // Pinned as a case because a future reader will have the same idea.
     const report = { ...base, undetermined: ['AWS::Foo::Bar'] };
-    expect(() => assertReportIsComplete(report, true)).not.toThrow();
-    // ...and the escape hatch does not strip the record, so `--check` still
-    // refuses it. That is what makes it a declared gap rather than a hidden one.
-    expect(report.undetermined).toEqual(['AWS::Foo::Bar']);
+    expect(() =>
+      (assertReportIsComplete as (r: CoverageReport, allow?: boolean) => void)(report, true)
+    ).toThrow(/could not be classified/);
   });
 });
 
@@ -834,7 +868,7 @@ describe('parseCliArgs', () => {
   });
 
   it('returns regenerate / check / summary modes', () => {
-    expect(parseCliArgs(['--regenerate'])).toEqual({ kind: 'regenerate', allowUndetermined: false });
+    expect(parseCliArgs(['--regenerate'])).toEqual({ kind: 'regenerate' });
     expect(parseCliArgs(['--check'])).toEqual({ kind: 'check' });
     expect(parseCliArgs([])).toEqual({ kind: 'summary' });
   });
@@ -946,11 +980,19 @@ describe('summarizeCachedReport', () => {
 describe('runCheck', () => {
   function setupFixture(
     tier1: string[],
-    sourceLines: string[]
-  ): { dir: string; jsonPath: string; sourcePath: string; cleanup: () => void } {
+    sourceLines: string[],
+    extra: { undetermined?: string[]; markdown?: string } = {}
+  ): {
+    dir: string;
+    jsonPath: string;
+    sourcePath: string;
+    markdownPath: string;
+    cleanup: () => void;
+  } {
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-audit-test-'));
     const jsonPath = join(dir, 'report.json');
     const sourcePath = join(dir, 'register-providers.ts');
+    const markdownPath = join(dir, 'report.md');
     const report: CoverageReport = {
       schemaVersion: 1,
       generatedAt: '2026-05-16T00:00:00.000Z',
@@ -958,14 +1000,88 @@ describe('runCheck', () => {
       tier1,
       tier2: [],
       tier3: [],
+      ...(extra.undetermined && { undetermined: extra.undetermined }),
     };
     atomicWriteFile(jsonPath, JSON.stringify(report));
     atomicWriteFile(sourcePath, sourceLines.join('\n'));
-    return { dir, jsonPath, sourcePath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    // The markdown defaults to what the generator produces, so a case that is
+    // not ABOUT the markdown is not accidentally testing it.
+    atomicWriteFile(markdownPath, extra.markdown ?? renderMarkdown(report));
+    return {
+      dir,
+      jsonPath,
+      sourcePath,
+      markdownPath,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    };
   }
 
+  it('refuses a cached report that lists an unclassified type', () => {
+    // Gap 1 from the round-2 review: this arm was completely unfenced —
+    // replacing its condition with `if (false)` left the suite green — while it
+    // is the only thing that stops an unclassifiable type reaching consumers
+    // that read the tier lists as facts. Tier 1 MATCHES here, so without the
+    // arm the run exits 0.
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::IAM::Role', new R());`],
+      { undetermined: ['AWS::Foo::Bar'] }
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, jsonPath, sourcePath, markdownPath);
+      expect(io.exitCode).toBe(1);
+      expect(io.errors.join('\n')).toContain('AWS::Foo::Bar');
+      // ...and it must NOT also report success.
+      expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('refuses a committed markdown that its own generator would not produce', () => {
+    // The gap that let this PR ship a corrected generator beside an uncorrected
+    // artifact: editing `renderMarkdown` does not touch its output, and nothing
+    // compared the two. Tier 1 matches and nothing is undetermined, so the
+    // markdown mismatch is the only reason to fail.
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::IAM::Role', new R());`],
+      { markdown: '# stale, hand-edited\n' }
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, jsonPath, sourcePath, markdownPath);
+      expect(io.exitCode).toBe(1);
+      expect(io.errors.join('\n')).toMatch(/does not match what renderMarkdown produces/);
+      expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reports an unclassified type AND a tier-1 drift in the same run', () => {
+    // The arm falls through rather than early-returning, so one run surfaces
+    // both problems instead of making the operator re-run to see the second.
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::S3::Bucket', new B());`],
+      { undetermined: ['AWS::Foo::Bar'] }
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, jsonPath, sourcePath, markdownPath);
+      expect(io.exitCode).toBe(1);
+      const errors = io.errors.join('\n');
+      expect(errors).toContain('AWS::Foo::Bar');
+      expect(errors).toContain('AWS::S3::Bucket');
+    } finally {
+      cleanup();
+    }
+  });
+
   it('passes when cached Tier 1 matches register-providers.ts', () => {
-    const { jsonPath, sourcePath, cleanup } = setupFixture(
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
       ['AWS::IAM::Role', 'AWS::S3::Bucket'],
       [
         `registry.register('AWS::IAM::Role', new R());`,
@@ -974,7 +1090,7 @@ describe('runCheck', () => {
     );
     try {
       const io = makeFakeIO();
-      runCheck(io, jsonPath, sourcePath);
+      runCheck(io, jsonPath, sourcePath, markdownPath);
       expect(io.exitCode).toBeUndefined();
       expect(io.logs.join('\n')).toMatch(/matches register-providers\.ts/);
     } finally {
@@ -983,7 +1099,7 @@ describe('runCheck', () => {
   });
 
   it('fails with exit code 1 when source has a provider not in cache', () => {
-    const { jsonPath, sourcePath, cleanup } = setupFixture(
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
       ['AWS::IAM::Role'],
       [
         `registry.register('AWS::IAM::Role', new R());`,
@@ -992,7 +1108,7 @@ describe('runCheck', () => {
     );
     try {
       const io = makeFakeIO();
-      runCheck(io, jsonPath, sourcePath);
+      runCheck(io, jsonPath, sourcePath, markdownPath);
       expect(io.exitCode).toBe(1);
       const errOutput = io.errors.join('\n');
       expect(errOutput).toMatch(/types NOT in the cached Tier 1/);
@@ -1004,13 +1120,13 @@ describe('runCheck', () => {
   });
 
   it('fails when cache has a provider gone from source', () => {
-    const { jsonPath, sourcePath, cleanup } = setupFixture(
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
       ['AWS::IAM::Role', 'AWS::Stale::Removed'],
       [`registry.register('AWS::IAM::Role', new R());`]
     );
     try {
       const io = makeFakeIO();
-      runCheck(io, jsonPath, sourcePath);
+      runCheck(io, jsonPath, sourcePath, markdownPath);
       expect(io.exitCode).toBe(1);
       const errOutput = io.errors.join('\n');
       expect(errOutput).toMatch(/types NOT in register-providers\.ts/);

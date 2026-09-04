@@ -1634,7 +1634,7 @@ No dedicated SDK Provider, but `ProvisioningType` is `FULLY_MUTABLE` or `IMMUTAB
 
 ## Tier 3 — Not provisionable by cdkd today
 
-`ProvisioningType` is `NON_PROVISIONABLE` (or DescribeType failed). Cloud Control API cannot create / update / delete these types; cdkd cannot support them at all without a dedicated SDK Provider. Most entries here are inherently read-only or registry-only types (`AWS::*::*Type`, data-only resources, etc.) and are NOT realistic targets for a provider.
+`ProvisioningType` is `NON_PROVISIONABLE`. (A type whose `DescribeType` could not be resolved is NOT here — it is recorded under `undetermined` and the regeneration refuses to write the report at all, because a guess in this tier becomes a committed pre-flight refusal.) Cloud Control API cannot create / update / delete these types; cdkd cannot support them at all without a dedicated SDK Provider. Most entries here are inherently read-only or registry-only types (`AWS::*::*Type`, data-only resources, etc.) and are NOT realistic targets for a provider.
 
 - `AWS::AmazonMQ::ConfigurationAssociation`
 - `AWS::Amplify::Jobs`
