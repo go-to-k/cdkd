@@ -1,6 +1,6 @@
 ---
 title: "Deploy: waits & concurrency"
-description: "Deploy-time wait and concurrency flags — the concurrency knobs, the per-resource-type wait-semantics table, and --no-wait / --full-wait."
+description: "cdkd deploy wait and concurrency flags — the concurrency knobs, the per-resource-type wait-semantics table, and --no-wait / --full-wait."
 ---
 
 # Deploy: waits & concurrency

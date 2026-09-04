@@ -34,6 +34,8 @@ The detailed per-command / per-flag reference is split across these pages:
 - **[`cdkd drift`](cli-drift.md)** — detecting and resolving drift against live
   AWS resources.
 - **[`cdkd rollback`](cli-rollback.md)** — reverting a failed deploy.
+- **[`cdkd force-unlock`](cli-force-unlock.md)** — clearing a lock a crashed or
+  cancelled run left behind.
 - **[`cdkd export`](cli-export.md)** — handing a stack over to CloudFormation.
 - **[`cdkd scrub`](cli-scrub.md)** — state secret hygiene (clean + audit).
 - **[`cdkd publish-assets`](cli-publish-assets.md)** — synth + build + publish
