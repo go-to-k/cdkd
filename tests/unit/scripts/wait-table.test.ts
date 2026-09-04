@@ -59,25 +59,44 @@ describe('wait-table parser', () => {
 
   it('ignores a type named only in prose inside the section', () => {
     const rows = parseWaitTable(doc(11, 'Only `AWS::Prose::Only` routes differently.'));
+    expect(rows).toHaveLength(11);
     expect(rows.map((r) => r.type)).not.toContain('AWS::Prose::Only');
   });
 
   it('ignores a pipe-leading line inside a fenced block', () => {
     const fenced = ['```text', '| `AWS::Fenced::Thing` | a | b | c | d | e |', '```'].join('\n');
     const rows = parseWaitTable(doc(11, fenced));
+    expect(rows).toHaveLength(11);
     expect(rows.map((r) => r.type)).not.toContain('AWS::Fenced::Thing');
   });
 
   it('ignores a row of a DIFFERENT table in the same section', () => {
-    // The header binds to the first pipe line only, so a second table's rows
-    // would otherwise be read under this table's validated column order — and
-    // a short row yields an empty `--full-wait` cell, which the full-wait
-    // filter reads as "not the default".
+    // The header binds to the first pipe line, so a second table's rows would
+    // otherwise be read under this table's validated column order — and a short
+    // row yields an empty `--full-wait` cell, which the full-wait filter reads
+    // as "not the default".
     const foreign = ['| Type | Note |', '| --- | --- |', '| `AWS::Foreign::Thing` | zzz |'].join(
       '\n'
     );
     const rows = parseWaitTable(doc(11, foreign));
+    expect(rows).toHaveLength(11);
     expect(rows.map((r) => r.type)).not.toContain('AWS::Foreign::Thing');
+  });
+
+  it('ignores a SIX-column foreign table too, not just a short one', () => {
+    // Column count is only a proxy for table identity; the parser anchors on
+    // the contiguous run instead, so a same-width table below the real one is
+    // out of reach by class rather than by shape.
+    const foreign = [
+      '| Resource type | `--no-wait` | Default | `--full-wait` | CloudFormation | Terraform |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| `AWS::CloudFront::Distribution` | x | y | see above | z | z |',
+      '| `AWS::Foreign::Wide` | x | y | also affected | z | z |',
+    ].join('\n');
+    const rows = parseWaitTable(doc(11, foreign));
+    expect(rows).toHaveLength(11);
+    expect(rows.map((r) => r.type)).not.toContain('AWS::Foreign::Wide');
+    expect(rows.filter((r) => r.fullWait === 'see above')).toEqual([]);
   });
 
   it('refuses a moved column rather than silently reindexing', () => {
@@ -118,7 +137,9 @@ describe('wait-table parser', () => {
     const md = [doc(11), '', '## Next section', '', '| `AWS::After::Section` | a | b | c | d | e |']
       .join('\n')
       .replace(/\n{3,}/g, '\n\n');
-    expect(parseWaitTable(md).map((r) => r.type)).not.toContain('AWS::After::Section');
+    const rows = parseWaitTable(md);
+    expect(rows).toHaveLength(11);
+    expect(rows.map((r) => r.type)).not.toContain('AWS::After::Section');
   });
 
   it('parses the real docs/cli-deploy.md, and agrees with a direct read', () => {

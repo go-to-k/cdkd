@@ -68,11 +68,20 @@ export function parseWaitTable(md: string): WaitTableRow[] {
   const next = rest.indexOf('\n## ');
   const section = next >= 0 ? rest.slice(0, next) : rest;
 
+  // The table is the CONTIGUOUS run of pipe lines that begins at the section's
+  // first one. Anchoring on contiguity rather than on a per-row shape test is
+  // what makes a second table in the same section unreachable BY CLASS: an
+  // earlier cut discriminated by column COUNT, which is only a proxy for table
+  // identity, and a six-column foreign table would have walked straight through
+  // it. The section does hold sub-headings, so a future table under one of them
+  // is a real shape, not a hypothetical.
   const rows: WaitTableRow[] = [];
   let header: string[] | null = null;
   let rowCount = 0;
+  let done = false;
   let fence: string | null = null;
   for (const line of section.split('\n')) {
+    if (done) break;
     // A fenced block can hold pipe-leading lines that are not table rows.
     const fenceMark = /^ {0,3}(```+|~~~+)/.exec(line);
     if (fenceMark) {
@@ -80,21 +89,19 @@ export function parseWaitTable(md: string): WaitTableRow[] {
       else if (line.trimStart().startsWith(fence)) fence = null;
       continue;
     }
-    if (fence !== null || !line.startsWith('|')) continue;
+    if (fence !== null) continue;
+    if (!line.startsWith('|')) {
+      if (header !== null) done = true; // the run ended; anything after is a different table
+      continue;
+    }
 
     const cells = splitRow(line);
     if (header === null) {
       header = cells;
       continue;
     }
-    // A row of a DIFFERENT table in the same section must not be read under
-    // this table's validated column order — `header` binds to the first pipe
-    // line only, so nothing else would catch it. Measured: a two-column
-    // `| Type | Note |` table admitted a fake type with an empty `--full-wait`
-    // cell, which the filter reads as "not the default" and counts as affected.
-    if (cells.length !== EXPECTED_HEADER.length) continue;
     const types = cells[0]?.match(/AWS::[A-Za-z0-9]+::[A-Za-z0-9]+/g) ?? [];
-    if (types.length === 0) continue; // also drops the `| --- |` separator
+    if (types.length === 0) continue; // drops the `| --- |` separator
     rowCount += 1;
     for (const type of types) rows.push({ type, fullWait: cells[3] ?? '' });
   }
