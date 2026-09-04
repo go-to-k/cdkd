@@ -18,7 +18,7 @@
  *
  * The per-target plan surfaces a **DATA LOSS** prefix for stateful
  * targets (those with a non-null `statefulReason` after the live
- * `s3:ListObjectsV2` probe — see issue [#648]); these reached pre-flight
+ * `s3:ListObjectVersions` probe — see issue [#648]); these reached pre-flight
  * only because the user opted in with `--force-stateful-recreation`,
  * so the prompt's **DATA LOSS** wording is the third "stop and think"
  * moment.
