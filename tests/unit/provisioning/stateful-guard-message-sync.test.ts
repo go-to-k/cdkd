@@ -99,7 +99,14 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
     const marker = 'requires replacement (immutable property changed: ';
     const start = DEPLOY_ENGINE.indexOf(marker);
     expect(start, 'the property-driven refusal template moved').toBeGreaterThan(0);
-    const refusal = DEPLOY_ENGINE.slice(start, start + 500);
+    // Bounded by the error CODE that closes the same `new CdkdError(...)`
+    // rather than by a character count: a magic window leaves a tail the flag
+    // name could reappear in, and grows into a false RED if the template does.
+    const end = DEPLOY_ENGINE.indexOf("'STATEFUL_REPLACE_BLOCKED'", start);
+    expect(end, 'the refusal no longer closes with STATEFUL_REPLACE_BLOCKED').toBeGreaterThan(
+      start
+    );
+    const refusal = DEPLOY_ENGINE.slice(start, end);
     expect(
       refusal,
       'the property-driven refusal no longer names --force-stateful-recreation — the ' +

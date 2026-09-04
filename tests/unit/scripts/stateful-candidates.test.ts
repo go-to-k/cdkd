@@ -552,7 +552,6 @@ describe('the pure derivation functions', () => {
     ]) {
       expect(md, `renderMarkdown dropped the row: ${row}`).toContain(row);
     }
-    // The signal table carries a real COUNT per signal, not a constant.
     // The signal table, in DECLARATION order and as one block. Per-row
     // `toMatch` is order-blind, and the counts are not all distinct, so a
     // transposition among like-valued rows survived it.
