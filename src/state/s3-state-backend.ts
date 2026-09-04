@@ -25,6 +25,7 @@ import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { displaySafe } from '../utils/display-safe.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
@@ -555,18 +556,22 @@ export class S3StateBackend {
         // delete — but the outcome is issue #2550's symptom exactly: a record
         // surviving a destroy that reported success. Say it at WARN so it is
         // not a silent no-op the way the original bug was.
-        // `stackName` reaches here from an S3 key segment, and this message
-        // both prints it and builds a pasteable command — the class issue
-        // #2170 closed for the force-unlock hint.
+        // Deliberately just the fact. Earlier drafts named the S3 key, built
+        // a pasteable `cdkd state orphan <name>` and prescribed a permission
+        // grant; every one of those clauses was a defect. The key embeds the
+        // raw stack name, so rendering it re-opened the injection the other
+        // clauses had sanitized. `displaySafe` keeps `'`, so the quoted
+        // command could be broken out of — and it maps non-ASCII to a space,
+        // so the name in it may not be the stack's. The remedy needs
+        // `s3:ListBucket`, which is the permission whose absence produces the
+        // commonest instance of this warning. The operator knows the stack
+        // they just destroyed; what they cannot see is that a record may have
+        // survived it.
         const safeName = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
         this.logger.warn(
           `Could not read the legacy state record for '${safeName}' while cleaning up ` +
-            `(${legacyProbe.reason}). If one exists it was left in place; check ` +
-            `s3://${this.config.bucket}/${this.getLegacyStateKey(stackName)} and remove it ` +
-            `with: cdkd state orphan '${safeName}'\n` +
-            `A principal without s3:ListBucket sees a MISSING object as AccessDenied, so ` +
-            `this can appear on every destroy — grant it to silence the case where there ` +
-            `is nothing to clean up.`
+            `(${legacyProbe.reason}). If one exists it was left in place. ` +
+            `Re-run with --verbose for the underlying error.`
         );
       }
       if (legacyProbeBelongsTo(legacyProbe, region)) {
@@ -1189,9 +1194,14 @@ export class S3StateBackend {
     } catch (error) {
       if (isNoSuchKey(error)) return { kind: 'absent' };
       // Don't fail the whole list on a single bad legacy file — log & skip.
-      const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      this.logger.debug(`Could not read legacy state region for '${stackName}': ${reason}`);
-      return { kind: 'unreadable', reason };
+      // The class at default verbosity, AWS's own text at debug: on this
+      // warning's headline population S3 words `AccessDenied` as `User:
+      // arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized
+      // to perform: ...`, so the summary is what may be printed and the detail
+      // is not.
+      const { summary, detail } = describeAwsFailure(error);
+      this.logger.debug(`Could not read legacy state region for '${stackName}': ${detail}`);
+      return { kind: 'unreadable', reason: summary };
     }
   }
 

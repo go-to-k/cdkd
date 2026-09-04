@@ -838,15 +838,67 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // principal without s3:ListBucket sees a MISSING object as
       // AccessDenied), so a warn on any other kind would be noise on every
       // destroy of every stack.
-      beforeEach(() => {
-        childLoggerMock.warn.mockClear();
+      // No local reset: the enclosing suite's beforeEach already runs
+      // vi.clearAllMocks(), which clears this hoisted mock.
+      // Only the warning under test: `deleteState`'s journal sweep emits its
+      // own unrelated warning under these mocks, and asserting over the joined
+      // text would let that one satisfy — or falsify — assertions about this
+      // one.
+      const warnings = (): string =>
+        childLoggerMock.warn.mock.calls
+          .map((c: unknown[]) => String(c[0]))
+          .filter((m: string) => m.includes('Could not read the legacy state record'))
+          .join('\n');
+
+      it('warns with the error CLASS when the probe cannot be read', async () => {
+        s3Client.send.mockResolvedValueOnce({}); // delete new key
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(
+            new Error(
+              'User: arn:aws:sts::123456789012:assumed-role/deployer/session-42 is not authorized'
+            ),
+            { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }
+          )
+        );
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const warned = warnings();
+        expect(warned).toMatch(/Could not read the legacy state record for 'S'/);
+        expect(warned).toContain('AccessDenied');
+        expect(warned).toMatch(/left in place/);
       });
 
-      const warnings = (): string =>
-        childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+      it('keeps AWS\'s own wording out of the warning', async () => {
+        // On this warning's headline population S3 words AccessDenied as
+        // `User: arn:aws:sts::<account>:assumed-role/<role>/<session> ...`, so
+        // printing its message writes the caller's account, role and session
+        // into terminal and CI output on every destroy.
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(
+            new Error(
+              'User: arn:aws:sts::123456789012:assumed-role/deployer/session-42 is not authorized'
+            ),
+            { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }
+          )
+        );
 
-      it('warns, naming the cause and the remedy, when the probe cannot be read', async () => {
-        s3Client.send.mockResolvedValueOnce({}); // delete new key
+        await backend.deleteState('S', 'us-east-1');
+
+        const warned = warnings();
+        expect(warned).not.toContain('123456789012');
+        expect(warned).not.toContain('assumed-role');
+        expect(warned).not.toContain('session-42');
+      });
+
+      it('suggests no command and prescribes no permission', async () => {
+        // Three review rounds of defects came from trying: the S3 key embeds
+        // the raw stack name, `displaySafe` keeps `'` so a quoted command can
+        // be broken out of, it maps non-ASCII to a space so the name may not
+        // be the stack's, and the remedy needs the very permission whose
+        // absence produces the commonest instance of this warning.
+        s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockRejectedValueOnce(
           Object.assign(new Error('denied'), { name: 'AccessDenied' })
         );
@@ -854,12 +906,30 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         await backend.deleteState('S', 'us-east-1');
 
         const warned = warnings();
-        expect(warned).toMatch(/Could not read the legacy state record for 'S'/);
-        // The cause, so the recurring no-ListBucket case is self-diagnosing
-        // rather than an unattributable line on every run.
-        expect(warned).toContain('AccessDenied');
-        expect(warned).toContain('s3:ListBucket');
-        expect(warned).toMatch(/cdkd state orphan 'S'/);
+        expect(warned).not.toContain('cdkd state orphan');
+        expect(warned).not.toContain('s3:ListBucket');
+        expect(warned).not.toContain('s3://');
+      });
+
+      it('warns for a body it could not classify, without the AWS advice', async () => {
+        // `reason` also carries the two non-throwing unreadable shapes. They
+        // are not permission problems, so nothing in the message may read as
+        // one.
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                JSON.stringify({ version: 1, stackName: 'S', region: 123, resources: {}, outputs: {}, lastModified: 1 })
+              ),
+          },
+        });
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const warned = warnings();
+        expect(warned).toMatch(/not a string/);
+        expect(warned).not.toContain('s3:ListBucket');
       });
 
       it('stays silent when the legacy key is simply absent', async () => {
