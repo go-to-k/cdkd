@@ -5,6 +5,13 @@
 
 * **utils:** spread awsClientDefaults() at every client site, including the dynamic-import ones ([#2465](https://github.com/go-to-k/cdkd/issues/2465)) ([9d353b4](https://github.com/go-to-k/cdkd/commit/9d353b472ca81c1c66918d110b38c0f4f0dbd34e))
 
+## [0.285.14](https://github.com/go-to-k/cdkd/compare/v0.285.13...v0.285.14) (2026-09-04)
+
+
+### Bug Fixes
+
+* **resolver:** resolve {{resolve:ssm-secure:...}} instead of sending the literal token to AWS ([#2492](https://github.com/go-to-k/cdkd/issues/2492)) ([f30da72](https://github.com/go-to-k/cdkd/commit/f30da724dc78df0c65af29862fc292a473fc518d))
+
 ## [0.285.12](https://github.com/go-to-k/cdkd/compare/v0.285.11...v0.285.12) (2026-09-03)
 
 
