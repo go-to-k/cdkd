@@ -74,7 +74,7 @@ const alwaysTable = tableRowsBetween(
 );
 const conditionalTable = tableRowsBetween(
   '### Conditionally stateful types',
-  '### How S3 buckets are judged'
+  '### How the conditional types are judged'
 );
 
 describe('STATEFUL_TYPES (#615)', () => {
@@ -465,7 +465,7 @@ describe('STATEFUL_TYPES (#615)', () => {
       // future third reason kind on the conditional side. Enumerating the kinds
       // makes the addition of one red here, where the message names it.
       // Several bag shapes, or the retention kind never appears and the
-      // enumeration silently covers three of the four documented values.
+      // enumeration silently covers a subset of the documented values.
       const bags = [{}, { RetentionInDays: 30 }, undefined];
       const kinds = new Set(
         [...STATEFUL_TYPES].flatMap((t) =>
@@ -477,6 +477,7 @@ describe('STATEFUL_TYPES (#615)', () => {
       );
       expect([...kinds].map(String).sort()).toEqual([
         'always',
+        'has-log-events',
         'has-objects',
         'has-retention',
         'null',
@@ -518,12 +519,18 @@ describe('isStatefulRecreateTargetSync (#615)', () => {
       ).toBe('has-retention');
     });
 
-    it('returns null when RetentionInDays is 0 or absent', () => {
-      // RetentionInDays=0 is "infinite" in CFn semantics — but it's also
-      // a clean "no retention configured" sentinel for the guard's purposes
-      // (the test below covers infinite separately).
-      // Actually 0 is reserved in CFn; the documented values are 1, 3, ...
-      // — 0 should be treated as "absent" for our guard.
+    it('DEFERS (null) when RetentionInDays is 0 or absent — issue #2558', () => {
+      // `null` here is the S3 bucket's meaning of `null`: the bag cannot
+      // answer, so the live `DescribeLogStreams` probe decides. It is NOT
+      // "the log group holds nothing" — an unset or zero `RetentionInDays`
+      // is CloudWatch Logs' never-expire, and `LogsLogGroupProvider` records
+      // `0` for exactly that. Reading it as "not stateful" is what destroyed
+      // a never-expiring log group on a plain `cdkd deploy`.
+      //
+      // The polarity that PROVES this is a deferral rather than a pass is in
+      // `isStatefulRecreateTargetForReplace` below (mid-deploy, no probe
+      // opportunity -> `'has-log-events'`) and in the probe's own suite in
+      // `tests/unit/deployment/recreate-targets.test.ts`.
       expect(isStatefulRecreateTargetSync('AWS::Logs::LogGroup', {})).toBe(null);
       expect(
         isStatefulRecreateTargetSync('AWS::Logs::LogGroup', { LogGroupName: 'x' })
@@ -533,7 +540,7 @@ describe('isStatefulRecreateTargetSync (#615)', () => {
       ).toBe(null);
     });
 
-    it('returns null when properties is undefined', () => {
+    it('defers when properties is undefined', () => {
       expect(isStatefulRecreateTargetSync('AWS::Logs::LogGroup', undefined)).toBe(null);
     });
   });
@@ -554,7 +561,14 @@ describe('renderStatefulReason', () => {
     expect(renderStatefulReason('always')).toMatch(/destroy loses all data/);
     expect(renderStatefulReason('has-objects')).toMatch(/non-empty/);
     expect(renderStatefulReason('has-retention')).toMatch(/retains data/);
+    expect(renderStatefulReason('has-log-events')).toMatch(/not provably empty/);
     expect(renderStatefulReason(null)).toBe('(not stateful)');
+    // The log-group reason renders on TWO different paths — a pre-flight probe
+    // that FOUND a stream, and a mid-deploy site that probed nothing — so the
+    // assertive phrasing its S3 sibling uses would be false on the second.
+    // Pinned, because "log group is non-empty" is the wording a future reword
+    // would reach for.
+    expect(renderStatefulReason('has-log-events')).not.toMatch(/is non-empty/);
   });
 });
 
@@ -574,11 +588,32 @@ describe('isStatefulRecreateTargetForReplace (--replace mid-deploy, no async pro
     expect(isStatefulRecreateTargetForReplace('AWS::RDS::DBInstance', {})).toBe('always');
   });
 
-  it('matches the sync variant for LogGroup (retention is resolvable from props, no conservatism)', () => {
+  it('keeps the sync verdict for a LogGroup the recorded retention already settles', () => {
     expect(
       isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', { RetentionInDays: 30 })
     ).toBe('has-retention');
-    expect(isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', {})).toBe(null);
+  });
+
+  it('treats a deferred LogGroup as stateful (cannot probe log streams mid-deploy) — issue #2558', () => {
+    // The fix's core polarity, and the one the old predicate got backwards: an
+    // unset or zero `RetentionInDays` is CloudWatch Logs' never-expire, so the
+    // mid-deploy sites — which include a PLAIN `cdkd deploy`'s property-driven
+    // replacement, reached with no flag at all — must refuse rather than
+    // DELETE + CREATE.
+    for (const bag of [
+      {},
+      { LogGroupName: 'x' },
+      { RetentionInDays: 0 },
+      // The provider's own never-expire placeholder, read back from the
+      // observed bag: `LogsLogGroupProvider` writes `0` for a log group with
+      // no retention policy.
+      { LogGroupName: 'x', RetentionInDays: 0 },
+      undefined,
+    ]) {
+      expect(isStatefulRecreateTargetForReplace('AWS::Logs::LogGroup', bag)).toBe(
+        'has-log-events'
+      );
+    }
   });
 
   it('returns null for non-stateful types (replace freely)', () => {

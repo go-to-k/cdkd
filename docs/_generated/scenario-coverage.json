@@ -1526,6 +1526,11 @@
       "scenarios": []
     },
     {
+      "name": "loggroup-never-expire-guard",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "macro-expansion",
       "annotated": true,
       "scenarios": [
@@ -2854,6 +2859,7 @@
     "local-start-service-watch-fast",
     "loggroup-class-guard",
     "loggroup-kms-associate",
+    "loggroup-never-expire-guard",
     "nested-stack",
     "nested-stack-deep",
     "nodejs-function",

@@ -218,6 +218,18 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     //                                 failure this fence exists for, and
     //                                 "which readers exist" is the checkable
     //                                 question; "which of them gate" is not.
+    //   recreate-confirm-prompt.ts -> NO row, same ADVISORY class as the
+    //                                 rollback reader, added by issue [#2558]'s
+    //                                 review round. It decides whether a target
+    //                                 in the `--recreate-via-*` plan carries
+    //                                 the **DATA LOSS** prefix; the REFUSAL for
+    //                                 that path is already the
+    //                                 `recreate-targets.ts` row above, and this
+    //                                 reader can only reach a target the guard
+    //                                 has already let through (it fires under
+    //                                 `--force-stateful-recreation`, which is
+    //                                 what makes the prompt reachable at all).
+    //                                 So it adds display, not a path.
     //
     // The scan covers the spellings the CURRENT readers use — the two
     // predicates and a direct `STATEFUL_TYPES.has(...)` — and no others.
@@ -288,8 +300,9 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     walk(srcDir);
     // Floor first: a walk that stopped seeing `src/` would make the equality
     // below hold at zero against a table that also could not be found.
-    expect(readers.length).toBeGreaterThanOrEqual(4);
+    expect(readers.length).toBeGreaterThanOrEqual(5);
     expect(readers.map((f) => f.slice(repoRoot.length + 1)).sort()).toEqual([
+      'src/cli/commands/recreate-confirm-prompt.ts',
       'src/deployment/deploy-engine.ts',
       'src/deployment/deploy-engine.ts',
       'src/deployment/recreate-targets.ts',

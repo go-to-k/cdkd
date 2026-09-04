@@ -23,6 +23,13 @@ import {
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3Client } from '@aws-sdk/client-s3';
+import {
+  ResourceNotFoundException,
+  type CloudWatchLogsClient,
+} from '@aws-sdk/client-cloudwatch-logs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 function res(
   resourceType: string,
@@ -258,32 +265,37 @@ describe('validateRecreateTargets (#615)', () => {
       expect(renderRecreateTargetsErrors(v)).toBeNull();
     });
 
-    it('LogGroup is conditional: blocked only when RetentionInDays > 0', () => {
+    it('LogGroup is conditional at SYNC time: retention blocks, no retention DEFERS to the probe', () => {
+      // The `null` on `UnprobedLogs` is a DEFERRAL, not a pass: this validator
+      // is the sync first-cut, and `probeAndRevalidateStateful` decides that
+      // target's fate a few lines later in `deploy.ts` (issue #2558 — an unset
+      // retention is CloudWatch Logs' never-expire, never "nothing to lose").
+      // The name says `Unprobed`, not `Ephemeral`, for exactly that reason.
       const template: CloudFormationTemplate = {
         Resources: {
           KeptLogs: { Type: 'AWS::Logs::LogGroup', Properties: {} },
-          EphemeralLogs: { Type: 'AWS::Logs::LogGroup', Properties: {} },
+          UnprobedLogs: { Type: 'AWS::Logs::LogGroup', Properties: {} },
         },
       };
       const state = st('S', {
         KeptLogs: res('AWS::Logs::LogGroup', {
           properties: { RetentionInDays: 30 },
         }),
-        EphemeralLogs: res('AWS::Logs::LogGroup', { properties: {} }),
+        UnprobedLogs: res('AWS::Logs::LogGroup', { properties: {} }),
       });
       const v = validateRecreateTargets({
         template,
         state,
-        recreateViaCcApi: ['KeptLogs', 'EphemeralLogs'],
+        recreateViaCcApi: ['KeptLogs', 'UnprobedLogs'],
         allowUnsupportedProperties: new Set(),
         forceStatefulRecreation: false,
       });
-      // Only KeptLogs blocked (RetentionInDays > 0); EphemeralLogs passes.
+      // Only KeptLogs is decided from the bag; UnprobedLogs awaits the probe.
       expect(v.blockedStatefulTargets).toHaveLength(1);
       expect(v.blockedStatefulTargets[0]!.logicalId).toBe('KeptLogs');
       expect(v.blockedStatefulTargets[0]!.statefulReason).toBe('has-retention');
-      const ephemeral = v.targets.find((t) => t.logicalId === 'EphemeralLogs');
-      expect(ephemeral?.statefulReason).toBe(null);
+      const unprobed = v.targets.find((t) => t.logicalId === 'UnprobedLogs');
+      expect(unprobed?.statefulReason).toBe(null);
     });
 
     it('S3 bucket is deferred to the async probe (sync target.statefulReason is null)', () => {
@@ -687,6 +699,42 @@ describe('validateRecreateTargets — #665 symmetric forward refusal (--recreate
   });
 });
 
+/**
+ * A validation carrying only the stateful slice, for the rendering assertions.
+ * Every other category is empty, so the rendered block is unambiguously the
+ * stateful refusal.
+ */
+function emptyValidation(
+  blocked: Array<RecreateTarget & { statefulReason: Exclude<RecreateTarget['statefulReason'], null> }>
+): Parameters<typeof renderRecreateTargetsErrors>[0] {
+  return {
+    targets: [...blocked],
+    unknownLogicalIds: [],
+    missingFromState: [],
+    ambiguousIntent: [],
+    ambiguousIntentSdk: [],
+    blockedStatefulTargets: blocked,
+    blockedMultiRegionTargets: [],
+    blockedAlreadySdk: [],
+    blockedAlreadyCcApi: [],
+    blockedNoSdkProvider: [],
+    conflictingDirections: [],
+  };
+}
+
+/**
+ * A CloudWatch Logs client for validations that contain no log-group target.
+ * Throwing rather than no-op'ing: a probe reaching it would mean the arm fired
+ * for a type it does not own.
+ */
+function noLogGroupTargets(): CloudWatchLogsClient {
+  return {
+    send: vi.fn(() => {
+      throw new Error('no log-group target in this validation');
+    }),
+  } as unknown as CloudWatchLogsClient;
+}
+
 describe('probeStatefulRecreateTargetsAsync (#648)', () => {
   function s3Target(overrides: Partial<RecreateTarget> = {}): RecreateTarget {
     return {
@@ -697,6 +745,23 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
       direction: 'to-cc-api',
       ...overrides,
     };
+  }
+
+  /**
+   * A CloudWatch Logs client that FAILS the test if it is ever used.
+   *
+   * Every case in this describe is about the S3 arm, so a log-group probe
+   * firing here would mean the type dispatch stopped discriminating — and
+   * since the log-group arm fails CLOSED, a stray call would silently promote
+   * a target rather than error. Throwing a distinctive message makes the
+   * mis-dispatch visible instead.
+   */
+  function forbiddenLogsClient(): CloudWatchLogsClient {
+    return {
+      send: vi.fn(() => {
+        throw new Error('the S3 arm must not touch the CloudWatch Logs client');
+      }),
+    } as unknown as CloudWatchLogsClient;
   }
 
   function mockS3({
@@ -737,27 +802,43 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
 
   it('promotes statefulReason to has-objects when the bucket has at least one current version', async () => {
     const { client } = mockS3({ versions: 1 });
-    const out = await probeStatefulRecreateTargetsAsync([s3Target()], client, silentLogger());
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
     expect(out).toHaveLength(1);
     expect(out[0]!.statefulReason).toBe('has-objects');
   });
 
   it('promotes statefulReason to has-objects when the bucket has only delete-markers (versioned bucket where current keys are soft-deleted)', async () => {
     const { client } = mockS3({ versions: 0, deleteMarkers: 1 });
-    const out = await probeStatefulRecreateTargetsAsync([s3Target()], client, silentLogger());
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
     expect(out[0]!.statefulReason).toBe('has-objects');
   });
 
   it('leaves statefulReason at null when ListObjectVersions returns no versions and no delete-markers', async () => {
     const { client } = mockS3({ versions: 0, deleteMarkers: 0 });
-    const out = await probeStatefulRecreateTargetsAsync([s3Target()], client, silentLogger());
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
     expect(out[0]!.statefulReason).toBe(null);
   });
 
   it('soft-fails on probe error — logs a warn and leaves the sync result in place', async () => {
     const { client } = mockS3({ throws: new Error('AccessDenied') });
     const logger = silentLogger();
-    const out = await probeStatefulRecreateTargetsAsync([s3Target()], client, logger);
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
+      logger
+    );
     expect(out[0]!.statefulReason).toBe(null);
     expect(logger.warn).toHaveBeenCalledTimes(1);
     const warnArg = logger.warn.mock.calls[0]![0] as string;
@@ -778,7 +859,7 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
           direction: 'to-cc-api',
         },
       ],
-      client,
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
       silentLogger()
     );
     expect(out[0]!.statefulReason).toBe(null);
@@ -789,11 +870,453 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
     const { client, sentCommands } = mockS3({ versions: 99 });
     const out = await probeStatefulRecreateTargetsAsync(
       [s3Target({ statefulReason: 'always' })],
-      client,
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
       silentLogger()
     );
     expect(out[0]!.statefulReason).toBe('always');
     expect(sentCommands).toHaveLength(0);
+  });
+});
+
+describe('probeStatefulRecreateTargetsAsync — AWS::Logs::LogGroup arm (#2558)', () => {
+  function logGroupTarget(overrides: Partial<RecreateTarget> = {}): RecreateTarget {
+    return {
+      logicalId: 'MyLogGroup',
+      resourceType: 'AWS::Logs::LogGroup',
+      physicalId: '/aws/lambda/my-fn',
+      // The sync predicate DEFERS for a log group whose recorded bag carries no
+      // positive retention — that deferral is what this probe resolves.
+      statefulReason: null,
+      direction: 'to-cc-api',
+      ...overrides,
+    };
+  }
+
+  function mockLogs({ streams, throws }: { streams?: number; throws?: Error }): {
+    client: CloudWatchLogsClient;
+    sentCommands: Array<{ logGroupName?: string; limit?: number }>;
+  } {
+    const sentCommands: Array<{ logGroupName?: string; limit?: number }> = [];
+    const send = vi.fn(async (cmd: { input?: { logGroupName?: string; limit?: number } }) => {
+      sentCommands.push(cmd.input ?? {});
+      if (throws) throw throws;
+      return {
+        logStreams: Array.from({ length: streams ?? 0 }, (_, i) => ({
+          logStreamName: `stream-${i}`,
+          // The field the probe must NOT read: AWS reports `storedBytes` as
+          // zero for every log STREAM since June 2019, so a byte-count probe
+          // would call this non-empty group empty.
+          storedBytes: 0,
+        })),
+      };
+    });
+    return { client: { send } as unknown as CloudWatchLogsClient, sentCommands };
+  }
+
+  /** An S3 client the log-group arm must never touch. */
+  function forbiddenS3Client(): S3Client {
+    return {
+      send: vi.fn(() => {
+        throw new Error('the LogGroup arm must not touch the S3 client');
+      }),
+    } as unknown as S3Client;
+  }
+
+  function silentLogger() {
+    return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  }
+
+  const probe = async (
+    target: RecreateTarget,
+    logs: { client: CloudWatchLogsClient },
+    logger = silentLogger()
+  ): Promise<RecreateTarget[]> =>
+    probeStatefulRecreateTargetsAsync(
+      [target],
+      { s3: forbiddenS3Client(), cloudWatchLogs: logs.client },
+      logger
+    );
+
+  it('promotes to has-log-events when the log group has at least one log stream', async () => {
+    const logs = mockLogs({ streams: 1 });
+    const logger = silentLogger();
+    const out = await probe(logGroupTarget(), logs, logger);
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    // Probed by NAME with a single-page limit — the recorded physical id IS the
+    // log group name, and a full listing on a busy group would be pointless.
+    expect(logs.sentCommands).toEqual([{ logGroupName: '/aws/lambda/my-fn', limit: 1 }]);
+    // SILENT: a stream is an ANSWER, so this arm must not emit the non-answer
+    // warning. Without this pin, collapsing the found-a-stream arm into the
+    // non-answer `else` would tell a user whose group demonstrably has a
+    // stream that the API "answered without settling it" — the same verdict
+    // reached by a wrong and misleading route, with nothing red.
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('leaves the deferral at null when the log group has no log streams', async () => {
+    // The polarity that keeps the condition CONDITIONAL: a genuinely disposable
+    // log group is still recreatable with no consent flag. Every event belongs
+    // to a stream, so zero streams proves the group holds none.
+    const logs = mockLogs({ streams: 0 });
+    const out = await probe(logGroupTarget(), logs);
+    expect(out[0]!.statefulReason).toBe(null);
+  });
+
+  it('fails CLOSED on probe error — warns AND promotes, unlike the S3 arm', async () => {
+    // The divergence from `ListObjectVersions`'s soft-fail is the point of
+    // issue #2558: an unprovable emptiness must not read as empty for a type
+    // whose default configuration is "never expire".
+    const logs = mockLogs({ throws: new Error('AccessDeniedException') });
+    const logger = silentLogger();
+    const out = await probe(logGroupTarget(), logs, logger);
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const warnArg = logger.warn.mock.calls[0]![0] as string;
+    expect(warnArg).toContain('MyLogGroup');
+    expect(warnArg).toContain('/aws/lambda/my-fn');
+    expect(warnArg).toContain('AccessDeniedException');
+    expect(warnArg).toContain('--force-stateful-recreation');
+  });
+
+  it('treats a MISSING log group as provably empty — the one error that is an answer', async () => {
+    // `ResourceNotFoundException` is not a failure to learn whether the group
+    // holds events; it IS the answer, so the fail-CLOSED rule does not apply
+    // and no warning is emitted. Constructed through the SDK's own class, since
+    // production narrows with `instanceof` — a plain `Error` carrying the same
+    // message must NOT take this arm, which the next assertion pins.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const logs = mockLogs({ throws: notFound });
+    const logger = silentLogger();
+    const out = await probe(logGroupTarget(), logs, logger);
+    expect(out[0]!.statefulReason).toBe(null);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('refuses the not-found inference when the client is in the WRONG region', async () => {
+    // `region-check.ts`'s whole purpose: a `ResourceNotFoundException` from a
+    // client pointed elsewhere says nothing about the recorded resource. The
+    // probe cannot throw (that is the delete path's answer), so it falls back
+    // to the fail-CLOSED arm and says why.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: () => Promise.resolve('eu-west-1') },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: 'us-east-1' },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    // Both regions named: the warning is only actionable if the user can see
+    // WHICH two disagree.
+    const warned = logger.warn.mock.calls[0]![0] as string;
+    expect(warned).toContain('eu-west-1');
+    expect(warned).toContain('us-east-1');
+  });
+
+  it('prints the recorded region FOLDED, not as stored', async () => {
+    // The message compares two values, so it has to show the two values that
+    // were compared: printing the raw record next to the folded client region
+    // renders `(  US-EAST-1 )` and reads as a difference the check did not
+    // actually make.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: () => Promise.resolve('eu-west-1') },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: '  US-EAST-1 ' },
+      logger
+    );
+    const warned = logger.warn.mock.calls[0]![0] as string;
+    expect(warned).toContain('(us-east-1)');
+    expect(warned).not.toContain('US-EAST-1');
+  });
+
+  it('skips the region check entirely for a whitespace-only recorded region', async () => {
+    // A blank record carries no information, so it must read as ABSENT (the
+    // documented back-compat no-op) rather than as a region to compare
+    // against — which is what `CloudControlProvider` does with its own.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    // A spy, not just a rejecting stub: the rejection would only prove there
+    // was no observable CONSEQUENCE of consulting the client, while the claim
+    // in this case's name is that it is not consulted at all.
+    const regionFn = vi.fn(() => Promise.reject(new Error('config.region() must not be consulted')));
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: regionFn },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: '   ' },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe(null);
+    expect(regionFn).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('does not THROW when the client region cannot be resolved — it fails closed', async () => {
+    // The probe's contract is that it never throws, and the only thing making
+    // that true for a rejecting `config.region()` is that the `await` sits
+    // INSIDE the try. Hoisting it out — the natural "resolve the region once"
+    // refactor — leaves every other case green, so this is the one that pins
+    // it. Measured: without the pin, that refactor passed the whole file.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: () => Promise.reject(new Error('Region is missing')) },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: 'us-east-1' },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    // The remedy has to match the CAUSE: nothing established a mismatch here,
+    // so the message must not tell the user to fix one.
+    const warned = logger.warn.mock.calls[0]![0] as string;
+    expect(warned).toMatch(/region could not be resolved/);
+    expect(warned).not.toMatch(/does not match/);
+  });
+
+  it('reports an EMPTY client region as unresolved, not as a mismatch', async () => {
+    // `assertRegionMatch`'s unknown-region branch keys on falsiness, so `''`
+    // takes the same path a rejection does — and `??` would have printed
+    // `the client region ()`.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: () => Promise.resolve('') },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: 'us-east-1' },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    expect(logger.warn.mock.calls[0]![0] as string).toMatch(/region could not be resolved/);
+  });
+
+  it('accepts a recorded region carrying stray whitespace', async () => {
+    // `canonicalizeRegion` only lower-cases; the trim is the other half of the
+    // fold `CloudControlProvider` applies, and without it a padded state record
+    // refuses a log group AWS says is gone.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: () => Promise.resolve('us-east-1') },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: '  us-east-1 ' },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe(null);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('accepts a region that differs only in CASE from the recorded one', async () => {
+    // A CDK manifest may spell the region `US-EAST-1` while the SDK resolves
+    // `us-east-1`, and `assertRegionMatch` compares with `!==`. Without the
+    // canonicalization an absent log group would be refused, and the refusal's
+    // remedy is the flag that clears the data guard for the whole run.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: () => Promise.resolve('us-east-1') },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: 'US-EAST-1' },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe(null);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('honours the not-found inference when the client region MATCHES the state region', async () => {
+    // The other polarity of the same guard — without it, a mutation that made
+    // the check always refuse would pass the case above.
+    const notFound = new ResourceNotFoundException({
+      message: 'The specified log group does not exist.',
+      $metadata: {},
+    });
+    const client = {
+      send: vi.fn(() => {
+        throw notFound;
+      }),
+      config: { region: () => Promise.resolve('us-east-1') },
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      { s3: forbiddenS3Client(), cloudWatchLogs: client, expectedRegion: 'us-east-1' },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe(null);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('does NOT take the not-found arm for a look-alike message on a plain Error', async () => {
+    // The discriminator is the TYPE, not the wording: a permission error
+    // phrased "... does not exist" must still fail closed. Without this, a
+    // future switch to a substring match would pass the case above.
+    const logs = mockLogs({ throws: new Error('The specified log group does not exist.') });
+    const logger = silentLogger();
+    const out = await probe(logGroupTarget(), logs, logger);
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to read an ABSENT logStreams field as empty', async () => {
+    // The SDK types `logStreams` optional
+    // (`DescribeLogStreamsResponse.logStreams?: LogStream[]`), so an omitted
+    // field is a legal response — and it says NOTHING about the group's
+    // contents. An earlier revision read it as zero streams via `?.length ?? 0`
+    // and passed the target through, which is the same "an unprovable
+    // emptiness reads as empty" mistake #2558 exists to retire, one shape over.
+    const client = {
+      send: vi.fn(async () => ({})),
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probe(logGroupTarget(), { client }, logger);
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const warned = String(logger.warn.mock.calls[0]![0]);
+    expect(warned).toContain('no logStreams field in the response');
+    // ACTIONABLE, to the same bar as the sibling probe-error warning below:
+    // which resource, which log group, and the flag that clears the guard. A
+    // warning naming only the shape leaves the user with no next step.
+    expect(warned).toContain('MyLogGroup');
+    expect(warned).toContain('/aws/lambda/my-fn');
+    expect(warned).toContain('--force-stateful-recreation');
+  });
+
+  it('refuses to read an EMPTY PAGE carrying a continuation token as empty', async () => {
+    // A `nextToken` means the listing is not finished, so this page's
+    // emptiness is not the GROUP's emptiness. `limit: 1` makes this unlikely
+    // in practice, but "unlikely" is not the standard a data guard gets to
+    // use, and the API contract permits it.
+    const client = {
+      send: vi.fn(async () => ({ logStreams: [], nextToken: 'more-pages' })),
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probe(logGroupTarget(), { client }, logger);
+    expect(out[0]!.statefulReason).toBe('has-log-events');
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const warned = String(logger.warn.mock.calls[0]![0]);
+    expect(warned).toContain('an empty page carrying a continuation token');
+    expect(warned).toContain('MyLogGroup');
+    expect(warned).toContain('/aws/lambda/my-fn');
+    expect(warned).toContain('--force-stateful-recreation');
+  });
+
+  it('clears the guard ONLY for a present, empty list with no continuation token', async () => {
+    // The one proof shape, pinned next to the two non-answers above so the
+    // pair cannot both be satisfied by a blanket "always promote". Without
+    // this the fix would be indistinguishable from an unconditional refuse.
+    const client = {
+      send: vi.fn(async () => ({ logStreams: [], nextToken: undefined })),
+    } as unknown as CloudWatchLogsClient;
+    const logger = silentLogger();
+    const out = await probe(logGroupTarget(), { client }, logger);
+    expect(out[0]!.statefulReason).toBe(null);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('passes a has-retention log group through without probing', async () => {
+    // The recorded bag already settled it, and the probe may not WEAKEN a
+    // positive verdict — an empty-but-retaining group must stay refused, which
+    // is the pre-#2558 behaviour this fix does not relax.
+    const logs = mockLogs({ streams: 0 });
+    const out = await probe(logGroupTarget({ statefulReason: 'has-retention' }), logs);
+    expect(out[0]!.statefulReason).toBe('has-retention');
+    expect(logs.sentCommands).toEqual([]);
+  });
+
+  it('renders the refusal for a promoted log group', async () => {
+    const logs = mockLogs({ streams: 1 });
+    const out = await probe(logGroupTarget(), logs);
+    const validation = emptyValidation([
+      out[0]! as RecreateTarget & { statefulReason: 'has-log-events' },
+    ]);
+    const error = renderRecreateTargetsErrors(validation);
+    expect(error).toContain('MyLogGroup');
+    expect(error).toContain('log group is not provably empty');
+    // NOT the bucket's assertive phrasing: this reason also renders where
+    // nothing was probed at all.
+    expect(error).not.toContain('log group is non-empty');
+  });
+
+  it('renders NO refusal for an empty log group — the allow-arm, end to end', async () => {
+    // The offline twin of the integ fixture's phase 4
+    // (`tests/integration/loggroup-never-expire-guard/verify.sh`), which
+    // asserts exactly this pair against real AWS: no refusal text, and the
+    // target still present so the recreate plan can name it. It is the
+    // assertion that separates "the guard became conditional" from "the guard
+    // refuses every log group", and a refuse-everything regression would
+    // satisfy every other test in this describe block.
+    const logs = mockLogs({ streams: 0 });
+    // `emptyValidation` derives `targets` from the BLOCKED list, so the
+    // un-blocked target is threaded in explicitly.
+    const validated = await probeAndRevalidateStateful({
+      validation: { ...emptyValidation([]), targets: [logGroupTarget()] },
+      clients: { s3: forbiddenS3Client(), cloudWatchLogs: logs.client },
+      forceStatefulRecreation: false,
+    });
+    expect(validated.blockedStatefulTargets).toEqual([]);
+    expect(validated.targets.map((t) => t.logicalId)).toEqual(['MyLogGroup']);
+    expect(renderRecreateTargetsErrors(validated)).toBeNull();
   });
 });
 
@@ -830,7 +1353,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
     };
     const out = await probeAndRevalidateStateful({
       validation,
-      s3Client: s3,
+      clients: { s3, cloudWatchLogs: noLogGroupTargets() },
       forceStatefulRecreation: false,
     });
     expect(out.blockedStatefulTargets).toHaveLength(1);
@@ -839,6 +1362,50 @@ describe('probeAndRevalidateStateful (#648)', () => {
     const error = renderRecreateTargetsErrors(out);
     expect(error).toContain('MyBucket');
     expect(error).toContain('S3 bucket is non-empty');
+  });
+
+  it('composes the log-group promotion into blockedStatefulTargets and the rendered error', async () => {
+    // The S3 case above covers the composition for the older type only; this
+    // is the same walk for `AWS::Logs::LogGroup` end to end — probe promotes,
+    // the blocked list picks it up, and the refusal names the resource and the
+    // reason a user acts on.
+    const s3 = {
+      send: vi.fn(() => {
+        throw new Error('no S3 target in this validation');
+      }),
+    } as unknown as S3Client;
+    const cloudWatchLogs = {
+      send: vi.fn(async () => ({ logStreams: [{ logStreamName: 'seeded' }] })),
+    } as unknown as CloudWatchLogsClient;
+    const target: RecreateTarget = {
+      logicalId: 'MyLogGroup',
+      resourceType: 'AWS::Logs::LogGroup',
+      physicalId: '/aws/lambda/my-fn',
+      statefulReason: null,
+      direction: 'to-cc-api',
+    };
+    // An empty validation must issue no call at all — the surviving
+    // `--force-stateful-recreation` case skips for a different reason, so
+    // nothing else covers this one.
+    const empty = await probeAndRevalidateStateful({
+      validation: emptyValidation([]),
+      clients: { s3, cloudWatchLogs },
+      forceStatefulRecreation: false,
+    });
+    expect(empty.blockedStatefulTargets).toEqual([]);
+    expect(vi.mocked(cloudWatchLogs.send)).not.toHaveBeenCalled();
+
+    const withTarget = { ...emptyValidation([]), targets: [target] };
+    const promotedOut = await probeAndRevalidateStateful({
+      validation: withTarget,
+      clients: { s3, cloudWatchLogs },
+      forceStatefulRecreation: false,
+    });
+    expect(promotedOut.blockedStatefulTargets).toHaveLength(1);
+    expect(promotedOut.blockedStatefulTargets[0]!.statefulReason).toBe('has-log-events');
+    const error = renderRecreateTargetsErrors(promotedOut);
+    expect(error).toContain('MyLogGroup');
+    expect(error).toContain('log group is not provably empty');
   });
 
   it('returns validation untouched when --force-stateful-recreation is true (no AWS round-trip)', async () => {
@@ -859,10 +1426,52 @@ describe('probeAndRevalidateStateful (#648)', () => {
     };
     const out = await probeAndRevalidateStateful({
       validation,
-      s3Client: s3,
+      clients: { s3, cloudWatchLogs: noLogGroupTargets() },
       forceStatefulRecreation: true,
     });
     expect(out).toBe(validation);
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+// Wiring pin — same shape as the resource-timeout registry pin in
+// tests/unit/provisioning/resource-timeout-registry.test.ts.
+//
+// Both probes are only as correct as the CLIENTS they are handed, and nothing
+// in this file's mocks can see that: every case above constructs its own
+// doubles, so passing a wrong-REGION client (the state-bucket client instead of
+// the deploy-region one) or wiring the wrong SERVICE leaves all of them green
+// and is caught only by a real-AWS run. The S3 half was unpinned before issue
+// #2558 too; the log-group client doubles the surface, so it is pinned here.
+describe('deploy.ts hands the probes the DEPLOY-region clients (source-level pin)', () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy.ts'), 'utf8');
+  // Live lines only: a commented-out spelling must fail this pin, not satisfy
+  // it — the failure mode a whole-file `toContain` walks straight into.
+  const liveLines = src
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//') && !line.trimStart().startsWith('*'))
+    .join('\n');
+
+  it('calls probeAndRevalidateStateful with both stack-region clients', () => {
+    const callIdx = liveLines.indexOf('probeAndRevalidateStateful({');
+    expect(callIdx, 'live probeAndRevalidateStateful call not found').toBeGreaterThan(-1);
+    // Bound the window to the call itself, so a matching spelling elsewhere in
+    // this 1000-line command cannot satisfy the pin.
+    const call = liveLines.slice(callIdx, callIdx + 400);
+    expect(call).toContain('s3: stackAwsClients.s3');
+    expect(call).toContain('cloudWatchLogs: stackAwsClients.cloudWatchLogs');
+    // And the state region, without which the probe's not-found-means-gone
+    // inference runs unguarded (`region-check.ts`).
+    expect(call).toContain('expectedRegion: stateForRecreateCheck?.state.region');
+  });
+
+  it('stackAwsClients is built for the STACK region, not the state-bucket region', () => {
+    // The discriminator: `stackAwsClients` must be constructed with
+    // `stackRegion`. A probe issued against `baseRegion` would report an
+    // us-east-1 log group empty while the stack deploys to another region.
+    const ctorIdx = liveLines.indexOf('const stackAwsClients = new AwsClients({');
+    expect(ctorIdx, 'stackAwsClients construction not found').toBeGreaterThan(-1);
+    expect(liveLines.slice(ctorIdx, ctorIdx + 200)).toContain('region: stackRegion');
   });
 });

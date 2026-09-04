@@ -603,9 +603,11 @@ describe('DeployEngine — --replace wire-through', () => {
       // `change.desiredProperties` left all of them green.
       //
       // `AWS::Logs::LogGroup` is the discriminator, because its verdict is
-      // computed from the bag: `has-retention` iff `RetentionInDays > 0`.
-      // Putting the retention in exactly one bag and asserting both polarities
-      // makes any bag swap red in one direction or the other.
+      // computed from the bag: `has-retention` iff the bag it reads carries
+      // `RetentionInDays > 0`, `has-log-events` otherwise (issue #2558 — an
+      // unset retention is never-expire, so the deferral is stateful here).
+      // Putting the retention in exactly one bag and asserting which REASON
+      // each renders makes any bag swap red in one direction or the other.
       //
       // (`change.currentProperties` and the state record's `properties` stay
       // the SAME object here, which is what production does — the diff builds
@@ -635,24 +637,61 @@ describe('DeployEngine — --replace wire-through', () => {
         expect(callOrder).toEqual(['update']);
       });
 
-      it('replaces when only the DESIRED bag carries the retention', async () => {
+      it('blocks with the NOT-PROVABLY-EMPTY reason when only the DESIRED bag carries the retention', async () => {
         // The other polarity, and the one that kills a swap to the desired bag.
-        // It pins BAG SELECTION, and nothing else: the guard's predicate is
-        // `RetentionInDays > 0` on the RECORDED bag, so a template merely
-        // ADDING retention replaces with no flag, exactly as it did before the
-        // guard was hoisted.
         //
-        // Deliberately NOT justified as "the recorded log group is ephemeral" —
-        // that reading is FALSE. An unset or zero retention is CloudWatch Logs'
-        // "never expire", the most data-bearing setting there is. The predicate
-        // letting it through is a known gap (issue #2558), not a judgement this
-        // assertion endorses.
+        // Both polarities now BLOCK — issue #2558 closed the gap this case used
+        // to record, because an unset or zero recorded retention is CloudWatch
+        // Logs' "never expire", the most data-bearing setting the type has, and
+        // replacing such a log group with no consent flag destroyed every event
+        // in it. What still discriminates the bags is the REASON: the recorded
+        // bag answers `has-retention` ("log group retains data"), the deferral
+        // answers `has-log-events` ("log group is not provably empty"). A swap
+        // to the desired bag would render the retention reason here, and the
+        // deferral reason in the case above — so each assertion pins its own
+        // bag, exactly as before, and the fixture is unchanged.
         rejectWith(CC_REJECTION);
-        await invokeProvision(makeEngine({}), 'AWS::Logs::LogGroup', undefined, undefined, {
-          recorded: { LogGroupName: 'x' },
-          desired: { RetentionInDays: 30 },
-        });
+        const err = await invokeProvision(
+          makeEngine({}),
+          'AWS::Logs::LogGroup',
+          undefined,
+          undefined,
+          { recorded: { LogGroupName: 'x' }, desired: { RetentionInDays: 30 } }
+        ).then(
+          () => null,
+          (e) => e as Error & { cause?: { message?: string; code?: string } }
+        );
+        expect(err).not.toBeNull();
+        expect(err!.cause?.code).toBe('STATEFUL_REPLACE_BLOCKED');
+        expect(err!.cause?.message).toMatch(/log group is not provably empty/);
+        expect(err!.cause?.message).not.toMatch(/log group retains data/);
+        expect(provider.delete).not.toHaveBeenCalled();
+        expect(callOrder).toEqual(['update']);
+      });
+
+      it('replaces a log group under --force-stateful-recreation, deleting the old one', async () => {
+        // The consent flag still works, and the refusal above is not a
+        // dead-ended path: without this, a predicate that blocked
+        // UNCONDITIONALLY (ignoring the flag) would satisfy both cases above.
+        // Asserting the DELETE, not just the absence of the throw — the guard
+        // refuses BEFORE the delete, so only the delete proves the replacement
+        // actually ran.
+        rejectWith(CC_REJECTION);
+        await invokeProvision(
+          makeEngine({ forceStatefulRecreation: true }),
+          'AWS::Logs::LogGroup',
+          undefined,
+          undefined,
+          { recorded: { LogGroupName: 'x' }, desired: { RetentionInDays: 30 } }
+        );
         expect(callOrder).toEqual(['update', 'delete', 'create']);
+        expect(provider.delete).toHaveBeenCalledWith(
+          'MyResource',
+          'old-pid',
+          'AWS::Logs::LogGroup',
+          expect.anything(),
+          expect.objectContaining({ forceDataDelete: true })
+        );
       });
     });
 

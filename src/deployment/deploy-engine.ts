@@ -4261,9 +4261,10 @@ export class DeployEngine {
           // the `--recreate-via-*` flags run their own pre-flight stateful probe
           // (`probeStatefulRecreateTargetsAsync`) before the deploy, so a
           // recreate-flagged target has already been validated. Uses the
-          // conservative mid-deploy variant (treats a non-probed S3 bucket as
+          // conservative mid-deploy variant (treats a non-probed S3 bucket, and
+          // a log group whose recorded retention does not already settle it, as
           // stateful) since the diff loop has no chance to run the async
-          // object-count probe. A `Retain` UpdateReplacePolicy is exempt: the
+          // emptiness probes. A `Retain` UpdateReplacePolicy is exempt: the
           // old resource + its data survive the replacement (orphaned, not
           // deleted), so there is no data loss to confirm. `Snapshot` is NOT
           // exempt: cdkd DOES take a final snapshot on the replacement delete
@@ -4898,8 +4899,10 @@ export class DeployEngine {
               // to the REPLACEMENT, not to the trigger.
               //
               // Conservative variant: this fires mid-deploy with no chance to
-              // run the async S3 object-count probe, so a deferred S3 bucket
-              // is treated as stateful (block unless forced).
+              // run either async emptiness probe, so a deferred S3 bucket — and
+              // likewise a log group with no recorded retention, CloudWatch
+              // Logs' never-expire (issue #2558) — is treated as stateful
+              // (block unless forced).
               //
               // `UpdateReplacePolicy: Retain` is deliberately NOT an exemption
               // here, unlike the property-driven replacement guard above: that

@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run scenario-coverage` to regenerate.
 
-**92 / 92 canonical scenarios** have at least one integ fixture exercising them. **195 / 289 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**92 / 92 canonical scenarios** have at least one integ fixture exercising them. **195 / 290 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -128,7 +128,7 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `warn-arm-effective-properties` | A provider warn arm that SKIPS or SUBSTITUTES a malformed DECLARED value must record what it actually SENT (`effectiveProperties`), not the declared value. The deploy SUCCEEDS, so recording the declared bag makes state describe something AWS does not hold: `readCurrentState` can never match it, every later `cdkd drift` re-reports the same difference, and `drift --revert` re-issues the same skipped call (issues #1591 / #1612 / #1653 / #1654). Only a real deploy can produce the record and only a real read-side run can prove it converges, so a mocked client agrees with whatever wire assumption the author had. Covered arms: the DynamoDB GlobalTable `StreamSpecification` warn-and-SKIP (retains the PREVIOUS value; drops it when the previous side is malformed too) and the Lambda URL `AuthType` warn-and-SUBSTITUTE (records the previous value on the substituted arm, drops the key on the OMITTED arm) — each asserting the recorded value, the untouched LIVE resource, and that the corrected template then diffs clean against that record (a `cdkd drift` assertion would be vacuous here: drift prefers the `observedProperties` baseline, which is a live read and therefore matches AWS either way). The Lambda arm additionally asserts the security consequence directly (the URL is still IAM-guarded) and that a reverse-replacement replay of a record with no `AuthType` ANNOUNCES the PUBLIC default it falls back to. | [`dynamodb-globaltable`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/dynamodb-globaltable/)<br>[`lambda-url-authtype-replay`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-url-authtype-replay/) |
 | `wide-dag-throttle-retry` | Wide (~100-resource: 80 SSM Parameters + 10 IAM Roles + 10 SNS Topics, 10-deep SSM Fn::Sub chain) single-stack burst deployed under a HIGH `--concurrency` to stress the concurrency limiter + event-driven DAG executor + throttle/retry classifier: a `TooManyRequests` / `Rate exceeded` / HTTP 429 during the burst must be RETRIED (deploy still succeeds) not fatal, the chained subset proves strict DAG ordering, and the destroy burst absorbs ~100 deletes with 0 orphans. | [`throttle-wide-dag`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/throttle-wide-dag/) |
 
-## Un-annotated fixtures (94)
+## Un-annotated fixtures (95)
 
 These integ fixtures have no `.scenarios.json` sidecar. They may or may not exercise a canonical scenario — contributor review needed. To opt out (per-service smoke tests with no canonical pattern), add a sidecar with `{ "scenarios": [] }`.
 
@@ -197,6 +197,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`local-start-service-watch-fast`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-service-watch-fast/)
 - [`loggroup-class-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/loggroup-class-guard/)
 - [`loggroup-kms-associate`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/loggroup-kms-associate/)
+- [`loggroup-never-expire-guard`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/loggroup-never-expire-guard/)
 - [`nested-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/nested-stack/)
 - [`nested-stack-deep`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/nested-stack-deep/)
 - [`nodejs-function`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/nodejs-function/)

@@ -663,9 +663,12 @@ describe('DeployEngine - Resource Replacement', () => {
     // have been DELETE + CREATEd on a plain `cdkd deploy` with no consent.
     //
     // `AWS::Logs::LogGroup` is the discriminator, because its verdict is
-    // computed from the bag: `has-retention` iff `RetentionInDays > 0`. Putting
-    // the retention in exactly one bag and asserting both polarities makes any
-    // bag swap red in one direction or the other.
+    // computed from the bag: `has-retention` iff the bag it reads carries
+    // `RetentionInDays > 0`, and `has-log-events` otherwise (issue #2558 — an
+    // unset retention is CloudWatch's never-expire, so the mid-deploy sites
+    // treat the deferral as stateful). Putting the retention in exactly one bag
+    // and asserting which REASON is rendered makes any bag swap red in one
+    // direction or the other.
     // The state record and `change.currentProperties` are built from ONE bag
     // per case, because production cannot make them diverge: the diff derives
     // `currentProperties` FROM the state record. Seeding a retention into the
@@ -774,16 +777,17 @@ describe('DeployEngine - Resource Replacement', () => {
       expect(mockProvider.delete).not.toHaveBeenCalled();
     });
 
-    it('ALLOWS when only the DESIRED bag carries the retention', async () => {
+    it('BLOCKS with the NOT-PROVABLY-EMPTY reason when only the DESIRED bag carries the retention', async () => {
       // The other polarity, and the one that kills a swap to the desired bag.
-      // It pins BAG SELECTION only: the guard's predicate is
-      // `RetentionInDays > 0` on the RECORDED bag, so a template merely ADDING
-      // retention replaces with no flag.
       //
-      // Deliberately NOT justified as "the recorded log group is ephemeral" —
-      // that reading is FALSE (an unset or zero retention is CloudWatch Logs'
-      // "never expire"). The predicate letting it through is a known gap,
-      // issue #2558, which this assertion records rather than endorses.
+      // Both polarities BLOCK since issue #2558: an unset or zero RECORDED
+      // retention is CloudWatch Logs' "never expire", so on a plain
+      // `cdkd deploy` a renamed log group used to be DELETE + CREATEd with no
+      // consent flag and no warning. What still pins BAG SELECTION is the
+      // REASON each renders — `has-retention` ("log group retains data") from
+      // the recorded bag above, `has-log-events` ("log group is not provably
+      // empty") from the deferral here — so a swap to the desired bag reds one
+      // direction or the other exactly as before.
       // The template ADDS retention, so only the DESIRED bag carries it.
       seedCase(
         { LogGroupName: 'old-log-group' },
@@ -796,7 +800,41 @@ describe('DeployEngine - Resource Replacement', () => {
         mockDagBuilder as any,
         mockDiffCalculator as any,
         mockProviderRegistry as any,
-        {}, // NO forceStatefulRecreation -> and none is needed
+        {}, // NO forceStatefulRecreation -> the guard must fire
+        'us-east-1'
+      );
+
+      const deployError = await engine.deploy(stackName, logGroupTemplate).then(
+        () => null,
+        (e) => e as Error
+      );
+      expect(deployError).not.toBeNull();
+      expect(codesInCauseChain(deployError!)).toContain('STATEFUL_REPLACE_BLOCKED');
+      const rendered = deployError!.message + String(deployError!.cause);
+      expect(rendered).toMatch(/log group is not provably empty/);
+      expect(rendered).not.toMatch(/log group retains data/);
+      // The load-bearing half: nothing destructive ran.
+      expect(mockProvider.create).not.toHaveBeenCalled();
+      expect(mockProvider.delete).not.toHaveBeenCalled();
+    });
+
+    it('replaces the deferred log group under --force-stateful-recreation', async () => {
+      // Without this the predicate could refuse unconditionally — ignoring the
+      // consent flag — and both cases above would still pass. Asserting the
+      // DELETE specifically: the guard refuses ahead of it, so the delete is
+      // the only proof the replacement really ran.
+      seedCase(
+        { LogGroupName: 'old-log-group' },
+        { LogGroupName: 'new-log-group', RetentionInDays: 30 }
+      );
+
+      const engine = new DeployEngine(
+        mockStateBackend as any,
+        mockLockManager as any,
+        mockDagBuilder as any,
+        mockDiffCalculator as any,
+        mockProviderRegistry as any,
+        { forceStatefulRecreation: true },
         'us-east-1'
       );
 

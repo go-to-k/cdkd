@@ -110,19 +110,35 @@ describe('LogsLogGroupProvider LogGroupClass update guard', () => {
     ).rejects.toThrow(ResourceUpdateNotSupportedError);
   });
 
-  it('carries the actionable --replace suggestion in the message (bare flag without retention)', async () => {
-    const err = await provider
+  it('names the class transition it refused, in both directions', async () => {
+    // The flag set used to be CONDITIONAL, and this case asserted the negative
+    // — a never-expiring log group was told a bare `--replace` would do. Issue
+    // #2558 retired that premise, and the unconditional-advice cases below own
+    // the flag set now. What is left here is the TRANSITION text, which no
+    // other case pins — and the BACKWARD direction below is coverage no other
+    // case has at all (the forward arm differs from its sibling only in the
+    // retention value, which is why it is not the point of this case).
+    const forward = await provider
       .update(
         'ClassLg',
         PHYSICAL_ID,
         RESOURCE_TYPE,
         { LogGroupClass: 'INFREQUENT_ACCESS' },
-        { LogGroupClass: 'STANDARD' }
+        { LogGroupClass: 'STANDARD', RetentionInDays: 30 }
       )
       .catch((e: Error) => e);
-    expect((err as Error).message).toMatch(/--replace/);
-    expect((err as Error).message).not.toMatch(/--force-stateful-recreation/);
-    expect((err as Error).message).toMatch(/'STANDARD' -> 'INFREQUENT_ACCESS'/);
+    expect((forward as Error).message).toMatch(/'STANDARD' -> 'INFREQUENT_ACCESS'/);
+
+    const backward = await provider
+      .update(
+        'ClassLg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupClass: 'STANDARD', RetentionInDays: 30 },
+        { LogGroupClass: 'INFREQUENT_ACCESS' }
+      )
+      .catch((e: Error) => e);
+    expect((backward as Error).message).toMatch(/'INFREQUENT_ACCESS' -> 'STANDARD'/);
   });
 
   it('names --force-stateful-recreation when the log group retains data (stateful guard)', async () => {
@@ -132,6 +148,46 @@ describe('LogsLogGroupProvider LogGroupClass update guard', () => {
         PHYSICAL_ID,
         RESOURCE_TYPE,
         { LogGroupClass: 'INFREQUENT_ACCESS', RetentionInDays: 7 },
+        { LogGroupClass: 'STANDARD', RetentionInDays: 7 }
+      )
+      .catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/--replace --force-stateful-recreation/);
+  });
+
+  it('names it for a NEVER-EXPIRING log group too — the advice is unconditional (issue #2558)', async () => {
+    // The polarity the retention case above cannot see, and the one the flag
+    // set used to get WRONG: with no `RetentionInDays` in either bag the
+    // provider advised a bare `--replace`, on the retired premise that such a
+    // log group was not stateful. It is CloudWatch Logs' never-expire, the
+    // mid-deploy guard refuses it, and following that advice cost the user a
+    // second failed deploy. Both bags are retention-free here, so a
+    // conditional keyed on EITHER bag reds.
+    const err = await provider
+      .update(
+        'ClassLg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupClass: 'INFREQUENT_ACCESS' },
+        { LogGroupClass: 'STANDARD' }
+      )
+      .catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/--replace --force-stateful-recreation/);
+    // The flag's SCOPE, which the message names because this remedy now
+    // reaches every log group rather than only retention-carrying ones.
+    expect((err as Error).message).toMatch(/no per-resource granularity/i);
+  });
+
+  it('names it when only the DESIRED bag drops the retention (the recorded one still has it)', async () => {
+    // The bag-selection case issue #2521 filed against this line: the guard
+    // reads the RECORDED bag, so a template merely DROPPING the retention was
+    // told `--replace` alone would do and was then refused. Unconditional
+    // advice answers it without having to pick a bag.
+    const err = await provider
+      .update(
+        'ClassLg',
+        PHYSICAL_ID,
+        RESOURCE_TYPE,
+        { LogGroupClass: 'INFREQUENT_ACCESS' },
         { LogGroupClass: 'STANDARD', RetentionInDays: 7 }
       )
       .catch((e: Error) => e);

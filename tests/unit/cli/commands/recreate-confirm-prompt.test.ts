@@ -11,6 +11,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import type { RecreateTarget } from '../../../../src/deployment/recreate-targets.js';
 
 const warnSpy = vi.fn();
@@ -63,7 +66,7 @@ describe('promptRecreateConfirm (#649)', () => {
   });
 
   it('returns true without prompting when target list is empty', async () => {
-    const result = await promptRecreateConfirm({ stackName: 'S', targets: [], yes: false });
+    const result = await promptRecreateConfirm({ stackName: 'S', targets: [], yes: false, forceStatefulRecreation: false });
     expect(result).toBe(true);
     expect(warnSpy).not.toHaveBeenCalled();
     expect(readlineQuestion).not.toHaveBeenCalled();
@@ -74,6 +77,7 @@ describe('promptRecreateConfirm (#649)', () => {
       stackName: 'MyStack',
       targets: [target()],
       yes: true,
+      forceStatefulRecreation: false,
     });
     expect(result).toBe(true);
     expect(readlineQuestion).not.toHaveBeenCalled();
@@ -89,6 +93,7 @@ describe('promptRecreateConfirm (#649)', () => {
       stackName: 'S',
       targets: [target()],
       yes: false,
+      forceStatefulRecreation: false,
     });
     expect(result).toBe(true);
     expect(readlineQuestion).toHaveBeenCalledTimes(1);
@@ -101,6 +106,7 @@ describe('promptRecreateConfirm (#649)', () => {
       stackName: 'S',
       targets: [target()],
       yes: false,
+      forceStatefulRecreation: false,
     });
     expect(result).toBe(true);
   });
@@ -111,6 +117,7 @@ describe('promptRecreateConfirm (#649)', () => {
       stackName: 'S',
       targets: [target()],
       yes: false,
+      forceStatefulRecreation: false,
     });
     expect(result).toBe(false);
     expect(infoSpy.mock.calls.some((c) => String(c[0]).includes('Deploy cancelled'))).toBe(true);
@@ -122,6 +129,7 @@ describe('promptRecreateConfirm (#649)', () => {
       stackName: 'S',
       targets: [target()],
       yes: false,
+      forceStatefulRecreation: false,
     });
     expect(result).toBe(false);
   });
@@ -135,14 +143,155 @@ describe('promptRecreateConfirm (#649)', () => {
         target({ logicalId: 'OtherFn' }),
       ],
       yes: false,
+      // A non-null reason only reaches this prompt under the force flag (the
+      // probe path throws the refusal instead), so the realistic pairing is
+      // `true` — and it also pins that the flag does not DOWNGRADE a verdict.
+      forceStatefulRecreation: true,
     });
     const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
     expect(warnLines).toContain('**DATA LOSS** MyDB (AWS::RDS::DBInstance)');
     expect(warnLines).toContain('--force-stateful-recreation acknowledged');
+    // `renderStatefulReason`, not the raw discriminator — a reader of the plan
+    // is shown the sentence, not the enum member.
+    expect(warnLines).toContain('stateful (destroy loses all data in the resource)');
+    expect(warnLines).not.toContain('stateful (always)');
     expect(warnLines).toContain('DATA: all data in MyDB will be lost (no automatic data migration)');
     // Non-stateful target has neither.
     expect(warnLines).toContain('- OtherFn (AWS::Lambda::Function)');
     expect(warnLines).not.toContain('**DATA LOSS** OtherFn');
+  });
+
+  describe('conditional types under --force-stateful-recreation (#2558)', () => {
+    // `probeAndRevalidateStateful` returns EARLY under the force flag, so the
+    // live emptiness probes never run and every target still carries the SYNC
+    // verdict — which for the two conditional types is `null` (DEFER), not
+    // "no data". Reading that `null` as "not stateful" is the exact mistake
+    // #2558 retired one layer down; these pin that the prompt does not repeat
+    // it.
+    it('shows **DATA LOSS** for a never-expiring log group whose sync reason is null', async () => {
+      await promptRecreateConfirm({
+        stackName: 'S',
+        targets: [
+          target({
+            logicalId: 'NeverExpireLg',
+            resourceType: 'AWS::Logs::LogGroup',
+            physicalId: '/aws/lambda/fn',
+            statefulReason: null,
+          }),
+        ],
+        yes: true,
+        forceStatefulRecreation: true,
+      });
+      const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+      expect(warnLines).toContain('**DATA LOSS** NeverExpireLg (AWS::Logs::LogGroup)');
+      expect(warnLines).toContain('DATA: all data in NeverExpireLg will be lost');
+      // A RE-DERIVED reason gets its own wording, not `renderStatefulReason`'s.
+      // The probe did not run here, so the plan may report that emptiness was
+      // not established — and must not borrow a sentence that asserts what
+      // WAS found (`renderStatefulReason('has-objects')` is the assertive "S3
+      // bucket is non-empty", and the two types share this line).
+      expect(warnLines).toContain(
+        'stateful (emptiness not established — --force-stateful-recreation skips the probe)'
+      );
+      expect(warnLines).not.toContain('log group is not provably empty');
+    });
+
+    it('shows **DATA LOSS** for an S3 bucket whose sync reason is null', async () => {
+      // The bucket half was already wrong before #2558 — its sync verdict has
+      // ALWAYS deferred — so it is pinned alongside rather than assumed.
+      await promptRecreateConfirm({
+        stackName: 'S',
+        targets: [
+          target({
+            logicalId: 'DataBucket',
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'data-bucket',
+            statefulReason: null,
+          }),
+        ],
+        yes: true,
+        forceStatefulRecreation: true,
+      });
+      const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+      expect(warnLines).toContain('**DATA LOSS** DataBucket (AWS::S3::Bucket)');
+      // And the bucket is the reason the re-derived wording exists at all: it
+      // must NOT be told it is non-empty on a path where nothing was probed.
+      expect(warnLines).not.toContain('S3 bucket is non-empty');
+      expect(warnLines).toContain(
+        'stateful (emptiness not established — --force-stateful-recreation skips the probe)'
+      );
+    });
+
+    it('does NOT escalate a null reason when the probe DID run', async () => {
+      // The other polarity, and the reason the flag is a parameter rather than
+      // an unconditional conservative render: without the force flag the probe
+      // RAN, so its `null` is the answer of something that actually measured,
+      // and warning over it would be a false alarm on the one path that did.
+      //
+      // Precisely for the LOG GROUP, which is what this case pins. The S3 arm
+      // fails OPEN, so a bucket whose `ListObjectVersions` threw also reaches
+      // here with `null` and no data-loss line — an under-warning this change
+      // does not close, tracked with the rest of that arm's non-answer
+      // handling in issue #2578.
+      await promptRecreateConfirm({
+        stackName: 'S',
+        targets: [
+          target({
+            logicalId: 'ProvenEmptyLg',
+            resourceType: 'AWS::Logs::LogGroup',
+            physicalId: '/aws/lambda/fn',
+            statefulReason: null,
+          }),
+        ],
+        yes: true,
+        forceStatefulRecreation: false,
+      });
+      const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+      expect(warnLines).toContain('- ProvenEmptyLg (AWS::Logs::LogGroup)');
+      expect(warnLines).not.toContain('**DATA LOSS**');
+      expect(warnLines).not.toContain('DATA: all data in ProvenEmptyLg');
+    });
+
+    it('trusts a bag-derived reason as-is instead of re-deriving it', async () => {
+      // The discriminating case for "a recorded reason is trusted as-is": a
+      // `has-retention` log group under the force flag. `null` is what triggers
+      // the re-derivation, so a non-null reason must reach the renderer
+      // untouched — and the two now render DIFFERENTLY, which is what makes the
+      // case checkable at all (before the re-derived wording split off, both
+      // sides produced the same sentence and nothing here could tell them
+      // apart).
+      await promptRecreateConfirm({
+        stackName: 'S',
+        targets: [
+          target({
+            logicalId: 'RetainingLg',
+            resourceType: 'AWS::Logs::LogGroup',
+            physicalId: '/aws/lambda/fn',
+            statefulReason: 'has-retention',
+          }),
+        ],
+        yes: true,
+        forceStatefulRecreation: true,
+      });
+      const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+      expect(warnLines).toContain('**DATA LOSS** RetainingLg (AWS::Logs::LogGroup)');
+      expect(warnLines).toContain('stateful (log group retains data (RetentionInDays > 0))');
+      expect(warnLines).not.toContain('emptiness not established');
+    });
+
+    it('leaves a non-conditional type alone when its sync reason is null', async () => {
+      // Guard-the-guard: the escalation is keyed on the TYPE, so a Lambda must
+      // not pick up a DATA LOSS line merely because the flag is set.
+      await promptRecreateConfirm({
+        stackName: 'S',
+        targets: [target({ logicalId: 'PlainFn' })],
+        yes: true,
+        forceStatefulRecreation: true,
+      });
+      const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+      expect(warnLines).toContain('- PlainFn (AWS::Lambda::Function)');
+      expect(warnLines).not.toContain('**DATA LOSS**');
+    });
   });
 
   it('renders downstream consumer enumeration when supplied (#650)', async () => {
@@ -150,6 +299,7 @@ describe('promptRecreateConfirm (#649)', () => {
       stackName: 'Producer',
       targets: [target()],
       yes: true,
+      forceStatefulRecreation: false,
       downstreamConsumers: [
         {
           consumerStack: 'StackB',
@@ -177,6 +327,7 @@ describe('promptRecreateConfirm (#649)', () => {
       stackName: 'Producer',
       targets: [target()],
       yes: true,
+      forceStatefulRecreation: false,
       downstreamConsumers: [],
     });
     const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
@@ -187,7 +338,7 @@ describe('promptRecreateConfirm (#649)', () => {
   it('throws an actionable error in a non-TTY environment when --yes is not set', async () => {
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
     await expect(
-      promptRecreateConfirm({ stackName: 'S', targets: [target()], yes: false })
+      promptRecreateConfirm({ stackName: 'S', targets: [target()], yes: false, forceStatefulRecreation: false })
     ).rejects.toThrow(/--recreate-via-cc-api confirm prompt cannot run in a non-interactive/);
     expect(readlineQuestion).not.toHaveBeenCalled();
   });
@@ -199,6 +350,7 @@ describe('promptRecreateConfirm (#649)', () => {
         target({ direction: 'to-sdk', logicalId: 'BackLambda' }),
       ],
       yes: true,
+      forceStatefulRecreation: false,
     });
     const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
     expect(warnLines).toContain('--recreate-via-sdk-provider will destroy + recreate 1');
@@ -214,6 +366,7 @@ describe('promptRecreateConfirm (#649)', () => {
         target({ direction: 'to-sdk', logicalId: 'BackLambda' }),
       ],
       yes: true,
+      forceStatefulRecreation: false,
     });
     const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
     expect(warnLines).toMatch(
@@ -229,8 +382,42 @@ describe('promptRecreateConfirm (#649)', () => {
       stackName: 'S',
       targets: [target()],
       yes: true,
+      forceStatefulRecreation: false,
     });
     expect(result).toBe(true);
     expect(readlineQuestion).not.toHaveBeenCalled();
+  });
+});
+
+// The prompt's `forceStatefulRecreation` input is a REQUIRED field, so no call
+// site can omit it — but "required" only forces PRESENCE. Every case above
+// constructs its own input, so hard-coding `false` at the single production
+// call site reinstates exactly the bug this field exists to fix and leaves the
+// whole suite green. A behavioural pin is out of reach: the call sits inside
+// `deployCommand`, past synth and past the AWS clients. So it is pinned at the
+// source, the same shape `recreate-targets.test.ts` uses for the probe's
+// clients, and for the same reason — the wrong value is invisible to every
+// mock in this file and would surface only against real AWS.
+describe('deploy.ts tells the prompt whether the probe ran (source-level pin)', () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy.ts'), 'utf8');
+  // Live lines only: a commented-out spelling must fail this pin, not satisfy
+  // it — the failure mode a whole-file `toContain` walks straight into.
+  const liveLines = src
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//') && !line.trimStart().startsWith('*'))
+    .join('\n');
+
+  it('forwards the CLI flag, not a literal', () => {
+    const callIdx = liveLines.indexOf('promptRecreateConfirm({');
+    expect(callIdx, 'live promptRecreateConfirm call not found').toBeGreaterThan(-1);
+    // Bound the window to the call itself, so a matching spelling elsewhere in
+    // this 1000-line command cannot satisfy the pin.
+    const call = liveLines.slice(callIdx, callIdx + 500);
+    expect(call).toContain('forceStatefulRecreation: options.forceStatefulRecreation');
+    // The discriminating half: a literal would still satisfy a bare
+    // "the key is present" check, and `false` is the value that hides a
+    // never-expiring log group's **DATA LOSS** line.
+    expect(call).not.toMatch(/forceStatefulRecreation:\s*(?:true|false)\b/);
   });
 });
