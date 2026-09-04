@@ -50,7 +50,7 @@ cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed s
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--cluster <name>` | `cdkd-local` | Cluster name surfaced in `ECS_CONTAINER_METADATA_URI_V4`, and the prefix of the docker network. |
-| `--max-tasks <n>` | `3` | Hard cap on local replicas per service, overriding the template's `DesiredCount`. Cannot exceed 83 — the ceiling the local address allocator can serve. |
+| `--max-tasks <n>` | `3` | Hard cap on local replicas per service, overriding the template's `DesiredCount`. Cannot exceed 83 — the range of the per-replica link-local /24 subnet allocator. |
 | `--restart-policy <policy>` | `on-failure` | What happens when an essential container exits: `on-failure`, `always`, or `none` (run degraded). |
 | `--no-logs` | off | Stop streaming each replica's container output to the terminal. |
 | `--assume-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or an explicit ARN) and forward temporary credentials through the metadata sidecar. |
@@ -224,8 +224,8 @@ requested host ports each time.
 - `--watch` rolls the existing replicas onto the new image but does not scale the
   replica count up or down when `DesiredCount` or the `--max-tasks` clamp changes
   mid-run. A warning names it; restart to pick up the new count.
-- `--max-tasks` cannot exceed 83, the ceiling the local address allocator can
-  serve.
+- `--max-tasks` cannot exceed 83, the range of the per-replica link-local /24
+  subnet allocator.
 - Under `--from-cfn-stack`, an `Fn::GetAtt` in a container's `Environment[].Value`
   is dropped with a warning: CloudFormation's resource listing does not return
   per-attribute values, and no ECS-side call recovers them from a deployed task.

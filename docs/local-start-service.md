@@ -30,7 +30,7 @@ Docker is required — see [Local Execution](local-emulation.md#requirements).
 | --- | --- | --- |
 | `[targets...]` | interactive picker | One or more CDK display paths or stack-qualified logical ids of `AWS::ECS::Service` resources. Omit in a TTY to multi-select. |
 | `--cluster <name>` | `cdkd-local` | Cluster name reported by the metadata endpoint, and the prefix of the shared Docker network and per-replica cluster names. |
-| `--max-tasks <n>` | `3` | Hard cap on the local replica count, applied over the template's `DesiredCount`. Must be between `1` and `83` — the ceiling the local address allocator can serve. |
+| `--max-tasks <n>` | `3` | Hard cap on the local replica count, applied over the template's `DesiredCount`. Must be between `1` and `83` — the range of the per-replica link-local /24 subnet allocator. |
 | `--restart-policy <policy>` | `on-failure` | How to react when a replica's essential container exits: `on-failure`, `always`, or `none`. |
 | `--host-port <containerPort=hostPort...>` | host port equals container port | Publish a container port on a specific host port, e.g. `80=8080`. Repeatable. Single-replica services only. |
 | `--no-logs` | off (logs stream) | Stop streaming each replica's container output to your terminal. `docker logs -f <id>` stays available. |

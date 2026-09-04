@@ -43,8 +43,8 @@ accept `--env-vars` or `--container-host`, and its `--from-state` is inert — s
 | `--no-pull` | off | Skip `docker pull` for a Lambda origin's base image and use the cached one. No-op for a distribution with no Lambda. |
 | `--cache-origin` | off | Keep objects fetched from a deployed S3 origin in memory for the session instead of re-reading each request. |
 | `--from-state` | off | Accepted, but **does nothing on this command**, and still conflicts with `--from-cfn-stack` — see [State sources](#state-sources). |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Inert here, like `--from-state`. |
-| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Inert here, like `--from-state`. |
+| `--state-bucket <bucket>` | — | Never read on this command, like `--from-state`. |
+| `--state-prefix <prefix>` | — | Never read on this command, like `--from-state`. |
 | `--from-cfn-stack [name]` | off | Bind the same values to a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the resolved stack name. |
 | `--stack-region <region>` | — | The CloudFormation client region under `--from-cfn-stack`. The state-record half does not apply here. |
 | `--assume-role [arn]` | off | Assume a Lambda origin's deployed execution role and forward temporary credentials into its container. Omit the flag to keep your own shell credentials in the container. |

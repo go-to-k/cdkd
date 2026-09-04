@@ -206,10 +206,10 @@ fallback — apply to the **bootstrap-marker family**: `cdkd bootstrap`,
 `cdkd gc`, and `cdkd bootstrap --destroy`. These three move together because one
 writes the key the other two read.
 
-The `cdkd local` family has its own chain and never falls back to a literal:
-`--region`, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the synthesized
-stack's own `env.region`. Every remaining command resolves `--region` →
-`AWS_REGION` and falls back to the `us-east-1` literal.
+The `cdkd local` family reads `AWS_DEFAULT_REGION` too, and adds a fourth step
+of its own: `--region`, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
+region the target stack was synthesized or recorded for. It falls back to the
+`us-east-1` literal only when none of those resolves.
 
 ### The reconciliation
 

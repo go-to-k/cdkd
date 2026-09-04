@@ -30,7 +30,7 @@ cdkd local start-api --from-state --stage prod  # resolve env vars from deployed
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `[target]` | every discovered API | Serve only the named API. See [Target selection](#target-resolution). |
+| `[target]` | every discovered API | Serve only the named API. See [Target resolution](#target-resolution). |
 | `--port <port>` | `0` (auto-allocate) | Port for the first server; later servers take `port+1`, `port+2`, and so on. |
 | `--host <host>` | `127.0.0.1` | Bind address for every API server — the address **you** connect to. |
 | `--stack <name>` | single-stack auto-detect | Stack to serve, when neither the target nor `--from-cfn-stack` identifies one. |
@@ -460,9 +460,8 @@ principal and an empty claims map.
 
 The failure entry has a short TTL of about 60s, so a transient network blip does
 not lock pass-through in for the full success TTL — the next minute's request
-retries the fetch. The warn is throttled rather than one-shot: it re-fires at
-most once every five minutes per JWKS URL, so a proxy that stays down keeps
-saying so instead of going quiet after the first request.
+retries the fetch — and warns again when it fails again, so a proxy that stays
+down keeps saying so rather than going quiet after the first request.
 
 This is a deliberate trade for a dev tool: a surprising deny is worse than a
 warn plus allow when you are iterating on a handler and a corporate proxy is
@@ -722,9 +721,11 @@ once:
 - **Local build**, from the `cdk.out` asset manifest when the synthesizer
   produced a matching `dockerImages` entry. `docker build` then runs against the
   recorded build context.
-- **ECR pull**, when no asset matches. Same-account and same-region only —
-  this command has no `--ecr-role-arn`, so a cross-account registry needs
-  [`cdkd local invoke`](local-invoke.md#container-image-lambdas), which does.
+- **ECR pull**, when no asset matches. The ECR client is built for the image
+  URI's own region, so cross-region works. Cross-account works only when the
+  repository policy grants your identity directly: this command has no
+  `--ecr-role-arn`, so to assume a role first use
+  [`cdkd local invoke`](local-invoke.md#container-image-lambdas).
 
 The resulting deterministic `cdkd-local-invoke-<hash>` tag goes into the warm
 pool, which runs it verbatim: no `/var/task` bind mount, no base-image pull, and

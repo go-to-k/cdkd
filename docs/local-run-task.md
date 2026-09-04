@@ -225,11 +225,11 @@ in [Which registry hosts count as ECR](#which-registry-hosts-count-as-ecr).
 With neither state flag, a same-stack repository reference fails with an error
 naming them as the way forward; the stack must have been deployed first.
 
-Under `--from-cfn-stack`, an `Fn::GetAtt` elsewhere in the task definition is
-dropped with a warning — a stack's resource listing carries no per-attribute
-values. This ECR case is its one exception: the repository ARN and URI are
-rebuilt from the recovered physical name plus the pseudo parameters, so no
-per-attribute lookup is needed.
+Under `--from-cfn-stack`, an `Fn::GetAtt` in a container's `Environment[].Value`
+is dropped with a warning — a stack's resource listing carries no per-attribute
+values. Image URIs are not affected: the repository ARN and URI are rebuilt from
+the recovered physical name plus the pseudo parameters, so no per-attribute
+lookup is needed.
 
 ## Environment variables and secrets
 
@@ -373,13 +373,13 @@ container cleanup.
 | Code | Meaning |
 | --- | --- |
 | `0` | The essential container exited `0`, or `--detach` started the containers and returned. |
-| `1` | Either the essential container exited `1`, or cdkd failed before running it — Docker unavailable, target not found, network creation failed, secret resolution failed, an unsupported volume type. |
+| `1` | Either the essential container exited `1`, or cdkd itself failed — Docker unavailable, target not found, network creation failed, secret resolution failed, an unsupported volume type. |
 | `130` | `^C`. A first `^C` tears the task down and then exits; a second exits immediately without container cleanup. |
 | `N` | Any other code the essential container exited with; cdkd propagates it verbatim. |
 
-`1` is the one ambiguous code, because it is both a container exit and cdkd's
-own default failure code. A cdkd-side failure always prints an error before it
-exits, and no container output precedes it — that is the discriminator.
+`1` is the one ambiguous code: it is both a container's own exit status and
+cdkd's default for any failure of its own. Read the error line to tell them
+apart.
 
 The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
 
