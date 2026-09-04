@@ -62,18 +62,8 @@ by a probe or a trace, never by re-reading the diff:
   code; re-measured +0–3%). Confirm the probe reaches the added code, as §5
   requires of a mutation probe.
 
-**A fix that CLOSES a member falsifies every sentence that COUNTS the set** —
-the member leaves in the diff while the counter sits in a file the diff never
-touches (four instances in ONE run, go-to-k/cdkd#2410 / go-to-k/cdkd#2275,
-every one caught by a reviewer and none by the author):
-
-```bash
-# The counters sit OUTSIDE the diff, which is why re-reading the diff misses them.
-grep -rn "<the set's noun, then its cardinal>" src/ docs/ .claude/
-```
-
-NAME the member you closed where the count lives; a silent renumber is what
-makes the next reader re-file it.
+**A fix that CLOSES a member falsifies every sentence that COUNTS the set**,
+and those counters sit OUTSIDE the diff — §8-g's COUNT bullet is the remedy.
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
@@ -137,7 +127,8 @@ Unit tests passing is necessary but NOT sufficient:
   `integ-broad` for cross-cutting files). Run it via **`/run-integ <name>`**
   — never raw `cdkd deploy` / `cdkd destroy` from a shell; the skill encodes
   deploy + update + destroy + orphan verification and records the ledger row.
-  `/pick-integ` chooses the fixture(s).
+  `/pick-integ` chooses the fixture(s) and marks which are maintainer-only —
+  never name one it flagged.
 - **Non-deletion source change** → still live-test the fixed path end-to-end
   (deploy → the redeploy that reproduced the bug → destroy), fresh fixture or
   `/run-integ` against an existing one.
@@ -246,9 +237,9 @@ injection, redeploys, and runs a genuinely clean destroy.
 ### 8-e. Watching runs and pollers
 
 **Never leave a real-AWS run unwatched, and do not reach for `timeout`** — it
-does not exist on macOS (exit 127 in 0s reads as an instant completion), and a
-hung integ looks identical to a slow one from outside (one wedged in
-`docker push` for 4h17m). Shell watchdog, firing made visible:
+does not exist on macOS (exit 127 in 0s reads as instant completion), and a
+hung integ is indistinguishable from a slow one (one wedged in `docker push`
+for 4h17m). Shell watchdog, firing made visible:
 
 ```bash
 LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
@@ -276,10 +267,10 @@ crash). Pair with a `Monitor` on phase lines AND log-growth stalling.
   call and read the log's own terminal line. Two nearby traps: a `cd` inside
   the backgrounded compound leaves the parent's `$VAR` unset, and `grep -c`
   exits 1 on a count of zero.
-- **A run blocked before its assertions is not a failing fix** — record it as
-  `FAIL` (the bar is exit-code-based) with a ledger note naming the blocker
-  and any hand-removed AWS resources, or the next reader concludes the merged
-  fix is broken.
+- **A run blocked before its assertions is not a failing fix** — record `FAIL`
+  (the bar is exit-code-based) with a ledger note naming the blocker and any
+  hand-removed AWS resources, or the next reader reads the merged fix as
+  broken.
 
 ### 8-f. Fixture environment prechecks
 
@@ -293,15 +284,15 @@ aws s3 ls "s3://cdkd-state-<acct>/cdkd-bootstrap/"                       # which
 ```
 
 **A docker-dependent fixture is an environment blocker — prefer one reaching
-the same code without it** (on the merits, not merely availability). When
-docker is genuinely required (`integ-local`), verify registry reach FIRST
-(`docker pull hello-world` under a 120s cap) — `docker version` answering says
-nothing about registry networking. **Do NOT restart Docker to fix a hang — on
-Docker Desktop the restart IS the likelier cause**: the daemon routes registry
-traffic through a proxy the Desktop APP serves, and a quit-and-reopen can
-leave the self-respawning backend up while the app never finishes launching
-(four consecutive hung pulls; only a manual app restart recovered). Diagnose
-in order, stop at the first line that explains the symptom:
+the same code without it** (on the merits, not availability). When docker is
+required (`integ-local`), verify registry reach FIRST (`docker pull
+hello-world` under a 120s cap) — `docker version` says nothing about registry
+networking. **Do NOT restart Docker to fix a hang — on Docker Desktop the
+restart IS the likelier cause**: the daemon routes registry traffic through a
+proxy the Desktop APP serves, and a quit-and-reopen can leave the
+self-respawning backend up while the app never finishes launching (four
+consecutive hung pulls; only a manual app restart recovered). Diagnose in
+order, stopping at the first line that explains the symptom:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/  # 401 = HOST networking fine
@@ -309,10 +300,9 @@ docker info 2>/dev/null | grep -i proxy         # the proxy the daemon depends o
 pgrep -f 'Docker Desktop' >/dev/null && echo app-running || echo APP-NOT-RUNNING
 ```
 
-Ask the maintainer rather than escalating — factory reset / deleting Docker
-data destroys local images and volumes, never yours to spend. Clean up your
-own probes (`kill`ing a `docker pull` wrapper leaves the `com.docker.cli`
-child running).
+Ask the maintainer rather than escalating — a factory reset or deleting Docker
+data destroys local images and volumes, never yours to spend. Clean up your own probes (`kill`ing
+a `docker pull` wrapper leaves the `com.docker.cli` child running).
 
 ### 8-g. Prose claims are verified to the same bar as code
 
@@ -332,10 +322,9 @@ code defects and FIVE false statements in prose. Habits that each caught one:
 - **In a FIX round, the fix invalidated your own prose** — every past-tense
   measurement is stale until re-derived (one run: one code defect, TEN false
   claims — a changelog citing a ledger row the same delta replaced, a fence
-  "claimed rather than probed" whose named case did not exist, a tally
-  patched instead of re-measured, a blanket claim contradicted by its own
-  list). Before a fix round is final, re-derive every number, `file:line`,
-  ledger citation and "measured" verb, and say which tree they came from.
+  "claimed rather than probed" whose named case did not exist). Before a fix
+  round is final, re-derive every `file:line`, ledger citation and "measured"
+  verb, and say which tree they came from; for NUMBERS see the next bullet.
 - **The remedy is to DELETE the unproved clause, not rewrite it** — the
   recurring shape is a CONSEQUENCE bolted onto a verified claim ("X is
   load-bearing: deleting it would hard-fail" — X probed, the consequence
@@ -343,6 +332,18 @@ code defects and FIVE false statements in prose. Habits that each caught one:
   clause from INSIDE a sentence can falsify the survivor, so re-read what
   remains. When the false claim was that something IS fenced, BUILD the fence
   instead.
+- **A COUNT is never repaired by recounting** — give every number in published
+  prose one of three DISPOSITIONS: delete it (preferred — a changelog bullet
+  cannot be re-derived, and an enumeration IS its own count), fence it with a
+  floor AND a cap from a test that reads the code, or attribute it as a dated,
+  explicitly non-derivable measurement. Recounting fails because a widened set
+  falsifies counters in files the diff never touches (go-to-k/cdkd#2410 /
+  go-to-k/cdkd#2275, four in one run, every one caught by a reviewer and none
+  by the author; go-to-k/cdkd#2519 drifted its per-type lists seven times
+  across changelog, docs, PR body and comments, once inside the sentence
+  announcing the previous three were wrong). Sweep them with
+  `grep -rn "<the set's noun, then its cardinal>" src/ docs/ .claude/`, then
+  dispose of each — a silent renumber is what makes the next reader re-file it.
 - **Write the rationale FIRST in a fix round** — the one rationale-first
   round of four was the only one that introduced no new prose defect.
 
@@ -410,7 +411,12 @@ cannot doubt is the premise the lane handed them (go-to-k/cdkd#2383: three
 rounds of lane reviewers each found the next spelling of one defect; the
 independent orchestrator round found the YAML merge key the lane's own
 tripwire had been added to backstop and did not fire on). Take the tier the
-heuristic gives for YOUR pass.
+heuristic gives for YOUR pass, and keep the LATE rounds independent too —
+author-side round COUNT does not converge on the author's blind spot
+(go-to-k/cdkd#2519: its lane rounds reported no blockers; later independent
+rounds kept finding deltas INSIDE the previous round's fix). Three rounds of
+that shape means change the METHOD, not add a round — §5's "three spellings in
+three rounds".
 
 **A reviewer's scratch COPY of a worktree is not detached from git.** A linked
 worktree's `.git` is a FILE pointing into the main repo, and `cp -R` carries

@@ -643,6 +643,14 @@ last `git -C` / `gh -C` flag, and `cd`s to the resolved target before
 gate landed in the main tree, the root cause in
 `feedback_cross_agent_main_tree_contention.md`).
 
+**A hand-typed `markgate` is not the one the hooks run.** `.mise.toml` pins
+0.4.1 and every gate resolves it through mise, but a Homebrew `markgate` 0.2.0
+earlier on `PATH` wins for a bare invocation and cannot parse this repo's
+`hash: diff` gates: `markgate verify check` exits 2 with
+`unknown hash "diff"` against a perfectly fresh marker (measured 2026-09-04).
+That is a false BLOCK, and it reads as a stale marker. Spell any hand check
+`mise exec -- markgate ...`.
+
 **An unreadable target directory is a REFUSAL in every blocking gate** (issue
 [#2027](https://github.com/go-to-k/cdkd/issues/2027)). A hook receives command
 TEXT, not the shell's expansion, so `git -C "$W" add -A && git -C "$W" commit

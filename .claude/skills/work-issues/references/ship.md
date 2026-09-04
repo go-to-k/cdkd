@@ -13,7 +13,10 @@ from, so a merge from the main tree consults the WRONG store (measured
 sentinel blocking with a misleading sha mismatch; go-to-k/cdkd#2363). The
 sentinels are GITIGNORED, so a fresh worktree has none and `markgate set` on a
 sentinel-bound gate refuses (`dead scope: include matches nothing ...`) —
-write the sentinel first (`/run-integ` step 11), never bypass. Never two
+write the sentinel first (`/run-integ` step 11), never bypass. Ordering, not
+just presence: REWRITING a sentinel after its marker is set stales that
+marker, so a second broad run's `.markgate-broad-integ-test` write must be
+followed by another `markgate set integ-broad`. Never two
 lanes' integs or merges concurrently; everything after the merge stays with
 the parent.
 

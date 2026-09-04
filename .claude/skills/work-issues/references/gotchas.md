@@ -42,27 +42,28 @@
 - **Stale-base phantom diff** (§7) — never "restore" the peer's lines a stale
   `git diff main` appears to have removed; rebase instead.
 - **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the
-  main tree between calls; use `git -C <lane tree>` for git ops and re-`cd`
-  before relative paths. **A KILLED or REFUSED call is a named reset trigger,
-  and it lies about the filesystem too**: a timeout can return the shell at
-  the session cwd; a PreToolUse refusal aborts the WHOLE call, so the `mkdir`
-  a later `cd` depends on never ran — and a failed `cd` does NOT stop the rest
-  of its call (lines after one wrote into the main tree). After any timeout or
-  refusal, run `pwd` AND re-verify what the aborted call should have created.
-  **Its worst form is a FALSE GREEN on a verification command**: a gate run
-  from the main tree verifies unmodified `main` and passes (measured:
-  `vp run typecheck:test` RC=0 twice while the lane held 20 type errors; the
-  tell was a COUNT — 123 tests vs 143). Prefix every verification command with
-  `cd <worktree> &&`; when a result is surprisingly clean, check `pwd`. **A
-  BACKGROUNDED call starts from the session cwd**, not the `cd` of an earlier
-  call — make every long-running call print its own `pwd` first. **When a
-  stray main-tree edit has already happened, both obvious repairs are
-  refused** (`git checkout -- <path>` trips `dirty-path-restore-gate`; writing
-  the file back trips `main-tree-edit-gate`): re-apply the edit in the
-  worktree with an ABSOLUTE path, then
-  `git -C <main> stash push -m <label> -- <path>`; drop the stash only after
-  confirming `stash@{0}`'s message is yours — parallel lanes stash too. A
-  blocked call runs NOTHING, preamble included — §6 has the rule.
+  main tree between calls; prefix every verification command with
+  `cd <worktree> &&` and `git -C <lane tree>` every git op (the addressing
+  rule for READS, and the contradicting-answer test, are in
+  `references/launch-mode.md`). **A KILLED or REFUSED call is a named
+  reset trigger, and it lies about the filesystem too**: a timeout can return
+  the shell at the session cwd; a PreToolUse refusal aborts the WHOLE call, so
+  the `mkdir` a later `cd` depends on never ran — and a failed `cd` does NOT
+  stop the rest of its call. After any timeout or refusal, run `pwd` AND
+  re-verify what the aborted call should have created. **Its worst form is a
+  FALSE GREEN on a verification command**: a gate run from the main tree
+  verifies unmodified `main` and passes (measured: `vp run typecheck:test`
+  RC=0 twice while the lane held 20 type errors; the tell was a COUNT — 123
+  tests vs 143) — an unexpectedly clean or short result is a `pwd` check, not
+  a pass. **A BACKGROUNDED call starts from the session cwd**, not the
+  `cd` of an earlier call — make every long-running call print its own `pwd`
+  first. **When a stray main-tree edit has already happened, both obvious
+  repairs are refused** (`git checkout -- <path>` trips
+  `dirty-path-restore-gate`; writing the file back trips
+  `main-tree-edit-gate`): re-apply the edit in the worktree with an ABSOLUTE
+  path, then `git -C <main> stash push -m <label> -- <path>`; drop the stash
+  only after confirming `stash@{0}`'s message is yours — parallel lanes stash
+  too. A blocked call runs NOTHING, preamble included — §6 has the rule.
 - **An IN-PLACE run ends with the Stop hook still calling its lane unmerged,
   and the remedy it names is one this mode forbids.**
   `stop-unmerged-lane-warn.sh` enumerates worktrees ahead of `origin/main`,

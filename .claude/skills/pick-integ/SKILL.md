@@ -94,6 +94,23 @@ truncated, and the wrap-up names exactly which tests were not run.
    | `src/synthesis/macro-*` | `macro-expansion` |
    | `package.json` (cdk-local bump) | `local-*` cluster (the bump's blast radius) |
 
+   **Mark every name an agent session cannot run, and offer a substitute.** A
+   fixture drives itself from `verify.sh`, or from `run.sh` invoked directly
+   (`migrate-from-cfn`); with neither, `/run-integ` falls back to a standard
+   flow that needs a bare `cdkd deploy`, which the harness refuses (that
+   skill's step 5) — legal only when a human drives the shell. So such a name
+   is a MAINTAINER-only recommendation, never a lane's: go-to-k/cdkd#2514's
+   lane named `bench-cdk-sample` as its broad arm and the parent had to
+   substitute `lambda`. Several BROAD-set entries are in this state — derive
+   the split, never trust a remembered list:
+
+   ```bash
+   for t in NAME1 NAME2; do   # the names about to be recommended
+     d=<LANE_TREE>/tests/integration/$t
+     [ -f "$d/verify.sh" ] || [ -f "$d/run.sh" ] || echo "MAINTAINER-ONLY: $t"
+   done
+   ```
+
 3. **Rank** the union of {changed-area} ∪ {failing} ∪ {stale >14d} ∪
    {expiring soon} ∪ {never-run}:
    - **P0**: changed-area AND (stale OR failing OR never-run).
