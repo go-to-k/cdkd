@@ -48,3 +48,4 @@ Outputs:
 
 - [Cross-Stack References](cross-stack-references.md) — consuming another stack's outputs
 - [State Management](state-management.md) — where outputs are stored
+- [CLI Reference](cli-reference.md) — `cdkd state show <stack> --json` reads them back

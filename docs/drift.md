@@ -39,6 +39,6 @@ which is where observed-state capture shipped.
 
 ## Related
 
-- [`cdkd drift`](cli-drift.md) — every flag, the per-type read-back coverage, and the exit codes
+- [`cdkd drift`](cli-drift.md#resource-type-coverage) — which types have a drift read-back, per resource type
 - [State Management](state-management.md) — the baseline drift compares against
 - [`cdkd diff`](cli-diff.md) — comparing against your template rather than against state

@@ -58,5 +58,5 @@ semantics, cross-region / cross-account forms).
 ## Related
 
 - [Cross-Stack References](cross-stack-references.md) — the `Fn::ImportValue` design and the exports index
-- [Import & CFn Migration](import.md) — moving a CloudFormation stack into cdkd
-- [Export to CloudFormation](export.md) — moving one back out
+- [Importing Existing Resources](import.md) — moving a CloudFormation stack into cdkd
+- [Exporting to CloudFormation](export.md) — moving one back out

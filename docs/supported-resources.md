@@ -3,7 +3,7 @@ title: Supported Resources
 description: "Every AWS resource type cdkd can deploy and manage, grouped by category — SDK Provider vs Cloud Control API coverage per type."
 ---
 
-# Supported AWS Resource Types
+# Supported Resources
 
 This document lists every AWS resource type cdkd can deploy and manage,
 grouped by category. Use it to confirm whether your CDK stack will work
@@ -96,24 +96,10 @@ Categories are alphabetical.
 
 adopt-only singleton — the CFn registry declares the type a read-only representation of the AWS-managed default browser `aws.browser.v1` with `NON_PROVISIONABLE` provisioning, so cdkd adopts the default via `GetBrowser` on create and no-ops delete; custom browsers are the separate `AWS::BedrockAgentCore::BrowserCustom` type, served by Cloud Control
 
-### API Gateway
-
-- `AWS::ApiGateway::Account`
-- `AWS::ApiGateway::Resource`
-- `AWS::ApiGateway::Deployment`
-- `AWS::ApiGateway::Stage`
-- `AWS::ApiGateway::Method`
-- `AWS::ApiGateway::Authorizer`
-- `AWS::ApiGatewayV2::Api`
-- `AWS::ApiGatewayV2::Stage`
-- `AWS::ApiGatewayV2::Integration`
-- `AWS::ApiGatewayV2::Route`
-- `AWS::ApiGatewayV2::Authorizer`
-
 ### Analytics
 
-- `AWS::Glue::Database`
-- `AWS::Glue::Table` — [Iceberg caveat](#glue-table-iceberg-support-icebergtableinput-is-refused)
+- `AWS::Glue::Database` — [AWS-managed `Parameters` survive an update](#glue-table-database-aws-managed-parameters-survive-an-update)
+- `AWS::Glue::Table` — [Iceberg caveat](#glue-table-iceberg-support-icebergtableinput-is-refused), [AWS-managed `Parameters` survive an update](#glue-table-database-aws-managed-parameters-survive-an-update)
 - `AWS::Glue::Job`
 - `AWS::Glue::Crawler`
 - `AWS::Glue::Connection`
@@ -136,6 +122,20 @@ adds a standalone instance group to an existing cluster referenced by `JobFlowId
 
 adds a standalone instance fleet to an existing cluster referenced by `ClusterId`; `NON_PROVISIONABLE` in the CFn registry so no Cloud Control fallback exists; `AddInstanceFleet`-backed create polled to `RUNNING`, `ModifyInstanceFleet` mutable surface (`TargetOnDemandCapacity`/`TargetSpotCapacity`/`ResizeSpecifications`/`InstanceTypeConfigs`), everything else createOnly → replacement; **delete has no standalone AWS API** — a fleet is released when the parent cluster terminates, so delete is a no-op that drops cdkd state (best-effort scale-to-0 for a `TASK` fleet); self-reported 1h resource timeout
 
+### API Gateway
+
+- `AWS::ApiGateway::Account`
+- `AWS::ApiGateway::Resource`
+- `AWS::ApiGateway::Deployment`
+- `AWS::ApiGateway::Stage`
+- `AWS::ApiGateway::Method`
+- `AWS::ApiGateway::Authorizer`
+- `AWS::ApiGatewayV2::Api`
+- `AWS::ApiGatewayV2::Stage`
+- `AWS::ApiGatewayV2::Integration`
+- `AWS::ApiGatewayV2::Route`
+- `AWS::ApiGatewayV2::Authorizer`
+
 ### Audit
 
 - `AWS::CloudTrail::Trail`
@@ -148,6 +148,11 @@ adds a standalone instance fleet to an existing cluster referenced by `ClusterId
 
 - `AWS::DLM::LifecyclePolicy`
 
+### Cache
+
+- `AWS::ElastiCache::CacheCluster`
+- `AWS::ElastiCache::SubnetGroup`
+
 ### CDN
 
 - `AWS::CloudFront::CloudFrontOriginAccessIdentity`
@@ -159,11 +164,6 @@ adds a standalone instance fleet to an existing cluster referenced by `ClusterId
 - `AWS::CodeBuild::Project`
 - `AWS::CodeCommit::Repository` — `Code` create-only S3-zip seed content unpacked into the initial commit via `CreateCommit`; `Triggers` reconciled on create + update via `PutRepositoryTriggers`
 
-### Cache
-
-- `AWS::ElastiCache::CacheCluster`
-- `AWS::ElastiCache::SubnetGroup`
-
 ### CloudFormation
 
 - `AWS::CloudFormation::Stack` — [notes](#aws-cloudformation-stack)
@@ -171,7 +171,14 @@ adds a standalone instance fleet to an existing cluster referenced by `ClusterId
 
 #### `AWS::CloudFormation::Stack`
 
-nested stacks; fresh deploy + recursive `cdkd import --migrate-from-cloudformation` adoption + recursive `cdkd export` per-stack IMPORT loop; the original "one atomic `--include-nested-stacks` IMPORT" design was found infeasible by 2026-05-24 AWS spike, redesigned per [design §4.0/§4.3](design/464-nested-stacks-export-import.md) — each cdkd-managed stack becomes its own CFn stack via a separate IMPORT changeset in leaf-first order; non-leaf parents adopt their just-imported children via the AWS-docs "Nest an existing stack" pattern
+nested stacks, in three directions: a fresh `cdkd deploy`, a recursive
+`cdkd import --migrate-from-cloudformation` adoption, and a recursive
+`cdkd export`. On export, each cdkd-managed stack becomes its own
+CloudFormation stack through a separate IMPORT changeset, submitted leaf-first;
+a non-leaf parent then adopts its just-imported children with AWS's documented
+"nest an existing stack" pattern. CloudFormation rejects
+`--include-nested-stacks` on an IMPORT changeset, so there is no single-changeset
+form of this
 
 #### `AWS::CloudFormation::WaitConditionHandle`
 
@@ -189,10 +196,6 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 - `AWS::EC2::Instance`
 - `AWS::AutoScaling::AutoScalingGroup`
 
-### Config
-
-- `AWS::SSM::Parameter`
-
 ### Container
 
 - `AWS::ECS::Cluster`
@@ -203,11 +206,6 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 ### Cost Management
 
 - `AWS::Budgets::Budget` — global API served from us-east-1; `update` reconciles `NotificationsWithSubscribers` in place instead of CloudFormation's whole-budget replacement
-
-### DNS
-
-- `AWS::Route53::HostedZone`
-- `AWS::Route53::RecordSet`
 
 ### Database
 
@@ -233,6 +231,11 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 - `AWS::ServiceDiscovery::PublicDnsNamespace`
 - `AWS::ServiceDiscovery::Service`
 
+### DNS
+
+- `AWS::Route53::HostedZone`
+- `AWS::Route53::RecordSet`
+
 ### Encryption
 
 - `AWS::KMS::Key`
@@ -242,6 +245,7 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 
 - `AWS::Events::Rule`
 - `AWS::Events::EventBus`
+- `AWS::Scheduler::Schedule`
 
 ### GraphQL
 
@@ -261,10 +265,6 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 - `AWS::IAM::Group`
 - `AWS::IAM::UserToGroupAddition`
 - `AWS::IAM::AccessKey`
-
-### Integration
-
-- `AWS::Scheduler::Schedule`
 
 ### Load Balancing
 
@@ -306,6 +306,10 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 ### Orchestration
 
 - `AWS::StepFunctions::StateMachine`
+
+### Parameters
+
+- `AWS::SSM::Parameter`
 
 ### Secrets
 
@@ -389,8 +393,8 @@ state rather than from your template, so refusing would leave you with no
 remedy at all — you cannot edit a state record from your CDK code, only by hand
 in `state.json`. Both rollback paths therefore WARN and continue:
 
-- **Update** — `rollback-executor.ts` calls `provider.update(...)` with the
-  previous state's properties. cdkd does not wire Glue's update-only
+- **Update** — the rollback replays the previous state's properties through the
+  provider's update path. cdkd does not wire Glue's update-only
   `UpdateOpenTableFormatInput` shape, so nothing is forwarded and no bad value
   can reach AWS from that path.
 - **Reverse-replacement create** — the arm that revives the OLD table after a
@@ -406,9 +410,7 @@ in `state.json`. Both rollback paths therefore WARN and continue:
 
 This is a deliberate **parity divergence**: CloudFormation does not validate the
 property, it forwards it and then rolls the stack back. No working deployment is
-lost by refusing it, because a live probe (2026-08-09, `us-east-1`,
-5 raw `glue:CreateTable` shapes + 5 CloudFormation stacks) showed the spec is
-undeployable on **both** paths:
+lost by refusing it, because the spec is undeployable on **both** paths:
 
 - the raw `glue:CreateTable` API — the call cdkd itself makes — rejects every
   spec shape (`Location information cannot be null while creating an iceberg

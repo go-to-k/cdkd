@@ -7,15 +7,6 @@ description: Install cdkd, bootstrap your AWS account, and run your first direct
 
 cdkd works with your existing CDK app as-is — install it, run `cdkd bootstrap` once per AWS account, and replace `cdk deploy` with `cdkd deploy`.
 
-## Installation
-
-```bash
-npm i -g @go-to-k/cdkd           # latest release
-npm i -g @go-to-k/cdkd@<version> # pin to a specific version
-```
-
-The installed binary is `cdkd`.
-
 ## Prerequisites
 
 - **Node.js** >= 20.0.0
@@ -29,8 +20,19 @@ to track deployed resources, plus cdkd-owned asset storage (by default a
 `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
 [`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap)). Per-region asset
 storage is added automatically on the first `cdkd deploy` into each region.
-Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`: see
+Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`:
+see [`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap). If you bootstrapped
+under an earlier cdkd, see
 [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
+
+## Installation
+
+```bash
+npm i -g @go-to-k/cdkd           # latest release
+npm i -g @go-to-k/cdkd@<version> # pin to a specific version
+```
+
+The installed binary is `cdkd`.
 
 ## Quick Start
 
@@ -59,12 +61,13 @@ cdkd destroy
 cdkd has three command families:
 
 - **Top-level commands** — most (`cdkd deploy` / `destroy` / `diff` /
-  `synth` / `list` / `import` / `export` / `migrate` / `orphan` /
-  `scrub` / `publish-assets`) require a CDK app — they synthesize a template to
+  `synth` / `list` / `import` / `export` / `orphan` / `scrub` /
+  `publish-assets`) require a CDK app — they synthesize a template to
   learn what they're operating on. A few operate on the state bucket /
   AWS directly and need no app: `cdkd bootstrap`, `cdkd drift`,
-  `cdkd rollback`, `cdkd events`, `cdkd gc`, `cdkd force-unlock`. See
-  [CLI Reference](cli-reference.md).
+  `cdkd rollback`, `cdkd events`, `cdkd gc`, `cdkd force-unlock`, and
+  `cdkd migrate`, which starts from a CloudFormation stack and writes the
+  CDK app for you. See [CLI Reference](cli-reference.md).
 - **`cdkd state ...` subcommands** (`state info` / `list` / `resources`
   / `show` / `orphan` / `destroy` / `migrate` / `refresh-observed`)
   operate on the S3 state bucket only and do NOT need the CDK app —
@@ -104,8 +107,8 @@ cdkd diff MyStack --fail            # exit 1 on any change (CI gate)
 
 # Drift — state vs live AWS, no synth
 cdkd drift MyStack                  # exit 1 if drift
-cdkd drift MyStack --accept --yes   # state <- AWS
-cdkd drift MyStack --revert --yes   # AWS <- state
+cdkd drift MyStack --accept --yes   # state ← AWS
+cdkd drift MyStack --revert --yes   # AWS ← state
 
 # Deployment history, cdkd's DescribeStackEvents equivalent (no synth)
 cdkd events MyStack                 # past deploy / destroy runs, newest first
@@ -117,7 +120,7 @@ cdkd events MyStack --run <runId>   # one run's full event stream
 ```bash
 cdkd destroy MyStack
 cdkd orphan MyStack/MyBucket        # drop one resource from state (AWS resource stays)
-cdkd force-unlock MyStack           # clear a stale lock from a cancelled CI job
+cdkd force-unlock MyStack           # clear a stale lock from an interrupted deploy or cancelled CI job
 cdkd gc --dry-run                   # reclaim unreferenced cdkd-owned assets (S3 + ECR)
 ```
 
@@ -137,6 +140,7 @@ cdkd scrub MyStack --dry-run --fail # standing CI gate: exit 1 if plaintext rema
 ```bash
 cdkd publish-assets                 # synth + upload only (typical CI split)
 cdkd import MyStack --yes           # adopt existing AWS resources into cdkd state
+cdkd migrate MyCfnStack             # adopt a non-CDK CFn stack, generating the CDK app
 cdkd export MyStack                 # hand a cdkd-managed stack back to CloudFormation
 ```
 
@@ -145,7 +149,7 @@ cdkd export MyStack                 # hand a cdkd-managed stack back to CloudFor
 ```bash
 cdkd state info                     # bucket name, region, schema version
 cdkd state list                     # one row per (stackName, region)
-cdkd state list --tree              # parent -> child nested-stack tree
+cdkd state list --tree              # parent → child nested-stack tree
 cdkd state show MyStack             # full state record
 cdkd state resources MyStack        # logical id / type / physical id
 cdkd state destroy MyStack          # delete AWS resources + state, no CDK app
@@ -175,5 +179,5 @@ deprecation warning. Explicit pre-provisioning
 
 - [Using with AI Agents](ai-agents.md) — install the cdkd skill so Claude Code and other agents deploy with cdkd.
 - [Wait modes](wait-modes.md) — `--no-wait` / default / `--full-wait`: choose what "done" means per resource type.
-- [Use in CI: per-PR environments](ci-per-pr.md) — one ephemeral stack per pull request, deployed and destroyed by workflow.
+- [Per-PR Environments in CI](ci-per-pr.md) — one ephemeral stack per pull request, deployed and destroyed by workflow.
 - [CLI reference](cli-reference.md) — every command and flag in detail.

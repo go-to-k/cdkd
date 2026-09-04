@@ -81,14 +81,10 @@ schema, legacy `version: 1` migration, bucket-name migration via
 
 ## Where to go next
 
-- [Stack Outputs](stack-outputs.md) — how `CfnOutput` values are resolved and stored
-- [Orphan vs Destroy](orphan-vs-destroy.md) — the two ways a resource leaves cdkd's management
-- [Wait Modes](wait-modes.md) — choose what "done" means per deploy
-- [CLI Reference](cli-reference.md) — every flag, including the
-  [VPC route DependsOn relaxation](cli-deploy-tuning.md#no-aggressive-vpc-parallel)
-
-## Related
-
 - [Getting Started](getting-started.md) — installing cdkd and deploying a first stack
+- [Stack Outputs](stack-outputs.md) — reading a deployed stack's outputs back
+- [Orphan vs Destroy](orphan-vs-destroy.md) — dropping a resource from state without deleting it
+- [Wait Modes](wait-modes.md) — choosing what "done" means per resource type
 - [State Management](state-management.md) — the state record in detail
 - [Architecture](architecture.md) — the full pipeline, layer by layer
+- [CLI Reference](cli-reference.md) — every command and the full exit-code table

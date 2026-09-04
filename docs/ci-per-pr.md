@@ -3,7 +3,7 @@ title: Per-PR Environments in CI
 description: Deploy one ephemeral stack per pull request with cdkd in GitHub Actions — CDK context stack suffix, OIDC role design, and teardown housekeeping.
 ---
 
-# Use in CI: per-PR environments
+# Per-PR Environments in CI
 
 Deploy time is CI job time, and a PR environment redeploys on every
 push — so cdkd's speedup compounds across a PR's lifetime. Because
@@ -74,28 +74,27 @@ jobs:
       - run: npx @go-to-k/cdkd state destroy WebApp-pr-${{ github.event.pull_request.number }} --yes
 ```
 
-The destroy job has no checkout, `npm ci`, or synth —
+The destroy job has no checkout and no `npm ci`, which is why it invokes the
+full package name — there is no local install for `npx` to find. It needs
+neither, and no synth either, because
 [`cdkd state destroy`](cli-state.md#cdkd-state-destroy) deletes from the state
 record alone, so it works even after the branch is gone.
 
 ## Making the teardown complete
 
-If the environment contains protection-enabled resources (RDS /
-DynamoDB deletion protection, EC2 termination protection, and more),
-add [`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
-to the destroy so the teardown completes in one pass — an ephemeral PR
-environment has nothing worth protecting, and without the flag those
-resources survive the job and linger until the next sweep.
+The destroy job above runs `cdkd state destroy`, and all three of these flags
+exist on it as well as on `cdkd destroy` — an ephemeral PR environment has
+nothing worth protecting, so a teardown that needs a second pass is a teardown
+that leaves resources billing.
 
-Two more teardown-completeness flags matter for disposable
-environments: resources with `DeletionPolicy: Snapshot` leave a final
-snapshot behind on every PR close by default — add
-[`--skip-final-snapshot`](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot)
-when the environment's data is disposable, so snapshots don't
-accumulate per closed PR. And `cdkd destroy --purge-events` also
-removes the stack's deployment-event history so the state bucket
-returns fully empty (after a `state destroy`, the equivalent is
-`cdkd events prune <stack> --all`).
+| Flag | Reach for it when | Without it |
+| --- | --- | --- |
+| [`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy) | The environment has RDS or DynamoDB deletion protection, EC2 termination protection, or any other protection-enabled resource | Those resources survive the job and linger until the next sweep |
+| [`--skip-final-snapshot`](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) | The environment's data is disposable and a resource carries `DeletionPolicy: Snapshot` | A final snapshot accumulates on every PR close |
+| `--purge-events` | You want the state bucket to return fully empty | The stack's deployment-event history is kept as post-mortem context |
+
+`--purge-events` is the one that differs by command: on `cdkd state destroy` the
+equivalent is a separate `cdkd events prune <stack> --all`.
 
 ## Housekeeping
 
@@ -120,9 +119,9 @@ returns fully empty (after a `state destroy`, the equivalent is
 
 ## Related
 
-- [`cdkd destroy`](cli-destroy.md) — the guards the teardown job turns off, and
-  what each one protects
+- [Destroy flags & guards](cli-destroy.md) — the guards the teardown job turns
+  off, and what each one protects
 - [Orphan vs Destroy](orphan-vs-destroy.md) — why the destroy job needs no
   checkout
 - [Wait Modes](wait-modes.md) — choosing what "done" means for the deploy job
-- [CLI Reference](cli-reference.md) — every command, and the full exit-code table
+- [CLI Reference](cli-reference.md) — every command and the full exit-code table

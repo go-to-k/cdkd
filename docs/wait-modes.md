@@ -51,6 +51,6 @@ wait-semantics-identical.
 
 ## Related
 
-- [Deploy: waits & concurrency](cli-deploy.md) — the per-resource-type wait table, and the concurrency knobs
+- [Deploy: tuning](cli-deploy-tuning.md) — the per-resource timeout overrides, and observed-state capture
 - [Benchmarks](benchmarks.md) — what each mode costs in wall clock
 - [CLI Reference](cli-reference.md) — every command and the full exit-code table

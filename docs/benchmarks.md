@@ -14,10 +14,14 @@ with each other:
 
 | | vs CloudFormation | vs Terraform |
 | --- | --- | --- |
-| What is timed | Deploy phase only, unless a table says otherwise | Cold end-to-end wall clock |
+| What is timed | Deploy phase only | Cold end-to-end wall clock |
 | Includes synth / plan | No | Yes |
-| Runs per cell | Stated per table | Median of 7 |
-| Region | Stated per table | `us-east-1` |
+| Runs per cell | Median of 7 |
+| Region | `us-east-1` |
+
+Every number is in seconds. The CloudFormation tables state their own run count
+and region where they were recorded; a cell re-measured later says so in the
+caption beneath its table.
 
 Synth is excluded from the CloudFormation comparison because it is identical on
 both sides — cdkd and the AWS CDK run the same user code through the same
@@ -62,7 +66,7 @@ CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/
 | SQS | 83 | 22 | **9** | 9 |
 | SQS + CloudWatch | 87 | 44 | 30 | 31 |
 
-Best of 3 runs, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3): the default no longer waits for CloudFront `Deployed`, so NAT stabilization is the critical path. The other cells are from the original campaign.
+Best of 3 runs, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3): the default no longer waits for CloudFront `Deployed`, so NAT stabilization is the critical path. The other cells are from the earlier round.
 
 - **~1.5–2x faster than Express on most stacks** — e.g. SQS finishes in 9s vs Express's 22s (~2.4x).
 - **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack the cdkd default finishes in 96s vs Express's 366s (~3.8x) — the default already leaves CloudFront propagation to complete in the background — and `--no-wait` (40s, ~9x) additionally skips the NAT stabilization wait.
@@ -84,7 +88,7 @@ Real-world stack: 1 VPC (2 AZs, NAT Gateway, public + private subnets) + Lambda 
 | --- | ---: | ---: | ---: |
 | Deploy | **599s** | 96s (~6x) | **40s (15.0x)** |
 
-The 15x figure requires `cdkd deploy --no-wait`, which returns as soon as each Create call returns and lets AWS finish NAT Gateway stabilization in the background too. cdkd's default already leaves CloudFront's ~5min propagation to finish in the background, and the default scheduler parallelizes `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda with NAT Gateway propagation (pass `--no-aggressive-vpc-parallel` to opt out) — on this stack the default gives ~6x, with NAT stabilization as the remaining critical path. The cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3); the CFn and `--no-wait` cells are from the original campaign, so read the ~6x ratio as approximate across campaigns.
+The 15x figure requires `cdkd deploy --no-wait`, which returns as soon as each Create call returns and lets AWS finish NAT Gateway stabilization in the background too. cdkd's default already leaves CloudFront's ~5min propagation to finish in the background, and the default scheduler parallelizes `CloudFront::Distribution` / `Lambda::Url` / VPC Lambda with NAT Gateway propagation (pass `--no-aggressive-vpc-parallel` to opt out) — on this stack the default gives ~6x, with NAT stabilization as the remaining critical path. The cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3); the CFn and `--no-wait` cells are from the earlier round, so read the ~6x ratio as approximate across rounds.
 
 ## Cloud Control API fallback path — **1.6x faster** (40.9s vs 64.9s)
 
@@ -120,12 +124,11 @@ that selects the mode. Both rows are ties: fire-and-forget by 0.8s, and
 `Deployed` by 7.6s with fully overlapping run distributions (cdkd
 `--full-wait` 163.7-216.6s vs Terraform 155.7-188.4s at n=7). The cloudfront
 rows were re-measured 2026-07-31 on cdkd 0.272.0 (all six modes interleaved
-in one campaign); the other scenarios' numbers are from the original
-campaign.
+in one round); the other scenarios' numbers are from the earlier round.
 
-One cdkd binary produces every number within a campaign. See
+One cdkd binary produces every number within a measurement round. See
 [How to read these numbers](#how-to-read-these-numbers) for what is timed and
-the rules the campaign holds itself to.
+the rules this comparison holds itself to.
 
 - **The winner depends on how much of the wall clock is orchestration.** On wide, parallel stacks (wide, serverless) cdkd is ~2.2-2.3x faster than Terraform, because almost the entire deploy is scheduling and API calls. Where a single slow resource dominates the wall clock the gap narrows toward the physical floor both tools share: ec2 1.23x, ecs 1.29x, and cloudfront -- pure CloudFront propagation delay under the `Deployed` definition, pure API accept under fire-and-forget -- a tie in both rows. Nothing here makes AWS itself faster.
 - **A win is claimed only where the run distributions separate.** In the four bolded rows no cdkd run overlaps any Terraform run (exact Mann-Whitney p = 0.0006, the floor at n=7 vs n=7). The three ties disclose which way their medians lean, and the rule cuts both ways: webapp leans cdkd by 17.6s but its runs span 98-138s against Terraform's 106-138s, so n=7 cannot separate them (p = 0.24) -- NAT-gateway creation varies by more than the gap between the tools -- and both cloudfront rows lean Terraform (by 0.8s and 7.6s) inside fully overlapping ranges. Sizing the claim by the median gap instead would invert the webapp/ec2 pair, since ec2 separates completely on 6.8s while webapp's larger 17.6s does not. "Overlapping" means unproven at this sample size, not disproven -- for either side.
