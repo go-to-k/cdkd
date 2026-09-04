@@ -19,15 +19,16 @@ cdkd local start-cloudfront                                                   # 
 cdkd local start-cloudfront MyStack/MyDistribution --port 8080                # pin the listener port
 cdkd local start-cloudfront MyStack/MyDistribution --origin SiteOrigin=./dist # serve an origin from a local directory
 cdkd local start-cloudfront MyStack/MyDistribution --kvs-file RoutesKvs=./routes.json  # back cf.kvs() from a local file
-cdkd local start-cloudfront MyStack/MyDistribution --from-state --watch       # bind cdkd state, hot-reload on source edits
+cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack --watch   # bind deployed state, hot-reload on source edits
 ```
 
 ## Options
 
-`-a, --app`, `--no-pull`, `--from-state` and `--stack-region` behave as they do
-on every `cdkd local` subcommand; see
+`-a, --app`, `--no-pull` and `--stack-region` behave as they do on every
+`cdkd local` subcommand; see
 [Local Execution](local-emulation.md#common-flags). This command does **not**
-accept `--env-vars` or `--container-host`.
+accept `--env-vars` or `--container-host`, and its `--from-state` is inert — see
+[State sources](#state-sources).
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -41,7 +42,7 @@ accept `--env-vars` or `--container-host`.
 | `--tls-key <path>` | — | PEM private key. Implies `--tls`. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda origin's base image and use the cached one. No-op for a distribution with no Lambda. |
 | `--cache-origin` | off | Keep objects fetched from a deployed S3 origin in memory for the session instead of re-reading each request. |
-| `--from-state` | off | Accepted, but **does nothing on this command** — see [State sources](#state-sources). Use `--from-cfn-stack`. |
+| `--from-state` | off | Accepted, but **does nothing on this command**, and still conflicts with `--from-cfn-stack` — see [State sources](#state-sources). |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Inert here, like `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Inert here, like `--from-state`. |
 | `--from-cfn-stack [name]` | off | Bind the same values to a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the resolved stack name. |
@@ -72,7 +73,11 @@ paths resolve their environment without consulting cdkd state at all.
 
 `--from-cfn-stack [name]` is the state source that works here. It binds a
 deployed-S3 origin's bucket, backs `cf.kvs()` reads with the deployed
-KeyValueStore, and resolves a Function URL origin's backing Lambda.
+KeyValueStore, and resolves the environment of both Function URL origin Lambdas
+and Lambda@Edge functions.
+
+Passing `--from-state` and `--from-cfn-stack` together is still an error, so
+drop `--from-state` rather than leaving it on as a no-op.
 
 ## Target resolution
 
@@ -92,7 +97,7 @@ served per invocation.
 | S3 origin content | Read from the staged asset directory, or from real S3 under `--from-cfn-stack`. No Docker. |
 | Path routing | In-process, across `DefaultCacheBehavior` plus the ordered `CacheBehaviors[]`, using CloudFront's `*` / `?` glob matching. |
 | `DefaultRootObject` and `CustomErrorResponses` | Applied in-process — the root path resolves to the default root object, and error responses give the SPA fallback. |
-| Custom (non-S3, non-Function-URL) origins | Not run. A warning at boot, `502` at request time. |
+| Custom (non-S3, non-Function-URL) origins | Not fetched. A warning at boot, `502` at request time — unless you point the origin at a directory with `--origin`. |
 | CDN caching and edge locations | Not reproduced. `--cache-origin` is an origin read-through cache, not CloudFront's. |
 
 ### Origins
@@ -102,8 +107,10 @@ distribution's `Origins[].Id` in the synthesized template — not a construct
 path and not a logical ID, and CDK generates those ids with a hash suffix. You
 do not have to go looking for one: an S3 origin whose local source cannot be
 resolved raises a boot-time warning that spells the flag out for you, including
-`--origin <that id>=<dir>`. A custom (non-S3, non-Function-URL) origin warns too,
-but `--origin` does not apply to it — nothing serves it locally.
+`--origin <that id>=<dir>`. A custom (non-S3, non-Function-URL) origin warns
+without naming the flag, but `--origin` works on it just the same — an override
+is applied before the origin is classified, so pointing any origin at a
+directory serves it from there.
 
 S3 origin content is resolved out of the cloud assembly: the origin's bucket →
 its `BucketDeployment` custom resource → `SourceObjectKeys` → the staged asset

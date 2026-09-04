@@ -14,9 +14,9 @@ routing rule, a weighted split or an auth action needs to be exercised without
 a deploy. Docker is required.
 
 Reach for [`cdkd local start-api`](local-start-api.md) instead when the front
-door you want to exercise is API Gateway: an ALB routes to running ECS replicas
-and to Lambda target groups, where API Gateway routes to Lambdas and HTTP
-upstreams.
+door you want to exercise is API Gateway. An ALB answers from running ECS
+replicas, Lambda target groups, redirects and fixed responses; API Gateway
+answers from Lambdas, HTTP upstreams and response templates.
 
 ```bash
 cdkd local start-alb MyStack/MyAlb                             # serve one ALB on its listener ports

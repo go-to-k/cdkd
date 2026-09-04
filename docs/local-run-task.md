@@ -106,9 +106,9 @@ endpoints over your own network.
 
 Every `ContainerDefinitions[].PortMappings` entry is published on the host, at
 the entry's `HostPort` when the template names one and at the container port
-otherwise, bound to `--container-host` (`127.0.0.1` by default). A task
-declaring container port `8080` is reachable at `http://127.0.0.1:8080` as soon
-as its container starts.
+otherwise, bound to `--container-host` (`127.0.0.1` by default), and on the
+mapping's own protocol. A task declaring TCP container port `8080` is reachable
+at `127.0.0.1:8080` as soon as its container starts.
 
 A **privileged host port** — anything the mapping would publish below 1024 —
 fails at `docker run`, because a local publish there needs root and macOS Docker
