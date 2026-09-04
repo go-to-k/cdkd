@@ -160,7 +160,7 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
 
   it('round-trip happy path — sqs subscription with FilterPolicy survives readCurrentState → update() without rejection-shape inputs', async () => {
     // End-to-end round-trip test (the structural guard documented in
-    // docs/provider-rules.md "readCurrentState() for drift detection"). Read AWS-current shape, feed
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection). Read AWS-current shape, feed
     // it back through update(), assert the Subscribe call shape would
     // not be rejected by AWS.
     mockSend.mockResolvedValueOnce({

@@ -155,7 +155,7 @@ const ipProtocol = requireConfigString(
   { coerceNumber: true }
 );
 
-// UPDATE-path sites WARN instead of throwing — see §1a: `update()` is a state
+// UPDATE-path sites WARN instead of throwing — see [Pre-flight refusal](#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards): `update()` is a state
 // replay path unconditionally, so a refusal there can leave the resource
 // un-rollbackable with no template-side remedy.
 const status = requireConfigString(properties['Status'], 'Active', 'AWS::IAM::AccessKey Status', {
@@ -464,7 +464,7 @@ docs rather than letting a reader assume the refusal is total.
 
 If a property is merely *unimplemented* rather than undeployable, this is the
 wrong mechanism — move it to `unhandledByDesign`, which converts the silent
-drop into the Cloud Control auto-route (see §3c).
+drop into the Cloud Control auto-route (see [`handledProperties` against the CFn schema](#handledproperties-against-the-cfn-schema)).
 
 ## Idempotency
 
@@ -793,7 +793,7 @@ improvement.
 
 An abort on an `update()` path must be right for EVERY caller, not only the
 template-driven one — `cdkd drift --revert` and the rollback executor's revert
-arms call `update()` with a state-borne desired bag (see §1a). The SNS abort
+arms call `update()` with a state-borne desired bag (see [Pre-flight refusal](#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards)). The SNS abort
 clears that bar because a second live subscription serves none of the three;
 where a refusal would not, downgrade it to a warning instead.
 
@@ -1070,7 +1070,7 @@ Checklist when writing or reviewing an `update()`:
   `Modify*` calls) vs **full-replace** (the whole config object is replaced,
   or removal is handled by a dedicated `Delete*` call, like the S3 bucket
   sub-config pattern). Only merge APIs need clear-on-removal — but a
-  full-replace API has the MIRROR hazard instead, see §2b.
+  full-replace API has the MIRROR hazard instead, see [Full-replace update APIs erase AWS-authored values](#full-replace-update-apis-erase-aws-authored-values).
 - For each optional mutable property: what does AWS need to receive to get
   back to the CFn default? Common shapes: the documented default scalar
   (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
@@ -1373,7 +1373,7 @@ Checklist when writing or reviewing an `update()`:
 
 ## Full-replace update APIs erase AWS-authored values
 
-A **full-replace** update API needs no clear-on-removal (§2a) — omitting a key
+A **full-replace** update API needs no clear-on-removal (see [Update removal semantics](#update-removal-semantics-clear-on-removal)) — omitting a key
 IS the reset. Its hazard runs the other way: whatever the payload omits is
 erased, including values **AWS itself wrote** and your template therefore has
 no representation for. No template-side diff hints at the loss, and no unit
@@ -1855,7 +1855,7 @@ believing the desired side is always an observed snapshot.
 
 `cdkd drift --revert` round-trips `observedProperties` (the snapshot `readCurrentState` produced) back through `provider.update`. That code path is what surfaces every shape-mismatch bug between the read side (`readCurrentState` output) and the write side (AWS create/update API input). Two failure classes have been observed; both must be designed around BEFORE adding a new `readCurrentState`.
 
-**Class 1 — type-discriminator-dependent fields.** A field is only valid on AWS when a sibling discriminator says so. Examples: SQS `DeduplicationScope` / `FifoThroughputLimit` (FIFO-only — `FifoQueue=true`), SNS `FifoThroughputScope` (`FifoTopic=true`), AppSync DataSource shape (`DynamoDBConfig` / `LambdaConfig` / `HttpConfig` discriminated by `Type`). Emitting a `''` placeholder for these on a discriminator-false resource means `--revert` pushes it back and AWS rejects with "You can specify X only when Y is set to true". **Fix:** guard the emit on the sibling discriminator — only emit when the discriminator is true. Pattern documented in `feedback_always_emit_check_type_discriminator.md`. Drift detection is not lost: the discriminator-false state cannot legally have the field on AWS, so console-side ADD is impossible. When the discriminator is **N-way rather than boolean** — a set of mutually-exclusive `<Variant>Configuration` blocks selected by a type field, as in AppSync's `Type` or FSx `FileSystem`'s `FileSystemType` (`LustreConfiguration` / `WindowsConfiguration` / `OntapConfiguration` / `OpenZFSConfiguration`) — the same rule reads: emit EXACTLY the one block the discriminator selects, and emit it **unconditionally** (so the always-emit contract still holds for the one legal block, `{}` included), never the others. The §3b key-set test is then written once per discriminator value, each asserting its own block is present and the rest absent — see [tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts).
+**Class 1 — type-discriminator-dependent fields.** A field is only valid on AWS when a sibling discriminator says so. Examples: SQS `DeduplicationScope` / `FifoThroughputLimit` (FIFO-only — `FifoQueue=true`), SNS `FifoThroughputScope` (`FifoTopic=true`), AppSync DataSource shape (`DynamoDBConfig` / `LambdaConfig` / `HttpConfig` discriminated by `Type`). Emitting a `''` placeholder for these on a discriminator-false resource means `--revert` pushes it back and AWS rejects with "You can specify X only when Y is set to true". **Fix:** guard the emit on the sibling discriminator — only emit when the discriminator is true. Pattern documented in `feedback_always_emit_check_type_discriminator.md`. Drift detection is not lost: the discriminator-false state cannot legally have the field on AWS, so console-side ADD is impossible. When the discriminator is **N-way rather than boolean** — a set of mutually-exclusive `<Variant>Configuration` blocks selected by a type field, as in AppSync's `Type` or FSx `FileSystem`'s `FileSystemType` (`LustreConfiguration` / `WindowsConfiguration` / `OntapConfiguration` / `OpenZFSConfiguration`) — the same rule reads: emit EXACTLY the one block the discriminator selects, and emit it **unconditionally** (so the always-emit contract still holds for the one legal block, `{}` included), never the others. The key-set test is then written once per discriminator value, each asserting its own block is present and the rest absent — see [tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/providers/fsx-filesystem-provider.test.ts).
 
 **The "console-side ADD is impossible" clause holds ONLY when the discriminator is an INDEPENDENT sibling** (issue [#1565](https://github.com/go-to-k/cdkd/issues/1565)). Where the "discriminator" is really the field group's OWN presence — the group is all-or-nothing, and enabling it IS setting the fields — a console-side add is not merely possible, it is the whole drift you want to catch, and guarding the emit hides it FOREVER: the comparator's top-level walk is baseline-keys-only, so a key absent from the snapshot is never compared. `AWS::CloudTrail::Trail`'s `CloudWatchLogsLogGroupArn` / `CloudWatchLogsRoleArn` pair is that shape, and it was guarded on a rationale whose both halves later proved false: AWS was said to reject the `''` round-trip (the issue #1160 live probe accepts it and nulls the field out), and a console-side enable was said to surface as both fields appearing at once on the next read (it cannot — the walk never reaches an absent key). For this shape emit the group TOGETHER and UNCONDITIONALLY, with `''` placeholders, and keep the all-or-nothing invariant on the WRITE side instead — CloudTrail's update path decides both fields TOGETHER and forwards them on PRESENCE, so an explicit `''` CLEARS (which is what lets `drift --revert` undo a console-side enable) while an ABSENT pair is retained, and a half-populated or non-string shape is refused rather than coerced. Ask which one you have before guarding: *is there a sibling field whose value makes mine illegal (guard), or is my own presence the switch (always-emit)?*
 

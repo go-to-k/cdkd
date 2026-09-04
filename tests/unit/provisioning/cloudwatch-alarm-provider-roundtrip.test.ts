@@ -41,8 +41,8 @@ const RESOURCE_TYPE = 'AWS::CloudWatch::Alarm';
 /**
  * Mechanical guard for Class 1 (type-discriminator) and Class 2
  * (structurally-incomplete-when-empty) placeholder regressions on the
- * `cdkd drift --revert` round-trip. See docs/provider-development.md
- * § 3b "Read-update round-trip test" and the canonical
+ * `cdkd drift --revert` round-trip. See docs/provider-rules.md#readcurrentstate-for-drift-detection
+ *  "Read-update round-trip test" and the canonical
  * `sns-topic-provider-roundtrip.test.ts` / `sqs-queue-provider-update.test.ts`.
  *
  * `readCurrentState` always-emits placeholders (`MetricName: ''`,

@@ -497,7 +497,7 @@ describe('IAMRoleProvider', () => {
       expect(mockSend.mock.calls.some((c) => c[0] instanceof GetRoleCommand)).toBe(true);
     });
 
-    // Issue #1160 clear-on-removal trio (docs/provider-rules.md "Update removal semantics"):
+    // Issue #1160 clear-on-removal trio (docs/provider-rules.md#update-removal-semantics-clear-on-removal):
     // IAM UpdateRole has merge semantics (absent field = "no change",
     // live-verified 2026-07-27), while CFn resets a template-removed
     // property to its default. update() must therefore send an explicit
@@ -581,7 +581,7 @@ describe('IAMRoleProvider', () => {
 
     it('round-trip: empty-string Description placeholder reaches UpdateRoleCommand (truthy-gate guard)', async () => {
       // Mechanical guard for the truthy-gate regression. See
-      // docs/provider-rules.md "readCurrentState() for drift detection" "Read-update round-trip test".
+      // docs/provider-rules.md#readcurrentstate-for-drift-detection.
       //
       // The IAM Role bug class:
       //   - readCurrentState emits Description: '' as the always-emit

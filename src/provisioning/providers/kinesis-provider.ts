@@ -298,7 +298,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       (properties['Name'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 128 });
 
-    // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-rules.md "Pre-flight refusal").
+    // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards).
     // Refusing from inside it would throw AFTER `CreateStream` already ran, and
     // a failed CREATE journals no physical id — so `rollback-executor` skips it
     // and the stream is orphaned, untracked and unrollbackable. `streamName` is
@@ -681,7 +681,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       // But it must SAY so. The metrics sibling below warns on its skip, and
       // without this the same junk value is a hard refusal on create and a
       // silent no-op on update — same template, opposite feedback, and no
-      // signal at all on the update path (docs/provider-development.md 1a
+      // signal at all on the update path (docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards
       // requires the warn-and-skip arm to announce itself).
       const desiredSizeRead = readMaxRecordSize(properties['MaxRecordSizeInKiB'], mask);
       if (desiredSizeRead.kind === 'unusable') {

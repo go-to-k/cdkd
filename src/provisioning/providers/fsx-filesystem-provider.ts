@@ -1819,7 +1819,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * by their respective `read*Configuration` helpers; the few inputs AWS
    * never returns stay listed in {@link getDriftUnknownPaths}.
    *
-   * Emission follows `docs/provider-development.md` §3b: every top-level
+   * Emission follows `docs/provider-rules.md#readcurrentstate-for-drift-detection`: every top-level
    * property `update()` can mutate is emitted unconditionally with a
    * placeholder, registry-createOnly properties keep their guard, and the
    * `<Variant>Configuration` blocks take the Class 1 type-discriminator

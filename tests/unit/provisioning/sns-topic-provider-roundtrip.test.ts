@@ -43,8 +43,8 @@ describe('SNSTopicProvider read-update round-trip', () => {
 
   it('Class 1 — standard topic (FifoTopic=false) does not send FIFO-only attrs to AWS on round-trip', async () => {
     // Mechanical guard for Class 1 placeholder regression on type-
-    // discriminator-dependent fields. See docs/provider-development.md
-    // § 3b "Read-update round-trip test".
+    // discriminator-dependent fields. See docs/provider-rules.md#readcurrentstate-for-drift-detection
+    //  "Read-update round-trip test".
     //
     // SNS FifoThroughputScope is FIFO-only. On a STANDARD topic
     // readCurrentState must NOT emit it as a placeholder (or, if it

@@ -532,7 +532,7 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     }
 
     // Tags via S3 Control ListTagsForResource (always-emit per
-    // docs/provider-rules.md "readCurrentState() for drift detection"; an untagged bucket returns an empty
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection; an untagged bucket returns an empty
     // list, not an error, and the comparator's "key absent in state never
     // drifts" rule keeps pre-Tags-support stacks quiet).
     result['Tags'] = await this.readTags(physicalId);

@@ -45,7 +45,7 @@ describe('SQSQueuePolicyProvider read-update round-trip', () => {
 
   it('round-trip: observed snapshot survives update() with a valid Policy attribute', async () => {
     // Mechanical guard for the round-trip code path used by `cdkd drift
-    // --revert`. See docs/provider-rules.md "readCurrentState() for drift detection".
+    // --revert`. See docs/provider-rules.md#readcurrentstate-for-drift-detection.
     //
     // For SQS::QueuePolicy:
     //   - Class 1 (type-discriminator-dependent fields): N/A — no

@@ -11,7 +11,7 @@
  * live value on removal. Route every optional mutable field of a
  * merge-semantics API through this helper, with `clearValue` set to the
  * property's CFn default or the SDK-documented clear sentinel — see
- * docs/provider-rules.md "Update removal semantics" for the per-field checklist.
+ * docs/provider-rules.md#update-removal-semantics-clear-on-removal for the per-field checklist.
  *
  * Returns `newValue` when present, the `clearValue` when the field was
  * present before and is now absent (removal), and `undefined` when it was

@@ -11,8 +11,8 @@
 # `provider.update()` during `cdkd drift --revert`, and AWS-rejection-
 # shaped values silently break the revert. The fix was a per-provider
 # `*-roundtrip.test.ts` (or `*-update.test.ts` — both naming
-# conventions co-exist). The readCurrentState drift-detection section of
-# `docs/provider-rules.md`
+# conventions co-exist). See
+# `docs/provider-rules.md#read-update-round-trip-test-mandatory-for-any-provider-with-readcurrentstate`
 # documents the rule, but doc-by-courtesy doesn't enforce it on the
 # next NEW provider. This hook closes that gap structurally.
 #
@@ -181,7 +181,8 @@ fi
     echo "      (or:      tests/unit/provisioning/${base}-update.test.ts)"
   done
   echo
-  echo "See the readCurrentState drift-detection section of docs/provider-rules.md for the round-trip test pattern."
+  echo "See docs/provider-rules.md#read-update-round-trip-test-mandatory-for-any-provider-with-readcurrentstate"
+  echo "for the round-trip test pattern."
   echo "If this provider intentionally does not implement readCurrentState (e.g."
   echo "a sub-resource provider whose state is fully managed by its parent),"
   echo "remove the readCurrentState method to bypass this gate."

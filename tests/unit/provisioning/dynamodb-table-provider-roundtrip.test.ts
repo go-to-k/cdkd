@@ -41,7 +41,7 @@ const TABLE_ARN = 'arn:aws:dynamodb:us-east-1:123:table/my-table';
 /**
  * Mechanical guard against Class 1 / Class 2 placeholder regressions on
  * `cdkd drift --revert`'s readCurrentState → update round-trip. See
- * `docs/provider-development.md` § 3b "Read-update round-trip test" and
+ * `docs/provider-rules.md#readcurrentstate-for-drift-detection` "Read-update round-trip test" and
  * `tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts` for the
  * shape this mirrors.
  *

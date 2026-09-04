@@ -50,7 +50,7 @@ describe('ElastiCacheProvider read-update round-trip', () => {
   it('Class 1 — memcached cluster does not surface redis-only TransitEncryptionEnabled', async () => {
     // Mechanical guard for Class 1 placeholder regression on
     // type-discriminator-dependent fields. See
-    // docs/provider-rules.md "readCurrentState() for drift detection".
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection.
     //
     // ElastiCache `TransitEncryptionEnabled` is redis-only on
     // CreateCacheClusterCommand. AWS DescribeCacheClusters returns the

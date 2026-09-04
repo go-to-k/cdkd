@@ -1084,12 +1084,13 @@ export class GlueProvider implements ResourceProvider {
    * | no             | no              | AWS-AUTHORED -> preserved from live  |
    *
    * That keeps this provider on the repo's established clear-on-removal
-   * position (docs/provider-rules.md "Update removal semantics", issue #1155): a removal the
+   * position (docs/provider-rules.md#update-removal-semantics-clear-on-removal, issue #1155): a removal the
    * user expressed in the template still reaches AWS. Glue's update APIs are
    * full-replace, so removal needs no explicit reset sentinel — omitting the
    * key IS the reset, and the only thing this helper adds back is the set of
    * keys the user never authored in the first place. The generalized rule for
-   * any full-replace update API lives in docs/provider-rules.md "Reporting a skipped delete".
+   * any full-replace update API lives in
+   * docs/provider-rules.md#full-replace-update-apis-erase-aws-authored-values.
    *
    * Audited siblings that do NOT get this treatment: `JobUpdate`'s
    * `DefaultArguments` / `NonOverridableArguments`, `ConnectionInput`'s

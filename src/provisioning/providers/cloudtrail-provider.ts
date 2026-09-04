@@ -322,8 +322,8 @@ export class CloudTrailProvider implements ResourceProvider {
     // `readCurrentState` always-emits empty-string `''` placeholders for
     // several optional fields (S3KeyPrefix, KMSKeyId, SnsTopicName) so
     // console-side
-    // adds are detectable as drift (per docs/provider-development.md
-    // § 3b "always emit user-controllable top-level keys"). `cdkd drift
+    // adds are detectable as drift (per docs/provider-rules.md#readcurrentstate-for-drift-detection
+    //  "always emit user-controllable top-level keys"). `cdkd drift
     // --revert` round-trips the placeholder back through this `update()`,
     // and this helper drops the placeholder so the wire layer never sees
     // it. Mirrors the canonical Class 2 pattern in `sqs-queue-provider.ts`
@@ -817,7 +817,7 @@ export class CloudTrailProvider implements ResourceProvider {
     // Always-emit user-controllable top-level keys with placeholders so
     // console-side adds become visible to drift (the comparator's top-
     // level walk is state-keys-only, so an omitted key is invisible
-    // forever). See docs/provider-rules.md "readCurrentState() for drift detection".
+    // forever). See docs/provider-rules.md#readcurrentstate-for-drift-detection.
     const result: Record<string, unknown> = {};
     if (trail.Name !== undefined) result['TrailName'] = trail.Name;
     // S3BucketName is required to create a trail; AWS always returns it.

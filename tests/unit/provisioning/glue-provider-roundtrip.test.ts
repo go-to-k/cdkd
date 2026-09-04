@@ -142,7 +142,7 @@ describe('GlueProvider read-update round-trip', () => {
 
   it('AWS::Glue::Table — Class 2: empty placeholders (Parameters {}, PartitionKeys []) round-trip without AWS-rejection shape', async () => {
     // Mechanical guard for Class 2 placeholder regression. See
-    // docs/provider-rules.md "readCurrentState() for drift detection". `readCurrentState` always-emits
+    // docs/provider-rules.md#readcurrentstate-for-drift-detection. `readCurrentState` always-emits
     // `Parameters: {}` and `PartitionKeys: []` as placeholders so console
     // adds are detectable. Round-tripping those through update() must
     // produce a valid `UpdateTable` payload — empty `Parameters` /
@@ -226,7 +226,7 @@ describe('GlueProvider read-update round-trip', () => {
     // not truthy). An empty `Parameters: {}` placeholder must survive —
     // a truthy gate would skip the conversion entirely and leave the
     // raw object unconverted (functional difference is small here, but
-    // the docs/provider-rules.md "readCurrentState() for drift detection" rule applies uniformly).
+    // the docs/provider-rules.md#readcurrentstate-for-drift-detection rule applies uniformly).
     mockSend.mockResolvedValueOnce({});
 
     const observed = {
@@ -881,7 +881,7 @@ describe('GlueProvider — AWS-managed Parameters preservation (#1461)', () => {
 
   it('AWS::Glue::Table — a WHOLE Parameters block the user removed stays removed', async () => {
     // A per-key removal test does NOT cover whole-block removal (the map
-    // itself dropped from the template) — docs/provider-rules.md "Update removal semantics".
+    // itself dropped from the template) — docs/provider-rules.md#update-removal-semantics-clear-on-removal.
     mockLiveTable({ table_type: 'ICEBERG', owner_team: 'analytics' });
 
     await provider.update(
