@@ -485,15 +485,43 @@ describe('SDK client construction critic', () => {
       return out;
     }
 
+    /**
+     * BOTH cases below read the SAME immutable tree, and each of them used to
+     * pay for it twice over: `textScan()` walks all 334 `src/**` files (10.8 MB)
+     * and was called twice per case, and `findClientSites` -- a full TypeScript
+     * parse -- ran once per HIT (171) rather than once per distinct FILE (83),
+     * because `textScan().map(...)` parses before `new Map` dedupes and the
+     * SIZE case loops hits directly. Measured on a 12-core host: 751 + 631 ms
+     * as written against 237 ms for one shared scan and one parse per file.
+     * That is what put these two cases at 3.7-4.1 s of the 5 s budget under
+     * partial parallel load and made them flake on CI (issue #2491).
+     *
+     * SCOPED TO THIS DESCRIBE ON PURPOSE. The `regression probes against the
+     * REAL tree` block below rewrites a scratch COPY of `src/` and re-reports
+     * it; a module-level cache keyed by absolute path would be consulted there
+     * too and could hand a probe its PRE-MUTATION verdict, which is a probe
+     * that passes without testing anything. These two cases never mutate, so
+     * sharing between them changes no verdict.
+     */
+    let scanned: ReturnType<typeof textScan> | undefined;
+    const scanOnce = (): ReturnType<typeof textScan> => (scanned ??= textScan());
+    const siteCache = new Map<string, ReturnType<typeof findClientSites>>();
+    function sitesOnce(file: string): ReturnType<typeof findClientSites> {
+      let found = siteCache.get(file);
+      if (found === undefined) {
+        found = findClientSites(file, readFileSync(file, 'utf8'));
+        siteCache.set(file, found);
+      }
+      return found;
+    }
+
     it('finds no construction the AST walk did not, except in prose', () => {
       const detected = new Set<string>();
-      for (const [file, sites] of new Map(
-        textScan().map((h) => [h.file, findClientSites(h.file, readFileSync(h.file, 'utf8'))])
-      )) {
-        for (const site of sites) detected.add(`${file}:${site.line}`);
+      for (const hit of scanOnce()) {
+        for (const site of sitesOnce(hit.file)) detected.add(`${hit.file}:${site.line}`);
       }
 
-      const unexplained = textScan().filter(
+      const unexplained = scanOnce().filter(
         (hit) =>
           !detected.has(`${hit.file}:${hit.line}`) &&
           // A construction NAMED in a comment is not a construction.
@@ -512,11 +540,11 @@ describe('SDK client construction critic', () => {
     it('the two methods agree on the SIZE, not just on the absence of surprises', () => {
       // The floor's other direction: if the AST walk started reporting sites the
       // text scan cannot see, one of them is wrong and it is worth knowing.
-      const scanned = new Set(textScan().map((h) => `${h.file}:${h.line}`));
+      const scannedLines = new Set(scanOnce().map((h) => `${h.file}:${h.line}`));
       const detectedNotScanned: string[] = [];
-      for (const hit of textScan()) {
-        for (const site of findClientSites(hit.file, readFileSync(hit.file, 'utf8'))) {
-          if (!scanned.has(`${hit.file}:${site.line}`)) {
+      for (const hit of scanOnce()) {
+        for (const site of sitesOnce(hit.file)) {
+          if (!scannedLines.has(`${hit.file}:${site.line}`)) {
             detectedNotScanned.push(`${hit.file}:${site.line}`);
           }
         }
@@ -716,4 +744,19 @@ describe('SDK client construction critic', () => {
       expect(result.stderr).toContain('only valid with --check');
     });
   });
-});
+  // FILE-LEVEL, not on the two cases the flake report named (issue #2491).
+  // Eight of the 48 cases here read the REAL tree, and the memoisation above
+  // only helps the two that were WASTING work. The six `regression probes
+  // against the REAL tree` cases each `cpSync` the whole 10.8 MB `src/` tree
+  // and then run `buildReport` over all 334 files, which is legitimately about
+  // a second apiece and does not get cheaper by rewriting; measured under
+  // partial parallel load they sit at 1.5-2.8 s, the largest within 12% of the
+  // two named cases when idle. A timeout on the named pair alone would move
+  // the next flake one test over.
+  //
+  // 15 s rather than the 30 s the report suggested: after the memoisation the
+  // whole file runs in about 2-3 s, so this is ~10x headroom and still fails
+  // loudly. 30 s would silently absorb another 6x regression in a file whose
+  // entire job is to fail loudly. The repo already spells per-test budgets as
+  // `}, 15_000)` and sets no global `testTimeout`, so this adds no mechanism.
+}, 15_000);
