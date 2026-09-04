@@ -40,6 +40,18 @@ paths:
   packages hyphenate where the endpoint host does not, and a mis-named
   `vi.mock` is silently INERT.
 
+### A test that SPAWNS a subprocess must declare its own timeout
+
+Vitest's default 5 s is an IN-PROCESS bound. A case that spawns one of this
+repo's own `.ts` entry points pays Node startup plus type-stripping every time,
+so it passes locally and fails on a loaded CI runner — the direction that reads
+as flakiness rather than an under-declared bound (2026-09-04,
+go-to-k/cdkd#2553: five spawns of `scripts/audit-stateful-candidates.ts` ran in
+~2 s locally, timed out at 5000 ms in CI). Pass the bound as `it`'s third
+argument (`}, 60_000);`), generously — its job is to stop a HANG, not to police
+latency. One cheap spawn of an already-BUILT binary is fine under the default;
+the trigger is a TS entry point, or several spawns in a case.
+
 ### A `*Once` primer must be consumed by the test that primed it (mandatory)
 
 - `vi.clearAllMocks()` clears call RECORDS but does NOT drain the queue seeded by
@@ -275,9 +287,9 @@ partial first page is a silent false pass). References:
 `tests/integration/emr-instance-configs/verify.sh`.
 
 A pager invoked non-interactively is a SEPARATE route to a hang, so
-`export AWS_PAGER=""` near the top of a fixture is cheap insurance — a
-recommendation for NEW and affected fixtures, not a tree-wide invariant.
-Mechanically enforced since issue #1402; user-facing writeup in
+`export AWS_PAGER=""` near the top of a fixture is cheap insurance — for NEW
+and affected fixtures, not a tree-wide invariant. Enforced since issue #1402;
+writeup in
 [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` upstream-cdk callers must pin AND resolve a fixture-local CLI (mandatory)
@@ -492,18 +504,15 @@ after destroy — the shape of `loggroup-kms-associate` and siblings since #958.
 blocker and proposed account-bootstrap infrastructure to avoid a non-problem —
 neither premise survived one `grep` of the fixture tree.)
 
-Two things this rule does NOT say: the `/cleanup` skill's caution stands for
-keys it did not create (only schedule deletion for `KeyManager == CUSTOMER` +
+Two things this rule does NOT say: `/cleanup`'s caution stands for keys it did
+not create (schedule deletion only for `KeyManager == CUSTOMER` +
 `KeyState == Enabled` keys with a cdkd-shaped description, never one with live
-grants or aliases), and a key does keep BILLING through its pending window —
-a cost, not an orphan, and per `feedback_integ_is_not_a_cost` not a reason to
-skip coverage.
+grants or aliases), and a key keeps BILLING through its window — a cost, not an
+orphan, and not a reason to skip coverage.
 
 The generalizable half: when an issue states a BLOCKER as settled fact, grep
-the tree for the blocker before building around it — a sibling fixture may
-already have disproven it. See also
-`feedback_verify_issue_root_cause_before_building_tooling` and
-`feedback_umbrella_issue_row_can_be_already_fixed`. User-facing writeup in
+the tree before building around it — a sibling fixture may already have
+disproven it. User-facing writeup in
 [docs/integ-fixture-conventions.md](../../docs/integ-fixture-conventions.md).
 
 ### `verify.sh` must sweep S3 OBJECT VERSIONS and assert zero (mandatory for secret-seeding fixtures)
@@ -557,21 +566,21 @@ observed live, none visible from reading the script, only from COUNTING what S3
 holds afterwards:
 
 1. **Trap-only sweep.** `trap - EXIT INT TERM` on the success path means a
-   sweep living only in `cleanup` runs on the failure path and never the normal
-   one.
+   sweep living only in `cleanup` never runs on the normal path.
 2. **`printf '%s' | tr | while read`.** `out=$(aws ...)` strips the trailing
-   newline, so `read` returns non-zero on the LAST field and the body never
-   runs for it (verified: 0 of 1 on a single-version key, 346 of 347 on a full
-   listing). Use `printf '%s\n'` AND `|| [ -n "${key}" ]`.
+   newline, so `read` returns non-zero on the LAST field and the body skips it
+   (verified: 0 of 1, and 346 of 347). Use `printf '%s\n'` AND
+   `|| [ -n "${key}" ]`.
 3. **`length(...)` under `--output text`.** `--query` is applied PER PAGE, so a
    >1000-entry listing prints one number per page (measured `1000\n189`).
-   Count ROWS of a `[Key,VersionId]` projection.
+   Count ROWS of a projection. Applies to ANY filtered count, not just a
+   version sweep (go-to-k/cdkd#2553 shipped six such captures in a fixture).
 
-Two shapes are decisions, not style: `([Versions, DeleteMarkers][])[...]` — the
-parentheses are load-bearing (the unparenthesised form returns empty; measured
-0 vs 347) — and the teardown sweep must NOT be noncurrent-only: after
-`aws s3 rm` the DELETE MARKER is the `IsLatest == true` entry, so one marker
-per key would survive forever and the zero-assertion would never pass.
+Two shapes are decisions, not style: the parentheses in
+`([Versions, DeleteMarkers][])[...]` are load-bearing (unparenthesised returns
+empty; measured 0 vs 347), and the teardown sweep must NOT be noncurrent-only —
+after `aws s3 rm` the DELETE MARKER is the `IsLatest == true` entry, so one
+marker per key would survive forever.
 
 EVERY entry point — purge, count AND assertion — refuses a prefix that is not
 `cdkd/<stack>/<region>/` with both segments non-empty. On the purge side that
@@ -586,13 +595,12 @@ convention exists to remove, reintroduced inside its own assertion. Pinned by
 under bash against a fake `aws` that records its own invocation — asserting not
 just a non-zero exit but that no AWS call was attempted at all.
 
-Deletes go through `DeleteObjects` in batches of 1000 (the API maximum); keys
-carrying a quote or a backslash fall back to single-object `delete-object` (the
-payload is built without `jq` — sourcing the helper must not add a `jq`
-dependency). Under `Quiet: true` a successful call returns `{}`, so an `Errors`
-key in the output is a per-object failure reported as overall success
-(confirmed: rc=0 with `Errors` present); it warns, and the retry loop plus the
-zero-assertion are the backstop. **Both AWS calls pin `--output`** — `json` on
+Deletes go through `DeleteObjects` in batches of 1000 (the API maximum); a key
+carrying a quote or backslash falls back to single-object `delete-object`, its
+payload built without `jq` (sourcing the helper must not add that dependency).
+Under `Quiet: true` a success returns `{}`, so an `Errors` key is a per-object
+failure reported as overall success (confirmed: rc=0 with `Errors` present); it
+warns, and the retry loop plus the zero-assertion are the backstop. **Both AWS calls pin `--output`** — `json` on
 the delete, `text` on the listing — because the CLI's format is AMBIENT
 (`AWS_DEFAULT_OUTPUT`, or `output =` in the profile): un-pinned, the delete's
 per-object failure arrives in a shape the `"Errors"` check never matches and
@@ -687,9 +695,8 @@ cleared `> 0`.) Practical rules:
 
 - before trusting a new checker, measure — count parsed items per shape and
   explain any gap against a rough independent count;
-- encode the measurement as assertions with real numeric floors, anchored so a
-  near-miss cannot satisfy them;
-- aggregate floors alone are insufficient: one dead shape hides under them.
+- encode it as assertions with real numeric floors, anchored so a near-miss
+  cannot satisfy them; aggregate floors alone hide one dead shape.
 
 See `tests/unit/scripts/integ-cli-flags.test.ts` for the shape the assertions
 take.

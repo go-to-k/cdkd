@@ -109,12 +109,11 @@ markers.
   go-to-k/cdkd#2428's round-2 fixes reverted green; go-to-k/cdkd#2450's
   escaping fix stayed green weakened to keys-only because its fixture had
   nothing to escape).
-- **Reviewer subagents spawned BY A LANE report to the MAIN session**, not to
-  the lane that spawned them — a lane that dispatches reviewers and waits
-  blocks forever while the parent collects verdicts it did not ask for
-  (go-to-k/cdkd#2417). Pick one shape in the dispatch: the lane runs its
-  reviewers synchronously, or the parent owns the review dispatch and relays
-  verdicts down (under §9's queued-versus-`Resuming` rule).
+- **Reviewer subagents spawned BY A LANE report to the MAIN session** — a lane
+  that dispatches and waits blocks forever while the parent collects verdicts
+  it did not ask for (go-to-k/cdkd#2417). Pick one shape: the lane runs them
+  synchronously, or the parent dispatches and relays verdicts down (§9's
+  queued-versus-`Resuming` rule).
 
 ### 8-c. The live-test tiers
 
@@ -350,32 +349,33 @@ code defects and FIVE false statements in prose. Habits that each caught one:
 ### 8-h. Reviewer findings are inputs, not verdicts
 
 - **A reviewer's suggested FIX can be wrong even when its finding is right**
-  — derive regexes, bounds and constants from the code that produces the
-  value, and probe both directions (go-to-k/cdkd#2052: the suggested key
-  filter's `+` would have skipped keys cdkd really writes — the producer's
-  random suffix can be empty — trading over-collection for invisible
-  under-collection).
+  — derive regexes, bounds and constants from the code that PRODUCES the
+  value, and probe both directions (go-to-k/cdkd#2052: the suggested filter's
+  `+` would have skipped keys cdkd really writes, trading over-collection for
+  invisible under-collection).
 - **Check a reviewer's PREMISE before acting, and say so when you decline** —
   record the trace in the PR body; a declined finding with evidence can be
   re-judged, a silently dropped one looks like an oversight.
-- **An ABSENCE claim ("no such fence exists") is the one a reviewer is least
-  able to establish — verify it by RUNNING the thing said not to exist**
-  (acting on one nearly broke a byte budget sitting 2 B under its cap).
-- **Your own BRIEF to a lane agent is a published claim** — the trigger for
-  verification is DESTINATION, not doubt. Grep every mechanism claim before
-  it goes into an instruction; when an agent corrects your brief, say so.
+- **An ABSENCE claim ("no such fence exists", "that string is nowhere in the
+  source") is the one a reviewer is least able to establish — verify it by
+  RUNNING the thing said not to exist** (one nearly broke a byte budget 2 B
+  under its cap). **A grep cannot see an INTERPOLATED string**:
+  go-to-k/cdkd#2553's reviewer called a live integ sentinel dead because its
+  `Failed to update Vault` needle is nowhere in `src` — it is built at runtime
+  from `Failed to ${changeType} ${logicalId}`, and the suggested fix aimed it
+  at the wrapped CAUSE. Find the TEMPLATE, not the literal.
+- **Your own BRIEF is a published claim** — grep every mechanism claim before
+  it goes into an instruction; the trigger is DESTINATION, not doubt.
 - **A REVIEWER brief fails worse** — a false premise aims the whole round at
-  the wrong subject and returns a report that reads as authoritative (a false
-  region-residency mechanism reached three briefs before being caught).
-  Correct one already sent in-flight rather than waiting for the report.
+  the wrong subject and its report still reads as authoritative (a false
+  region-residency mechanism reached three briefs). Correct one in-flight.
 - **When two reviewers CONTRADICT each other, settle it in the code yourself
   before forwarding either** — say which was right and why. **For a claim
-  about an EXTERNAL system, neither reviewer can settle it and neither can
-  you: the tie-break is a MEASUREMENT** (a `NoEcho` masking dispute was
-  settled by a live CFn A/B that overturned the lane's design —
-  go-to-k/cdkd#2274; `CLAUDE.md`'s "never file divergence on folklore"). The
-  tell is grammatical: if the disputed sentence names a service rather than a
-  file, stop reading code and measure.
+  about an EXTERNAL system the tie-break is a MEASUREMENT**, since neither
+  they nor you can settle it (a `NoEcho` dispute was settled by a live CFn A/B
+  that overturned the lane's design — go-to-k/cdkd#2274). The tell is
+  grammatical: a disputed sentence naming a SERVICE rather than a file means
+  stop reading code and measure.
 
 ### 8-i. Fresh deploys, markers, and who sets what
 
