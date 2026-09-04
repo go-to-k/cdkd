@@ -491,7 +491,7 @@ payload.
 
 | Out of scope | Deferred to |
 | --- | --- |
-| Java / Go / Ruby / .NET runtimes | Future PRs |
+| The deprecated `go1.x` runtime | Never — AWS retired the managed Go runtime; build Go handlers for `provided.al2023`, which cdkd does emulate |
 | Cross-account / cross-region / pre-existing-ARN Lambda Layers | Shipped — same-stack `AWS::Lambda::LayerVersion` refs and literal layer-version ARNs are both resolved, the latter by downloading the layer version; see the "Lambda Layers" section above |
 | Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
 | `Fn::Select` / `Fn::Split` / `Fn::If` etc. in `--from-state` | Future PR (warn + drop today) |

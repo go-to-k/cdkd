@@ -120,7 +120,7 @@ provider's own cleanup does the same for the keys it deletes on the happy path.
 
 That purge needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion` on the
 state bucket, which the least-privilege policy in
-[state-management.md](state-management.md#security-and-best-practices) did not
+[State Management](state-management.md#security-and-best-practices) did not
 previously grant. It fails soft: without those actions the collection still
 succeeds and `cdkd gc` still reports the reclaimed bytes, but a warning counts
 and names the affected keys, names the two grants, and the bodies stay

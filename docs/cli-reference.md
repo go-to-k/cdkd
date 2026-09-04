@@ -198,8 +198,10 @@ The marker reads on the TEARDOWN and DEPLOY paths therefore try the canonical
 key first and the spelling you passed second, so a marker written under a raw
 key — by this cdkd or by an older one — is still found. `cdkd bootstrap`'s own
 existing-marker read is the exception, and deliberately so: it reads the single
-raw key it is about to write, because that read and that write are one pair. See the `cdkd gc` and `cdkd bootstrap --destroy` sections
-above.
+raw key it is about to write, because that read and that write are one pair.
+[`cdkd gc`](cli-gc.md) and
+[`cdkd bootstrap --destroy`](cli-bootstrap.md#teardown-cdkd-bootstrap-destroy)
+describe the marker reads on their own paths.
 
 **Resolution order** is `--region` → `AWS_REGION` → `AWS_DEFAULT_REGION` →
 **the region your AWS profile resolves** → `us-east-1`.
@@ -403,7 +405,7 @@ every summary arm and only when non-zero, so a run with no suppressed guard
 prints exactly what it always did. A warning beneath the line names the
 resources; the durable half is a `RESOURCE_GUARD_INDETERMINATE` event, which
 outlives the run — see
-[docs/deployment-events.md](deployment-events.md). `cdkd state destroy` prints
+[Deployment Events](deployment-events.md). `cdkd state destroy` prints
 the same figure but records no events at all.
 
 The state record is kept on purpose: without it you would have neither
@@ -497,5 +499,5 @@ full reference for all `cdkd local *` subcommands (`local invoke` /
 `local start-api` / `local run-task` / `local start-service` /
 `local start-alb` / `local start-cloudfront` / `local invoke-agentcore` /
 `local start-agentcore`) lives in
-**[docs/local-emulation.md](local-emulation.md)**.
+**[Local Execution](local-emulation.md)**.
 

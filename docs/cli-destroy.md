@@ -238,9 +238,9 @@ Behavior:
   and a per-resource `--resource-timeout` firing, which rejects
   without cancelling the delete, so the provider never observes a
   failure to compensate.
-- This is **per-PR-level**: a single `--remove-protection` covers
-  every protection-bearing type listed above. There is no per-
-  type variant. If you need finer control, run a stack-only
+- The flag is **all-or-nothing for the run**: a single
+  `--remove-protection` covers every protection-bearing type
+  listed above. There is no per-type variant. If you need finer control, run a stack-only
   destroy and clean up the rest manually.
 - The interactive confirmation prompt is updated when the flag is
   set: `About to destroy N resources from stack "X", REMOVING

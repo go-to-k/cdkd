@@ -111,8 +111,8 @@ installed (`npm i -g aws-cdk` or equivalent).
 
 **Important**: phase 3 is the **existing** `cdkd import
 --migrate-from-cloudformation` machinery
-([src/cli/commands/import.ts](../../src/cli/commands/import.ts) +
-[retire-cfn-stack.ts](../../src/cli/commands/retire-cfn-stack.ts)). The new
+([src/cli/commands/import.ts](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/import.ts) +
+[retire-cfn-stack.ts](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/retire-cfn-stack.ts)). The new
 `cdkd migrate` command does NOT introduce a new state-writing or retirement
 code path — it only orchestrates phase 1 + phase 2 + invokes the existing
 phase 3.

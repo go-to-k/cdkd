@@ -10,8 +10,8 @@ cdkd works with your existing CDK app as-is — install it, run `cdkd bootstrap`
 ## Installation
 
 ```bash
-npm i -g @go-to-k/cdkd          # latest release
-npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
+npm i -g @go-to-k/cdkd           # latest release
+npm i -g @go-to-k/cdkd@<version> # pin to a specific version
 ```
 
 The installed binary is `cdkd`.

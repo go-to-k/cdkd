@@ -152,7 +152,7 @@ CDK bootstrap destinations verbatim, byte-identical to the behavior before
 cdkd-owned asset storage existed);
 present → cdkd-assets mode (asset publishing redirects to the cdkd storage
 and template references are rewritten to match — see the asset-destinations
-section in [docs/cli-bootstrap.md](cli-bootstrap.md#asset-destinations-after-opt-in-cdkd-assets-mode); no state schema
+section in [`cdkd bootstrap`](cli-bootstrap.md#asset-destinations-after-opt-in-cdkd-assets-mode); no state schema
 change, the deployed `properties` simply carry the cdkd names); present but
 bucket/repo deleted → hard error
 (never a silent fallback). `cdkd bootstrap --destroy` removes the marker and
@@ -163,21 +163,21 @@ disclosure fix. The marker deliberately lives OUTSIDE the
 `{STATE_PREFIX}/` prefix so stack listing never mistakes it for a stack, and
 per-region keys mean concurrent bootstraps of two regions cannot race on a
 shared object. `cdkd state info` lists the opted-in regions. Full design in
-[docs/design/1002-cdkd-asset-storage.md](design/1002-cdkd-asset-storage.md).
+the [asset-storage design note](design/1002-cdkd-asset-storage.md).
 
 To opt a region back out, `cdkd bootstrap --destroy --region <r>` tears
 down the region's asset bucket + ECR repo and deletes the marker last
 (the reverse of the create-side marker-written-last ordering); add
 `--include-state-bucket` to also delete the state bucket once every stack
 is destroyed. See the teardown section in
-[docs/cli-bootstrap.md](cli-bootstrap.md#teardown-cdkd-bootstrap-destroy).
+[`cdkd bootstrap`](cli-bootstrap.md#teardown-cdkd-bootstrap-destroy).
 
 Because assets are content-addressed and never deleted on `cdkd destroy`,
 the asset bucket / ECR repo grow over time; `cdkd gc` reclaims
 unreferenced objects / images by scanning every state file in the state
 bucket for asset references (with a 30d default age guard). See the gc
 section in
-[docs/cli-gc.md](cli-gc.md#cdkd-gc-garbage-collect-cdkd-owned-storage).
+[`cdkd gc`](cli-gc.md#cdkd-gc-garbage-collect-cdkd-owned-storage).
 
 ### Configuration Example
 
@@ -232,8 +232,7 @@ For users who already bootstrapped under that scheme, the lookup chain in
 The legacy fallback is **temporary**. It will be dropped in a future
 release together with the `cdkd-state-{accountId}-{region}` legacy
 bucket name. Users who already bootstrapped under that name should
-migrate via `cdkd state migrate` (see below). The legacy-removal step is
-tracked in [`docs/plans/99-future-bc-removal.md`](./plans/99-future-bc-removal.md).
+migrate via `cdkd state migrate` (see below).
 
 #### Migration path: `cdkd state migrate`
 
@@ -352,7 +351,7 @@ cdkd still **reads** this layout (looking up the legacy key only when its
 embedded `region` field matches the requested region), and the next write
 auto-migrates: it writes the new region-scoped key, then deletes the legacy
 key. The legacy read path is temporary and will be removed in a future
-release (see `docs/plans/99-future-bc-removal.md`).
+release.
 
 An older cdkd binary that only knows an earlier version will **fail with
 a clear error** if it sees a higher-versioned blob (e.g. `Unsupported
@@ -430,7 +429,7 @@ deleted, since there is no signal to skip on; redeploy under v5 to
 populate the field). `DeletionPolicy: Snapshot` is honored on the same
 paths: cdkd creates the final snapshot CloudFormation
 promises before deleting (see the "DeletionPolicy: Snapshot" section in
-[cli-destroy.md](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics and the
+[Destroy flags & guards](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics and the
 `--skip-final-snapshot` opt-out).
 
 > **Upgrade note (v4 → v5)** — the **first** `cdkd deploy` after
@@ -665,7 +664,7 @@ unresolved output is dropped from the block entirely rather than printed as
 
 ```json
 {
-  "version": 8,
+  "version": 9,
   "stackName": "MyAppStack",
   "region": "us-east-1",
   "resources": {
@@ -711,6 +710,7 @@ unresolved output is dropped from the block entirely rather than printed as
     "BucketArn": "arn:aws:s3:::myappstack-mybucket-abc123xyz",
     "FunctionArn": "arn:aws:lambda:us-east-1:123456789012:function:MyAppStack-MyFunction"
   },
+  "exportNames": ["BucketArn"],
   "lastModified": 1710835200000
 }
 ```
@@ -835,7 +835,7 @@ Varies by resource type. Examples:
 | `AWS::SQS::Queue` | `https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue` |
 | `Custom::MyResource` | Any string returned by custom resource |
 
-**Note**: cdkd supports **all resource types supported by Cloud Control API**. The table above shows only a few examples. For resources not supported by Cloud Control API, custom SDK Providers can be implemented (see [provider-development.md](./provider-development.md)).
+**Note**: cdkd supports **all resource types supported by Cloud Control API**. The table above shows only a few examples. For resources not supported by Cloud Control API, custom SDK Providers can be implemented (see [Provider Development](./provider-development.md)).
 
 **The physicalId is provider-defined, and it may differ from the value
 CloudFormation records for the same resource.** cdkd stores whatever the
@@ -863,7 +863,7 @@ The composite value is what state records, what `cdkd state show` /
 `cdkd state resources` print, and what
 `cdkd import --resource <logicalId>=<physicalId>` expects. A few types also
 accept a looser form on import — see
-[import.md](./import.md#auto-resolved-no-resource-flag-needed) for the
+[Importing Existing Resources](./import.md#auto-resolved-no-resource-flag-needed) for the
 per-type notes.
 
 | Resource Type | physicalId format |
@@ -1020,7 +1020,7 @@ CloudFormation itself refuses `AWS::Glue::Table`,
 `AWS::Route53::RecordSet`, `AWS::AppSync::ApiKey` and
 `AWS::EC2::NetworkAclEntry` in IMPORT changesets. `cdkd export` detects
 that up front and names every affected resource — see
-[cli-export.md](cli-export.md#cdkd-export-hand-a-stack-over-to-cloudformation).
+[`cdkd export`](cli-export.md#cdkd-export-hand-a-stack-over-to-cloudformation).
 
 Two more types **accept** a composite id without producing one:
 
@@ -2129,11 +2129,11 @@ aws s3 cp /tmp/state-backup.json \
 ### If Lock Remains
 
 ```bash
-# Force delete lock
-aws s3 rm s3://cdkd-state-bucket/cdkd/MyStack/us-east-1/lock.json
+# Release the lock with cdkd (preferred)
+cdkd force-unlock MyStack --stack-region us-east-1
 
-# Or cdkd command (planned for future implementation)
-# cdkd unlock --stack MyStack --force
+# Or delete the lock object directly
+aws s3 rm s3://cdkd-state-bucket/cdkd/MyStack/us-east-1/lock.json
 ```
 
 ### If State and Resources Don't Match
@@ -2200,7 +2200,7 @@ cdkd deploy --state-backend dynamodb \
 
 ## References
 
-- [architecture.md](./architecture.md) - Overall architecture
+- [Architecture](./architecture.md) - Overall architecture
 - [S3 Conditional Requests](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-requests.html)
 - [Optimistic Locking Pattern](https://en.wikipedia.org/wiki/Optimistic_concurrency_control)
 - Terraform State Management (reference case)

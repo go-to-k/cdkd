@@ -12,7 +12,7 @@ This document grounds the implementation against (a) the AWS
 `AWS::CloudFormation::Stack` resource type contract, (b) CDK 2.x
 `cdk.NestedStack`'s actual synthesis output (verified via `cdk synth` on
 2026-05-22 against `/Users/goto/pc/github/cdk-agc/test-cdk/cdk.out`),
-and (c) the existing cdkd architecture documented in [CLAUDE.md](../../CLAUDE.md).
+and (c) the existing cdkd architecture documented in [CLAUDE.md](https://github.com/go-to-k/cdkd/blob/main/CLAUDE.md).
 Where AWS / CDK semantics differ from a tempting "natural" cdkd shape,
 the divergence is called out explicitly per the project's
 "don't invent divergence" rule.
@@ -145,7 +145,7 @@ interface StackState {
 undefined), v6 writers always emit. An old binary reading v6 fails
 clearly with the existing "Upgrade cdkd" error (the
 `STATE_SCHEMA_VERSIONS_READABLE` mechanism already covers this — see
-[src/types/state.ts](../../src/types/state.ts) `parseStateBody`).
+[src/types/state.ts](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts) `parseStateBody`).
 
 `STATE_SCHEMA_VERSION_CURRENT` bumps to 6;
 `STATE_SCHEMA_VERSIONS_READABLE` extends to `[1, 2, 3, 4, 5, 6]`.
@@ -594,7 +594,7 @@ unsupported), so there's nothing to migrate from.
    `{stack, region, changes, children: [...]}` tree, and `--fail` (parity
    with `cdk diff --fail`) exits 1 on any tree-wide change so CI can gate
    on it. Implemented in
-   [src/cli/commands/diff-recursive.ts](../../src/cli/commands/diff-recursive.ts).
+   [src/cli/commands/diff-recursive.ts](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/diff-recursive.ts).
 
 ---
 
@@ -671,16 +671,16 @@ suggests this split:
   `Properties.TemplateURL: Fn::Join` + `Metadata['aws:asset:path']` +
   `Metadata['aws:asset:property']: 'TemplateURL'`; child template at
   `cdk.out/<filename>.nested.template.json`).
-- cdkd architecture: [CLAUDE.md](../../CLAUDE.md), specifically the
+- cdkd architecture: [CLAUDE.md](https://github.com/go-to-k/cdkd/blob/main/CLAUDE.md), specifically the
   7-layer architecture diagram + the existing `IntrinsicFunctionResolver`
   / `DiffCalculator` / `LockManager` / `S3StateBackend` contracts.
 - Related cdkd source surfaces:
-  [src/types/state.ts](../../src/types/state.ts) (schema),
-  [src/state/s3-state-backend.ts](../../src/state/s3-state-backend.ts)
-  (key layout), [src/synthesis/assembly-reader.ts](../../src/synthesis/assembly-reader.ts)
-  (artifact walk), [src/deployment/deploy-engine.ts](../../src/deployment/deploy-engine.ts)
-  (engine), [src/provisioning/register-providers.ts](../../src/provisioning/register-providers.ts)
+  [src/types/state.ts](https://github.com/go-to-k/cdkd/blob/main/src/types/state.ts) (schema),
+  [src/state/s3-state-backend.ts](https://github.com/go-to-k/cdkd/blob/main/src/state/s3-state-backend.ts)
+  (key layout), [src/synthesis/assembly-reader.ts](https://github.com/go-to-k/cdkd/blob/main/src/synthesis/assembly-reader.ts)
+  (artifact walk), [src/deployment/deploy-engine.ts](https://github.com/go-to-k/cdkd/blob/main/src/deployment/deploy-engine.ts)
+  (engine), [src/provisioning/register-providers.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/register-providers.ts)
   (where the new provider registers),
-  [src/cli/commands/import.ts](../../src/cli/commands/import.ts) +
-  [src/cli/commands/export.ts](../../src/cli/commands/export.ts)
+  [src/cli/commands/import.ts](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/import.ts) +
+  [src/cli/commands/export.ts](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/export.ts)
   (where the "nested stacks unsupported" hard-block currently lives).

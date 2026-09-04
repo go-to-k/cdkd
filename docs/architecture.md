@@ -466,8 +466,8 @@ interface S3StateBackend {
 ```
 
 **State Schema** (`types/state.ts`) — abbreviated; the full current-version
-shape (v8, incl. `region` / `imports` / `outputReads` / the nested-stack parent
-links) is in [state-management.md](state-management.md#state-schema):
+shape (v9, incl. `region` / `imports` / `outputReads` / `exportNames` / the
+nested-stack parent links) is in [State Management](state-management.md#state-schema):
 
 ```typescript
 interface StackState {
@@ -682,9 +682,9 @@ the minimal patch.
 
 **Preferred Providers**: SDK Providers make direct synchronous API calls with no polling overhead, making them significantly faster than Cloud Control API.
 
-**Implemented Providers**: IAM, S3, SQS, SNS, Lambda, DynamoDB, CloudWatch, Secrets Manager, SSM, EventBridge, EC2 (VPC/Subnet/SecurityGroup etc.), API Gateway, CloudFront, StepFunctions, ECS, ELBv2, RDS, Route53, WAFv2, Cognito, BedrockAgentCore, Custom Resources. See `src/provisioning/providers/` and [supported-resources.md](./supported-resources.md) for the full list.
+**Implemented Providers**: IAM, S3, SQS, SNS, Lambda, DynamoDB, CloudWatch, Secrets Manager, SSM, EventBridge, EC2 (VPC/Subnet/SecurityGroup etc.), API Gateway, CloudFront, StepFunctions, ECS, ELBv2, RDS, Route53, WAFv2, Cognito, BedrockAgentCore, Custom Resources. See `src/provisioning/providers/` and [Supported Resources](./supported-resources.md) for the full list.
 
-**How to Add Providers**: See [provider-development.md](./provider-development.md)
+**How to Add Providers**: See [Provider Development](./provider-development.md)
 
 ### 8. Utilities (`src/utils/`)
 
@@ -1047,7 +1047,7 @@ Each layer has clear responsibilities
   whose parameter is a `SecureString` (issue
   [#1901](https://github.com/go-to-k/cdkd/issues/1901)). A `String` /
   `StringList` parameter is public config and stays resolved in state. See
-  [docs/cli-scrub.md](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit).
+  [`cdkd scrub`](cli-scrub.md#cdkd-scrub-state-secret-hygiene-clean-audit).
 - A **custom-resource `Data` value has no reference behind it**, so it takes a
   second channel: a handler that sets `NoEcho: true` on its cfn-response has
   every string in its `Data` persisted as `***` — in the custom resource's own
@@ -1061,15 +1061,15 @@ Each layer has clear responsibilities
   producer still has the plaintext in memory and hands it to the consumer,
   while a producer deployed by an earlier run has none and the consumer is
   refused. See
-  [docs/state-management.md](state-management.md#noecho-custom-resource-responses)
-  and [docs/cross-stack-references.md](cross-stack-references.md#a-redaction-mask-is-not-re-resolvable-and-only-one-run-can-bridge-it).
+  [State Management](state-management.md#noecho-custom-resource-responses)
+  and [Cross-Stack References](cross-stack-references.md#a-redaction-mask-is-not-re-resolvable-and-only-one-run-can-bridge-it).
 
 ## Limitations and Future Extensions
 
 ### Current Limitations
 
-1. **CloudFormation Macros**: Supported via a transient CloudFormation changeset round-trip (issue [#463](https://github.com/go-to-k/cdkd/issues/463) — `CreateChangeSet` type CREATE, `GetTemplate --template-stage Processed`, cleanup; see [docs/design/463-cfn-macros.md](design/463-cfn-macros.md)). Expansion is selection-aware (issue [#1150](https://github.com/go-to-k/cdkd/issues/1150)): `cdkd deploy` / `cdkd diff` expand only the stacks they target, `cdkd list` / `cdkd destroy` never expand (names and destroy both come from the manifest / cdkd state), and intermittent `AWS::EarlyValidation::*` hook rejections of the transient changeset are retried (issue [#1151](https://github.com/go-to-k/cdkd/issues/1151)). Multi-stage macros (expansion output that itself contains a macro) remain out of scope
-2. **Nested Stacks**: Fully supported in both directions. Fresh `cdkd deploy` of nested-stack-bearing CDK apps uses the recursive `NestedStackProvider` (issue [#459](https://github.com/go-to-k/cdkd/issues/459)). Adoption of an existing CFn-managed nested-stack hierarchy uses `cdkd import --migrate-from-cloudformation` (issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR A — recursive `DescribeStackResources` walk, per-child v6-keyed state writes, recursive `DeletionPolicy: Retain` injection, single parent-side `DeleteStack` cascade). Handing a cdkd-managed nested-stack tree back to CloudFormation uses `cdkd export` (issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR B2 — the orchestrator runs `runPerStackImportLoop` which submits one CFn IMPORT changeset per cdkd-managed stack in the tree in leaf-first order; non-leaf parents adopt their just-imported children via the AWS-docs "Nest an existing stack" pattern (`DeletionPolicy: Retain` plus `ResourceIdentifier: { StackId: <child-arn> }` plus a `TemplateURL` rewritten to point at the child's `GetTemplate(Processed)` output). The original "one atomic `--include-nested-stacks` IMPORT changeset" design was found infeasible by the 2026-05-24 AWS spike — AWS rejects that flag combination with `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`; see [docs/design/464-nested-stacks-export-import.md](design/464-nested-stacks-export-import.md) §4.0 / §4.3 for the per-stack-loop algorithm.
+1. **CloudFormation Macros**: Supported via a transient CloudFormation changeset round-trip (issue [#463](https://github.com/go-to-k/cdkd/issues/463) — `CreateChangeSet` type CREATE, `GetTemplate --template-stage Processed`, cleanup; see the [CloudFormation macros design note](design/463-cfn-macros.md)). Expansion is selection-aware (issue [#1150](https://github.com/go-to-k/cdkd/issues/1150)): `cdkd deploy` / `cdkd diff` expand only the stacks they target, `cdkd list` / `cdkd destroy` never expand (names and destroy both come from the manifest / cdkd state), and intermittent `AWS::EarlyValidation::*` hook rejections of the transient changeset are retried (issue [#1151](https://github.com/go-to-k/cdkd/issues/1151)). Multi-stage macros (expansion output that itself contains a macro) remain out of scope
+2. **Nested Stacks**: Fully supported in both directions. Fresh `cdkd deploy` of nested-stack-bearing CDK apps uses the recursive `NestedStackProvider` (issue [#459](https://github.com/go-to-k/cdkd/issues/459)). Adoption of an existing CFn-managed nested-stack hierarchy uses `cdkd import --migrate-from-cloudformation` (issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR A — recursive `DescribeStackResources` walk, per-child v6-keyed state writes, recursive `DeletionPolicy: Retain` injection, single parent-side `DeleteStack` cascade). Handing a cdkd-managed nested-stack tree back to CloudFormation uses `cdkd export` (issue [#464](https://github.com/go-to-k/cdkd/issues/464) PR B2 — the orchestrator runs `runPerStackImportLoop` which submits one CFn IMPORT changeset per cdkd-managed stack in the tree in leaf-first order; non-leaf parents adopt their just-imported children via the AWS-docs "Nest an existing stack" pattern (`DeletionPolicy: Retain` plus `ResourceIdentifier: { StackId: <child-arn> }` plus a `TemplateURL` rewritten to point at the child's `GetTemplate(Processed)` output). The original "one atomic `--include-nested-stacks` IMPORT changeset" design was found infeasible by the 2026-05-24 AWS spike — AWS rejects that flag combination with `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`; see the [nested-stack export/import design note](design/464-nested-stacks-export-import.md) §4.0 / §4.3 for the per-stack-loop algorithm.
 3. **Change Sets**: No concept (always executes immediately)
 4. All intrinsic functions are now supported (16/16, including `Fn::GetStackOutput` for cross-region references — same-account, or cross-account via `RoleArn` against the producer account's cdkd state. Cross-stack references also fall back to CloudFormation on a cdkd-state miss — issue [#1697](https://github.com/go-to-k/cdkd/issues/1697) — so producers still managed by CloudFormation can be referenced)
 5. All pseudo parameters are now supported (7/7)

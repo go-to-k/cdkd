@@ -16,8 +16,8 @@ different semantics:
 This doc covers the design and implementation of strong-reference
 enforcement and the supporting performance optimizations (persistent
 exports index). For the user-facing CLI behavior, see
-[mixed-estates.md](mixed-estates.md) and
-[docs/cli-reference.md](cli-reference.md).
+[Mixed Estates](mixed-estates.md) and
+[CLI Reference](cli-reference.md).
 
 ---
 
@@ -149,7 +149,7 @@ version of the same collision — a plain output in one stack shadowing an
 export of the same name in another — is closed by schema v9's
 `exportNames`, which narrows what the index derives from the bag to the
 aliases the producer actually declared; see the v9 section in
-[state-management.md](state-management.md#version-9-adds-exportnames-current-writers).) Rename the export (or
+[State Management](state-management.md#version-9-adds-exportnames-current-writers).) Rename the export (or
 the colliding output) and redeploy the producer — there is no
 configuration that restores the old behavior, and the old behavior was
 order-dependent anyway.
@@ -447,7 +447,7 @@ exists:
 
 The values themselves are still delivered to AWS in the clear on the runs that
 succeed; only what cdkd writes down changes. See
-[state-management.md](state-management.md#noecho-custom-resource-responses).
+[State Management](state-management.md#noecho-custom-resource-responses).
 
 ### `Fn::GetStackOutput` does NOT recordImport — it records to a separate bag
 

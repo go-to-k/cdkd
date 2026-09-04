@@ -50,7 +50,7 @@ cdkd deploys AWS CDK applications directly via the AWS SDK and Cloud Control API
 
 Your CDK app synthesizes to an ordinary CloudFormation template — cdkd requires zero CDK code changes. cdkd then builds and publishes assets, analyzes the template's dependency graph, diffs it against the current state, and executes the plan in parallel, dispatching each resource the moment its dependencies complete. Each resource is provisioned by a hand-written SDK Provider where one exists, with Cloud Control API as the fallback for many additional types.
 
-For a deeper look at each layer and a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI parsing, synthesis, asset publishing, per-stack deploy), see [architecture.md](architecture.md).
+For a deeper look at each layer and a step-by-step walkthrough of the full `cdkd deploy` pipeline (CLI parsing, synthesis, asset publishing, per-stack deploy), see [Architecture](architecture.md).
 
 ## State Management
 
@@ -74,7 +74,7 @@ default. To isolate apps, pass different `--state-prefix` values.
 `cdkd destroy --all` only targets stacks from the current CDK app
 (determined by synthesis), not all stacks in the bucket.
 
-See **[state-management.md](state-management.md)** for the full
+See **[State Management](state-management.md)** for the full
 spec: S3 key layout, optimistic-locking mechanism (ETag-based), state
 schema, legacy `version: 1` migration, bucket-name migration via
 `cdkd state migrate`, and troubleshooting.
