@@ -193,7 +193,7 @@ Each firing is classified per target, which picks the per-replica primitive:
 | Change | Primitive |
 | --- | --- |
 | Source-only edits to an interpreted-language handler (Node, Python, Ruby, shell) | Fast path: the new source is copied into each replica and the container is restarted. No rebuild; the front-door pool entry is unchanged because the IP and port are preserved. |
-| Dockerfile, dependency manifest, compiled-language source, or an ambiguous edit | Rebuild: a shadow replica boots, its port is probed for TCP readiness, it is atomically registered in the front-door pool, then the old replica is dropped. |
+| Dockerfile, dependency manifest, compiled-language source, or an ambiguous edit | Rebuild: cdkd boots a shadow replica, probes its port for TCP readiness, swaps it into the front-door pool atomically, then drops the old replica. |
 
 Both paths roll one replica at a time, so a continuous request stream against a
 listener port sees no connection refusals across the reload. The host front door

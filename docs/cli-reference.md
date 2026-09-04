@@ -165,7 +165,7 @@ The `cdkd local` family is where that is not yet uniform:
 | --- | --- |
 | `local invoke`, `local run-task`, `local invoke-agentcore` | The flag and both environment variables. |
 | `local start-api` | The flag only, so an upper-cased `AWS_REGION` still reaches the Lambda containers it starts. |
-| `local start-service`, `local start-alb`, `local start-cloudfront`, `local start-agentcore` | Neither. Spell the region lower-case on these four. |
+| `local start-service`, `local start-alb`, `local start-cloudfront`, `local start-agentcore` | Neither, apart from the `--from-state` state read, which folds both. Spell the region lower-case on these four. |
 
 The fold is not cosmetic. Everything downstream of the value is case-sensitive,
 and in different ways:
@@ -298,6 +298,16 @@ meaning is "non-zero result", not "the command crashed":
 
 - **`cdkd drift` exits `1` when drift is detected.**
 - **`cdkd diff --fail` exits `1` when any change is detected.**
+
+The `cdkd local` family adds two codes of its own:
+
+| Exit | Meaning |
+| --- | --- |
+| `130` | Interrupted by `^C`. The long-running servers also use it for a clean SIGTERM shutdown, except `local start-cloudfront` and `local start-agentcore`, which exit `0` there. |
+| `N` | `cdkd local run-task` propagates its essential container's own exit code. |
+
+Per-command detail is on each command's page under
+[Local Execution](local-emulation.md).
 
 Exit `2` is carried by the error itself rather than decided by the command that
 catches it, so an intermediate handler re-throwing a partial failure cannot

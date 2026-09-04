@@ -474,7 +474,7 @@ stdout besides the response, neither routed by cdkd's logger:
 | Source | What lands on stdout |
 | --- | --- |
 | The container's own stdout | The runtime emulator puts `START` / `END` / `REPORT` and every handler log line there — `console.error` included — so any handler that prints lands ahead of the response. |
-| The container-image build path | That path is shared with cdk-local, whose logger has no stdout reservation, so `Building container image (platform=...)` and `Skipping docker build ...` print on stdout for a container-image Lambda. |
+| The container-image build path | For a container-image Lambda, `Building container image (platform=...)` and `Skipping docker build ...` print on stdout rather than stderr. |
 
 `docker pull` progress does not: while a command holds the stdout reservation,
 the child process's fd 1 is redirected to fd 2.

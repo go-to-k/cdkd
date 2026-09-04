@@ -125,11 +125,12 @@ Each replica runs under its own cluster name,
 `<cluster>-svc-<service-logical-id>-r<index>`, which is what the metadata
 endpoint reports and what makes replicas easy to pick out of `docker ps`.
 
-Before creating the shared network, cdkd sweeps orphaned `<cluster>-svc-*`
-networks left behind by an interrupted run. Because the subnet is fixed, a leaked
-network would otherwise make every later run fail on
-`Pool overlaps with other one on this address space`. A network counts as
-orphaned when nothing but its own `-metadata` sidecar is still attached.
+An interrupted run can leave its network behind, and the subnet is fixed, so
+cdkd sweeps orphaned `<cluster>-svc-*` networks before creating the shared one —
+otherwise the next run would fail on `Pool overlaps with other one on this
+address space`. A network counts as orphaned when nothing but its own
+`-metadata` sidecar is still attached, so a network still serving replicas is
+never touched.
 
 ### Service Connect and Cloud Map
 

@@ -167,7 +167,7 @@ Each firing is classified to pick the primitive:
 
 | Change | Primitive |
 | --- | --- |
-| Source-only edits an existing container can absorb | Soft reload: the new source is copied in and the container is restarted. |
+| Source-only edits an existing container can absorb | Soft reload: cdkd `docker cp`s the new source into the container and restarts it. |
 | Anything requiring a new image | Rebuild: a fresh container boots and the server is re-pointed at it. |
 
 Either way the new container is re-probed for readiness under `--timeout` before
