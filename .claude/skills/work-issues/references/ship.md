@@ -34,8 +34,7 @@ at `mergeable=CONFLICTING state=DIRTY` never fires CI. In a fan-out run this is
 the likeliest PR state — peer lanes keep merging while yours sits open. Rebase,
 force-push, and CI fires within ~30s. **`--watch` does not cover the wait for
 checks to APPEAR** — with none reported it returns at once, so an `until` loop
-wrapping it hot-spins through the whole tool timeout (10 min, measured
-2026-09-05) and a plain `sleep` chain is refused by the harness. Poll
+wrapping it hot-spins through a full tool timeout (measured 2026-09-05) and a plain `sleep` chain is refused by the harness. Poll
 `gh pr checks <N> --json state` from `Monitor` or a backgrounded loop.
 
 **~30s is push-to-queue latency, not time-to-verdict**: with runner backlog,

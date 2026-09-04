@@ -133,11 +133,12 @@ measured miss:
   that the behaviour happens, which do not go red when it stops
   (`references/verify.md` §8-d).
 - **A sweep's number is unearned until you paste the command that produced
-  it** — one claimed "88 hits across 13 files" and the reviewer's grep
-  returned 47. A count RELAYED from a subagent is the same failure without
-  even a command (FOUR published in one run, every one wrong — "nine sites",
-  grep found 78), and the tell is grammatical: a number arriving as a WORD
-  was counted by an agent, one arriving as OUTPUT by a machine. Run the query
+  it, and re-run that command before you ship** — one claimed "88 hits across
+  13 files" and the reviewer's grep returned 47. A count RELAYED from a
+  subagent is the same failure without even a command (FOUR published in one
+  run, every one wrong — "nine sites", grep found 78), and the tell is
+  grammatical: a number arriving as a WORD was counted by an agent, one
+  arriving as OUTPUT by a machine. Run the query
   yourself, put its output in the text, and give the number one of
   `references/verify.md` §8-g's three dispositions before it ships.
 - **Grep the repo for the SYMPTOM before deriving a fix** — something may

@@ -16,11 +16,15 @@ name: Release
 # to THIS workflow filename on npmjs.com — do not rename release.yml without
 # updating the trusted publisher config.
 #
-# Known behavior: the release PR is created with GITHUB_TOKEN, and GitHub does
-# not trigger `pull_request` workflows for such PRs — so the release PR shows
-# NO CI checks (and ci-green-gate blocks an agent-side `gh pr merge` on it).
-# Its diff is only version/CHANGELOG/manifest; the maintainer merges it via
-# the web UI. To get CI on release PRs, hand the release-please step a PAT.
+# Known behavior: the release PR is created with GITHUB_TOKEN, and a
+# `pull_request` CI run IS created for it — held at `action_required` until a
+# maintainer approves it, then green (measured 2026-09-05 on
+# go-to-k/cdkd#2594, #2585 and #2508: attempt 1 action_required, attempt 2
+# green). So ci-green-gate blocks an agent-side `gh pr merge` only while those
+# runs are unapproved, and stops blocking once they are green — the standing
+# rule in CLAUDE.md ("never merge the release PR unless the maintainer asked
+# for a release") is the real protection. Its diff is only
+# version/CHANGELOG/manifest; the maintainer merges it via the web UI.
 #
 # Known behavior: release-please does NOT rebuild a standing release PR whose
 # computed release is unchanged — it logs `PR #N remained the same` and leaves

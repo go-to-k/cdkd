@@ -499,10 +499,13 @@ export const MULTI_REGION_RECREATE_BLOCKED_TYPES: ReadonlySet<string> = new Set(
  *    non-empty" on the two where nothing was proved. A known
  *    overstatement, kept because the sentence is also the shipped
  *    mid-deploy refusal text and hedging it would weaken the case that
- *    IS proved; the two unproved paths each emit their own precise
- *    `logger.warn` immediately before the refusal — "without settling
- *    it" for the continuation-marker case — so the truth is on screen
- *    even though this sentence overstates it. The one site that
+ *    IS proved. Only ONE of the two unproved paths corrects it on
+ *    screen: the continuation-marker case warns "without settling it"
+ *    immediately before the refusal. The other — this module's
+ *    {@link isStatefulRecreateTargetForReplace} `AWS::S3::Bucket` arm,
+ *    reached from `deploy-engine.ts`'s two replacement guards — throws
+ *    with no warning at all, so there the assertive sentence is the
+ *    only thing the user sees. The one site that
  *    re-derives a reason (`recreate-confirm-prompt.ts`) works around
  *    it with its own wording rather than borrowing this one.
  *  - `null` — not stateful for the purposes of this guard.
