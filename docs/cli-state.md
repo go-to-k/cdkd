@@ -64,15 +64,12 @@ the deprecated option: it names which legacy bucket to migrate.
 
 Every subcommand that acts on a named record — all of them except `info`,
 `list`, and `migrate` — also takes `--stack-region <region>`, which selects
-which of a name's records to use. What happens without it when a name has
-records in several regions differs by subcommand: `resources`, `show`,
-`destroy`, and `refresh-observed` refuse and tell you to pick one, while
-`orphan` removes the record in *every* region. Under `--all` the flag stops
-being a disambiguator and becomes a filter — `refresh-observed --all` without
-it refreshes every region.
+which of a name's records to use. It is deliberately not spelled `--region`:
+the deprecated global option picks the AWS client's region, whereas
+`--stack-region` picks which record to act on.
 
-It is deliberately not spelled `--region`: the deprecated global option picks
-the AWS client's region, whereas `--stack-region` picks which record to act on.
+What happens when you omit it and the name has records in several regions is
+not uniform across the subcommands, so each one's table below states it.
 
 ## `cdkd state info`
 
@@ -180,7 +177,7 @@ header row, which makes it pipe-friendly.
 | --- | --- | --- |
 | `-l`, `--long` | off | Expand each resource into a block including its dependencies and attributes. |
 | `--json` | off | Emit the resource array as JSON. Takes precedence over `--long`. |
-| `--stack-region <region>` | — | Region of the record to read. Required when one stack name has state in more than one region. |
+| `--stack-region <region>` | — | Region of the record to read. Omitting it on a name with records in several regions is an error. |
 
 **Resource properties are deliberately excluded from every mode here** — use
 [`cdkd state show`](#cdkd-state-show) when you need them. A physical id may be
@@ -205,7 +202,7 @@ with its properties, attributes, dependencies, and `provisionedBy` routing.
 | --- | --- | --- |
 | `--json` | off | Emit the raw state record and lock as JSON. |
 | `--show-nested` | off | Recursively include every nested-stack child under the target. |
-| `--stack-region <region>` | — | Region of the record to read. Required when one stack name has state in more than one region. |
+| `--stack-region <region>` | — | Region of the record to read. Omitting it on a name with records in several regions is an error. |
 
 `--show-nested` reuses the same recursive walker as `cdkd export`: for every
 `AWS::CloudFormation::Stack` row in the target's resources it derives the child
@@ -241,7 +238,7 @@ resources become untracked rather than deleted.
 | --- | --- | --- |
 | `<stacks...>` | — | Stack name(s) to orphan, as physical CloudFormation names. At least one is required. |
 | `-f`, `--force` | off | Skip the confirmation prompt **and** remove the record even when the stack is locked. |
-| `--stack-region <region>` | — | Orphan only the record in this region. Without it, every region-scoped record for the name is removed. |
+| `--stack-region <region>` | — | Orphan only the record in this region. Omitting it removes every region-scoped record for the name — `orphan` does not refuse an ambiguous name. |
 
 `-y` / `--yes` skips the prompt but does *not* bypass the lock guard; only
 `--force` does both. A locked stack otherwise fails with the exact
@@ -282,7 +279,7 @@ handling, strong-reference blocks, lock behavior, and exit codes are the same.
 | `--allow-unsupported-types <types>` | — | Comma-separated escape hatch routing otherwise-unprovisionable types through Cloud Control. |
 | `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation has been running longer than this. Repeatable. |
 | `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that exceeds this. Repeatable. |
-| `--stack-region <region>` | — | Act on the record in this region. A name whose only record is elsewhere is warned about and skipped. |
+| `--stack-region <region>` | — | Act on the record in this region, plus any record predating the region-scoped layout. A name whose only record is elsewhere is warned about and skipped; omitting the flag on a name with records in several regions is an error, `--all` included. |
 
 Three differences from `cdkd destroy` are worth knowing before you script it:
 
@@ -381,14 +378,13 @@ defaults and keys your template never set.
 | `[stacks...]` | — | Stack name(s) to refresh, as physical CloudFormation names. Required unless `--all` is given. |
 | `--all` | off | Refresh every stack in the state bucket. |
 | `--dry-run` | off | Print the per-stack refresh count without taking a lock, reading resources back from AWS, or writing state. The records themselves are still read from S3. |
-| `--stack-region <region>` | — | Region of the record to refresh. Required when a named stack has state in more than one region; under `--all` it instead filters which regions are refreshed. |
+| `--stack-region <region>` | — | Region of the record to refresh. Omitting it on a *named* stack with records in several regions is an error; under `--all` the flag is a filter instead, and omitting it refreshes every region. |
 
 Why it exists: `cdkd deploy` already maintains the baseline in two ways — it
 captures a fresh one for every resource it creates, updates, or replaces, and
 it reads back any resource whose baseline is missing, including ones that
-deploy left unchanged. Both paths only reach resources whose provider can read
-state back; the rest keep whatever they had. What it never does is re-read a resource that was
-unchanged *and* already had a baseline. That one keeps whatever was captured
+deploy left unchanged. What it does not do is re-read a resource that was
+unchanged *and* already had a baseline; that one keeps whatever was captured
 the last time the resource was touched, however long ago.
 
 This command re-reads the whole stack on demand, so it covers that case, and
