@@ -1,4 +1,4 @@
-import { Option } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   DEFAULT_RESOURCE_WARN_AFTER_MS,
   DEFAULT_RESOURCE_TIMEOUT_MS,
@@ -184,34 +184,58 @@ export interface ResourceTimeoutOption {
 }
 
 /**
- * Commander `argParser` for every `--stack-region` declaration (issue #2556).
+ * Commander `argParser` for `--stack-region` (issue #2556).
  *
- * An empty value is rejected at PARSE time rather than being handed to the
- * commands. `--stack-region ''` is falsy, so every consumer that tested the
- * option for truthiness read it as ABSENT — and absent means "all regions" on
- * the commands that take `--all`, so a flag passed to NARROW a destructive
- * operation silently WIDENED it. `drift --all --revert --stack-region ''`
- * wrote cdkd state values into AWS across every stack in every region.
+ * Refuses a value carrying no region name at all, at PARSE time rather than
+ * in each consumer. `--stack-region ''` is falsy, so every consumer that
+ * tested the option for truthiness read it as ABSENT — and absent means "all
+ * regions" on the commands that take `--all`, so a flag passed to NARROW a
+ * destructive operation silently WIDENED it. `drift --all --revert
+ * --stack-region ''` wrote cdkd state values into AWS across every stack in
+ * every region.
  *
- * Rejecting here rather than adding a presence test to each consumer: there
- * are eleven declarations and more consumers than that, the option is threaded
- * through helpers that cannot see how it was spelled, and no region is
- * legitimately empty — so the value never needs to reach them. A new
- * `--stack-region` consumer inherits the guard instead of having to know
- * about it.
+ * Here rather than in the consumers because there are more consumers than
+ * declarations, the value is threaded through helpers that cannot see how it
+ * was spelled, and the empty value has no legitimate meaning — so it never
+ * needs to reach them. `guardStackRegionOptions` extends the same guard to
+ * declarations cdkd does not own.
  *
- * Whitespace-only is rejected for the same reason: `' '` is truthy, so it
- * takes the filter branch and matches no ref, which reads as "no state in
- * that region" rather than as the typo it is.
+ * The rule is only "this is not a name": empty and whitespace-only are
+ * refused, and everything else is passed through UNCHANGED — cdkd keeps no
+ * list of region names, so a value that looks wrong is the caller's to own,
+ * and trimming one would be the silent reinterpretation this whole class
+ * started as.
  */
 export function parseStackRegion(value: string): string {
   if (value.trim() === '') {
-    throw new Error(
-      'Invalid --stack-region: expected a region name (e.g. us-east-1), got an empty value. ' +
+    throw new InvalidArgumentError(
+      `expected a region name (e.g. us-east-1), got ${value === '' ? 'an empty value' : 'whitespace only'}. ` +
         'Omit the flag entirely to operate on every region a stack has state in.'
     );
   }
   return value;
+}
+
+/**
+ * Attach {@link parseStackRegion} to every `--stack-region` the command tree
+ * carries, including ones cdkd never declared.
+ *
+ * `cdkd local start-{service,alb,cloudfront,agentcore}` inherit the option
+ * from cdk-local, so there is no declaration in this repo to hang a parser on
+ * and a grep for the flag string does not find them. They are the worst place
+ * to miss it: cdk-local resolves the CloudFormation client's region with
+ * `options.stackRegion ?? options.region ?? AWS_REGION`, and `''` is not
+ * nullish — so an empty value WINS over both fallbacks and reaches the client.
+ *
+ * Idempotent, and it never replaces a parser a declaration already set.
+ */
+export function guardStackRegionOptions(cmd: Command): void {
+  for (const option of cmd.options) {
+    if (option.long === '--stack-region' && option.parseArg === undefined) {
+      option.argParser(parseStackRegion);
+    }
+  }
+  for (const sub of cmd.commands) guardStackRegionOptions(sub);
 }
 
 /**

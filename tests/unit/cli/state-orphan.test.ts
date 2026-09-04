@@ -572,19 +572,14 @@ describe('cdkd state orphan', () => {
       // silently widened it to every region.
       //
       // The guard moved to parse time (issue #2556) once the same defect was
-      // found at ten more sites, so the run now fails before any ref is read —
-      // which is why nothing is listed here and the message is commander's,
-      // not the command's. What the case pins is unchanged: an empty value
-      // never reaches a delete.
-      mockListStacks.mockResolvedValue([
-        { stackName: 'LegacyStack' },
-        { stackName: 'LegacyStack', region: 'us-east-1' },
-      ]);
-      mockIsLocked.mockResolvedValue(false);
-
+      // found at fourteen more declarations, so the run now fails before any
+      // ref is read. No `listStacks` result is primed on purpose: priming one
+      // would suggest the walk happens, and the assertion below is that it
+      // does not. What the case pins is unchanged — an empty value never
+      // reaches a delete.
       await expect(
         runStateOrphan(['orphan', 'LegacyStack', '--stack-region', '', '--yes'])
-      ).rejects.toThrow(/Invalid --stack-region/);
+      ).rejects.toThrow(/is invalid/);
 
       expect(mockDeleteLegacyState).not.toHaveBeenCalled();
       expect(mockDeleteState).not.toHaveBeenCalled();
