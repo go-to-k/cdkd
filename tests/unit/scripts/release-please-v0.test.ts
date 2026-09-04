@@ -30,6 +30,79 @@ import { describe, expect, it } from 'vite-plus/test';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 describe('release-please v0 fence', () => {
+  it('release-please splices the next entry at the TOP of CHANGELOG.md', () => {
+    // release-please's Changelog updater (updaters/changelog.ts) finds its
+    // insertion point with this regex and splices the new entry in FRONT of
+    // the match. The leading \n is load-bearing: a file that begins directly
+    // with a version header — what semantic-release wrote, with no title —
+    // never matches its OWN top entry, so the search lands on the SECOND
+    // header and every release is filed one section too low. Measured on
+    // release PR go-to-k/cdkd#2503, which ordered the file 0.285.13,
+    // 0.285.14, 0.285.12; the miss repeats at the same spot every release,
+    // so the disorder compounds. The `# Changelog` title is the fix, and
+    // it is also what release-please writes itself when creating the file.
+    //
+    // Asserting the title string alone would not be enough: the regex wants
+    // ## or ###, so an H1 version header (semantic-release used H1 for
+    // minor/major bumps) is invisible to it too. This asserts the OUTCOME —
+    // the splice point is immediately before the first version header —
+    // which covers both causes and any third.
+    //
+    // Only the FIRST regex below is the updater's — a hand copy of its
+    // DEFAULT_VERSION_HEADER_REGEX, mirrored rather than imported, so it can
+    // drift: an action bump that changed the constant would leave this
+    // attesting to nothing. The sha pin asserted further down is what bounds
+    // that, so re-check this literal when the pin moves. Verified against
+    // release-please 17.3.0 — the version release-please-action@5c625bf
+    // (v4.4.1) resolves and bundles, read from that tag's own package-lock
+    // rather than from a locally installed copy, whose 17.11.x carries the
+    // same constant and is easy to mistake for the shipped one. The SECOND
+    // regex is the test's own and is deliberately WIDER
+    // (it accepts H1) — that width is what catches an H1 sitting on top.
+    //
+    // Known bound: both are code-fence-blind, so a fenced `## [1.2.3]` line
+    // inside the preamble would satisfy this while release-please spliced
+    // INSIDE the fence, and a preamble line like `# 2026 archive` would red
+    // it although the splice is correct. The preamble carries no code fence
+    // and no heading; keep it that way rather than complicating the regexes.
+    const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    const spliceAt = changelog.search(/\n###? v?[0-9[]/s);
+    expect(spliceAt, 'no version header release-please could splice against').toBeGreaterThan(-1);
+    const firstHeaderAt = changelog.search(/^#{1,3} v?[0-9[]/m);
+    expect(firstHeaderAt, 'no version header at all').toBeGreaterThan(-1);
+    expect(
+      spliceAt + 1,
+      'release-please would file the next release BELOW the newest entry: ' +
+        'restore the `# Changelog` title block, or demote a top H1 version header to `## [`',
+    ).toBe(firstHeaderAt);
+  });
+
+  it('no CHANGELOG.md version header is left at H1', () => {
+    // The whole file was normalized to release-please's own shape (title, H2
+    // version headers) so that nothing has to be done per release for it to
+    // stay conformant: release-please only ever writes `## [x.y.z]`, so an H1
+    // version header can now only arrive by hand. semantic-release wrote H1
+    // for minor/major bumps, and one of those sitting on top is invisible to
+    // the splice regex above (it wants ## or ###) — this keeps the file from
+    // drifting back into the mixed state that made the splice miss possible.
+    const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    const h1Versions = changelog.match(/^# v?[0-9[].*$/gm) ?? [];
+    expect(h1Versions, 'H1 version headers must be H2').toEqual([]);
+    // Floored AT the measurement (878 at the normalization), not under it.
+    // A floor far below its subject fences only total disappearance — the
+    // shape check-scope-checker-inputs.test.ts already ruled on, and the
+    // first cut here was 100 against 878, which an 88% collapse would have
+    // passed. At-measurement is safe BECAUSE the count only ever grows (one
+    // header per release), so it can never false-red; and it buys a property
+    // a lower floor does not have — deleting a single entry reds it.
+    // `toBeGreaterThanOrEqual`, not `toBe`: an equality would red on the very
+    // next release.
+    expect(
+      changelog.match(/^## v?[0-9[]/gm)?.length ?? 0,
+      'a CHANGELOG version entry went missing — re-measure only if the removal was deliberate',
+    ).toBeGreaterThanOrEqual(878);
+  });
+
   it('bump-minor-pre-major keeps breaking changes below 1.0.0', () => {
     const config = JSON.parse(readFileSync(join(repoRoot, 'release-please-config.json'), 'utf8'));
     const pkg = config.packages?.['.'];

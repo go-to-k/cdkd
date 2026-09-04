@@ -263,6 +263,12 @@ gates:
       - ".github/workflows/release.yml"
       - "release-please-config.json"
       - ".release-please-manifest.json"
+      # The same suite also reads CHANGELOG.md, to assert release-please
+      # would splice the next entry at the TOP of it and that every version
+      # header is the H2 form it emits. A release-PR merge rewrites this
+      # file, so it stales `check` — which package.json in this same scope
+      # already did on every release, so the entry adds no new cost.
+      - "CHANGELOG.md"
       - "docs/**"
       # This file itself (the go-to-k/cdk-local#623 sibling, handled in the
       # same session): the gate's own definition decides what the marker
