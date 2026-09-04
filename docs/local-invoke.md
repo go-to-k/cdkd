@@ -1,184 +1,199 @@
 ---
-title: local invoke
+title: cdkd local invoke
 description: "Run a single Lambda function from your CDK app in a local Docker container via the AWS Lambda Runtime Interface Emulator — no AWS deploy."
 ---
 
-# `local invoke` (run Lambda functions locally)
+# cdkd local invoke
 
-`cdkd local invoke <target>` runs a Lambda function from a CDK app on
-the developer's machine, inside a Docker container that bundles the
-AWS Lambda Runtime Interface Emulator (RIE). Modeled on
-`sam local invoke` but reusing cdkd's synthesis / asset / construct-path
-plumbing.
+`cdkd local invoke <target>` runs one Lambda function from a CDK app on your
+machine, inside a Docker container that bundles the AWS Lambda Runtime
+Interface Emulator (RIE). It plays the role `sam local invoke` does, but reads
+your CDK app directly — no `template.yaml`, no `cdk synth | sam ...`
+round-trip. Reach for it to exercise a handler against a real event payload
+before you deploy anything.
 
-**Requires Docker.** The first invocation pulls the Lambda base image
-(`public.ecr.aws/lambda/nodejs:<version>`,
-`public.ecr.aws/lambda/python:<version>`,
-`public.ecr.aws/lambda/ruby:<version>`,
-`public.ecr.aws/lambda/java:<version>`,
-`public.ecr.aws/lambda/dotnet:<version>`, or
-`public.ecr.aws/lambda/provided:<al2|al2023>` — ~600MB for the
-language-specific images, ~50MB for the OS-only `provided.*`);
-subsequent invocations reuse the cached image. Pass `--no-pull` to
-skip the `docker pull` round-trip altogether. Supported runtimes:
-`nodejs18.x` / `nodejs20.x` / `nodejs22.x` / `nodejs24.x` /
-`python3.11` / `python3.12` / `python3.13` / `python3.14` /
-`ruby3.2` / `ruby3.3` / `java8.al2` / `java11` / `java17` / `java21` /
-`dotnet6` / `dotnet8` / `provided.al2` / `provided.al2023`. The
-deprecated `go1.x` runtime is rejected with a migration pointer to
-`provided.al2023`. Java, .NET, and `provided.*` are **asset-backed
-only** — inline `Code.ZipFile` is rejected with a routing message
-("use `lambda.Code.fromAsset(...)`") because the Handler shape names
-a compiled artifact (`package.Class::method` for Java's JVM class;
-`Assembly::Namespace.Class::Method` for .NET's CLR assembly; an
-arbitrary `bootstrap` binary for `provided.*`).
+```bash
+cdkd local invoke MyStack/MyApi/Handler                       # default {} event
+cdkd local invoke MyStack/MyApi/Handler -e event.json         # event from a file
+echo '{"k":1}' | cdkd local invoke MyHandler --event-stdin    # single-stack app, event on stdin
+cdkd local invoke MyStack/MyApi/Handler --from-state          # resolve env intrinsics from cdkd state
+cdkd local invoke MyStack/MyApi/Handler --from-state --assume-role   # run under the deployed role
+cdkd local invoke MyStack/Handler -e event.json | tail -1 | jq .body # the payload is the LAST stdout line
+```
 
-A ZIP Lambda's `Architectures: [x86_64]` (default) / `[arm64]` is pinned to
-`--platform linux/amd64` / `linux/arm64` on the container's `docker run`
-(matching the container-image path). On an arch-mismatched host Docker
-emulates the function's declared arch, so a `provided.*` `bootstrap`
-compiled for the other architecture runs instead of failing with
-`fork/exec /var/runtime/bootstrap: exec format error` /
-`Runtime.InvalidEntrypoint`. The same pinning applies to `cdkd local
-start-api`'s warm-container pool.
+Docker is required. The first run pulls the Lambda base image; later runs
+reuse the cached one.
 
-**Container Lambdas** — `lambda.DockerImageFunction(...)` /
-`Code.ImageUri` is supported in addition to ZIP Lambdas. cdkd reads the
-function's local `Dockerfile` from `cdk.out` (via the asset manifest
-keyed off the `:<hash>` suffix on `Code.ImageUri`) and runs `docker build`
-locally, then `docker run` against the resulting image. When no asset
-matches (typically: invoking a stack deployed elsewhere), cdkd falls back
-to `docker pull` from ECR. **Cross-account / cross-region pull is
-supported**: cdkd auto-detects cross-account from `sts:GetCallerIdentity`,
-builds the ECR client for the URI's region, and (when
-`--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to pick up
-permissions in the target account. Without `--ecr-role-arn`, cdkd
-falls through to the caller's credentials — works when the target ECR
-repository's resource policy grants the caller directly (AWS surfaces
-`AccessDenied` if missing, with a hint at the flag).
-`Architectures: [x86_64]` (default) and `[arm64]` are honored via
-`--platform linux/amd64` / `linux/arm64` on both the build and the run.
+## Options
 
-### Target resolution
+| Flag | Default | Description |
+| --- | --- | --- |
+| `<target>` | — | CDK display path or stack-qualified logical ID of the Lambda to invoke. Required. See [Target resolution](#target-resolution). |
+| `-e`, `--event <file>` | `{}` | JSON event payload file. |
+| `--event-stdin` | off | Read the event JSON from stdin. Mutually exclusive with `--event`. |
+| `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape. See [Local Execution](local-emulation.md#common-flags) and [Resolution priority](#resolution-priority). |
+| `--no-pull` | off | Skip `docker pull`. Semantics differ per code path — see [`--no-pull` and `--no-build` by code path](#no-pull-and-no-build-by-code-path). |
+| `--no-build` | off | Skip `docker build` on the container-image local-build path. See [`--no-pull` and `--no-build` by code path](#no-pull-and-no-build-by-code-path). |
+| `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port, so a Node debugger can attach and step through the handler. Must be an integer in 1-65535. |
+| `--container-host <host>` | `127.0.0.1` | Host IP to bind the RIE port to. See [Local Execution](local-emulation.md#common-flags). |
+| `--assume-role [arn]` | off | Run the handler under the deployed function's execution role instead of your shell credentials. See [`--assume-role`: run under the deployed execution role](#assume-role-run-under-the-deployed-execution-role). |
+| `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before `lambda:GetLayerVersion` on literal-ARN layer entries. See [Literal layer ARNs](#literal-layer-arns). |
+| `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR on the container-image pull path. See [Container-image Lambdas](#container-image-lambdas). |
+| `--from-state` | off | Substitute env-var intrinsics from cdkd's S3 state. See [`--from-state`: recover env vars from cdkd state](#from-state-recover-env-vars-from-cdkd-state). |
+| `--from-cfn-stack [cfn-stack-name]` | off | Substitute env-var intrinsics from a deployed CloudFormation stack. Mutually exclusive with `--from-state`. See [`--from-cfn-stack`: recover env vars from CloudFormation](#from-cfn-stack-recover-env-vars-from-cloudformation). |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Used only with `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Used only with `--from-state`. |
+| `--stack-region <region>` | — | Region of the state record to read, and the CFn client region for `--from-cfn-stack`. See [Local Execution](local-emulation.md#common-flags). |
+| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud-assembly directory. Pass `-a cdk.out` to skip synthesis while iterating. |
+| `--output <path>` | `cdk.out` | Output directory for synthesis. |
+| `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
+| `--profile <profile>` | — | AWS profile. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls (state reads, STS, ECR). Distinct from `--assume-role`, which targets the handler's credentials. |
+| `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
+| `--verbose` | off | Verbose logging (on stderr). |
+
+The region used for AWS API calls and for pseudo-parameter substitution is taken
+from `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the synthesized stack's own
+`env.region`. A deprecated `--region` flag still overrides all three; prefer the
+environment variable or your AWS profile.
+
+### `--no-pull` and `--no-build` by code path
+
+| Code path | `--no-pull` | `--no-build` |
+| --- | --- | --- |
+| ZIP Lambda | Skip pulling the public Lambda base image. | No-op — no `docker build` runs. |
+| Container image, local build | No-op — `docker build` does not refresh the `FROM` cache by default. | Reuse the deterministic `cdkd-local-invoke-<hash>` tag from a prior run. Errors with an actionable message when that tag is not in the local registry. |
+| Container image, ECR pull | Skip `docker pull`, and error when the image is not already in the local cache. | No-op — use `--no-pull` to control this path. |
+
+The two flags are compatible with each other.
+
+## Target resolution
 
 The positional `<target>` accepts two forms:
 
-- **CDK display path** — `MyStack/MyApi/Handler`. Matches the same
-  prefix-rule cdkd uses for `cdkd orphan`: an L2 path resolves to the
-  synthesized L1 child (`MyStack/MyApi/Handler/Resource`).
-- **Stack-qualified logical ID** — `MyStack:MyApiHandler1234ABCD`. The
-  colon is unambiguous because logical IDs cannot contain `/` or `:`.
+- **CDK display path** — `MyStack/MyApi/Handler`. An L2 path resolves to the
+  synthesized L1 child (`MyStack/MyApi/Handler/Resource`), the same prefix rule
+  `cdkd orphan` uses.
+- **Stack-qualified logical ID** — `MyStack:MyApiHandler1234ABCD`. The colon is
+  unambiguous, because logical IDs can contain neither `/` nor `:`.
 
-Single-stack apps may omit the stack prefix entirely:
-`cdkd local invoke MyHandler` is valid when the app contains exactly
-one stack (mirrors `cdkd deploy` / `cdkd destroy` auto-detect).
+Single-stack apps may omit the stack prefix entirely: `cdkd local invoke
+MyHandler` is valid when the app contains exactly one stack, mirroring `cdkd
+deploy` / `cdkd destroy` auto-detection.
 
-When the target does not match anything, the error lists every Lambda
-in the resolved stack so the user can copy/paste a valid one.
+When the target matches nothing, the error lists every Lambda in the resolved
+stack, so you can copy a valid one out of it.
 
-### Options
+## Runtimes and images
 
-| Option | Default | Description |
+### Supported runtimes
+
+| Family | Runtimes | Base image | Code source |
+| --- | --- | --- | --- |
+| Node.js | `nodejs18.x`, `nodejs20.x`, `nodejs22.x`, `nodejs24.x` | `public.ecr.aws/lambda/nodejs:<version>` | Asset or inline `Code.ZipFile` |
+| Python | `python3.11`, `python3.12`, `python3.13`, `python3.14` | `public.ecr.aws/lambda/python:<version>` | Asset or inline `Code.ZipFile` |
+| Ruby | `ruby3.2`, `ruby3.3` | `public.ecr.aws/lambda/ruby:<version>` | Asset or inline `Code.ZipFile` |
+| Java | `java8.al2`, `java11`, `java17`, `java21` | `public.ecr.aws/lambda/java:<version>` | Asset only |
+| .NET | `dotnet6`, `dotnet8` | `public.ecr.aws/lambda/dotnet:<version>` | Asset only |
+| OS-only | `provided.al2`, `provided.al2023` | `public.ecr.aws/lambda/provided:<al2\|al2023>` | Asset only |
+
+The language-specific images are roughly 600MB; the OS-only `provided.*` images
+roughly 50MB.
+
+Java, .NET and `provided.*` are **asset-backed only**: inline `Code.ZipFile` is
+rejected with a pointer at `lambda.Code.fromAsset(...)`, because each of those
+`Handler` shapes names a compiled artifact — `package.Class::method` for Java's
+JVM class, `Assembly::Namespace.Class::Method` for .NET's CLR assembly, an
+arbitrary `bootstrap` binary for `provided.*`.
+
+The deprecated `go1.x` runtime is rejected with a migration pointer at
+`provided.al2023`.
+
+### Architecture pinning
+
+A ZIP Lambda's `Architectures: [x86_64]` (the default) or `[arm64]` is pinned to
+`--platform linux/amd64` or `linux/arm64` on the container's `docker run`, the
+same way the container-image path pins it on both build and run. On an
+arch-mismatched host, Docker emulates the function's declared architecture, so a
+`provided.*` `bootstrap` compiled for the other architecture runs rather than
+failing with `fork/exec /var/runtime/bootstrap: exec format error` /
+`Runtime.InvalidEntrypoint`.
+
+The same pinning applies to [`cdkd local start-api`](local-start-api.md)'s
+warm-container pool.
+
+### Container-image Lambdas
+
+`lambda.DockerImageFunction(...)` / `Code.ImageUri` functions are supported
+alongside ZIP Lambdas. cdkd resolves the image in this order:
+
+1. **Asset-manifest hit.** cdkd extracts the asset hash from the `:<hash>` tail
+   of the image URI and looks it up in the stack's asset manifest
+   (`cdk.out/<stack>.assets.json`, `dockerImages[<hash>]`), then runs `docker
+   build` against the recorded build context.
+2. **Single-asset fallback.** When the lookup misses but the manifest holds
+   exactly one Docker asset, that asset is used — this covers digest-pinned
+   URIs.
+3. **ECR pull.** When both miss (typically: invoking a stack deployed
+   elsewhere), cdkd falls back to `docker pull` from ECR.
+
+The ECR-pull path supports cross-account and cross-region registries. cdkd
+detects cross-account from `sts:GetCallerIdentity`, builds the ECR client for
+the URI's own region, and — when `--ecr-role-arn <arn>` is passed — issues
+`sts:AssumeRole` to pick up permissions in the target account before
+`ecr:GetAuthorizationToken` and the pull. Without `--ecr-role-arn`, cdkd uses
+your own credentials directly, which works when the target repository's resource
+policy grants you; otherwise AWS returns `AccessDenied` and cdkd hints at the
+flag. Same-account, same-region pulls need no role.
+
+`ImageConfig` is honored on the `docker run`:
+
+| Template field | Effect |
+| --- | --- |
+| `ImageConfig.Command` | Becomes the container `CMD`. |
+| `ImageConfig.EntryPoint` | Becomes `--entrypoint <first>` plus the rest as positional args. |
+| `ImageConfig.WorkingDirectory` | Becomes `--workdir`. |
+
+When `EntryPoint` is unset — the common case — the image's own entrypoint stays
+in charge. For AWS Lambda base images that is `/lambda-entrypoint.sh`, which
+routes to RIE on port 8080.
+
+## Environment variables
+
+The function's template `Properties.Environment.Variables` entries are handled
+by kind:
+
+| Entry kind | Without a state source | With `--from-state` / `--from-cfn-stack` |
 | --- | --- | --- |
-| `-e, --event <file>` | `{}` | JSON event payload file. |
-| `--event-stdin` | off | Read event JSON from stdin (mutually exclusive with `--event`). |
-| `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block applied to every invoke. `null` clears a key. The function-specific key may also be a **CDK display path** (`MyStack/MyHandler` — same form `cdkd local invoke <target>` accepts). Both forms coexist; later JSON entry wins on conflict (SAM apply-in-order). |
-| `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). |
-| `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkd-local-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkd local invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
-| `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. Same-account / same-region pulls do not need this flag; cross-account without the flag falls back to the caller's credentials (succeeds when an IAM resource policy on the ECR repo grants the caller directly, else AWS surfaces `AccessDenied`). No-op when `--no-pull` is set. |
-| `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Use only when the developer's own credentials cannot read the layer — typically a cross-account layer. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. No-op for stacks whose layers are all same-stack `AWS::Lambda::LayerVersion` references. |
-| `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
-| `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
-| `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from cdkd state (requires `--from-state`); (3) `--no-assume-role` explicitly opts out (forces dev creds even with `--from-state`). Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
-| `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time (Q2 recommendation C). Pass `-a cdk.out` to skip synthesis when iterating. |
-| `--output <dir>` | `cdk.out` | Output directory for synthesis. |
-| `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in env vars with the deployed physical IDs / attributes. Off by default — keeps PR 1's literal-only / warn-and-drop behavior. See [State-driven env recovery (`--from-state`)](#state-driven-env-recovery-from-state) below. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. **Mutually exclusive with `--from-state`** — pick one source. `Fn::GetAtt` in a consumer Lambda's own env vars is recovered from the deployed function config (`lambda:GetFunctionConfiguration`, via `cdk-local@0.10.0`); `Fn::GetAtt` at other sites still warn-and-drops, except a same-stack ECR repository's `Arn` / `RepositoryUri` in a container image URI (synthesized from the recovered physical name + pseudo parameters). See [CloudFormation-driven env recovery (`--from-cfn-stack`)](#cloudformation-driven-env-recovery-from-cfn-stack) below. |
-| `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
-| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
-| `--stack-region <region>` | auto | Region of the state record to read. Required for `--from-state` when the same stack name has state in multiple regions. Also drives the CFn client region for `--from-cfn-stack` (cdkd does not have a separate `--cfn-stack-region` flag). |
+| Literal (string / number / boolean) | Passed through as-is. | Passed through as-is. |
+| Intrinsic (`Ref`, `Fn::GetAtt`, `Fn::Sub`, `Fn::Join`, `Fn::ImportValue`) | Warned by name and **dropped**, rather than silently substituting garbage. | Substituted with the deployed value where the source can supply one; warned and dropped otherwise. |
+| AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) | Warned and dropped. | Resolved from `sts:GetCallerIdentity` plus the resolved region. |
 
-### Environment variables
+You can always override any entry — intrinsic or not — with `--env-vars`.
 
-Template `Properties.Environment.Variables` entries:
-
-- **Literal values** (string / number / boolean) are passed through as-is.
-- **Intrinsic-valued entries** (`Ref` / `Fn::GetAtt` / `Fn::Sub` /
-  `Fn::Join`, plus the `${AWS::AccountId}` / `${AWS::Region}` /
-  `${AWS::Partition}` / `${AWS::URLSuffix}` pseudo parameters) need state
-  (and a single `sts:GetCallerIdentity` for `${AWS::AccountId}`) to
-  resolve. Without `--from-state` v1 emits a warning naming the variable
-  and **drops** it (rather than silently substituting garbage); pass
-  `--from-state` (see below) to recover deployed values from cdkd's S3
-  state, or override intrinsics via `--env-vars`.
-
-Standard Lambda runtime env vars are always set: `AWS_LAMBDA_FUNCTION_NAME`,
+These standard Lambda runtime variables are always set, so the handler's
+`context.*` fields look real: `AWS_LAMBDA_FUNCTION_NAME`,
 `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`, `AWS_LAMBDA_FUNCTION_TIMEOUT`,
 `AWS_LAMBDA_FUNCTION_VERSION`, `AWS_LAMBDA_LOG_GROUP_NAME`,
-`AWS_LAMBDA_LOG_STREAM_NAME`. The handler's `context.*` fields look real.
+`AWS_LAMBDA_LOG_STREAM_NAME`.
 
-### State-driven env recovery (`--from-state`)
+### Resolution priority
 
-When the target stack has been deployed with `cdkd deploy`, the function's
-intrinsic-valued env vars (`Ref` / `Fn::GetAtt` / `Fn::Sub`) reference
-resources whose physical IDs only exist in AWS. PR 1's behavior is to
-drop those entries with a warn — correct when there's no source of
-truth, but unhelpful when cdkd already knows them. `--from-state` opts
-in to reading cdkd's S3 state and substituting the deployed values
+Highest wins:
+
+1. The `--env-vars` file's function-specific entry (`{LogicalId: {KEY: VALUE}}`,
+   or the same block keyed by CDK display path).
+2. The `--env-vars` file's global `Parameters` block.
+3. The `--from-state` / `--from-cfn-stack` substituted intrinsic, when a state
+   source is set and the substitution succeeded.
+4. The template's literal value.
+
+## `--from-state`: recover env vars from cdkd state
+
+When the target stack has been deployed with `cdkd deploy`, cdkd already knows
+the physical IDs and attributes its intrinsic-valued env vars point at.
+`--from-state` opts in to reading cdkd's S3 state and substituting those values
 before the env block reaches the container.
-
-**Resolution priority** (highest priority wins):
-
-1. `--env-vars` file function-specific entry (`{LogicalId: {KEY: VALUE}}`).
-2. `--env-vars` file global `Parameters` block.
-3. `--from-state` substituted intrinsic (when the flag is set AND the
-   template entry was a supported intrinsic AND substitution succeeded).
-4. Template literal value.
-
-**Supported intrinsics**: `Ref` (→ `state.resources[id].physicalId`),
-`Fn::GetAtt` (→ `state.resources[id].attributes[attr]`, JSON-stringified
-when the cached value is an object/array), `Fn::Sub` (single-string and
-two-arg forms; `${LogicalId}` / `${LogicalId.attr}` / `${AWS::*}`
-placeholders are substituted in place — the two-arg form's bindings map
-can also carry intrinsic values, recursively resolved), `Fn::Join`
-(every element recursively resolved, then joined), and `Ref: AWS::*`
-pseudo parameters (`AccountId` / `Region` / `Partition` / `URLSuffix`)
-resolved against STS `GetCallerIdentity` + the configured region.
-
-**Failure mode**: per-key best-effort. When a substitution can't be
-produced (state missing for the referenced resource, attribute not
-captured at deploy time, unsupported intrinsic in `Fn::Sub`), the key
-is reported via warn and dropped — same UX as PR 1. State-load
-failures (no state record, multi-region ambiguity without
-`--stack-region`, bucket-resolution error) degrade to warn-and-fall-back
-rather than aborting the whole invoke.
-
-**Auto-assume execution role**: when `--from-state` is paired with bare
-`--assume-role` (no ARN argument), cdkd reads the function's
-`Properties.Role` from cdkd state, resolves `Fn::GetAtt: [<RoleId>, 'Arn']`
-shapes against the sibling IAM Role resource's recorded `Arn` attribute,
-and STS-assumes that role automatically — no manual ARN lookup required.
-When `--from-state` is set WITHOUT `--assume-role`, the legacy hint path
-fires instead: cdkd logs the deployed role ARN once so users can re-run
-with `--assume-role`. Pass `--no-assume-role` to explicitly opt out even
-with `--from-state`; pass `--assume-role <arn>` to override the resolved
-ARN with an explicit one. STS failures (insufficient permissions /
-trust-policy mismatch) degrade to a warn + dev-creds fallback — this is
-a developer-loop tool, not a security boundary.
-
-**Pseudo parameters**: when the function's template env contains any
-intrinsic value, `cdkd local invoke --from-state` issues a single
-`sts:GetCallerIdentity` (for `${AWS::AccountId}`) and derives
-`partition` / `urlSuffix` from the resolved region (`--region` >
-`AWS_REGION` > `AWS_DEFAULT_REGION` > the synth-derived stack region).
-STS failures degrade to warn — substitution still runs for non-`AWS::*`
-refs; affected `${AWS::*}` placeholders fall back to warn + drop.
-Literal-only env maps skip the STS hop.
-
-**Out of scope** (deferred): cross-stack `Fn::ImportValue` /
-`Fn::GetStackOutput`, other intrinsics (`Fn::Select`, `Fn::Split`,
-`Fn::If`, etc.). Anything beyond the listed supported intrinsics is
-treated as unresolved (warn + drop).
 
 ```bash
 # Single-region stack: --from-state alone is enough
@@ -188,314 +203,330 @@ cdkd local invoke MyStack/MyApi/Handler --from-state
 # Multi-region: disambiguate the state record
 cdkd local invoke MyStack/MyApi/Handler --from-state --stack-region us-west-2
 
-# Combine with --env-vars to override a single key (override wins)
+# Combine with --env-vars to override a single key (the override wins)
 cdkd local invoke MyStack/MyApi/Handler --from-state \
   --env-vars '{"Parameters":{"DEBUG":"1"}}'
 ```
 
-### CloudFormation-driven env recovery (`--from-cfn-stack`)
+### Supported intrinsics
 
-`--from-state` only works when the target stack was deployed via `cdkd
-deploy` — cdkd reads its own S3 state and that state only exists for
-cdkd-deployed stacks. For CDK apps deployed via the upstream CDK CLI
-(`cdk deploy` → CloudFormation), use `--from-cfn-stack` instead: cdkd
-calls `cloudformation:DescribeStackResources` against the named CFn
-stack to populate the same per-logical-id physical-id map that
-`--from-state` would have built from cdkd state, then runs the existing
-substitution engine against it.
+| Intrinsic | Resolved from |
+| --- | --- |
+| `Ref: <LogicalId>` | The state record's `resources[id].physicalId`. |
+| `Fn::GetAtt: [<LogicalId>, <attr>]` | The state record's `resources[id].attributes[attr]`, JSON-stringified when the cached value is an object or array. |
+| `Fn::Sub` | Both the single-string and two-arg forms. `${LogicalId}` / `${LogicalId.attr}` / `${AWS::*}` placeholders are substituted in place; the two-arg form's bindings map may itself carry intrinsics, resolved recursively. |
+| `Fn::Join` | Every element is resolved recursively, then joined. |
+| `Ref: AWS::AccountId` / `Region` / `Partition` / `URLSuffix` | One `sts:GetCallerIdentity` plus the resolved region. |
+| `Fn::ImportValue` | The producer stack's state record, in a second pass. Same account, same region. |
+| `Fn::GetStackOutput` | The named stack's outputs. Same account; the intrinsic's own `Region` argument is honoured, so cross-region works. |
+
+The last two open an extra client, so cdkd builds that resolver only when the
+function's environment actually references one of them.
+
+Pseudo-parameter resolution runs only when the env map actually contains an
+intrinsic — a literal-only map skips the STS hop entirely. The region used for
+`partition` / `urlSuffix` follows `--region` > `AWS_REGION` >
+`AWS_DEFAULT_REGION` > the synth-derived stack region. An STS failure warns and
+leaves the `${AWS::*}` placeholders dropped; non-`AWS::*` substitution still
+runs.
+
+### Failure handling
+
+Resolution is per-key best-effort. When a substitution cannot be produced —
+state missing for the referenced resource, the attribute not captured at deploy
+time, an unsupported intrinsic inside `Fn::Sub` — that key is warned and
+dropped, and the invoke proceeds.
+
+State-load failures are equally non-fatal: a missing state record, multi-region
+ambiguity without `--stack-region`, or a bucket-resolution error warns and falls
+back to the no-state behaviour rather than aborting the invoke.
+
+## `--from-cfn-stack`: recover env vars from CloudFormation
+
+`--from-state` only works for stacks deployed by `cdkd deploy`, because that is
+the only thing that writes cdkd's S3 state. For CDK apps deployed through the
+upstream CDK CLI (`cdk deploy` → CloudFormation), use `--from-cfn-stack`: cdkd
+calls `cloudformation:ListStackResources` against the named stack to build
+the same per-logical-ID physical-ID map, then runs the same substitution engine
+over it.
 
 ```bash
 # Bare flag — uses the cdkd stack name as the CFn stack name
-# (typical for CDK apps where they match).
 cdk deploy MyStack
 cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack
 
-# Explicit CFn stack name — use when the deployed CFn stack name
-# differs from the cdkd / CDK display name (e.g. when CDK's `stackName`
-# prop was overridden).
+# Explicit CFn stack name — when the deployed name differs from the CDK
+# display name (e.g. CDK's `stackName` prop was overridden)
 cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack MyExplicitCfnStackName
 
-# Cross-region CFn stack — --stack-region drives the CFn client region.
+# Cross-region CFn stack — --stack-region drives the CFn client region
 cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack --stack-region eu-west-1
 ```
 
-**What's resolved**: `Ref: <LogicalId>` against
-`DescribeStackResources` (one CFn API call per stack) and
-`Fn::ImportValue: <ExportName>` against `cloudformation:ListExports`
-(paginated, memoized for one substitution pass).
+### What resolves
 
-**`Fn::GetAtt` is recovered for a consumer Lambda's OWN env vars; other
-sites warn-and-drop.** CFn's `DescribeStackResources` does NOT return
-per-attribute values — it only exposes `(LogicalResourceId,
-PhysicalResourceId, ResourceType)` triplets. But CloudFormation already
-resolved every intrinsic at deploy time, so a consumer Lambda's
-`Environment.Variables` already carries the concrete value. As of
-`cdk-local@0.10.0` (which cdkd consumes through the `--from-cfn-stack`
-shim), env keys whose template value is an `Fn::GetAtt` the static
-substituter could not resolve are filled at runtime by reading the
-deployed function's config (`lambda:GetFunctionConfiguration`) — this
-covers `Fn::GetAtt` / `Fn::Sub` / `Fn::ImportValue` / cross-stack `Ref`
-in Lambda env vars uniformly, without provider-specific describe calls.
-`Fn::GetAtt` at NON-Lambda-env sites (e.g. ECS container env) is still
-warn-and-dropped; override the affected entry via `--env-vars` if the
-value is critical.
+| Intrinsic | Resolved from |
+| --- | --- |
+| `Ref: <LogicalId>` | `cloudformation:ListStackResources`, paginated, once per stack. |
+| `Fn::ImportValue: <ExportName>` | `cloudformation:ListExports`, paginated and memoized for one substitution pass. |
+| `Fn::GetAtt` in a **consumer Lambda's own** env vars | The deployed function's configuration (`lambda:GetFunctionConfiguration`). |
+| `Fn::GetAtt` anywhere else | Nothing — warned and dropped. Override the entry with `--env-vars` if the value is critical. |
+| `Fn::GetStackOutput` | Nothing — rejected with a warn. |
 
-**`Fn::GetStackOutput` is rejected** with a clear warn naming the cdkd-
-vs-CFn gap: it's a cdkd-specific intrinsic with no CloudFormation
-equivalent (CFn cross-stack vocabulary is `Fn::ImportValue` against an
-explicit `Outputs.<name>.Export` block). Use `Fn::ImportValue` or pass
-`--from-state` instead.
+`ListStackResources` returns only `(LogicalResourceId, PhysicalResourceId,
+ResourceType)` triplets, with no per-attribute values. But
+CloudFormation already resolved every intrinsic at deploy time, so a consumer
+Lambda's `Environment.Variables` already holds the concrete value: cdkd reads it
+back from the deployed function config, which covers `Fn::GetAtt` / `Fn::Sub` /
+`Fn::ImportValue` / cross-stack `Ref` in Lambda env vars uniformly, with no
+per-service describe calls.
 
-**Mutually exclusive with `--from-state`** — the CLI rejects the
-combination at parse time. The two flags target different state
-sources (cdkd's S3 state vs CloudFormation); asking for both is
-ambiguous about which wins.
+`Fn::GetStackOutput` is a cdkd-specific intrinsic with no CloudFormation
+equivalent — CFn's cross-stack vocabulary is `Fn::ImportValue` against an
+explicit `Outputs.<name>.Export` block. Use `Fn::ImportValue`, or `--from-state`
+instead.
 
-**Region handling**: the CFn client is region-bound at construction
-time using the precedence `--stack-region` > `--region` > `AWS_REGION`
-> `AWS_DEFAULT_REGION` > the synth-derived stack region. There is
-intentionally no separate `--cfn-stack-region` flag — `--stack-region`
-does double duty. When NONE of these signals is set the CLI **throws**
-with a remediation message (distinct from `--from-state`'s silent
-`us-east-1` fallback; CFn `DescribeStackResources` queries a specific
-region and silently picking `us-east-1` would query the wrong stack
-environment).
+### Region handling
 
-**Multi-stack guard**: `local start-api` / `local start-service` route
-multiple stacks in one invocation. Bare `--from-cfn-stack` works there
-because each routed stack uses its own cdkd stack name as the CFn
-stack name. **Explicit `--from-cfn-stack <name>` is rejected** when
-more than one stack is routed (the explicit name would apply to every
-routed stack and silently mismap `Ref` lookups whose logical IDs
-happen to collide between siblings). Use bare `--from-cfn-stack` for
+The CFn client is region-bound at construction using the precedence
+`--stack-region` > `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION` > the
+synth-derived stack region. There is deliberately no separate
+`--cfn-stack-region` flag; `--stack-region` does double duty.
+
+When none of those signals is set, the command **throws** with a remediation
+message rather than falling back to a literal region the way `--from-state`
+does. The CloudFormation client queries one specific region, and silently
+choosing `us-east-1` would query the wrong environment.
+
+### Multi-stack routing
+
+[`cdkd local start-api`](local-start-api.md) and [`cdkd local
+start-service`](local-start-service.md) can route several stacks in one
+invocation. Bare `--from-cfn-stack` works there, because each routed stack uses
+its own cdkd stack name as the CFn stack name. An **explicit
+`--from-cfn-stack <name>` is rejected** when more than one stack is routed: the
+one name would apply to every routed stack and silently mismap `Ref` lookups
+whose logical IDs happen to collide between siblings. Use the bare form for
 multi-stack apps, or run one cdkd invocation per stack.
 
-**Failure modes**: `DescribeStackResources` failures (stack not found,
-access denied, throttling) degrade to a per-key warn + drop, same UX as
-the `--from-state` warn-and-fall-back path. `ListExports` failures only
-affect `Fn::ImportValue` resolution; same-stack `Ref` substitutions
-still succeed because they only need the `DescribeStackResources`
-result.
+### CloudFormation failure handling
 
-### Asset resolution
+`ListStackResources` failures — stack not found, access denied, throttling —
+degrade to a per-key warn and drop, the same as `--from-state`. `ListExports`
+failures affect only `Fn::ImportValue`; same-stack `Ref` substitutions still
+succeed, because they need only the resource listing.
 
-**ZIP Lambdas**: cdkd uses the CDK-blessed `Metadata['aws:asset:path']`
-hint on each Lambda's CFn resource (the same source SAM uses) to find
-the local unzipped asset directory under `cdk.out`, and bind-mounts it
-at `/var/task` read-only. `Code.ZipFile` (inline) functions are
-materialized to a tmpdir using the file path implied by the function's
-`Handler` property (`index.handler` → `tmpdir/index.js`).
+## `--assume-role`: run under the deployed execution role
 
-### Lambda Layers
+By default the container inherits your shell's `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` unchanged, which is
+SAM-compatible but means the handler usually runs with far wider permissions
+than it has when deployed. `--assume-role` STS-assumes the function's execution
+role and forwards the resulting temporary credentials instead, so an
+IAM-permission bug shows up locally.
 
-Same-stack `AWS::Lambda::LayerVersion` references in
-`Properties.Layers` are resolved automatically and bind-mounted at
-`/opt` (read-only) inside the container. The flow:
+| Form | Behaviour |
+| --- | --- |
+| `--assume-role <arn>` | Assumes the explicit ARN. Takes precedence over anything resolved from state. |
+| `--assume-role` (bare) | Reads the function's `Properties.Role` from cdkd state, resolves `Fn::GetAtt: [<RoleId>, 'Arn']` shapes against the sibling IAM Role's recorded `Arn` attribute, and assumes that. Requires `--from-state`. |
+| flag omitted | Your shell credentials are forwarded unchanged. |
 
-1. `cdkd local invoke` walks `Properties.Layers` left-to-right.
-2. Each entry must be `{Ref: '<LayerLogicalId>'}` or
-   `{Fn::GetAtt: ['<LayerLogicalId>', 'Ref']}` pointing at an
-   `AWS::Lambda::LayerVersion` resource in the same stack. The layer's
-   `Metadata['aws:asset:path']` is read the same way Lambda code is
-   located — the layer asset is unzipped under `cdk.out/asset.<hash>/`
-   ready to bind-mount.
-3. cdkd produces a single bind mount at `/opt`:
-   - **Single layer**: the layer's asset dir is bind-mounted directly
-     (no copy).
-   - **Multiple layers**: each layer's contents are copied into a
-     freshly-allocated tmpdir IN ORDER (later layers overwrite earlier
-     files via `cpSync({force: true})`); the merged tmpdir is then
-     bind-mounted at `/opt` and removed in the cleanup path.
-   - The merge mirrors AWS Lambda's actual runtime behavior: AWS
-     extracts every layer ZIP into `/opt` in template order so later
-     layers shadow earlier files (**"last layer wins on file
-     collision"**). cdkd cannot rely on multiple `-v ...:/opt:ro`
-     entries — Docker rejects duplicate bind mounts at the same target
-     path with `Error response from daemon: Duplicate mount point: /opt`.
-4. The layer's directory layout (`/opt/python/...`,
-   `/opt/nodejs/...`, `/opt/lib/...`, etc.) is the user's
-   responsibility — cdkd does NOT inspect the contents.
+With `--from-state` set but no `--assume-role`, cdkd logs the deployed role ARN
+once, so you can re-run with the flag.
 
-**Literal-ARN layer entries**: a `Layers` entry
-that is the string
-`arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>` is
-resolved by downloading that layer version's ZIP and unzipping it into a
-host tmpdir, which then joins the same `/opt` merge as same-stack layers
-— so "last layer wins" holds across both kinds. This covers
-AWS-published public layers (Lambda Powertools, the Datadog extension)
-and cross-account / cross-region shared layers. Pass
-`--layer-role-arn <arn>` to `sts:AssumeRole` before
-`lambda:GetLayerVersion` when the developer's own credentials cannot
-read the layer — typically a cross-account one; AWS-published public
-layers are readable from every account and need no role.
+An STS failure — insufficient permissions, trust-policy mismatch — degrades to a
+warn plus a fallback to your shell credentials. This is a developer-loop tool,
+not a security boundary.
 
-The ARN's **partition is derived from its region** rather than matched
-against a hardcoded list, so the ARN in any of the eight partitions —
-commercial, `aws-cn`, `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`,
-`aws-iso-f`, `aws-eusc` — now PARSES; previously only three did, and
-the other five were refused outright at resolution. The two segments must
-also AGREE: `arn:aws-cn:lambda:us-east-1:...` is refused, naming the
-disagreement, because `us-east-1` does not belong to `aws-cn`. A region
-cdkd's partition table does not recognise resolves to the commercial
-partition, so a brand-new commercial region keeps working with `arn:aws:`.
+## Asset resolution
 
-> **Parsing is not the whole path, and the rest is still commercial-only.**
-> The download itself runs through cdk-local, which rebuilds the ARN with a
-> hardcoded `aws` partition before calling `lambda:GetLayerVersion`
-> (`node_modules/cdk-local/dist/local-studio-BBtUAVNy.js:15214` —
-> `` `arn:aws:lambda:${layer.region}:${layer.accountId}:layer:${layer.name}` ``).
-> So a layer ARN in any of the seven non-commercial partitions gets past
-> cdkd's parse and then fails at the AWS call instead. `aws-cn` and
-> `aws-us-gov` already parsed before this change and gain nothing from it;
-> for the five that did not (`aws-iso`, `aws-iso-b`, `aws-iso-e`,
-> `aws-iso-f`, `aws-eusc`) what changed is WHICH failure you get — an
-> AWS-side error naming the real blocker, rather than cdkd refusing to read
-> the ARN at all. End-to-end support for those partitions needs an
-> upstream cdk-local fix.
+**ZIP Lambdas.** cdkd reads the CDK-blessed `Metadata['aws:asset:path']` hint on
+each Lambda's CFn resource — the same source SAM uses — to find the local
+unzipped asset directory under `cdk.out`, and bind-mounts it at `/var/task`
+read-only. Inline `Code.ZipFile` functions are materialized to a tmpdir using
+the file path implied by the function's `Handler` property (`index.handler` →
+`tmpdir/index.js`).
 
-**Out of scope (v1)** — hard-errors with a clear pointer at the
-offending entry:
+**Container-image Lambdas.** See [Container-image
+Lambdas](#container-image-lambdas) above.
 
-- Layer entries that are neither a same-stack reference nor a
-  well-formed layer-version ARN (a malformed ARN, a function ARN, an
-  unversioned layer ARN, or a partition that disagrees with the region).
-- Same-stack refs that don't point at an `AWS::Lambda::LayerVersion`
-  (typo'd logical ID).
-- Same-stack refs to a `LayerVersion` whose `Metadata['aws:asset:path']`
+## Lambda layers
+
+Layers are resolved into a single read-only bind mount at `/opt` inside the
+container. cdkd does not inspect the contents — the layer's internal layout
+(`/opt/python/...`, `/opt/nodejs/...`, `/opt/lib/...`) is yours to get right.
+
+With one layer, that layer's asset directory is bind-mounted directly, with no
+copy. With several, each layer's contents are copied into a fresh tmpdir **in
+template order**, so later layers overwrite earlier files, and the merged tmpdir
+is bind-mounted and removed on cleanup. The merge mirrors what AWS Lambda does
+at runtime — it extracts every layer ZIP into `/opt` in template order, so the
+**last layer wins on a file collision**. cdkd cannot use several `-v ...:/opt:ro`
+entries instead, because Docker rejects duplicate bind mounts at one target with
+`Error response from daemon: Duplicate mount point: /opt`.
+
+### Same-stack layer references
+
+A `Properties.Layers` entry of the form `{Ref: '<LayerLogicalId>'}` or
+`{Fn::GetAtt: ['<LayerLogicalId>', 'Ref']}` must point at an
+`AWS::Lambda::LayerVersion` in the same stack. Its
+`Metadata['aws:asset:path']` is read the same way Lambda code is located, and
+the asset is already unzipped under `cdk.out/asset.<hash>/`, ready to mount.
+
+### Literal layer ARNs
+
+A `Layers` entry that is the string
+`arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>` is resolved
+by downloading that layer version's ZIP and unzipping it into a host tmpdir,
+which then joins the same `/opt` merge — so "last layer wins" holds across both
+kinds. This covers AWS-published public layers (Lambda Powertools, the Datadog
+extension) and cross-account or cross-region shared layers.
+
+Pass `--layer-role-arn <arn>` to `sts:AssumeRole` before
+`lambda:GetLayerVersion` when your own credentials cannot read the layer,
+typically a cross-account one. AWS-published public layers are readable from
+every account and need no role.
+
+**Only a commercial-partition layer ARN downloads.** An ARN in any of the seven
+non-commercial partitions — `aws-cn`, `aws-us-gov`, `aws-eusc` and the four ISO
+partitions — passes cdkd's parse and then fails at the AWS call, because
+the download rebuilds the ARN with a hardcoded `aws` partition before calling
+`lambda:GetLayerVersion`.
+
+The parse itself accepts all eight partitions — commercial, `aws-cn`,
+`aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` —
+because the partition is derived from the ARN's region rather than matched
+against a fixed list. The two segments must agree: `arn:aws-cn:lambda:us-east-1:...`
+is refused, naming the disagreement, because `us-east-1` does not belong to
+`aws-cn`. A region cdkd's partition table does not recognise resolves to the
+commercial partition, so a brand-new commercial region keeps working with
+`arn:aws:`.
+
+### Rejected layer entries
+
+These hard-error, with the message pointing at the offending entry:
+
+- An entry that is neither a same-stack reference nor a well-formed
+  layer-version ARN — a malformed ARN, a function ARN, an unversioned layer
+  ARN, or a partition that disagrees with the region.
+- A same-stack reference that does not point at an `AWS::Lambda::LayerVersion`
+  (a typo'd logical ID).
+- A same-stack reference to a `LayerVersion` whose `Metadata['aws:asset:path']`
   is missing.
 
-**Container Lambdas** (`Code.ImageUri`): the `Layers` property is
-silently ignored — matches AWS behavior, since container images bake
-their layers at build time and AWS rejects `Layers` on container
-Lambdas at deploy time.
+Container-image Lambdas (`Code.ImageUri`) silently ignore `Layers`, matching AWS:
+container images bake their layers at build time, and AWS rejects `Layers` on a
+container Lambda at deploy time.
 
-**Container Lambdas** (`Code.ImageUri`): cdkd extracts the asset hash
-from the `:<hash>` tail of the image URI (CDK synthesizes the URI as a
-`Fn::Sub` whose body ends in the asset hash) and looks the matching
-entry up in the stack's asset manifest (`cdk.out/<stack>.assets.json`,
-`dockerImages[<hash>]`). When the lookup hits, `cdkd local invoke` calls
-`docker build` against the recorded build context. When the lookup
-misses AND the manifest contains exactly one Docker asset, that single
-asset is used (single-asset fallback — covers digest-pinned URIs). When
-both miss, cdkd falls back to **ECR pull** with cross-account /
-cross-region support: cdkd builds the ECR client for the URI's region
-and (when `--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to
-gain credentials in the target account before authenticating to ECR
-and pulling. Without `--ecr-role-arn`, cdkd uses the caller's
-credentials directly (works when the ECR repo's resource policy grants
-the caller, else AWS surfaces `AccessDenied` with a hint at the flag).
-`ImageConfig.Command` becomes the docker run
-CMD; `ImageConfig.EntryPoint` (when set) becomes `--entrypoint <first>`
-plus the rest as positional args; `ImageConfig.WorkingDirectory` becomes
-`--workdir`. When `EntryPoint` is unset (the common case), the image's
-default entrypoint stays in charge — for AWS Lambda base images that's
-`/lambda-entrypoint.sh`, which routes to RIE on port 8080.
+## Ephemeral storage
 
-### Ephemeral storage (`/tmp` cap)
+When the template declares `Properties.EphemeralStorage.Size` — the typical CDK
+shape being `new lambda.Function(this, 'X', { ephemeralStorageSize:
+cdk.Size.gibibytes(2) })` — cdkd adds `--tmpfs /tmp:rw,size=<N>m` to the `docker
+run`, so the container's `/tmp` is a memory-backed filesystem capped at the
+templated value in MiB (`cdk.Size.gibibytes(2)` serializes to `2048`). Handlers
+that exceed the deployed cap fail locally with `ENOSPC` the way they would on
+AWS, and handlers that check free space via `statvfs` / `df` see the configured
+cap instead of the host's overlay filesystem.
 
-When a Lambda's template declares `Properties.EphemeralStorage.Size`
-(typical CDK shape:
-`new lambda.Function(this, 'X', { ephemeralStorageSize: cdk.Size.gibibytes(2) })`),
-`cdkd local invoke` adds `--tmpfs /tmp:rw,size=<N>m` to the `docker run`
-command so the container's `/tmp` is a memory-backed filesystem capped
-at the templated value (`N` MiB; `cdk.Size.gibibytes(2)` serializes to
-`2048`). Handlers that exceed the deployed cap fail locally with
-`ENOSPC` the way they would on AWS, and handlers that detect free space
-via `statvfs` / `df` see the configured cap rather than the host's
-overlay-fs.
+| Template state | Result |
+| --- | --- |
+| `EphemeralStorage.Size` set, ≤ 10240 MiB | `--tmpfs /tmp:rw,size=<N>m`. Applies to both ZIP and container-image Lambdas. |
+| `EphemeralStorage` absent | No `--tmpfs`; `/tmp` is whatever the base image provides. AWS Lambda base images do not mount a sized tmpfs themselves. |
+| Size above the AWS 10240 MiB (10 GiB) ceiling | Hard error at resolve time, with an actionable message, rather than a `docker run` AWS would have refused anyway. |
+| Intrinsic-valued `Size` (the `{Ref: 'SomeParam'}` shape) | Silently no `--tmpfs` — local invoke has no Parameters context to resolve it with. |
 
-Applies to both ZIP and IMAGE (container) Lambdas — `--tmpfs` overlays
-mount-time inside any container regardless of base image. Container
-Lambdas get an `[info]` log line at startup so users notice the
-`/tmp` override on top of whatever their Dockerfile placed there.
+Container-image Lambdas get an `[info]` line at startup, so the `/tmp` override
+on top of whatever the Dockerfile placed there is not a surprise. The same cap
+applies to each cold-started container in [`cdkd local
+start-api`](local-start-api.md)'s warm pool.
 
-When `EphemeralStorage` is absent, no `--tmpfs` is emitted and the
-container's `/tmp` is whatever the base image provides (AWS Lambda
-base images don't mount a sized tmpfs themselves, so the existing
-behavior is preserved). Templates over the AWS 10240 MiB (10 GiB)
-ceiling hard-error at resolve time with an actionable message rather
-than hanging on a `docker run` that AWS would have refused anyway.
-Intrinsic-valued `Size` entries (the `{Ref: 'SomeParam'}` shape) drop
-silently to no-`--tmpfs` since local invoke cannot resolve them
-without the Parameters context the deploy engine has.
+## Reaching a server on the host
 
-The same cap applies to `cdkd local start-api`'s warm container pool
-— each cold-started container for a Lambda with `EphemeralStorage`
-gets the same sized `/tmp`.
+The container can reach a server bound on the host loopback — an
+`AWS_ENDPOINT_URL_*` local endpoint such as a DynamoDB or S3 mock, or a tunneled
+VPC resource — via the `host.docker.internal` hostname.
 
-### Reaching a server on the host (`host.docker.internal`)
+- **Docker Desktop (macOS / Windows)** resolves it natively.
+- **Linux native dockerd** gets the `--add-host
+  host.docker.internal:host-gateway` mapping injected automatically (Docker
+  20.10+).
+- On an older or unavailable daemon the mapping is silently skipped — never an
+  error.
 
-The Lambda container can reach a server bound on the host loopback — an
-`AWS_ENDPOINT_URL_*` local endpoint (e.g. a local DynamoDB / S3 mock), or a
-tunneled VPC resource — via the `host.docker.internal` hostname. Docker
-Desktop (macOS / Windows) resolves it natively; on Linux native dockerd cdkd
-injects the `--add-host host.docker.internal:host-gateway` mapping
-automatically (Docker 20.10+). On an older / unavailable daemon the mapping is
-silently skipped (never an error). The same applies to `cdkd local run-task`
-container runs, and — inherited from cdk-local's ECS service emulator engine —
-to `cdkd local start-service` / `cdkd local start-alb`.
+The same applies to [`cdkd local run-task`](local-run-task.md) container runs,
+and to [`cdkd local start-service`](local-start-service.md) and [`cdkd local
+start-alb`](local-start-alb.md).
 
-### `local invoke` / `local invoke-agentcore` output streams
+## Output streams
 
-**Everything cdkd's own logger prints goes to stderr.** Both commands reserve
-stdout unconditionally, so every cdkd status line -- `Synthesizing CDK
-app...`, `Target: ...`, `Starting container ...`, layer resolution notices,
-and cdkd's `--verbose` debug output -- goes to **stderr**, the way
-`sam local invoke` has always done it. The lines are moved, not suppressed:
-a terminal shows what it always did, and `2>&1` restores the old
-single-stream view.
+**Everything cdkd's own logger prints goes to stderr.** `cdkd local invoke` and
+[`cdkd local invoke-agentcore`](local-invoke-agentcore.md) reserve stdout
+unconditionally, so every cdkd status line — `Synthesizing CDK app...`,
+`Target: ...`, `Starting container ...`, layer-resolution notices, `--verbose`
+debug output — is written to stderr, the way `sam local invoke` does it. A
+terminal shows the same thing it always did, and `2>&1` restores a single-stream
+view.
 
-**But stdout is not yet payload-only, so pipe through `tail -1`.** Two
-things still reach it, neither routed by cdkd's logger:
+**Stdout is not payload-only, so pipe through `tail -1`.** Two things reach
+stdout besides the response, neither routed by cdkd's logger:
 
-1. **The container's own stdout**, piped through by `streamLogs`. The Lambda
-   runtime emulator puts `START` / `END` / `REPORT` *and* every handler log
-   line on the container's stdout -- `console.error` included, which is
-   measured rather than assumed -- so any handler that prints lands ahead of
-   the response.
-2. **cdk-local's own logger.** The container-image build path is reused from
-   cdk-local, which has a separate logger with no reservation concept, so
-   `Building container image (platform=...)` and `Skipping docker build ...`
-   print on stdout for a container-image Lambda.
+| Source | What lands on stdout |
+| --- | --- |
+| The container's own stdout | The runtime emulator puts `START` / `END` / `REPORT` and every handler log line there — `console.error` included — so any handler that prints lands ahead of the response. |
+| The container-image build path | For a container-image Lambda, `Building container image (platform=...)` and `Skipping docker build ...` print on stdout rather than stderr. |
 
-A third used to be listed here and is now closed: `docker pull` progress
-reached stdout because `runDockerForeground` passes `stdio: 'inherit'`, and
-`cdkd` runs it unconditionally for an ECR image, so it needed no flag at all.
-While a command holds the reservation that child's fd 1 is now redirected to
-fd 2. The remaining gap is `streamLogs` alone.
+`docker pull` progress does not: while a command holds the stdout reservation,
+the child process's fd 1 is redirected to fd 2.
 
 ```bash
-# Safe today: the response payload is always the LAST line on stdout.
+# The response payload is always the LAST line on stdout.
 cdkd local invoke MyStack/Handler --event event.json | tail -1 | jq .body
 cdkd local invoke-agentcore MyStack/Agent 2> progress.log | tail -1
 ```
 
-A ZIP-code Lambda whose handler prints nothing hits neither, so
-`cdkd local invoke MyStack/Handler | jq` does work there -- it is just not a
-guarantee cdkd can make yet for every target.
+A ZIP Lambda whose handler prints nothing hits neither source, so `cdkd local
+invoke MyStack/Handler | jq` does work there — it is just not a guarantee that
+holds for every target.
 
-`local start-api`, `local run-task` and `local start-service` are unaffected --
-their stdout is a human surface (route table, prefixed container logs), not a
-payload.
+[`cdkd local start-api`](local-start-api.md), [`cdkd local
+run-task`](local-run-task.md) and [`cdkd local
+start-service`](local-start-service.md) are unaffected: their stdout is a human
+surface (route table, prefixed container logs), not a payload.
 
-### `local invoke` exit codes
+## Exit codes
 
-- `0` — RIE answered, regardless of whether the handler returned a
-  success payload OR an error payload. Lambda-style: a thrown handler
-  produces a 200 with an error structure on AWS, and we mirror that.
-- `1` — cdkd-side errors before/after the handler ran: Docker not
-  installed, image pull failed, target not found, RIE port unreachable
-  after the readiness window, container exited before responding.
-
-### v1 scope (out of scope, deferred)
-
-| Out of scope | Deferred to |
+| Code | Meaning |
 | --- | --- |
-| The deprecated `go1.x` runtime | Never — AWS retired the managed Go runtime; build Go handlers for `provided.al2023`, which cdkd does emulate |
-| Cross-account / cross-region / pre-existing-ARN Lambda Layers | Shipped — same-stack `AWS::Lambda::LayerVersion` refs and literal layer-version ARNs are both resolved, the latter by downloading the layer version; see the "Lambda Layers" section above |
-| Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` in `--from-state` | Future PR |
-| `Fn::Select` / `Fn::Split` / `Fn::If` etc. in `--from-state` | Future PR (warn + drop today) |
-| SQS / S3 event source emulation | Future PR |
-| VPC simulation | Never (local can't replicate VPC) |
-| Custom Resources (`Custom::*`) | Never — these are invoked by the deploy framework, not by users. cdkd surfaces a clear error pointing at the underlying ServiceToken Lambda. |
+| `0` | RIE answered — whether the handler returned a success payload **or** an error payload. This mirrors AWS, where a thrown handler still produces a 200 carrying an error structure. |
+| `1` | A cdkd-side error before or after the handler ran: Docker not installed, image pull or build failed, target not found, an invalid flag value, RIE unreachable within the readiness window, or the container exiting before it responded. |
+| `130` | `^C` (SIGINT). The container is stopped and removed, and any merged-layer or inline-code tmpdir is cleaned up, before the process exits. |
 
+The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
+
+## Limitations
+
+- The deprecated `go1.x` runtime is not emulated. Build Go handlers for
+  `provided.al2023`, which is supported.
+- Cross-stack references resolve within one AWS account only; a
+  `Fn::GetStackOutput` carrying a `RoleArn` for another account is refused.
+  `Fn::ImportValue` is additionally same-region — a producer stack in another
+  region is warned and dropped.
+- `Fn::Select`, `Fn::Split`, `Fn::If` and other intrinsics outside the
+  [supported list](#supported-intrinsics) are warned and dropped rather than
+  resolved.
+- SQS and S3 event-source emulation is not provided. Pass the event body with
+  `--event` instead.
+- VPC placement is not simulated. A handler that depends on VPC-private
+  connectivity needs a tunnel; see [Reaching a server on the
+  host](#reaching-a-server-on-the-host).
+- Custom Resources (`Custom::*`) cannot be invoked as such — they are called by
+  the deploy framework, not by users. cdkd errors with a pointer at the
+  underlying `ServiceToken` Lambda, which you can invoke directly.
+
+## Related
+
+- [Local Execution](local-emulation.md) — every `cdkd local` subcommand, the Docker requirement, and the flags they share
+- [`cdkd local start-api`](local-start-api.md) — the long-running API Gateway emulator over the same RIE containers
+- [`cdkd local invoke-agentcore`](local-invoke-agentcore.md) — the same one-shot shape for a Bedrock AgentCore Runtime
+- [CLI Reference](cli-reference.md) — every command and the full exit-code table

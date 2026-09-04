@@ -1,105 +1,257 @@
 ---
-title: local start-alb
+title: cdkd local start-alb
 description: "Front local ECS and Lambda backing services with a local Application Load Balancer — path, host, header, weighted, redirect, and fixed-response routing."
 ---
 
-# `local start-alb` (run an Application Load Balancer locally)
+# cdkd local start-alb
 
-`cdkd local start-alb <Stack/Alb...>` is the long-running
-local Application Load Balancer front-door. It names one or more
-`AWS::ElasticLoadBalancingV2::LoadBalancer` resources from the
-synthesized template, discovers the ECS / Lambda targets behind each
-listener's `forward` action, boots every backing ECS service via the
-same engine `local start-service` uses (replicas, restart-on-exit,
-Service Connect / Cloud Map), and stands up a per-listener local
-`node:http(s)` server that round-robins inbound requests across the
-running replicas and applies the listener rules (path / host / header /
-method / query-string / source-IP) against the backing targets. The
-symmetric counterpart of `local start-api` for ALB-fronted workloads.
+`cdkd local start-alb [targets...]` stands up a local Application Load Balancer
+in front of the ECS services and Lambda functions its listeners point at. It
+boots every backing ECS service, opens one local HTTP(S) server per listener
+port, and applies that listener's rules — path, host, header, method,
+query-string and source-IP — against the running replicas. Reach for it when a
+routing rule, a weighted split or an auth action needs to be exercised without
+a deploy. Docker is required.
 
-The command is a thin wrapper around the shared ECS service emulator
-engine (`runEcsServiceEmulator`, shimmed from `cdk-local/internal`);
-the per-listener front-door owns the routing + auth-guard logic, the
-underlying engine owns the container boot + Cloud Map plumbing.
+Reach for [`cdkd local start-api`](local-start-api.md) instead when the front
+door you want to exercise is API Gateway. An ALB answers from running ECS
+replicas, Lambda target groups, redirects and fixed responses; API Gateway
+answers from Lambdas, HTTP upstreams and response templates.
 
-### `local start-alb` target resolution
+```bash
+cdkd local start-alb MyStack/MyAlb                             # serve one ALB on its listener ports
+cdkd local start-alb                                           # pick the load balancers interactively (TTY)
+cdkd local start-alb MyStack/PublicAlb MyStack/InternalAlb     # two ALBs sharing one network + registry
+cdkd local start-alb MyStack/MyAlb --lb-port 80=8080           # remap a privileged listener port
+cdkd local start-alb MyStack/MyAlb --tls --bearer-token "$JWT" # terminate TLS locally, inject a default token
+cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed state, hot-reload on source edits
+```
 
-- `Stack/Alb/...` (display path) or `Stack:LogicalId` (logical id).
-- Single-stack apps may omit the stack prefix.
-- The target MUST resolve to an
-  `AWS::ElasticLoadBalancingV2::LoadBalancer`; passing a Listener or
-  TargetGroup surfaces a clear error naming the available ALBs in the
-  stack.
-- Variadic: multiple ALB targets in one invocation share a single
-  shared docker network + a single Cloud Map registry so ECS services
-  registered to different ALBs still discover each other.
+## Options
 
-### `local start-alb` options
+`-a, --app`, `--env-vars`, `--no-pull`, `--from-state`, `--stack-region` and
+`--container-host` behave as they do on every `cdkd local` subcommand; see
+[Local Execution](local-emulation.md#common-flags).
 
-| Flag | Default | Behavior |
+### Front door
+
+| Flag | Default | Description |
 | --- | --- | --- |
-| `--lb-port <listenerPort=hostPort>` | host port == listener port | Remap the local front-door host port for a specific listener port. Repeatable (`--lb-port 80=8080 --lb-port 443=8443`). Use this on macOS to remap a privileged listener port (< 1024) to a non-privileged host port. |
-| `--tls` | off | Terminate TLS locally for cloud-HTTPS listeners. Default: a cloud-HTTPS listener is served over plain HTTP locally (`X-Forwarded-Proto: https` is preserved so the upstream app still sees the deployed listener protocol). Implied by `--tls-cert` / `--tls-key`. Use this when local-dev cookies need `Secure` / `SameSite=None`, when the upstream app inspects TLS metadata, or for mTLS / SNI testing — otherwise plain HTTP is friendlier (no self-signed cert warnings in curl / browser). |
-| `--tls-cert <path>` | — | PEM-encoded server certificate for HTTPS front-door listeners. Implies `--tls`. Must be set together with `--tls-key`. Pass `--tls` alone (without `--tls-cert` / `--tls-key`) to auto-generate a self-signed cert cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`. The deployed Listener Certificates are NOT fetched (ACM private keys are not retrievable). |
-| `--tls-key <path>` | — | PEM-encoded server private key matching `--tls-cert`. Implies `--tls`. Must be set together. |
-| `--no-verify-auth` | off | Disable local enforcement of `authenticate-cognito` / `authenticate-oidc` actions. Every request is served as if the auth check passed. |
-| `--bearer-token <jwt>` | — | Default Bearer JWT injected as `Authorization: Bearer <jwt>` when the inbound request has none. Verified against the same JWKS / OIDC discovery URL the deployed ALB would (signature + iss + aud + exp). Cookie pass-through (`AWSELBAuthSessionCookie-*`) also works. |
-| `--cluster <name>` | `cdkd-local` | Cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` and used as the docker network prefix. Same shape as `local start-service`. |
-| `--max-tasks <n>` | `3` | Per-service hard cap on local replica count regardless of template `DesiredCount`. Same shape as `local start-service`. |
-| `--restart-policy <p>` | `on-failure` | Restart-on-exit behavior for backing ECS containers. Same three-state grammar as `local start-service`. |
-| `--env-vars <file>` | — | SAM-shape JSON env-var overrides for backing containers; same format as `local run-task` / `local start-service`. |
-| `--container-host <ip>` | `127.0.0.1` | Host IP to bind published container + front-door ports to. Must be a numeric IP. |
-| `--assume-task-role [arn]` | unset | Assume each backing service's TaskRoleArn (or the supplied ARN). Same three-form grammar as `local start-service`. |
-| `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull`. Same shape as `local start-service`. |
-| `--platform <p>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
-| `--no-pull` | off | Skip `docker pull` on every container image and the metadata sidecar. |
-| `--from-state` | off | Read cdkd's S3 state for the target stack and substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::ImportValue` / `Fn::GetStackOutput` intrinsics in the resolved backing services' container images, environment variables, secrets, role ARNs, and volumes. Mutually exclusive with `--from-cfn-stack`. Same shape as `local start-service --from-state`. |
-| `--state-bucket <bucket>` | auto | S3 bucket containing cdkd state. Falls back to `CDKD_STATE_BUCKET` env or `cdk.json context.cdkd.stateBucket`, then the default `cdkd-state-{accountId}`. Only used with `--from-state`. |
-| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only used with `--from-state`. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` intrinsics. For CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Mutually exclusive with `--from-state`. Same shape as `local start-service --from-cfn-stack`. |
-| `--stack-region <region>` | — | Region of the state record to read. Used with `--from-state` when the same stack name has state in multiple regions, and with `--from-cfn-stack` as the CFn client region. |
-| `--watch` | off | Hot reload: re-synth + per-replica reload of every ECS service behind the ALB when the CDK source changes (`cdk.json watch.include` / `watch.exclude` honored; `cdk.out` / `node_modules` / `.git` always excluded). A per-firing classifier picks the per-replica primitive: source-only edits on interpreted-language handlers (Node / Python / Ruby / shell) take a bind-mount **FAST PATH** (`docker cp` + `docker restart`; no `docker build`, sub-second; the front-door pool entry is unchanged since the IP/port are preserved). Dockerfile / dependency manifest / compiled-language source / ambiguous edits fall through to the rebuild rolling primitive — boot a shadow, wait for TCP-ready, atomically register it in the front-door pool, drop the old entry. Either path rolls one replica at a time, so a continuous external request stream against the listener port sees zero connection refusals across the reload. The host front-door (TLS, JWKS cache, Lambda-target containers, listener sockets) stays up across the reload. Lambda target groups behind the ALB are a no-op on reload (the warm RIE container keeps its boot-time image). Off by default; existing replica(s) keep serving when synth fails mid-reload. (cdk-local 0.69.0.) |
-| `--image-override <target=ref>` | — | Pin or locally build a backing service's container image instead of using the deployed registry tag. Same grammar + per-service `--image-build-arg` / `--image-build-secret` / `--image-target` variants as `local start-service`. (cdk-local 0.77.) |
-| `--shadow-ready-timeout <ms>` | `60000` | Per-invocation override of the shadow-replica TCP-ready probe budget. Same shape as `local start-service`. (cdk-local 0.77.) |
+| `[targets...]` | interactive picker | One or more load balancers, as a CDK display path (`MyStack/MyAlb`) or a stack-qualified logical ID. Variadic; omit in a TTY to multi-select. |
+| `--lb-port <listenerPort=hostPort>` | host port == listener port | Bind the front door for one listener on a different host port. Repeatable. |
+| `--tls` | off | Terminate TLS locally for cloud-HTTPS listeners instead of serving them over plain HTTP. |
+| `--tls-cert <path>` | — | PEM server certificate for the HTTPS front door. Implies `--tls`; must be paired with `--tls-key`. |
+| `--tls-key <path>` | — | PEM private key matching `--tls-cert`. Implies `--tls`; must be paired with it. |
+| `--bearer-token <jwt>` | — | Bearer JWT the front door injects as `Authorization` when an inbound request carries none. |
+| `--no-verify-auth` | off | Serve every request as if the `authenticate-cognito` / `authenticate-oidc` check passed. |
 
-When no listener rule matches an inbound request, the local front-door's
-404 now explains which listener fields (path / host / header / method)
-were evaluated, instead of a bare 404 (cdk-local 0.77).
+### Backing services
 
-### `local start-alb` listener / action support
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--cluster <name>` | `cdkd-local` | Cluster name surfaced in `ECS_CONTAINER_METADATA_URI_V4`, and the prefix of the docker network. |
+| `--max-tasks <n>` | `3` | Hard cap on local replicas per service, overriding the template's `DesiredCount`. Cannot exceed 83 — the range of the per-replica link-local /24 subnet allocator. |
+| `--restart-policy <policy>` | `on-failure` | What happens when an essential container exits: `on-failure`, `always`, or `none` (run degraded). |
+| `--no-logs` | off | Stop streaming each replica's container output to the terminal. |
+| `--assume-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or an explicit ARN) and forward temporary credentials through the metadata sidecar. |
+| `--assume-task-role [arn]` | off | Deprecated alias of `--assume-role` on this command. Both forms work here; note that `cdkd local run-task` accepts only `--assume-task-role`. |
+| `--platform <platform>` | task `RuntimePlatform` | Force `linux/amd64` or `linux/arm64` for every container. |
 
-The local front-door reads the synthesized template and emulates these
-listener / action shapes:
+### Container images
 
-- **Listener protocols:** HTTP and HTTPS. A cloud-HTTPS listener is
-  served over plain HTTP locally by default — `X-Forwarded-Proto: https`
-  is preserved so the upstream app still sees the deployed listener
-  protocol. Pass `--tls` to terminate TLS locally (a self-signed cert is
-  auto-generated and cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`),
-  or `--tls-cert` / `--tls-key` to supply your own cert (each flag
-  implies `--tls`). Non-HTTP/HTTPS listeners (TCP / UDP / TLS / NLB) are
-  skipped with a warn.
-- **Rule conditions:** all six ALB fields — `path-pattern`,
-  `host-header`, `http-header`, `http-request-method`,
-  `query-string`, `source-ip`.
-- **Default + rule actions:** `forward` (single target group, weighted
-  forward across multiple target groups), `redirect`, `fixed-response`.
-  `authenticate-cognito` + `authenticate-oidc` enforce a local Bearer-JWT
-  check (or `AWSELBAuthSessionCookie` pass-through) against the same
-  JWKS / OIDC discovery URL the deployed ALB would.
-- **Target groups:** ECS (`AWS::ECS::Service.LoadBalancers[]` binding
-  the TG to the container + port) and Lambda (TG `Targets[].Id` =
-  `{Fn::GetAtt: [<FnLogicalId>, "Arn"]}`).
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
+| `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR, for cross-account or centralized registries. |
+| `--no-build` | off | Skip `docker build` on the local CDK-asset path and reuse the previously built tag. Errors when that tag is missing. |
+| `--image-override <service=dockerfile>` | — | Build a service's image locally from the named Dockerfile instead of pulling its deployed registry tag. Repeatable; a bare `<dockerfile>` opens a picker. |
+| `--image-build-arg <KEY=VAL>` | — | `docker build --build-arg` pair for every `--image-override` build. Repeatable. `<service>:KEY=VAL` scopes it to one service. |
+| `--image-build-secret <id=src>` | — | `docker build --secret id=<id>,src=<src>` entry for every `--image-override` build, for `RUN --mount=type=secret`. Repeatable. `<service>:id=src` scopes it to one service. |
+| `--image-target <stage>` | — | Multi-stage build stage for `--image-override` builds (docker's `--target`). `<service>=<stage>` scopes it to one service; a bare `<stage>` applies globally. |
+| `--no-interactive-overrides` | off | Suppress the boot prompt that asks for a Dockerfile per pinned target, and the `--image-override <dockerfile>` picker. |
+| `--strict-overrides` | off | Fail at boot when any registry-pinned target is still uncovered after overrides and prompts resolve. |
 
-Unsupported listener / action / target shapes are skipped with a per-line
-warn at boot; the front-door still serves what it can.
+### Hot reload
 
-### `local start-alb` lifecycle
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--watch` | off | Re-synth and roll every backing ECS service when the CDK source changes. |
+| `--shadow-ready-timeout <ms>` | `60000` | How long a shadow replica has to accept a TCP connection before the roll gives up. Also read from `CDKD_SHADOW_READY_TIMEOUT_MS`; the flag wins. |
 
-`^C` (SIGINT) and SIGTERM tear down the front-door servers first, then
-every backing service's replicas + sidecar + shared network in parallel.
-Double-`^C` bypasses cleanup and exits 130 immediately so users have an
-escape hatch when docker hangs. The front-door servers always rebind
-the requested host port on restart — there is no in-process state
-across `^C`.
+### State sources
 
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--from-state` | off | Resolve intrinsics in the backing services from cdkd's S3 state. Mutually exclusive with `--from-cfn-stack`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only meaningful with `--from-state`. |
+| `--from-cfn-stack [name]` | off | Resolve intrinsics from a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the cdkd stack name. |
+| `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region under `--from-cfn-stack`. |
+
+### Shared
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly. |
+| `--output <path>` | `cdk.out` | Output directory for synthesis. |
+| `-c`, `--context <key=value>` | — | Context value passed to synthesis. Repeatable. |
+| `--env-vars <file>` | — | SAM-shaped JSON env-var overrides for backing containers. |
+| `--container-host <ip>` | `127.0.0.1` | Host IP the published container and front-door ports bind to. Must be a numeric IP. |
+| `--region <region>` | `AWS_REGION` / stack / profile | AWS region for SDK calls. |
+| `--profile <profile>` | — | AWS profile. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
+| `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
+| `--verbose` | off | Verbose logging. |
+
+**Spell the region lower-case.** This command does not fold an upper-cased
+`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
+form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
+
+## Target resolution
+
+Each target names an `AWS::ElasticLoadBalancingV2::LoadBalancer`:
+
+- A CDK display path (`MyStack/MyAlb`), or a stack-qualified logical ID
+  (`MyStack:MyAlb`). Single-stack apps may omit the stack prefix.
+- Omit the targets entirely in an interactive terminal to multi-select from a
+  list of the app's load balancers.
+- Naming a Listener or a TargetGroup is an error, and the message lists the
+  load balancers available in the stack.
+
+Passing several load balancers in one invocation puts them on a single shared
+docker network with one Cloud Map registry, so ECS services registered behind
+different load balancers still discover each other.
+
+## Listener and action support
+
+The front door reads the synthesized template and serves these shapes. Anything
+outside them is skipped with a warning at boot, and the rest of the load
+balancer still serves.
+
+| Shape | What is served |
+| --- | --- |
+| Listener protocols | `HTTP` and `HTTPS`. `TCP` / `UDP` / `TLS` (NLB-style) listeners are skipped. |
+| Rule conditions | All six ALB fields: `path-pattern`, `host-header`, `http-header`, `http-request-method`, `query-string`, `source-ip`. |
+| Actions | `forward` (single target group and weighted across several), `redirect`, `fixed-response`. |
+| Auth actions | `authenticate-cognito` and `authenticate-oidc`, enforced as a local Bearer-JWT check. |
+| Target groups | ECS services (bound through `AWS::ECS::Service.LoadBalancers[]`) and Lambda functions (a target group whose `Targets[].Id` is the function's ARN). |
+
+Requests forwarded to a backing replica carry the ALB forwarding headers: the
+client IP appended to any existing `X-Forwarded-For` chain, plus
+`X-Forwarded-Proto` and `X-Forwarded-Port` for the listener. When no rule
+matches and the listener has no locally servable default action, the 404 names
+the request fields that were evaluated rather than returning a bare status.
+
+WebSocket upgrades go through the same rule matching and auth gates. An ECS
+forward target gets a raw TCP bridge to the picked replica; `redirect` and
+`fixed-response` actions answer over the upgrade socket; a Lambda target group
+answers `502`, because Lambda target groups do not carry WebSocket traffic.
+
+### TLS termination
+
+A cloud-HTTPS listener is served over **plain HTTP** locally by default, with
+`X-Forwarded-Proto: https` preserved so the upstream app still sees the deployed
+listener protocol. That is the friendlier default — no self-signed certificate
+warnings in `curl` or a browser.
+
+| Invocation | Front door |
+| --- | --- |
+| (no TLS flag) | Plain HTTP, `X-Forwarded-Proto: https` preserved. |
+| `--tls` | Real HTTPS with a self-signed certificate, generated on first use and cached under `$XDG_CACHE_HOME/cdk-local/alb-https/` (`~/.cache/cdk-local/alb-https/` by default). Requires `openssl` on `PATH`. |
+| `--tls-cert` + `--tls-key` | Real HTTPS with your own PEM pair. Each flag implies `--tls`. |
+
+Reach for `--tls` when local-dev cookies need `Secure` / `SameSite=None`, when
+the app inspects TLS metadata, or for mTLS / SNI testing. The auto-generated
+certificate lists only `DNS:localhost,IP:127.0.0.1` as SubjectAltName, so a
+client validating a non-loopback `--container-host` fails the SAN check — supply
+`--tls-cert` / `--tls-key` with a matching SAN for that case.
+
+### Authentication actions
+
+An `authenticate-cognito` or `authenticate-oidc` action makes the front door
+verify a Bearer JWT against the same JWKS / OIDC discovery URL the deployed load
+balancer would use, checking signature, issuer, audience and expiry. An
+`AWSELBAuthSessionCookie-*` cookie also passes the guard.
+
+- `--bearer-token <jwt>` supplies the token the front door slots in when the
+  inbound request has no `Authorization` header of its own. A caller that
+  presents its own token is verified on that token.
+- `--no-verify-auth` disables the guard entirely, for local work where minting a
+  token is not worth it.
+
+An authenticate action with no locally servable terminal action behind it is
+skipped with a warning.
+
+## `--watch`: hot reload without dropping connections
+
+`--watch` re-synthesizes and reloads the backing services whenever the CDK
+source changes. `cdk.json`'s `watch.include` / `watch.exclude` are honored, and
+`cdk.out`, `node_modules` and `.git` are always excluded.
+
+Each firing is classified per target, which picks the per-replica primitive:
+
+| Change | Primitive |
+| --- | --- |
+| Source-only edits to an interpreted-language handler (Node, Python, Ruby, shell) | Fast path: the new source is copied into each replica and the container is restarted. No rebuild; the front-door pool entry is unchanged because the IP and port are preserved. |
+| Dockerfile, dependency manifest, TypeScript or compiled-language source, or an ambiguous edit | Rebuild: cdkd boots a shadow replica, probes its port for TCP readiness, swaps it into the front-door pool atomically, then drops the old replica. |
+
+Both paths roll one replica at a time, so a continuous request stream against a
+listener port sees no connection refusals across the reload. The host front door
+— TLS, the JWKS cache, Lambda target containers and the listener sockets — stays
+up throughout. When synthesis fails mid-reload the existing replicas keep
+serving and a warning is printed.
+
+## Lifecycle
+
+`^C` (SIGINT) and SIGTERM tear the front-door servers down first, then every
+backing service's replicas, sidecar and shared network in parallel. A second
+signal skips cleanup and exits immediately, which is the escape hatch when
+docker itself is wedged — orphan containers may remain, and
+`docker ps --filter name=cdkd-local-` finds them.
+
+Nothing persists in process across a restart: the front-door servers rebind the
+requested host ports each time.
+
+## Limitations
+
+- A listener protocol, action type or target shape outside the tables above is
+  skipped with a per-line warning at boot; the load balancer serves what is left.
+- A listener's ACM `Certificates[]` are not fetched — ACM private keys are not
+  retrievable — so local HTTPS always uses a generated or supplied certificate.
+- Lambda target groups are a no-op on a `--watch` reload: the warm container
+  keeps the image it booted with.
+- `--watch` rolls the existing replicas onto the new image but does not scale the
+  replica count up or down when `DesiredCount` or the `--max-tasks` clamp changes
+  mid-run. A warning names it; restart to pick up the new count.
+- `--max-tasks` cannot exceed 83, the range of the per-replica link-local /24
+  subnet allocator.
+- Under `--from-cfn-stack`, an `Fn::GetAtt` in a container's `Environment[].Value`
+  is dropped with a warning: CloudFormation's resource listing does not return
+  per-attribute values, and no ECS-side call recovers them from a deployed task.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `1` | Hard error — bad target, synthesis failure, docker or AWS failure, a boot refused by `--strict-overrides`, or a cancelled interactive picker. |
+| `130` | Shut down on `^C` / SIGTERM, or on a second signal with cleanup skipped. |
+
+The front door runs until it is signalled, so a successful session ends at `130`
+rather than `0`. The full cross-command table is in the
+[CLI Reference](cli-reference.md#exit-codes).
+
+## Related
+
+- [`cdkd local start-service`](local-start-service.md) — the ECS service emulator
+  that runs the backends this command fronts
+- [`cdkd local start-api`](local-start-api.md) — the API Gateway counterpart of
+  this front door
+- [`cdkd local run-task`](local-run-task.md) — the rules every backing container
+  follows for secrets, volumes and `DependsOn` start ordering
+- [`cdkd local invoke`](local-invoke.md) — one-shot Lambda invoke, the same RIE
+  container a Lambda target group uses
+- [Local Execution](local-emulation.md) — every `cdkd local` subcommand, Docker
+  requirements, and the flags they share
+- [CLI Reference](cli-reference.md) — every cdkd command, the output-stream
+  contract, and the full exit-code table
