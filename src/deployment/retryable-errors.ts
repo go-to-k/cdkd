@@ -1313,13 +1313,18 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  *
  *  - `name` — the synchronous `UpdateResource` rejection, one cause link below
  *    the provider's wrapper.
- *  - `ccErrorCode` — the field `CloudControlOperationFailedError` carries for
- *    an asynchronous progress-event failure, read structurally exactly as
- *    `cloud-control-provider.ts` reads it for `AlreadyExists` / `NotFound`. No
- *    async occurrence has been MEASURED (`UnsupportedActionException` is
- *    raised synchronously by `UpdateResource` today); the arm exists so the
- *    async shape cannot silently fall through to prose, and it is pinned by a
- *    unit case built from the real error class.
+ *  - `ccErrorCode` PLUS `ccOperation === 'UPDATE'` — the two fields
+ *    `CloudControlOperationFailedError` carries for an asynchronous
+ *    progress-event failure, read structurally exactly as
+ *    `cloud-control-provider.ts` reads the code for `AlreadyExists` /
+ *    `NotFound`. No async occurrence has been MEASURED
+ *    (`UnsupportedActionException` is raised synchronously by `UpdateResource`
+ *    today); the arm exists so the async shape cannot silently fall through to
+ *    prose, and it is pinned by unit cases built from the real error class.
+ *    `ccOperation` is required rather than decorative precisely BECAUSE the
+ *    arm is unmeasured: a CREATE or DELETE sub-operation reporting the same
+ *    code says nothing about whether the type has an UPDATE handler, and
+ *    reading the code alone would let it trigger a DELETE + CREATE.
  *
  * ## Why the walk stops at another resource's error
  *
@@ -1339,7 +1344,10 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  * The prose fallback is read at the TOP LEVEL ONLY, exactly as the pre-#2520
  * predicate did, and for the same asymmetry: missing the signal fails the
  * deploy (safe), matching it too broadly replaces a resource nobody asked to
- * replace (unsafe).
+ * replace (unsafe). It is read INSIDE the walk, after the anchor, so the
+ * anchor governs every route into a `true` — ordered ahead of it, the
+ * nested-stack immunity would rest on the child engine's wrapper happening to
+ * quote no AWS text, which is a property of another file.
  *
  * ## Codes deliberately NOT matched
  *
@@ -1354,14 +1362,6 @@ export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
  * deleting the resource.
  */
 export function isUpdateUnsupportedError(error: unknown, logicalId: string): boolean {
-  // Byte-identical to the read this predicate replaced in `deploy-engine.ts`,
-  // `String(error)` arm included: a provider is free to `throw 'text'`, and
-  // narrowing to `Error | string` here would silently stop classifying any
-  // other thrown shape the old code did classify.
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- deliberate: the pre-#2520 predicate stringified whatever was thrown
-  const topMessage = error instanceof Error ? error.message : String(error);
-  if (topMessage.includes(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK)) return true;
-
   let current: unknown = error;
   for (
     let depth = 0;
@@ -1371,12 +1371,40 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
     const link = current as {
       name?: unknown;
       ccErrorCode?: unknown;
+      ccOperation?: unknown;
       logicalId?: unknown;
       cause?: unknown;
     };
+    // The anchor runs FIRST at every depth, the prose check included. Ordering
+    // the prose read ahead of it would leave the nested-stack immunity
+    // INCIDENTAL — resting on the child engine's wrapper happening to quote no
+    // AWS text (`Failed to update resource <id>`), a property of another file
+    // that no fence here watches. Anchored first, a rejection that names
+    // another resource cannot classify this one by ANY route.
     if (typeof link.logicalId === 'string' && link.logicalId !== logicalId) return false;
     if (link.name === CC_UNSUPPORTED_ACTION_ERROR_NAME) return true;
-    if (link.ccErrorCode === CC_UNSUPPORTED_ACTION_ERROR_NAME) return true;
+    // `ccOperation` too, even though no async occurrence has been measured: the
+    // field distinguishes which Cloud Control operation failed, and a CREATE or
+    // DELETE sub-operation reporting the same code says nothing about whether
+    // the type has an UPDATE handler. Reading the code alone would let such a
+    // failure trigger a DELETE + CREATE.
+    if (link.ccErrorCode === CC_UNSUPPORTED_ACTION_ERROR_NAME && link.ccOperation === 'UPDATE') {
+      return true;
+    }
+    // AWS's prose, at the TOP LEVEL ONLY — exactly the reach of the pre-#2520
+    // predicate. Walking prose deeper would WIDEN which deploys take the
+    // destructive DELETE + CREATE: a nested `ProvisioningError` whose cause
+    // happens to quote the phrase would newly qualify.
+    //
+    // Byte-identical to the read this predicate replaced in `deploy-engine.ts`,
+    // `String(error)` arm included: a provider is free to `throw 'text'`, and
+    // narrowing to `Error | string` would silently stop classifying a shape the
+    // old code did classify.
+    if (depth === 0) {
+      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- deliberate: the pre-#2520 predicate stringified whatever was thrown
+      const topMessage = error instanceof Error ? error.message : String(error);
+      if (topMessage.includes(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK)) return true;
+    }
     current = link.cause;
   }
   return false;

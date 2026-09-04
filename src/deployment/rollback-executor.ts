@@ -621,12 +621,16 @@ export function classifyRollbackOp(
       }
       return 'skip-mismatch';
     }
-    // `Retain` orphaned the old resource instead of deleting it (the deploy
-    // engine's create-then-destroy path skips the delete; the delete-first
-    // fallbacks refuse Retain outright), so the old resource still exists
-    // and can be re-adopted without a re-create. `Snapshot` is NOT retained
-    // on replacement (the engine plain-deletes) — it re-creates like the
-    // default policy.
+    // `Retain` orphaned the old resource instead of deleting it, so it still
+    // exists and can be re-adopted without a re-create. THREE engine paths
+    // produce that state: the property-driven create-then-destroy path skips
+    // the delete, the `--replace` delete-first fallbacks refuse Retain
+    // outright, and since issue #2518 the update-failure replacement fallback
+    // is create-ONLY under Retain too. Before #2518 that third path DELETED
+    // the old resource whatever the policy said, so this classification
+    // re-adopted a physical id that no longer existed.
+    // `Snapshot` is NOT retained on replacement (the engine plain-deletes) —
+    // it re-creates like the default policy.
     const retained = op.previousState!.updateReplacePolicy === 'Retain';
     return retained ? 'reverse-replacement-readopt' : 'reverse-replacement';
   }

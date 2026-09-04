@@ -1410,6 +1410,51 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(err, 'MyThing')).toBe(false);
   });
 
+  it('requires ccOperation UPDATE, not the code alone', () => {
+    // The async arm is unmeasured by its own admission, which is exactly why
+    // it must be narrow: `CloudControlOperationFailedError` carries the
+    // operation, and a CREATE or DELETE sub-operation reporting the same code
+    // says nothing about whether the type has an UPDATE handler. Reading the
+    // code alone would let such a failure trigger a DELETE + CREATE.
+    const forUpdate = new CloudControlOperationFailedError(
+      'UPDATE failed for MyCluster: unsupported',
+      'AWS::DocDB::DBCluster',
+      'MyCluster',
+      'pid-1',
+      'UnsupportedActionException',
+      'UPDATE'
+    );
+    const forCreate = new CloudControlOperationFailedError(
+      'CREATE failed for MyCluster: unsupported',
+      'AWS::DocDB::DBCluster',
+      'MyCluster',
+      'pid-1',
+      'UnsupportedActionException',
+      'CREATE'
+    );
+    expect(isUpdateUnsupportedError(forUpdate, 'MyCluster')).toBe(true);
+    expect(isUpdateUnsupportedError(forCreate, 'MyCluster')).toBe(false);
+  });
+
+  it('applies the resource anchor to the PROSE fallback too, not only the structured arms', () => {
+    // The prose read sits INSIDE the walk, after the anchor, so the anchor
+    // governs every route into a `true`. Ordered ahead of it, the nested-stack
+    // immunity would rest on the child engine's wrapper happening to quote no
+    // AWS text — a property of another file that nothing here watches. This
+    // case is the shape that ordering decides: a top-level rejection that
+    // NAMES another resource and quotes AWS's prose.
+    const foreign = new ProvisioningError(
+      'Resource type AWS::DynamoDB::Table does not support UPDATE action',
+      'AWS::DynamoDB::Table',
+      'SomeOtherResource',
+      'other-pid'
+    );
+    expect(isUpdateUnsupportedError(foreign, 'MyNestedStack')).toBe(false);
+    // ...and the same object still classifies for the resource it names, so
+    // the anchor is not simply refusing everything.
+    expect(isUpdateUnsupportedError(foreign, 'SomeOtherResource')).toBe(true);
+  });
+
   it('does NOT match the Cloud Control handler code NotUpdatable', () => {
     // "This patch is not applicable" — a create-only property or an invalid
     // document — which cdkd already routes through property-driven

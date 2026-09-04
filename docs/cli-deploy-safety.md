@@ -464,7 +464,8 @@ The details that matter here:
   to **both** triggers this section covers, not only the `--replace` opt-in:
   replacing either needs `--force-stateful-recreation` whether you passed
   `--replace` or the Cloud Control auto-fallback took you there on a plain
-  `cdkd deploy`.
+  `cdkd deploy` — unless the resource declares `UpdateReplacePolicy: Retain`,
+  which exempts both triggers because the old resource survives (see below).
 - **The Cloud Control `UnsupportedActionException` auto-fallback is guarded on
   the same terms.** That fallback still needs no flag to REACH the replacement
   — when AWS rejects the in-place update because the type has no Cloud Control
@@ -488,7 +489,9 @@ The details that matter here:
   this section covers, exactly as it is for the property-driven replacement
   described below. Under `Retain` the replacement becomes create-ONLY: cdkd
   leaves the old physical resource in place — orphaned, with its data, and no
-  longer tracked in state — and only creates the new one. Nothing is destroyed,
+  longer tracked in state, so it keeps incurring cost and `cdkd destroy` will
+  not remove it; delete it yourself once you no longer need the data — and only
+  creates the new one. Nothing is destroyed,
   so there is no data loss for `--force-stateful-recreation` to confirm, and
   the flag is not required. It is also not an override: passing it does **not**
   make cdkd delete a resource the template asked to keep.
@@ -762,7 +765,9 @@ reaches with no flag — there is no opportunity to run either probe, so cdkd
 assumes the resource has data. Every bucket and every log group needs
 `--force-stateful-recreation` on those paths — a recorded `RetentionInDays > 0`
 does not exempt a log group there, it is simply a second reason the same guard
-fires.
+fires. The one exemption on all three is `UpdateReplacePolicy: Retain`: the old
+resource survives the replacement, so there is no data loss to confirm and the
+flag is not required (and does not override the policy).
 
 ### `--force-stateful-recreation`
 

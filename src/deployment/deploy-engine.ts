@@ -51,6 +51,7 @@ import type {
   CloudFormationTemplate,
   CreateContext,
   EffectivePropertiesResult,
+  ResourceCreateResult,
   ResourceDeleteResult,
   ResourceProvider,
   ResourceUpdateResult,
@@ -5145,7 +5146,7 @@ export class DeployEngine {
                 replDecision.provisionedBy === 'cc-api'
                   ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
                   : resolvedProps;
-              let createResult: Awaited<ReturnType<ResourceProvider['create']>>;
+              let createResult: ResourceCreateResult;
               try {
                 createResult = await this.withRetry(
                   () =>
@@ -5261,6 +5262,19 @@ export class DeployEngine {
                 // `result.attributes ?? ...`, which cannot tell absent from
                 // undefined.
                 ...(createResult.attributes && { attributes: createResult.attributes }),
+                // The create's own `NoEcho` declaration, carried for the same
+                // reason the property-driven twin passes `createResult` whole:
+                // this literal REPLACES the update result, so a declaration
+                // dropped here never reaches `registerNoEchoAttributes` below
+                // and the replacement's sensitive attributes land UNMASKED in
+                // `state.json`. Found by review on this PR; the omission
+                // pre-dates it, but `Retain` makes this block the only thing
+                // that runs on the path, so leaving it would ship a literal
+                // known to be wrong in the hunk being rewritten.
+                ...(createResult.noEchoAttributes === true && { noEchoAttributes: true }),
+                ...(createResult.noEchoAttributeNames && {
+                  noEchoAttributeNames: createResult.noEchoAttributeNames,
+                }),
               };
               // Carried explicitly: this literal REPLACES the update result, so
               // a narrowing the replacement create announced would be dropped
@@ -5598,8 +5612,12 @@ export class DeployEngine {
    * connect the message to their code at all.
    *
    * `descriptor` names WHERE the name came from; `remedy` is the accurate
-   * first option. Both callers append the shared `--replace` alternative,
-   * which is identical in either case.
+   * first option. What each caller appends after it differs: the two
+   * property-driven create-first sites append the shared `--replace`
+   * alternative, while the update-failure fallback's two `Retain` refusals
+   * (issue #2518) append the Retain clause instead — under `Retain` no flag
+   * frees the name, so offering `--replace` there would send the user to a
+   * flag that changes nothing.
    *
    * Classification is best-effort by construction (see
    * {@link looksLikeCdkdGeneratedName}) and falls back to the pre-#1636

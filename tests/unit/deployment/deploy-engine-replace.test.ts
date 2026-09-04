@@ -27,6 +27,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
@@ -543,15 +544,20 @@ describe('DeployEngine — --replace wire-through', () => {
       expect(provider.delete).not.toHaveBeenCalled();
     });
 
-    it('never prepares a final snapshot on the Retain arm', async () => {
-      // `UpdateReplacePolicy` is ONE attribute, so `Retain` and `Snapshot`
-      // cannot both be applied — but the snapshot read a few lines down is the
-      // one site with a STATE fallback, and a future edit that hoisted it
-      // above the retain branch would take a snapshot of a resource nobody is
-      // deleting. Pinned through the observable the snapshot reaches: the
-      // delete's `finalSnapshotIdentifier`. Nothing deletes here, so the
-      // strongest available assertion is that no delete happened at all AND
-      // the recorded `Snapshot` on state did not turn this into one.
+    it('a state-recorded Snapshot does not resurrect the delete under a template Retain', async () => {
+      // The ONE fixture where the snapshot read's `?? currentResource
+      // .updateReplacePolicy` fallback has something to fall back TO. It pins
+      // the SOURCE of the retain decision, not the snapshot call: swap
+      // `retainOldOnReplace`'s template-only read for a state read and this
+      // case deletes (state says `Snapshot`, not `Retain`).
+      //
+      // What it deliberately does NOT claim — an earlier revision did, and it
+      // was unfalsifiable — is that hoisting `prepareFinalSnapshotForDelete`
+      // above the retain branch would red. It would not: that call reads the
+      // TEMPLATE first, the template says `Retain`, and the helper returns
+      // `undefined` for anything that is not `Snapshot`, so the hoist produces
+      // no observable at all. Only a two-mutation change (state-first read AND
+      // the hoist) reaches one.
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain', 'Snapshot');
       expect(callOrder).toEqual(['update', 'create']);
@@ -644,6 +650,62 @@ describe('DeployEngine — --replace wire-through', () => {
       );
       expect(isUpdateUnsupportedError(err!, 'MyResource')).toBe(false);
       expect(isUpdateUnsupportedError(err!.cause as Error, 'MyResource')).toBe(false);
+    });
+
+    it('leaves a NON-Retain create failure completely alone — the translation is Retain-only', async () => {
+      // The guard the reviewer found unpinned, and its consequence is not
+      // cosmetic. On the NON-Retain path the old resource has ALREADY been
+      // deleted by the time the create runs, so an `AlreadyExists` there is a
+      // name-cooldown the retry layer is built to ride out. Dropping the
+      // `if (!retainOldOnReplace) throw createError` line would rewrite it into
+      // a refusal asserting "UpdateReplacePolicy: Retain pins that resource in
+      // place" — false — and `markNonRetryable` it, turning a retryable
+      // cooldown into a permanent failure. Every OTHER create-override case in
+      // this file sits on the Retain path, so nothing watched this direction.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        throw new Error('Table already exists: my-table');
+      });
+      const err = await invokeProvision(
+        makeEngine({ forceStatefulRecreation: true }),
+        'AWS::DynamoDB::Table'
+      ).then(
+        () => null,
+        (e) => e as Error & { cause?: Error & { code?: string } }
+      );
+      expect(err).not.toBeNull();
+      // The raw AWS text survives, untranslated and unmarked.
+      expect(err!.cause?.code).not.toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(err!.cause?.message).toContain('Table already exists: my-table');
+      expect(err!.cause?.message).not.toMatch(/UpdateReplacePolicy: Retain/);
+      expect(isMarkedNonRetryable(err!.cause!)).toBe(false);
+      // And the delete DID run first, which is what makes this the cooldown
+      // shape rather than the collision one.
+      expect(callOrder).toEqual(['update', 'delete', 'create']);
+    });
+
+    it('announces the retained old resource — the only user-visible record that it is now untracked', async () => {
+      // The source calls this line "the one user-visible record that a physical
+      // resource is now outside cdkd's state", and the state assertion below
+      // pins the RECORD, not the announcement. Both halves: the retain arm
+      // names the old physical id, and the non-retain arm does not claim to
+      // have retained anything.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain');
+      const info = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
+      expect(info.some((l) => l.includes('CREATE only — UpdateReplacePolicy: Retain'))).toBe(true);
+      expect(
+        info.some((l) => l.includes('Retaining old MyResource (old-pid) - UpdateReplacePolicy: Retain'))
+      ).toBe(true);
+
+      vi.mocked(getLogger().info).mockClear();
+      callOrder = [];
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      await invokeProvision(makeEngine({ forceStatefulRecreation: true }), 'AWS::DynamoDB::Table');
+      const plain = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
+      expect(plain.some((l) => l.includes('Retaining old'))).toBe(false);
+      expect(plain.some((l) => l.includes('replacing (DELETE → CREATE)'))).toBe(true);
     });
 
     it('lets a NON-collision create failure through untranslated', async () => {
@@ -763,8 +825,11 @@ describe('DeployEngine — --replace wire-through', () => {
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table').then(
         () => null,
-        (e) => e as Error & { cause?: { message?: string } }
+        (e) => e as Error & { cause?: { message?: string; code?: string } }
       );
+      // Bound the ARM before asserting its negatives: a refusal that reached a
+      // DIFFERENT arm satisfies two `not.toMatch`es for free.
+      expect(err!.cause?.code).toBe('STATEFUL_REPLACE_BLOCKED');
       expect(err!.cause?.message).not.toMatch(/does NOT protect this path/);
       expect(err!.cause?.message).not.toMatch(/Retain/);
     });
@@ -919,6 +984,37 @@ describe('DeployEngine — --replace wire-through', () => {
       await invokeProvision(engine, 'AWS::DynamoDB::Table', 'Retain');
       expect(callOrder).toEqual(['update', 'create']);
       expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('carries the replacement create\'s NoEcho declaration onto the update result', async () => {
+      // The result literal REPLACES the update result, so a `NoEcho`
+      // declaration dropped here never reaches `registerNoEchoAttributes` and
+      // the replacement's sensitive attributes land UNMASKED in state. The
+      // property-driven twin passes `createResult` whole for exactly this
+      // reason. Asserted through the observable the declaration reaches: a
+      // declared attribute is masked in the persisted record.
+      rejectWith('Resource type AWS::Glue::SecurityConfiguration does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        return {
+          physicalId: 'new-pid',
+          attributes: { Secret: 'super-secret-value', Public: 'fine' },
+          noEchoAttributeNames: ['Secret'],
+        };
+      });
+      const engine = makeEngine({});
+      await invokeProvision(engine, 'AWS::Glue::SecurityConfiguration');
+      expect(callOrder).toEqual(['update', 'delete', 'create']);
+      // The registration is the observable: `registerNoEchoAttributes` records
+      // the declared NAMES against the resource, which is what makes every
+      // later log line / event / error mask those values. Asserted as the
+      // exact SET, so an over-broad registration (the whole bag) reds too.
+      const registered = (
+        engine as unknown as {
+          noEchoAttributeResources: Map<string, true | Set<string>>;
+        }
+      ).noEchoAttributeResources.get('MyResource');
+      expect(registered).toEqual(new Set(['Secret']));
     });
 
     it('the retained old resource is dropped from state in favour of the new physical id', async () => {
