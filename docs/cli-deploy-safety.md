@@ -779,6 +779,6 @@ other two are unaffected by it.
 - [Deploy: waits & concurrency](cli-deploy.md) — concurrency knobs and the wait-semantics table
 - [Deploy: tuning](cli-deploy-tuning.md) — timeouts, name prefixing, observed-state capture
 - [Destroy flags & guards](cli-destroy.md) — the destroy-side data guards and `--remove-protection`
-- [Supported AWS Resource Types](supported-resources.md) — the per-type tier table and property-level coverage
+- [Supported Resources](supported-resources.md) — the per-type tier table and property-level coverage
 - [Cross-Stack References](cross-stack-references.md) — the full design behind `--no-cfn-fallback`
 - [cdkd State Management Specification](state-management.md) — where `provisionedBy` lives in the state record

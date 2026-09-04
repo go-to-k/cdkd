@@ -54,3 +54,9 @@ How it behaves:
 See **[Cross-Stack References](cross-stack-references.md)**
 for the full design (resolution order, weak-vs-strong reference
 semantics, cross-region / cross-account forms).
+
+## Related
+
+- [Cross-Stack References](cross-stack-references.md) — the `Fn::ImportValue` design and the exports index
+- [Importing Existing Resources](import.md) — moving a CloudFormation stack into cdkd
+- [Exporting to CloudFormation](export.md) — moving one back out

@@ -8,7 +8,8 @@ description: "CloudFormation feature parity in cdkd — which intrinsic function
 CloudFormation feature parity for cdkd. For per-resource-type provisioning
 support (SDK Providers vs Cloud Control API fallback), see
 [Supported Resources](supported-resources.md). For `cdkd local invoke`
-runtime / handler support, see [CLI Reference](cli-reference.md).
+runtime and handler support, see
+[`cdkd local invoke`](local-invoke.md#runtimes-and-images).
 
 ## Intrinsic Functions
 
@@ -87,3 +88,10 @@ top-level features rather than table rows.
 | Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl, Route53 HealthCheckId, ECR Repository Arn |
 | CC API null value stripping | ✅ | Removes null values before API calls |
 | Retry with HTTP status codes | ✅ | 429 / 503 + cause chain inspection |
+
+## Related
+
+- [Supported Resources](supported-resources.md) — per-type provider coverage
+- [`cdkd local invoke`](local-invoke.md) — the Lambda runtimes emulated locally
+- [Cross-Stack References](cross-stack-references.md) — how `Fn::ImportValue` resolves
+- [Troubleshooting](troubleshooting.md) — what to do when something is not supported

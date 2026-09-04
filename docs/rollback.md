@@ -66,3 +66,9 @@ journal is kept so you can re-run), `1` = hard error. See
 [`cdkd rollback`](cli-rollback.md) for the
 full reference and known limitations (a DELETE that already happened
 cannot be restored).
+
+## Related
+
+- [`cdkd rollback`](cli-rollback.md) — every flag, the journal, and the exit codes
+- [Destroy flags & guards](cli-destroy.md) — tearing a stack down instead of reverting it
+- [Deployment Events](deployment-events.md) — reading back what a failed run actually did

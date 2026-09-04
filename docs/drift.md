@@ -36,3 +36,9 @@ The deploy-side opt-out that turns baseline capture off —
 once capture is off and the v2 → v3 upgrade flow that backfills the
 baseline on the first deploy after an upgrade from cdkd earlier than 0.47,
 which is where observed-state capture shipped.
+
+## Related
+
+- [`cdkd drift`](cli-drift.md#resource-type-coverage) — which types have a drift read-back, per resource type
+- [State Management](state-management.md) — the baseline drift compares against
+- [`cdkd diff`](cli-diff.md) — comparing against your template rather than against state

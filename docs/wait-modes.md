@@ -48,3 +48,9 @@ per resource type, next to what CloudFormation and Terraform do, plus
 the caveats (NAT egress, RDS final-snapshot timing, etc.). cdkd is
 template-compatible with CloudFormation but not
 wait-semantics-identical.
+
+## Related
+
+- [Deploy: tuning](cli-deploy-tuning.md) — the per-resource timeout overrides, and observed-state capture
+- [Benchmarks](benchmarks.md) — what each mode costs in wall clock
+- [CLI Reference](cli-reference.md) — every command and the full exit-code table
