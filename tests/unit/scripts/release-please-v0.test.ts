@@ -53,8 +53,11 @@ describe('release-please v0 fence', () => {
     // drift: an action bump that changed the constant would leave this
     // attesting to nothing. The sha pin asserted further down is what bounds
     // that, so re-check this literal when the pin moves. Verified against
-    // release-please 17.11.x as bundled by release-please-action@5c625bf
-    // (v4.4.1). The SECOND regex is the test's own and is deliberately WIDER
+    // release-please 17.3.0 — the version release-please-action@5c625bf
+    // (v4.4.1) resolves and bundles, read from that tag's own package-lock
+    // rather than from a locally installed copy, whose 17.11.x carries the
+    // same constant and is easy to mistake for the shipped one. The SECOND
+    // regex is the test's own and is deliberately WIDER
     // (it accepts H1) — that width is what catches an H1 sitting on top.
     //
     // Known bound: both are code-fence-blind, so a fenced `## [1.2.3]` line
