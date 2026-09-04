@@ -9,8 +9,14 @@ Runs the CDK app and writes its CloudFormation templates to the assembly
 directory, printing the template to stdout when the app has exactly one stack.
 Mirrors `cdk synth`.
 
-It makes no AWS mutation and reads no cdkd state — it is the step every
-app-reading command performs internally, run on its own.
+It deploys nothing, but it is not offline. Synthesis resolves the account
+through STS and runs the app's context lookups, and on a template using
+CloudFormation **macros** `cdkd synth` expands them for real — creating and then
+deleting a transient `cdkd-macro-expand-<uuid>` stack and change set, and
+uploading the template to the cdkd state bucket when it exceeds CloudFormation's
+inline size limit. `cdkd deploy` / `diff` / `list` defer that expansion to a
+later phase; `cdkd synth` does it during synthesis, because its output is the
+expanded template.
 
 ```bash
 cdkd synth                          # synthesize; print the template if there is one stack
@@ -26,17 +32,19 @@ cdkd synth --ignore-errors          # never fail on annotations
 | --- | --- | --- |
 | `--strict` | `false` | Fail on CDK **warning** annotations too, not only errors. |
 | `--ignore-errors` | `false` | Never fail on annotations, error ones included. Produces a template that will likely not deploy. |
-| `-a`, `--app <command>` | `cdk.json`, then `CDKD_APP` | The CDK app command, or a path to an already-synthesized assembly directory. |
+| `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to an already-synthesized assembly directory. |
 | `--output <path>` | `cdk.out` | Directory to synthesize into. |
 | `-c`, `--context <key=value...>` | — | Context values, repeatable. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
-| `--verbose` | `false` | Debug-level logging. |
+| `--verbose` | `false` | Debug-level logging. Also writes a `<stackName>.template.json` per stack into `--output`, alongside whatever the app wrote. |
+| `--region <region>` | `AWS_REGION`, then the profile | Deprecated and hidden, but honoured. Prefer `AWS_REGION` or the profile — see [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command). |
 | `-y`, `--yes` | `false` | Accepted for consistency with the other commands; `cdkd synth` asks no confirmation, so it changes nothing. |
 
 `--strict` and `--ignore-errors` are shared with `cdkd deploy`; the flags and
 the annotation categories they act on are described once, in
-[Deploy: tuning](cli-deploy-tuning.md).
+[Deploy: tuning](cli-deploy-tuning.md). Given both, **`--strict` wins** — the
+same precedence the CDK CLI uses.
 
 ## It has no stack selection
 
@@ -47,18 +55,24 @@ stack's annotations are checked — so `--strict` on a multi-stack app fails whe
 
 ## Where the templates go
 
-Every stack's template is written into the assembly directory (`cdk.out` by
-default, `--output` to change it), one file per stack, exactly as `cdk synth`
-writes them. That directory is the complete output; stdout is a convenience for
-the single-stack case.
+The **CDK app** writes its own templates into the assembly directory, one file
+per stack; cdkd's part is to point the app at that directory (`cdk.out` by
+default, `--output` to change it) and then read what appeared. The directory is
+the complete output; stdout is a convenience for the single-stack case.
 
-Because the directory is a valid cloud assembly, it can be fed straight back to
-any cdkd command through `--app`, which then skips synthesis:
+Because the directory is a valid cloud assembly, it can be fed straight back
+through `--app` to the commands that take one — `deploy`, `diff`, `destroy`,
+`list`, `synth` and the rest of the app-reading family, though not the
+state-only ones like `gc` or `force-unlock` — and synthesis is then skipped:
 
 ```bash
 cdkd synth --output build/assembly
 cdkd deploy --app build/assembly    # deploy what was just synthesized
 ```
+
+Nothing is written when `--app` already points at an assembly directory: there
+is no app to run, so `cdkd synth --app build/assembly` reads and reports rather
+than regenerating.
 
 ## The stdout contract
 
@@ -78,17 +92,21 @@ zero. Both properties are described in full on the CLI Reference page:
 ## CDK annotations
 
 The app's `Annotations` are surfaced with CDK CLI parity: informational and
-warning messages print, and an **error** annotation on any stack refuses the
-synthesis rather than emitting a template — the same thing `cdk synth` does.
-`--strict` promotes warnings to that treatment; `--ignore-errors` demotes
-everything and always emits.
+warning messages print, and an **error** annotation on any stack aborts with
+`Found errors` — the same thing `cdk synth` does. `--strict` promotes warnings
+to that treatment (`Found warnings (--strict mode)`); `--ignore-errors` demotes
+everything, except that `--strict` overrides it when both are given.
+
+What the abort stops is cdkd's own output — the template on stdout and the
+summary. The **app has already run** by then, so its templates are on disk in
+the assembly directory whether or not the annotation check passed.
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Synthesis succeeded and the assembly was written. |
-| `1` | The app could not be resolved, the app itself failed, or an annotation refused the synthesis (any error annotation, or any warning under `--strict`). |
+| `0` | The app ran, the assembly was written, and no annotation aborted the run. |
+| `1` | The app could not be resolved, the app itself failed, or an annotation aborted the run (any error annotation, or any warning under `--strict`). The assembly directory may still hold the app's templates. |
 
 The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
 
