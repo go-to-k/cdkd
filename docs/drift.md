@@ -34,4 +34,5 @@ The deploy-side opt-out that turns baseline capture off —
 [`--no-capture-observed-state`](cli-deploy-tuning.md#no-capture-observed-state)
 — is documented on the deploy tuning page, along with what drift reports
 once capture is off and the v2 → v3 upgrade flow that backfills the
-baseline on the first deploy after an upgrade from cdkd earlier than 0.49.
+baseline on the first deploy after an upgrade from cdkd earlier than 0.47,
+which is where observed-state capture shipped.

@@ -386,7 +386,7 @@ undeclared key captured with a real value is still compared.
 **v2 → v3 upgrade is automatic on the next `cdkd deploy`.** When the
 deploy engine loads state and finds resources without
 `observedProperties` (typical the first time you deploy after upgrading
-from cdkd <0.49), it kicks off `provider.readCurrentState` for each in
+from cdkd <0.47), it kicks off `provider.readCurrentState` for each in
 parallel with the rest of the deploy and drains the result into state at
 the final save. The deploy critical path does NOT wait on these reads —
 the cost is bounded by the longest single `readCurrentState` (~200-300ms

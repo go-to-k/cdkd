@@ -211,6 +211,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['cli-internals.md', 48],
   ['code-layout.md', 261],
   ['delete-outcome.md', 5], // literal list: EXACT, see below
+  ['docs-page-template.md', 70], // `docs/**`; measured 79 tracked files
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
@@ -257,6 +258,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // field reference split out of CLAUDE.md by the 2026-09-04 token-diet pass);
   // the band is that one satellite's size.
   ['CLAUDE.md', 10_000, 20_000], // measured 12,483 at registration (session-report.md alone; re-measure on edit)
+  // The representative path for docs-page-template.md, whose glob is `docs/**`.
+  // A plain docs page matches that file and nothing else, so the band is one
+  // satellite's size; `docs/_generated/**` additionally pulls layout-scripts.md
+  // in, which is why the representative path is an ordinary page rather than a
+  // generated one.
+  ['docs/cli-deploy.md', 4_200, 12_000], // measured 4,820 at registration
   ['src/provisioning/providers/s3-bucket-provider.ts', 210_000, 265_000], // measured 239,539; the cap was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
   // A provisioning path OUTSIDE `providers/**`, and it is the row that makes
   // the provider half of this table bind at all. Review probe, 2026-08-25:
@@ -527,7 +534,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 42; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 43; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -604,6 +611,12 @@ const CORPUS_FILE_COUNT = 42; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  session-wrap field reference moved OUT of CLAUDE.md, which is
                               //  injected into every context, into a satellite loaded on demand.
                               //  That makes 42.
+                              //  + docs-page-template.md (2026-09-04): a NEW file rather than a
+                              //  split -- the page shape and voice rules for `docs/**`, which is
+                              //  the source of the public cdkd.dev site and had no written
+                              //  convention at all. 4,822 B under a single `docs/**` glob, so it
+                              //  loads only for a session editing the site and no existing file
+                              //  shrank. That makes 43.
 const CORPUS_BYTES_MIN = 817_000;   // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04
                                     // compression: measured 851,451 B -- 34,451 B of slack, the
                                     // same ~34 KB every previous setting used.

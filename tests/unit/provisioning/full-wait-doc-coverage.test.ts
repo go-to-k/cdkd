@@ -5,11 +5,11 @@ import { dirname, join } from 'node:path';
 
 /**
  * Enforce that every SDK provider whose stabilization wait is gated on
- * `CDKD_FULL_WAIT` is documented in the `--full-wait` section of
+ * `CDKD_FULL_WAIT` is documented in the per-type wait table of
  * `docs/cli-deploy.md`. This is the `--full-wait`-side mirror of
  * `no-wait-doc-coverage.test.ts`: when a provider's default becomes
  * fire-and-forget with `--full-wait` opting into the wait, the resource type
- * MUST appear in that section — otherwise the user-facing "which resources
+ * MUST appear in that table — otherwise the user-facing "which resources
  * does --full-wait affect" list silently rots.
  *
  * `.claude/rules/providers.md` deferred this backstop while `AWS::ECS::Service`
@@ -20,11 +20,17 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const providersDir = join(repoRoot, 'src', 'provisioning', 'providers');
 const deployDocPath = join(repoRoot, 'docs', 'cli-deploy.md');
 
-/** Extract the `## `--full-wait`` section (up to the next `## ` heading). */
+/** The single H2 holding the per-resource-type wait table. */
+const WAIT_TABLE_HEADING = '## Wait behaviour by resource type';
+
+/** Extract the wait-table section (up to the next `## ` heading). */
 function fullWaitSection(): string {
   const md = readFileSync(deployDocPath, 'utf8');
-  const start = md.indexOf('## `--full-wait`');
-  expect(start, 'cli-deploy.md must have a `--full-wait` section').toBeGreaterThanOrEqual(0);
+  const start = md.indexOf(WAIT_TABLE_HEADING);
+  expect(
+    start,
+    `cli-deploy.md must have a "${WAIT_TABLE_HEADING}" section`
+  ).toBeGreaterThanOrEqual(0);
   const rest = md.slice(start + 1);
   const next = rest.indexOf('\n## ');
   return next >= 0 ? rest.slice(0, next) : rest;
@@ -48,18 +54,18 @@ describe('--full-wait doc coverage', () => {
     expect(fullWaitProviders.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('documents each CDKD_FULL_WAIT provider in the cli-deploy.md --full-wait section', () => {
+  it('documents each CDKD_FULL_WAIT provider in the cli-deploy.md wait table', () => {
     const section = fullWaitSection();
     const undocumented = fullWaitProviders.filter((p) => {
       const types = handledTypes(p.source);
-      // At least one of the provider's handled types must appear in the
-      // --full-wait section (a provider handling many types may gate only one
-      // wait on --full-wait, so one documented type suffices).
+      // At least one of the provider's handled types must appear in the wait
+      // table (a provider handling many types may gate only one wait on
+      // --full-wait, so one documented type suffices).
       return !types.some((t) => section.includes(t));
     });
     expect(
       undocumented.map((p) => p.file),
-      'these providers honor --full-wait but no handled type appears in the cli-deploy.md --full-wait section; add it'
+      'these providers honor --full-wait but no handled type appears in the cli-deploy.md wait table; add a row'
     ).toEqual([]);
   });
 });
