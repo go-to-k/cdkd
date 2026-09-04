@@ -86,3 +86,9 @@ schema, legacy `version: 1` migration, bucket-name migration via
 - [Wait Modes](wait-modes.md) — choose what "done" means per deploy
 - [CLI Reference](cli-reference.md) — every flag, including the
   [VPC route DependsOn relaxation](cli-deploy-tuning.md#no-aggressive-vpc-parallel)
+
+## Related
+
+- [Getting Started](getting-started.md) — installing cdkd and deploying a first stack
+- [State Management](state-management.md) — the state record in detail
+- [Architecture](architecture.md) — the full pipeline, layer by layer

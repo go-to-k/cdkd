@@ -87,3 +87,9 @@ top-level features rather than table rows.
 | Attribute enrichment | ✅ | CloudFront OAI, DynamoDB StreamArn, API Gateway RootResourceId, Lambda FunctionUrl, Route53 HealthCheckId, ECR Repository Arn |
 | CC API null value stripping | ✅ | Removes null values before API calls |
 | Retry with HTTP status codes | ✅ | 429 / 503 + cause chain inspection |
+
+## Related
+
+- [Supported Resources](supported-resources.md) — per-type provider coverage
+- [Cross-Stack References](cross-stack-references.md) — how `Fn::ImportValue` resolves
+- [Troubleshooting](troubleshooting.md) — what to do when something is not supported

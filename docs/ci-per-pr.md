@@ -14,17 +14,20 @@ back is a one-line workflow revert.
 Run `cdkd bootstrap` once per AWS account beforehand (creates the state
 bucket + asset storage; `cdk bootstrap` is not required).
 
-**One stack per PR** — pass the PR number as CDK context and suffix the
-stack name; cdkd state is keyed by (stack name, region) and locks are
-per-stack, so PR environments deploy concurrently without contention:
+## One stack per PR
+
+Pass the PR number as CDK context and suffix the stack name. cdkd state is
+keyed by (stack name, region) and locks are per-stack, so PR environments
+deploy concurrently without contention:
 
 ```ts
 const prNumber = app.node.tryGetContext('prNumber');
 new WebAppStack(app, `WebApp${prNumber ? `-pr-${prNumber}` : ''}`);
 ```
 
-**Credentials** — cdkd calls AWS APIs directly, so the deploying
-identity needs permissions for every deployed resource (CDK's
+## Credentials
+
+cdkd calls AWS APIs directly, so the deploying identity needs permissions for every deployed resource (CDK's
 `cdk-hnb659fds-*` roles do not work: they are designed for
 CloudFormation delegation, and cdkd uses its own bootstrap storage).
 Create a dedicated deploy role and switch into it with
@@ -35,8 +38,9 @@ allows only that base role — the strong permissions live in exactly one
 place, reachable through one path, and never sit on the CI runner
 itself.
 
-**Minimal GitHub Actions shape** (deploy on open/sync/reopen, destroy
-on close):
+## A minimal GitHub Actions workflow
+
+Deploy on open / synchronize / reopen, destroy on close:
 
 ```yaml
 on:
@@ -74,6 +78,8 @@ The destroy job has no checkout, `npm ci`, or synth —
 [`cdkd state destroy`](cli-state.md#cdkd-state-destroy) deletes from the state
 record alone, so it works even after the branch is gone.
 
+## Making the teardown complete
+
 If the environment contains protection-enabled resources (RDS /
 DynamoDB deletion protection, EC2 termination protection, and more),
 add [`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
@@ -91,7 +97,7 @@ removes the stack's deployment-event history so the state bucket
 returns fully empty (after a `state destroy`, the equivalent is
 `cdkd events prune <stack> --all`).
 
-**Housekeeping**:
+## Housekeeping
 
 - Pick the wait mode from what runs next (see
   [wait modes](wait-modes.md)): review-only environments can use
@@ -111,3 +117,12 @@ returns fully empty (after a `state destroy`, the equivalent is
   change is detected (and `cdkd drift --json` machine-checks live
   divergence). See [Exit codes](cli-reference.md#exit-codes) for
   per-command semantics.
+
+## Related
+
+- [`cdkd destroy`](cli-destroy.md) — the guards the teardown job turns off, and
+  what each one protects
+- [Orphan vs Destroy](orphan-vs-destroy.md) — why the destroy job needs no
+  checkout
+- [Wait Modes](wait-modes.md) — choosing what "done" means for the deploy job
+- [CLI Reference](cli-reference.md) — every command, and the full exit-code table
