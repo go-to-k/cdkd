@@ -811,17 +811,30 @@ async function deployCommand(
             // dedicated SDK provider is registered for the type.
             hasSdkProvider: (rt) => stackProviderRegistry.getProviderType(rt) === 'sdk',
           });
-          // Issue [#648] — promote `AWS::S3::Bucket` targets whose sync
-          // reason is `null` to `'has-objects'` when the live bucket
-          // has at least one object. Uses the deploy-region S3 client
-          // (the user's bucket lives in the stack's deploy region, not
-          // the state bucket region). Soft-fails on permission denied
-          // / bucket-not-found: leaves the sync reason in place and
-          // logs a warn (the user can decide to pass --force-stateful-
-          // recreation).
+          // Issues [#648] / [#2558] — promote the two conditionally
+          // stateful types whose sync reason is `null` (which means
+          // DEFER for them, not "not stateful"): an `AWS::S3::Bucket`
+          // to `'has-objects'` when the live bucket has at least one
+          // object, an `AWS::Logs::LogGroup` to `'has-log-events'` when
+          // it has at least one log stream. Both use the DEPLOY-region
+          // clients (the user's bucket / log group lives in the stack's
+          // deploy region, not the state bucket region). The S3 probe
+          // soft-fails OPEN on permission denied / bucket-not-found; the
+          // log-group probe fails CLOSED, because an unset retention is
+          // CloudWatch's never-expire and an unprovable emptiness must
+          // not read as empty. Both log a warn saying which happened.
           const validation = await probeAndRevalidateStateful({
             validation: syncValidation,
-            s3Client: stackAwsClients.s3,
+            clients: {
+              s3: stackAwsClients.s3,
+              cloudWatchLogs: stackAwsClients.cloudWatchLogs,
+              // The region the recorded resources live in, for the same reason
+              // `DeleteContext.expectedRegion` carries it: the log-group probe
+              // reads a `ResourceNotFoundException` as "gone", and that is only
+              // sound when the client is pointing where the state says the
+              // resource is.
+              expectedRegion: stateForRecreateCheck?.state.region,
+            },
             forceStatefulRecreation: options.forceStatefulRecreation ?? false,
           });
           const errorBlock = renderRecreateTargetsErrors(validation);
@@ -856,6 +869,10 @@ async function deployCommand(
               stackName: stackInfo.stackName,
               targets: validation.targets,
               yes: options.yes ?? false,
+              // Tells the prompt whether the emptiness probe ran: it did NOT
+              // under this flag (`probeAndRevalidateStateful` returns early),
+              // so a conditional type's `null` reason proves nothing there.
+              forceStatefulRecreation: options.forceStatefulRecreation ?? false,
               downstreamConsumers,
             });
             if (!proceed) {

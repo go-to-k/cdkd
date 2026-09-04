@@ -908,10 +908,13 @@ export const forceStatefulRecreationOption = new Option(
   '--force-stateful-recreation',
   'Confirm a data-losing destroy + recreate of a stateful resource. Required ' +
     'whenever a replacement target is a stateful type — databases, filesystems, ' +
-    'KMS keys, table / vector storage, source repositories, log groups with ' +
-    'retention, and more; docs/cli-deploy-safety.md carries the full list, and ' +
-    'S3 is the special case (a non-empty bucket at pre-flight, ANY bucket ' +
-    'mid-deploy, where the emptiness probe cannot run) — on the ' +
+    'KMS keys, table / vector storage, source repositories, ' +
+    'and more; docs/cli-deploy-safety.md carries the full list, and S3 buckets ' +
+    'and log groups are the conditional cases (a non-empty bucket, or a log ' +
+    'group with retention or with log streams, at pre-flight; ANY bucket or ' +
+    'log group mid-deploy, where the emptiness probe cannot run — and note the ' +
+    'probes differ on failure: the bucket fails open, the log group closed) — ' +
+    'on the ' +
     '--recreate-via-cc-api / ' +
     '--recreate-via-sdk-provider ' +
     'pre-flight, with --replace, AND on the paths a plain deploy reaches ' +
@@ -926,9 +929,10 @@ export const replaceOption = new Option(
   'Replace (DELETE + CREATE) a resource whose in-place update is rejected because an ' +
     'immutable property changed and AWS exposes no update API for it (e.g. Lambda LayerVersion ' +
     'content, EFS AccessPoint, ECS TaskDefinition, ApiGatewayV2 immutable fields). Without this ' +
-    'flag such a change fails the deploy. Stateful types (RDS / DynamoDB / EFS / S3 with data / ' +
-    'Logs with retention / etc.) ALSO require --force-stateful-recreation since the replacement ' +
-    'is a data-losing DELETE + CREATE.'
+    'flag such a change fails the deploy. Stateful types (RDS / DynamoDB / EFS / any S3 bucket / ' +
+    'any Logs log group / etc.) ALSO require --force-stateful-recreation since the replacement ' +
+    'is a data-losing DELETE + CREATE — mid-deploy neither emptiness probe can run, so both ' +
+    'conditional types count as stateful there.'
 ).default(false);
 
 /**

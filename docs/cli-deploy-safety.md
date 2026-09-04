@@ -254,6 +254,11 @@ targets in both directions produces one plan carrying both direction tags.
   their plan row plus an explicit `DATA: all data in <logical id> will be lost
   (no automatic data migration)` line. That is the third stop-and-think moment
   on top of the two-flag opt-in.
+- The two **conditionally** stateful types get that prefix too, even though
+  `--force-stateful-recreation` skips the emptiness probes entirely: with no
+  probe result to go on, every S3 bucket and every log group in the plan is
+  shown as data-bearing. The plan errs toward warning, because an emptiness
+  nothing measured is not an emptiness.
 
 ### Cross-stack reference propagation
 
@@ -450,12 +455,14 @@ The details that matter here:
 - **The guard is evaluated mid-deploy**, at the moment the immutable-update
   rejection is caught — not at pre-flight, as it is for the `--recreate-via-*`
   flags. The error names the resource and the data-loss reason.
-- **Every `AWS::S3::Bucket` counts as stateful here**, empty or not. There is
-  no opportunity mid-deploy to run the object-count probe the pre-flight path
-  uses, so cdkd assumes the bucket has data. That applies to **both** triggers
-  this section covers, not only the `--replace` opt-in: replacing a bucket
-  needs `--force-stateful-recreation` whether you passed `--replace` or the
-  Cloud Control auto-fallback took you there on a plain `cdkd deploy`.
+- **Every `AWS::S3::Bucket` counts as stateful here**, empty or not, and so
+  does every `AWS::Logs::LogGroup` that is not already stateful from its
+  recorded retention. There is no opportunity mid-deploy to run the emptiness
+  probes the pre-flight path uses, so cdkd assumes both hold data. That applies
+  to **both** triggers this section covers, not only the `--replace` opt-in:
+  replacing either needs `--force-stateful-recreation` whether you passed
+  `--replace` or the Cloud Control auto-fallback took you there on a plain
+  `cdkd deploy`.
 - **The Cloud Control `UnsupportedActionException` auto-fallback is guarded on
   the same terms.** That fallback still needs no flag to REACH the replacement
   — when AWS rejects the in-place update because the type has no Cloud Control
@@ -527,9 +534,9 @@ Three exemptions apply to this trigger specifically:
   `--recreate-via-sdk-provider` is exempt**, because those flags ran their own
   pre-flight stateful probe before the deploy started.
 
-As with `--replace`, this mid-deploy check treats every `AWS::S3::Bucket` as
-stateful. Non-stateful types still replace freely on a plain `cdkd deploy` with
-no flag.
+As with `--replace`, this mid-deploy check treats every `AWS::S3::Bucket` and
+every `AWS::Logs::LogGroup` as stateful — neither emptiness probe can run here.
+Non-stateful types still replace freely on a plain `cdkd deploy` with no flag.
 
 ## Stateful-resource guard
 
@@ -656,19 +663,21 @@ it holds no data.
 | Type | Guard fires when | Guard does not fire when |
 | --- | --- | --- |
 | `AWS::S3::Bucket` | The bucket has at least one current version, prior version, or delete-marker | The bucket is empty — but see the per-path note below |
-| `AWS::Logs::LogGroup` | `RetentionInDays > 0` on the recorded state | Retention is unset or zero — see the note below |
+| `AWS::Logs::LogGroup` | `RetentionInDays > 0` on the recorded state, or the log group has at least one log stream | The log group has no retention recorded AND no log streams — but see the per-path note below |
 
-**Known gap in the log-group condition.** An unset or zero `RetentionInDays`
-is CloudWatch Logs' **never expire** setting, not an empty log group. So the
-right-hand column above means only that the guard does not fire — it does
-**not** mean the log group holds nothing, and today a never-expiring log group
-can be replaced with no consent flag. Check the retention before renaming a log
-group you care about.
+**Retention is not an emptiness signal.** An unset or zero `RetentionInDays`
+is CloudWatch Logs' **never expire** setting — the most data-bearing
+configuration the type has, and the one cdkd records as `0`. It used to be read
+as "nothing to lose", so a never-expiring log group renamed in the template was
+destroyed on a plain `cdkd deploy` with no consent flag. An unset retention now
+DEFERS instead: at pre-flight the emptiness probe below decides, and mid-deploy,
+where no probe can run, the log group counts as stateful.
 
-### How S3 buckets are judged, per path
+### How the conditional types are judged, per path
 
-The two guard timings answer the S3 question differently, and the difference is
-what decides whether you need `--force-stateful-recreation` for a bucket.
+The two guard timings answer the emptiness question differently, and the
+difference is what decides whether you need `--force-stateful-recreation` for a
+bucket or a log group.
 
 **At pre-flight** (`--recreate-via-cc-api` / `--recreate-via-sdk-provider`)
 cdkd issues a single-page `s3:ListObjectVersions(MaxKeys=1)` against each
@@ -686,11 +695,42 @@ without `--force-stateful-recreation`. The probe fails open, so treat that
 warning as a prompt to decide for yourself: pass
 `--force-stateful-recreation` if the bucket might hold data.
 
+For a log group, the same pre-flight issues a single-page
+`logs:DescribeLogStreams(limit=1)` against the recorded log group name. A log
+group with no log stream can hold no log event — every event belongs to a
+stream — so zero streams is the one signal that proves the group empty, and
+cdkd uses it rather than a byte count: `LogStream.storedBytes` has been
+reported as zero by the API since June 2019, and stream presence needs no size
+semantics at all. A group holding only empty streams therefore counts as
+non-empty, which is the safe direction.
+
+Only one answer clears the guard: a log group whose response carries a
+**present, empty** stream list and **no continuation token**. A response with
+no stream list at all, or an empty page that still carries a `nextToken`, has
+not settled the question, so cdkd warns and treats the group as stateful — the
+same direction a failed probe takes.
+
+**Unlike the bucket probe, the log-group probe fails CLOSED**: if
+`DescribeLogStreams` errors, cdkd warns and treats the log group as stateful,
+so you get a refusal naming `--force-stateful-recreation` rather than a silent
+recreate. The asymmetry is deliberate — the whole point of the log-group
+condition is that an emptiness cdkd cannot prove must not read as empty.
+
+One error is the exception, because it is an answer rather than a failure to
+get one: a `ResourceNotFoundException` means AWS says the log group does not
+exist, so it provably holds no events and the guard is cleared. cdkd trusts
+that only after confirming the CloudWatch Logs client is pointing at the region
+cdkd's state records for the resource — a not-found from the wrong region says
+nothing about the log group. When that check cannot be satisfied, the group is
+treated as not provably empty like any other unsettled answer.
+
 **Mid-deploy** — `--replace`, property-driven replacement, and the Cloud
 Control `UnsupportedActionException` auto-fallback, which a plain `cdkd deploy`
-reaches with no flag — there is no opportunity to run that probe, so cdkd
-assumes the bucket has data. Every bucket needs `--force-stateful-recreation`
-on those paths.
+reaches with no flag — there is no opportunity to run either probe, so cdkd
+assumes the resource has data. Every bucket and every log group needs
+`--force-stateful-recreation` on those paths — a recorded `RetentionInDays > 0`
+does not exempt a log group there, it is simply a second reason the same guard
+fires.
 
 ### `--force-stateful-recreation`
 

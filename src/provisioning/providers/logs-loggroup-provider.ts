@@ -348,16 +348,27 @@ export class LogsLogGroupProvider implements ResourceProvider {
     const prevClass = normalizeClass(previousProperties['LogGroupClass']);
     const nextClass = normalizeClass(properties['LogGroupClass']);
     if (prevClass !== nextClass) {
-      // A retention-carrying log group is in the stateful-recreate guard set,
-      // so a bare --replace would be stopped a second time by
+      // EVERY log group is in the stateful-recreate guard set on this path, so
+      // a bare --replace would be stopped a second time by
       // STATEFUL_REPLACE_BLOCKED — name the full flag set upfront.
-      const replaceFlags = properties['RetentionInDays']
-        ? '--replace --force-stateful-recreation'
-        : '--replace';
+      //
+      // UNCONDITIONAL since issue [#2558]. It used to read
+      // `properties['RetentionInDays']`, on the premise that a log group with
+      // no retention was not stateful; that premise was the defect — an unset
+      // or zero retention is CloudWatch Logs' never-expire — and the
+      // mid-deploy guard now refuses any log group the recorded bag cannot
+      // prove empty. Advising a bare `--replace` would hand the user a remedy
+      // guaranteed to fail on the second deploy. (This also retires the
+      // ADVICE half of issue [#2521], which filed the same line for reading
+      // the DESIRED bag while the guard reads the RECORDED one: with no
+      // condition left, there is no bag to read. Its other half — a
+      // string-valued retention defeating the guard's `typeof === 'number'`
+      // test — is untouched and still open.)
+      const replaceFlags = '--replace --force-stateful-recreation';
       throw new ResourceUpdateNotSupportedError(
         'AWS::Logs::LogGroup',
         logicalId,
-        `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change`
+        `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change. Note --force-stateful-recreation has NO per-resource granularity: it clears the data guard for every replacement target in the run`
       );
     }
 

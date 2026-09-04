@@ -17,16 +17,36 @@
  *     like a successful skipped-deploy.
  *
  * The per-target plan surfaces a **DATA LOSS** prefix for stateful
- * targets (those with a non-null `statefulReason` after the live
- * `s3:ListObjectVersions` probe — see issue [#648]); these reached pre-flight
- * only because the user opted in with `--force-stateful-recreation`,
- * so the prompt's **DATA LOSS** wording is the third "stop and think"
- * moment.
+ * targets; a target reaches this prompt still carrying a stateful reason only
+ * because the user opted in with `--force-stateful-recreation`, so the
+ * **DATA LOSS** wording is the third "stop and think" moment.
+ *
+ * **The prefix is NOT read off `statefulReason` alone**, and the reason is the
+ * flag that makes the prompt reachable in the first place (issue [#2558]'s
+ * review round). `probeAndRevalidateStateful` returns EARLY under
+ * `--force-stateful-recreation` — it never issues the live
+ * `s3:ListObjectVersions` / `logs:DescribeLogStreams` probes — so under that
+ * flag every target still carries the SYNC verdict, and for the two
+ * CONDITIONAL types the sync verdict of a deferral is `null`. `null` there
+ * does not mean "holds nothing": an `AWS::S3::Bucket` always defers, and an
+ * `AWS::Logs::LogGroup` with no recorded retention is CloudWatch Logs'
+ * NEVER EXPIRE. Rendering that as "not stateful" is precisely the reading
+ * issue [#2558] exists to retire, and it was already wrong for a non-empty
+ * bucket before that. So when the probe did not run, a `null` reason is
+ * re-derived through {@link isStatefulRecreateTargetForReplace} — the
+ * conservative mid-deploy predicate, a pure function of the type with no AWS
+ * call, chosen over re-running the probe because re-running it under the force
+ * flag would repopulate `blockedStatefulTargets` and turn the opt-in into a
+ * refusal.
  */
 
 import readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
 import type { RecreateTarget } from '../../deployment/recreate-targets.js';
+import {
+  isStatefulRecreateTargetForReplace,
+  renderStatefulReason,
+} from '../../provisioning/stateful-types.js';
 import {
   renderDownstreamConsumers,
   type DownstreamConsumer,
@@ -36,6 +56,14 @@ export async function promptRecreateConfirm(input: {
   stackName: string;
   targets: ReadonlyArray<RecreateTarget>;
   yes: boolean;
+  /**
+   * Whether the run carries `--force-stateful-recreation`, i.e. whether the
+   * live emptiness probe was SKIPPED. Required rather than defaulted: an
+   * omitted value would have to pick a side, and the permissive side is the
+   * one that hides a never-expiring log group's **DATA LOSS** line. See the
+   * module JSDoc for why a `null` reason is untrustworthy under the flag.
+   */
+  forceStatefulRecreation: boolean;
   /**
    * Optional per-target downstream consumer enumeration (issue [#650]).
    * Empty / undefined → no per-target consumer list is rendered (the
@@ -68,11 +96,44 @@ export async function promptRecreateConfirm(input: {
     );
   }
   for (const t of input.targets) {
-    const stateful = t.statefulReason !== null;
+    // A recorded reason is trusted as-is; only a `null` under the force flag
+    // is re-derived, and only ever UPWARDS (the conservative predicate can
+    // promote a deferral, never clear a positive verdict). Passing `undefined`
+    // for the recorded bag is deliberate: `RecreateTarget` does not carry one,
+    // and the only bag-driven verdict — a log group's `has-retention` — is
+    // already non-null here and never reaches this line.
+    // ONE call to the predicate, deliberately: `stateful-replace-message-doc-sync`
+    // scans `src/` for readers of the guard and asserts an exact list, one
+    // entry per call site, so a second spelling here reads as a second reader.
+    const rederivedReason =
+      t.statefulReason === null && input.forceStatefulRecreation
+        ? isStatefulRecreateTargetForReplace(t.resourceType, undefined)
+        : null;
+    const rederived = rederivedReason !== null;
+    const reason = t.statefulReason ?? rederivedReason;
+    const stateful = reason !== null;
     const dataLossPrefix = stateful ? '**DATA LOSS** ' : '';
     const directionTag = t.direction === 'to-cc-api' ? ' [SDK → CC]' : ' [CC → SDK]';
+    // Two wordings, because the two cases KNOW different things.
+    //
+    // A verdict the probe produced renders through `renderStatefulReason` —
+    // the sentence the refusal path already shows — never the raw
+    // discriminator (`has-log-events` is internal).
+    //
+    // A RE-DERIVED verdict may not borrow that sentence.
+    // `renderStatefulReason('has-objects')` is the assertive "S3 bucket is
+    // non-empty", and on this path nothing was measured: the force flag is
+    // exactly what skipped the probe. Printing it would tell a user with an
+    // empty bucket that it is non-empty — asserting an emptiness verdict cdkd
+    // does not hold, which is the same class of overstatement, pointed the
+    // other way, that issue [#2558] is about. (The log group's own reason IS
+    // hedged, but the bucket shares this line, so the hedge has to live here.)
     const stateNote = stateful
-      ? ` — stateful (${t.statefulReason}); --force-stateful-recreation acknowledged`
+      ? ` — stateful (${
+          rederived
+            ? 'emptiness not established — --force-stateful-recreation skips the probe'
+            : renderStatefulReason(reason)
+        }); --force-stateful-recreation acknowledged`
       : '';
     logger.warn(
       `  - ${dataLossPrefix}${t.logicalId} (${t.resourceType})${directionTag}${stateNote}`

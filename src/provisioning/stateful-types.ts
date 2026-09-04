@@ -36,14 +36,21 @@
  *   - `AWS::S3::Bucket`: empty buckets are safe to recreate. The
  *     deploy engine probes `s3:ListObjectVersions` at plan time and only
  *     refuses when the bucket has at least one object.
- *   - `AWS::Logs::LogGroup`: the deploy engine refuses only when
- *     `RetentionInDays > 0`. NOTE this is a KNOWN GAP, not a statement
- *     that the rest are empty: an unset or zero retention is CloudWatch
- *     Logs' "never expire", the most data-bearing setting there is, and
- *     `LogsLogGroupProvider` writes `0` for precisely that. Issue
- *     [#2558] tracks it; the predicate is left as-is here.
+ *   - `AWS::Logs::LogGroup`: a log group holding no log events is safe
+ *     to recreate, and RETENTION IS NOT THE SIGNAL FOR THAT (issue
+ *     [#2558]). An unset or zero `RetentionInDays` is CloudWatch Logs'
+ *     "never expire" — the most data-bearing configuration the type
+ *     has, and what `LogsLogGroupProvider` records `0` for — so reading
+ *     it as "holds nothing" destroyed years of events on a plain
+ *     `cdkd deploy`. A recorded `RetentionInDays > 0` still answers
+ *     `has-retention` from the bag alone (a cheap positive, never
+ *     probed away); every other bag DEFERS, exactly as the bucket does.
+ *     The pre-flight resolves the deferral with a live
+ *     `logs:DescribeLogStreams` probe (a log group with no stream can
+ *     hold no event, since every event belongs to a stream); mid-deploy,
+ *     where no probe can run, it resolves to `has-log-events`.
  *
- * Both conditional checks live in {@link isStatefulRecreateTarget};
+ * Both conditional checks live in {@link isStatefulRecreateTargetSync};
  * the bare {@link STATEFUL_TYPES} set is the type-only first-cut.
  *
  * **Lower bound, enforced by a test** (issue [#2514]'s review round):
@@ -132,7 +139,7 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Filesystem / blob.
   'AWS::EFS::FileSystem',
   'AWS::FSx::FileSystem',
-  'AWS::S3::Bucket', // conditional — see isStatefulRecreateTarget
+  'AWS::S3::Bucket', // conditional — see isStatefulRecreateTargetSync
   // S3 Express directory bucket. `S3DirectoryBucketProvider.delete` consumes
   // `DeleteContext.forceDataDelete` and the CDK `autoDeleteObjects` tag
   // (issue [#1344], the sibling of the general-purpose bucket's [#1340]
@@ -243,7 +250,7 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::Glue::Database',
   'AWS::Glue::Table',
   // Logs (retained data).
-  'AWS::Logs::LogGroup', // conditional — see isStatefulRecreateTarget
+  'AWS::Logs::LogGroup', // conditional — see isStatefulRecreateTargetSync
   // Edge / URL-immutability — CloudFront URL change breaks downstream
   // consumers and the change has a ~20-minute propagation window.
   'AWS::CloudFront::Distribution',
@@ -478,20 +485,36 @@ export const MULTI_REGION_RECREATE_BLOCKED_TYPES: ReadonlySet<string> = new Set(
  *    plan time).
  *  - `'has-retention'` — Logs::LogGroup with `RetentionInDays > 0`
  *    (read from the resource's recorded properties).
+ *  - `'has-log-events'` — Logs::LogGroup whose emptiness is not
+ *    established: the plan-time probe found at least one log stream,
+ *    the probe could not run, or the caller is a mid-deploy site that
+ *    has no probe opportunity at all. Its rendered text is HEDGED
+ *    ("log group is not provably empty") for exactly that reason —
+ *    only the hedge is true across all three.
+ *    `'has-objects'` carries the same double duty and is NOT hedged:
+ *    it still renders the assertive "S3 bucket is non-empty" even
+ *    where nothing was probed. That is a known overstatement on the
+ *    unprobed paths, kept out of this change because the sentence is
+ *    also the shipped mid-deploy refusal text; the one site that
+ *    re-derives a reason (`recreate-confirm-prompt.ts`) works around
+ *    it with its own wording rather than borrowing this one.
  *  - `null` — not stateful for the purposes of this guard.
  */
-export type StatefulReason = 'always' | 'has-objects' | 'has-retention' | null;
+export type StatefulReason = 'always' | 'has-objects' | 'has-retention' | 'has-log-events' | null;
 
 /**
  * Cheap, synchronous read of the resource's recorded properties only.
- * For `AWS::S3::Bucket` this returns `null` — the live `ListObjectVersions`
- * probe to distinguish empty buckets (safe to recreate) from
- * non-empty (data loss) lives in
+ * TWO types return `null` meaning DEFER rather than "not stateful":
+ * `AWS::S3::Bucket` always, and `AWS::Logs::LogGroup` whenever the
+ * recorded bag does not already prove `has-retention`. The live probes
+ * that resolve both deferrals (`ListObjectVersions` for the bucket,
+ * `DescribeLogStreams` for the log group) live in
  * `src/deployment/recreate-targets.ts#probeStatefulRecreateTargetsAsync`
- * (issue [#648]) and runs after this sync first-cut. Sync callers can
+ * (issues [#648] / [#2558]) and run after this sync first-cut. Sync callers can
  * still treat `null` as "not stateful" — the deploy command does both
  * passes back-to-back; only callers that explicitly opt out of the
- * async probe need to assume conservative "stateful" semantics.
+ * async probe need to assume conservative "stateful" semantics, which
+ * is what {@link isStatefulRecreateTargetForReplace} exists to do.
  *
  * Returns the {@link StatefulReason} when the type is stateful (or
  * `null` for non-stateful types).
@@ -504,6 +527,10 @@ export function isStatefulRecreateTargetSync(
   if (resourceType === 'AWS::Logs::LogGroup') {
     const retention = recordedProperties?.['RetentionInDays'];
     if (typeof retention === 'number' && retention > 0) return 'has-retention';
+    // NOT "no retention, therefore nothing to lose" — an unset or zero
+    // retention is CloudWatch Logs' never-expire (issue [#2558]). The bag
+    // cannot answer whether the group holds events, so defer to the live
+    // `DescribeLogStreams` probe exactly as the bucket defers to its own.
     return null;
   }
   if (resourceType === 'AWS::S3::Bucket') {
@@ -529,14 +556,19 @@ export function isStatefulRecreateTargetSync(
  * All of them catch the rejection or classify the diff while the deploy is
  * already in flight, so — unlike the `--recreate-via-*` pre-flight, which
  * runs {@link probeStatefulRecreateTargetsAsync} (`s3:ListObjectVersions`) —
- * there is no opportunity to probe an `AWS::S3::Bucket`'s object count. The
- * sync check returns `null` for S3 (it defers to that async probe), which would
- * let a NON-EMPTY bucket be DELETE + CREATEd (data loss) without
- * `--force-stateful-recreation`. To stay fail-safe, treat a deferred S3 bucket
- * as stateful here: the user must pass `--force-stateful-recreation` to replace
- * ANY S3 bucket on any of those paths, empty or not. Every other type matches
- * {@link isStatefulRecreateTargetSync} exactly (the LogGroup retention check is
- * fully resolvable from recorded properties, so no conservatism is needed there).
+ * there is no opportunity to probe an `AWS::S3::Bucket`'s object count, nor an
+ * `AWS::Logs::LogGroup`'s log streams. The sync check returns `null` for both
+ * deferrals, which would let a NON-EMPTY bucket — or a never-expiring log group
+ * — be DELETE + CREATEd (data loss) without `--force-stateful-recreation`. To
+ * stay fail-safe, both deferrals resolve to stateful here: the user must pass
+ * `--force-stateful-recreation` to replace ANY S3 bucket, and any log group
+ * whose recorded bag does not already prove `has-retention`, on any of those
+ * paths — empty or not.
+ *
+ * The log group's arm is the one issue [#2558] added, and the reason it is
+ * needed is that the old predicate treated "no retention recorded" as "holds
+ * nothing" when it is CloudWatch Logs' never-expire. Every other type matches
+ * {@link isStatefulRecreateTargetSync} exactly.
  */
 export function isStatefulRecreateTargetForReplace(
   resourceType: string,
@@ -547,6 +579,12 @@ export function isStatefulRecreateTargetForReplace(
   if (resourceType === 'AWS::S3::Bucket') {
     // Cannot prove the bucket is empty mid-deploy — assume it has data.
     return 'has-objects';
+  }
+  if (resourceType === 'AWS::Logs::LogGroup') {
+    // Same shape, one type down: the bag proved nothing (retention is unset or
+    // zero, i.e. never-expire) and no probe can run here, so assume the group
+    // holds events.
+    return 'has-log-events';
   }
   return null;
 }
@@ -564,6 +602,12 @@ export function renderStatefulReason(reason: StatefulReason): string {
       return 'S3 bucket is non-empty';
     case 'has-retention':
       return 'log group retains data (RetentionInDays > 0)';
+    case 'has-log-events':
+      // Deliberately NOT "log group is non-empty", the assertive phrasing the
+      // bucket's sibling uses: this reason is rendered both when the plan-time
+      // probe FOUND a log stream and when nothing could be probed at all, and
+      // only the hedged wording is true in both cases.
+      return 'log group is not provably empty';
     case null:
       return '(not stateful)';
   }

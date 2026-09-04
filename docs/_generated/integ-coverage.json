@@ -4622,6 +4622,7 @@
         "log-pipeline",
         "loggroup-class-guard",
         "loggroup-kms-associate",
+        "loggroup-never-expire-guard",
         "monitoring",
         "remove-protection",
         "route53",
@@ -4679,6 +4680,9 @@
         "loggroup-kms-associate": [
           "l2",
           "literal"
+        ],
+        "loggroup-never-expire-guard": [
+          "l2"
         ],
         "monitoring": [
           "l2"
