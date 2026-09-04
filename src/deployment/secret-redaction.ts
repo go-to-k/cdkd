@@ -2658,6 +2658,11 @@ function positionByEmbeddedSpan(
   // that needle instead (so does this arm, by falling through to it). See the
   // generation note in the docstring for why this bound matters.
   const survivor = secrets.get(middle);
+  // A type-narrowing formality, not a reachable refusal: `recorded === middle`
+  // already implies an entry for `middle` — both resolver seams `set` the
+  // entry beside `recordResolvedPair`, the one `mergeResolvedPairs` caller
+  // copies the entries first, and nothing deletes from a `RecordedSecretValues`
+  // map. Kept in the fail-closed shape rather than as a non-null assertion.
   if (survivor === undefined) return scanned;
   if (scanned !== prefix + survivor + suffix) return scanned;
   return prefix + token + suffix;
