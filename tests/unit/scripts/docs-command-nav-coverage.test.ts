@@ -20,15 +20,14 @@ import { buildProgram } from '../../../src/cli/program.js';
  *   - `tests/unit/scripts/docs-site-links.test.ts` validates links between
  *     pages that exist. It cannot see a page that was never written.
  *
- * WHY THREE STRUCTURES RATHER THAN A `cli-<command>.md` CONVENTION. Measured on
- * the tree this file was written against: six of the nineteen commands have no
- * `cli-<command>.md` at all (`synth`, `list`, `orphan`, `import`, `local`,
- * `migrate`), and two more have one whose H1 is a topic rather than the command
- * (`# Deploy: waits & concurrency`, `# Destroy flags & guards`). Those eight are
- * not one case: three of the six ARE documented, on a page named for the topic
- * it covers, and three are not documented at all. A single naming convention
- * collapses all eight into one exclusion list and loses that distinction --
- * which is the whole finding.
+ * WHY THREE STRUCTURES RATHER THAN A `cli-<command>.md` CONVENTION. Several
+ * commands have no `cli-<command>.md` at all, and several more have one whose
+ * H1 is a topic rather than the command. Those are not one case: some of the
+ * first group ARE documented, on a page named for the topic it covers, and some
+ * are not documented anywhere. A single naming convention collapses them into
+ * one exclusion list and loses that distinction -- which is the whole finding.
+ * The current membership of each group is the three structures below; they are
+ * the record, so this paragraph does not restate it.
  *
  * So a command is claimed in one of three ways, each CHECKED differently, and
  * the strength of the check follows the strength of the claim:
@@ -42,15 +41,15 @@ import { buildProgram } from '../../../src/cli/program.js';
  *   - `UNDOCUMENTED` -- shipped with no documentation, with the reason recorded.
  *
  * HOW A TOPIC CLAIM IS CHECKED, AND WHY NOT BY A BODY MENTION. A body mention
- * decides nothing here. Measured over the 50 navigation-listed pages,
- * whole-file: `cdkd deploy` is named on 38 of them, `destroy` 29, `local` 16,
- * `import` 13, `orphan` 7 -- `/getting-started` and `/troubleshooting` alone
- * would satisfy a mention check for every topic mapping, so any of the five
- * could be repointed at either and stay green. That is exactly the regression
- * this fence is for: a dedicated page deleted and its mapping quietly moved
- * somewhere the command merely gets discussed. An earlier revision refused the
- * CLI Reference hub as a target and claimed that removed the class; it removed
- * one destination out of dozens, and the claim was the more serious error.
+ * decides nothing here: a command is named in the body of most of the
+ * navigation-listed pages, `/getting-started` and `/troubleshooting` among
+ * them, and neither of those is any command's documentation. Either would
+ * satisfy a mention check for every topic mapping, so one could be repointed
+ * there and stay green -- exactly the regression this fence is for, a dedicated
+ * page deleted and its mapping quietly moved somewhere the command merely gets
+ * discussed. An earlier revision refused the CLI Reference hub as a target and
+ * claimed that removed the class; it removed one destination out of dozens, and
+ * the claim was the more serious error.
  *
  * The evidence is the page's FRONTMATTER instead: its own `title` or
  * `description` must name `cdkd <command>`, matched at a word boundary so an
@@ -70,7 +69,7 @@ import { buildProgram } from '../../../src/cli/program.js';
  * description names no command today, so the rule happens to reject it -- but
  * that is a fact about current wording, and a hub description listing the
  * commands it indexes would re-qualify it. The refusal is the invariant; the
- * frontmatter rule is what generalises it to the other forty-nine pages.
+ * frontmatter rule is what generalises it to every other page.
  *
  * WHAT THIS DOES NOT PROVE:
  *
@@ -79,10 +78,10 @@ import { buildProgram } from '../../../src/cli/program.js';
  *     topic page declares the command part of its subject. Neither grades the
  *     prose, and neither can tell a thorough page from a stub.
  *   - That a topic mapping points at the BEST page for the command. `local`
- *     has eight sibling subcommand pages whose frontmatter also names
- *     `cdkd local`, so the overview could be swapped for one of them and stay
- *     green. They do document the command family, so this is a worse-page
- *     risk rather than a no-page one -- the class this fence is for.
+ *     has sibling subcommand pages whose frontmatter also names `cdkd local`,
+ *     so the overview could be swapped for one of them and stay green. They do
+ *     document the command family, so this is a worse-page risk rather than a
+ *     no-page one -- the class this fence is for.
  *   - Anything about SUBCOMMANDS. `cdkd state *`, `cdkd local *` and
  *     `cdkd events prune` are out of scope, so one of those can still ship
  *     undocumented -- the same class as the `migrate` incident, one level down.
@@ -99,13 +98,11 @@ const HUB_PAGE = '/cli-reference';
  * documentation. None of them may qualify as a topic page for any command.
  *
  * This is the discrimination claim as an assertion. Body mentions cannot tell
- * these apart from a real topic page -- `cdkd deploy` is named on 38 of the 50
- * navigation-listed pages -- so what makes the frontmatter rule worth having is
- * exactly that these are rejected by it. Core Concepts is the near miss: its
- * description reads "How cdkd deploys CDK apps", which a substring match
- * accepts and the word boundary rejects. The other three each name all five
- * topic commands in their bodies, Troubleshooting and State Management 44 times
- * apiece.
+ * these apart from a real topic page, so what makes the frontmatter rule worth
+ * having is exactly that these are rejected by it. Core Concepts is the near
+ * miss: its description reads "How cdkd deploys CDK apps", which a substring
+ * match accepts and the word boundary rejects. The others each name every topic
+ * command somewhere in their bodies while documenting none of them.
  *
  * The HUB is deliberately NOT in this list, even though it is the same kind of
  * page. It is refused structurally by the topic check, and the header says that
@@ -193,8 +190,10 @@ const UNDOCUMENTED: Readonly<Record<string, string>> = {
     '`--show-dependencies` -- plus the `ls` alias named on the state page. Tracked by ' +
     'go-to-k/cdkd#2577.',
   synth:
-    'No page of its own. The CLI Reference explains its stdout contract on a multi-stack ' +
-    'app; none of its flags are documented anywhere. Tracked by go-to-k/cdkd#2577.',
+    'No page of its own. Its material is scattered: the CLI Reference covers the stdout ' +
+    'contract on a multi-stack app and names `--output` there, and the deploy-tuning page ' +
+    'documents `--strict` / `--ignore-errors` as also accepted by it. Tracked by ' +
+    'go-to-k/cdkd#2577.',
   migrate:
     'Held pending the deprecation decision in go-to-k/cdkd#2572 -- it is the only ' +
     'command that requires the AWS CDK CLI binary, so whether it stays at all is ' +
@@ -204,9 +203,11 @@ const UNDOCUMENTED: Readonly<Record<string, string>> = {
 /**
  * Floors, so a parse that has gone blind cannot report green having compared
  * nothing. "The tree yielded no commands" and "every command is documented" are
- * the same pass without these. Both sit below the measured counts (19 commands,
- * 50 navigation paths) with enough slack that an ordinary removal does not
- * force a test edit, while a total parse failure cannot clear them.
+ * the same pass without these. Both sit well below what the tree yields today,
+ * with enough slack that an ordinary removal does not force a test edit, while
+ * a total parse failure cannot clear them. They are backstops against a dead
+ * parser, not measurements -- deliberately not tightened to the live counts,
+ * which would make every ordinary docs change a test edit.
  */
 const MIN_COMMANDS = 15;
 const MIN_NAV_PATHS = 30;
@@ -429,8 +430,8 @@ describe('docs command/nav coverage', () => {
     expect(
       problems.sort(),
       `A COMMAND_TOPIC_PAGES entry claims a broader page documents the command, and the ` +
-        `page's own title or description must say so. A body mention is not evidence: ` +
-        `\`cdkd deploy\` is named on 38 of the 50 navigation-listed pages, so a mapping ` +
+        `page's own title or description must say so. A body mention is not evidence -- ` +
+        `a command is named in the body of most navigation-listed pages, so a mapping ` +
         `repointed at Getting Started or Troubleshooting would pass on one.`
     ).toEqual([]);
   });
