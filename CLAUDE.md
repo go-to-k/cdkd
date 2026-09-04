@@ -156,7 +156,12 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 **Recently Implemented**: per-PR shipped-feature notes live in
 [docs/changelog-cdkd.md](docs/changelog-cdkd.md) — new entries go there, never
 back into this CLAUDE.md (per the official guidance that a CLAUDE.md should
-stay small so context-window usage and instruction adherence stay high).
+stay small so context-window usage and instruction adherence stay high). One
+entry is capped at **2000 characters** — behavior delta, changed files, issue /
+PR + residual numbers; a design decision goes to `docs/design/<issue>-<slug>.md`
+and a mechanism to the implementing module's or test's doc comment, linked from
+the entry. Contract and the forward-only cutoff in that file's header, enforced by
+`tests/unit/scripts/changelog-entry-size.test.ts` (issue [#2552](https://github.com/go-to-k/cdkd/issues/2552)).
 
 ## Dependencies
 

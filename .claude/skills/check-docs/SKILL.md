@@ -66,5 +66,5 @@ Skip this step if issues remain unfixed — a stale or missing marker correctly 
 
 - Do NOT add documentation that doesn't exist yet (don't create new doc files)
 - Focus on consistency between existing docs and code, not completeness
-- Check CLAUDE.md's "Known Limitations" section AND `docs/changelog-cdkd.md` (the per-PR shipped-feature changelog moved out of CLAUDE.md per Claude Code's ≤200-line memory guidance) for stale entries
+- Check CLAUDE.md's "Known Limitations" section AND `docs/changelog-cdkd.md` (the per-PR shipped-feature changelog moved out of CLAUDE.md per Claude Code's ≤200-line memory guidance) for stale entries. A new entry there is capped at 2000 characters over the bullet and its continuation lines (issue go-to-k/cdkd#2552, enforced by `tests/unit/scripts/changelog-entry-size.test.ts`): keep the behavior delta, the changed files, and the issue / PR + residual numbers, and put a design decision in `docs/design/<issue>-<slug>.md` or a mechanism in the implementing module's or test's doc comment, linked from the entry
 - Prefer referencing source directories over hardcoded lists in docs
