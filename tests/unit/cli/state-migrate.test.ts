@@ -215,6 +215,132 @@ describe('cdkd state migrate', () => {
     );
   });
 
+  /**
+   * Issue [#2538](https://github.com/go-to-k/cdkd/issues/2538). The case
+   * above passes `--yes`, so it never reaches the prompt — which is how the
+   * dry-run bail sitting BELOW the confirmation block survived. A preview
+   * must not ask the user to confirm a copy it will never perform, and on a
+   * non-TTY the prompt does not merely ask, it refuses with
+   * `NON_INTERACTIVE_CONFIRM` and exits 1 — in CI, the one place a preview is
+   * most useful.
+   */
+  describe('--dry-run without --yes', () => {
+    it('never reaches the confirmation prompt', async () => {
+      planS3({
+        HeadBucketCommand: [() => ({})],
+        ListObjectsV2Command: [
+          () => ({ Contents: [{ Key: 'cdkd/MyStack/us-east-1/state.json' }] }),
+        ],
+      });
+      // Scripted to answer 'y', so a reached prompt would proceed rather
+      // than hang — the assertion below is what catches it either way.
+      readlineQuestion.mockResolvedValue('y');
+
+      await runMigrate(['migrate', '--region', 'us-east-1', '--dry-run']);
+
+      expect(readlineQuestion).not.toHaveBeenCalled();
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/--dry-run: no changes will be made/)
+      );
+      expect(infoSpy).not.toHaveBeenCalledWith('Migration cancelled.');
+    });
+
+    it('runs unattended on a non-TTY instead of refusing', async () => {
+      // The CI shape: no `-y`, no terminal. Before the fix this exited 1 via
+      // `confirmOrRefuse`, so a scheduled "is a legacy bucket still around?"
+      // check could not use --dry-run at all.
+      setStdinIsTty(undefined);
+      planS3({
+        HeadBucketCommand: [() => ({})],
+        ListObjectsV2Command: [
+          () => ({ Contents: [{ Key: 'cdkd/MyStack/us-east-1/state.json' }] }),
+        ],
+      });
+
+      await runMigrate(['migrate', '--region', 'us-east-1', '--dry-run']);
+
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/--dry-run: no changes will be made/)
+      );
+      // No refusal reached the error path, and stdin was never consulted.
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(readlineQuestion).not.toHaveBeenCalled();
+    });
+
+    it('discloses the source-bucket deletion under --remove-legacy', async () => {
+      // `--remove-legacy` is named nowhere in the plan the command prints;
+      // before the bail moved, the ONLY place it surfaced was the prompt
+      // string. A preview of the single destructive flag that says nothing
+      // about it is worse than the prompt it replaced.
+      planS3({
+        HeadBucketCommand: [() => ({})],
+        ListObjectsV2Command: [
+          () => ({ Contents: [{ Key: 'cdkd/MyStack/us-east-1/state.json' }] }),
+        ],
+      });
+
+      await runMigrate(['migrate', '--region', 'us-east-1', '--dry-run', '--remove-legacy']);
+
+      const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).toMatch(/--remove-legacy:/);
+      expect(printed).toMatch(/every object version and delete marker/);
+      expect(readlineQuestion).not.toHaveBeenCalled();
+    });
+
+    it('says nothing about --remove-legacy when it was not passed', async () => {
+      planS3({
+        HeadBucketCommand: [() => ({})],
+        ListObjectsV2Command: [
+          () => ({ Contents: [{ Key: 'cdkd/MyStack/us-east-1/state.json' }] }),
+        ],
+      });
+
+      await runMigrate(['migrate', '--region', 'us-east-1', '--dry-run']);
+
+      expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(
+        /--remove-legacy:/
+      );
+    });
+
+    it('is not inert: an active lock still refuses before the bail', async () => {
+      // The dry-run bail sits BELOW the lock check and the source-exists
+      // check, so a preview still surfaces both. Pinning the boundary keeps a
+      // later "make --dry-run do nothing at all" from silencing them.
+      planS3({
+        HeadBucketCommand: [() => ({})],
+        ListObjectsV2Command: [
+          () => ({ Contents: [{ Key: 'cdkd/MyStack/us-east-1/lock.json' }] }),
+        ],
+      });
+
+      await expect(
+        runMigrate(['migrate', '--region', 'us-east-1', '--dry-run'])
+      ).rejects.toThrow();
+
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toMatch(/Refusing to migrate/);
+      expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(
+        /--dry-run: no changes/
+      );
+    });
+
+    it('still prompts when --dry-run is absent', async () => {
+      // The opposite polarity: moving the bail must not make the real run
+      // skip its confirmation too.
+      planS3({
+        HeadBucketCommand: [() => ({})],
+        ListObjectsV2Command: [
+          () => ({ Contents: [{ Key: 'cdkd/MyStack/us-east-1/state.json' }] }),
+        ],
+      });
+      readlineQuestion.mockResolvedValue('n');
+
+      await runMigrate(['migrate', '--region', 'us-east-1']);
+
+      expect(readlineQuestion).toHaveBeenCalledTimes(1);
+      expect(infoSpy).toHaveBeenCalledWith('Migration cancelled.');
+    });
+  });
+
   it('cancels when user declines the prompt', async () => {
     planS3({
       HeadBucketCommand: [() => ({})],

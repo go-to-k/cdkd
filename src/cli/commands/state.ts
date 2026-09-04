@@ -1105,18 +1105,35 @@ async function stateOrphanCommand(
         continue;
       }
 
-      // Pick which region(s) to remove. With --region, restrict to one. The
-      // legacy entry (region: undefined) is matched only when --region is
-      // absent — there's no legacy-only flag because the legacy key is
-      // self-identifying via its missing region.
-      const targets = options.stackRegion
-        ? stackRefs.filter((r) => r.region === options.stackRegion)
-        : stackRefs;
+      // Pick which region(s) to remove. With --stack-region, restrict to
+      // one. The legacy entry (region: undefined) is matched only when the
+      // flag is absent — there's no legacy-only flag because the legacy key
+      // is self-identifying via its missing region.
+      //
+      // Presence, not truthiness: `--stack-region ''` is falsy, so a truthy
+      // test skipped the filter and silently widened the removal to EVERY
+      // region — the opposite of what the caller asked for, on a destructive
+      // command. An empty value now matches nothing and lands in the error
+      // below, like any other region with no record.
+      const targets =
+        options.stackRegion !== undefined
+          ? stackRefs.filter((r) => r.region === options.stackRegion)
+          : stackRefs;
 
       if (targets.length === 0) {
-        const seen = stackRefs.map((r) => r.region ?? '(legacy)').join(', ');
+        // Sanitized like the lock message below (issue #2170): every value
+        // here is an S3 key segment or a legacy state body, so a planted
+        // newline forged a line in this very sentence. The presence check
+        // above routes more traffic onto this branch.
+        const seen = stackRefs
+          .map((r) =>
+            r.region ? displaySafe(r.region, { asciiOnly: true }) || UNRENDERABLE : '(legacy)'
+          )
+          .join(', ');
         throw new Error(
-          `No state found for stack '${stackName}' in region '${options.stackRegion}'. ` +
+          `No state found for stack ` +
+            `'${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' in ` +
+            `region '${displaySafe(options.stackRegion ?? '', { asciiOnly: true })}'. ` +
             `Available regions: ${seen}.`
         );
       }
@@ -1131,9 +1148,12 @@ async function stateOrphanCommand(
             // state body, so a planted `\n` forged a line in this very
             // sentence — the provenance this file already cites two lines down
             // as the reason to route the hint through the shared builder.
+            // Bare word, not '(legacy)': the template below already wraps
+            // `where` in parentheses, so the parenthesised form rendered
+            // `Stack 'X' ((legacy)) is locked.`
             const where = target.region
               ? displaySafe(target.region, { asciiOnly: true }) || UNRENDERABLE
-              : '(legacy)';
+              : 'legacy';
             throw new Error(
               `Stack '${displaySafe(stackName, { asciiOnly: true })}' (${where}) is locked. ` +
                 // Through the shared builder rather than hand-interpolated
@@ -1177,7 +1197,8 @@ async function stateOrphanCommand(
         process.stdout.write(
           `\nWARNING: This removes cdkd's state record for [${targetList}] only. ` +
             `AWS resources will NOT be deleted.\n` +
-            `Use 'cdkd destroy ${stackName}' if you want to delete the actual resources.\n\n`
+            `Use 'cdkd destroy ${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}' ` +
+            `if you want to delete the actual resources.\n\n`
         );
         const ok = await confirmStateOrphanRemoval(
           `Remove state for ${targetList} from s3://${setup.bucket}/${setup.prefix}/?`
@@ -1189,8 +1210,8 @@ async function stateOrphanCommand(
       }
 
       // Iterate over every selected region. forceReleaseLock is idempotent
-      // (no-op when no lock present). For legacy-only refs (no region) we
-      // pass `undefined` to delete the legacy key; deleteState handles both.
+      // (no-op when no lock present). The two arms below delete DIFFERENT
+      // keys: see the comments on each.
       for (const target of targets) {
         if (target.region) {
           // Issue #2171: this force-release takes no lock of its own and
@@ -1202,12 +1223,18 @@ async function stateOrphanCommand(
           await setup.stateBackend.deleteState(stackName, target.region);
           await setup.lockManager.forceReleaseLock(stackName, target.region);
         } else {
-          // Pure legacy record without a region body field: just sweep the
-          // legacy key (which is what the no-region forceReleaseLock targets).
+          // Pure legacy record without a region body field. Both keys are the
+          // region-less ones, and they are separate objects: issue #2537, the
+          // state file was never deleted here because `forceReleaseLock`
+          // targets `{prefix}/{stack}/lock.json` — the LOCK — while the record
+          // itself sits at `{prefix}/{stack}/state.json`. The success line
+          // below printed regardless, so a removal was reported that had not
+          // happened. `deleteState` cannot be used: it requires a region.
           await warnOnLiveForeignLock(setup.lockManager, stackName, undefined, logger);
+          await setup.stateBackend.deleteLegacyState(stackName);
           await setup.lockManager.forceReleaseLock(stackName, undefined);
         }
-        logger.info(`✓ Removed state for stack: ${formatStackRef(target)}`);
+        logger.info(`✓ Removed state for stack: ${formatStackRefSafe(target)}`);
       }
     }
   } finally {

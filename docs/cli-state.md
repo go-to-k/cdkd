@@ -250,7 +250,7 @@ resources become untracked rather than deleted.
 | --- | --- | --- |
 | `<stacks...>` | — | Stack name(s) to orphan, as physical CloudFormation names. At least one is required. |
 | `-f`, `--force` | off | Skip the confirmation prompt **and** remove the record even when the stack is locked. |
-| `--stack-region <region>` | — | Orphan only the record in this region. Omitting it removes every region-scoped record for the name — `orphan` does not refuse an ambiguous name. |
+| `--stack-region <region>` | — | Orphan only the record in this region. Omitting it removes every record for the name — `orphan` does not refuse an ambiguous name. |
 
 `-y` / `--yes` skips the prompt but does *not* bypass the lock guard; only
 `--force` does both. A locked stack otherwise fails with the exact
@@ -345,10 +345,8 @@ no record body is rewritten.
 | `--remove-legacy` | off | Delete the source bucket after the copy is verified. Irreversible: it empties every object version and delete marker first, so the source bucket's version history is gone. |
 
 `migrate --dry-run` prints its plan — the two bucket names, the source
-bucket's real region, and the object count — and then still raises the
-confirmation prompt before stopping. [`refresh-observed --dry-run`](#cdkd-state-refresh-observed)
-skips its prompt; this one does not, so an unattended preview needs `-y`
-alongside it.
+bucket's real region, and the object count — and stops there without asking
+for confirmation, so it is safe to run unattended.
 
 The migration is idempotent: the destination is reused when it already exists,
 each object copy is idempotent per key, and the post-copy verification tolerates
