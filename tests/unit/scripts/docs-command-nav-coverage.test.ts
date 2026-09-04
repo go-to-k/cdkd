@@ -21,12 +21,14 @@ import { buildProgram } from '../../../src/cli/program.js';
  *     pages that exist. It cannot see a page that was never written.
  *
  * WHY THREE STRUCTURES RATHER THAN A `cli-<command>.md` CONVENTION. Measured on
- * the tree this file was written against: eight of the nineteen commands have
- * no `cli-<command>` page, and they are not all the same case. Five are
- * genuinely documented under a differently-named page the navigation lists;
- * three are not documented at all. A bare naming-convention assertion would
- * have put all eight in one exclusion list and lost that distinction -- which
- * is the whole finding.
+ * the tree this file was written against: six of the nineteen commands have no
+ * `cli-<command>.md` at all (`synth`, `list`, `orphan`, `import`, `local`,
+ * `migrate`), and two more have one whose H1 is a topic rather than the command
+ * (`# Deploy: waits & concurrency`, `# Destroy flags & guards`). Those eight are
+ * not one case: three of the six ARE documented, on a page named for the topic
+ * it covers, and three are not documented at all. A single naming convention
+ * collapses all eight into one exclusion list and loses that distinction --
+ * which is the whole finding.
  *
  * So a command is claimed in one of three ways, each CHECKED differently, and
  * the strength of the check follows the strength of the claim:
@@ -39,19 +41,30 @@ import { buildProgram } from '../../../src/cli/program.js';
  *     weaker; the hub page is REFUSED as a target for it (see below).
  *   - `UNDOCUMENTED` -- shipped with no documentation, with the reason recorded.
  *
- * WHY THE HUB IS REFUSED AS A MAPPING TARGET. `docs/cli-reference.md` names
- * every command at least once, so mapping a command to it passes a mention
- * check for free. Measured while reviewing this file: sixteen mappings stayed
- * green when repointed at the hub, which is exactly the regression a fence like
- * this is for -- a dedicated page deleted and its mapping quietly moved to the
- * hub. Refusing the hub outright removes the class rather than tightening a
- * substring test against it.
+ * HOW A TOPIC CLAIM IS CHECKED, AND WHY NOT BY A BODY MENTION. A body mention
+ * decides nothing here. Measured over the 50 navigation-listed pages:
+ * `cdkd deploy` is named in the body of 38 of them, `destroy` 29, `local` 16,
+ * `import` 13, `orphan` 7 -- `/getting-started` and `/troubleshooting` alone
+ * would satisfy a mention check for every topic mapping, so any of the five
+ * could be repointed at either and stay green. That is exactly the regression
+ * this fence is for: a dedicated page deleted and its mapping quietly moved
+ * somewhere the command merely gets discussed. An earlier revision refused the
+ * CLI Reference hub as a target and claimed that removed the class; it removed
+ * one destination out of dozens, and the claim was the more serious error.
+ *
+ * The evidence is the page's FRONTMATTER instead: its own `title` or
+ * `description` must name `cdkd <command>`. That is the page declaring the
+ * command to be part of its subject rather than something it happens to
+ * mention, and it discriminates -- measured, all five topic pages name their
+ * command there, while `/getting-started`, `/troubleshooting` and the hub name
+ * none at all.
  *
  * WHAT THIS DOES NOT PROVE:
  *
  *   - That a page documents a command WELL, or covers its flags. The H1 check
- *     proves a page is titled after the command; the mention check proves a
- *     topic page names it somewhere. Neither grades the prose.
+ *     proves a page is titled after the command; the frontmatter check proves a
+ *     topic page declares the command part of its subject. Neither grades the
+ *     prose, and neither can tell a thorough page from a stub.
  *   - Anything about SUBCOMMANDS. `cdkd state *`, `cdkd local *` and
  *     `cdkd events prune` are out of scope, so one of those can still ship
  *     undocumented -- the same class as the `migrate` incident, one level down.
@@ -59,9 +72,6 @@ import { buildProgram } from '../../../src/cli/program.js';
  */
 const repoRoot = join(import.meta.dirname, '..', '..', '..');
 const DOCS_CONFIG = join(repoRoot, 'vite.docs.config.ts');
-
-/** The hub page. Refused as a topic-page target -- see the header. */
-const HUB_PAGE = '/cli-reference';
 
 /**
  * Command -> the navigation path of ITS OWN reference page.
@@ -126,10 +136,14 @@ const COMMAND_TOPIC_PAGES: Readonly<Record<string, { path: string; reason: strin
  * visible in review as adding a command.
  */
 const UNDOCUMENTED: Readonly<Record<string, string>> = {
-  list: 'No page and no section anywhere; not even its `ls` alias. Tracked by go-to-k/cdkd#2577.',
+  list:
+    'No page of its own. What exists is spread through the CLI Reference cross-command ' +
+    'sections -- its output in each mode, worked examples, and `--long` / ' +
+    '`--show-dependencies` -- plus the `ls` alias named on the state page. Tracked by ' +
+    'go-to-k/cdkd#2577.',
   synth:
-    'No page. The CLI Reference explains its stdout behaviour on a multi-stack app ' +
-    'but documents none of its flags. Tracked by go-to-k/cdkd#2577.',
+    'No page of its own. The CLI Reference explains its stdout contract on a multi-stack ' +
+    'app; none of its flags are documented anywhere. Tracked by go-to-k/cdkd#2577.',
   migrate:
     'Held pending the deprecation decision in go-to-k/cdkd#2572 -- it is the only ' +
     'command that requires the AWS CDK CLI binary, so whether it stays at all is ' +
@@ -167,9 +181,11 @@ function topLevelCommandNames(): string[] {
 /**
  * Every `path: '/x'` entry inside the hand-authored `navigation` array.
  *
- * Scoped to that array, with comment lines dropped first: a whole-file scan
- * would accept a `path:` in an example or a commented-out entry, reporting a
- * page as reachable that the built site does not link to. The path pattern is
+ * Scoped to that array, with both comment forms stripped first: a whole-file
+ * scan would accept a `path:` in an example, and an unstripped one would accept
+ * a commented-out entry -- either way reporting a page as reachable that the
+ * built site does not link to. Line comments were the spelling a review caught;
+ * block comments are the same defect one spelling over. The path pattern is
  * deliberately permissive (`[^']+`) so a future nested path is READ and then
  * judged by the existence check, rather than skipped and then reported as
  * missing from the navigation -- a true failure with a misleading reason.
@@ -185,6 +201,7 @@ function navPaths(): Set<string> {
   ).not.toBeNull();
   const body = (block as RegExpExecArray)[1] as string;
   const uncommented = body
+    .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .filter((line) => !line.trimStart().startsWith('//'))
     .join('\n');
@@ -194,6 +211,12 @@ function navPaths(): Set<string> {
 /** `/cli-gc` -> `docs/cli-gc.md`. */
 function docFileFor(navPath: string): string {
   return join(repoRoot, 'docs', `${navPath.slice(1)}.md`);
+}
+
+/** The page's frontmatter block, or `null` when it has none. */
+function frontmatterOf(file: string): string | null {
+  const m = /^---\n([\s\S]*?)\n---\n/.exec(readFileSync(file, 'utf8'));
+  return m ? (m[1] as string) : null;
 }
 
 /** The page's first `# ` heading, or `null` when it has none. */
@@ -311,13 +334,9 @@ describe('docs command/nav coverage', () => {
     ).toEqual([]);
   });
 
-  it('names the command on every topic page, and never routes one to the hub', () => {
+  it('declares the command in the frontmatter of every topic page', () => {
     const problems: string[] = [];
     for (const [name, { path: navPath, reason }] of Object.entries(COMMAND_TOPIC_PAGES)) {
-      if (navPath === HUB_PAGE) {
-        problems.push(`${name} -> ${navPath}: the hub names every command, so it proves nothing`);
-        continue;
-      }
       if (reason.trim().length < MIN_REASON_LENGTH) {
         problems.push(`${name} -> ${navPath}: no reason recorded for the absence of its own page`);
       }
@@ -326,15 +345,21 @@ describe('docs command/nav coverage', () => {
         problems.push(`${name} -> ${navPath}: docs/${navPath.slice(1)}.md does not exist`);
         continue;
       }
-      if (!readFileSync(file, 'utf8').includes(`cdkd ${name}`)) {
-        problems.push(`${name} -> ${navPath}: page never mentions \`cdkd ${name}\``);
+      const fm = frontmatterOf(file);
+      if (fm === null) {
+        problems.push(`${name} -> ${navPath}: page has no frontmatter block`);
+        continue;
+      }
+      if (!fm.includes(`cdkd ${name}`)) {
+        problems.push(`${name} -> ${navPath}: frontmatter never names \`cdkd ${name}\``);
       }
     }
     expect(
       problems.sort(),
-      `A COMMAND_TOPIC_PAGES entry claims a broader page documents the command. The page ` +
-        `must name it, and must not be the CLI Reference hub -- the hub names every ` +
-        `command, so mapping one to it passes for free.`
+      `A COMMAND_TOPIC_PAGES entry claims a broader page documents the command, and the ` +
+        `page's own title or description must say so. A body mention is not evidence: ` +
+        `\`cdkd deploy\` is named in the body of 38 of the 50 navigation-listed pages, so ` +
+        `a mapping repointed at Getting Started or Troubleshooting would pass on one.`
     ).toEqual([]);
   });
 

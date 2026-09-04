@@ -99,7 +99,7 @@ events are all left as they were.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Every lock the walk reached was deleted, or there was none to delete. |
+| `0` | The walk completed. Every lock it reached was deleted, there was none to delete, or a delete failed — see below. |
 | `1` | No stack was named; credentials or state-bucket resolution failed; or listing the stack's regions failed. |
 
 The two failures are not symmetric, and the difference matters when scripting

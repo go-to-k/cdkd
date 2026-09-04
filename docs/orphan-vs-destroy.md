@@ -1,6 +1,6 @@
 ---
 title: Orphan vs Destroy
-description: destroy deletes AWS resources and cdkd state; orphan removes only the state record — per resource or per stack — leaving the AWS resources intact.
+description: "cdkd destroy deletes AWS resources and cdkd state; cdkd orphan removes only the state record — per resource or per stack — leaving the AWS resources intact."
 ---
 
 # Orphan vs Destroy
