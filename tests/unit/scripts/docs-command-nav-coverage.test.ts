@@ -57,9 +57,14 @@ import { buildProgram } from '../../../src/cli/program.js';
  * inflected verb does not qualify (`How cdkd deploys CDK apps` contains the
  * substring `cdkd deploy`, and Core Concepts is written exactly that way). That
  * is the page declaring the command to be part of its subject rather than
- * something it happens to mention, and it discriminates -- measured across the
- * 50 pages, frontmatter versus whole-file: `deploy` 4 against 38, `destroy` 2
- * against 29, `local` 9 against 16, `import` 1 against 13, `orphan` 1 against 7.
+ * something it happens to mention.
+ *
+ * That it DISCRIMINATES is asserted rather than asserted-in-prose, by
+ * `NON_DOCUMENTING_PAGES` below. Three review rounds each found a wrong count
+ * in a hand-maintained figure here -- the last one counting Core Concepts among
+ * the qualifying pages in the same sentence that introduced the word boundary
+ * to reject it. A fourth recount would have been the same mistake again, so the
+ * figures are gone and the property they described is a test.
  *
  * The hub is ALSO refused structurally, not left to the frontmatter rule. Its
  * description names no command today, so the rule happens to reject it -- but
@@ -88,6 +93,24 @@ const DOCS_CONFIG = join(repoRoot, 'vite.docs.config.ts');
 
 /** The hub. Refused as a topic-page target regardless of its wording. */
 const HUB_PAGE = '/cli-reference';
+
+/**
+ * Pages that discuss commands at length without being any one command's
+ * documentation. None of them may qualify as a topic page for any command.
+ *
+ * This is the discrimination claim as an assertion. Body mentions cannot tell
+ * these apart from a real topic page -- `cdkd deploy` is named on 38 of the 50
+ * navigation-listed pages -- so what makes the frontmatter rule worth having is
+ * exactly that these four are rejected by it. Core Concepts is in the list
+ * because it is the near miss: its description reads "How cdkd deploys CDK
+ * apps", which a substring match accepts and the word boundary rejects.
+ */
+const NON_DOCUMENTING_PAGES: readonly string[] = [
+  '/getting-started',
+  '/troubleshooting',
+  '/concepts',
+  HUB_PAGE,
+];
 
 /**
  * Command -> the navigation path of ITS OWN reference page.
@@ -203,10 +226,9 @@ function topLevelCommandNames(): string[] {
  * built site does not link to. Line comments were the spelling a review caught;
  * block comments are the same defect one spelling over. Line comments are
  * dropped FIRST, because a `/*` written inside one would otherwise open a
- * spurious block and swallow the real entries after it (this file already
- * contains a line comment carrying a `/*`, just outside the array). The path
- * pattern is
- * deliberately permissive (`[^']+`) so a future nested path is READ and then
+ * spurious block and swallow the real entries after it -- the scanned config
+ * already carries a line comment containing a `/*`, one line above the array.
+ * The path pattern is deliberately permissive (`[^']+`) so a future nested path is READ and then
  * judged by the existence check, rather than skipped and then reported as
  * missing from the navigation -- a true failure with a misleading reason.
  */
@@ -396,6 +418,28 @@ describe('docs command/nav coverage', () => {
         `page's own title or description must say so. A body mention is not evidence: ` +
         `\`cdkd deploy\` is named on 38 of the 50 navigation-listed pages, so a mapping ` +
         `repointed at Getting Started or Troubleshooting would pass on one.`
+    ).toEqual([]);
+  });
+
+  it('rejects every page that discusses commands without documenting one', () => {
+    const qualifying: string[] = [];
+    for (const navPath of NON_DOCUMENTING_PAGES) {
+      const file = docFileFor(navPath);
+      expect(existsSync(file), `${navPath}: docs/${navPath.slice(1)}.md does not exist`).toBe(true);
+      const fm = frontmatterOf(file);
+      expect(fm, `${navPath}: page has no frontmatter block to check`).not.toBeNull();
+      for (const name of Object.keys(COMMAND_TOPIC_PAGES)) {
+        if (namesCommand(fm as string, name)) {
+          qualifying.push(`${navPath} would qualify as the topic page for ${name}`);
+        }
+      }
+    }
+    expect(
+      qualifying.sort(),
+      `One of these pages now names a command in its frontmatter, so the topic check ` +
+        `would accept a mapping repointed at it. Either the wording drifted -- reword it, ` +
+        `or tighten the match -- or the page genuinely became that command's ` +
+        `documentation, in which case move it out of NON_DOCUMENTING_PAGES deliberately.`
     ).toEqual([]);
   });
 
