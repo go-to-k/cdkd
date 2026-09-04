@@ -149,7 +149,7 @@ refuses by default while they still hold data:
 | --- | --- |
 | `AWS::S3::Bucket` | CDK `autoDeleteObjects: true`, which templates as the `aws-cdk:auto-delete-objects` tag. |
 | `AWS::ECR::Repository` | CDK `emptyOnDelete: true` (`EmptyOnDelete: true` in the template), or the legacy `autoDeleteImages` (the `aws-cdk:auto-delete-images` tag). |
-| `AWS::S3Express::DirectoryBucket` | The `aws-cdk:auto-delete-objects` tag set to `true` in the bucket's `Tags`. CDK has no `autoDeleteObjects` sugar here, so declare the tag on the L1. |
+| `AWS::S3Express::DirectoryBucket` | The `aws-cdk:auto-delete-objects` tag set to `true` in the bucket's `Tags` — a handled property. CDK has no `autoDeleteObjects` sugar here, so declare the tag on the L1. |
 
 Both bucket types share a bounded empty-retry loop, so the auto-empty absorbs
 concurrent writes — including the race where objects (ALB access logs, for

@@ -61,7 +61,7 @@ to actually be serving, **not** on where the deploy runs:
 
 These are the types whose behaviour differs across the three modes. Other
 types are unaffected by the flags — which does not mean they never wait: a
-DynamoDB table, an EFS file system, an EMR cluster and a dozen others wait for
+DynamoDB table, an EFS file system, an EMR cluster and a dozen more wait for
 their own readiness on create in every mode, because their provider needs the
 result.
 
