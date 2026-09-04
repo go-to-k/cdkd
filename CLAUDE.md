@@ -194,6 +194,20 @@ such PRs) and `ci-green-gate` blocks an agent-side merge of it — the
 maintainer merges the release PR via the web UI (its diff is only
 version/CHANGELOG/manifest, already CI-covered on main).
 
+**A standing release PR can go STALE, and it stays mergeable while it is.**
+release-please does not rebuild a release PR whose computed release is
+unchanged — it logs `PR #N remained the same` and leaves the branch on the
+base it was cut from. So anything that later lands on `main` in a file
+release-please OWNS (`CHANGELOG.md`, `package.json`'s version,
+`.release-please-manifest.json`) is missing from that branch, and merging the
+PR takes the branch's stale copy and reverts it. Measured on #2503, whose
+branch predated the CHANGELOG normalization (#2504): GitHub reported it
+MERGEABLE while merging it would have undone 285 header conversions. The
+remedy is to close the release PR, delete its branch, and re-run the release
+workflow (`workflow_dispatch` exists for exactly this) — release-please
+recomputes the identical release from current `main`. So after any PR that
+edits one of those files, check whether a release PR is open and recreate it.
+
 ## Node.js Version
 
 - **`package.json` engines**: Node.js >= 20.0.0 (the lower bound for users of cdkd).
