@@ -30,10 +30,12 @@ answered `Resuming agent` and unstuck it). After any send answering "queued":
 confirm the agent actually runs, or re-send at once.
 
 **Before you watch CI, read the PR's merge state** (`/verify-pr` step 3): a PR
-at `mergeable=CONFLICTING state=DIRTY` never fires CI, and `gh pr checks
---watch` blocks forever on "no checks reported". In a fan-out run this is the
-likeliest PR state — peer lanes keep merging while yours sits open. Rebase,
-force-push, and CI fires within ~30s.
+at `mergeable=CONFLICTING state=DIRTY` never fires CI. In a fan-out run this is
+the likeliest PR state — peer lanes keep merging while yours sits open. Rebase,
+force-push, and CI fires within ~30s. **`--watch` does not cover the wait for
+checks to APPEAR** — with none reported it returns at once, so an `until` loop
+wrapping it hot-spins through a full tool timeout (measured 2026-09-05) and a plain `sleep` chain is refused by the harness. Poll
+`gh pr checks <N> --json state` from `Monitor` or a backgrounded loop.
 
 **~30s is push-to-queue latency, not time-to-verdict**: with runner backlog,
 checks can APPEAR 10+ minutes after a push and settle minutes later — longer
@@ -117,7 +119,7 @@ after any rebase touching it **and commit the rewrite before pushing**
 red; confirm with `git status --porcelain -- docs/_generated/`).
 
 ```bash
-gh pr merge <n> -R <owner>/<repo> --squash --delete-branch   # squash is the only method here
+gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 ```
 
 **`-R` is not optional in a run that touches more than one repo.** Without it
@@ -180,13 +182,9 @@ routinely is when another lane's write lands there (§7). It fails loudly —
 read the error, and do NOT restore the offending path: it is another session's
 uncommitted work, and `dirty-path-restore-gate` refuses it.
 
-**Release** is BATCHED (release-please via `.github/workflows/release.yml`) —
-merging a `fix:` / `feat:` commit to `main` publishes NOTHING by itself: it
-only creates/updates the standing `chore(release): <ver>` release PR. The npm
-release happens when the maintainer merges that release PR, so do NOT poll for
-a version bump after an ordinary merge, and never merge the release PR unless
-the user asked for a release. Confirm the release PR picked up the merge
-instead:
+**Release** is BATCHED (`CLAUDE.md` → "Release Flow" owns the rules: an
+ordinary merge publishes nothing, and the standing release PR is never yours to
+merge). This stage owes only the confirmation that it picked your merge up:
 
 ```bash
 gh pr list --state open --search "chore(release) in:title"   # the standing release PR

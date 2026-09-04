@@ -139,9 +139,12 @@ Blocked by ci-green-gate: no CI checks are reported on this PR yet.
 
 Merging before checks register is the PR #1231 failure shape (merged
 while check-build-test was red; main stayed red until fix-forward
-#1232). Wait for CI to start, watch it finish, then merge:
+#1232). \`--watch\` does NOT cover THIS state: with no checks reported
+it returns at once instead of waiting for them to appear, so wrapping
+it in a retry loop just spins. Poll until checks EXIST, then watch:
 
-  gh pr checks ${pr_number:-<PR>} --watch
+  gh pr checks ${pr_number:-<PR>} --json name,state   # [] = not registered yet
+  gh pr checks ${pr_number:-<PR>} --watch             # once a row exists
   # merge only after every check reports pass/skipping
 
 If this repo genuinely has no CI, bypass explicitly:

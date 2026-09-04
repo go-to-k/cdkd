@@ -89,6 +89,19 @@ issues the `Agent` calls.
      `integ-destroy` scope; real-AWS regressions cost cleanup time)
    - Branch has > 1 fix-back commit ("multiple sub-agents wrote the diff":
      `git log main..<branch> --oneline | grep -cE '^[a-f0-9]+ fix(\(|:)'`)
+   - **The code this PR edits shipped a defect in a RECENT PR.** A judgement
+     trigger, not a path list: `pr-review-gate.sh` reads the diff's stats and
+     paths plus the BRANCH's own commit subjects, and has no view of the
+     edited file's HISTORY — so it cannot see this and may not require the
+     marker. Raise the tier anyway and say why. The tell is
+     `git log --oneline -8 -- <the file>` coming back as consecutive `fix:`
+     commits. Measured on go-to-k/cdkd#2593: the heuristic said `inline`,
+     while that log on `src/deployment/recreate-targets.ts` showed the two
+     preceding merges were both data-loss-guard fixes and the nearer one
+     (go-to-k/cdkd#2565) had fixed a fail-open reading in the very function
+     this PR edits again. Code + security ran, and both converged on the same
+     two untested response shapes. Recency is evidence about the code, the
+     same way a security path is.
 
    **Security add-on reviewer (additive — NOT part of the tier ladder).**
    Whenever ANY security / process-launch path matches (surface list +
@@ -134,7 +147,15 @@ issues the `Agent` calls.
    waits for all, and synthesizes:
 
    - Any **blocker** → the marker is NOT set; address the blockers and
-     re-run `/review-pr <N>`.
+     re-run `/review-pr <N>` **from step 1**, on the PR's CURRENT stats. A
+     fix round adds LOC and files AND a `fix:` commit, so the tier is not
+     fixed for the life of a PR and neither is whether `pr-review-gate.sh`
+     requires the marker at all: go-to-k/cdkd#2593 opened at 306 LOC / 4
+     files (`inline`, no marker required) and its review-fix commit took it
+     to 406 LOC / 6 files — `1-reviewer` by size, and `3-axis` once the
+     hook's second-`fix:`-commit up-bias fires on the same push. Caught only
+     by recomputing before the merge; re-read the stats after every fix
+     round, in both directions.
    - Every finding minor / nit / clean → set the marker bound to the PR's
      current HEAD sha:
 

@@ -193,10 +193,17 @@ not wait for a version bump after a merge, and never merge the release PR
 without the maintainer asking for a release. cdkd deliberately stays at major
 version 0: `bump-minor-pre-major: true` maps breaking changes to MINOR bumps,
 and the publish job in `.github/workflows/release.yml` hard-fails on any tag
-whose major is not 0. The release PR is created with `GITHUB_TOKEN`, so it
-carries NO CI checks (GitHub does not trigger `pull_request` workflows for
-such PRs) and `ci-green-gate` blocks an agent-side merge of it — the
-maintainer merges the release PR via the web UI (its diff is only
+whose major is not 0. A `pull_request` CI run IS created for the release PR —
+the older note here said GitHub triggers none for a `GITHUB_TOKEN`-created PR.
+It starts at `action_required`, held for maintainer approval, and goes green
+once approved (measured 2026-09-05 on PRs
+[#2594](https://github.com/go-to-k/cdkd/pull/2594), #2585 and #2508: attempt 1
+`action_required`, attempt 2 green, all `event=pull_request`). So
+`ci-green-gate` stops blocking an agent-side merge the moment those runs are
+approved, leaving only `verify-pr-gate`'s generic marker requirement, which any
+lane already satisfies. **The rule above — never merge the release PR unless
+the maintainer asked for a release — is the real protection, not a gate.** The
+maintainer merges it via the web UI (its diff is only
 version/CHANGELOG/manifest, already CI-covered on main).
 
 **A standing release PR can go STALE, and it stays mergeable while it is.**
