@@ -175,7 +175,7 @@ local-invoke-agentcore-from-state	2026-07-26T20:40:20Z	PASS	86	verify.sh	0727b s
 local-invoke-buildkit	2026-07-26T20:35:19Z	PASS	18	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
 local-invoke-container	2026-09-02T12:38:17Z	PASS	49	verify.sh	PR 2441 (issue 2410); 4/4. Also used as the live check of the cdk-local second-logger claim: with streams split, stdout carried Building container image + START/END/REPORT + the payload as the LAST line, stderr carried every cdkd logger line (issues 2429 / 2419)
 local-invoke-dotnet	2026-07-26T20:35:19Z	PASS	58	verify.sh	0727b sweep-L5 staleness re-run (rc=0); docker + account clean
-local-invoke-from-cfn-stack	2026-07-26T21:13:17Z	PASS	94	verify.sh	re-run post review fixes; install-guard exercised via fresh node_modules direct run (rc=0); clean
+local-invoke-from-cfn-stack	2026-09-04T15:08:26Z	FAIL	5650	verify.sh	blocked at step 1c: docker pull hung ~94min on an already-cached image; aborted before any assertion, no AWS resources created
 local-invoke-from-cfn-stack-multi-stack	2026-07-26T21:13:17Z	PASS	113	verify.sh	re-run post review fixes; docker + account + CFn clean
 local-invoke-from-state	2026-08-26T03:18:49Z	PASS	79	verify.sh	PR #2194 integ-local gate (local-state-loader in scope); Docker + real-AWS from-state, 0 err 0 orphans
 local-invoke-java	2026-07-26T20:29:11Z	PASS	36	verify.sh	0727b sweep-L4 staleness re-run (rc=0); docker + account clean
