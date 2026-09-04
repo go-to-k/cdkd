@@ -26,8 +26,17 @@ export class BackupStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // Phase 1b (issue #2553) renames the vault to prove the stateful guard
+    // refuses a plain `cdkd deploy` that would DELETE + CREATE it.
+    // `BackupVaultName` is createOnly in the type's registry schema, and
+    // `AWS::Backup::*` has NO SDK provider, so the rename is exactly the
+    // property-driven replacement through Cloud Control's DELETE that the
+    // tier-2 sweep added `AWS::Backup::BackupVault` to `STATEFUL_TYPES` for.
+    // The suffix must DIFFER from the default, or the arm is vacuous.
+    const vaultSuffix = process.env['CDKD_TEST_RENAME_VAULT'] === 'true' ? 'vault-v2' : 'vault';
+
     const vault = new backup.BackupVault(this, 'Vault', {
-      backupVaultName: `${this.stackName.toLowerCase()}-vault`,
+      backupVaultName: `${this.stackName.toLowerCase()}-${vaultSuffix}`,
       // No recovery points are ever created in this integ, so the vault is
       // empty and can be deleted cleanly on destroy.
       removalPolicy: cdk.RemovalPolicy.DESTROY,

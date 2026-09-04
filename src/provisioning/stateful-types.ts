@@ -75,6 +75,25 @@
  * agreement checkable rather than hand-curated.
  * `AWS::S3Express::DirectoryBucket` was the one type on the wrong side.
  *
+ * **Third bound, and the first that reads the population the other two are
+ * blind to** (issue [#2553]): both bounds above are derived from
+ * `src/provisioning/providers/**` and `register-providers.ts`, so both can
+ * only see types cdkd has an SDK PROVIDER for — 134 of them, against the
+ * 1371 tier-2 types that have none and whose replacement routes through
+ * Cloud Control's DELETE. That is the population issue [#2514] was filed
+ * about, and until now it had never been swept.
+ * `scripts/audit-stateful-candidates.ts` reads every tier-2 type's
+ * CloudFormation registry schema and PROPOSES the ones that declare a
+ * createOnly property (so a rename is a replacement a plain `cdkd deploy`
+ * reaches with no flag) AND fire a data-bearing signal. Each proposal must
+ * end up either on this list or in that script's `NOT_GUARDED` map with a
+ * reason; `tests/unit/scripts/stateful-candidates.test.ts` fails on any that
+ * is in neither, and on a `NOT_GUARDED` entry the derivation has stopped
+ * proposing. Unlike the two bounds above the signals are HEURISTIC — no AWS
+ * artifact states "deleting this destroys user data" — so this bound makes
+ * the widening CHECKABLE rather than proven, which is the property a hand
+ * pass over 1371 types could not have.
+ *
  * Neither fence can see a provider whose delete destroys data with NO opt-in
  * at all — an unconditional empty (`S3TablesProvider.deleteTableBucket`,
  * `S3VectorsProvider.deleteVectorBucket`) or a plainly destructive API call
@@ -228,6 +247,208 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Edge / URL-immutability — CloudFront URL change breaks downstream
   // consumers and the change has a ~20-minute propagation window.
   'AWS::CloudFront::Distribution',
+
+  // ---------------------------------------------------------------------
+  // Tier-2 (Cloud-Control-routed) additions — issue [#2553].
+  //
+  // Everything above this line was reached by walking
+  // `src/provisioning/providers/**`, which is why the entries above are
+  // almost all types cdkd has an SDK provider for. The types below have NO
+  // SDK provider: a replacement routes through Cloud Control's DELETE, the
+  // path PR [#2519] hoisted this guard onto. They were proposed by
+  // `scripts/audit-stateful-candidates.ts`, which reads every tier-2 type's
+  // registry schema, and each one is reachable by a rename on a plain
+  // `cdkd deploy` — none has a `ReplacementRulesRegistry` entry, so
+  // `create-only-properties.ts` resolves the schema at diff time and its
+  // createOnly set classifies the change as a replacement. The per-type
+  // createOnly properties are recorded in
+  // `docs/_generated/stateful-candidates.json`, which is where that claim is
+  // checkable rather than assumed.
+  //
+  // The 27 candidates deliberately left OFF carry their reason in that
+  // script's `NOT_GUARDED` map, and
+  // `tests/unit/scripts/stateful-candidates.test.ts` fails on any candidate
+  // in neither place — so this block cannot silently stop keeping up with
+  // the derivation.
+  // ---------------------------------------------------------------------
+
+  // Databases and warehouses with no SDK provider. Each holds the rows
+  // themselves; a DELETE + CREATE hands back an empty one and AWS migrates
+  // nothing.
+  'AWS::Cassandra::Table',
+  'AWS::DocDBElastic::Cluster',
+  'AWS::Lightsail::Database',
+  'AWS::Timestream::Database',
+  'AWS::Timestream::Table',
+  // InfluxDB is a managed time-series server with provisioned storage
+  // (`AllocatedStorage`, `DbStorageType`); the cluster/instance IS the store.
+  'AWS::Timestream::InfluxDBCluster',
+  'AWS::Timestream::InfluxDBInstance',
+  // Oracle Database@AWS. A VM cluster runs the customer's Oracle databases on
+  // its own storage; terminating it destroys them.
+  'AWS::ODB::CloudAutonomousVmCluster',
+  'AWS::ODB::CloudVmCluster',
+  // Redshift Serverless splits storage from compute: the NAMESPACE owns the
+  // databases (and a snapshot IS a copy of them), while the workgroup is
+  // compute and is deliberately NOT guarded — see the script's NOT_GUARDED.
+  'AWS::RedshiftServerless::Namespace',
+  'AWS::RedshiftServerless::Snapshot',
+  // Graph stores. A snapshot is the data itself, not a pointer to it.
+  'AWS::NeptuneGraph::Graph',
+  'AWS::NeptuneGraph::GraphSnapshot',
+
+  // In-memory / streaming stores that persist their dataset.
+  'AWS::MemoryDB::Cluster',
+  // Guarded while `AWS::RDS::GlobalCluster` and its Neptune / DocDB siblings
+  // are written off, and the discriminator is in the schemas rather than in
+  // the naming: this type declares `NodeType` and `NumShards` — it SIZES the
+  // storage the regional clusters serve — while `AWS::RDS::GlobalCluster`
+  // declares only `Engine`, `EngineVersion`, `GlobalClusterIdentifier`,
+  // `SourceDBClusterIdentifier`, `StorageEncrypted` and `DeletionProtection`,
+  // every one of which points at member clusters that outlive it.
+  'AWS::MemoryDB::MultiRegionCluster',
+  'AWS::ElastiCache::ServerlessCache',
+  // Kafka. Topic data lives on the brokers' own storage; there is no
+  // migration to a replacement cluster.
+  'AWS::MSK::Cluster',
+  'AWS::MSK::ServerlessCluster',
+  // An MSK channel carries encryption AT REST over the change stream it
+  // buffers before delivery. Whether a delete drops undelivered records is
+  // UNMEASURED, and the fail-safe rule applies.
+  'AWS::MSK::Channel',
+  // A managed message broker persists its queues (ActiveMQ KahaDB, RabbitMQ
+  // mnesia) on the broker's own storage.
+  'AWS::AmazonMQ::Broker',
+  // OpenSearch Ingestion buffers to persistent storage (`BufferOptions`,
+  // `EncryptionAtRestOptions`); a delete drops whatever has not drained.
+  'AWS::OSIS::Pipeline',
+  // Retained media, not a pipe: `DataRetentionInHours` is what makes a Kinesis
+  // Video stream data-bearing where a plain transport would not be.
+  'AWS::KinesisVideo::Stream',
+  // EventBridge archives retain the events themselves for `RetentionDays`.
+  'AWS::Events::Archive',
+
+  // Search / vector / analytics indexes. The indexed documents are the user's
+  // and are not re-derivable from the template.
+  'AWS::OpenSearchServerless::Collection',
+  'AWS::OpenSearchServerless::Index',
+  'AWS::OpenSearchServerless::CollectionIndex',
+  'AWS::Kendra::Index',
+  'AWS::QBusiness::Index',
+  // A Q Business application owns its indices, data-source sync state and
+  // conversation history.
+  'AWS::QBusiness::Application',
+  // Face and geofence collections are written through the service API, never
+  // from the template, so a recreate cannot restore them.
+  'AWS::Rekognition::Collection',
+  'AWS::Location::GeofenceCollection',
+  // An S3 Vectors index holds the vectors, exactly as the already-guarded
+  // `AWS::S3Vectors::VectorBucket` holds the indexes.
+  'AWS::S3Vectors::Index',
+  // Bedrock knowledge bases can hold Bedrock-MANAGED vector storage
+  // (`StorageConfiguration`); whether a given one does is a template-time
+  // choice this guard cannot see, so it takes the fail-safe side.
+  'AWS::Bedrock::KnowledgeBase',
+  // A data-automation library carries encryption at rest over the entity
+  // definitions and extractions it accumulates.
+  'AWS::Bedrock::DataAutomationLibrary',
+
+  // Object / file / image stores with no SDK provider.
+  'AWS::Lightsail::Bucket',
+  'AWS::S3Outposts::Bucket',
+  'AWS::HealthImaging::Datastore',
+  'AWS::HealthLake::FHIRDatastore',
+  // An email archive retains the messages themselves.
+  'AWS::SES::MailManagerArchive',
+  // A WorkSpaces instance volume is an EBS volume with a filesystem on it —
+  // the same argument as the already-guarded `AWS::EC2::Volume`.
+  'AWS::WorkspacesInstances::Volume',
+
+  // IoT Analytics stores raw and processed messages on all three of its
+  // resources; none of it is re-derivable.
+  'AWS::IoTAnalytics::Channel',
+  'AWS::IoTAnalytics::Datastore',
+  'AWS::IoTAnalytics::Dataset',
+
+  // Artifact / image / source stores.
+  //
+  // A CodeArtifact DOMAIN is not a grouping: it owns the deduplicated asset
+  // storage every repository in it references, so deleting the domain
+  // destroys package content the repositories alone do not hold.
+  'AWS::CodeArtifact::Domain',
+  'AWS::CodeArtifact::Repository',
+  // Public ECR repositories hold images exactly as the already-guarded
+  // private `AWS::ECR::Repository` does.
+  'AWS::ECR::PublicRepository',
+
+  // Backup vaults hold the recovery points — the data whose whole purpose is
+  // to survive the loss of the resource it was taken from. Note that NO
+  // property-shaped signal can see this: every property on the type is a
+  // pointer or a setting, and the recovery points appear nowhere in the
+  // schema. That blind spot is why the derivation also has a name-scoped
+  // signal.
+  'AWS::Backup::BackupVault',
+  'AWS::Backup::LogicallyAirGappedBackupVault',
+
+  // Kubernetes control plane. The etcd store behind an EKS cluster holds
+  // every Kubernetes object the user created; nothing in the CloudFormation
+  // template describes it, and a replacement comes back empty.
+  'AWS::EKS::Cluster',
+  // SageMaker HyperPod cluster nodes carry local and tiered storage
+  // (`TieredStorageConfig`) holding training checkpoints.
+  'AWS::SageMaker::Cluster',
+  // A SageMaker Studio domain OWNS the EFS file system holding every user
+  // profile's home directory (`HomeEfsFileSystemId`).
+  'AWS::SageMaker::Domain',
+
+  // Service-owned "domains" that hold the records themselves rather than DNS
+  // names. Contrast `AWS::Amplify::Domain`, `AWS::Cognito::UserPoolDomain`
+  // and `AWS::Lightsail::Domain`, which are DNS and are NOT guarded.
+  'AWS::Cases::Domain',
+  'AWS::CustomerProfiles::Domain',
+  'AWS::DataZone::Domain',
+
+  // Clean Rooms tables hold populated mapping and intermediate-result data,
+  // not just a reference to a configured table.
+  'AWS::CleanRooms::IdMappingTable',
+  'AWS::CleanRooms::IntermediateTable',
+
+  // Runtime-written key/value and tabular stores. Both are seeded from the
+  // template at most once (`ImportSource`) and then written through the
+  // service API, so a recreate loses every write since.
+  'AWS::CloudFront::KeyValueStore',
+  'AWS::Connect::DataTable',
+
+  // An AppConfig configuration profile whose `LocationUri` is `hosted` owns
+  // its configuration versions; deleting the profile deletes them. Whether a
+  // given profile is hosted is a template-time value, so the type is guarded
+  // unconditionally rather than probed.
+  'AWS::AppConfig::ConfigurationProfile',
+
+  // Investigation groups retain investigations for `RetentionInDays` — the
+  // same argument the LogGroup entry rests on.
+  'AWS::AIOps::InvestigationGroup',
+  // A Recycle Bin retention rule is guarded on the FAIL-SAFE side of an open
+  // question rather than on a proof, and the distinction is the whole reason
+  // it is here: the rule's own content (`ResourceTags`, `RetentionPeriod`,
+  // `LockConfiguration`) is entirely template-declared, so a recreate restores
+  // the RULE exactly. What is NOT derivable from this repo or the type's
+  // schema is what happens to the resources already sitting in the bin UNDER
+  // that rule when it is deleted — and those are snapshots and AMIs the user
+  // deleted expecting to be able to get them back. An earlier revision wrote
+  // the type off on the assumption that they survive; that assumption is
+  // withdrawn, because the derivation's own rule says a candidate whose answer
+  // is not knowable from the outside is guarded (see `NOT_GUARDED`'s header in
+  // `scripts/audit-stateful-candidates.ts`).
+  'AWS::Rbin::Rule',
+
+  // Identifier-immutability, the class `AWS::CloudFront::Distribution` is
+  // already on this list for. Releasing a phone number or a sender ID returns
+  // it to the pool: the replacement gets a DIFFERENT one, every downstream
+  // consumer of the old one breaks, and the original may be unobtainable. AWS
+  // ships `DeletionProtectionEnabled` on both, which is the same judgement.
+  'AWS::SMSVOICE::PhoneNumber',
+  'AWS::SMSVOICE::SenderId',
 ]);
 
 /**

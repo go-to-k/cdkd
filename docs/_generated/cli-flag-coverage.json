@@ -304,6 +304,7 @@
     {
       "flag": "--force-stateful-recreation",
       "integs": [
+        "backup",
         "deletion-policy-snapshot",
         "efs-immutable-replacement",
         "glue-securityconfig-replace",

@@ -22,7 +22,7 @@ asset-auto-create	2026-09-01T14:49:24Z	PASS	300	verify.sh	PR#2398 proxy no-op re
 asset-bootstrap	2026-08-26T06:51:55Z	PASS	136	verify.sh	issue 2240 live arm; new phase 1b proves the cross-region --asset-bucket refusal names both regions and leaves no marker/policy on the foreign bucket; eu-west-1 (us-east-1/us-west-2/ap-northeast-1 all carry cdkd markers); destroy 2 deleted 0 errors, 0 orphans
 asset-migration	2026-08-12T08:18:17Z	PASS	600	verify.sh	us-east-2; final script post-review-round-3; rc ok, orph clean
 aws-custom-resource	2026-08-12T08:12:11Z	PASS	77	verify.sh	#1674 lane; CR invoke path, 4 del/0 err, 0 orph
-backup	2026-07-26T20:07:41Z	PASS	67	verify.sh	0727b sweep-b14 staleness re-run (rc=0); account clean
+backup	2026-09-04T16:42:27Z	PASS	245	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean; phases 1b/1c pin both polarities of the stateful guard (#2553)
 basic	2026-08-01T10:00:06Z	PASS	81	standard	0801 regression sweep; 2 del/0 err, 0 orphans
 batch	2026-07-26T18:43:33Z	PASS	89	standard	0727b sweep-b5 staleness re-run (rc=0); account clean
 bedrock-agentcore	2026-08-10T05:19:05Z	PASS	36	standard	0810 P2 sweep b6; 6 del 0 err, 0 orph
