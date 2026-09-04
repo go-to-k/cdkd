@@ -21,11 +21,25 @@ name: Release
 # NO CI checks (and ci-green-gate blocks an agent-side `gh pr merge` on it).
 # Its diff is only version/CHANGELOG/manifest; the maintainer merges it via
 # the web UI. To get CI on release PRs, hand the release-please step a PAT.
+#
+# Known behavior: release-please does NOT rebuild a standing release PR whose
+# computed release is unchanged — it logs `PR #N remained the same` and leaves
+# the branch on the base it was cut from. So a change to a file release-please
+# OWNS (CHANGELOG.md) that lands on main afterwards is absent from the release
+# branch, and GitHub can still report the PR MERGEABLE: merging it would take
+# the branch's stale copy and undo that change. Seen on go-to-k/cdkd#2503,
+# which was closed and recreated as go-to-k/cdkd#2508 after CHANGELOG.md was
+# normalized. Remedy: close the release PR, delete its branch, and re-run this
+# workflow — which is what `workflow_dispatch` below is for. Re-running is
+# safe: release-please recomputes the identical release from main.
 
 on:
   push:
     branches:
       - main
+  # Manual re-run: recreate a stale release PR (see the note above), or refresh
+  # one without waiting for the next merge. release-please is idempotent.
+  workflow_dispatch:
 
 permissions: {}
 
