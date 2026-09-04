@@ -931,6 +931,22 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
     });
   }
 
+  it('promotes WITHOUT the unsettled warning when a truncated page also carries an entry — the ordinary MaxKeys=1 answer for a non-empty bucket', async () => {
+    const logger = silentLogger();
+    // This is the COMMON real response, not an edge case: MaxKeys=1 against a
+    // non-empty bucket returns one entry AND IsTruncated: true. Only the
+    // branch ORDER keeps the "without settling it" warning off every
+    // non-empty bucket, so the order needs its own test.
+    const { client } = mockS3({ versions: 1, truncation: 'isTruncated' });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
+      logger
+    );
+    expect(out[0]!.statefulReason).toBe('has-objects');
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it('leaves statefulReason at null when the page OMITS both arrays and is not truncated — S3 omits an empty collection, so absence is how an empty bucket answers', async () => {
     const logger = silentLogger();
     const { client } = mockS3({ omitArrays: true });
@@ -971,6 +987,23 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
     // Without the retry this fell into the fail-OPEN catch and stayed null,
     // silently widening the hole the guard exists to close.
     expect(out[0]!.statefulReason).toBe('has-objects');
+  });
+
+  it('gives up after a bounded number of attempts on a PERSISTENT throttle, and degrades to the S3 arm’s open failure', async () => {
+    const { client, sentCommands } = mockS3({ throws: throttleError() });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: client, cloudWatchLogs: forbiddenLogsClient(), sleep: noSleep },
+      silentLogger()
+    );
+    // 3 retries = 4 attempts. Pinned so the budget cannot grow silently on a
+    // path where a user is waiting, and so the published "three retries"
+    // figure has something watching it.
+    expect(sentCommands).toHaveLength(4);
+    // Exhaustion lands in the SAME arm the pre-retry code reached on the
+    // first throttle — the retry buys attempts, it does not change the
+    // failure posture.
+    expect(out[0]!.statefulReason).toBe(null);
   });
 
   it('does NOT retry a non-throttle S3 failure — the probe keeps its open failure arm', async () => {
@@ -1463,6 +1496,24 @@ describe('probeStatefulRecreateTargetsAsync — AWS::Logs::LogGroup arm (#2558)'
     // Pre-fix the throttle reached the catch and refused with
     // `has-log-events`.
     expect(out[0]!.statefulReason).toBe(null);
+  });
+
+  it('gives up after a bounded number of attempts on a PERSISTENT throttle, and degrades to the log group’s CLOSED failure', async () => {
+    const throttle = new Error('Rate exceeded');
+    throttle.name = 'ThrottlingException';
+    const logs = mockLogs({ throws: throttle });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [logGroupTarget()],
+      {
+        s3: forbiddenS3Client(),
+        cloudWatchLogs: logs.client,
+        sleep: async (): Promise<void> => {},
+      },
+      silentLogger()
+    );
+    expect(logs.sentCommands).toHaveLength(4);
+    // The opposite posture to the S3 twin above, and deliberately so.
+    expect(out[0]!.statefulReason).toBe('has-log-events');
   });
 
   it('does NOT retry a non-throttle log-group failure', async () => {

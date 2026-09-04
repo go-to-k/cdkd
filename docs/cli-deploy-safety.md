@@ -695,10 +695,12 @@ that simply OMITS the version and delete-marker lists is different, and does
 count as empty: S3 omits an empty collection rather than sending an empty
 list, so omission is how an empty bucket answers.
 
-Both emptiness probes retry a rate limit (three attempts, exponential
-backoff) and nothing else. Every other failure here is either an answer or
-something an identical retry will not change, so it goes straight to the
-per-type failure behaviour described below.
+Both emptiness probes retry a throttling response — a throttling error code,
+or HTTP 429 / 503 — up to three times with exponential backoff, at most
+3.5 seconds per target. Every other failure goes straight to the per-type
+behaviour described below, because it is either an answer or something an
+identical retry will not change. When the retries are exhausted the probe
+lands in that same per-type behaviour.
 
 If the probe itself fails — permission denied, bucket not found mid-flight, a
 transient network error — cdkd logs a warning and leaves the target

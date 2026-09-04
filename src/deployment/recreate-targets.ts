@@ -654,18 +654,30 @@ export async function probeStatefulRecreateTargetsAsync(
   logger: Logger = getLogger().child('recreate-targets')
 ): Promise<RecreateTarget[]> {
   const promoted: RecreateTarget[] = [];
-  // Both probes retry a THROTTLE and nothing else (issue [#2566]). A rate
-  // limit is the one failure here that a retry can clear, and the two arms
-  // answer a throttle differently by design -- the bucket falls through to
-  // its open failure arm, the log group to a refusal -- so an unretried
-  // throttle silently widens the S3 hole in one arm and refuses a deploy the
-  // user asked for in the other. Deliberately NOT the shared transient table:
-  // every other error here is either an answer (`ResourceNotFoundException`)
-  // or something a second identical call will not change, and this runs on
-  // the pre-flight path where a user is waiting.
+  // Both probes retry a THROTTLE (issue [#2566]). A rate limit is the one
+  // failure here that a retry can clear, and the two arms answer a throttle
+  // differently by design -- the bucket falls through to its open failure
+  // arm, the log group to a refusal -- so an unretried throttle silently
+  // widens the S3 hole in one arm and refuses a deploy the user asked for in
+  // the other. Deliberately NOT the shared transient table: every other error
+  // here is either an answer (`ResourceNotFoundException`) or something a
+  // second identical call will not change, and this runs on the pre-flight
+  // path where a user is waiting.
+  //
+  // "Throttle" means what `isThrottlingError` means -- a throttling error
+  // NAME or a 429/503 -- and not the shared table's `Rate exceeded` MESSAGE
+  // backstop, which a custom `isRetryable` replaces rather than extends. Both
+  // services this probes raise a canonical name (`SlowDown` / a 503 for S3,
+  // `ThrottlingException` for CloudWatch Logs), so the narrower reading
+  // covers them; a rate limit arriving with a generic name would not retry.
+  //
+  // 3 retries = 4 attempts, sleeping 0.5s + 1s + 2s = 3.5s at worst, per
+  // target. `logger` is threaded so that wait is visible under `--verbose`
+  // instead of reading as a hang.
   const probeRetryOptions = {
     maxRetries: 3,
     initialDelayMs: 500,
+    logger,
     // `(classificationText, error)` — the ERROR is the second argument, and
     // reading the first would hand `isThrottlingError` a string with no
     // `.name` and classify every throttle as non-retryable. Same spelling the
@@ -718,10 +730,14 @@ export async function probeStatefulRecreateTargetsAsync(
         // response that arrived, not about a probe that failed.
         const hasVersions = (result.Versions?.length ?? 0) > 0;
         const hasDeleteMarkers = (result.DeleteMarkers?.length ?? 0) > 0;
+        // Truthiness, not `!== undefined`, so an empty-string marker reads as
+        // ABSENT — the same reading the log-group twin's `!result.nextToken`
+        // gives the same shape. Measured: a complete listing carries
+        // `IsTruncated: false` and neither marker at all, so the two spellings
+        // agree today; they disagree only on a `''` marker, where
+        // `!== undefined` would refuse a genuinely empty bucket.
         const truncated =
-          result.IsTruncated === true ||
-          result.NextKeyMarker !== undefined ||
-          result.NextVersionIdMarker !== undefined;
+          result.IsTruncated === true || !!result.NextKeyMarker || !!result.NextVersionIdMarker;
         if (hasVersions || hasDeleteMarkers) {
           promoted.push({ ...target, statefulReason: 'has-objects' });
         } else if (truncated) {
