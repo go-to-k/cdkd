@@ -6,8 +6,36 @@ unlisted: true
 # `cdkd migrate --from-cfn-stack`: adopt plain (non-CDK) CFn stacks
 
 **Issue**: [#465](https://github.com/go-to-k/cdkd/issues/465)
-**Status**: Design (no implementation)
+**Status**: SUPERSEDED — the command this document designs was implemented,
+shipped, and then REMOVED in issue
+[#2572](https://github.com/go-to-k/cdkd/issues/2572).
 **Wave**: 4
+
+> **This design is historical. `cdkd migrate` no longer exists.**
+>
+> It was the only cdkd command that shelled out to the upstream `cdk` binary
+> (`cdk migrate --from-stack` for codegen, `cdk synth` on the generated app,
+> `cdk --version` as a pre-flight), which contradicts cdkd's design constraint
+> of not depending on the AWS CDK CLI. Issue #2572 weighed keeping it,
+> reimplementing CloudFormation-template-to-CDK-code generation inside cdkd,
+> and removing it; the maintainer chose removal.
+>
+> What survives, and what to use instead:
+>
+> - `cdkd import --migrate-from-cloudformation` still adopts a CloudFormation
+>   stack into cdkd state and retires the CFn stack. It requires a CDK app that
+>   already synthesizes the stack — that is the part `cdkd migrate` added and
+>   cdkd no longer does.
+> - For a plain, non-CDK stack, generate the CDK app first with upstream
+>   `cdk migrate --from-stack` yourself, then run
+>   `cdkd import --migrate-from-cloudformation`. That is the same two steps
+>   `cdkd migrate` performed, with the CDK CLI dependency where it belongs:
+>   in the user's hands, not in cdkd's.
+>
+> The rest of this document is kept because §2-§5 record WHY the two-pass
+> `(sourceLogicalId, synthLogicalId)` resource mapping was needed, which the
+> next attempt at this capability would otherwise rediscover. Read it as
+> history, not as a description of the shipped tool.
 
 ## 1. Goal & non-goals
 
@@ -490,7 +518,7 @@ After migration but BEFORE running any `cdkd deploy` against the new app:
   - Mock the import phase invocation; assert that the resolved
     `(generatedLogicalId, physicalId)` mapping is threaded through as
     `--resource-mapping-inline`.
-- **Real-AWS integration test** at `tests/integration/migrate-from-bare-cfn/`:
+- **Real-AWS integration test**, at the time at `tests/integration/migrate-from-bare-cfn/` (that fixture was deleted with the command in issue #2572 — the steps below are the historical plan, not a path in the tree):
   1. Pre-create a 3-resource CFn stack via raw `aws cloudformation
      create-stack` (no CDK): an S3 bucket + an SSM parameter + an SNS topic.
   2. Run `cdkd migrate --from-cfn-stack <name> --output-dir /tmp/migrate-out

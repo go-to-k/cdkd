@@ -152,8 +152,6 @@ const KNOWN_SCENARIOS: Record<string, string> = {
     'cdkd → CloudFormation migration via 2-phase IMPORT changeset + phase-2 UPDATE.',
   'migrate-from-cfn-handover':
     'CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack).',
-  'migrate-from-bare-cfn':
-    '`cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire.',
   'auto-import-cfn-generated-name':
     '`cdkd import` AUTO mode (no `--resource`, no `--migrate-from-cloudformation`) adopting a resource whose physical name CloudFormation GENERATED, after an upstream `cdk deploy`. Pins issue #1128: auto mode resolves ids by the template name property, then an `aws:cdk:path` tag walk that CANNOT match on real AWS (AWS rejects `aws:`-prefixed tag writes; CloudFormation keeps the value in template `Metadata` without promoting it to a tag), so a CFn-generated name returned `not found` until auto mode learned to consult `DescribeStackResources`. The fixture deliberately sets NO explicit physical name and passes NO override flag — both pre-existing import integs pass one of those and therefore never exercised this path, which is why the defect survived four rounds of #1091 tag-walk work.',
   'auto-import-composite-physical-id':

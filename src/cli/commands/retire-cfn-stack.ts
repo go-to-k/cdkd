@@ -40,7 +40,7 @@ export const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
  * Recursive tree of CloudFormation resources rooted at a parent stack.
  *
  * Built once per `cdkd import --migrate-from-cloudformation` invocation
- * (and used by both the per-child state-write walk in `runImport` and the
+ * (and used by both the per-child state-write walk in `importCommand` and the
  * recursive Retain-injection in `retireCloudFormationStack`), so an
  * arbitrarily-deep nesting only costs one `DescribeStackResources` round-trip
  * per stack instead of repeating the walk per consumer.
@@ -135,11 +135,13 @@ export interface RetireCloudFormationStackOptions {
    * any child resource without Retain would be deleted as a side effect
    * of retiring the parent.
    *
-   * When omitted (e.g. `cdkd migrate --from-cfn-stack` against a
-   * hand-authored single-stack template), the retire flow builds the tree
-   * lazily via {@link getCloudFormationResourceTree} on first need —
-   * adding at most one `DescribeStackResources` round-trip per nesting
-   * level, and zero overhead for the non-nested case.
+   * When omitted, the retire flow builds the tree lazily via
+   * {@link getCloudFormationResourceTree} on first need — adding at most one
+   * `DescribeStackResources` round-trip per nesting level, and zero overhead
+   * for the non-nested case. `cdkd import`'s migration path always supplies
+   * the tree, so since `cdkd migrate` was removed (issue #2572) the lazy arm
+   * has no in-repo caller; it is kept because `resourceTree` is optional in
+   * this helper's contract and omitting it must stay correct.
    *
    * The tree's root `stackName` must match `cfnStackName`; otherwise the
    * retire flow throws an invariant error before any AWS mutation runs.
@@ -261,8 +263,9 @@ export async function retireCloudFormationStack(
   // (a) the parent template actually contains nested-stack rows AND (b)
   // the caller didn't already supply one. The lazy build adds at most
   // one `DescribeStackResources` round-trip per nesting level, and zero
-  // overhead for the non-nested case (which is the migrate-from-cfn-stack
-  // path's common shape).
+  // overhead for the non-nested case. See the `resourceTree` JSDoc above for
+  // why the lazy arm is kept although `cdkd import`'s migration path always
+  // supplies the tree.
   const tpl = await cfnClient.send(
     new GetTemplateCommand({ StackName: cfnStackName, TemplateStage: 'Original' })
   );
@@ -410,9 +413,11 @@ export async function retireCloudFormationStack(
         // (which can fail validation when a parameter has no default, or
         // change resource shape when defaults differ from current values).
         // Pre-fix this caused UPDATE_ROLLBACK on any source stack with
-        // declared Parameters — surfaced by the `cdkd migrate` integ
-        // (bare-cfn-template.json carries a ResourceSuffix parameter so
-        // re-runs do not collide on physical names).
+        // declared Parameters — surfaced by the `migrate-from-bare-cfn` integ,
+        // whose template carried a ResourceSuffix parameter. That fixture was
+        // retired with `cdkd migrate` (issue #2572); the behaviour it found is
+        // still covered by the unit tests in
+        // `tests/unit/cli/retire-cfn-stack.test.ts`.
         const previousParameters = (stack.Parameters ?? []).map((p) => ({
           ParameterKey: p.ParameterKey,
           UsePreviousValue: true,
@@ -929,20 +934,20 @@ async function walkCfnStackTree(
 
 /**
  * The CloudFormation-stack retirement confirmation prompt, reached from
- * `cdkd import --migrate-from-cloudformation` and `cdkd migrate
- * --retire-cfn-stack` (both spell the skip flag `-y` / `--yes`). Its only call
- * site is inside the `if (!yes)` block above, which is what keeps
+ * `cdkd import --migrate-from-cloudformation` (skip flag `-y` / `--yes`). Its
+ * only call site is inside the `if (!yes)` block above, which is what keeps
  * `confirmOrRefuse`'s non-interactive refusal (issue #2275) from firing on a
  * `--yes` run.
  *
- * TWO commands reach it, so the refusal NAMES BOTH. Every other site names one
- * command because it has one; a refusal that named neither would leave a CI
- * user knowing a flag is missing without knowing which invocation to put it
- * on, and `confirmOrRefuse`'s own contract is that the refusal is the only
- * thing that user sees.
+ * The refusal NAMES that command, as every other site does, because
+ * `confirmOrRefuse`'s contract is that the refusal is the only thing a CI user
+ * sees: it has to say which invocation the missing flag belongs on. It named
+ * TWO commands until `cdkd migrate --retire-cfn-stack` was removed with the
+ * command itself (issue #2572); `cdkd import --migrate-from-cloudformation` is
+ * now the sole way to reach this prompt.
  *
  * It also states that cdkd state has ALREADY been written. This prompt is the
- * only one of the nine that fires AFTER its command's state write, so a
+ * only one of the ten that fires AFTER its command's state write, so a
  * refusal here leaves a genuine split brain — cdkd claims the resources while
  * the CloudFormation stack is still live — and the operator has to know that
  * before deciding whether to re-run or finish by hand.
@@ -953,9 +958,10 @@ export async function confirmPrompt(prompt: string): Promise<boolean> {
   return confirmOrRefuse(prompt, {
     refusal:
       'The CloudFormation stack retirement confirmation prompt cannot run in a ' +
-      'non-interactive environment. Pass -y / --yes on whichever command you ran — ' +
-      'cdkd import --migrate-from-cloudformation or cdkd migrate --retire-cfn-stack — ' +
-      'or run it from a real terminal. NOTE cdkd state has already been written: the ' +
+      'non-interactive environment. Pass -y / --yes on ' +
+      'cdkd import --migrate-from-cloudformation. ' +
+      'Alternatively, run it from a real terminal. ' +
+      'NOTE cdkd state has already been written: the ' +
       'resources are recorded in cdkd state while the CloudFormation stack is still ' +
       'live, so re-run with -y / --yes (or retire the stack by hand) to finish the ' +
       'migration.',

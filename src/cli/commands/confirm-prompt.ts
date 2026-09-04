@@ -85,12 +85,13 @@ export interface ConfirmOrRefuseOptions {
  * `printf 'y' |` (a real answer with no trailing newline) and `< /dev/null`
  * stay pending indefinitely.
  *
- * REFUSE rather than auto-confirm, at every one of the nine sites this helper
- * replaced. Every one of them guards a MUTATION — a rollback replay, a state
- * record removal, an observed-property refresh, an orphan, an import, an
- * export-then-delete-state, a drift accept/revert, a CloudFormation stack
- * retirement, a state-bucket migration — so silently answering "yes" on
- * behalf of an absent operator is never the safe reading. `deploy.ts`'s
+ * REFUSE rather than auto-confirm, at every one of the TEN sites that route
+ * through this helper. Every one of them guards a MUTATION — a rollback
+ * replay, a state record removal, an observed-property refresh, an orphan, an
+ * import, an export-then-delete-state, a drift accept/revert, a
+ * CloudFormation stack retirement, a state-bucket migration, an event-history
+ * prune — so silently answering "yes" on behalf of an absent operator is never
+ * the safe reading. `deploy.ts`'s
  * auto-confirm (`options.yes || !process.stdin.isTTY` -> proceed) stays the
  * deliberate exception, because a deploy that assumes "yes" is recoverable.
  *
@@ -109,10 +110,12 @@ export interface ConfirmOrRefuseOptions {
  * `--yes` refuse instead of proceed, which is the inverse bug.
  *
  * Throws {@link CdkdError} with the `NON_INTERACTIVE_CONFIRM` code, matching
- * `gc.ts` and `bootstrap-destroy.ts` — the only two of the five originally
- * guarded prompts that carry a code (the other three throw a bare `Error` or
- * a `LocalMigrateError`). `handleError` maps it to exit 1, so CI can branch on
- * it.
+ * `gc.ts` and `bootstrap-destroy.ts` — the only two of the four originally
+ * guarded prompts that carry a code (the other two throw a bare `Error`).
+ * `handleError` maps it to exit 1, so CI can branch on it.
+ *
+ * There were FIVE until `cdkd migrate` was removed (issue #2572); its prompt
+ * threw a `LocalMigrateError`, and that class went with it.
  *
  * TWO GUARDED PROMPTS DELIBERATELY DO NOT ROUTE THROUGH HERE:
  * `destroy-runner.ts`'s per-stack prompt (the issue #2259 fix) and
@@ -123,10 +126,10 @@ export interface ConfirmOrRefuseOptions {
  * passes an abort `signal` for the issue #2117 Ctrl-C handling. Folding them
  * in would also drag `destroy-runner.ts` (in the `integ-destroy` AND
  * `integ-broad` gate scopes) into a pure refactor's blast radius, buying a
- * real-AWS run for no behaviour change. The other five pre-existing guarded
+ * real-AWS run for no behaviour change. The other four pre-existing guarded
  * prompts (`gc.ts`, `bootstrap-destroy.ts`, `recreate-confirm-prompt.ts`,
- * `prefix-migration-check.ts`, `migrate-command.ts`) stay put for the same
- * reason: each guards its own flow with its own error type.
+ * `prefix-migration-check.ts`) stay put for the same reason: each guards its
+ * own flow with its own error type.
  *
  * @param prompt the question, WITHOUT its trailing `[y/N]` marker
  * @returns `true` only for `y` / `yes` (any case, trimmed)

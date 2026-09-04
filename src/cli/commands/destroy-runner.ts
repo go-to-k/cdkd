@@ -700,22 +700,23 @@ export async function runDestroyForStack(
     // REFUSE rather than auto-confirm. `deploy.ts` takes the other branch
     // (`!process.stdin.isTTY` -> proceed), but a deploy that assumes "yes" is
     // recoverable and a destroy is not: silently answering "yes" on behalf of
-    // an absent operator would delete every resource in the stack. Five
+    // an absent operator would delete every resource in the stack. Four
     // prompts already refuse -- `gc.ts`, `bootstrap-destroy.ts`,
-    // `recreate-confirm-prompt.ts`, `prefix-migration-check.ts` and
-    // `migrate-command.ts` all test `isTTY` before creating the interface --
-    // and issue #2247 chose the same refusal for `state destroy --all`'s BATCH
+    // `recreate-confirm-prompt.ts` and `prefix-migration-check.ts` all test
+    // `isTTY` before creating the interface -- and issue #2247 chose the same
+    // refusal for `state destroy --all`'s BATCH
     // prompt one layer up. This is the per-stack twin of that guard, so the
     // two layers of the same command now agree.
     //
-    // Only TWO of those five share the error SHAPE copied here: `gc.ts` and
+    // Only TWO of those four share the error SHAPE copied here: `gc.ts` and
     // `bootstrap-destroy.ts` throw `CdkdError` with `NON_INTERACTIVE_CONFIRM`.
-    // The other three throw a bare `Error` (`recreate-confirm-prompt.ts`,
-    // `prefix-migration-check.ts`) or a `LocalMigrateError`
-    // (`migrate-command.ts`). Matching the two that carry the code is
+    // The other two throw a bare `Error` (`recreate-confirm-prompt.ts`,
+    // `prefix-migration-check.ts`). Matching the two that carry the code is
     // deliberate: a destroy refusal is something CI should be able to branch
-    // on. (An earlier comment in this repo claimed all five carried the code;
-    // that was measured false -- do not restore it.)
+    // on. (An earlier comment in this repo claimed they all carried the code;
+    // that was measured false -- do not restore it.) There were FIVE until
+    // `cdkd migrate` was removed (issue #2572); its prompt threw a
+    // `LocalMigrateError`.
     //
     // Position is load-bearing: this sits AFTER the `--yes` / `--force`
     // short-circuit, so a non-interactive run that already passed a flag never

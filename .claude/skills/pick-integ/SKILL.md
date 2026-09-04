@@ -90,7 +90,7 @@ truncated, and the wrap-up names exactly which tests were not run.
    | `src/provisioning/providers/<Svc>*` | the matching service integ (`iam-managed-policy`, `dynamodb-*`, `s3-*`, `rds-*`, `kms-encryption`, `stepfunctions`, `eventbridge`, `sns-sqs-event`, `cognito`, `wafv2`, `route53`, …). Custom Resource changes → `custom-resource-provider`. |
    | `src/provisioning/cloud-control-provider.ts` | `cc-api-fallback`, `cc-api-fallback-transitions`, `recreate-via-cc-api` |
    | `src/local/**`, `src/cli/commands/local-*.ts` | the matching `local-*` test; a cross-cutting `src/local/` change → at least `local-invoke` + `local-start-api`. |
-   | `src/cli/commands/{export,import,migrate,retire-cfn-stack}*` | `export`, `export-nested-stack`, `migrate-from-cfn`, `import-nested-stack`, `import-value-strong-ref` |
+   | `src/cli/commands/{export,import,retire-cfn-stack}*` | `export`, `export-nested-stack`, `migrate-from-cfn`, `import-nested-stack`, `import-value-strong-ref` |
    | `src/synthesis/macro-*` | `macro-expansion` |
    | `package.json` (cdk-local bump) | `local-*` cluster (the bump's blast radius) |
 

@@ -577,10 +577,17 @@ describe('Glue delete CatalogId scoping (issue #1675)', () => {
     expect(mockLoggerWarn).not.toHaveBeenCalled();
   });
 
-  // `--migrate-from-cloudformation` reads the stack's ORIGINAL template, where
-  // an unquoted YAML `CatalogId: 123456789012` parses as a NUMBER. Rejecting it
-  // as "not a string" would silently retarget the DELETE at the default
-  // catalog, where a same-named table can exist and be destroyed instead.
+  // A numeric `CatalogId` reaches a provider from a numeric literal in the
+  // synth template (`new CfnResource({...})` / `addPropertyOverride`) or from
+  // the macro-expanded deploy template (`macro-expander.ts`'s
+  // `GetTemplate(TemplateStage: 'Processed')`), and on DELETE from the
+  // recorded state row that `destroy-runner.ts` replays into
+  // `provider.delete`. Rejecting it as "not a string" would silently retarget
+  // the DELETE at the default catalog, where a same-named table can exist and
+  // be destroyed instead. (This comment used to credit
+  // `--migrate-from-cloudformation` reading the stack's ORIGINAL template.
+  // That was never true of any command -- see the note on
+  // `catalogIdForApi` in the provider.)
   it('deleteTable coerces a YAML-numeric CatalogId to the string the API wants', async () => {
     mockGlueSend.mockResolvedValueOnce({});
 

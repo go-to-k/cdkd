@@ -41,8 +41,12 @@ import { join } from 'node:path';
  *
  *  1. A secret declared as a RAW CloudFormation property, wherever it lives.
  *     The obvious case is a fixture whose template is a checked-in `.json` /
- *     `.yaml` (today: `migrate-from-bare-cfn-codegen-only/template-fixture.json`,
- *     verified secret-free), which these patterns never read. But being written
+ *     `.yaml` (today: `raw-cfn-conditions-params/raw-template.json`,
+ *     `cross-stack-cfn-fallback/cfn-producer-template.json` and
+ *     `stepfunctions-s3-definition/definition.asl.json`, all verified
+ *     secret-free — the previously named
+ *     `migrate-from-bare-cfn-codegen-only/template-fixture.json` was retired
+ *     with `cdkd migrate`, issue #2572), which these patterns never read. But being written
  *     in TypeScript is NOT the same as being covered: every pattern below keys
  *     on an L2 construct prop, so an L1 or an escape hatch slips straight
  *     through -- `new CfnSecret({ secretString: 'x' })` (the pattern requires

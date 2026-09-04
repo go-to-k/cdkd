@@ -132,9 +132,12 @@ describe('confirmOrRefuse (issue #2275)', () => {
   );
 
   it('throws CdkdError with the NON_INTERACTIVE_CONFIRM code so CI can branch on it', async () => {
-    // Only `gc.ts` and `bootstrap-destroy.ts` carry this code among the five
-    // originally guarded prompts; the other three throw a bare `Error` /
-    // `LocalMigrateError`. Matching the two that carry it is deliberate, so
+    // Only `gc.ts` and `bootstrap-destroy.ts` carry this code among the FIVE
+    // originally guarded prompts (four survive; `migrate-command.ts` went with
+    // `cdkd migrate` in issue #2572). Of the other three, two threw a bare
+    // `Error` and `migrate-command.ts` threw `LocalMigrateError` -- a
+    // `CdkdError` subclass with its OWN code, not a bare Error.
+    // Matching the two that carry it is deliberate, so
     // asserting the CODE (not merely that something threw) is what keeps a
     // later refactor from silently downgrading the shape.
     setStdinIsTty(undefined);

@@ -490,9 +490,9 @@ describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => 
 
 
   it('throws CdkdError with the NON_INTERACTIVE_CONFIRM code so CI can branch on it', async () => {
-    // Only `gc.ts` and `bootstrap-destroy.ts` carry this code among the five
-    // guarded prompts; the other three throw a bare `Error` /
-    // `LocalMigrateError`. Matching the two that carry it is deliberate, so
+    // Only `gc.ts` and `bootstrap-destroy.ts` carry this code among the four
+    // guarded prompts; the other two throw a bare `Error`. Matching the two
+    // that carry it is deliberate, so
     // asserting the CODE (not merely that something threw) is what keeps a
     // later refactor from silently downgrading the shape.
     setStdinIsTty(undefined);

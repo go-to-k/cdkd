@@ -6714,9 +6714,8 @@ export interface ThroughputDiagnostic {
  * The CFn schema forbids `ProvisionedThroughput` / `OnDemandThroughput` /
  * `*ThroughputOverride` on `AWS::DynamoDB::GlobalTable`, so this only fires
  * for pre-#1387 cdkd state and hand-authored templates — but those ARE a
- * first-class cdkd surface (`cdkd import --migrate-from-cloudformation`,
- * `cdkd migrate --from-cfn-stack`), and the pre-fix code forwarded such a
- * block VERBATIM. Three defects followed, and fixing any subset leaves a
+ * first-class cdkd surface (`cdkd import --migrate-from-cloudformation`), and
+ * the pre-fix code forwarded such a block VERBATIM. Three defects followed, and fixing any subset leaves a
  * live one, which is why this helper does all three at once:
  *
  *  1. **Coercion.** The verbatim forward was the ONE path that skipped

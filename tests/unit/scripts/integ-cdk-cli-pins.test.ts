@@ -252,29 +252,54 @@ describe('integ fixture verify.sh cdk CLI pins (issue 1485)', () => {
     expect(fixtures.length).toBeGreaterThan(100);
   });
 
-  // Coverage floors, measured EXACTLY against the 2026-08-10 tree
-  // ("A checker must prove it sees its input", .claude/rules/testing.md).
-  // The invoking set: import-nested-stack + the two local-invoke-from-cfn-stack
-  // fixtures (bare, 7 invocations), export / import-auto-mode /
-  // intrinsics-torture-2 (npx, 5), migrate-from-bare-cfn-codegen-only
-  // (CDK_BIN, 2). Both totals AND per-shape FIXTURE counts are pinned: a
-  // total-only floor lets a within-fixture regression (import-auto-mode's 3
-  // npx dropping to 1) hide, and a per-shape fixture floor stops a dead shape
-  // being masked by new fixtures of another shape. If a legitimate refactor
-  // removes one, lower the floor in the same PR with a note — a silent drop
-  // to zero is the failure mode this exists for.
+  // Coverage floors, RE-MEASURED against this tree with this file's own
+  // `checkFixture` on 2026-09-04 ("A checker must prove it sees its input",
+  // .claude/rules/testing.md) — 7 invoking fixtures:
+  //   bare  7 invocations / 3 fixtures: import-nested-stack(1),
+  //         local-invoke-from-cfn-stack(3),
+  //         local-invoke-from-cfn-stack-multi-stack(3)
+  //   npx   7 invocations / 4 fixtures: asset-migration(2), export(1),
+  //         import-auto-mode(3), intrinsics-torture-2(1)
+  // The previous revision of this note said "export / import-auto-mode /
+  // intrinsics-torture-2 (npx, 5)" and was wrong in both membership and count:
+  // `asset-migration` was never listed, so the `invokers >= 7` floor was
+  // passing on a fixture the comment did not know about. It was carried
+  // forward across an edit instead of re-measured, which is the whole reason
+  // the numbers below are now stated per fixture.
+  // Both totals AND per-shape FIXTURE counts are pinned: a total-only floor
+  // lets a within-fixture regression (import-auto-mode's 3 npx dropping to 1)
+  // hide, and a per-shape fixture floor stops a dead shape being masked by new
+  // fixtures of another shape. If a legitimate refactor removes one, lower the
+  // floor in the same PR with a note — a silent drop to zero is the failure
+  // mode this exists for.
+  //
+  // The explicit-CDK_BIN shape HAS no floor, and that is the documented case
+  // above rather than an omission. Its only fixture was
+  // `migrate-from-bare-cfn-codegen-only`, retired with `cdkd migrate` (issue
+  // #2572), so the tree now holds ZERO of that shape and any floor above zero
+  // would fail while a floor of zero asserts nothing. The shape's PARSER stays
+  // covered by the synthetic cases earlier in this file
+  // ('sees a CDK_BIN-style invocation...', 'accepts an explicit local
+  // CDK_BIN...', 'flags a non-local CDK_BIN...'), which is what keeps the
+  // detection from rotting while no fixture exercises it. Restore the pair of
+  // floors below — `explicitBin >= n` and the per-shape fixture count — in the
+  // same PR as the first fixture that reintroduces the shape.
   it('parses the known invocation shapes across the tree', () => {
     const invokers = fixtures.filter((f) => f.invokesUpstreamCdk);
     const bare = fixtures.reduce((n, f) => n + f.bareInvocations, 0);
     const npx = fixtures.reduce((n, f) => n + f.npxInvocations, 0);
-    const explicitBin = fixtures.reduce((n, f) => n + f.explicitBinInvocations, 0);
     expect(invokers.length).toBeGreaterThanOrEqual(7);
     expect(bare).toBeGreaterThanOrEqual(7);
-    expect(npx).toBeGreaterThanOrEqual(5);
-    expect(explicitBin).toBeGreaterThanOrEqual(2);
+    expect(npx).toBeGreaterThanOrEqual(7);
     expect(fixtures.filter((f) => f.bareInvocations > 0).length).toBeGreaterThanOrEqual(3);
-    expect(fixtures.filter((f) => f.npxInvocations > 0).length).toBeGreaterThanOrEqual(3);
-    expect(fixtures.filter((f) => f.explicitBinInvocations > 0).length).toBeGreaterThanOrEqual(1);
+    expect(fixtures.filter((f) => f.npxInvocations > 0).length).toBeGreaterThanOrEqual(4);
+  });
+
+  // The zero above is an ASSERTED zero, not an unmeasured one: if a fixture
+  // reintroduces the shape without restoring the floors, this reds and names
+  // the fixture, so the removal cannot silently become permanent.
+  it('has no explicit-CDK_BIN fixture left to floor (issue #2572)', () => {
+    expect(fixtures.filter((f) => f.explicitBinInvocations > 0).map((f) => f.name)).toEqual([]);
   });
 
   it('every fixture that invokes the upstream cdk CLI is hermetic about which cdk it gets', () => {

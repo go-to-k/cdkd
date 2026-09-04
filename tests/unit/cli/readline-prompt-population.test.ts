@@ -34,7 +34,10 @@ import { dirname, join, relative, sep } from 'node:path';
  * [#2454](https://github.com/go-to-k/cdkd/issues/2454) then folded a TENTH —
  * `events.ts`'s prune confirmation, which was guarded at its CALLER rather
  * than in the helper and so refused with exit 0 — leaving **10 sites across 9
- * files**, the count this file asserts.
+ * files**. Issue [#2572](https://github.com/go-to-k/cdkd/issues/2572) then
+ * removed the whole `cdkd migrate` command, taking `migrate-command.ts`'s one
+ * site and its row with it, leaving **9 sites across 8 files** — the count
+ * this file asserts.
  *
  * That count is asserted rather than described for the reason the #2454 fold
  * demonstrated on this very comment: closing a member falsifies the sentence
@@ -51,7 +54,7 @@ import { dirname, join, relative, sep } from 'node:path';
  * contributor would plausibly write rather than only the one that was removed.
  * CAUGHT (11 of 12 non-prose shapes): `const rl = readline.createInterface(`,
  * `const rl = createInterface(` (bare named import), `let rl = ...`,
- * `const rl = await ...` (`migrate-command.ts`'s `await import` two-step),
+ * `const rl = await ...` (the `await import` two-step),
  * `const rl=...` with no spaces, `const { question, close } = ...`
  * (destructured), a bare statement-position call with no assignment,
  * `rl = readline.createInterface(` (re-assignment to an outer `let`),
@@ -150,10 +153,6 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
     sites: 1,
     why: 'Pre-existing guarded prompt (`process.stdin.isTTY`, throws a bare Error).',
   },
-  'src/cli/commands/migrate-command.ts': {
-    sites: 1,
-    why: 'Pre-existing guarded prompt (`process.stdin.isTTY`, throws LocalMigrateError).',
-  },
   'src/cli/commands/local-invoke-agentcore.ts': {
     sites: 1,
     why:
@@ -222,10 +221,14 @@ describe('readline interface population (issue #2275)', () => {
     // The floor is written as a literal rather than derived from `EXPECTED`,
     // because a floor computed from the pool it guards moves with the pool:
     // deleting rows from the table would keep a derived comparison green.
-    // 11 = the post-fold measurement in the file header.
+    // 11 = the post-fold measurement in the file header; 10 after the fold's
+    // own follow-ups; 9 since `cdkd migrate` was removed with its whole
+    // command (issue #2572), which took `migrate-command.ts`'s one site and
+    // its row above. Lowering a literal floor is only legitimate alongside
+    // the deletion that made it unreachable — which is this one.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(10);
-    expect(Object.keys(EXPECTED)).toHaveLength(9);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(9);
+    expect(Object.keys(EXPECTED)).toHaveLength(8);
   });
 
   it('none of the seven fully-folded files constructs an interface any more', () => {

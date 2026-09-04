@@ -20,6 +20,10 @@ import { buildProgram } from '../../../src/cli/program.js';
  *   - `tests/unit/scripts/docs-site-links.test.ts` validates links between
  *     pages that exist. It cannot see a page that was never written.
  *
+ * That command has since been REMOVED -- issue #2572, which the question above
+ * led to -- so do not look for it in the tree. The incident is kept because it
+ * is what this fence exists for, not because the command still does.
+ *
  * WHY THREE STRUCTURES RATHER THAN A `cli-<command>.md` CONVENTION. Several
  * commands have no `cli-<command>.md` at all, and several more have one whose
  * H1 is a topic rather than the command. Those are not one case: some of the
@@ -222,10 +226,16 @@ const COMMAND_TOPIC_PAGES: Readonly<Record<string, { path: string; reason: strin
  * visible in review as adding a command.
  */
 const UNDOCUMENTED: Readonly<Record<string, string>> = {
-  migrate:
-    'Held pending the deprecation decision in go-to-k/cdkd#2572 -- it is the only ' +
-    'command that requires the AWS CDK CLI binary, so whether it stays at all is ' +
-    'undecided. Writing a reference page for it first would be premature.',
+  // EMPTY, and that is the goal state rather than an oversight. Every
+  // registered command now has a page or a topic page. The last three entries
+  // left within a day of each other: `list` and `synth` gained reference pages
+  // (go-to-k/cdkd#2577), and `migrate` was REMOVED as a command
+  // (go-to-k/cdkd#2572) rather than documented.
+  //
+  // Keep the map. It is one of the three structures the assertions below read,
+  // so deleting it would turn "every command is documented" from a checked
+  // claim into an unchecked one -- and the next command that ships without a
+  // page needs somewhere to record that decision.
 };
 
 /**

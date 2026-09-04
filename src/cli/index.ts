@@ -20,7 +20,9 @@ const SUBCOMMANDS = new Set([
   'force-unlock',
   'state',
   'local',
-  'migrate',
+  'events',
+  'rollback',
+  'scrub',
 ]);
 
 /**

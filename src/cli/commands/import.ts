@@ -151,21 +151,6 @@ interface ImportRow {
   attributes?: Record<string, unknown>;
 }
 
-/**
- * Exported for `cdkd migrate --from-cfn-stack` (PR B of #465) so the
- * migrate orchestrator can drive the same lock + state + retire pipeline
- * as `cdkd import` without spawning a subprocess. Original Commander
- * registration in {@link createImportCommand} still wraps this in
- * `withErrorHandling` so library callers must handle their own exits.
- */
-export type RunImportOptions = ImportOptions;
-export async function runImport(
-  stackArg: string | undefined,
-  options: ImportOptions
-): Promise<void> {
-  return importCommand(stackArg, options);
-}
-
 async function importCommand(stackArg: string | undefined, options: ImportOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) {
@@ -882,8 +867,15 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           ...(options.profile && { s3ClientOpts: { profile: options.profile } }),
           // Pass the pre-built tree so the recursive Retain-injection
           // walk inside `retireCloudFormationStack` reuses our existing
-          // DescribeStackResources calls instead of redoing them. Only
-          // populated in the migration code path.
+          // DescribeStackResources calls instead of redoing them.
+          //
+          // The guard cannot currently be false: `migrationTree` is awaited
+          // unconditionally under the same `if (migrationCfnStackName)` that
+          // gates this block, so this is the site that makes
+          // `retire-cfn-stack.ts`'s "import always supplies the tree" note
+          // true. It is written conditionally anyway because the two
+          // assignments are ~500 lines apart and a future early-return
+          // between them would reintroduce the undefined case silently.
           ...(migrationTree && { resourceTree: migrationTree }),
         });
       }
@@ -1983,7 +1975,7 @@ function validateNestedStackShape(
  *      **parent-first acquire, leaves-first release** (each level's
  *      `finally` releases its child lock before sibling iteration
  *      continues, and the root lock is the outermost — held by
- *      `runImport`'s `try` / `finally`). This is the conventional
+ *      `importCommand`'s `try` / `finally`). This is the conventional
  *      hierarchical lock pattern: parent-first acquire prevents a
  *      second cdkd import from racing past the root lock; leaves-first
  *      release on success/failure means a mid-walk error never strands
@@ -2196,7 +2188,7 @@ async function importNestedStackChildrenRecursive(args: {
       // own locks; this child's lock stays held until its `finally`
       // releases it AFTER its descendants' locks are released (matches
       // the "leaves first, parent last" lock contract — descendants
-      // release first, then this level, then the root in `runImport`'s
+      // release first, then this level, then the root in `importCommand`'s
       // outer `finally`).
       if (childTreeNode.nested.size > 0) {
         await importNestedStackChildrenRecursive({
