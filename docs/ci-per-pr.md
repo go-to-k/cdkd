@@ -27,7 +27,8 @@ new WebAppStack(app, `WebApp${prNumber ? `-pr-${prNumber}` : ''}`);
 
 ## Credentials
 
-cdkd calls AWS APIs directly, so the deploying identity needs permissions for every deployed resource (CDK's
+cdkd calls AWS APIs directly, so the deploying identity needs permissions
+for every deployed resource (CDK's
 `cdk-hnb659fds-*` roles do not work: they are designed for
 CloudFormation delegation, and cdkd uses its own bootstrap storage).
 Create a dedicated deploy role and switch into it with
@@ -122,6 +123,8 @@ instead.
 
 - [Destroy flags & guards](cli-destroy.md) — the guards the teardown job turns
   off, and what each one protects
+- [`cdkd state`](cli-state.md) — the state-driven commands the destroy job runs,
+  with their flags and exit codes
 - [Orphan vs Destroy](orphan-vs-destroy.md) — why the destroy job needs no
   checkout
 - [Wait Modes](wait-modes.md) — choosing what "done" means for the deploy job
