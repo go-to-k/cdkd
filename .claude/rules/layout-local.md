@@ -10,18 +10,395 @@ Index of every area: [code-layout.md](code-layout.md).
 
 ## Core Directories
 
-- **src/local/** - `cdkd local invoke`, `cdkd local start-api`, `cdkd local run-task`, `cdkd local start-service`, `cdkd local start-alb`, `cdkd local start-cloudfront`, `cdkd local invoke-agentcore`, and `cdkd local start-agentcore` building blocks (renamed from `src/local-invoke/` to share the directory with the rest of the `cdkd local` family — see PR #228). The `start-cloudfront` + `start-agentcore` commands are THIN factory pass-throughs whose command files live at `src/cli/commands/local-start-cloudfront.ts` / `local-start-agentcore.ts` — each wraps a cdk-local `createLocalStart*Command` factory, re-hands the active embed config, AND threads cdkd's `--from-state` factory through the factory's `extraStateProviders` seam (issue #766; the `start-agentcore` factory carried the seam from the start, the `start-cloudfront` factory gained it in cdk-local 0.128.0 / cdk-local#426). Both layer the cdkd-specific `--from-state` / `--state-bucket` / `--state-prefix` flags on top of cdk-local's inherited `--from-cfn-stack` / `--stack-region` (cdk-local#380 also gave `start-cloudfront` Lambda Function URL + deployed-S3 origins). The ECS run-task family adds `ecs-task-resolver.ts` (synth template → `ResolvedEcsTask` with containers / volumes / DependsOn / RuntimePlatform), `ecs-secrets-resolver.ts` (`Secrets[].ValueFrom` → real values via SecretsManager / SSM), `ecs-network.ts` (per-task docker network + AWS-published metadata-endpoints sidecar lifecycle), and `ecs-task-runner.ts` (top-level orchestrator: image prep → DAG topo-sort → docker run loop → log stream → teardown). The ECS start-service family ([#466](https://github.com/go-to-k/cdkd/issues/466), [#460](https://github.com/go-to-k/cdkd/issues/460)) originally added `ecs-service-resolver.ts` + `ecs-service-runner.ts` + Cloud Map `cloud-map-registry.ts` / `cloud-map-resolver.ts` modules carrying the per-replica orchestrator + Service Connect / Cloud Map DNS-only overlay; the Part B refactor (PR #731, 2026-05-30) moved every one of those modules to cdk-local's bundled `runEcsServiceEmulator` engine + deleted them from cdkd's tree. The per-CLI-run shared docker network (`cdkd-local-svc-<rand>`, subnet `169.254.171.0/24`, sidecar at `169.254.171.2`) and the Cloud Map peer-discovery overlay are now engine-owned. See `docs/changelog-cdkd.md`'s Part B + Part A entries for the historical detail, and the bottom of this bullet for the current shim wiring. `cdkd local invoke` modules: `lambda-resolver.ts` (target → discriminated `ResolvedLambda` (`kind: 'zip' | 'image'`) carrying StackInfo / logicalId / runtime+handler+codePath for ZIP or imageUri+imageConfig for IMAGE; both variants carry `architecture` (issue #768) so the ZIP container run pins `--platform` the same way the IMAGE path always has; reuses `cdk-path.ts` and `stack-matcher.ts`), `env-resolver.ts` (template literals + SAM-shape `--env-vars` overrides; intrinsic-valued entries warn-and-drop unless `--from-state` substituted them upstream), `state-resolver.ts` (PR 2 — pure-functional substituter that walks intrinsic-valued env-var values against `state.resources` from cdkd's S3 state file; supports `Ref` / `Fn::GetAtt` / `Fn::Sub`, reports per-key unresolved reasons), `runtime-image.ts` (`Runtime` → `public.ecr.aws/lambda/<lang>:<v>` + source-file extension; v1 supports `nodejs18.x` / `nodejs20.x` / `nodejs22.x` / `python3.11` / `python3.12` / `python3.13`), `docker-runner.ts` (thin `execFile`/`spawn` wrappers around `docker pull` / `docker run -d --rm --name <optional>` / `docker logs -f` / `docker rm -f` + free-port allocator; PR 5 extended `runDetached` with `--platform` / `--entrypoint` / `--workdir`; PR 8a added the optional `--name` for orphan-sweep), `docker-image-builder.ts` (PR 5 — local-build path for container Lambdas, wraps the shared `src/assets/docker-build.ts` helper with a stable per-context tag), `ecr-puller.ts` (PR 5 — ECR-pull fallback when the cdk.out asset lookup misses; same-account / same-region only, cross-acct/region hard-errors with a deferred-PR pointer), and `rie-client.ts` (HTTP `POST /2015-03-31/functions/function/invocations` to RIE inside the container, plus a TCP-probe-based readiness wait). `cdkd local start-api` modules (PR 8a): `route-discovery.ts` (REST v1 + HTTP API + Function URL → `DiscoveredRoute[]` with a 30-line local intrinsic resolver — no deploy-state dependency), `api-gateway-event.ts` (pure-functional v1 + v2 event-shape builders + PR 8b `applyAuthorizerOverlay`), `api-gateway-response.ts` (Lambda response → HTTP, with auto-format / error-envelope / cookies-as-multiple-Set-Cookie translation), `route-matcher.ts` (3-tier precedence: full → greedy `{proxy+}` → `$default`, with literal-segment tie-break), `container-pool.ts` (per-Lambda warm container pool with mutex-protected lazy growth, 60s idle GC, dispose-tolerates-removeContainer-failures), and `http-server.ts` (the `node:http` accept loop with PR 8b authorizer pass and PR 8c's atomic `setServerState` swap for hot reload). PR 8b additions: `authorizer-resolver.ts` (REST v1 / HTTP v2 / Function URL authorizer detection + identity-source parsing — extended in #447 with the `IamAuthorizer` discriminated union member for REST v1 `AuthorizationType: 'AWS_IAM'`, and again in #621 wiring Function URL `AuthType: 'AWS_IAM'` through the same descriptor so it rides the same SigV4 verifier; [#470](https://github.com/go-to-k/cdkd/issues/470) added support for `Fn::GetAtt: [<UserPool>, 'Arn']` under `ProviderARNs[]` — the canonical CDK `apigateway.CognitoUserPoolsAuthorizer` shape — by synthesizing an unreachable placeholder ARN so `cognito-jwt.ts`'s JWKS pass-through fallback admits every token without signature verification), `authorizer-cache.ts` (TTL-aware result cache), `lambda-authorizer.ts` (TOKEN + REQUEST authorizer invoke + IAM-policy parser — **since DELETED** in the slice 12 migration recorded below; the authorizer logic survives in cdk-local, reached from cdkd through the `authorizer-resolver.ts` (slice 12) and `authorizer-cache.ts` (slice 3) re-export shims), `cognito-jwt.ts` (JWKS fetch + RS256 verify + claims extraction + pass-through fallback), `sigv4-verify.ts` (#447 — REST v1 AWS_IAM SigV4 signature verification against the dev's local credentials via `STSClient`'s default credential chain; signature verification only, no IAM policy emulation; warn-and-pass on foreign-identity requests per `feedback_match_aws_default_over_opinionated.md`). PR 8c additions: `cors-handler.ts` (CFn `CorsConfiguration` parser + OPTIONS preflight matcher for HTTP API v2), `stage-resolver.ts` (per-API Stage selection + `attachStageContext` for routes; populates `event.stageVariables`), `file-watcher.ts` (chokidar-backed debounced file watcher with dynamic path-list updates), `reload-orchestrator.ts` (synth-failure-tolerant reload pipeline with chain-serialized concurrent calls). `invoke-agentcore-watch-loop.ts` ([#270](https://github.com/go-to-k/cdkd/issues/270)) is the cdkd-owned `cdkd local invoke-agentcore --watch` reload loop — built on cdk-local's exported watch primitives (`createFileWatcher` / `createWatchPredicates` / `resolveWatchConfig` / `classifySourceChange`, the same ones `local start-api --watch` uses) plus copies of cdk-local's not-exported `loadAgentCoreAssetContext` / `deriveOldAssetHash` helpers; it takes `rebuild` / `softReload` callbacks from the command so the per-firing classifier picks a `docker cp`+restart soft-reload (interpreted-handler source edit) vs a full image rebuild (Dockerfile / compiled / asset-hash change), re-opening the `/ws` socket or re-running the one-shot `/invocations` on each reload. cdk-local's own `runAgentCoreWatchLoop` could not be shimmed because it hard-couples to cdk-local's `Synthesizer` / `LocalInvokeAgentCoreOptions` types. `intrinsic-image.ts` (issue #286 Gap 2) holds the shared canonical-CDK-2.x-`Fn::Join`-shape resolver for container image URIs (`lambda.DockerImageCode.fromEcr` + ECS `ContainerImage.fromEcrRepository`) — `tryResolveImageFnJoin` + `substituteImagePlaceholders` + the `ImageResolutionContext` / `FnJoinResolveOutcome` types, used by both `lambda-resolver.ts` and `ecs-task-resolver.ts`. `intrinsic-lambda-arn.ts` (issue #286 Gaps 3 / 4) is the sibling helper for Lambda ARN intrinsics in API Gateway resolvers — `resolveLambdaArnIntrinsic` accepts `Ref` / `Fn::GetAtt: [..., 'Arn']` / the REST v1 invoke-ARN `Fn::Join` wrapper (also emitted by CDK 2.x's HTTP v2 `HttpLambdaAuthorizer`) / the `Fn::Sub` invoke-ARN wrapper (both 1-arg `${LogicalId.Arn}` form and 2-arg `Fn.sub(template, vars)` form). Returns a discriminated union so each call site (`route-discovery.ts` for `IntegrationUri`, `authorizer-resolver.ts` for `AuthorizerUri`) wraps the unsupported case with its own error class. `intrinsic-utils.ts` ([#471](https://github.com/go-to-k/cdkd/issues/471)) holds the shared `pickRefLogicalId` helper — extracts the referenced logical ID from a `{Ref: <string>}` intrinsic, returns `null` otherwise. Consumed by `route-discovery.ts`, `websocket-route-discovery.ts`, `authorizer-resolver.ts`, and `stage-resolver.ts`. Centralizes a 5-line predicate that was previously duplicated four times so future intrinsic-shape extensions (e.g. accepting `Fn::Sub`-bound Refs in REST v1 ResourceId / ParentId) land in one place. `authorizer-context.ts` (PR #515 item 9) is the per-kind shape builder consumed today by `http-server.ts`'s `buildAuthorizerContextForServiceIntegration` (HTTP API v2 service-integration `$context.authorizer.*` parameter-mapping context). Owns the bare per-kind shape (Lambda flat `principalId + context`, IAM `principalId` only, Cognito `{claims}`, JWT `{jwt: {claims, scopes}}`). The sibling `buildOverlay` in `http-server.ts` (Lambda AWS_PROXY event overlay) still uses hand-rolled per-kind branching because it wraps the result in the `AuthorizerEventOverlay` discriminated union shape (with the `lambda-http-v2` arm layering an additional `.lambda` namespace); the inner per-kind context matches the helper's output exactly, so a future kind addition can be lifted through this helper at both call sites with no behavior change. #457 additions: `vtl-engine.ts` is a hand-rolled minimal AWS API Gateway VTL evaluator (`$input` / `$context` / `$util` built-ins, `#set` / `#if` / `#elseif` / `#else` / `#foreach` / `##` directives, JSONPath subset — no external dep) used by every REST v1 non-AWS_PROXY dispatcher; `integration-response-selector.ts` resolves `IntegrationResponses[].SelectionPattern` (regex anchored `^...$`) + `ResponseParameters` header literals + `ResponseTemplates` Accept-header content negotiation; `rest-v1-integrations.ts` carries the four dispatchers (`dispatchMockIntegration` / `dispatchHttpProxyIntegration` / `dispatchHttpIntegration` / `dispatchAwsLambdaIntegration`) plus `substituteUriPlaceholders` + `applyRequestParameters`. The CLI commands live at `src/cli/commands/local-invoke.ts` (creates the `cdkd local` parent + registers `invoke`, `start-api`, `run-task`, and `start-service`), `src/cli/commands/local-start-api.ts`, `src/cli/commands/local-run-task.ts`, and `src/cli/commands/local-start-service.ts`. `src/cli/commands/local-state-loader.ts` is a shared helper (extracted from `local-invoke.ts` in PR #267) that both `cdkd local invoke --from-state` and `cdkd local run-task --from-state` route through to load cdkd's S3 state for the target stack — single impl, parameterized log prefix. It also exports `loadBootstrapContainerRepo` (issue #1025): a best-effort, never-failing read of the region's asset-storage bootstrap marker (`cdkd-bootstrap/{region}.json`) that `cdkd local run-task --from-state` uses to recognize images published to a custom-named cdkd container-asset repo (`cdkd bootstrap --container-repo`, issue #1011) as cdk-asset images, keeping the local `cdk.out`-build fast path. **Region CASE is folded across the whole file (issue [#1836](https://github.com/go-to-k/cdkd/issues/1836)), and the several folds it carries are NOT interchangeable — do not "simplify" them into one.** The state-record match is EXACT-first, case-insensitive second (`listStacks` dedupes on the exact `{stack}\0{region}` pair, so both spellings can coexist as two DISTINCT refs and a fold-only lookup would answer `--stack-region us-east-1` with the OTHER record; a canonical-equal collision is reported at warn), and the candidate it compares is the user's UNFOLDED spelling, carried alongside the folded flag as `rawStackRegion` — captured at each handler entry BEFORE the fold, derived from the still-raw flag by the `--from-state` factory for the ENGINE commands, and read by NOTHING else except `loadBootstrapContainerRepo`'s raw marker probe (which DOES build one S3 key no state record spells — the `cdkd-bootstrap/{RAW}.json` second attempt below; every STATE key is still a record's own spelling). Without it the exact arm is DEAD in production and its warning lies: every path into the compare folds the flag first, so the candidate is always canonical and `--stack-region US-EAST-1` reads the `us-east-1` record while reporting it as the exact spelling. Meanwhile the key it hands `getState` — and the exports-index key `buildCrossStackResolver` builds — keeps the RECORD's own spelling, since nothing folds `cdkd deploy --region` and a folded key would 404. **Every caller of `buildCrossStackResolver` must pass a state record's spelling** (`local-invoke.ts` / `local-invoke-agentcore.ts` pass `loaded.region`; `local-run-task.ts` threads it out of `buildEcsImageResolutionContext` and falls back to its folded env chain via `resolveEcsConsumerRegion` only when no record was loaded — with `||` on the flag link, so a blank `--region ''` cannot win the chain and become an empty index key). **That `consumerRegion` has FOUR consumers and they do NOT all want the same spelling**, which is why the value stays RAW at the boundary and each consumer folds for itself: it becomes `cdkd/_index/{region}/exports.json` AND `ExportIndexStore`'s raw rebuild filter (RAW — a spelling no record carries rebuilds ZERO refs and PUTs an EMPTY index, permanently degrading every `Fn::ImportValue` to the O(N) scan; keyed by a record's spelling the filter always matches, so a key miss costs only a correct rebuild — which is also why that lookup is NOT read-only against the bucket, despite the file's header); it is the same-region filter of the index-miss per-stack scan (folded on BOTH sides, `getState` key still the ref's own spelling); via `SubstitutionContext.consumerRegion` it is cdk-local's DEFAULT producer region for an `Fn::GetStackOutput` carrying no explicit `Region`, so `resolveGetStackOutput` needs the same both-sides case RECOVERY the scan has — exact key first, then a `listStacks` walk for a canonical-equal record, or an `US-EAST-1` consumer record referencing a `us-east-1` producer 404s and the env var is dropped with only a per-key warning; and it names the state BUCKET through `resolveStateBucketWithDefault`, which is the one consumer that must be FOLDED (the legacy default name `cdkd-state-{acct}-{region}` is lowercase-only — an upper-cased bucket is not virtual-hostable, so the request goes path-style, S3 answers 400 `InvalidBucketName`, and the whole resolver returns `undefined`, warn-and-dropping EVERY cross-stack env entry on a legacy-bucket account while `loadStateForStack` read the same record fine). Both sibling loaders fold before their own `resolveStateBucketWithDefault` call, so all three agree. `opts.region` folds separately at all three S3-client construction sites, with ABSENT — and a blank `--region ''` — staying absent so the SDK's own chain still resolves the profile's region. That fold is on the `AwsClients` constructor, NOT on the `S3StateBackend` options bag next to it (which carries only `profile` / `credentials`), so a test asserting the latter fences nothing. And the marker read probes the CANONICAL `cdkd-bootstrap/{region}.json` first and then the RAW spelling, because the WRITE side (`cdkd bootstrap`, whose region is `options.region || AWS_REGION || 'us-east-1'` unfolded — issue [#1820](https://github.com/go-to-k/cdkd/issues/1820)'s lane) can have written the upper-cased key; a fold-and-stop read would miss a marker the pre-fold read found. **How reachable that raw key actually is was MEASURED for issue [#2021](https://github.com/go-to-k/cdkd/issues/2021) and is much narrower than the per-caller comments used to imply** — a plain `AWS_REGION=US-EAST-1 cdkd bootstrap` cannot write it, because the marker is written LAST and both resources must be created first from that same raw region, where `cdkd-assets-<acct>-US-EAST-1` is an invalid S3 bucket name and `CreateBucket` is additionally handed an invalid `LocationConstraint`. It needs BOTH `--asset-bucket` and `--container-repo` as valid lowercase names AND a pre-existing bucket, or a marker written by hand / by a cdkd predating those guards. Probe 2 is kept anyway, because that state is real and losing it silently re-points a bootstrapped region at `cdk gc`-collectable storage, which is the #2021 failure itself; the cost is one extra `GetObject` on a non-canonical region only, and both conditions are pinned by tests so the claim cannot rot. That two-probe read is no longer hand-written here: issue [#2021](https://github.com/go-to-k/cdkd/issues/2021) moved it into ONE shared helper, `readBootstrapMarkerBody(stateBackend, rawRegion)` in `src/assets/asset-storage.ts`, returning `{ body, resolvedKey }` — the key ACTUALLY read, so each caller's message, plan line and delete target can follow it. The helper deliberately does NOT catch, so every caller keeps its own policy on top: `loadBootstrapContainerRepo` stays best-effort, while `gc.ts` / `bootstrap-destroy.ts` still translate `NoSuchBucket` into their never-bootstrapped message and hard-error on anything else, and `bootstrap --destroy` still deletes `resolvedKey` rather than the canonical key (deleting the canonical one when the body came from the raw one orphans the marker). Issue [#606](https://github.com/go-to-k/cdkd/issues/606) layers a `LocalStateProvider` interface (`src/local/local-state-provider.ts`) on top, with two implementations: `s3-local-state-provider.ts` wraps `local-state-loader.ts` verbatim (the `--from-state` path) and `cfn-local-state-provider.ts` reads a deployed CloudFormation stack via `cloudformation:DescribeStackResources` / `DescribeStacks --Outputs` / `ListExports` (paginated, memoized per substitution pass) for the new `--from-cfn-stack [<cfn-stack-name>]` flag — lets users run `cdkd local invoke / start-api / run-task / start-service` against CDK apps deployed via the upstream CDK CLI (`cdk deploy` → CloudFormation) without first migrating to cdkd. The dispatcher lives at `src/cli/commands/local-state-source.ts` (`createLocalStateProvider(options, cdkdStackName, synthRegion)` returns the right provider for the supplied flags, enforces mutual exclusion between `--from-state` and `--from-cfn-stack`, and resolves the bare-form `--from-cfn-stack` to the cdkd stack name verbatim). The dispatcher is a thin shim around the `cdk-local` npm package: `cdk-local` owns the `--from-cfn-stack` implementation + the dispatch logic, and cdkd injects its S3-backed `--from-state` factory via `cdk-local`'s `extraStateProviders` hook. That factory also folds the region CASE of `--region` AND `--stack-region` (issue [#1836](https://github.com/go-to-k/cdkd/issues/1836)) — idempotent for the four commands that fold at their own handler entry, and the ONLY cdkd-owned stop for the ECS / CloudFront / AgentCore engine commands, whose handler cdk-local owns — and carries the UNFOLDED `--stack-region` spelling through as `rawStackRegion` (from the handler's capture when there was one, else from the raw flag it received), which is the only thing that makes the loader's exact-spelling record match reachable. cdkd's own `cfn-local-state-provider.ts` is now dead code (kept in tree as a CAT-A shim candidate for a follow-up Phase 3 batch). Wire-format mapping for the CFn provider: `Ref` → `DescribeStackResources` lookup; `Fn::ImportValue` → `ListExports`; `Fn::GetAtt` is warn-and-dropped in v1 for most sites (CFn does not return per-attribute values from `DescribeStackResources`), but as of `cdk-local@0.10.0` a **consumer Lambda's OWN env-var** `Fn::GetAtt` values are recovered at runtime from the deployed function's already-resolved config (`lambda:GetFunctionConfiguration`) — CFn resolved every intrinsic at deploy time, so the function's `Environment.Variables` already carries the concrete value; cdkd inherits this through the `local-state-source` shim (cdk-local's `CfnLocalStateProvider` does the recovery; the optional `resolveDeployedFunctionEnv` provider method is implemented only on the CFn provider, so cdkd's S3 `--from-state` provider is unaffected). Other `Fn::GetAtt` sites (e.g. ECS container env) still warn-and-drop. `Fn::GetStackOutput` is rejected with a clear pointer (cdkd-specific intrinsic, no CFn equivalent). Region handling reuses `--stack-region` — no separate `--cfn-stack-region` flag. **Phase 3 shim swap (Batch B):** an expanding set of `src/local/**` modules are now thin re-export shims (`export { ... } from 'cdk-local'`) — the implementations described above are owned by `cdk-local` (which exposes the symbols from its package entry) and cdkd consumes them verbatim instead of carrying byte-identical copies; their unit tests moved to cdk-local alongside the implementations. Because cdkd keeps its OWN `cdkd local` command tree (it does NOT use cdk-local's command factories, which install the host embed-config themselves), `createLocalCommand()` (in `src/cli/commands/local-invoke.ts`) calls `setEmbedConfig(CDKD_EMBED_CONFIG)` once at build time so every shim that reads cdk-local's `getEmbedConfig()` renders cdkd branding (`cliName: 'cdkd local'` / `resourceNamePrefix: 'cdkd-local'` / `awsBindMountPath: '/cdkd-aws'` / `envPrefix: 'CDKD'`) instead of cdk-local's `cdkl` defaults — cdk-local `0.20.0` (cdk-local#85) exposes `setEmbedConfig` from its package entry for exactly this shim-host case. Slice 1 (`cdk-local@0.8.0`): `intrinsic-utils.ts`, `intrinsic-lambda-arn.ts`, `parameter-mapping.ts`, `api-gateway-response.ts`, `docker-inspect.ts`. Slice 2 / route cluster (`cdk-local@0.11.0`): `route-discovery.ts`, `route-matcher.ts`, `api-gateway-event.ts`, `websocket-route-discovery.ts`. Slice 3 / authorizer leaves (`cdk-local@0.12.0`): `authorizer-cache.ts`, `cognito-jwt.ts`. Slice 4 / leaf utilities (`cdk-local@0.14.0`): `env-resolver.ts`, `stage-resolver.ts`. Slice 5 / `cloud-map-registry.ts` (`cdk-local@0.15.0`): the slice-4 candidate that had to wait for `cdk-local@0.15.0` ([cdk-local#79](https://github.com/go-to-k/cdk-local/pull/79)) to add `type RegistrationHandle` to its package entry — the still-local sibling `src/local/ecs-service-runner.ts` imports that type via `./cloud-map-registry.js`, so a bare-shim could not typecheck against `0.14.0` (which exposed only the `CloudMapRegistry` class). `cdk-local@0.14.0` ([cdk-local#78](https://github.com/go-to-k/cdk-local/pull/78)) had already ported the `cloud-map-registry` unit test alongside the class export, so cdkd's shim PR deleted the now-duplicate cdkd test. Slice 6 / leaf utilities (`cdk-local@0.17.0`): `runtime-image.ts` (`resolveRuntimeImage` / `resolveRuntimeFileExtension` / `resolveRuntimeCodeMountPath` — Lambda `Runtime` → ECR base-image / source-file extension / in-container code-mount path), `websocket-event.ts` (`buildConnectEvent` / `buildDisconnectEvent` / `buildMessageEvent` + `WebSocketHandshakeSnapshot` / `WebSocketLambdaEvent` — `$connect` / `$disconnect` / message event-shape builders), `websocket-mgmt-api.ts` (`ConnectionRegistry` / `handleConnectionsRequest` / `parseConnectionsPath` / `buildMgmtEndpointEnvUrl` + `ConnectionRegistryEntry` — `@connections` management API: in-process connection registry + local management-endpoint HTTP handler). `cdk-local@0.17.0` ([cdk-local#81](https://github.com/go-to-k/cdk-local/pull/81)) exposes these from its package entry + carries the three ported unit tests. The shim re-exports only the src-consumed symbols (test-only symbols like `resolveRuntimeSpec` / `UnsupportedRuntimeError` / `readRequestBody` stay reachable via cdk-local's source for the ported tests, not the package entry); `runtime-image`'s only divergence from cdk-local was an `embedConfig`-branded unknown-runtime error string the test does not assert on, so it shimmed cleanly. Slice 7 / leaf utilities (`cdk-local@0.21.0`): `docker-version.ts` (`HOST_GATEWAY_MIN_VERSION` / `probeHostGatewaySupport` — Docker host-gateway version probe gating the `--add-host=...:host-gateway` mapping WebSocket Lambda containers need on Linux native dockerd; cdk-local#483 / issue [#784](https://github.com/go-to-k/cdkd/issues/784) extended the re-export with `resolveHostGatewayExtraHosts` / `HOST_DOCKER_INTERNAL_GATEWAY` — the memoized never-throwing `host.docker.internal:host-gateway` resolver cdkd's `local invoke` / `run-task` adopt so a Lambda / ECS container can reach a host-loopback server (`AWS_ENDPOINT_URL_*` / tunneled VPC); merged into the runner's `--add-host` list by `ecs-task-runner.ts`'s `mergeHostGatewayAddHostFlags`, while `start-service` / `start-alb` inherit it from cdk-local's ECS service emulator engine), `api-server-grouping.ts` (`availableApiIdentifiers` / `filterRoutesByApiIdentifier` / `groupRoutesByServer` + `ApiServerGroup` — splits a flat discovered-route list into one local HTTP server per RestApi / HTTP API / Function URL), and `layer-arn-materializer.ts` (`materializeLayerFromArn` — downloads + unzips a literal-ARN Lambda Layer to a host tmpdir for `/opt` bind-mounting). `cdk-local@0.21.0` ([cdk-local#91](https://github.com/go-to-k/cdk-local/pull/91)) exposes these from its package entry + carries the three ported unit tests. The shim re-exports only the src-consumed symbols (test-only `parseDockerVersion` / `compareDockerVersions` / `routeMatchesIdentifier` / `LayerMaterializationError` stay reachable via cdk-local's source for the ported tests, not the package entry); `docker-version` + `api-server-grouping` were byte-identical, and `layer-arn-materializer`'s only divergence was the `embedConfig`-branded tmpdir prefix (`getEmbedConfig().resourceNamePrefix` renders cdkd's `cdkd-local` via the host's `setEmbedConfig`, so behavior is identical). cdkd's consumer tests `local-invoke-layers.test.ts` / `local-start-api-layers.test.ts` keep their `vi.mock('layer-arn-materializer.js')` — direct module-replacement, so it still intercepts post-shim. Slice 8 / divergent leaves (`cdk-local@0.22.0`): `cors-handler.ts` (`buildCorsConfigByApiId` / `buildCorsConfigFromCloudFrontChain` / `applyCorsResponseHeaders` / `matchPreflight` + `CorsConfig` — CFn `CorsConfiguration` / CloudFront-chain parsing + HTTP API v2 OPTIONS preflight) and `intrinsic-image.ts` (`derivePseudoParametersFromRegion` / `tryResolveImageFnJoin` / `substituteImagePlaceholders` + `ImageResolutionContext` — canonical CDK 2.x `Fn::Join` ECR image-URI resolver + same-stack ECR `Fn::GetAtt` synthesis). `cdk-local@0.22.0` ([cdk-local#92](https://github.com/go-to-k/cdk-local/pull/92)) exposes these + carries the ported tests (cors-handler's test was MERGED into cdk-local's pre-existing `isFunctionUrlOacFronted` coverage — disjoint helper names, no collision; intrinsic-image's test added under its own filename alongside cdk-local's `intrinsic-image-ecr-getatt.test.ts`). Both are clean SUPERSET inheritances: cdk-local's cors-handler adds an `isFunctionUrlOacFronted` export cdkd does NOT consume (a dead export — zero behavior change, lands unwired until the #63 `--strict-sigv4` work adopts it); cdk-local's intrinsic-image adds a same-stack-ECR `Fn::GetAtt` Arn / RepositoryUri synthesis that fires only for a bare-`Fn::GetAtt` ECR image URI under `--from-cfn-stack` where the canonical `Fn::Join` path (unchanged, already resolved pre-shim) did not — `docs/local-emulation.md`'s `run-task` / `start-service` `--from-cfn-stack` warn-drop rows were narrowed to note that exception. The shim re-exports only src-consumed symbols (`isFunctionUrlOacFronted` / `PreflightResponse` / `FnJoinResolveOutcome` stay off the package entry). No breakers. **`intrinsic-image.ts` stopped being a BARE re-export in issue [#1814](https://github.com/go-to-k/cdkd/issues/1814)**: `derivePseudoParametersFromRegion` is now a thin BOUNDARY WRAPPER (the slice-10 / slice-13 shape) that runs the region through `canonicalizeRegion` (`src/utils/aws-partition.ts`) before delegating, because cdk-local carries its OWN partition table whose prefix tests are case-sensitive — so the issue #1795 canonicalization, which every cdkd-owned derivation inherits from one point, structurally could not reach this FOURTH one and an upper-cased `--region CN-NORTH-1` still synthesized `<acct>.dkr.ecr.CN-NORTH-1.amazonaws.com/...` on the `Fn::Join` `Code.ImageUri` path. The other two symbols stay bare re-exports. The preferred fix is upstream (one normalization point per package); the wrapper stays correct if cdk-local later canonicalizes too, since the fold is idempotent. It fixes CASE only — cdk-local's table also predates the three rows cdkd's #1764 added, so `us-isof-` / `eu-isoe-` / `eusc-` regions resolve COMMERCIAL here even when spelled canonically (a table-COVERAGE divergence, filed as issue [#1821](https://github.com/go-to-k/cdkd/issues/1821) and pinned by a unit case). Slice 9 / state-resolver (`cdk-local@0.24.0`): `state-resolver.ts` (`substituteAgainstState` / `substituteAgainstStateAsync` / `substituteEnvVarsFromState` / `substituteEnvVarsFromStateAsync` + the `CrossStackResolver` / `SubstitutionContext` / `StateEnvSubstitutionAudit` / `PseudoParameters` types — the `--from-state` / `--from-cfn-stack` pure-functional intrinsic substituter for env-var / image / role / volume values; `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join` / `Fn::Select` / `Fn::Split` plus async `Fn::ImportValue` / `Fn::GetStackOutput` via a cross-stack resolver, with per-key unresolved reasons). `cdk-local@0.24.0` ([cdk-local#97](https://github.com/go-to-k/cdk-local/pull/97)) exposes these from its package entry + carries the ported module-own unit test (cdkd drops its copy). The shim re-exports only the src-consumed symbols (`StateSubstitutionResult` + cdk-local's added `applyDeployedEnvFallback` stay off the package entry — no cdkd consumer). A clean SUPERSET inheritance: cdk-local genericized the per-key unresolved-reason wording (`no record in cdkd state` → `no record in the state source`, `via cdkd deploy` → `and ensure the producer stack was deployed`, `cdkd-managed stack` → `deployed stack`, `need --from-state context` → `need an active state source, e.g. --from-cfn-stack`), so those USER-VISIBLE reason messages change wording on inherit (more accurate — they now cover `--from-cfn-stack` too); cdkd's two consumer-test reason-string assertions (`local-start-api-from-state.test.ts`, `ecs-task-resolver.test.ts`) were flipped to the new wording. No breakers (pure-functional; no namespace-spy / consumer `vi.mock` of state-resolver or its transitive deps). Slice 10 / websocket-body (`cdk-local@0.29.0`): `websocket-body.ts` (`bufferToBody` — converts a ws-emitted message buffer into the AWS-canonical `{ body, isBase64Encoded }` event shape; text frames pass through as UTF-8, binary frames are base64-encoded). `cdk-local@0.29.0` ([cdk-local#106](https://github.com/go-to-k/cdk-local/pull/106)) exposes `bufferToBody` from its package entry + carries the ported module-own unit test; cdkd drops its `bufferToBody (B3 regression guard)` block from `websocket-server.test.ts`. UNLIKE every prior slice this is NOT a bare `export { bufferToBody } from 'cdk-local'` re-export but a thin spy-friendly LOCAL wrapper (`export function bufferToBody(...) { return bufferToBodyImpl(...); }` over the cdk-local impl): the still-local `websocket-server.ts` imports `bufferToBody` as a namespace (`import * as websocketBody`) and the B4 regression test (Issue #537 item 6) installs `vi.spyOn(websocketBody, 'bufferToBody')` to assert the post-`$connect`-deny close-handshake window does no `bufferToBody` allocation work — a bare re-export binding is a non-configurable getter `vi.spyOn` cannot redefine, so the wrapper preserves the spy seam while cdk-local owns the actual codec. No other breakers (pure-functional codec). Verified end-to-end via the `local-start-api-websocket` Docker integ. Slice 11 / cluster #4 (`cdk-local@0.30.0`): `cloud-map-resolver.ts` (`buildCloudMapIndex` + `CloudMapIndex` — `start-service` Cloud Map service-discovery index from `AWS::ServiceDiscovery::PrivateDnsNamespace` / `::Service`) and `integration-response-selector.ts` (`selectIntegrationResponse` / `evaluateResponseParameters` / `pickResponseTemplate` / `tryParseStatus` + `IntegrationResponseEntry` — REST v1 `IntegrationResponses[]` selection by `SelectionPattern` regex / `ResponseParameters` header literals / `Accept` content negotiation). `cdk-local@0.30.0` ([cdk-local#109](https://github.com/go-to-k/cdk-local/pull/109)) exposes these + carries the two ported module-own unit tests (cdkd drops its copies). Both resolvers were byte-identical. The breaker here was NOT a mock seam but **class identity** (the third breaker family): `cloud-map-resolver` throws `EcsTaskResolutionError` (owned by still-local `ecs-task-resolver.ts`) and `integration-response-selector` throws `VtlEvaluationError` (owned by still-local `vtl-engine.ts`); once the resolvers re-export from cdk-local their throws use cdk-local's BUNDLED error classes, while still-local consumers + tests (`ecs-service-resolver.ts` / `ecs-service-resolver.test.ts` / `ecs-task-resolver.test.ts` `toThrow(EcsTaskResolutionError)`; `rest-v1-integrations.ts`'s `instanceof VtlEvaluationError` catch + `vtl-engine.test.ts` / `rest-v1-integrations-issue-507.test.ts` assertions) reference cdkd's LOCAL class — two distinct class objects across the package boundary, so `instanceof` / `toThrow` would silently fail. Resolved by the **class-identity reconciliation**: cdk-local#109 ALSO exports `EcsTaskResolutionError` + `VtlEvaluationError` from its package entry, and cdkd's still-local `ecs-task-resolver.ts` / `vtl-engine.ts` now DELETE their local `class` definitions and `import { ... } from 'cdk-local'` + re-export — their IMPLEMENTATION stays local but the error CLASS is sourced from cdk-local, so every throw site (local or shimmed) and every host-side assertion share ONE identity. This is the first slice to partially-couple a stay-local module to cdk-local (just the error class, not the impl). The shims re-export only src-consumed symbols (`ResolvedCloudMapNamespace` / `ResolvedCloudMapService` / `SelectedIntegrationResponse` stay off the package entry; `integration-response-selector`'s old `export { VtlEvaluationError }` re-export is dropped — no cdkd consumer imported it from there). No mock-seam breakers (neither resolver is namespace-spied, and the rest-v1 consumer tests `vi.mock` `rie-client.js`, a dep of `rest-v1-integrations` itself, not of the shimmed selector). Verified end-to-end via the `local-start-service` + `local-start-api-rest-v1-non-proxy` Docker integs. Slice 12 / authorizer + sigv4 cluster (`cdk-local@0.32.0`): the cluster slice 11 marked deferred. `http-server.ts` (`startApiServer` / `readMtlsMaterialsFromDisk` + `ServerState` / `StartedApiServer` / `MtlsServerConfig`), `authorizer-resolver.ts` (`attachAuthorizers` + `AuthorizerInfo` / `RouteWithAuth`), and `sigv4-verify.ts` (`defaultCredentialsLoader` + `CredentialsLoader`) become re-export shims; `lambda-authorizer.ts` + `authorizer-context.ts` are **DELETED** (not shimmed) — once `http-server` (their only importer) became a shim and their module-own tests moved to cdk-local, they had ZERO remaining cdkd consumers, so a re-export shim would have been dead code. `cdk-local@0.32.0` ([cdk-local#113](https://github.com/go-to-k/cdk-local/pull/113)) exposes the consumed symbols + ports the http-server / authorizer-context test suites. The breaker was the **#63 SigV4 default DIVERGENCE — the FOURTH breaker family: a deliberate behavior difference the host has not adopted, NOT a mock seam** (see memory `feedback_shim_blocked_by_unadopted_semantic_divergence`): cdkd ships fail-closed-by-default (deny unverifiable AWS_IAM SigV4, security review #484) with an opt-OUT `--allow-unverified-sigv4` flag; cdk-local ships warn-and-pass-by-default with an opt-IN `--strict-sigv4` flag. A naive shim would flip cdkd's secure default to fail-open. Resolved WITHOUT a security regression and WITHOUT cdkd adopting cdk-local's default: (1) cdkd's still-local `local-start-api.ts` translates its flag to cdk-local's existing `sigV4Strict` `startApiServer` option (`sigV4Strict: options.allowUnverifiedSigv4 !== true` — strict unless the opt-out flag is passed), so the deny/pass DECISION stays cdkd's fail-closed; (2) the SigV4 warn MESSAGES (emitted by cdk-local's bundled `sigv4-verify`) are parameterized via two new embedConfig fields — cdkd's `CDKD_EMBED_CONFIG` sets `sigV4StrictByDefault: true` + `sigV4OptFlag: '--allow-unverified-sigv4'` so the inherited messages reference cdkd's opt-out flag + advice instead of cdk-local's `--strict-sigv4` (cdk-local#113 made the 4 flag-referencing messages polarity-aware; under cdk-local's defaults they render byte-identically to before). cdkd also cleanly GAINS cdk-local's `oacFronted` Function-URL exception (CloudFront re-signs OAC-fronted origin requests, so the local server can't verify a client signature — warn-and-pass is correct there; a behavior improvement). The mock-seam breaker slice 11 flagged (`http-server.test.ts` mocking `rie-client.js`'s `invokeRie`) is resolved by those test suites moving into cdk-local (where rie-client is in-bundle mockable). cdkd keeps `local-start-api.ts` local (its `--allow-unverified-sigv4` flag + the option translation + the cdkd-glue `local-embed-config.test.ts`), so the cdkd CLI surface is unchanged. Verified end-to-end via the `local-start-api` Docker integ. **UPDATE 2026-05-31 (case-A → case-B retrofit):** the case-A divergence-preserving resolution was REVERSED with user sign-off — cdkd now follows cdk-local's warn-and-pass default. `CDKD_EMBED_CONFIG` flipped to `sigV4StrictByDefault: false` + `sigV4OptFlag: '--strict-sigv4'`; `LocalStartApiOptions.allowUnverifiedSigv4 → strictSigv4`; the two `local-start-api.ts` translation sites flipped to `sigV4Strict: options.strictSigv4 === true`; the CLI option renamed `--allow-unverified-sigv4 → --strict-sigv4` with the inverted help text + default; shim header comments in `http-server.ts` / `sigv4-verify.ts` updated. **BREAKING CHANGE** for users who relied on cdkd's prior fail-closed default — they must now pass `--strict-sigv4` to opt in. Slice 13 / docker-image-builder (`cdk-local@0.33.0`): `docker-image-builder.ts` (`buildContainerImage` + `architectureToPlatform` + `BuildContainerImageOptions` — `invoke` local container-Lambda build). `cdk-local@0.33.0` ([cdk-local#114](https://github.com/go-to-k/cdk-local/pull/114)) exposes these + `LocalInvokeBuildError`; cdk-local#115 ports the executable-source re-tag test cases. UNLIKE the bare re-exports, this is a **BOUNDARY-WRAPPER shim** (like slice 10's spy wrapper): the slice-12 note flagged docker-image-builder BLOCKED because its `LocalInvokeBuildError extends CdkdError` (cdkd's base) while cdk-local's is `CdkLocalError`-based, so the slice-11 same-base class-identity reconciliation cannot apply. The fix is a thin wrapper — `architectureToPlatform` + the `BuildContainerImageOptions` type re-export directly, but `buildContainerImage` is wrapped to catch cdk-local's thrown `LocalInvokeBuildError` and re-throw cdkd's `CdkdError`-based one at the boundary, so a local-invoke build failure still surfaces with cdkd's exit code / formatting. `ecr-puller` + `ecs-task-runner` throw / catch their OWN `LocalInvokeBuildError` (self-contained — they do NOT call docker-image-builder), so they are unaffected. The cdkd `docker-build-executable-retag.test.ts`'s `docker-image-builder` re-tag block moved to cdk-local (cdk-local#115); the file's `docker-asset-publisher` block (cdkd ECR publish path, stay-local) stays. Verified end-to-end via the `local-invoke-container` Docker integ. Slice 14 / file-watcher (`cdk-local@0.34.0`): `file-watcher.ts` becomes a bare re-export shim (`createFileWatcher` + `FileWatcher` / `FileWatcherOptions` types). UNLIKE every prior shim this was a **user-approved BEHAVIOR-CHANGING feature reconciliation**, not a mechanical re-export: `cdkd local start-api --watch` flips from cdkd's watch-OUTPUT model (watch `cdk.out/` + asset dirs; reload only when something else re-synths) to cdk-local's watch-SOURCE model (watch the CDK app source tree at `process.cwd()`, exclude `cdk.out` / `node_modules` / `.git`, honor `cdk.json` `watch.include` / `watch.exclude`, and RE-SYNTH on a source edit — the `cdk watch`-like UX). The change was small because cdkd's `reloadAllServers` ALREADY re-synths (`synthesizeAndBuild`), so it was a watch-TARGET swap, not a re-synth retrofit. `cdk-local@0.34.0` ([cdk-local#116](https://github.com/go-to-k/cdk-local/pull/116)) exposes `createFileWatcher` / `FileWatcher` / `FileWatcherOptions` + `createWatchPredicates` / `WatchPredicates` + `resolveWatchConfig` / `CdkWatchConfig`. cdkd's still-local `local-start-api.ts` imports `createWatchPredicates` + `resolveWatchConfig` from `cdk-local`, watches `[process.cwd()]` with cdk-local's `ignored` / `shouldTrigger` predicates, and DELETES the watch-output plumbing (`computeAssetPaths`, `lastAssetPaths`, the `FileWatcher.update()` dynamic-path calls, and the corresponding `reloadAllServers` args). cdkd's `file-watcher.test.ts` drops (cdk-local owns it). No self-fire loop: cdkd's synth writes only to `cdk.out`, which `createWatchPredicates` excludes. Verified end-to-end via the `local-start-api` Docker integ. **The Phase 3 shim swap is COMPLETE** — every shimmable `src/local/**` module is now a re-export shim (or a boundary / spy wrapper); the only modules that remain cdkd-local are the stay-local-FOREVER set (the `ecs-*` engine, `rie-client`, `container-pool`, `lambda-resolver`, `ecr-puller`, `docker-runner`, `reload-orchestrator`, `httpv2-service-integration`, `websocket-server`, `rest-v1-integrations`, `vtl-engine` + `ecs-task-resolver` [impl local; their error class is sourced from cdk-local per slice 11], and the `*-local-state-provider` plumbing) plus the CLI command files that keep cdkd's own command tree. NOTE `route-discovery.ts`'s error strings still emit a `go-to-k/cdkd` docs URL via cdk-local until the cdk-local self-containment cleanup parameterizes it via `embedConfig`; until then cdkd's shim keeps emitting the cdkd URL (correct for cdkd). `cdkd local start-alb` ([#86](https://github.com/go-to-k/cdkd/issues/86)) ships as a thin shim consumer of the shared ECS service emulator engine — `src/local/elb-front-door-resolver.ts` re-exports `resolveAlbFrontDoor` / `isApplicationLoadBalancer` + the front-door type set from `cdk-local`, `src/cli/commands/ecs-service-emulator.ts` re-exports `runEcsServiceEmulator` / `addCommonEcsServiceOptions` + the engine's `EcsServiceEmulatorOptions` / `EmulatorStrategy` / `Planned*` types from `cdk-local/internal`, and the command file `src/cli/commands/local-start-alb.ts` (`createLocalStartAlbCommand`) wires its `LocalStartAlbOptions` (cdkd-specific `--from-state` / `--state-bucket` / `--state-prefix` + `tls?: boolean` extending the engine's `EcsServiceEmulatorOptions`) into `runEcsServiceEmulator(targets, options, albStrategy(options), cdkdExtraStateProviders)`. The ALB-specific flags (`--lb-port` / `--tls` / `--tls-cert` / `--tls-key` / `--no-verify-auth` / `--bearer-token`) are registered via cdk-local's `addAlbSpecificOptions(cmd)` (added in cdk-local 0.64.0 / [cdk-local#203](https://github.com/go-to-k/cdk-local/pull/203)) so cdkd auto-inherits any new ALB-only flag the upstream `cdkl start-alb` adds without manual `.addOption(...)` duplication; `parseLbPortOverrides` / `resolveAlbTarget` / `albStrategy` live in cdk-local and are re-exported by cdkd's `ecs-service-emulator.ts` shim. **BREAKING 2026-05-31:** cdk-local 0.64.0 flips the default HTTPS-listener local behavior from auto-TLS-terminate (with self-signed cert) to **plain HTTP** (with `X-Forwarded-Proto: https` preserved); cdkd inherits the new default. Users who want the prior behavior must pass `--tls` (auto-generates self-signed cert) or `--tls-cert` / `--tls-key` (user-supplied cert). The 4th-arg `extraStateProviders` is sourced from the new export `cdkdExtraStateProviders` in `src/cli/commands/local-state-source.ts` (`{ fromState: fromStateFactory }`) — the same factory `createLocalStateProvider` registers for the rest of the `cdkd local *` family — so cdk-local's engine picks cdkd's S3-backed `--from-state` factory transparently when it calls `createLocalStateProvider` internally per backing-service boot. `cdkd local start-service` (Part B follow-up to PR #725, 2026-05-30) ships as the second consumer of the same shared engine — `src/cli/commands/local-start-service.ts` collapses from a 944-line per-replica orchestrator to a ~120-line shim mirroring `local-start-alb.ts`'s shape (`LocalStartServiceOptions` extends `EcsServiceEmulatorOptions` with cdkd's `--from-state` / `--state-bucket` / `--state-prefix`, a `serviceStrategy(options): EmulatorStrategy` returns `boots` only with empty `lbPortOverrides` and no `frontDoor`, and `createLocalStartServiceCommand` wires `runEcsServiceEmulator(targets, options, serviceStrategy(options), cdkdExtraStateProviders)`). The start-service-specific flags (`--host-port` since cdk-local 0.62.0; `--watch` since cdk-local 0.69.0 / [cdk-local#214](https://github.com/go-to-k/cdk-local/issues/214) Phase 4) are registered via cdk-local's `addStartServiceSpecificOptions(cmd)` so cdkd auto-inherits any new start-service-only flag the upstream `cdkl start-service` adds without manual `.addOption(...)` duplication. `--watch` on either `start-service` or `start-alb` runs the cdk-local engine's Phase 4 classifier per reload: source-only edits on interpreted-language handlers (Node / Python / Ruby / shell) inside a CDK image asset take a bind-mount FAST PATH (`docker cp` + `docker restart`, no `docker build`, typical end-to-end latency well under a second), while Dockerfile / dependency manifest / compiled-language source / asset-hash-unchanged / ambiguous edits fall through to the Phase 1-3 rebuild rolling primitive (shadow boot + atomic Service Connect / Cloud Map / front-door pool swap); the classifier verdict + per-replica completion lines (`verdict=soft-reload` / `Soft-reloaded replica ... restart + TCP-ready probe complete` vs `verdict=rebuild (...)` / `Rolling replica ... swap complete`) are emitted by the engine directly and pass through cdkd's output unchanged. The fixture exercising both paths against real Docker is `tests/integration/local-start-service-watch-fast/`. The retained `src/local/ecs-network.ts` exports — `createTaskNetwork` / `destroyTaskNetwork` / `buildMetadataEnv` / `buildEndpointSubnet` / `METADATA_ENDPOINT_IMAGE` / `METADATA_ENDPOINT_IP` — are kept ONLY because `ecs-task-runner.ts` (the still-local `cdkd local run-task` orchestrator) consumes them; once `run-task` migrates to a cdk-local engine of its own those exports become deletable too.
-
+- **src/local/** - `cdkd local invoke` / `start-api` / `run-task` /
+  `start-service` / `start-alb` / `start-cloudfront` / `invoke-agentcore` /
+  `start-agentcore` building blocks (renamed from `src/local-invoke/`, PR
+  #228).
+  - **`start-cloudfront` + `start-agentcore` are THIN factory pass-throughs**
+    (`src/cli/commands/local-start-cloudfront.ts` /
+    `local-start-agentcore.ts`): each wraps a cdk-local
+    `createLocalStart*Command` factory, re-hands the active embed config, and
+    threads cdkd's `--from-state` factory through the factory's
+    `extraStateProviders` seam (issue #766; the `start-cloudfront` factory
+    gained the seam in cdk-local 0.128.0 / cdk-local#426). Both layer cdkd's
+    `--from-state` / `--state-bucket` / `--state-prefix` on top of cdk-local's
+    inherited `--from-cfn-stack` / `--stack-region`.
+  - **ECS run-task family** (still cdkd-local): `ecs-task-resolver.ts` (synth
+    template → `ResolvedEcsTask`), `ecs-secrets-resolver.ts`
+    (`Secrets[].ValueFrom` → real values via SecretsManager / SSM),
+    `ecs-network.ts` (per-task docker network + metadata-endpoints sidecar),
+    `ecs-task-runner.ts` (orchestrator: image prep → DAG topo-sort → docker
+    run loop → log stream → teardown).
+  - **ECS start-service family** (#466 / #460): the original per-replica
+    orchestrator + Cloud Map modules were MOVED to cdk-local's bundled
+    `runEcsServiceEmulator` engine and deleted from cdkd's tree (Part B
+    refactor, PR #731). The per-CLI-run shared docker network
+    (`cdkd-local-svc-<rand>`, subnet `169.254.171.0/24`, sidecar at
+    `169.254.171.2`) and the Cloud Map peer-discovery overlay are
+    engine-owned. History in `docs/changelog-cdkd.md`.
+  - **`cdkd local invoke` modules**: `lambda-resolver.ts` (target →
+    discriminated `ResolvedLambda` (`kind: 'zip' | 'image'`); both variants
+    carry `architecture` (issue #768) so the ZIP container run pins
+    `--platform` like the IMAGE path), `env-resolver.ts` (template literals +
+    SAM-shape `--env-vars`; intrinsic-valued entries warn-and-drop unless
+    `--from-state` substituted them), `state-resolver.ts` (pure-functional
+    substituter against `state.resources`: `Ref` / `Fn::GetAtt` / `Fn::Sub` /
+    `Fn::Join` / `Fn::Select` / `Fn::Split`, plus async `Fn::ImportValue` /
+    `Fn::GetStackOutput` via a cross-stack resolver, with per-key unresolved
+    reasons — `docs/local-invoke.md`'s table still calls `Fn::Select` /
+    `Fn::Split` a future PR, which is STALE: they ship), `runtime-image.ts` (`Runtime` →
+    `public.ecr.aws/lambda/<lang>:<v>` + source extension), `docker-runner.ts`
+    (thin `execFile`/`spawn` wrappers around docker pull/run/logs/rm + free-
+    port allocator; optional `--name` for orphan-sweep),
+    `docker-image-builder.ts` (local-build path for container Lambdas),
+    `ecr-puller.ts` (ECR-pull fallback; same-account / same-region only,
+    cross-acct/region hard-errors), `rie-client.ts` (HTTP POST to RIE +
+    TCP-probe readiness wait).
+  - **`cdkd local start-api` modules** (PR 8a): `route-discovery.ts` (REST v1
+    + HTTP API + Function URL → `DiscoveredRoute[]`, local intrinsic
+    resolver, no deploy-state dependency), `api-gateway-event.ts` (v1 + v2
+    event builders + `applyAuthorizerOverlay`), `api-gateway-response.ts`,
+    `route-matcher.ts` (3-tier precedence: full → greedy `{proxy+}` →
+    `$default`, literal-segment tie-break), `container-pool.ts` (per-Lambda
+    warm pool, mutex-protected lazy growth, 60s idle GC), `http-server.ts`
+    (accept loop + authorizer pass + atomic `setServerState` hot-reload
+    swap). PR 8b: `authorizer-resolver.ts` (authorizer detection +
+    identity-source parsing; #447 added the `IamAuthorizer` union member for
+    REST v1 `AWS_IAM`, #621 wired Function URL `AuthType: 'AWS_IAM'` onto the
+    same SigV4 verifier, #470 accepts `Fn::GetAtt: [<UserPool>, 'Arn']` under
+    `ProviderARNs[]` by synthesizing an unreachable placeholder ARN so
+    `cognito-jwt.ts`'s JWKS pass-through fallback admits tokens without
+    signature verification), `authorizer-cache.ts` (TTL-aware),
+    `lambda-authorizer.ts` (**DELETED** in slice 12 — the logic survives in
+    cdk-local), `cognito-jwt.ts` (JWKS fetch + RS256 verify + pass-through
+    fallback), `sigv4-verify.ts` (#447 — SigV4 signature verification against
+    local credentials; signature only, no IAM policy emulation; warn-and-pass
+    on foreign identities per `feedback_match_aws_default_over_opinionated`).
+    PR 8c: `cors-handler.ts`, `stage-resolver.ts` (populates
+    `event.stageVariables`), `file-watcher.ts`, `reload-orchestrator.ts`
+    (synth-failure-tolerant, chain-serialized).
+  - `invoke-agentcore-watch-loop.ts` (#270): cdkd-owned
+    `cdkd local invoke-agentcore --watch` reload loop — built on cdk-local's
+    exported watch primitives plus copies of the not-exported
+    `loadAgentCoreAssetContext` / `deriveOldAssetHash`; the per-firing
+    classifier picks `docker cp`+restart soft-reload vs full image rebuild.
+    cdk-local's own `runAgentCoreWatchLoop` could not be shimmed (it
+    hard-couples to cdk-local's `Synthesizer` / options types).
+  - Intrinsic helpers: `intrinsic-image.ts` (#286 Gap 2 — canonical CDK 2.x
+    `Fn::Join` ECR image-URI resolver shared by `lambda-resolver.ts` and
+    `ecs-task-resolver.ts`), `intrinsic-lambda-arn.ts` (#286 Gaps 3/4 —
+    `resolveLambdaArnIntrinsic` accepts `Ref` / `Fn::GetAtt: [..., 'Arn']` /
+    the REST v1 invoke-ARN `Fn::Join` wrapper / the `Fn::Sub` invoke-ARN
+    wrapper (1-arg and 2-arg); returns a discriminated union so each call
+    site wraps the unsupported case in its own error class),
+    `intrinsic-utils.ts` (#471 — shared `pickRefLogicalId`, consumed by
+    route/websocket discovery, authorizer-resolver, stage-resolver, so
+    intrinsic-shape extensions land in one place), `authorizer-context.ts`
+    (PR #515 item 9 — per-kind `$context.authorizer.*` shape builder;
+    `http-server.ts`'s sibling `buildOverlay` still hand-branches because it
+    wraps the result in the `AuthorizerEventOverlay` union).
+  - #457 REST v1 non-proxy: `vtl-engine.ts` (minimal AWS VTL evaluator —
+    `$input` / `$context` / `$util`, directives, JSONPath subset, no external
+    dep), `integration-response-selector.ts` (`SelectionPattern` regex +
+    `ResponseParameters` + Accept negotiation), `rest-v1-integrations.ts`
+    (the four dispatchers + `substituteUriPlaceholders` +
+    `applyRequestParameters`).
+  - CLI commands: `src/cli/commands/local-invoke.ts` (creates the `cdkd
+    local` parent + registers invoke / start-api / run-task / start-service),
+    `local-start-api.ts`, `local-run-task.ts`, `local-start-service.ts`.
+    `local-state-loader.ts` (PR #267) is the shared S3-state loader both
+    `invoke --from-state` and `run-task --from-state` route through; it also
+    exports `loadBootstrapContainerRepo` (issue #1025): a best-effort,
+    never-failing read of the region's asset-storage bootstrap marker
+    (`cdkd-bootstrap/{region}.json`) so `run-task --from-state` recognizes
+    images in a custom-named container-asset repo (issue #1011) as cdk-asset
+    images.
+  - **Region CASE is folded across the loader (issue #1836), and its several
+    folds are NOT interchangeable — do not "simplify" them into one.**
+    - The state-record match is EXACT-first, case-insensitive second
+      (`listStacks` dedupes on the exact `{stack}\0{region}` pair, so both
+      spellings can coexist as two DISTINCT refs; a canonical-equal collision
+      is reported at warn). The candidate compared is the user's UNFOLDED
+      spelling, carried as `rawStackRegion` — captured at each handler entry
+      BEFORE the fold, derived from the still-raw flag by the `--from-state`
+      factory for the ENGINE commands, and read by NOTHING else except
+      `loadBootstrapContainerRepo`'s raw marker probe. Without it the exact
+      arm is DEAD and its warning lies (every path would fold first). The key
+      handed to `getState` — and the exports-index key
+      `buildCrossStackResolver` builds — keeps the RECORD's own spelling
+      (nothing folds `cdkd deploy --region`; a folded key would 404).
+    - **Every caller of `buildCrossStackResolver` must pass a state record's
+      spelling** (`local-invoke.ts` / `local-invoke-agentcore.ts` pass
+      `loaded.region`; `local-run-task.ts` threads it out of
+      `buildEcsImageResolutionContext`, falling back to its folded env chain
+      via `resolveEcsConsumerRegion` only when no record was loaded — with
+      `||` on the flag link, so a blank `--region ''` cannot become an empty
+      index key).
+    - **`consumerRegion` has FOUR consumers that do NOT all want the same
+      spelling** — it stays RAW at the boundary and each consumer folds for
+      itself: (1) the `cdkd/_index/{region}/exports.json` key AND
+      `ExportIndexStore`'s rebuild filter take RAW (a spelling no record
+      carries rebuilds ZERO refs and PUTs an EMPTY index, permanently
+      degrading every `Fn::ImportValue` to the O(N) scan; keyed by a record's
+      spelling a key miss costs only a correct rebuild — also why that lookup
+      is NOT read-only against the bucket); (2) the index-miss per-stack
+      scan's same-region filter folds BOTH sides (`getState` key still the
+      ref's own spelling); (3) via `SubstitutionContext.consumerRegion` it is
+      cdk-local's DEFAULT producer region for an `Fn::GetStackOutput` with no
+      explicit `Region`, so `resolveGetStackOutput` needs the same both-sides
+      case RECOVERY the scan has (exact key first, then a `listStacks` walk
+      for a canonical-equal record) — else an `US-EAST-1` consumer record
+      referencing a `us-east-1` producer 404s and the env var is dropped with
+      only a per-key warning; (4) `resolveStateBucketWithDefault` must be
+      FOLDED — the legacy default bucket name `cdkd-state-{acct}-{region}` is
+      lowercase-only, an upper-cased name is not virtual-hostable, S3 answers
+      400 `InvalidBucketName` path-style, and the whole resolver returns
+      `undefined`, warn-dropping EVERY cross-stack env entry on a
+      legacy-bucket account. Both sibling loaders fold before their own
+      `resolveStateBucketWithDefault` call, so all three agree.
+    - `opts.region` folds separately at all three S3-client construction
+      sites, with ABSENT — and a blank `--region ''` — staying absent so the
+      SDK's own chain still resolves the profile's region. That fold is on
+      the `AwsClients` constructor, NOT on the `S3StateBackend` options bag
+      beside it (which carries only `profile` / `credentials`) — a test
+      asserting the latter fences nothing.
+    - The bootstrap-marker read probes the CANONICAL
+      `cdkd-bootstrap/{region}.json` first, then the RAW spelling — the
+      WRITE side (`cdkd bootstrap`, whose region is unfolded, issue #1820)
+      can have written the upper-cased key. How reachable the raw key is was
+      MEASURED for issue #2021 and is narrow: it needs BOTH `--asset-bucket`
+      and `--container-repo` as valid lowercase names AND a pre-existing
+      bucket, or a marker written by hand / by a cdkd predating the guards
+      (a plain `AWS_REGION=US-EAST-1 cdkd bootstrap` cannot write it — the
+      marker is written LAST and the bucket create fails first). Probe 2 is
+      KEPT anyway: that state is real, losing it silently re-points a
+      bootstrapped region at `cdk gc`-collectable storage (the #2021 failure
+      itself); cost is one extra `GetObject` on a non-canonical region only,
+      and both conditions are pinned by tests.
+    - Issue #2021 moved the two-probe read into ONE shared helper,
+      `readBootstrapMarkerBody(stateBackend, rawRegion)` in
+      `src/assets/asset-storage.ts`, returning `{ body, resolvedKey }` — the
+      key ACTUALLY read, so each caller's message, plan line and delete
+      target can follow it. It deliberately does NOT catch:
+      `loadBootstrapContainerRepo` stays best-effort, `gc.ts` /
+      `bootstrap-destroy.ts` translate `NoSuchBucket` into their
+      never-bootstrapped message and hard-error otherwise, and
+      `bootstrap --destroy` deletes `resolvedKey` rather than the canonical
+      key (deleting the canonical one when the body came from the raw one
+      orphans the marker).
+  - **`LocalStateProvider`** (issue #606, `src/local/local-state-provider.ts`):
+    two implementations — `s3-local-state-provider.ts` (wraps
+    `local-state-loader.ts`; the `--from-state` path) and
+    `cfn-local-state-provider.ts` (reads a deployed CloudFormation stack for
+    `--from-cfn-stack [<cfn-stack-name>]`, letting users run the `cdkd
+    local` family against `cdk deploy`-ed apps without migrating). The
+    dispatcher `src/cli/commands/local-state-source.ts`
+    (`createLocalStateProvider(...)`) enforces mutual exclusion between the
+    two flags and is a thin shim around the `cdk-local` npm package —
+    cdk-local owns the `--from-cfn-stack` implementation + dispatch, cdkd
+    injects its S3-backed `--from-state` factory via the
+    `extraStateProviders` hook. That factory also folds the region CASE of
+    `--region` AND `--stack-region` (#1836) — idempotent for the four
+    commands that fold at handler entry, and the ONLY cdkd-owned stop for
+    the ECS / CloudFront / AgentCore engine commands — and carries the
+    UNFOLDED `--stack-region` through as `rawStackRegion`, the only thing
+    that makes the loader's exact-spelling match reachable. cdkd's own
+    `cfn-local-state-provider.ts` is now dead code (kept as a CAT-A shim
+    candidate). CFn-provider wire mapping: `Ref` → `DescribeStackResources`;
+    `Fn::ImportValue` → `ListExports`; `Fn::GetAtt` warn-and-drop for most
+    sites, but a consumer Lambda's OWN env-var `Fn::GetAtt` values are
+    recovered from the deployed function's already-resolved config
+    (`lambda:GetFunctionConfiguration`, cdk-local@0.10.0) — CFn resolved
+    every intrinsic at deploy time; other `Fn::GetAtt` sites (ECS container
+    env) still warn-and-drop. `Fn::GetStackOutput` is rejected with a
+    pointer (cdkd-specific intrinsic). Region handling reuses
+    `--stack-region`.
+  - **Phase 3 shim swap (COMPLETE)**: an expanding set of `src/local/**`
+    modules became thin re-export shims (`export { ... } from 'cdk-local'`);
+    implementations and their unit tests moved to cdk-local. cdkd keeps its
+    OWN `cdkd local` command tree, so `createLocalCommand()` calls
+    `setEmbedConfig(CDKD_EMBED_CONFIG)` once at build time (cdk-local 0.20.0
+    / cdk-local#85) — every shim reading `getEmbedConfig()` renders cdkd
+    branding (`cliName: 'cdkd local'` / `resourceNamePrefix: 'cdkd-local'` /
+    `awsBindMountPath: '/cdkd-aws'` / `envPrefix: 'CDKD'`). Slices, with the
+    BREAKER FAMILIES each surfaced:
+    - Slice 1 (0.8.0): `intrinsic-utils`, `intrinsic-lambda-arn`,
+      `parameter-mapping`, `api-gateway-response`, `docker-inspect`. Slice 2
+      (0.11.0): route cluster (`route-discovery`, `route-matcher`,
+      `api-gateway-event`, `websocket-route-discovery`). Slice 3 (0.12.0):
+      `authorizer-cache`, `cognito-jwt`. Slice 4 (0.14.0): `env-resolver`,
+      `stage-resolver`. Slice 5 (0.15.0): `cloud-map-registry` — had to wait
+      for cdk-local#79 to export `type RegistrationHandle` (a still-local
+      sibling imported the type, so a bare shim could not typecheck).
+    - Slice 6 (0.17.0): `runtime-image`, `websocket-event`,
+      `websocket-mgmt-api`. Slice 7 (0.21.0): `docker-version`
+      (`probeHostGatewaySupport`; cdk-local#483 / issue #784 added
+      `resolveHostGatewayExtraHosts` — the memoized never-throwing
+      `host.docker.internal:host-gateway` resolver `local invoke` /
+      `run-task` adopt, merged by `ecs-task-runner.ts`'s
+      `mergeHostGatewayAddHostFlags`; `start-service` / `start-alb` inherit
+      it from the engine), `api-server-grouping`, `layer-arn-materializer`
+      (cdkd's consumer tests keep their `vi.mock` — direct
+      module-replacement still intercepts post-shim). Shims re-export only
+      src-consumed symbols; test-only symbols stay off the package entry.
+    - Slice 8 (0.22.0): `cors-handler`, `intrinsic-image` — clean SUPERSET
+      inheritances (cdk-local adds `isFunctionUrlOacFronted` cdkd does not
+      consume, and a same-stack-ECR `Fn::GetAtt` synthesis that fires only
+      under `--from-cfn-stack`). **`intrinsic-image.ts` stopped being a BARE
+      re-export in issue #1814**: `derivePseudoParametersFromRegion` is a
+      thin BOUNDARY WRAPPER running the region through `canonicalizeRegion`
+      (`src/utils/aws-partition.ts`) before delegating — cdk-local carries
+      its OWN case-sensitive partition table, so the #1795 canonicalization
+      structurally could not reach this fourth derivation and an upper-cased
+      `--region CN-NORTH-1` still synthesized a wrong ECR host. The wrapper
+      stays correct if cdk-local later canonicalizes (the fold is
+      idempotent). It fixes CASE only — cdk-local's table also predates
+      cdkd's #1764 rows, so `us-isof-` / `eu-isoe-` / `eusc-` regions
+      resolve COMMERCIAL there even spelled canonically (table-COVERAGE
+      divergence, issue #1821, pinned by a unit case).
+    - Slice 9 (0.24.0): `state-resolver` (the `--from-state` /
+      `--from-cfn-stack` substituter over `Ref` / `Fn::GetAtt` / `Fn::Sub` /
+      `Fn::Join` / `Fn::Select` / `Fn::Split` plus async `Fn::ImportValue` /
+      `Fn::GetStackOutput`, + `CrossStackResolver` / `SubstitutionContext`
+      types). Clean superset; cdk-local genericized
+      the USER-VISIBLE per-key unresolved-reason wording, and cdkd's two
+      consumer-test reason-string assertions were flipped to the new
+      wording.
+    - Slice 10 (0.29.0): `websocket-body` — NOT a bare re-export but a thin
+      spy-friendly LOCAL wrapper (`bufferToBody` delegating to the cdk-local
+      impl): the still-local `websocket-server.ts` imports it as a namespace
+      and a regression test installs `vi.spyOn` — a bare re-export binding
+      is a non-configurable getter `vi.spyOn` cannot redefine.
+    - Slice 11 (0.30.0): `cloud-map-resolver`,
+      `integration-response-selector` — surfaced the **class-identity
+      breaker family**: once a shim re-exports, its throws use cdk-local's
+      BUNDLED error classes while still-local consumers/tests reference
+      cdkd's local class — two class objects across the package boundary, so
+      `instanceof` / `toThrow` silently fail. Resolved by class-identity
+      reconciliation: cdk-local#109 also exports `EcsTaskResolutionError` +
+      `VtlEvaluationError`, and cdkd's still-local `ecs-task-resolver.ts` /
+      `vtl-engine.ts` DELETE their local `class` definitions and import +
+      re-export from cdk-local — impl local, error CLASS sourced upstream,
+      one identity for every throw site and assertion.
+    - Slice 12 (0.32.0): `http-server`, `authorizer-resolver`,
+      `sigv4-verify` become shims; `lambda-authorizer.ts` +
+      `authorizer-context.ts` are DELETED (zero remaining cdkd consumers — a
+      shim would be dead code). Surfaced the **fourth breaker family: a
+      deliberate semantic divergence the host has not adopted** (memory
+      `feedback_shim_blocked_by_unadopted_semantic_divergence`) — the #63
+      SigV4 default (cdkd fail-closed vs cdk-local warn-and-pass); first
+      resolved divergence-preserving via the `sigV4Strict` option +
+      polarity-aware embedConfig messages (`sigV4StrictByDefault` /
+      `sigV4OptFlag`), and cdkd cleanly gained the `oacFronted` Function-URL
+      exception (CloudFront re-signs OAC-fronted origin requests, so
+      warn-and-pass is correct there). **UPDATE 2026-05-31: REVERSED with
+      user sign-off** — cdkd now follows cdk-local's warn-and-pass default;
+      `CDKD_EMBED_CONFIG` flipped to `sigV4StrictByDefault: false` +
+      `sigV4OptFlag: '--strict-sigv4'`, the option renamed
+      `--allow-unverified-sigv4` → `--strict-sigv4` with inverted polarity
+      (`sigV4Strict: options.strictSigv4 === true`). **BREAKING CHANGE** for
+      users who relied on the prior fail-closed default.
+    - Slice 13 (0.33.0): `docker-image-builder` — a BOUNDARY-WRAPPER shim:
+      cdkd's `LocalInvokeBuildError` extends `CdkdError` while cdk-local's
+      is `CdkLocalError`-based, so the slice-11 same-base reconciliation
+      cannot apply; `buildContainerImage` is wrapped to catch cdk-local's
+      error and re-throw cdkd's at the boundary (exit code / formatting
+      preserved). `ecr-puller` + `ecs-task-runner` throw/catch their OWN
+      `LocalInvokeBuildError` (self-contained, unaffected).
+    - Slice 14 (0.34.0): `file-watcher` — a user-approved BEHAVIOR-CHANGING
+      reconciliation, not a mechanical re-export: `start-api --watch` flips
+      from watch-OUTPUT (watch `cdk.out/` + asset dirs) to cdk-local's
+      watch-SOURCE model (watch the app source tree, exclude `cdk.out` /
+      `node_modules` / `.git`, honor `cdk.json` `watch.include/exclude`,
+      RE-SYNTH on a source edit). Small only because `reloadAllServers`
+      ALREADY re-synths; cdkd deleted the watch-output plumbing. No
+      self-fire loop: synth writes only to `cdk.out`, which the predicates
+      exclude.
+    - Each slice was verified end-to-end via the relevant Docker integ
+      (`local-invoke-container`, `local-start-api`, `local-start-service`,
+      `local-start-api-websocket`, `local-start-api-rest-v1-non-proxy`).
+    - The stay-local-FOREVER set: the `ecs-*` engine, `rie-client`,
+      `container-pool`, `lambda-resolver`, `ecr-puller`, `docker-runner`,
+      `reload-orchestrator`, `httpv2-service-integration`,
+      `websocket-server`, `rest-v1-integrations`, `vtl-engine` +
+      `ecs-task-resolver` (impl local; error class from cdk-local per slice
+      11), the `*-local-state-provider` plumbing, and the CLI command files
+      that keep cdkd's own command tree. NOTE `route-discovery.ts`'s error
+      strings still emit a `go-to-k/cdkd` docs URL via cdk-local until the
+      self-containment cleanup parameterizes it via `embedConfig` (correct
+      for cdkd meanwhile).
+  - **`cdkd local start-alb`** (#86): thin shim consumer of the shared ECS
+    service emulator engine — `src/local/elb-front-door-resolver.ts`
+    re-exports `resolveAlbFrontDoor` / `isApplicationLoadBalancer` + the
+    front-door types, `src/cli/commands/ecs-service-emulator.ts` re-exports
+    `runEcsServiceEmulator` / `addCommonEcsServiceOptions` + engine types
+    from `cdk-local/internal`, and `local-start-alb.ts` wires
+    `runEcsServiceEmulator(targets, options, albStrategy(options),
+    cdkdExtraStateProviders)`. ALB-specific flags (`--lb-port` / `--tls` /
+    `--tls-cert` / `--tls-key` / `--no-verify-auth` / `--bearer-token`) come
+    via cdk-local's `addAlbSpecificOptions(cmd)` (0.64.0 / cdk-local#203) so
+    cdkd auto-inherits new ALB-only flags. **BREAKING 2026-05-31**: cdk-local
+    0.64.0 flips the default HTTPS-listener local behavior from
+    auto-TLS-terminate to **plain HTTP** (with `X-Forwarded-Proto: https`
+    preserved); users wanting the prior behavior pass `--tls` or
+    `--tls-cert` / `--tls-key`. The 4th-arg `extraStateProviders` is the
+    exported `cdkdExtraStateProviders` from `local-state-source.ts` — the
+    same factory the rest of the family registers — so the engine picks
+    cdkd's S3 `--from-state` transparently per backing-service boot.
+  - **`cdkd local start-service`** (Part B follow-up to PR #725): second
+    consumer of the same engine — `local-start-service.ts` collapsed from a
+    944-line orchestrator to a ~120-line shim mirroring `local-start-alb.ts`
+    (`serviceStrategy` returns `boots` only, empty `lbPortOverrides`, no
+    `frontDoor`). Start-service-specific flags come via
+    `addStartServiceSpecificOptions(cmd)` (`--host-port` since 0.62.0;
+    `--watch` since 0.69.0 / cdk-local#214 Phase 4). `--watch` on either
+    command runs the engine's classifier per reload: interpreted-language
+    source edits inside a CDK image asset take the bind-mount FAST PATH
+    (`docker cp` + `docker restart`, well under a second), everything else
+    falls through to the rebuild rolling primitive (shadow boot + atomic
+    swap); the verdict + per-replica lines are engine-emitted and pass
+    through unchanged. Fixture: `tests/integration/local-start-service-watch-fast/`.
+  - The retained `src/local/ecs-network.ts` exports (`createTaskNetwork` /
+    `destroyTaskNetwork` / `buildMetadataEnv` / `buildEndpointSubnet` /
+    `METADATA_ENDPOINT_IMAGE` / `METADATA_ENDPOINT_IP`) are kept ONLY
+    because `ecs-task-runner.ts` consumes them; once `run-task` migrates to
+    a cdk-local engine they become deletable.
 
 ## The cdk-local boundary runs THROUGH this directory, not around it
 
-Half of `src/local/**` is cdkd's own implementation and half is a re-export surface over cdk-local, and the line between them has moved several times. Getting it wrong has cost real review rounds in BOTH directions — a fix landing in a copy that no longer runs (issue [#2203](https://github.com/go-to-k/cdkd/issues/2203), where a live probe returned the whole secret afterwards), and a "cdkd users are not affected" call that held only for `local run-task` because `start-service` / `start-alb` reach cdk-local's bundled copy instead. So the boundary is now MECHANICAL rather than remembered: `scripts/check-local-reachability.ts` (`vp run audit:local-reachability:check`) classifies every module here and fails when the classification and the source disagree. Measured 2026-08-26 over all 57 files: 16 live (12 fully, 4 with dead exports), 2 loaded-only (`vtl-engine.ts`, `reload-orchestrator.ts`), 2 unreferenced (`httpv2-service-integration.ts`, `cfn-local-state-provider.ts`), 36 re-export shims (28 consumed, 8 with no `src/` importer) and 1 types-only.
+Half of `src/local/**` is cdkd's own implementation and half is a re-export
+surface over cdk-local, and the line has moved several times. Getting it wrong
+has cost review rounds in BOTH directions — a fix landing in a copy that no
+longer runs (issue #2203, where a live probe returned the whole secret
+afterwards), and a "cdkd users are not affected" call that held only for
+`local run-task` because `start-service` / `start-alb` reach cdk-local's
+bundled copy instead. The boundary is therefore MECHANICAL:
+`scripts/check-local-reachability.ts` (`vp run audit:local-reachability:check`)
+classifies every module and fails when classification and source disagree.
+Measured 2026-08-26 over all 57 files: 16 live (12 fully, 4 with dead
+exports), 2 loaded-only (`vtl-engine.ts`, `reload-orchestrator.ts`), 2
+unreferenced (`httpv2-service-integration.ts`,
+`cfn-local-state-provider.ts`), 36 re-export shims (28 consumed, 8 with no
+`src/` importer), 1 types-only.
 
-Two annotations carry the verdict at the declaration, which is where an author about to edit a body will actually read it, and BOTH directions are enforced — a missing one fails, and one on a symbol that IS reachable fails as stale:
+Two annotations carry the verdict at the declaration, and BOTH directions are
+enforced — a missing one fails, and one on a symbol that IS reachable fails as
+stale:
 
-- **`@no-live-caller <reason>`** - the symbol has a cdkd-authored body that nothing in `src/` reaches. The reason must name where the live implementation is (usually cdk-local's copy behind `http-server.ts`'s `startApiServer`), or say there is none.
-- **`@test-only-export <reason>`** - exported solely so unit tests can reset module-scoped state, in a module that is otherwise live.
+- **`@no-live-caller <reason>`** - a cdkd-authored body nothing in `src/`
+  reaches. The reason must name where the live implementation is (usually
+  cdk-local's copy behind `http-server.ts`'s `startApiServer`), or say there
+  is none.
+- **`@test-only-export <reason>`** - exported solely so unit tests can reset
+  module-scoped state, in an otherwise-live module.
 
-Annotating is the floor rather than the destination — deleting the orphaned fork (about 4.4k lines of source plus 3.7k of tests, enumerated per file) is issue [#2277](https://github.com/go-to-k/cdkd/issues/2277), kept separate because removing a subsystem is a different review from adding a critic.
+Annotating is the floor — deleting the orphaned fork (~4.4k lines of source +
+3.7k of tests, enumerated per file) is issue #2277, kept separate because
+removing a subsystem is a different review from adding a critic.
 
-`loaded-only` is the state that makes a module-level rule useless here: `vtl-engine.ts` IS imported (by `rest-v1-integrations.ts`, which `local-start-api.ts` imports for `warnSsrfRiskyUri`), so ESM evaluates it, and yet not one of its exports is ever reached. `rie-client.ts` is the mirror-image caution: `invokeRie` and `waitForRieReady` there ARE live, only the streaming half is not — so "this file is dead" is as wrong as "this file is live".
+`loaded-only` is the state that makes a module-level rule useless here:
+`vtl-engine.ts` IS imported (by `rest-v1-integrations.ts`, which
+`local-start-api.ts` imports for `warnSsrfRiskyUri`), so ESM evaluates it, yet
+not one of its exports is ever reached. `rie-client.ts` is the mirror-image
+caution: `invokeRie` and `waitForRieReady` ARE live, only the streaming half
+is not — so "this file is dead" is as wrong as "this file is live".

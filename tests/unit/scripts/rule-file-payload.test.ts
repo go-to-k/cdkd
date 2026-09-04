@@ -81,7 +81,12 @@ const RULES_DIR = join(repoRoot, '.claude', 'rules');
  * written for); the largest file the split itself produced is
  * `layout-scripts.md` at 59,193 B. Lower this cap when hooks.md is split.
  */
-const MAX_RULE_FILE_BYTES = 120_000;
+const MAX_RULE_FILE_BYTES = 80_000; // RE-DERIVED DOWNWARD 120_000 -> 80_000 by the
+// 2026-09-04 rules-corpus compression (rule + one-line citation form applied to
+// the nine largest files). Largest is now hooks.md at 71,499 B (was 118,976), so
+// this keeps ~11% headroom over the leader — the same ratio the old cap held.
+// A compression pass re-derives caps DOWNWARD in its own commit; nothing raises
+// them to fit an addition (the anti-regrowth rule in /work-issues retro 10-c).
 // DELIBERATE, and recorded because it is now the tightest bound in this file.
 // `hooks.md` measures 117,469 B against this cap on 2026-09-01 -- 2,531 B of
 // headroom, where the hooks-stop.md split (go-to-k/cdkd#2391 / #2396) had left
@@ -112,7 +117,7 @@ const MAX_LINE_BYTES = 4_000;
  * collide on this fence; the cost is that one lane may spend headroom another
  * lane freed. Only ever lower it.
  */
-const LEGACY_LONG_LINE_BUDGET = 24;
+const LEGACY_LONG_LINE_BUDGET = 7; // RATCHET: 24 -> 7, re-measured after the 2026-09-04 compression
 
 /**
  * Hard ceiling on any single line. Measured 2026-08-25: the worst line in the
@@ -266,10 +271,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `provider-custom-resources.md`, whose glob names the ONE file it
   // describes. Every `src/provisioning/**` path lost those bytes; none of
   // them but the custom-resource provider needed them.
-  ['src/provisioning/region-check.ts', 78_000, 120_000],
+  ['src/provisioning/region-check.ts', 63_500, 120_000],
   ['src/deployment/deploy-engine.ts', 43_000, 80_000],
   ['src/cli/commands/deploy.ts', 41_000, 80_000],
-  ['src/local/docker-runner.ts', 60_000, 100_000],
+  ['src/local/docker-runner.ts', 41_500, 100_000],
   ['src/analyzer/dag-builder.ts', 26_000, 60_000],
   ['scripts/gen-nested-key-coverage.ts', 52_000, 90_000],
   // Review probe, 2026-08-25: with only the six rows above, 9 of the 28 rule
@@ -279,7 +284,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // a sample. These rows put every rule file under at least one budget -- which
   // is asserted below rather than left as a claim -- and the number beside each
   // is its measured payload rounded out by roughly a tenth in each direction.
-  ['src/deployment/secret-redaction.ts', 89_000, 112_000],   // measured 101,842
+  ['src/deployment/secret-redaction.ts', 70_000, 112_000],   // measured 101,842
   ['src/cli/commands/scrub.ts', 88_000, 118_000],            // measured 112,141 (see below)
   // 110,000 -> 118,000 (issue go-to-k/cdkd#2274). This path loads BOTH
   // `layout-deployment-secrets.md` and the new `layout-scrub.md` satellite, so the
@@ -298,7 +303,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   ['src/cli/commands/drift.ts', 87_000, 110_000],            // measured 104,268
   ['src/cli/commands/import.ts', 63_000, 80_000],            // measured  72,035
   ['src/utils/ip-protocol.ts', 83_000, 105_000],             // measured  95,005
-  ['src/provisioning/cloud-control-provider.ts', 83_000, 105_000], // measured 94,925
+  ['src/provisioning/cloud-control-provider.ts', 67_500, 105_000], // measured 94,925
   // 55_000 -> 57_000 (both rows): `code-layout.md` gained an index row for
   // `layout-scrub.md` (issue #2274), and that file is in EVERY payload, so a
   // cap with 100 B of headroom fails for a reason unrelated to the path it
@@ -316,7 +321,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // failed this row for a reason unrelated to itself -- the same argument that
   // moved CORPUS_BYTES_MAX. Measured 61,358 B (the 55,681 B beside the old cap
   // was 5,677 B stale).
-  ['tests/unit/scripts/rule-file-payload.test.ts', 48_000, 68_000], // measured 61,358
+  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 68_000], // measured 61,358
   // hooks.md WAS this path's only matcher, and while that held the cap was
   // dominated by MAX_RULE_FILE_BYTES no matter where it sat: at 135_000 (as
   // shipped) it was 15,000 B past the per-file cap and could not fire at all;
@@ -331,12 +336,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // landmine shape CORPUS_BYTES_MAX's comment names) and its branch-gate bullet
   // one line past the >4000 B ratchet. Moved out verbatim, hooks.md is 115,030 B
   // and the satellite 6,454 B.
-  ['.claude/hooks/branch-gate.sh', 108_000, 140_000], // measured 121,484
+  ['.claude/hooks/branch-gate.sh', 74_000, 140_000], // measured 121,484
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
   // than the cap being raised -- a cap that moves when it fires is not a cap.
-  ['.claude/hooks/lib/command-match.sh', 108_000, 140_000], // measured 132,187
+  ['.claude/hooks/lib/command-match.sh', 76_000, 140_000], // measured 132,187
   // The four `integ-*` gates were the heaviest UNBUDGETED paths once
   // `gate-sibling-repos.md` split out of hooks.md: this row is the only one
   // that names them, so without it the satellite sits under no budget at all
@@ -344,14 +349,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // Deliberately NOT added to the command-match row above: that path already
   // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
   // adding a third file would spend down to about 1 KB.
-  ['.claude/hooks/integ-local-gate.sh', 108_000, 140_000], // measured 132,814
+  ['.claude/hooks/integ-local-gate.sh', 76_000, 140_000], // measured 132,814
   // The cwd-race detector's entry moved out of hooks.md when the #2363
   // widening pushed that file past the 120,000 B per-file cap (the #2236
   // precedent). This path is the representative one for the satellite
   // (its two globs are the hook and its .test.sh, per the REACH_FLOORS
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
-  ['.claude/hooks/main-tree-git-cwd-detector.sh', 108_000, 140_000], // measured 129,490
+  ['.claude/hooks/main-tree-git-cwd-detector.sh', 73_000, 140_000], // measured 129,490
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the
@@ -359,7 +364,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // globs are the hook and its suite, per the REACH_FLOORS entry above);
   // without this row the satellite would sit under no budget at all. Payload is
   // hooks.md + hooks-main-tree-branch.md.
-  ['.claude/hooks/main-tree-branch-gate.sh', 118_000, 152_000], // measured 135,138
+  ['.claude/hooks/main-tree-branch-gate.sh', 82_000, 152_000], // measured 135,138
   //   The comment here read "measured 124,200" and the payload was already
   //   124,758 when it was written -- 558 B behind on the day it shipped, because
   //   the satellite kept being edited after the figure was taken. Re-measured at
@@ -374,13 +379,13 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // pushed that file to 122,559 B, past the same cap. Representative path for
   // the satellite (its four globs are the two hooks and their suites, per the
   // REACH_FLOORS entry above). Payload is hooks.md + hooks-stop.md.
-  ['.claude/hooks/stop-warn.sh', 108_000, 140_000], // measured 133,753
+  ['.claude/hooks/stop-warn.sh', 77_000, 140_000], // measured 133,753
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
   // for "the 20-odd shared helpers" -- it does not, because that row's payload
   // is 52,459 B lighter.
-  ['src/provisioning/masked-retry-logger.ts', 122_000, 162_000], // measured 126,979
+  ['src/provisioning/masked-retry-logger.ts', 94_500, 162_000], // measured 126,979
   ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
   ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  37,183
   ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
@@ -394,7 +399,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 63_500, 72_000],                            // measured  64,742
+  ['tests/setup.ts', 46_000, 72_000],                            // measured  64,742
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above
@@ -599,7 +604,9 @@ const CORPUS_FILE_COUNT = 42; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  session-wrap field reference moved OUT of CLAUDE.md, which is
                               //  injected into every context, into a satellite loaded on demand.
                               //  That makes 42.
-const CORPUS_BYTES_MIN = 966_000;   // measured 1,000,819 B -- 34,819 B of slack.
+const CORPUS_BYTES_MIN = 817_000;   // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04
+                                    // compression: measured 851,451 B -- 34,451 B of slack, the
+                                    // same ~34 KB every previous setting used.
                                     // 917_000 -> 966_000 (2026-09-03): re-measured with the same
                                     // ~34 KB of slack every previous setting used. The comment
                                     // beside 917_000 read "measured 951,706 B", 49 KB behind the
@@ -614,7 +621,7 @@ const CORPUS_BYTES_MIN = 966_000;   // measured 1,000,819 B -- 34,819 B of slack
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 1_040_000; // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 890_000; // RE-DERIVED DOWNWARD 1_040_000 -> 890_000 (measured 851,451 + the ~39 KB of headroom the old ceiling held). // growth is the norm here; this catches bulk growth that stays under every per-file cap.
                                     // 1_000_000 -> 1_040_000 (2026-09-03, go-to-k/cdkd#2402's
                                     // third review round): measured 1,000,819 B. The previous
                                     // bound was set at 12,808 B of slack and TWO lanes spent it

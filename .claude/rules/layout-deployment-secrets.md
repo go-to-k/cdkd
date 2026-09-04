@@ -16,14 +16,493 @@ Index of every area: [code-layout.md](code-layout.md).
 
 ## Important Files
 
-- **src/deployment/secret-redaction.ts** - Secret redaction for resolved dynamic references (GHSA fix). A LEAF module (imports nothing). **What counts as a secret is decided by the RESOLVER, and by TYPE rather than by spelling**: every `{{resolve:secretsmanager:...}}`, plus a `{{resolve:ssm:...}}` whose parameter turns out to be a `SecureString` (issue [#1901](https://github.com/go-to-k/cdkd/issues/1901) — the plain `ssm` form resolves with `WithDecryption`, so it yields a real secret for that type while a `String` / `StringList` parameter is public config and stays RESOLVED in state, or every parameter-backed property would become a perpetual spurious UPDATE). Secret-ness for an ssm reference is therefore DISCOVERED, not spelled: `resolveSSMReference` reports it off the same `GetParameter` response that carries the value, and the resolver remembers the verdict per expression in this module's own `recordedSecretExpressions` store (issue [#1910](https://github.com/go-to-k/cdkd/issues/1910)), so the redaction path can read the same verdicts (process-global, and cleared by `resetAccountInfoCache`) so the cache-hit and `skipDynamicReferences` arms can act on it without a second lookup. That store is deliberately WIDER-lived than the resolved VALUES it used to be paired with: since issue [#1933](https://github.com/go-to-k/cdkd/issues/1933) `cachedDynamicReferences` lives on the RESOLVER INSTANCE (one per stack, each carrying its own region) rather than at module scope, so a cache hit can only ever be a value this stack resolved in this region — the key and the lifetime used to be narrower than the value they stood for, which resolved one region's secret into another region's resource and left a second stack's secrets map empty so `cdkd scrub --all` reported it clean. The verdict store keeping the wider lifetime is safe in the one direction that matters (a verdict inherited across regions can only make a reference be treated AS a secret), and each cache entry additionally carries the verdict that produced it, so another stack's resolver RETRACTING the memo cannot stop this one redacting its own region's secret. The other half of the same outcome — the lookups running through the process-ambient `getAwsClients()` singleton, which `cdkd deploy` re-pins per stack (correct when serial) but the default `--stack-concurrency 4` races for, and which `cdkd scrub` / `drift` / `import` never re-pin at all — was issue [#1957](https://github.com/go-to-k/cdkd/issues/1957) and is closed by the resolver's `clientsForRegion`, which builds region-pinned clients (`AwsClients.withRegion`, carrying the ambient profile / credentials and overriding only the region) unless the ambient clients are PROVEN to already point at the resolver's region. The direction of that test is the correctness argument: "unknown" means SCOPE, not skip, because the case where the region is knowable only from `~/.aws/config` is what `aws configure` produces and failing open there left the disclosure reachable. PROVEN means the ambient's region is EXPLICITLY CONFIGURED (`AwsClients.configuredRegion`); an unconfigured ambient is never taken as a match, however its region might be guessed. Asking one client is not a weaker proof, it is the wrong question: `clientOptions` omits `region` wholesale when unset and the service getters are LAZY, so an unconfigured `AwsClients` is a bag of DEFERRED constructions, each memoizing its own region at its own instant while `deploy.ts`'s `switchRegion` keeps mutating `AWS_REGION`. Its `ssm` can pin one region and its `secretsManager` another, so no single member can answer for the bag — which is why an earlier attempt to settle it by asking the SDK (`config.region()`) was removed rather than refined. A template-derived region (`Fn::GetAZs`) is additionally gated by `isClientSafeRegion` before it can select an endpoint. On the diff / no-op path the type lookup passes `WithDecryption: false`, so a `SecureString` comes back as its encrypted blob — never substituted, never cached — and the comparison stays expression-vs-expression. Owns `RecordedSecretValues` (a `Map<plaintextValue, {{resolve:...}}expression>` the resolver populates during a resolution pass), `redactSecretsForState(bag, secrets)` (deep-clone replacing each secret value — whole-value or embedded `Fn::Join` / `Fn::Sub` substring — with its unresolved expression; identity return when no secrets), `scrubResourceRecord(record, secrets)` (redacts one `ResourceState`'s `properties` / `attributes` / `observedProperties`, shared by the deploy save choke point and `cdkd scrub`), and `maskSecretsInText(text, secrets)` (replaces a secret value with `***` for log / error output) plus its object-level twin `maskSecretsInError(error, secrets)` (issue [#2038](https://github.com/go-to-k/cdkd/issues/2038)) — a CLONE of EVERY link in the error's `cause` CHAIN, each carrying its own masked `message`, needed because `formatError` renders a `CdkdError`'s CAUSE as `Caused by: <cause.message>` and `handleError` logs that at `error` level, so that sink reads the error OBJECT and no amount of masking at the string sites can close it. **The CHAIN, not just the top link**, and the review round that forced that is the interesting part: a provider wrapping an AWS failure in a generic sentence (`new Error('the call failed', { cause: awsError })`) leaves the plaintext ONE link down, where a top-level-only mask hits its identity-return, reports "nothing to mask" and hands back an object still carrying it — the contract says the returned error is safe to render, and `formatError` walking a single level is an implementation detail one edit away from re-opening the hole. The identity-return therefore means "nothing ANYWHERE in the chain changed". Each link's clone copies the prototype and every own property DESCRIPTOR (symbols included) so `markNonRetryable`'s non-enumerable marker, `$metadata` / `Code` and `name` survive for `isMarkedNonRetryable` / `isThrottlingError` / `isTransientServerError` / `extractDeploymentEventError` (`Object.assign` would have dropped the marker, which is why the descriptors form is used); `message` and `cause` are the two descriptors deliberately NOT copied through, since both are re-defined per link and copying a NON-CONFIGURABLE original would make that re-definition throw. `cause` is rewired to the CLONE of whatever it pointed at in a SECOND pass over the already-built clone map, which is what makes a CYCLIC chain (`a.cause = b; b.cause = a`) terminate — the walk additionally carries a visited-set and a depth cap (`ERROR_CAUSE_MASK_MAX_DEPTH` 20, the bounded-walk shape `extractDeploymentEventError` and the retry classifiers already use), and a link beyond the cap keeps its original unmasked message. A `cause` that is not an `Error` keeps its original descriptor verbatim. `extractDeploymentEventError` needs no change of its own: it copies only the TOP link's `message` and walks the chain solely for `$metadata.requestId` / `Code`, neither of which is caller-supplied. **Redaction is BOTH path-based and value-based, and the split is load-bearing** (issues [#1904](https://github.com/go-to-k/cdkd/issues/1904) / [#1900](https://github.com/go-to-k/cdkd/issues/1900)). `redactSecretsForState(bag, secrets, source?)` takes an optional SOURCE bag still carrying the unresolved expressions; wherever the source leaf is a `{{resolve:...}}` string, that string is persisted VERBATIM. Position is what the value map structurally cannot supply: keyed by the plaintext, two expressions resolving to the SAME value collapse (last write wins) and every site is rewritten to the survivor, so state holds an expression the template lacks at that leaf and the stack takes a permanent spurious UPDATE (#1904). Re-keying does not help -- a secret embedded in a joined string is only findable by VALUE -- so the value scan stays for every leaf the source cannot position (a diverged shape, a key the source lacks, a leaf that merely EMBEDS a secret inside surrounding text, a cross-stack leaf whose identity the source does not literally spell). An intrinsic OBJECT source was in that list too, and it now takes one of TWO position passes depending on its spelling. The `Fn::Join` / `Fn::Sub` half came out of the list at issue [#1916](https://github.com/go-to-k/cdkd/issues/1916), and it was the DOMINANT CDK shape rather than an edge case: `secret.secretValueFromJson(...)` renders the secret's ARN as a `Ref`, so every L2-reached secret is a join and the whole position pass missed it, leaving a colliding pair to collapse exactly as before #1904 (measured against real AWS: the unstaged leaf persisted the `:AWSCURRENT` sibling's spelling). `positionByIntrinsicSkeleton` closes it by SHAPE — the intrinsic's literal parts are escaped and its non-literal parts wildcarded into an anchored pattern (`[^}]*`, so a wildcard cannot cross a token terminator), then matched against the recorded secret expressions. It persists a match only when THREE conditions hold, each removing a different way of being wrong: the bag leaf's WHOLE value is a recorded secret plaintext (an embedded secret is not this shape and must keep going to the substring scan), EXACTLY ONE candidate matches (two means the skeleton genuinely cannot separate them, and guessing would be the collapse this fix removes one step over), and the match is not DEMONSTRABLY another value's expression per the pass's own map (the fence against a bag/source misalignment). Every refusal degrades to the value scan, i.e. to the pre-#1916 behavior, so no case gets worse. There is deliberately NO `isKnownSecretExpression` test on this arm, unlike the plain-string one: that arm's candidate is arbitrary TEMPLATE text and can be a public ssm reference, while these candidates come only from stores the resolver populates on a proven-secret verdict, so the test could never answer `false` and an unfalsifiable guard fences nothing. `Fn::ImportValue` / `Fn::GetStackOutput` source leaves are the OTHER half of that list, and issue [#2059](https://github.com/go-to-k/cdkd/issues/2059) takes them out of it by a different mechanism — `positionByCrossStackSource`, consulted BEFORE `positionByIntrinsicSkeleton`. Extending the skeleton pass could not have worked, and that is the part a future reader will otherwise try to "fix" (the issue body proposed exactly that, and it was measured and refuted twice before this landed): the skeleton is a TEXT matcher over the source leaf's literals, and neither intrinsic carries any text about its expression at all — `Fn::ImportValue`'s only literal is the export NAME, `Fn::GetStackOutput`'s are `StackName` / `OutputName` / `Region`, and none of them bears any relation to the producer's `{{resolve:...}}` string — while `SKELETON_WILDCARD` is `[^}]*` and cannot cross a token's own `}}`, so a pure-wildcard skeleton matches ZERO candidates and always REFUSES, i.e. degrades to the very collapse it was meant to close. What closes it is an ASSOCIATION rather than a matcher: `reresolveCrossStackValue` is the only point in the process holding BOTH halves at once — the consumer's source LEAF and the whole `{{resolve:...}}` token the producer stored — so it records `canonicalKey -> expression` into this module's `recordedCrossStackExpressions` map, homed HERE for the same cycle reason `recordedSecretExpressions` is (this module is the LEAF, the resolver already imports it, and the reverse edge would close a cycle) and cleared by `resetAccountInfoCache` on the same lifetime. The key comes from `crossStackSourceKey`, called by BOTH sides over the RAW intrinsic — `Fn::ImportValue <exportName>`, `Fn::GetStackOutput <stackName> <outputName> <region> <roleArn>`, (issue [#2055](https://github.com/go-to-k/cdkd/issues/2055) review) `Fn::GetAtt <logicalId> <attributeName>` for a nested stack's `Outputs.<Key>`, the one-placeholder `Fn::Sub` (#2270), and `Ref <param>` (#2291), which `resolveGetAtt` re-resolves through the same helper and which without a key fell to the plaintext-keyed value scan, collapsing a rotating secret's `:AWSCURRENT` and `:AWSPREVIOUS` outputs exactly as the other two arms did — NUL-separated because a `:` occurs inside real export names — so the writer's key and the persist path's key are byte-identical BY CONSTRUCTION. Deriving the writer's from the RESOLVED `exportName` / `stackName` looks equivalent and is NOT: the persist path holds the UNRESOLVED template leaf and nothing else, so the two spellings would have to be PROVEN equal at every slot rather than simply being the same string. A slot that is itself an intrinsic therefore yields no key and REFUSES. THE KEY IS NOT UNIQUE PER PRODUCER, and an earlier revision of this paragraph wrongly said it was ("one export name in one region names one stored value"): the `Fn::ImportValue` key carries NO region segment and an `Fn::GetStackOutput` that omits `Region` keys it empty, so one `cdkd deploy --all` puts two stacks in two regions on ONE key, `deploy.ts` building a resolver per stack region. What makes the store safe is therefore neither uniqueness nor the plaintext pairing that was tried next, but SCOPE: the associations live in a `WeakMap` keyed by the resolution pass's own `recordedSecretValues` bag, so an entry another pass recorded cannot be REACHED. Pairing alone was insufficient in a way worth recording, because it is the shape a third patch would repeat: it refuses a foreign entry only when the two plaintexts DIFFER, and a Secrets Manager multi-region replica or a shared API key makes them coincide, at which point a foreign association certified again and `resolveReplayProps` / `drift --revert` re-resolved the OTHER region's reference. The bag was already per-pass and already travelled from the resolver context to the redaction path, so this cost no new plumbing and no call-site parameter; a caller that hands the redaction path a different bag than it resolved with (`cdkd state refresh-observed`, whose map is empty by construction) simply finds nothing and falls back to the value scan. The `WeakMap` also bounds the PLAINTEXTS these entries carry to the pass that fetched them, retiring an explicit clear production never called. The pairing is KEPT anyway — belt-and-braces against a foreign pass, but still the only guard inside ONE pass against a bag/source MISALIGNMENT — and a key recorded against a different (expression, plaintext) PAIR is POISONED rather than overwritten, either half differing being enough. `recordCrossStackExpression` also refuses an `expression` that is not a whole `{{resolve:...}}` token: both payload parameters are `string`, the type system cannot see a SWAPPED call, and the reader returns `expression` to be persisted, so a swap would write a SECRET into `state.json` — the invariant narrows that to a token-shaped secret, as far as a shape test reaches while #1917 means a plaintext can look like a token. Every refusal degrades to `positionByIntrinsicSkeleton` and then to the value scan, so no case gets worse than it already was. The arm also keeps the skeleton pass's condition 1 (the bag leaf's WHOLE value must be a plaintext this pass recorded) and its condition 3 (an association THIS PASS can SEE resolved to a DIFFERENT plaintext is refused — the bag/source-misalignment fence, over a `plaintextIndexOf` now shared by both arms so the conflicting-plaintext poisoning has one definition; condition 2 compares what the WRITER recorded and condition 3 what this pass holds, and they can disagree), and needs no "exactly one" condition because a LOOKUP has no candidate set to disambiguate. The recording seam is gated on TWO tests. Presence in `recordedSecretValues` proves the pass resolved this token to a usable needle, and is what stops a `skipDynamicReferences` comparison resolve — which leaves a known secret UNRESOLVED — from recording the token as its own "plaintext" and POISONING the key for a deploy resolve that REUSES THE SAME BAG. It cannot be the #1901 gate on its own, though, because that map is shared across the whole pass: a PUBLIC `{{resolve:ssm:/x}}` whose resolved value coincides with any secret already recorded passes it. `isSecretExpressionByVerdictOrSpelling` is the test about THIS token — `secretsmanager` by spelling, or an `ssm` reference this process PROVED to be a `SecureString`, a verdict a definitive public answer RETRACTS — so a producer output holding a public reference is never associated with its leaf and cannot be handed back as an expression to persist. That retraction holds for the consumer's OWN region only: `pinSecretVerdict` returns early for a producer-region GUEST, so a guest's `String` verdict cannot retract a `SecureString` memo the consumer pinned for the same spelling, and the predicate then over-ACCEPTS a producer-region public parameter. Bounded to a spurious UPDATE and never a plaintext, since what is persisted is still an expression; closing it means keying the verdict store by region. It is the same predicate `isKnownSecretExpression` is built from, minus the pass-local set the resolver does not hold; the one shape it misses is a cross-REGION `ssm` `SecureString`, whose producer-region resolver is a GUEST and pins nothing process-wide, and missing it costs only a refusal. And it is a POSITION certification for exactly two spellings, never a widening of what the value scan may assume: the answer is always an expression a WRITER recorded against that exact leaf identity, never a source subtree, so the #1915 fences below are untouched. **Which source leaves may be persisted is gated by PROVENANCE, via `PathSourceRules`, and all THREE of its rules are load-bearing.** `descendArrays` follows the BAG's provenance: a bag produced BY resolving the source (`TEMPLATE_DERIVED_RULES` / `STATE_DERIVED_RULES`) is walked POSITIONALLY, which is sound only because resolution preserves structure, while an AWS readback may be REORDERED — AWS does not preserve list order (the reason `drift-normalize.ts` exists) and positional descent would write an expression onto the WRONG element while leaving the real secret in plaintext. A readback array is not given up on, though: since issue [#1915](https://github.com/go-to-k/cdkd/issues/1915) every kind FIRST tries a KEYED descent that pairs elements by an identity field (`Name` / `Key` — the shape `canonicalizeTagListsDeep` already keys on) with uniqueness required on BOTH sides, so pairing is by string equality and cannot mis-align; a key that is not really an identity fails the uniqueness test and refuses the whole array rather than producing a plausible wrong pairing, and an unpaired element falls to the value scan. That is what reaches a secret nested in an ECS `ContainerDefinitions[].Environment[]` on the UNCHANGED-resource path, where the value scan additionally has no needles because the resource was never resolved this deploy (#1900). It answers the reordering objection on its own terms rather than overriding it: the objection is ORDER, and a key does not depend on order. Keyed runs BEFORE positional, and an element it does not pair takes its POSITIONAL partner when positional would have been exact for the whole array (`descendArrays`, equal lengths, every pairing at its own index) — the invariant being that keying must never pre-empt a descent that would have been exact, since an unpaired leaf on the value scan takes a colliding SIBLING's expression. Two well-keyed lists can also carry DISJOINT identities, and that case falls through to positional by the same rule. Keyed is preferred because `descendArrays` rests on an assumption the module states but cannot enforce — every `effectiveProperties` producer TODAY preserves length and order — so a provider that reorders an equal-length `Tags[]` would satisfy the length check and mis-pair by index while the pairing that cannot mis-align sits one branch away. Two shapes are deliberately out of reach and fail closed: an array whose IDENTITY FIELD itself holds a secret (the two sides are known to differ, so pairing would be the guessing the uniqueness rule forbids), and an array of ARRAYS (the outer elements carry no identity field). `trustAnyExpression` follows the SOURCE's: a template carries PUBLIC ssm expressions too, and persisting one would keep a `String` / `StringList` parameter as an expression in state and re-introduce the perpetual UPDATE #1901 exists to prevent, so from a TEMPLATE source a leaf is substituted only when it is a KNOWN secret — `{{resolve:secretsmanager:` by definition, or an expression the resolver recorded (the ssm `SecureString` case) — while a STATE source holds no public expressions and is trusted wholesale. The definitional arm is what makes the fix work at all — when two expressions share a resolved value the map keeps only the last, so asking it about the LOSING expression answers 'no' for exactly the pair being separated. `sourceIsSameGeneration` (issue [#1917](https://github.com/go-to-k/cdkd/issues/1917) and its review) answers whether the SOURCE describes the same GENERATION of the resource that the BAG does, and it exists for one shape: a bag leaf that is ALREADY a complete `{{resolve:...}}` token, which is either a previously-persisted expression or a secret whose plaintext merely LOOKS like one. It is TRUE for exactly the two STATE-sourced constants whose source is that record's own persisted bag — `STATE_DERIVED_RULES` (the replay resolved its bag FROM the journaled record one statement earlier) and `STATE_SOURCED_READBACK_RULES` (the #1900 observed walk projects from the very `properties` beside it). Every TEMPLATE-sourced constant is FALSE, INCLUDING `TEMPLATE_DERIVED_RULES`, and that last one is the correction the review forced: `redactStateForPersist` walks EVERY record in the state map while `perResourceTemplateProps` is populated right after resolution and BEFORE the provider call, so a resource that merely ENTERED the create/update arm hands today's template to a record that is still the PREVIOUS generation — reachable through an intermediate `saveStateAfterResource`, the pre/post-rollback saves, and Ctrl-C. Keyed on the CALLER's intent that row claimed same-generation and rewrote a rolled-back `:AWSPREVIOUS` onto the template's `:AWSCURRENT`, so a rotation that failed and was reverted would read as applied, the next deploy would see NO_CHANGE, and drift could not see it either because the baseline was rewritten in the same walk. A refusal FALLS BACK to a WHOLE-VALUE redaction rather than returning the leaf untouched, and that is what lets the rule be set conservatively without giving up the disclosure fix: a token-shaped PLAINTEXT the pass resolved is a key of the value map and is still rewritten, while a previous generation's EXPRESSION is not a key and survives. Whole-value and not the full value scan — the scan's SUBSTRING arm USED to splice a short recorded secret value occurring inside the token's own text into the reference, corrupting a persisted expression, and since issue [#1935](https://github.com/go-to-k/cdkd/issues/1935) it does not: `redactSecretsForState`'s walk applies ONE predicate over the whole leaf — replace every recorded-plaintext match EXCEPT one lying STRICTLY INSIDE a complete `{{resolve:...}}` span, i.e. contained by it and shorter than it. A match coextensive with a span is still replaced (that is the #1917 token-shaped plaintext), and so is one that CONTAINS or STRADDLES a span. Expressing it as two rules instead — replace a whole span that is a recorded plaintext, value-scan the text between spans — was tried and REGRESSED: a straddling plaintext belongs to neither half and was persisted in the clear where the pre-fix code redacted it, and splitting the leaf also broke `buildNeedleRegex`'s longest-first PRECEDENCE, which holds only within one scan. The residual is an UNTERMINATED `{{resolve:` opener, which forms no span, so a needle after it is still replaced (as before the fix); a value already mangled by an older cdkd parses as a span now and is neither worsened nor repaired. That is one fix in the SHARED arm, so every `PathSourceRules` constant and every sourceless walk — the journal's `previousState`, `attributes`, `redactByPath`'s four fallbacks — inherits it. The whole-value bound above is kept anyway, so the two now agree for that shape by two independent mechanisms rather than one. Note the map is keyed by plaintext, so if two references share one token-shaped resolved value the refused leaf takes the SURVIVOR's expression (the #1910 class, not a disclosure). `secrets.has(bag)` is the wrong test for the same reason it always was — the hazard is GENERATION SKEW, which no value test can see. One constant exists solely because a caller can know something the derivation cannot: `STATE_SOURCED_CROSS_GENERATION_RULES`, which `cdkd scrub` threads into `scrubResourceRecord` for its `observedProperties` walk. Scrub repositions `properties` onto TODAY's template FIRST, so the "record's own properties" that walk falls back to have already moved a generation; it keeps `trustAnyExpression` (that source still holds no public expressions, which is what cleans a legacy PLAINTEXT baseline) but drops the generation claim, or the drift baseline would be rewritten onto a reference the stack may never have deployed and `cdkd drift --revert` would push it to AWS. **Every writer now passes a position source** (issue [#1910](https://github.com/go-to-k/cdkd/issues/1910), which closed the residue #1904 left): the four siblings the issue names — the rollback JOURNAL (`DeployEngine.redactOperationsForJournal`), the stack OUTPUTS (positioned by `DeployEngine.outputsTemplateSource`, the outputs' sibling of `perResourceTemplateProps`, consumed by all three outputs-redaction sites through one `redactOutputs` helper, which since issue [#1943](https://github.com/go-to-k/cdkd/issues/1943) passes `TEMPLATE_SOURCED_RULES` rather than the default: two of those three sites hand it a bag that is NOT this generation's — the persist choke point redacts whatever `state.outputs` holds, and the no-change path persists the PREVIOUS deploy's bag whenever a resolution failure keeps today's from landing — so `descendArrays`, the one flag the two constants differ on, is a claim the site cannot make; reachable because `TemplateOutput.Value` is `unknown` and cdkd does not enforce CloudFormation's string-valued-output rule, so a list-valued output puts an array on both sides. The `cdkd scrub` twin still passes the default and is tracked by issue [#2099](https://github.com/go-to-k/cdkd/issues/2099)), `cdkd scrub`, and `cdkd import` — plus a FIFTH the issue did not list, `rollback-executor.ts`'s `redactRollbackRecord`, which writes state after re-resolving and is reachable only through a replay, and a SIXTH that sweep structurally could not see — `cdkd state refresh-observed` (`src/cli/commands/state.ts`), which passed no source because it reached this module along NO path at all, so a search for callers of `redactSecretsForState` never named it (issue [#1926](https://github.com/go-to-k/cdkd/issues/1926)). Its readback is the DECRYPTED value for any resource deployed from a secret reference, and it leaked SCALARS as well as arrays because there was no redaction rather than one that declined to descend. Its secrets map is EMPTY by construction (the command neither synthesizes nor resolves), so it is the #1900 shape: the PATH pass carries it alone, positioned against the record's own `properties` under `STATE_SOURCED_READBACK_RULES`, and it inherits #1915's keyed array descent rather than re-solving it. **The path pass certifies only a WHOLE-TOKEN source leaf**, which left the DOMINANT CDK shape leaking on every empty-map readback path — a MIXED leaf (`postgres://u:{{resolve:...}}@h`, an `Fn::Join` around `secretValueFromJson`) fell through to a value scan that has no needles. `refuseUncertifiedReadbackPositions` closes that row inside `redactSecretsForState`, so every caller on that path inherits it with no call-site change: `cdkd state refresh-observed` and — this is why it belongs in the module rather than in the command — a plain `cdkd deploy`, whose `drainObservedCaptures` baseline reaches the persist choke point with exactly the same empty-map / state-source configuration. `cdkd scrub` is NOT an inheritor: its observed walk passes `STATE_SOURCED_CROSS_GENERATION_RULES`, which the gate below excludes by design. It is gated on `trustAnyExpression && !descendArrays && sourceIsSameGeneration`, and the third conjunct took a measurement: without it the pass also selected `STATE_SOURCED_CROSS_GENERATION_RULES` and rewrote a `cdkd scrub` baseline holding the DEPLOYED `:AWSPREVIOUS` reference onto the template's edited `:AWSCURRENT` one — the #1917 hazard, which `--revert` applies to AWS. It refuses only what POSITION justifies (a leaf whose KEY the source carries, taking the record's own value at the record's own path) and descends per identity-keyed element so a mixed leaf inside a paired element is reached too. A MIXED leaf embedding a plain `{{resolve:ssm:` token splits on whether a SECRETS MAP exists, and the `secrets-dynamic-ref` integ is what forced that split after every unit assertion passed without it: with a map, a pass resolved this bag so absence from the verdict store is real evidence the parameter is PUBLIC and the resolved value is kept; with an EMPTY map (`cdkd state refresh-observed`, and the deploy's choke point for an UNCHANGED resource) nothing was resolved, nothing could have been recorded, and reading absence as "public" persisted a DECRYPTED SecureString. Failing closed there is the same premise the whole-token arm already acts on — a public `String` parameter is stored RESOLVED (#1901), so a token SURVIVING in a persisted state bag is a SecureString by construction. Issue [#2036](https://github.com/go-to-k/cdkd/issues/2036) tracks that price, still OPEN: PR #2415 withdrew a process-global proven-public store (see its JSDoc). Of the FOUR residual rows once listed here, TWO close CONDITIONALLY and the other two are closed by DERIVED NEEDLES (issue [#2012](https://github.com/go-to-k/cdkd/issues/2012)). Two close conditionally (no identity key; none on the element; the arrays-of-arrays BOUND). `unkeyedArrayPairsByAnchors` licenses a POSITIONAL walk under FOUR conditions: index counts (arrays) match, or every SOURCE key is present in the bag (objects: source-key CONTAINMENT since #2012; a MISSING source key still refuses); every position whose SOURCE spells no dynamic reference is deep-equal on both sides — the *anchors*; every reference-bearing ELEMENT carries its own distinguishing anchor (a non-empty string, `isUniquelyKeyedBy`'s bar) or, being a bare reference with no interior to hold one, leans on the array's literal FRAME; and no two of them share an ORDER-INSENSITIVE anchor signature. Both extra conditions are the #2012 review's, each a measured misattribution on `AWS::AmazonMQ::Broker.Users`: an array-wide counter let one element's anchor license a sibling with none, and equal or merely permuted anchors hid a reorder. A position AWS did not rewrite is evidence the two containers are the same element, which meets the `descendArrays: false` order objection: a REORDERED list normally stops matching and is refused. It closes a SUBSET of each row — one normalised sibling drops the yield to zero — and the remainder stays a refusal. The last two (an UNPAIRED element beside a paired one; an observed KEY the source does not carry) close by DERIVED NEEDLES — `deriveReadbackNeedles` learns pairs from certified positions; scanned over the RAW bag, MERGED by `preferPositionDecisions` where a MARK tree says no pass decided (either naive ORDER fabricates a baseline); see its JSDoc. The journal is the consequential one: `resolveReplayProps` RE-RESOLVES it against AWS, so a leaf collapsed onto a sibling's expression ships the WRONG secret version to the live resource once two version stages diverge, rather than merely reporting a spurious change. Two sides of one op take DIFFERENT sources and must not be conflated — `properties` / `attemptedProperties` are this deploy's desired bags and take the TEMPLATE bag, while `previousState` was read back from STATE and positions itself via `scrubResourceRecord` with no source (the #1900 fallback). The ssm/ssm half is closed by the module-level `recordedSecretExpressions` SET (`recordSecretExpression` / `forgetSecretExpression` / `isRecordedSecretExpression` / `clearRecordedSecretExpressions`), which IS the resolver's SecureString verdict store — homed HERE rather than in the resolver so `isKnownSecretExpression` can consult it with no caller threading it, and reachable from the resolver along an import edge that already exists (the reverse would close a cycle, since this module is the LEAF). Since issue [#1916](https://github.com/go-to-k/cdkd/issues/1916) the set holds EVERY secret expression, not only the ssm ones: nothing has to ask it about a `secretsmanager` reference (spelling settles that), but it is ALSO the candidate list `positionByIntrinsicSkeleton` matches against, and a list holding only the ssm half cannot name the losing member of a collapsed secretsmanager/secretsmanager pair. Recording is gated on the SPELLING rather than on the resolver's `isSecret`, deliberately: an `ssm` reference whose `Type` came back unclassifiable is secret for THAT resolution but must stay unpinned so the next pass re-asks AWS (#1901), and recording it would pin it for the process — so such a pair still falls back to the value scan. The path pass ALSO runs with an EMPTY secrets map, which is the whole point for an UNCHANGED resource: it is never resolved during a deploy, so `perResourceSecrets` has no entry, and an observed-capture refresh echoing a secret would persist plaintext (#1900); `scrubResourceRecord` therefore redacts `observedProperties` against the record's OWN already-redacted `properties` when no template bag was supplied. The source bag is captured by `DeployEngine.perResourceTemplateProps` at the two sites that already populate `perResourceSecrets`, so nothing new is threaded through the resolver. Over-redaction on the value path is harmless and the safe direction. Consumed by `IntrinsicFunctionResolver` (records secrets + secret EXPRESSIONS + the cross-stack leaf-to-expression associations, masks Join/Sub debug logs), `DeployEngine.withParentInfo` (the single state-persist choke point) + its rollback-journal and stack-outputs writers, `rollback-executor.ts`'s `redactRollbackRecord`, `cdkd import`'s `resolveImportedProperties`, and `src/cli/commands/scrub.ts`.
-- **The MASK-ONLY needle class** (issue [#2274](https://github.com/go-to-k/cdkd/issues/2274)) is the third kind of entry a `RecordedSecretValues` bag can hold, and the first with NO expression behind it: a Lambda-backed custom resource's handler declares its response `Data` sensitive with the cfn-response `NoEcho: true` field, and the value is HANDLER-GENERATED, so there is nothing to rewrite it onto and what is persisted is `SECRET_MASK`. `recordMaskOnlyValue` records the pair as `plaintext -> SECRET_MASK` in the SAME map, so every persistence reader (`scrubResourceRecord`'s three fields, the rollback journal, the outputs bag, `maskSecretsInText`) is covered by code that already walks it, with nothing threaded anywhere; the SENTINEL VALUE is the marker -- there is no side table (an earlier revision's `WeakMap` was removed after a mutation probe showed its extra conjunct unfenceable AND wrong-pointing). Scope needs none either: the MAP is already per-pass, the property PR #2415 was forced back to after review found a process-wide positive store is itself a cross-stack disclosure (#2425). `recordMaskOnlyValuesIn` is the whole-`Data` twin, taking an `excluded` set -- the whole string leaves of the resource's own resolved template properties, via `wholeStringLeavesOf` -- so a handler echoing `event.ResourceProperties` into `Data` cannot mask cdkd's OWN `ServiceToken` out of the record `CustomResourceProvider.delete` reads it from. `carriesSecretMask` is the whole-leaf RECOGNITION test, UNBOUNDED in depth with a visited-set for cycles: an earlier depth cap was ASYMMETRIC with the unbounded walk that WRITES the mask, so a mask deeper than ten levels persisted and read as clean. A mask-only needle must clear `MIN_NEEDLE_LENGTH`, which the expression class does not -- an expression pair came from a POSITION cdkd resolved, a bare plaintext has none, and `Data: { Ready: "true" }` would otherwise mask every leaf whose whole value is `"true"`. **The one place the classes must differ is the SUBSTRING arm**: the persist walk builds its regex from `substringNeedlesOf` (every plaintext MINUS the mask class), so a mask only ever takes a leaf WHOLE. An expression substituted inside a longer leaf is lossless; a mask is not -- an inline `***` cannot be told from a user's own literal, so nothing downstream could recognise it and `drift --revert` / `resolveReplayProps` would push the corrupted string to AWS (the #1498 / #1501 class). `maskSecretsInText` is NOT narrowed the same way (its output is a log line or an event, which nothing reads back as a value); the embedded-value residual is [#2453](https://github.com/go-to-k/cdkd/issues/2453). Full argument in the module's JSDoc.
-- **The mask-only channel's CROSS-DEPLOY cost is guarded rather than hidden.** `ResourceState` carries no durable `NoEcho` flag ([#2449](https://github.com/go-to-k/cdkd/issues/2449)), so a later deploy reads `***` back. `ResolverContext.redactedAttributeReads` is the bag the resolver pushes such a read into -- `noteAttributeSecrecy` for `Fn::GetAtt`, `reresolveCrossStackValue` for `Fn::ImportValue` / `Fn::GetStackOutput` / a nested stack's `Outputs.<Key>` -- and `DeployEngine.refuseRedactedAttributeReads` fails the resource rather than sending the mask. It RECORDS rather than throws because the DIFF pass resolves the same leaf: a throw would fail every later deploy of such a stack, while recording leaves `***` against `***`, a clean NO_CHANGE. Other consumers: `drift.ts` (`preserveLiveValuesAtMaskedLeaves`, which REGISTERS `liveValue -> SECRET_MASK` for what it moves -- the masked POSITION is the proof the value is secret, and without it the moved plaintext reached `observedProperties`, the retry logger and the AWS error text unmasked; plus the `secretBearing` third disjunct, on `carriesSecretMask` rather than whole-value equality, because `calculateResourceDrift` does not descend arrays and a mask under one surfaces as a change on the ANCESTOR whose `stateValue` is the whole array -- `collectSecretMaskPaths` seeds those positions into their OWN set, apart from `secretPaths`, whose EXACT-leaf reading licenses DROPPING an absent-in-AWS change), `rollback-executor.ts` (`refuseMaskedReplayBaseline`, written side only) and `export.ts` (a record holding the mask joins the per-resource `blocked` list). **The CROSS-STACK half is a RECOVERY, not a refusal**: every cross-stack route reads the producer's persisted `state.outputs`, so a masked output would refuse a consumer template that deployed before this feature. `recordRecoverableMaskedOutput` / `recoverMaskedOutput` remember `stack + region + output key -> plaintext` for the PROCESS, written by `DeployEngine.rememberRecoverableMaskedOutputs` right after `redactOutputs` and read by `reresolveCrossStackValue` and `NestedStackProvider.readChildOutputsAsAttributes`. A hit is re-registered as a mask-only needle in the CONSUMER's bag, so the wire value is right and the consumer's record still persists `***`; a miss refuses. The key is a COORDINATE, never a bare plaintext -- the shape PR #2415 had to withdraw (#2425). The nested-stack provider reports recovered outputs PER ATTRIBUTE (`ResourceCreateResult.noEchoAttributeNames`), never whole-bag, or one sensitive child output would mask every ordinary sibling into the parent's record.
+- **src/deployment/secret-redaction.ts** - Secret redaction for resolved
+  dynamic references (GHSA fix). A LEAF module (imports nothing).
+  - **Secret-ness is decided by the RESOLVER, and by TYPE rather than by
+    spelling**: every `{{resolve:secretsmanager:...}}`, plus a
+    `{{resolve:ssm:...}}` whose parameter turns out to be a `SecureString`
+    (issue #1901 — a `String` / `StringList` parameter is public config and
+    stays RESOLVED in state, or every parameter-backed property would become a
+    perpetual spurious UPDATE). The verdict is DISCOVERED off the same
+    `GetParameter` response that carries the value and remembered per
+    expression in `recordedSecretExpressions` (issue #1910; process-global,
+    cleared by `resetAccountInfoCache`) so the cache-hit and
+    `skipDynamicReferences` arms can act on it without a second lookup.
+  - **`cachedDynamicReferences` lives on the RESOLVER INSTANCE** (one per
+    stack, each with its own region — issue #1933), so a cache hit can only be
+    a value this stack resolved in this region; module scope once resolved one
+    region's secret into another region's resource and left a second stack's
+    secrets map empty so `cdkd scrub --all` reported it clean. The verdict
+    store keeps the wider lifetime (safe: an inherited verdict can only make a
+    reference be treated AS a secret), and each cache entry carries the
+    verdict that produced it, so another stack retracting the memo cannot stop
+    this one redacting its own region's secret.
+  - **Region-pinned lookups** (issue #1957): the resolver's `clientsForRegion`
+    builds region-pinned clients (`AwsClients.withRegion`, which carries the
+    ambient profile / credentials and overrides only the region) unless the ambient
+    clients are PROVEN to already point at the resolver's region — "unknown"
+    means SCOPE, not skip (failing open on the `~/.aws/config`-only case left
+    the disclosure reachable). PROVEN means EXPLICITLY CONFIGURED
+    (`AwsClients.configuredRegion`); asking one client is the wrong question —
+    the service getters are LAZY, each memoizing its own region at its own
+    instant while `deploy.ts`'s `switchRegion` mutates `AWS_REGION`, so no
+    single member can answer for the bag (asking the SDK's `config.region()`
+    was removed rather than refined). A template-derived region (`Fn::GetAZs`)
+    is additionally gated by `isClientSafeRegion`.
+  - On the diff / no-op path the type lookup passes `WithDecryption: false`, so
+    a `SecureString` comes back as its encrypted blob — never substituted,
+    never cached — and the comparison stays expression-vs-expression.
+  - Owns `RecordedSecretValues` (a `Map<plaintextValue, expression>` the
+    resolver populates per pass), `redactSecretsForState(bag, secrets, source?)`
+    (deep-clone replacing each secret value — whole-value or embedded substring
+    — with its unresolved expression; identity return when no secrets),
+    `scrubResourceRecord(record, secrets)` (redacts one `ResourceState`'s
+    `properties` / `attributes` / `observedProperties`, shared by the deploy
+    save choke point and `cdkd scrub`), and `maskSecretsInText(text, secrets)`
+    (secret value → `***` for log / error output).
+  - **`maskSecretsInError(error, secrets)`** (issue #2038) is the object-level
+    twin: a CLONE of EVERY link in the error's `cause` CHAIN, each with its
+    own masked `message` — `formatError` renders
+    `Caused by: <cause.message>` and `handleError` logs the error OBJECT, so
+    no string-site masking can close that sink. **The CHAIN, not just the top
+    link**: a provider wrapping an AWS failure in a generic sentence leaves
+    the plaintext ONE link down, where a top-level-only mask hits its
+    identity-return and hands back an unsafe object — the contract is that
+    the returned error is safe to render; the identity-return means "nothing
+    ANYWHERE in the chain changed". Each link's clone copies the prototype
+    and every own property DESCRIPTOR (symbols included) so
+    `markNonRetryable`'s non-enumerable marker, `$metadata` / `Code` and
+    `name` survive for the retry classifiers (`isMarkedNonRetryable` /
+    `isThrottlingError` / `isTransientServerError`) and
+    `extractDeploymentEventError` (`Object.assign` would drop the marker);
+    `message` and `cause` are deliberately NOT copied (both re-defined per
+    link; copying a NON-CONFIGURABLE original would make the re-definition
+    throw). `cause` is rewired to the clone map in a SECOND pass (what makes
+    a CYCLIC chain terminate), with a visited-set and depth cap
+    (`ERROR_CAUSE_MASK_MAX_DEPTH` 20); a link beyond the cap keeps its
+    original unmasked message; a non-`Error` `cause` keeps its descriptor
+    verbatim. `extractDeploymentEventError` needs no change (copies only the
+    top link's `message`; walks only for `$metadata.requestId` / `Code`).
+  - **Redaction is BOTH path-based and value-based, and the split is
+    load-bearing** (issues #1904 / #1900). The optional SOURCE bag still
+    carries unresolved expressions; wherever the source leaf is a
+    `{{resolve:...}}` string, that string is persisted VERBATIM. Position is
+    what the value map structurally cannot supply: keyed by plaintext, two
+    expressions resolving to the SAME value collapse (last write wins) and
+    every site is rewritten to the survivor — a permanent spurious UPDATE
+    (#1904). The value scan stays for every leaf the source cannot position
+    (diverged shape, missing key, a leaf that merely EMBEDS a secret, a
+    cross-stack leaf the source does not literally spell).
+  - **`positionByIntrinsicSkeleton`** (issue #1916) positions `Fn::Join` /
+    `Fn::Sub` source leaves — the DOMINANT CDK shape
+    (`secret.secretValueFromJson(...)` renders the ARN as a `Ref`, so every
+    L2-reached secret is a join): literal parts escaped, non-literal parts
+    wildcarded (`[^}]*`, cannot cross a token terminator), matched against the
+    recorded secret expressions. Persists a match only when THREE conditions
+    hold: the bag leaf's WHOLE value is a recorded secret plaintext (an
+    embedded secret keeps going to the substring scan), EXACTLY ONE candidate
+    matches, and the match is not DEMONSTRABLY another value's expression per
+    the pass's own map (fence against bag/source misalignment). Every refusal
+    degrades to the value scan, so no case gets worse. Deliberately NO
+    `isKnownSecretExpression` test on this arm: candidates come only from
+    proven-secret stores, so the test could never answer `false`, and an
+    unfalsifiable guard fences nothing.
+  - **`positionByCrossStackSource`** (issue #2059, consulted BEFORE the
+    skeleton pass) handles `Fn::ImportValue` / `Fn::GetStackOutput` source
+    leaves. Extending the skeleton could not work (measured and refuted
+    twice): neither intrinsic carries any text about its expression, so a
+    pure-wildcard skeleton matches ZERO candidates and always refuses. What
+    closes it is an ASSOCIATION: `reresolveCrossStackValue` — the only point
+    holding BOTH the consumer's source leaf and the producer's stored token —
+    records `canonicalKey -> expression` into `recordedCrossStackExpressions`
+    (homed HERE for the same no-cycle reason; cleared by
+    `resetAccountInfoCache`).
+  - `crossStackSourceKey` is computed by BOTH sides over the RAW intrinsic —
+    `Fn::ImportValue <exportName>`; `Fn::GetStackOutput <stackName>
+    <outputName> <region> <roleArn>`; `Fn::GetAtt <logicalId> <attr>` for a
+    nested stack's `Outputs.<Key>` (#2055 review); the one-placeholder
+    `Fn::Sub` (#2270); and `Ref <param>` (#2291 — without a key it fell to the
+    value scan and collapsed a rotating secret's `:AWSCURRENT` /
+    `:AWSPREVIOUS` outputs) — NUL-separated (`:` occurs in real export
+    names), so writer key and persist-path key are byte-identical BY
+    CONSTRUCTION. Deriving the writer's key from the RESOLVED names is NOT
+    equivalent (the persist path holds only the unresolved leaf). A slot that
+    is itself an intrinsic yields no key and REFUSES.
+  - **THE KEY IS NOT UNIQUE PER PRODUCER**: the `Fn::ImportValue` key carries
+    no region segment and a `Fn::GetStackOutput` omitting `Region` keys it
+    empty, so one `cdkd deploy --all` puts two stacks in two regions on ONE
+    key. What makes the store safe is SCOPE, not uniqueness: the associations
+    live in a `WeakMap` keyed by the pass's own `recordedSecretValues` bag, so
+    another pass's entry cannot be REACHED (also bounding the plaintexts to
+    the pass that fetched them). Plaintext PAIRING alone was insufficient — it
+    refuses a foreign entry only when the plaintexts DIFFER, and a
+    multi-region replica or shared API key makes them coincide, re-certifying
+    a foreign association `resolveReplayProps` / `drift --revert` then
+    re-resolved as the OTHER region's reference. The pairing is KEPT
+    (belt-and-braces, and the only guard inside ONE pass against bag/source
+    MISALIGNMENT); a key recorded against a different (expression, plaintext)
+    PAIR is POISONED rather than overwritten, either half differing being
+    enough. A caller handing a different bag than it resolved with
+    (`cdkd state refresh-observed`, empty by construction) finds nothing and
+    falls back to the value scan.
+  - `recordCrossStackExpression` refuses an `expression` that is not a whole
+    `{{resolve:...}}` token: both payload parameters are `string`, the reader
+    RETURNS `expression` to be persisted, so a swapped call would write a
+    SECRET into `state.json` — the shape test narrows that as far as a shape
+    test reaches (#1917: a plaintext can look like a token). The arm keeps
+    skeleton condition 1 (whole-value recorded plaintext) and condition 3 (an
+    association THIS PASS can see resolved to a DIFFERENT plaintext is refused
+    — over a shared `plaintextIndexOf`; condition 2 compares what the WRITER
+    recorded, condition 3 what this pass holds, and they can disagree); a
+    LOOKUP needs no "exactly one".
+  - The recording seam is gated on TWO tests. (1) Presence in
+    `recordedSecretValues` proves the pass resolved the token to a usable
+    needle — what stops a `skipDynamicReferences` comparison resolve (which
+    leaves a known secret UNRESOLVED) from recording the token as its own
+    "plaintext" and POISONING the key for a deploy resolve REUSING THE SAME
+    BAG. (2) `isSecretExpressionByVerdictOrSpelling` is the test about THIS
+    token — `secretsmanager` by spelling, or an `ssm` reference this process
+    PROVED `SecureString`, a verdict a definitive public answer RETRACTS — so
+    a producer output holding a public reference is never associated. The
+    retraction holds for the consumer's OWN region only (`pinSecretVerdict`
+    returns early for a producer-region GUEST), so the predicate over-ACCEPTS
+    a producer-region public parameter — bounded to a spurious UPDATE, never a
+    plaintext (closing it means keying the verdict store by region); the one
+    shape it misses, a cross-REGION ssm `SecureString`, costs only a refusal.
+    It certifies POSITION for exactly two spellings, never a widening of what
+    the value scan may assume — the #1915 fences are untouched.
+  - **Which source leaves may be persisted is gated by PROVENANCE, via
+    `PathSourceRules`, and all THREE rules are load-bearing.**
+    - `descendArrays` follows the BAG's provenance: a bag produced BY resolving
+      the source (`TEMPLATE_DERIVED_RULES` / `STATE_DERIVED_RULES`) is walked
+      POSITIONALLY (resolution preserves structure), while an AWS readback may
+      be REORDERED (the reason `drift-normalize.ts` exists) — positional
+      descent would write an expression onto the WRONG element and leave the
+      real secret in plaintext. Since issue #1915 every kind FIRST tries a
+      KEYED descent pairing elements by an identity field (`Name` / `Key`)
+      with uniqueness required on BOTH sides; a key that is not really an
+      identity fails uniqueness and refuses the WHOLE array rather than
+      mis-pairing; an unpaired element falls to the value scan. That is what
+      reaches a secret nested in an ECS
+      `ContainerDefinitions[].Environment[]` on the UNCHANGED-resource path,
+      where the value scan has no needles (#1900). Keyed runs BEFORE
+      positional; an element it does not pair takes its POSITIONAL partner
+      when positional would have been exact for the whole array (keying must
+      never pre-empt an exact descent), and two well-keyed lists with
+      DISJOINT identities fall through to positional the same way. Keyed is
+      preferred because `descendArrays` rests on an assumption the module
+      cannot enforce (every `effectiveProperties` producer TODAY preserves
+      length and order). Two shapes fail closed: an array whose IDENTITY
+      FIELD itself holds a secret, and an array of ARRAYS.
+    - `trustAnyExpression` follows the SOURCE's provenance: a template carries
+      PUBLIC ssm expressions too, and persisting one would re-introduce the
+      perpetual UPDATE #1901 prevents — so from a TEMPLATE source a leaf is
+      substituted only when it is a KNOWN secret (`{{resolve:secretsmanager:`
+      by definition, or a recorded ssm `SecureString`), while a STATE source
+      holds no public expressions and is trusted wholesale. The definitional
+      arm is what makes the fix work: when two expressions share a resolved
+      value the map keeps only the last, so asking it about the LOSING
+      expression answers 'no' for exactly the pair being separated.
+    - `sourceIsSameGeneration` (issue #1917 + review) answers whether the
+      SOURCE describes the same GENERATION of the resource the BAG does, for
+      one shape: a bag leaf ALREADY a complete `{{resolve:...}}` token (a
+      previously-persisted expression, or a plaintext that LOOKS like one).
+      TRUE for exactly the two STATE-sourced constants whose source is that
+      record's own persisted bag — `STATE_DERIVED_RULES` and
+      `STATE_SOURCED_READBACK_RULES`. Every TEMPLATE-sourced constant is
+      FALSE, INCLUDING `TEMPLATE_DERIVED_RULES` — the review's correction:
+      `redactStateForPersist` walks EVERY record while
+      `perResourceTemplateProps` is populated BEFORE the provider call, so a
+      resource that merely ENTERED the create/update arm hands today's
+      template to a record still on the PREVIOUS generation (reachable via
+      intermediate `saveStateAfterResource`, the pre/post-rollback saves, and
+      Ctrl-C) — a same-generation claim there rewrote a rolled-back
+      `:AWSPREVIOUS` onto the template's `:AWSCURRENT`, so a failed rotation
+      read as applied and drift could not see it. A refusal FALLS BACK to a
+      WHOLE-VALUE redaction, not the leaf untouched: a token-shaped PLAINTEXT
+      the pass resolved is a value-map key and is still rewritten, while a
+      previous generation's EXPRESSION is not a key and survives.
+      `secrets.has(bag)` is the wrong test — the hazard is GENERATION SKEW,
+      which no value test can see. Two references sharing one token-shaped
+      resolved value leave the refused leaf on the SURVIVOR's expression (the
+      #1910 class, not a disclosure).
+  - **The substring arm spares complete tokens** (issue #1935): ONE predicate
+    over the whole leaf — replace every recorded-plaintext match EXCEPT one
+    lying STRICTLY INSIDE a complete `{{resolve:...}}` span (contained and
+    shorter). A match coextensive with a span is still replaced (the #1917
+    token-shaped plaintext), as is one that CONTAINS or STRADDLES a span.
+    Expressing it as two rules (replace whole spans; value-scan between spans)
+    was tried and REGRESSED: a straddling plaintext belonged to neither half
+    and persisted in the clear, and splitting the leaf broke
+    `buildNeedleRegex`'s longest-first PRECEDENCE (holds only within one
+    scan). Residual: an UNTERMINATED `{{resolve:` opener forms no span, so a
+    needle after it is still replaced. One fix in the SHARED arm, so every
+    `PathSourceRules` constant and every sourceless walk (the journal's
+    `previousState`, `attributes`, `redactByPath`'s four fallbacks) inherits
+    it.
+  - `STATE_SOURCED_CROSS_GENERATION_RULES` exists because a caller can know
+    something the derivation cannot: `cdkd scrub` threads it into
+    `scrubResourceRecord` for its `observedProperties` walk — scrub
+    repositions `properties` onto TODAY's template FIRST, so the fallback
+    source has already moved a generation; it keeps `trustAnyExpression`
+    (state holds no public expressions — what cleans a legacy PLAINTEXT
+    baseline) but drops the generation claim, or the drift baseline would be
+    rewritten onto a reference the stack may never have deployed and
+    `cdkd drift --revert` would push it to AWS.
+  - **Every writer passes a position source** (issue #1910): the rollback
+    JOURNAL (`DeployEngine.redactOperationsForJournal`); the stack OUTPUTS
+    (positioned by `DeployEngine.outputsTemplateSource`, consumed by all three
+    outputs-redaction sites through one `redactOutputs` helper — which since
+    issue #1943 passes `TEMPLATE_SOURCED_RULES` rather than the default: two
+    of the three sites hand it a bag that is NOT this generation's, so
+    `descendArrays` is a claim the site cannot make; reachable because
+    `TemplateOutput.Value` is `unknown` and a list-valued output puts an array
+    on both sides; the `cdkd scrub` twin still passes the default — issue
+    #2099); `cdkd scrub`; `cdkd import`'s `resolveImportedProperties`; a FIFTH
+    the issue did not list — `rollback-executor.ts`'s `redactRollbackRecord`
+    (reachable only through a replay) — and a SIXTH a caller-search could not
+    see: `cdkd state refresh-observed` (`src/cli/commands/state.ts`), which
+    reached this module along NO path at all (issue #1926). Its readback is
+    the DECRYPTED value for any resource deployed from a secret reference and
+    its secrets map is EMPTY by construction — the #1900 shape: the PATH pass
+    carries it alone, positioned against the record's own `properties` under
+    `STATE_SOURCED_READBACK_RULES`, inheriting #1915's keyed array descent.
+  - **`refuseUncertifiedReadbackPositions`** closes the MIXED-leaf row
+    (`postgres://u:{{resolve:...}}@h`, an `Fn::Join` around
+    `secretValueFromJson`) on every empty-map readback path — the path pass
+    certifies only WHOLE-TOKEN source leaves, and a mixed leaf fell to a value
+    scan with no needles. It lives inside `redactSecretsForState`, so every
+    caller inherits it with no call-site change: `cdkd state refresh-observed`
+    and — why it belongs in the module — a plain `cdkd deploy`, whose
+    `drainObservedCaptures` baseline reaches the persist choke point with the
+    same empty-map / state-source configuration. `cdkd scrub` is NOT an
+    inheritor (its observed walk passes
+    `STATE_SOURCED_CROSS_GENERATION_RULES`, which the gate excludes by
+    design). Gated on `trustAnyExpression && !descendArrays &&
+    sourceIsSameGeneration` — the third conjunct took a measurement: without
+    it the pass also selected the cross-generation rules and rewrote a scrub
+    baseline holding the DEPLOYED `:AWSPREVIOUS` onto the template's edited
+    `:AWSCURRENT` (the #1917 hazard, which `--revert` applies to AWS). It
+    refuses only what POSITION justifies and descends per identity-keyed
+    element so a mixed leaf inside a paired element is reached.
+  - A MIXED leaf embedding a plain `{{resolve:ssm:` token splits on whether a
+    SECRETS MAP exists (forced by the `secrets-dynamic-ref` integ after every
+    unit assertion passed without it): with a map, absence from the verdict
+    store is real evidence the parameter is PUBLIC and the resolved value is
+    kept; with an EMPTY map nothing could have been recorded, and reading
+    absence as "public" persisted a DECRYPTED SecureString. Failing closed is
+    the whole-token arm's own premise: a public `String` is stored RESOLVED
+    (#1901), so a token SURVIVING in a persisted bag is a SecureString by
+    construction. Issue #2036 tracks the price (still OPEN; PR #2415 withdrew
+    a process-global proven-public store — see its JSDoc).
+  - Of the FOUR residual rows once listed here, TWO close CONDITIONALLY:
+    `unkeyedArrayPairsByAnchors` licenses a POSITIONAL walk under FOUR
+    conditions — index counts match (arrays) or every SOURCE key is present in
+    the bag (objects: source-key CONTAINMENT since #2012; a MISSING source key
+    still refuses); every position whose SOURCE spells no dynamic reference is
+    deep-equal on both sides (the *anchors*); every reference-bearing ELEMENT
+    carries its own distinguishing anchor (`isUniquelyKeyedBy`'s bar) or,
+    being a bare reference, leans on the array's literal FRAME; and no two
+    share an ORDER-INSENSITIVE anchor signature (the last two are the #2012
+    review's, each a measured misattribution on
+    `AWS::AmazonMQ::Broker.Users`). A position AWS did not rewrite is evidence
+    the containers are the same element (a REORDERED list stops matching and
+    is refused). The other two rows (an UNPAIRED element beside a paired one;
+    an observed KEY the source does not carry) close by DERIVED NEEDLES
+    (issue #2012): `deriveReadbackNeedles` learns pairs from certified
+    positions, scanned over the RAW bag, MERGED by `preferPositionDecisions`
+    where a MARK tree says no pass decided (either naive order fabricates a
+    baseline) — see its JSDoc.
+  - The journal is the consequential writer: `resolveReplayProps` RE-RESOLVES
+    it against AWS, so a leaf collapsed onto a sibling's expression ships the
+    WRONG secret version to the live resource. Two sides of one op take
+    DIFFERENT sources: `properties` / `attemptedProperties` are this deploy's
+    desired bags and take the TEMPLATE bag; `previousState` was read back from
+    STATE and positions itself via `scrubResourceRecord` with no source (the
+    #1900 fallback).
+  - The ssm/ssm collapse half is closed by the module-level
+    `recordedSecretExpressions` SET (`recordSecretExpression` /
+    `forgetSecretExpression` / `isRecordedSecretExpression` /
+    `clearRecordedSecretExpressions`) — the resolver's SecureString verdict
+    store, homed HERE so `isKnownSecretExpression` can consult it with no
+    caller threading (the reverse import edge would close a cycle; this module
+    is the LEAF). Since issue #1916 the set holds EVERY secret expression, not
+    only the ssm ones — it is ALSO the skeleton pass's candidate list, and a
+    list holding only the ssm half cannot name the losing member of a
+    collapsed secretsmanager/secretsmanager pair. Recording is gated on the
+    SPELLING rather than the resolver's `isSecret`: an `ssm` reference whose
+    `Type` came back unclassifiable is secret for THAT resolution but must
+    stay unpinned so the next pass re-asks AWS (#1901) — such a pair still
+    falls back to the value scan.
+  - The path pass ALSO runs with an EMPTY secrets map — the whole point for an
+    UNCHANGED resource (never resolved this deploy, no `perResourceSecrets`
+    entry, and an observed-capture refresh echoing a secret would persist
+    plaintext, #1900); `scrubResourceRecord` redacts `observedProperties`
+    against the record's OWN already-redacted `properties` when no template
+    bag was supplied. The source bag is captured by
+    `DeployEngine.perResourceTemplateProps` at the two sites that populate
+    `perResourceSecrets`. Over-redaction on the value path is harmless and the
+    safe direction.
+  - Consumed by `IntrinsicFunctionResolver` (records secrets + secret
+    EXPRESSIONS + the cross-stack associations, masks Join/Sub debug logs),
+    `DeployEngine.withParentInfo` (the single state-persist choke point) + its
+    rollback-journal and stack-outputs writers, `rollback-executor.ts`'s
+    `redactRollbackRecord`, `cdkd import`'s `resolveImportedProperties`, and
+    `src/cli/commands/scrub.ts`.
+- **The MASK-ONLY needle class** (issue #2274) is the third kind of entry a
+  `RecordedSecretValues` bag can hold, and the first with NO expression behind
+  it: a Lambda-backed custom resource's handler declares its response `Data`
+  sensitive with cfn-response `NoEcho: true`, the value is HANDLER-GENERATED,
+  so what is persisted is `SECRET_MASK`.
+  - `recordMaskOnlyValue` records `plaintext -> SECRET_MASK` in the SAME map,
+    so every persistence reader (`scrubResourceRecord`'s three fields, the
+    rollback journal, the outputs bag, `maskSecretsInText`) is covered by code
+    that already walks it. The SENTINEL VALUE is the marker — no side table
+    (an earlier `WeakMap` was removed after a mutation probe showed its extra
+    conjunct unfenceable AND wrong-pointing). Scope needs none either: the MAP
+    is already per-pass — the property PR #2415 was forced back to after
+    review found a process-wide positive store is itself a cross-stack
+    disclosure (#2425).
+  - `recordMaskOnlyValuesIn` is the whole-`Data` twin, taking an `excluded`
+    set — the whole string leaves of the resource's own resolved template
+    properties, via `wholeStringLeavesOf` — so a handler echoing
+    `event.ResourceProperties` into `Data` cannot mask cdkd's OWN
+    `ServiceToken` out of the record `CustomResourceProvider.delete` reads it
+    from.
+  - `carriesSecretMask` is the whole-leaf RECOGNITION test, UNBOUNDED in depth
+    with a visited-set for cycles: an earlier depth cap was ASYMMETRIC with
+    the unbounded walk that WRITES the mask, so a deep mask persisted and read
+    as clean.
+  - A mask-only needle must clear `MIN_NEEDLE_LENGTH`, which the expression
+    class does not — an expression pair came from a POSITION cdkd resolved, a
+    bare plaintext has none, and `Data: { Ready: "true" }` would otherwise
+    mask every leaf whose whole value is `"true"`.
+  - **The one place the classes must differ is the SUBSTRING arm**: the
+    persist walk builds its regex from `substringNeedlesOf` (every plaintext
+    MINUS the mask class), so a mask only ever takes a leaf WHOLE — an inline
+    `***` cannot be told from a user's own literal, so nothing downstream
+    could recognise it and `drift --revert` / `resolveReplayProps` would push
+    the corrupted string to AWS (the #1498 / #1501 class). `maskSecretsInText`
+    is NOT narrowed the same way (its output is a log line or an event,
+    nothing reads it back as a value); the embedded-value residual is #2453.
+    Full argument in the module's JSDoc.
+- **The mask-only channel's CROSS-DEPLOY cost is guarded rather than hidden.**
+  `ResourceState` carries no durable `NoEcho` flag (#2449), so a later deploy
+  reads `***` back.
+  - `ResolverContext.redactedAttributeReads` is the bag the resolver pushes
+    such a read into — `noteAttributeSecrecy` for `Fn::GetAtt`,
+    `reresolveCrossStackValue` for `Fn::ImportValue` / `Fn::GetStackOutput` /
+    a nested stack's `Outputs.<Key>` — and
+    `DeployEngine.refuseRedactedAttributeReads` fails the resource rather than
+    sending the mask. It RECORDS rather than throws because the DIFF pass
+    resolves the same leaf: a throw would fail every later deploy of such a
+    stack, while recording leaves `***` against `***`, a clean NO_CHANGE.
+  - Other consumers: `drift.ts` (`preserveLiveValuesAtMaskedLeaves` REGISTERS
+    `liveValue -> SECRET_MASK` for what it moves — the masked POSITION is the
+    proof the value is secret; without it the moved plaintext reached
+    `observedProperties`, the retry logger and the AWS error text unmasked;
+    plus the `secretBearing` third disjunct on `carriesSecretMask` rather
+    than whole-value equality, because `calculateResourceDrift` does not
+    descend arrays and a mask under one surfaces as a change on the ANCESTOR
+    — `collectSecretMaskPaths` seeds those positions into their OWN set,
+    apart from `secretPaths`, whose EXACT-leaf reading licenses DROPPING an
+    absent-in-AWS change); `rollback-executor.ts`
+    (`refuseMaskedReplayBaseline`, written side only); `export.ts` (a record
+    holding the mask joins the per-resource `blocked` list).
+  - **The CROSS-STACK half is a RECOVERY, not a refusal**: every cross-stack
+    route reads the producer's persisted `state.outputs`, so a masked output
+    would refuse a consumer template that deployed before this feature.
+    `recordRecoverableMaskedOutput` / `recoverMaskedOutput` remember
+    `stack + region + output key -> plaintext` for the PROCESS, written by
+    `DeployEngine.rememberRecoverableMaskedOutputs` right after
+    `redactOutputs`, read by `reresolveCrossStackValue` and
+    `NestedStackProvider.readChildOutputsAsAttributes`. A hit is re-registered
+    as a mask-only needle in the CONSUMER's bag (wire value right, consumer's
+    record still persists `***`); a miss refuses. The key is a COORDINATE,
+    never a bare plaintext (the shape PR #2415 had to withdraw, #2425). The
+    nested-stack provider reports recovered outputs PER ATTRIBUTE
+    (`ResourceCreateResult.noEchoAttributeNames`), never whole-bag, or one
+    sensitive child output would mask every ordinary sibling into the parent's
+    record.
 
-- **src/deployment/masking-retry-logger.ts** - The masking `RetryLogger` every `withRetry` caller that holds a RESOLVED secret bag threads (issues [#1914](https://github.com/go-to-k/cdkd/issues/1914) / [#2018](https://github.com/go-to-k/cdkd/issues/2018) / [#2038](https://github.com/go-to-k/cdkd/issues/2038)). `retry.ts` interpolates the AWS message VERBATIM into both the per-attempt `debug` line and the give-up `warn` summary, and an AWS validation error routinely quotes the offending property VALUE back — so wherever the retried call's payload was resolved from a `{{resolve:...}}` reference, that value provably IS the secret and the logger must mask the CONCATENATED string. `warn` matters more than `debug`, which is why `RetryLogger.warn` is OPTIONAL: the give-up summary prints at DEFAULT verbosity, so a required `warn` would have been silently satisfied by a raw `logger.warn`. **A separate module rather than a home in `secret-redaction.ts`**, which is a documented no-import LEAF while this helper needs `RetryLogger` from `retry.ts`; it gives the three EAGER callers — `rollback-executor.ts` (three `withRetry` sites), `src/cli/commands/drift.ts`'s revert, and the deploy engine's two `--replace` re-create sites via `DeployEngine.maskingRetryLoggerFor` — ONE definition instead of three byte-identical copies. `DeployEngine.maskingRetryLogger` keeps a LAZY variant of its own, resolving the bag per line out of `perResourceSecrets`, because its generic `withRetry` wrapper is reached from call sites that hold no bag (DELETE, the observed-capture drain, the Outputs pass); every site that DOES hold one binds it eagerly, so the file cannot state one rule about looking a bag up by logical id and then break it three lines on.
+- **src/deployment/masking-retry-logger.ts** - The masking `RetryLogger` every
+  `withRetry` caller that holds a RESOLVED secret bag threads (issues #1914 /
+  #2018 / #2038). `retry.ts` interpolates the AWS message VERBATIM into the
+  per-attempt `debug` line and the give-up `warn` summary, and an AWS
+  validation error routinely quotes the offending property VALUE back — where
+  the payload was resolved from a `{{resolve:...}}` reference, that value
+  provably IS the secret and the logger must mask the CONCATENATED string.
+  `warn` matters more than `debug` (the summary prints at DEFAULT verbosity),
+  which is why `RetryLogger.warn` is OPTIONAL — a required `warn` would have
+  been silently satisfied by a raw `logger.warn`. A separate module rather
+  than a home in `secret-redaction.ts` (a documented no-import LEAF, while
+  this needs `RetryLogger` from `retry.ts`); it gives the three EAGER callers
+  — `rollback-executor.ts` (three `withRetry` sites), `drift.ts`'s revert, and
+  the deploy engine's two `--replace` re-create sites via
+  `DeployEngine.maskingRetryLoggerFor` — ONE definition.
+  `DeployEngine.maskingRetryLogger` keeps a LAZY variant, resolving the bag
+  per line out of `perResourceSecrets`, because its generic `withRetry`
+  wrapper is reached from call sites that hold no bag (DELETE, the
+  observed-capture drain, the Outputs pass); every site that DOES hold one
+  binds it eagerly.
 
-- **src/cli/commands/scrub.ts** - `cdkd scrub [STACK...]`, the permanent STATE SECRET-HYGIENE command (clean + audit). Its full entry -- the two output-repair passes, the cross-stack pre-pass and its three outcomes, the refusals and the exit codes -- moved to [layout-scrub.md](layout-scrub.md), whose `paths:` glob is the one file it describes.
+- **src/cli/commands/scrub.ts** - `cdkd scrub [STACK...]`, the permanent STATE
+  SECRET-HYGIENE command (clean + audit). Its full entry — the two
+  output-repair passes, the cross-stack pre-pass and its three outcomes, the
+  refusals and the exit codes — moved to [layout-scrub.md](layout-scrub.md),
+  whose `paths:` glob is the one file it describes.
 
-- **src/deployment/secret-region-classification.ts** - the ONE answer to "which region must answer for this `{{resolve:...}}` reference", shared by `cdkd deploy`'s resolver, `cdkd scrub`, `cdkd drift` and the rollback replay. `classifyReplaySecretRegion` returns `local` (the stack's own region; every non-secret service, every same-region ARN, and every name-form reference with no foreign producer region on record), `named-region` (the SECRET_ID is an `arn:` naming a different region -- route to a resolver pinned there) or `ambiguous` (name form AND a foreign producer region on record -- refuse). `producerRegionsFromState` derives the evidence from `state.imports[].sourceRegion` + `state.outputReads[].sourceRegion`. **Extracted from `rollback-executor.ts` by issue [#2134](https://github.com/go-to-k/cdkd/issues/2134) because the DIRECTION of the dependency had to flip**: the resolver needs this answer, and `rollback-executor.ts` imports the resolver, so importing the classifier back out of it would close a cycle. Deliberately a LEAF -- its only runtime dependency is `canonicalizeRegion` -- and deliberately NOT a general region-utilities module: what belongs here is the one decision every consumer must answer identically, since a second spelling of it is how two commands come to disagree about whether a secret reference is safe to resolve locally. `rollback-executor.ts` re-exports every name, so the four existing importers are unaffected. **A consumer that supplies the evidence owes TWO things, and the second is easy to miss**: it must pass `ResolverContext.producerRegions`, AND it must let the resulting refusal survive its own error handling. `cdkd scrub` -- the only supplier -- wraps each resolution pass in a best-effort `catch`, so it re-raises `DynamicReferenceRegionAmbiguousError` by cause-chain walk at all three sites; swallowed, the refusal produces exactly the silent success it exists to prevent. Conversely a REGION-PINNED sibling must NOT inherit the evidence (`siblingContext` in the resolver strips it): `producerRegions` describes the CONSUMER's reads, and a sibling classifies with its own region standing in for the consumer, so inheriting it makes a reference whose origin cdkd has already proven verdict `ambiguous`.
+- **src/deployment/secret-region-classification.ts** - the ONE answer to
+  "which region must answer for this `{{resolve:...}}` reference", shared by
+  `cdkd deploy`'s resolver, `cdkd scrub`, `cdkd drift` and the rollback
+  replay. `classifyReplaySecretRegion` returns `local` (the stack's own
+  region: every non-secret service, every same-region ARN, and every
+  name-form reference with no foreign producer region on record),
+  `named-region` (the SECRET_ID is an `arn:` naming a different region —
+  route to a resolver pinned there) or `ambiguous` (name form AND a foreign
+  producer region on record — refuse). `producerRegionsFromState` derives the
+  evidence from `state.imports[].sourceRegion` +
+  `state.outputReads[].sourceRegion`. Extracted from `rollback-executor.ts`
+  by issue #2134 because the dependency DIRECTION had to flip (the resolver
+  needs this answer and `rollback-executor.ts` imports the resolver).
+  Deliberately a LEAF (only runtime dependency: `canonicalizeRegion`) and NOT
+  a general region-utilities module — a second spelling of this decision is
+  how two commands come to disagree about whether a secret reference is safe
+  to resolve locally. `rollback-executor.ts` re-exports every name, so the
+  four existing importers are unaffected. **A consumer that supplies the
+  evidence owes TWO things, and the second is easy to miss**: it must pass
+  `ResolverContext.producerRegions`, AND it must let the resulting refusal
+  survive its own error handling — `cdkd scrub` (the only supplier) wraps
+  each resolution pass in a best-effort `catch`, so it re-raises
+  `DynamicReferenceRegionAmbiguousError` by cause-chain walk at all three
+  sites; swallowed, the refusal produces exactly the silent success it exists
+  to prevent. Conversely a REGION-PINNED sibling must NOT inherit the
+  evidence (`siblingContext` in the resolver strips it): `producerRegions`
+  describes the CONSUMER's reads, and a sibling classifies with its own
+  region standing in for the consumer, so inheriting it makes a reference
+  whose origin cdkd has already proven verdict `ambiguous`.
 
-- **src/provisioning/masked-retry-logger.ts** - The `RetryLogger` a provider hands to `withRetry` when its payload carries template-derived values (issue [#2050](https://github.com/go-to-k/cdkd/issues/2050)). Two exports: `createMaskedRetryLogger(logger, maskSecrets)` (routes BOTH `debug` and `warn` through the masker) and `maskerOrIdentity(maskSecrets)`. It exists because `src/deployment/retry.ts` interpolates the AWS error message verbatim into its per-attempt `debug` line AND into the give-up `warn` summary, which prints at DEFAULT verbosity — so an exhausted retry on a resolved `{{resolve:secretsmanager:...}}` value used to disclose the plaintext. A provider receives the masking CAPABILITY (`CreateContext.maskSecrets` / `UpdateContext.maskSecrets`, a `(msg: string) => string`), never the `RecordedSecretValues` bag, so this module is a LEAF taking only a type-only import — the same constraint as `src/provisioning/nested-stack-messages.ts`. Absent masker means identity, matching the `SecretMaskingContext` contract, so the import path and `drift --revert` are unaffected. **One module rather than one factory per provider**: `elbv2-provider.ts` and `servicediscovery-provider.ts` grew byte-identical private copies and `src/cli/commands/drift.ts` carries a third hand-rolled one, which is exactly how two files answer differently about the same request. Masking the retry logger is NOT sufficient on its own — `withRetry` rethrows the RAW error, and a NON-retryable rejection emits no retry log at all, so each provider must also mask `error.message` where it wraps the failure in a `ProvisioningError` (the deploy engine prints that message at ERROR, i.e. default verbosity). Mask the raw `error.message`, not the assembled sentence: only the raw value reaches `maskSecretsInText`'s whole-value arm, and `cause` must be threaded UNMASKED so `isRetryableTransientError`'s `$metadata` walk still classifies.
+- **src/provisioning/masked-retry-logger.ts** - The `RetryLogger` a provider
+  hands to `withRetry` when its payload carries template-derived values
+  (issue #2050). Two exports: `createMaskedRetryLogger(logger, maskSecrets)`
+  (routes BOTH `debug` and `warn` through the masker) and
+  `maskerOrIdentity(maskSecrets)`. Exists because `retry.ts` interpolates the
+  AWS error message verbatim into its `debug` line AND the give-up `warn`
+  summary (default verbosity) — an exhausted retry on a resolved
+  `{{resolve:secretsmanager:...}}` value used to disclose the plaintext. A
+  provider receives the masking CAPABILITY (`CreateContext.maskSecrets` /
+  `UpdateContext.maskSecrets`, a `(msg: string) => string`), never the
+  `RecordedSecretValues` bag, so this module is a LEAF taking only a type-only
+  import (same constraint as `src/provisioning/nested-stack-messages.ts`).
+  Absent masker means identity, matching the `SecretMaskingContext` contract,
+  so the import path and `drift --revert` are unaffected. **One module rather
+  than one factory per provider**: two providers grew byte-identical private
+  copies and `drift.ts` a third hand-rolled one — exactly how two files come
+  to answer differently about the same request. Masking the retry logger is
+  NOT sufficient on its own — `withRetry` rethrows the RAW error, and a
+  NON-retryable rejection emits no retry log at all, so each provider must
+  also mask `error.message` where it wraps the failure in a
+  `ProvisioningError` (printed at ERROR, i.e. default verbosity). Mask the
+  raw `error.message`, not the assembled sentence (only the raw value reaches
+  `maskSecretsInText`'s whole-value arm), and thread `cause` UNMASKED so
+  `isRetryableTransientError`'s `$metadata` walk still classifies.

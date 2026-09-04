@@ -16,13 +16,420 @@ Index of every area: [code-layout.md](code-layout.md).
 
 ## Important Files
 
-- **src/deployment/outputs-export-alias.ts** - The key-space rules for the stack-OUTPUTS bag, plus the user-facing messages that go with them (issue [#1919](https://github.com/go-to-k/cdkd/issues/1919)). `state.outputs` is keyed by output NAME and an output carrying `Export:` is ALSO aliased under its export name in the SAME bag, alongside a parallel bag holding each key's unresolved template value as the redaction POSITION source (#1910) — so whenever the two disagree about who owns a key, `redactByPath` positions a leaf by another output's source and persists that output's `{{resolve:...}}` reference as this one's value. The rules therefore live in ONE module, because FOUR writers apply them: `DeployEngine.resolveOutputs` (both of its bags), `cdkd scrub` (which rebuilds the source bag from the template to redact legacy state), and `src/analyzer/outputs-diff.ts`, which PREVIEWS the bag the deploy persists — the writer this module's own doc missed for two rounds, and whose divergence surfaces as a phantom diff row on every run plus a permanently red `cdkd diff --fail`. **The two writers deliberately do NOT share every rule**, and each difference is documented at the rule it applies to: the engine knows which output it just resolved a value from and which outputs ITS conditions suppressed, while scrub knows neither — its bag was written by an earlier binary under conditions it can only re-evaluate best-effort (from template defaults, assuming false on failure), so it over-approximates. Owns `isOutputSuppressedByCondition` / `collectPublishedOutputNames` (deploy side: a condition-suppressed output publishes no value, so it writes no source and does NOT reserve its name — reserving it would drop a WORKING export because an unrelated condition went false), `collectDeclaredOutputNames` (scrub side: conditions ignored, because a missed collision writes a wrong-secret reference while an over-approximated one costs a spurious warning plus one key redacted by value instead of by position), `isExportAliasCollision` (an export under the output's OWN name is not one; two outputs sharing one export name is a different class and deliberately unguarded), `exportNameSecretExposure` (an intrinsic `Export.Name` can resolve to secret PLAINTEXT and a KEY is never redacted — detected from the name's OWN resolution map, which is exact, rather than a containment scan over the pass's secrets, which was wrong in both directions: a one-character recorded secret dropped unrelated exports, and the mask it fed could not mask short values at all), `stateKeySecretExposure` (the KEY-side scan `cdkd scrub` reports with — containment, since a key written by an earlier binary has no resolution to attribute it to, but bounded at four characters like `secret-redaction`'s own substring rule so a degenerate short secret cannot fail the `--dry-run --fail` gate repo-wide), and five message builders. `maskEveryOccurrence` is local and threshold-free precisely because `maskSecretsInText` is not — feeding a detected-but-unmaskable name to that helper printed the secret under a `masked:` label — and the refusal message omits the name entirely if masking left it unchanged. NOT import-free, unlike `nested-stack-messages.ts`: it takes `secret-redaction.ts`, itself a documented no-import leaf. Known inherited residual, named in the module doc: an ssm reference whose `Type` came back unclassifiable is never pinned (#1901), so a later cache hit can substitute that plaintext into a name with nothing recorded and the refusal cannot fire.
+- **src/deployment/outputs-export-alias.ts** - Key-space rules for the
+  stack-OUTPUTS bag + their user-facing messages (issue #1919). `state.outputs`
+  is keyed by output NAME and an `Export:`-carrying output is ALSO aliased
+  under its export name in the SAME bag, beside a parallel bag of unresolved
+  template values used as the redaction POSITION source (#1910) — when the two
+  disagree about a key, `redactByPath` persists another output's
+  `{{resolve:...}}` reference as this one's value. ONE module because FOUR
+  writers apply the rules: `DeployEngine.resolveOutputs` (both bags),
+  `cdkd scrub` (rebuilds the source bag from the template), and
+  `src/analyzer/outputs-diff.ts`, which PREVIEWS the persisted bag (divergence
+  shows as a phantom diff row + permanently red `cdkd diff --fail`). **Deploy
+  and scrub deliberately do NOT share every rule** (scrub's bag was written by
+  an earlier binary, so it over-approximates). Owns
+  `isOutputSuppressedByCondition` / `collectPublishedOutputNames` (deploy: a
+  condition-suppressed output publishes no value, writes no source, and does
+  NOT reserve its name — reserving would drop a WORKING export over an
+  unrelated false condition), `collectDeclaredOutputNames` (scrub: conditions
+  ignored — a missed collision writes a wrong-secret reference; an
+  over-approximated one costs only a warning + one key redacted by value),
+  `isExportAliasCollision` (an export under the output's OWN name is not one;
+  two outputs sharing one export name is a different, deliberately unguarded
+  class), `exportNameSecretExposure` (an intrinsic `Export.Name` can resolve
+  to secret PLAINTEXT and a KEY is never redacted — detected from the name's
+  OWN resolution map, which is exact; a containment scan was wrong in both
+  directions), `stateKeySecretExposure` (scrub's KEY-side containment scan,
+  bounded at four characters so a degenerate short secret cannot fail the
+  `--dry-run --fail` gate repo-wide), and five message builders.
+  `maskEveryOccurrence` is local and threshold-free precisely because
+  `maskSecretsInText` is not (feeding a detected-but-unmaskable name to that
+  helper printed the secret under a `masked:` label); the refusal message
+  omits the name entirely if masking left it unchanged. NOT import-free (takes
+  `secret-redaction.ts`). Known residual: an ssm reference whose `Type` came
+  back unclassifiable is never pinned (#1901), so a later cache hit can
+  substitute that plaintext into a name with nothing recorded and the refusal
+  cannot fire.
 
-- **src/deployment/dag-executor.ts** - Generic event-driven DAG dispatcher (used inside a stack to schedule resource provisioning as soon as each resource's deps complete; no level barriers)
-- **src/deployment/delete-outcome.ts** - The shared `ResourceDeleteResult` helpers: the skip pair (`deleteSkipReason` / `deleteSkippedMessage`, issue [#1762](https://github.com/go-to-k/cdkd/issues/1762)) and the suppressed-guard pair (`withIndeterminateGuard` / `deleteIndeterminateGuards`, issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)). Detail — including why the module must stay an import-free LEAF — in [delete-outcome.md](delete-outcome.md).
-- **src/deployment/rollback-executor.ts** - Reusable rollback engine (issue [#1183](https://github.com/go-to-k/cdkd/issues/1183)), extracted from `DeployEngine` so BOTH the in-process automatic rollback AND the standalone `cdkd rollback` command drive identical semantics. Owns the `CompletedOperation` / `FailedOperation` types (the former moved here from `deploy-engine.ts`), `replayRollback` (reverts a list of ops: UPDATE/DELETE reverse-completion-order, then CREATE deletions dependency-sorted; best-effort per-op), `classifyRollbackOp` / `planRollback` (pure classification used by the command's plan preview; each plan item also carries `effectiveProvisionedBy` — the record-first route resolution — so the preview can consult the SAME `finalSnapshotMechanism` matrix the replay runs and label a Snapshot delete that will be REFUSED instead of promising a snapshot, issue #1366), `classifyFailedOp` / `planFailedOps` / `replayFailedOperations` (issue #1198 — the `--revert-failed` opt-in path for the op that FAILED mid-deploy; its delete of a provisioned-but-failed CREATE honors the CURRENT state record's `DeletionPolicy` through the SAME matrix as the completed-CREATE path — `orphan-failed-create-retain` for `Retain`, `delete-failed-create-with-final-snapshot` for `Snapshot`, plain `delete-failed-create` otherwise, issue #1362), and `sortRollbackCreates`. A replacement op (`previousState.physicalId !== op.physicalId`) is reverted by REVERSING the replacement (issue #1199): re-create the old resource from `previousState` via its recorded `provisionedBy` route then delete the new one (create-first; name collision falls back to delete-new-first + bounded name-release retry). BOTH of those create arms pass `CreateContext.replayingState: true` (issue [#1463](https://github.com/go-to-k/cdkd/issues/1463), via the shared `REPLAYING_STATE_CREATE_CONTEXT` constant so they cannot drift) — they are the only create call sites that can DECLARE a state replay, so a provider PRE-FLIGHT REFUSAL must downgrade to a warning there (the user cannot edit a state record from their CDK code); `GlueProvider`'s `enforceIcebergTableInputAbsent` is the only consumer today. The deploy engine's five create sites are all TEMPLATE-driven and never set that flag, keeping the refusal (they DO pass a context since issue [#1932](https://github.com/go-to-k/cdkd/issues/1932) — the three EXTERNAL callers — `deploy-engine.ts`, `rollback-executor.ts` and `drift --revert` — thread `maskSecrets` at every create / update site (the five providers that re-create inside their own `update()` do NOT, since they forward the outer call's `properties` with no context of their own), carrying a `maskSecrets` capability from `SecretMaskingContext` — so the fences for this read the context's KEY SET rather than the call's arity). That replay-CREATE also HONORS the provider's `effectiveProperties` (issue [#1682](https://github.com/go-to-k/cdkd/issues/1682), the create-side twin of #1644's `recordAfterRollbackUpdate`): the bag handed to `create()` IS `previousState.properties`, so a returned bag replaces the record's `properties` wholesale and reporting none keeps the previous bag. Until #1682 the arm typed its local result as `{ physicalId, attributes? }` and rebuilt from `prev.properties`, so a provider that deliberately SUBSTITUTED a malformed block on the replay announced it into a void and the phantom drift it exists to close survived the rollback — do not re-narrow that local type. Real-AWS regression net: `tests/integration/rollback-replay-effective-props/`. The providers that re-create inside their own `update()` (ACM certificate / IAM managed policy / IAM role / Lambda permission / SNS subscription) are NOT template-driven — this executor's `revert` arm calls `provider.update(..., previousState.properties, ...)`, so they forward a STATE record on a replay — but they CANNOT receive a `CreateContext`, since `update()`'s own context is an `UpdateContext` carrying no `replayingState`; the constraint that follows lands on providers, not here: a provider with a create-side pre-flight refusal must not re-create inside `update()`. Or — under `UpdateReplacePolicy: Retain`, where the old resource was orphaned not destroyed — delete the new one and re-adopt the old (`reverse-replacement-readopt`); stateful types warn that the old data is unrecoverable. Two deliberate behavior fixes shared by both callers: the rolled-back CREATE's CURRENT state record `DeletionPolicy` governs its delete (CFn semantics) — `Retain` ORPHANS (dropped from state, left in AWS), `Snapshot` routes to the `delete-with-final-snapshot` action which snapshots THEN deletes through the same mechanism matrix as the deploy engine's `prepareFinalSnapshotForDelete` (atomic delete parameter on the SDK route, `createPreDeleteFinalSnapshot` for `PRE_DELETE_SNAPSHOT_TYPES`, refusal-as-per-op-failure for a cc-api-routed atomic type or any other Snapshot-tagged shape) unless `RollbackExecutorContext.skipFinalSnapshot` (`cdkd rollback --skip-final-snapshot`) opts into the data loss — issue [#1358](https://github.com/go-to-k/cdkd/issues/1358), which fixed the pre-existing leak where `Snapshot` orphaned alongside `Retain` and handed the user an untracked, billing resource; `RetainExceptOnCreate` and absent / `Delete` delete plainly — and replay is idempotent (skips already-reverted / physical-id-mismatched / absent resources). Depends only on `ProviderRegistry` + region + logger + an optional event recorder / per-op state-save hook / `finalSnapshotClients` (region-pinned `PreDeleteSnapshotClients`, falling back to `getAwsClients()`) / `skipFinalSnapshot` — NOT on `DagBuilder` / `DiffCalculator` / the synthesizer / `ExportIndexStore`. **A replayed `{{resolve:...}}` reference is resolved by the region it NAMES, not by the stack's** (issue [#2057](https://github.com/go-to-k/cdkd/issues/2057)): since issue #1934 a cross-region cross-stack read records the PRODUCER's spelling of the expression into the CONSUMER's state, and that spelling carries no region, so re-resolving it locally hands a provider whatever a same-named secret holds in the consumer's region. `classifyReplaySecretRegion` returns one of three verdicts per reference -- `named-region` (an ARN naming another region, answered by a per-region-cached resolver from `ReplayResolvers`, because `resolveSecretsManagerReference` builds its client from `explicitRegion` and passes the ARN through as an opaque `SecretId`), `ambiguous` (region-less AND a foreign producer region on record -- throws `ROLLBACK_SECRET_REGION_AMBIGUOUS` BEFORE any lookup), and `local` (everything else, resolved exactly as before). The foreign-region evidence is `RollbackExecutorContext.importedProducerRegions`, built by the exported `producerRegionsFromState` from `StackState.imports[].sourceRegion` + `outputReads[].sourceRegion`. BOTH callers pass it: `cdkd rollback` from the loaded `baseState`, and `DeployEngine.rollbackExecutorContext(previousState)` from `crossStackReadsForPartialSave`, which is the UNION of the pre-deploy snapshot with this session's `recordedImports` / `recordedOutputReads`. That union is load-bearing rather than defensive: a rollback journal exists only after a FAILED deploy, and every non-success save used to persist the PRE-deploy snapshot alone, so the read a failing deploy INTRODUCED was never on record and the refusal was inert on exactly the deploy that needs it. The same gap independently downgraded a fresh strong reference to none for `findActiveImportConsumers`' destroy-time refusal. `producerRegionsFromState` and `classifyReplaySecretRegion` are EXPORTED because `drift.ts` carries the same walk and consumes both verbatim (issue [#2108](https://github.com/go-to-k/cdkd/issues/2108)) -- it holds the `StackState` itself, so it needs no context plumbing at all. `ReplayResolvers` is deliberately NOT exported: it is ~20 lines of caching around a constructor with no decision in it, and drift owns a structural twin under its own name rather than putting a rollback-internal type on the drift command's contract. That twin is fenced against divergence by `tests/unit/cli/drift-leaf-region-walk-mirrors-replay.test.ts`, which READS this file and asserts the two leaf walks are the SAME PROGRAM once a declared identifier-alias map and the two command-specific `throw` texts are normalized away -- stated as one positive condition rather than as a list of divergences to forbid, since the control flow the two share (refuse-first over the whole leaf, the whole-leaf fast path, the moving `indexOf` cursor, the fail-closed `at < 0` arm) has no shared symbol for a type error to hang on. `scrub.ts` no longer does (issue [#2109](https://github.com/go-to-k/cdkd/issues/2109)): it consumes both exports verbatim through its own `ScrubResolvers` twin, pinning every `named-region` reference to a resolver for the region the ARN names and refusing a region-less one with `SCRUB_SECRET_REGION_AMBIGUOUS` when state records a foreign producer region. The refusal is deliberately raised OUTSIDE scrub's per-item `catch { logger.debug }`, because a refusal that a debug line swallowed is exactly the "reports success over a state file that still holds the plaintext" outcome the issue forbids. The `Fn::ImportValue` route was unreachable from scrub until issue [#2133](https://github.com/go-to-k/cdkd/issues/2133): none of the resolve contexts `scrubStack` built passed `stateBackend`, so `resolveImportValue` / `getSameAccountStackState` threw for want of a dependency, the throw landed in the per-item best-effort `catch` and the leaf's plaintext never became a needle. All four contexts (the three the issue names plus the `evaluateConditions` one it does not) now come from ONE factory inside `scrubStack`, so a fifth cannot be written without the wiring -- which is how the first four came to lack it. `exportIndex` is deliberately still absent: the resolver's `state.json` scan fallback is equally correct, and supplying it would let `resolveImportValue`'s scan arm call `exportIndex.patchEntry`, i.e. an S3 WRITE from a command that performs no AWS mutation, `--dry-run` included. A cross-stack read that cannot be resolved is lifted OUT of the best-effort catch by a pre-pass (`resolveCrossStackReads`, run over all three bags) that refuses with `SCRUB_CROSS_STACK_READ_UNRESOLVED` -- the catch keeps swallowing everything else, because it exists for "a `Ref` to a resource not in state" and cannot tell that from "the producer's state could not be read", and making the catch itself refuse would break the partial scrubbing it exists for. The pre-pass does NOT rewrite the bag (the main resolution re-resolves the reference, secrets being cached per resolver instance) so a resolved cross-stack value that is itself reference-shaped cannot be re-interpreted by the stack's own resolver, and it walks `Fn::If` the way `resolveIf` does -- selected branch only -- so a conditional import of a not-yet-deployed producer cannot refuse the whole stack over a reference the deploy never read. `producerPublishesSecretExpression` makes the SAME selection through ONE shared `selectTakenConditionalBranches`, feeding both its literal `{{resolve:` scan and `collectReExportHops` (issue [#2150](https://github.com/go-to-k/cdkd/issues/2150)): the scan used to `JSON.stringify` the whole node and therefore see BOTH arms, so a producer declaring a secret expression in the UNTAKEN arm verdicted `declared` while its deployed value was benign -- an UNCLEARABLE `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` refusal, since nothing can turn that stored value into an expression and there is no bypass flag, stranding every other secret in the consumer stack. One selection site rather than two per consumer is deliberate: a per-site copy inside `collectReExportHops` was measurably invisible to the whole suite, its caller having already pruned. None of that says anything about which OTHER shapes reach the split: a Parameter `Default` or an `Fn::FindInMap` region->ARN table feeding an `Fn::Sub` gets a foreign-region reference to the same place with no `Fn::ImportValue` involved. A reference the intrinsics ASSEMBLE is the case the pre-pass cannot classify at all -- the token scan runs on the RAW leaf and `[^}]+` cannot cross the `}` of an `Fn::Sub` placeholder, so an assembled leaf carries a reference this pass cannot see whole. `isAssembledSecretReference` detects it with two tests, because the three assembled shapes fail in two different ways (measured): a MID-string `Fn::Sub` placeholder and an `Fn::Join` split both yield ZERO tokens, so a COUNT catches them, while a TRAILING placeholder (`...:SecretString:${Field}}}`) closes the match one brace short and yields exactly one token per opening -- caught instead by a whole token that still contains `${`. The COUNT counts openings followed by a SECRET SERVICE (`secretsmanager:` / `ssm:` / `ssm-secure:`) rather than the bare `{{resolve:`: counting the bare opening made any leaf that merely MENTIONS the syntax -- a description, an IAM policy document, a UserData script -- permanently unscrubbable in a cross-region stack, with a remedy ("spell the reference as one complete literal") that is unactionable for prose. **A detected leaf is DEFERRED, not refused** (issue [#2157](https://github.com/go-to-k/cdkd/issues/2157)): it is returned BY IDENTITY so the PRIMARY resolver classifies the reference once `resolveSub` / `resolveJoin` have assembled it. Until issue [#2134](https://github.com/go-to-k/cdkd/issues/2134) it threw `SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE` instead -- gated on a foreign producer region being on record, to keep it from refusing ordinary `Fn::Sub` templates -- because there was then nowhere downstream that could answer either; #2134's post-assembly classification buys the same safety property (a reference whose region cannot be established is never resolved in the stack's own region) over strictly MORE information, so the refusal only ever OVER-refused. The deferral is unconditional on evidence, unlike the refusal it replaced, which also removes an inconsistency: `classifyReplaySecretRegion` verdicts an ARN-form token `named-region` whatever evidence it holds, so the same leaf ALREADY resolved (rather than refusing) in a stack with no foreign producer region on record. What the pre-pass does NOT reach at all is stated in code rather than implied away: it arms only when the RAW leaf itself carries a `{{resolve:` opening, so a leaf whose opening is CONTRIBUTED by a `Ref` / parameter `Default` / `Fn::FindInMap` is returned by identity and never seen, as is an `Fn::Join` that splits BEFORE the service name -- both now reach the same resolver-side classification #2134 added. Every error that ESCAPES `scrubStack` is run through `maskSecretsInError` at that boundary, since `formatError`'s `Caused by:` line and the CLI's top-level `console.error` render the error OBJECT and its whole cause chain -- which is also what lets the `--all` loop print each failure's cause chain without holding a secrets map of its own. Every scrub refusal carries `exitCode = 2`, since `1` is already `--fail`'s "plaintext found". Under `--all` a refusal is caught PER STACK: the remaining stacks are still scrubbed and the run ends non-zero naming each one it could not examine. The final error NAMES the failed stacks and stops there -- each reason was already logged at `error` level as the run reached that stack, and repeating it printed the whole failure set twice under a summary whose own note says "see the errors above".
-- **src/deployment/resource-secrets-scope.ts** - The channel that carries a parent's resolved secret PAIRS into a nested child's engine: `withCurrentResourceSecrets` / `getCurrentResourceSecrets`, an `AsyncLocalStorage` bound around a provider CREATE / UPDATE call, read by `NestedStackProvider` (handed on as `DeployEngineOptions.inheritedSecrets`) and by `SecretsManagerSecretProvider.asPersisted` (issue [#2472](https://github.com/go-to-k/cdkd/issues/2472): a redaction seed for comparing a desired bag against the persisted spelling) (issue [#1903](https://github.com/go-to-k/cdkd/issues/1903)). cdkd's redaction rests on the resolver recording `plaintext -> {{resolve:...}} expression` into `recordedSecretValues`, which the engine reads at its state-save choke point; a nested stack BREAKS that chain, because the PARENT resolves the child's `Parameters` block and hands the child already-resolved PLAINTEXT while the child's own template carries `{Ref: <ParamName>}` — an intrinsic OBJECT, not an expression string. Nothing in the child's resolution ever sees a `{{resolve:`, so its `perResourceSecrets` came out EMPTY and the child's `state.json` persisted the decrypted secret. **The path-based redaction that closed #1904 / #1900 cannot help from the CHILD alone**, which is why this is a SEED rather than a second source bag: that pass copies a source leaf that IS a `{{resolve:...}}` string, and the child's is `{Ref: ...}`, which #2291 certifies only via the PARENT's per-parameter record. **Why an `AsyncLocalStorage` rather than a field on `CreateContext`**: exactly ONE provider needs the pairs, and a `RecordedSecretValues` is keyed by PLAINTEXT, so [providers.md](providers.md)'s existing rule applies — the reason `SecretMaskingContext` carries a masking FUNCTION and not the bag is that putting the bag on the shared context makes every one of the ~130 registered providers a place a `[...secrets.keys()]` can leak from. A function cannot substitute (seeding needs the PAIRS, not the ability to mask), so the bag travels a channel only a reader that hands it straight to a redaction helper may touch — the idiom `NestedStackProvider` already lives in, via `getCurrentNestedStackContext()`. **Why its own LEAF module rather than `deploy-engine.ts`, where it started**: both binders need it — the deploy engine and `rollback-executor.ts`, whose replay arms re-resolve the journal's `{{resolve:...}}` back to plaintext and drive the very same providers (issue [#2086](https://github.com/go-to-k/cdkd/issues/2086)) — and `deploy-engine.ts` already imports `rollback-executor.ts`, so leaving the store there would have made the two a cycle. The store is bound around the provider CREATE / UPDATE call itself — SIX deploy-engine sites (the two main ones plus the four replacement re-creates) and FOUR rollback-executor sites (both branches of `updateWithRollbackRetry`, which is the choke point for all four rollback update arms, plus the two reverse-replacement replay-CREATEs) — so no route silently skips the seed; it is scoped per resource and per retry attempt, and two resources under `--concurrency` cannot see each other's bag. ABSENT reads as `undefined`, the pre-#1903 behaviour for every other caller (`drift --revert`, import, tests) — but NOT for the rollback executor, where a recovery path restoring the pre-fix behaviour is a hole rather than a baseline. **A provider reading it MUST NOT enumerate or log its KEYS** — they are secret plaintext, and the only sanctioned use is handing the map on as a redaction seed.
-- **`DeployEngineOptions.inheritedSecrets` (in `src/deployment/deploy-engine.ts`)** - What the child engine does with that seed. `buildResolverContext` puts it on the resolver context as `ResolverContext.inheritedSecrets`, and `IntrinsicFunctionResolver.recordInheritedParameterSecrets` copies a pair into the context's own `recordedSecretValues` at the moment a `{Ref: <Param>}` resolves to a value carrying that plaintext — whole-value at any length, or a substring at or above `MIN_NEEDLE_LENGTH`, mirroring the two arms `redactSecretsForState` performs. **RECORDED AT RESOLUTION TIME, NOT PRE-SEEDED** (issue [#2087](https://github.com/go-to-k/cdkd/issues/2087)): the first cut pre-loaded every child resource's map with the parent's bag, which redacted the genuine consumers but also spliced the expression into an UNRELATED resource's literal that merely contained the plaintext as a substring (`my-production-bucket` against a secret `production`) — a change the desired side never mirrors, so the child acquired a perpetual UPDATE, or a perpetual REPLACEMENT on a create-only property. Recording at resolution time reproduces the parent's own scoping, where `perResourceSecrets` is keyed by logical id. **The diff half is COUPLED and had to land together**: `diff-recursive.ts`'s `resolveChildStackParameters` now sets `skipDynamicReferences: true`, which is correct ONLY because the child state now holds the expression — setting it alone would have compared expression-vs-plaintext and reported a spurious perpetual change on every run. Inside the child engine `{Ref: Param}` carries no `{{resolve:` for that flag to decline, so the DIFF resolver context binds a REDACTED parameter bag (`redactParametersForDiff`) while the PROVISIONING and CONDITION-EVALUATION contexts deliberately keep the real values (those reach AWS, and substituting an expression into an `Fn::Equals` would flip a condition). The recursive diff makes the same distinction from the other side: a child input parameter that arrives as a redacted token is kept UNCOERCED and disables the condition-pruning pass, because a verdict computed over an expression is not the one deploy will reach.
-- **src/deployment/work-graph.ts** - WorkGraph DAG orchestrator for asset publishing and stack deployment
-- **src/deployment/retryable-errors.ts** - Shared transient-error classifier (HTTP 429/503, the transient SERVER statuses, and a message-pattern table for IAM/CW Logs/SQS/KMS/etc. propagation delays). Consumed by `withRetry` (`src/deployment/retry.ts`) for back-off vs. fail fast. The message table is three composed parts — `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS` (just-created IAM entity not yet visible to a service's auth layer), the exported `NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS` (a service holding a name while an async delete finishes), and a private remainder — folded into the one exported `RETRYABLE_ERROR_MESSAGE_PATTERNS`, so retryability has ONE source of truth while `isIamPropagationError(message)` selects the DENSE cadence for the propagation class (see `retry.ts`). A misfiled pattern changes cadence, never retryability. Exports `isThrottlingError(error)` — the bounded `.cause` walk for rate-limit signals (throttling error NAMES and retryable HTTP statuses, both checked at every depth to 5). Issue #2026 adds `isTransientServerError(error)` alongside it — the same walk against `TRANSIENT_SERVER_ERROR_STATUS_CODES` (500/502/503/504, mirroring `@smithy/service-error-classification`'s `TRANSIENT_ERROR_STATUS_CODES`). **A SEPARATE set, not an addition to `RETRYABLE_HTTP_STATUS_CODES`**: that one is read by `isThrottlingError`, which SEVEN `isRetryable` sites across four files (`describe-type.ts:67`, `dynamodb-globaltable-provider.ts` x4, `export.ts:1744`, `intrinsic-function-resolver.ts:5216`) pass as a NARROW classifier — `describe-type.ts` says so outright ("retry ONLY throttle-shaped failures") — so widening it would silently have made every one "retry throttles AND server errors". Three further sites calling it directly (`drift.ts:518`, `export.ts:1755`, `dynamodb-index-busy-delete.ts:381`) strengthen it: `drift.ts` would have reported "cannot compare" for a read that merely 500'd. 501 stays terminal: the rule is the SDK's four transient statuses, not "5xx". `isRetryableTransientError` consults the marker, the throttle walk, the server-status walk, then the message-pattern table — the server-status check precedes the messages: it alone still works when the response carried NO message — the measured failure (SQS answered a mid-propagation `SetQueueAttributes` with HTTP 500 and an empty body, so the SDK substituted `UnknownError` and no pattern had anything to match). Issue #2302 adds `retryClassificationText(error)` — a THIRD bounded `.cause` walk beside `isMarkedNonRetryable` and `isThrottlingError`, on their shared `MAX_CAUSE_CHAIN_DEPTH`, so text is never read deeper than a marker is seen. OPT-IN: returns the top-level message unless a link carries `markRedactedCause`, since always reading the chain re-classifies every wrapper omitting its cause's text — 18 audited sites, the decisive one `deploy-engine.ts:3355`'s UNMARKED per-resource wrap (no denominator: two counting rules agreed on sites, not ratio). Redaction otherwise empties what the table matches: `not authorized to perform` and `conflicting conditional operation` both flipped to non-retryable. TWO readers — `retry.ts`, and `destroy-runner.ts`'s own delete loop, which calls `provider.delete` DIRECTLY; `dynamodb-delete-budget.ts` shares the shape but stays on `message` (DynamoDB-only; nothing redacts). Never log or throw the join. Also exports `describeRetryClassificationSignals` / `formatRetryClassificationSignals`, rendering what the classifier SAW (`[name=... http=... requestId=...]`) for the give-up line. It returns on the first link whose `$metadata` carries a NUMERIC status — returning on any `$metadata` object reported no `http=` for the real SDK network-error shape (`{attempts, totalRetryDelay}` wrapping a 500), contradicting the classifier that walked past it and retried. With no status anywhere, the name falls back to the deepest BELOW depth 0, since a `ProvisioningError`'s name describes cdkd not the service; a link that DOES carry `$metadata` is named at any depth, 0 included: the metadata proves it came from the SDK. `noMetadata` is false whenever any `$metadata` was seen, so "a status cdkd does not retry" stays distinct from "never reached error deserialization". Also exports `isNameCollisionError(message)` (issue #1207) — the name-collision matcher shared by the deploy engine's replacement create-first detection and `--replace` delete-first re-create retry, and the rollback executor's reverse-replacement detection + retry; NOT part of the transient pattern table (a collision is only retryable at the sites that just deleted the old name holder). It accepts BOTH spellings — AWS Lambda raises the SINGULAR `Function already exist: <name>`, so a plural-only pattern left every `AWS::Lambda::Function` off the collision path (#1625) — while a lookbehind refuses the negated / modal forms ("does NOT already exist", "MUST already exist"), whose consequence here is a DELETION, not a bad message. Issue #1206 adds `isNameCooldownError(message)` (a same-name re-creation cooldown — separate from the collision matcher because a cooldown at a create-first site must not trigger delete-new-first). Its spellings live in `NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS`, ALSO composed into `RETRYABLE_ERROR_MESSAGE_PATTERNS` since #2116, so a cooldown is retryable on the ORDINARY create path as well as the delete-then-re-create sites — the reachable case: a fresh `cdkd deploy` after a `cdkd destroy` has no idea a prior run deleted anything, and CloudFormation converges through it. Before #2116 the two consumers held different spellings of one SQS error (the wire message `wait 60 seconds` in the generic table, the error code `QueueDeletedRecently` not) and the Step Functions wording (`StateMachineDeleting` / `State Machine is being deleted`) in neither, so a destroy-then-redeploy of any stack with a `custom_resources.Provider` waiter machine failed hard. Five spellings: two SQS, two Step Functions, and S3's `conflicting conditional operation`. ELBv2's `DuplicateLoadBalancerName` and DynamoDB's create-side refusal were swept out — AWS raises both for a resource that merely EXISTS, so recognising them would turn a terminal collision into a wasted retry budget. It also adds `isRecreateRetryableError(message)` (collision OR cooldown — the retry filter for the delete-then-re-create sites: the `--replace` delete-first fallback, the `--recreate-via-cc-api` / `--recreate-via-sdk-provider` destroy-then-create path (issue #1214; before #2116 the inner generic retry's ~47s budget ended inside the 60s window — the original reason for the outer loop. The inner loop now rides the 64s name-cooldown grid and covers it alone, so the outer loop's remaining job is the late name RELEASE the inner default classifier rejects, at the cost of the two compounding to ~640s of sleep inside the 30-minute deadline), and the rollback executor's delete-new-first — paired with a maxRetries-8 / 10s-cap schedule ≈ 64s total sleep, covering the full 60s cooldown window; its initial create-first attempt also retries the cooldown alone). Issue #1778 adds the escape hatch the table cannot express: `markNonRetryable(error)` stamps a non-enumerable `Symbol.for('cdkd.nonRetryable')` on an error; `isMarkedNonRetryable(error)` walks the bounded `.cause` chain for it, consulted BEFORE any message heuristic. It exists because the classifiers match by SUBSTRING, so a cdkd-authored refusal interpolating user-controlled text (a logical id, a resource name) can hit a retryable pattern and burn the full ~47s schedule on a path that cannot succeed — `DependencyViolation` was then the table's only whitespace-free entry, so an ordinary composite CDK logical id sufficed (#1838); the name-cooldown error CODES joined it under #2116, widening the hazard past that sentence's first reading. **Two spellings, and the choice is not stylistic**: mark at the `throw` when the class is retryable in general and only this raising is not (`sns-subscription-provider.ts`'s abort); mark in the CONSTRUCTOR when the class is a refusal in EVERY case (`ResourceUpdateNotSupportedError` in `src/utils/error-handler.ts`, raised by ~20 providers inside the retried `update()` — a per-site marker there is one forgotten call from re-opening the hole for one provider). Hence `src/utils/error-handler.ts` imports from this file: `retryable-errors.ts` has zero imports, so it is a graph leaf and the edge cannot cycle. **Marking is NOT the default for a deliberate refusal** — the #1838 audit left `IntrinsicResolutionRefusalError` unmarked though deliberate and interpolating user text, because its fabricated-account arm is genuinely time-dependent (`getAccountInfo` caches a fabricated answer for 10s, precisely so a later attempt can heal); `ProvisioningError` / the `CdkdError` base stay unmarked because the marker read is a prototype-chain lookup and they wrap RELAYED AWS failures. The test is "can this succeed on a retry", not "did cdkd author it".
-- **src/deployment/retry.ts** - Retry helper used by DeployEngine. THREE schedules, picked per attempt from the error class: the generic 1s -> 2s -> 4s -> 8s capped at 8s over 8 retries (47s total sleep) for throttling and long resource-state transitions; a DENSE 0.25s -> 0.5s -> 1s -> 2s -> 2s ... over 26 retries (47.75s total sleep, `IAM_PROPAGATION_{INITIAL_DELAY_MS,MAX_DELAY_MS,MAX_RETRIES}`) for the IAM-propagation class (`isIamPropagationError`); and a LONGER 2s -> 4s -> 8s -> 10s ... over the generic 8 retries (64s total sleep, `NAME_COOLDOWN_{INITIAL_DELAY_MS,MAX_DELAY_MS,TOTAL_BUDGET_MS}`) for the name-cooldown class (`isNameCooldownError`, issue [#2116](https://github.com/go-to-k/cdkd/issues/2116)). The cooldown grid exists because the generic 47s cannot ride out the longest window in its class: SQS's own message NAMES 60 seconds, so the generic budget would fail 47s later rather than converge. Its numbers are the delete-then-re-create sites' existing budget, adopted verbatim so the ordinary-create path and those sites ride the same window identically. Only the DELAY grid differs — the retry COUNT stays the generic 8, so the loop's exit condition is unchanged (unlike the dense IAM grid, which needed its own ceiling). All three special grids apply ONLY on the default schedule: any explicit `maxRetries` / `initialDelayMs` / `maxDelayMs` / `isRetryable` means the caller owns the cadence. An exhausted cooldown sequence reports itself in the give-up `warn` summary alongside the propagation and 5xx counters (issue #2018's shape, extended to this class) — and that claim carries its own per-class conjunct (`nameCooldownRetries >= maxRetries && attempt >= attemptLimit`), because keying it on the loop's exit condition alone reported a single 2s cooldown retry inside a mixed sequence as "the full name-cooldown budget". **The three nested sites compound**: `deploy-engine.ts`'s two `--replace` / recreate sites and `rollback-executor.ts`'s reverse-replacement wrap a default-schedule `withRetry` in their own outer loop, so total sleep on a cooldown there measures ~487s -> ~640s (8.1 -> 10.7 min), still inside the 30-minute per-resource `withResourceDeadline`. Those outer loops are kept because their filter (`isRecreateRetryableError`) also covers the late name RELEASE the inner default classifier rejects — the original "the inner 47s budget is too short" rationale no longer holds now that the inner loop rides the 64s grid. Rationale: cdkd creates an IAM entity and consumes it ~1-3s later, so propagation failures resolve in single-digit seconds — the generic schedule's 4s/8s steps overshoot (a measured 3-instance EC2 stack burned ~10.2s of a 25.9s deploy in backoff after `Invalid IAM Instance Profile name`), while throttling genuinely wants exponential backoff. The dense budget is deliberately >= the generic one so a denser probe grid never shrinks the window in which propagation can still be caught. The class is re-evaluated per attempt, so a throttle hit mid-propagation backs off exponentially. The dense schedule applies ONLY when the caller left the schedule at its defaults (the deploy engine's create/update path, drift revert, the ELBv2 / ServiceDiscovery attribute calls); any explicit `maxRetries` / `initialDelayMs` / `maxDelayMs` / `isRetryable` means the caller owns the cadence and gets it verbatim (the DELETE path's 3 x 5s, the delete-then-re-create sites' ~64s SQS-cooldown budget, `describe-type.ts`'s throttle-only retry). Delegates retryable-error classification to `retryable-errors.ts`. The give-up line also carries the classifier's own inputs (`[name=... http=... requestId=...]`, issue [#2026](https://github.com/go-to-k/cdkd/issues/2026)) — the message is the field that can degenerate, so when it does the bracket is the whole diagnosis. **The propagation retry REPORTS itself (issue [#2018](https://github.com/go-to-k/cdkd/issues/2018))**: a sequence that gives up emits ONE `warn` line naming the retries spent and the backoff consumed (`gave up after 26 IAM-propagation retries over 47.75s of propagation backoff (the full propagation budget)`), and each per-attempt `debug` line carries the running total (`attempt 15/26, 25.75s backoff through this attempt` — the figure INCLUDES the wait the line is announcing, since the line prints before the sleep). **The exhaustion note keys on the loop's own exit condition (`sawPropagation && attempt >= attemptLimit`), NOT on the retry count**: a throttle mid-sequence classifies non-propagation, so it consumes an attempt without advancing the counter, and a count-keyed test reported a genuine 26-attempt exhaustion as "something else ended it" — the false NEGATIVE inverts the branch a reader uses to decide whether the budget needs widening. The seconds likewise count PROPAGATION backoff only, so a mixed sequence's throttle wait is excluded; that keeps the figure comparable against the 47.75s budget rather than reading as total elapsed time. `warn` rather than `debug` is the load-bearing part: an exhausted retry rethrows the RAW AWS error, so at default verbosity a 47.75s retry and a build carrying no retry at all printed byte-identical output — which is why a real field report of this failure could only be diagnosed by reading the source and diffing two releases, and why "the pattern is in the table" was not evidence the symptom was fixed. There are THREE counters (issue [#2026](https://github.com/go-to-k/cdkd/issues/2026) added `serverErrorRetries`), all reporting-only and feeding no control decision, and they advance only AFTER a wait completes so an interrupt cannot inflate the summary with a sleep that never happened. The give-up line is built from the kinds actually spent and joined with ` and `, so a mixed sequence reports both — `gave up after 2 IAM-propagation retries over 0.75s of propagation backoff (the full propagation budget) and 24 transient server-error retries (HTTP 5xx)` — while a propagation-only sequence renders byte-identically to what #2018 shipped. `serverErrorRetries` is gated on the caller NOT having supplied its own `isRetryable`: `RETRYABLE_HTTP_STATUS_CODES` already contains 503, so the throttle-only sites retry one today, and counting it there printed a default-level `warn` on graceful-degradation paths that previously printed nothing. The warn is wrapped in a `try/catch` because it fires immediately before the rethrow — a throwing logger must not REPLACE the error the summary exists to explain. `RetryLogger.warn` is OPTIONAL, and the reason is not merely that bare `{ debug }` callers must keep compiling: `drift.ts`'s revert deliberately threads a MASKING logger (issue [#1914](https://github.com/go-to-k/cdkd/issues/1914) — the summary interpolates the AWS message, which on that path can quote a resolved secret), so a required `warn` would have been silently satisfied by an unmasked `logger.warn`. Do NOT restate that every production caller threads a real `Logger`; an earlier revision of this entry did, and it was false for exactly that caller, which lost the summary entirely until #2018 wired its masked `warn`.
+- **src/deployment/dag-executor.ts** - Generic event-driven DAG dispatcher
+  (schedules each resource as soon as its deps complete; no level barriers)
+- **src/deployment/delete-outcome.ts** - Shared `ResourceDeleteResult`
+  helpers: the skip pair (`deleteSkipReason` / `deleteSkippedMessage`, issue
+  #1762) and the suppressed-guard pair (`withIndeterminateGuard` /
+  `deleteIndeterminateGuards`, issue #2301). Detail — including why it must
+  stay an import-free LEAF — in [delete-outcome.md](delete-outcome.md).
+- **src/deployment/rollback-executor.ts** - Reusable rollback engine (issue
+  #1183), extracted from `DeployEngine` so the in-process automatic rollback
+  AND `cdkd rollback` drive identical semantics.
+  - Owns `CompletedOperation` / `FailedOperation`, `replayRollback`
+    (UPDATE/DELETE reverse-completion-order, then CREATE deletions
+    dependency-sorted; best-effort per-op), `classifyRollbackOp` /
+    `planRollback` (pure classification for the plan preview; each item
+    carries `effectiveProvisionedBy` so the preview consults the SAME
+    `finalSnapshotMechanism` matrix the replay runs and labels a Snapshot
+    delete that will be REFUSED, issue #1366), `classifyFailedOp` /
+    `planFailedOps` / `replayFailedOperations` (issue #1198 —
+    `--revert-failed`; its delete of a provisioned-but-failed CREATE honors
+    the CURRENT record's `DeletionPolicy` through the same matrix —
+    `orphan-failed-create-retain` /
+    `delete-failed-create-with-final-snapshot` / plain
+    `delete-failed-create`, issue #1362), and `sortRollbackCreates`.
+  - A replacement op (`previousState.physicalId !== op.physicalId`) is
+    reverted by REVERSING the replacement (issue #1199): re-create the old
+    resource from `previousState` via its recorded `provisionedBy` route,
+    then delete the new one (create-first; name collision falls back to
+    delete-new-first + bounded name-release retry). BOTH create arms pass
+    `CreateContext.replayingState: true` (issue #1463, via the shared
+    `REPLAYING_STATE_CREATE_CONTEXT` constant so they cannot drift) — the
+    only create sites that can DECLARE a state replay, so a provider
+    PRE-FLIGHT REFUSAL must downgrade to a warning there (the user cannot
+    edit a state record from CDK code); `GlueProvider`'s
+    `enforceIcebergTableInputAbsent` is the only consumer. The deploy
+    engine's five create sites are TEMPLATE-driven, never set the flag, and
+    keep the refusal; they DO pass a context since issue #1932 — the three
+    EXTERNAL callers (`deploy-engine.ts`, `rollback-executor.ts`,
+    `drift --revert`) thread `maskSecrets` at every create/update site (the
+    five providers that re-create inside their own `update()` do NOT), so
+    fences read the context's KEY SET, not the call's arity.
+  - The replay-CREATE HONORS the provider's `effectiveProperties` (issue
+    #1682): the bag handed to `create()` IS `previousState.properties`, so a
+    returned bag replaces the record's `properties` wholesale and reporting
+    none keeps the previous bag. Pre-#1682 the arm's narrow local result type
+    dropped a substituted bag — do not re-narrow it. Real-AWS net:
+    `tests/integration/rollback-replay-effective-props/`.
+  - The providers that re-create inside their own `update()` (ACM
+    certificate / IAM managed policy / IAM role / Lambda permission / SNS
+    subscription) forward a STATE record on a replay but CANNOT receive a
+    `CreateContext` (update's context carries no `replayingState`) — the
+    constraint lands on providers: one with a create-side pre-flight refusal
+    must not re-create inside `update()`.
+  - Under `UpdateReplacePolicy: Retain` (old resource orphaned): delete the
+    new one and re-adopt the old (`reverse-replacement-readopt`); stateful
+    types warn the old data is unrecoverable.
+  - The rolled-back CREATE's CURRENT record `DeletionPolicy` governs its
+    delete (CFn semantics): `Retain` ORPHANS (dropped from state, left in
+    AWS); `Snapshot` routes to `delete-with-final-snapshot` (snapshot THEN
+    delete through the same mechanism matrix as
+    `prepareFinalSnapshotForDelete`: atomic delete parameter on the SDK
+    route, `createPreDeleteFinalSnapshot` for `PRE_DELETE_SNAPSHOT_TYPES`,
+    refusal-as-per-op-failure for a cc-api-routed atomic type) unless
+    `RollbackExecutorContext.skipFinalSnapshot`
+    (`cdkd rollback --skip-final-snapshot`) opts into the data loss — issue
+    #1358, which fixed `Snapshot` orphaning alongside `Retain`;
+    `RetainExceptOnCreate` / absent / `Delete` delete plainly. Replay is
+    idempotent (skips already-reverted / physical-id-mismatched / absent).
+  - Depends only on `ProviderRegistry` + region + logger + optional event
+    recorder / per-op state-save hook / `finalSnapshotClients` /
+    `skipFinalSnapshot` — NOT on `DagBuilder` / `DiffCalculator` / the
+    synthesizer / `ExportIndexStore`.
+  - **A replayed `{{resolve:...}}` reference is resolved by the region it
+    NAMES, not by the stack's** (issue #2057): a cross-region cross-stack
+    read records the PRODUCER's spelling into the CONSUMER's state (#1934),
+    and that spelling carries no region. `classifyReplaySecretRegion`
+    verdicts: `named-region` (ARN naming another region — per-region-cached
+    resolver from `ReplayResolvers`), `ambiguous` (region-less AND a foreign
+    producer region on record — throws `ROLLBACK_SECRET_REGION_AMBIGUOUS`
+    BEFORE any lookup), `local` (everything else). Evidence:
+    `RollbackExecutorContext.importedProducerRegions`, built by the exported
+    `producerRegionsFromState` from `imports[].sourceRegion` +
+    `outputReads[].sourceRegion`. BOTH callers pass it: `cdkd rollback` from
+    `baseState`, and `DeployEngine.rollbackExecutorContext` from
+    `crossStackReadsForPartialSave` — the UNION of the pre-deploy snapshot
+    with this session's recorded reads, load-bearing because a journal exists
+    only after a FAILED deploy and the snapshot alone never records the read
+    the failing deploy INTRODUCED (the refusal was inert on exactly the
+    deploy that needs it).
+  - `producerRegionsFromState` / `classifyReplaySecretRegion` are EXPORTED
+    because `drift.ts` consumes both verbatim (issue #2108).
+    `ReplayResolvers` is deliberately NOT exported (~20 lines of caching, no
+    decision in it); drift's structural twin is fenced by
+    `tests/unit/cli/drift-leaf-region-walk-mirrors-replay.test.ts`, which
+    READS this file and asserts the two leaf walks are the SAME PROGRAM
+    modulo an identifier-alias map and the two `throw` texts — one positive
+    condition, since the shared control flow has no shared symbol for a type
+    error to hang on.
+  - `scrub.ts` consumes both exports through its own `ScrubResolvers` twin
+    (issue #2109), refusing a region-less reference with
+    `SCRUB_SECRET_REGION_AMBIGUOUS` when state records a foreign producer
+    region — raised OUTSIDE scrub's per-item `catch { logger.debug }`
+    (swallowed, it is exactly the silent success over a plaintext state file
+    the issue forbids).
+  - The `Fn::ImportValue` route was unreachable from scrub until issue
+    #2133: no resolve context passed `stateBackend`, the throw landed in the
+    best-effort `catch`, and the leaf's plaintext never became a needle. All
+    four contexts now come from ONE factory inside `scrubStack` (a fifth
+    cannot be written without the wiring — how the first four came to lack
+    it). `exportIndex` stays deliberately absent: the `state.json` scan
+    fallback is equally correct, and supplying it would let the scan arm call
+    `exportIndex.patchEntry` — an S3 WRITE from a command that performs no
+    AWS mutation, `--dry-run` included.
+  - An unresolvable cross-stack read is lifted OUT of the best-effort catch
+    by a pre-pass (`resolveCrossStackReads`, over all three bags) refusing
+    with `SCRUB_CROSS_STACK_READ_UNRESOLVED` — the catch keeps swallowing
+    everything else (it exists for "a `Ref` to a resource not in state";
+    making it refuse would break partial scrubbing). The pre-pass does NOT
+    rewrite the bag (a resolved reference-shaped value cannot be
+    re-interpreted by the stack's own resolver) and walks `Fn::If`
+    selected-branch-only, like `resolveIf` — a conditional import of an
+    undeployed producer cannot refuse the whole stack.
+  - `producerPublishesSecretExpression` makes the SAME branch selection
+    through ONE shared `selectTakenConditionalBranches`, feeding both its
+    literal `{{resolve:` scan and `collectReExportHops` (issue #2150): the
+    scan used to see BOTH arms via `JSON.stringify`, so a secret expression
+    in the UNTAKEN arm produced an UNCLEARABLE
+    `SCRUB_CROSS_STACK_PRODUCER_PLAINTEXT` refusal with no bypass flag. One
+    selection site is deliberate: a per-site copy inside
+    `collectReExportHops` was measurably invisible to the suite.
+  - A reference the intrinsics ASSEMBLE cannot be classified by the raw-leaf
+    token scan (`[^}]+` cannot cross an `Fn::Sub` placeholder's `}`).
+    `isAssembledSecretReference` uses two tests because the three assembled
+    shapes fail two ways (measured): a mid-string `Fn::Sub` placeholder and
+    an `Fn::Join` split yield ZERO tokens (caught by a COUNT), a TRAILING
+    placeholder yields one short token per opening (caught by a whole token
+    still containing `${`). The COUNT counts openings followed by a SECRET
+    SERVICE (`secretsmanager:` / `ssm:` / `ssm-secure:`), not the bare
+    `{{resolve:` — the bare opening made any leaf that merely MENTIONS the
+    syntax (a description, an IAM policy, UserData) permanently unscrubbable
+    in a cross-region stack.
+  - **A detected leaf is DEFERRED, not refused** (issue #2157): returned BY
+    IDENTITY so the PRIMARY resolver classifies it once `resolveSub` /
+    `resolveJoin` have assembled it. The pre-#2134 refusal
+    (`SCRUB_SECRET_REFERENCE_UNCLASSIFIABLE`) only ever OVER-refused and
+    disagreed with `classifyReplaySecretRegion` (which verdicts an ARN-form
+    token `named-region` whatever evidence it holds); #2134's post-assembly
+    classification buys the same safety property (a reference whose region
+    cannot be established is never resolved in the stack's own region) over
+    strictly MORE information. The pre-pass arms only when the RAW leaf
+    carries a `{{resolve:` opening — a leaf whose opening is CONTRIBUTED by
+    a `Ref` / parameter `Default` / `Fn::FindInMap`, or an `Fn::Join`
+    splitting BEFORE the service name, reaches the same resolver-side
+    classification.
+  - Every error ESCAPING `scrubStack` runs through `maskSecretsInError` at
+    that boundary (`formatError` and the top-level `console.error` render the
+    error OBJECT and its cause chain) — which also lets `--all` print each
+    failure's chain without a secrets map of its own. Every scrub refusal is
+    `exitCode = 2` (`1` is `--fail`'s "plaintext found"). Under `--all` a
+    refusal is caught PER STACK; the final error NAMES the failed stacks and
+    stops there (each reason was already logged at `error` level).
+- **src/deployment/resource-secrets-scope.ts** - Carries a parent's resolved
+  secret PAIRS into a nested child's engine: `withCurrentResourceSecrets` /
+  `getCurrentResourceSecrets`, an `AsyncLocalStorage` bound around a provider
+  CREATE/UPDATE call, read by `NestedStackProvider` (handed on as
+  `DeployEngineOptions.inheritedSecrets`) and by
+  `SecretsManagerSecretProvider.asPersisted` (issue #2472) (issue #1903). A
+  nested stack breaks the redaction chain: the PARENT resolves the child's
+  `Parameters` and hands already-resolved PLAINTEXT while the child's
+  template carries `{Ref: <ParamName>}`, so the child's `perResourceSecrets`
+  came out EMPTY and its `state.json` persisted the decrypted secret; the
+  path pass cannot help from the CHILD alone (its source leaf is `{Ref:...}`,
+  not a `{{resolve:...}}` string), hence a SEED rather than a second source
+  bag. **`AsyncLocalStorage` rather than a `CreateContext` field**: exactly
+  ONE provider needs the pairs, and per [providers.md](providers.md) putting
+  a plaintext-keyed bag on the shared context makes every one of the ~130
+  providers a place `[...secrets.keys()]` can leak from; a masking function
+  cannot substitute (seeding needs the PAIRS). **Its own LEAF module**: both
+  binders need it (the deploy engine AND `rollback-executor.ts`, whose replay
+  arms re-resolve the journal to plaintext and drive the same providers,
+  issue #2086) and `deploy-engine.ts` already imports `rollback-executor.ts`,
+  so homing it there would cycle. Bound around the provider call at SIX
+  deploy-engine sites (two main + four replacement re-creates) and FOUR
+  rollback-executor sites (both branches of `updateWithRollbackRetry` — the
+  choke point for all four rollback update arms — plus the two
+  reverse-replacement replay-CREATEs), so no route silently skips the seed;
+  scoped per resource and per retry attempt (`--concurrency`-safe). ABSENT
+  reads as `undefined` — the pre-#1903 behaviour for every other caller, but
+  NOT for the rollback executor, where restoring pre-fix behaviour is a hole,
+  not a baseline. **A provider reading it MUST NOT enumerate or log its
+  KEYS** — secret plaintext; the only sanctioned use is handing the map on as
+  a redaction seed.
+- **`DeployEngineOptions.inheritedSecrets` (in `src/deployment/deploy-engine.ts`)**
+  - What the child engine does with the seed: `buildResolverContext` puts it
+  on the resolver context, and
+  `IntrinsicFunctionResolver.recordInheritedParameterSecrets` copies a pair
+  into the context's `recordedSecretValues` at the moment a `{Ref: <Param>}`
+  resolves to a value carrying that plaintext — whole-value at any length, or
+  a substring at/above `MIN_NEEDLE_LENGTH`, mirroring
+  `redactSecretsForState`'s two arms. **RECORDED AT RESOLUTION TIME, NOT
+  PRE-SEEDED** (issue #2087): pre-loading every child resource's map spliced
+  the expression into an UNRELATED resource's literal that merely contained
+  the plaintext as a substring (`my-production-bucket` vs secret
+  `production`) — a perpetual UPDATE, or a perpetual REPLACEMENT on a
+  create-only property; resolution-time recording reproduces the parent's
+  per-logical-id scoping. **The diff half is COUPLED**: `diff-recursive.ts`'s
+  `resolveChildStackParameters` sets `skipDynamicReferences: true`, correct
+  ONLY because the child state now holds the expression (alone it compares
+  expression-vs-plaintext — a spurious perpetual change). Inside the child
+  engine the DIFF resolver context binds a REDACTED parameter bag
+  (`redactParametersForDiff`) while the PROVISIONING and
+  CONDITION-EVALUATION contexts keep real values (those reach AWS, and an
+  expression inside `Fn::Equals` would flip a condition); the recursive diff
+  keeps a redacted child input parameter UNCOERCED and disables
+  condition-pruning, because a verdict computed over an expression is not the
+  one deploy will reach.
+- **src/deployment/work-graph.ts** - WorkGraph DAG orchestrator for asset
+  publishing and stack deployment
+- **src/deployment/retryable-errors.ts** - Shared transient-error classifier
+  (HTTP 429/503, transient SERVER statuses, message-pattern table for
+  propagation delays). Consumed by `withRetry` (`src/deployment/retry.ts`).
+  - The message table is three composed parts —
+    `IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS`, the exported
+    `NAME_COOLDOWN_ERROR_MESSAGE_PATTERNS`, and a private remainder — folded
+    into the one exported `RETRYABLE_ERROR_MESSAGE_PATTERNS`: retryability
+    has ONE source of truth, `isIamPropagationError(message)` selects the
+    DENSE cadence, and a misfiled pattern changes cadence, never
+    retryability.
+  - `isThrottlingError(error)`: bounded `.cause` walk (depth 5) for
+    throttling NAMES and `RETRYABLE_HTTP_STATUS_CODES`.
+    `isTransientServerError(error)` (issue #2026): the same walk against
+    `TRANSIENT_SERVER_ERROR_STATUS_CODES` (500/502/503/504, mirroring
+    `@smithy/service-error-classification`). **A SEPARATE set — do not widen
+    `RETRYABLE_HTTP_STATUS_CODES`**: seven `isRetryable` sites across four files (`describe-type.ts`,
+    `dynamodb-globaltable-provider.ts` x4, `export.ts`,
+    `intrinsic-function-resolver.ts`): four
+    files pass `isThrottlingError` as a NARROW throttle-only classifier
+    (`describe-type.ts` says so outright) and three more call it directly —
+    widening would silently make every one "retry throttles AND server
+    errors" (`drift.ts` would report "cannot compare" for a read that merely
+    500'd). 501 stays terminal. `isRetryableTransientError` consults the
+    marker, throttle walk, server-status walk, then messages — server-status
+    BEFORE messages because it alone works when the response carried NO
+    message (measured: SQS answered HTTP 500 with an empty body; the SDK
+    substituted `UnknownError`).
+  - `retryClassificationText(error)` (issue #2302): a THIRD bounded `.cause`
+    walk on the shared `MAX_CAUSE_CHAIN_DEPTH` (text never read deeper than
+    a marker is seen). OPT-IN: returns the top-level message unless a link
+    carries `markRedactedCause` — always reading the chain re-classifies
+    every wrapper omitting its cause's text (18 audited sites; decisive:
+    `deploy-engine.ts`'s UNMARKED per-resource wrap). Redaction otherwise
+    empties what the table matches (`not authorized to perform` and
+    `conflicting conditional operation` both flipped non-retryable). TWO
+    readers — `retry.ts`, and `destroy-runner.ts`'s delete loop, which calls
+    `provider.delete` DIRECTLY (`dynamodb-delete-budget.ts` stays on
+    `message`; nothing redacts there). Never log or throw the join.
+  - `describeRetryClassificationSignals` / `formatRetryClassificationSignals`
+    render what the classifier SAW (`[name=... http=... requestId=...]`) for
+    the give-up line. Returns on the first link whose `$metadata` carries a
+    NUMERIC status — returning on any `$metadata` object reported no `http=`
+    for the real SDK network-error shape (`{attempts, totalRetryDelay}`
+    wrapping a 500), contradicting the classifier that retried. With no
+    status anywhere the name falls back to the deepest link BELOW depth 0 (a
+    `ProvisioningError`'s name describes cdkd, not the service); a link
+    carrying `$metadata` is named at any depth. `noMetadata` is false
+    whenever any `$metadata` was seen, keeping "a status cdkd does not
+    retry" distinct from "never reached error deserialization".
+  - `isNameCollisionError(message)` (issue #1207): shared by the deploy
+    engine's replacement create-first detection / `--replace` delete-first
+    retry and the rollback executor's reverse-replacement path; NOT in the
+    transient table (a collision is only retryable where the old name holder
+    was just deleted). Accepts BOTH spellings — Lambda raises the SINGULAR
+    `Function already exist:`, so a plural-only pattern left every
+    `AWS::Lambda::Function` off the collision path (#1625) — and a
+    lookbehind refuses negated/modal forms ("does NOT already exist"), whose
+    consequence here is a DELETION.
+  - `isNameCooldownError(message)` (issue #1206): a same-name re-creation
+    cooldown — separate from the collision matcher because a cooldown at a
+    create-first site must not trigger delete-new-first. Its spellings are
+    ALSO composed into `RETRYABLE_ERROR_MESSAGE_PATTERNS` since #2116, so a
+    cooldown is retryable on the ORDINARY create path (a fresh `cdkd deploy`
+    after `cdkd destroy` has no idea a prior run deleted anything; pre-#2116
+    a destroy-then-redeploy of any `custom_resources.Provider` stack failed
+    hard). Five spellings: two SQS, two Step Functions, S3's `conflicting
+    conditional operation`. ELBv2's `DuplicateLoadBalancerName` and
+    DynamoDB's create-side refusal were swept OUT — AWS raises both for a
+    resource that merely EXISTS, so recognising them turns a terminal
+    collision into a wasted retry budget.
+  - `isRecreateRetryableError(message)` (collision OR cooldown): the retry
+    filter for the delete-then-re-create sites — the `--replace`
+    delete-first fallback, the `--recreate-via-cc-api` /
+    `--recreate-via-sdk-provider` destroy-then-create path (issue #1214),
+    and the rollback executor's delete-new-first — paired with a
+    maxRetries-8 / 10s-cap schedule ≈ 64s total sleep covering the full 60s
+    cooldown window; the initial create-first attempt also retries the
+    cooldown alone. The outer loops remain for the late name RELEASE the
+    inner default classifier rejects (the inner loop now rides the 64s
+    grid), the two compounding to ~640s inside the 30-minute deadline.
+  - `markNonRetryable(error)` (issue #1778): stamps a non-enumerable
+    `Symbol.for('cdkd.nonRetryable')`; `isMarkedNonRetryable` walks the
+    bounded `.cause` chain, consulted BEFORE any message heuristic —
+    classifiers match by SUBSTRING, so a cdkd-authored refusal interpolating
+    user-controlled text can hit a retryable pattern and burn the full
+    schedule on a path that cannot succeed (an ordinary composite CDK
+    logical id sufficed against `DependencyViolation`, #1838; the
+    name-cooldown error CODES widened the hazard under #2116). **Two marking
+    spellings, not stylistic**: mark at the `throw` when only this raising
+    is non-retryable (`sns-subscription-provider.ts`'s abort); mark in the
+    CONSTRUCTOR when the class is a refusal in EVERY case
+    (`ResourceUpdateNotSupportedError` in `src/utils/error-handler.ts`,
+    raised by ~20 providers inside the retried `update()` — a per-site
+    marker is one forgotten call from re-opening the hole). Hence
+    `error-handler.ts` imports from this zero-import graph leaf — the edge
+    cannot cycle. **Marking is NOT the default for a deliberate refusal**:
+    `IntrinsicResolutionRefusalError` stays unmarked (its fabricated-account
+    arm is genuinely time-dependent — `getAccountInfo` caches a fabricated
+    answer for 10s so a later attempt can heal); `ProvisioningError` /
+    `CdkdError` stay unmarked (they wrap RELAYED AWS failures). The test is
+    "can this succeed on a retry", not "did cdkd author it".
+- **src/deployment/retry.ts** - Retry helper used by DeployEngine.
+  - THREE schedules, picked per attempt from the error class: generic
+    1s → 2s → 4s → 8s cap over 8 retries (47s total sleep) for throttling
+    and long state transitions; DENSE 0.25s → 0.5s → 1s → 2s → 2s ... over
+    26 retries (47.75s, `IAM_PROPAGATION_{INITIAL_DELAY_MS,MAX_DELAY_MS,
+    MAX_RETRIES}`) for the IAM-propagation class; LONGER 2s → 4s → 8s →
+    10s ... over the generic 8 retries (64s, `NAME_COOLDOWN_*`, issue #2116)
+    for the name-cooldown class — the generic 47s cannot ride out the
+    longest window in its class (SQS's own message NAMES 60 seconds). The
+    cooldown numbers are the delete-then-re-create sites' budget adopted
+    verbatim; only the DELAY grid differs (retry COUNT stays 8, unlike the
+    dense IAM grid, which needed its own ceiling).
+  - All special grids apply ONLY on the default schedule: any explicit
+    `maxRetries` / `initialDelayMs` / `maxDelayMs` / `isRetryable` means the
+    caller owns the cadence verbatim (the DELETE path's 3 x 5s,
+    `describe-type.ts`'s throttle-only retry).
+  - Dense-grid rationale: cdkd creates an IAM entity and consumes it ~1-3s
+    later, so propagation resolves in single-digit seconds — the generic
+    4s/8s steps overshoot (measured: ~10.2s of a 25.9s deploy burned in
+    backoff) while throttling genuinely wants exponential backoff. The dense
+    budget is deliberately >= the generic one; the class is re-evaluated per
+    attempt (a throttle mid-propagation backs off exponentially).
+  - The three nested sites compound: `deploy-engine.ts`'s two
+    `--replace`/recreate sites and the rollback executor's
+    reverse-replacement wrap a default-schedule `withRetry` in an outer loop
+    — total sleep on a cooldown measures ~487s → ~640s, inside the 30-minute
+    per-resource `withResourceDeadline`.
+  - **The propagation retry REPORTS itself (issue #2018)**: a give-up emits
+    ONE `warn` line naming retries spent and propagation backoff consumed;
+    each per-attempt `debug` line carries the running total INCLUDING the
+    wait it announces (prints before the sleep). **The exhaustion note keys
+    on the loop's own exit condition (`sawPropagation && attempt >=
+    attemptLimit`), NOT the retry count** — a throttle mid-sequence consumes
+    an attempt without advancing the counter, and a count-keyed test
+    reported a genuine exhaustion as "something else ended it". The seconds
+    count PROPAGATION backoff only (comparable against the 47.75s budget).
+    `warn` rather than `debug` is load-bearing: an exhausted retry rethrows
+    the RAW AWS error, so at default verbosity a 47.75s retry and a build
+    with no retry printed byte-identical output. An exhausted cooldown
+    sequence reports the same way, with its own per-class conjunct
+    (`nameCooldownRetries >= maxRetries && attempt >= attemptLimit`) — keyed
+    on the loop exit alone it reported a single 2s cooldown retry as "the
+    full name-cooldown budget".
+  - THREE counters (issue #2026 added `serverErrorRetries`), all
+    reporting-only, advancing only AFTER a wait completes (an interrupt
+    cannot inflate the summary). The give-up line joins the kinds actually
+    spent with ` and `; a propagation-only sequence renders byte-identically
+    to #2018's shape. `serverErrorRetries` is gated on the caller NOT having
+    supplied its own `isRetryable` (`RETRYABLE_HTTP_STATUS_CODES` already
+    contains 503, and counting there printed a default-level `warn` on
+    graceful-degradation paths that previously printed nothing). The warn is
+    wrapped in `try/catch` — it fires immediately before the rethrow, and a
+    throwing logger must not REPLACE the error the summary explains. The
+    give-up line also carries the classifier's inputs
+    (`[name=... http=... requestId=...]`, issue #2026) — when the message
+    degenerates, the bracket is the whole diagnosis.
+  - `RetryLogger.warn` is OPTIONAL, and not merely so bare `{ debug }`
+    callers keep compiling: `drift.ts`'s revert deliberately threads a
+    MASKING logger (issue #1914 — the summary interpolates the AWS message,
+    which there can quote a resolved secret), so a required `warn` would have
+    been silently satisfied by an unmasked `logger.warn`. Do NOT restate that
+    every production caller threads a real `Logger` — an earlier revision
+    did, and it was false for exactly that caller.
