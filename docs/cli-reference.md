@@ -165,7 +165,7 @@ The `cdkd local` family is where that is not yet uniform:
 | --- | --- |
 | `local invoke`, `local run-task`, `local invoke-agentcore` | The flag and both environment variables. |
 | `local start-api` | The flag only, so an upper-cased `AWS_REGION` still reaches the Lambda containers it starts. |
-| `local start-service`, `local start-alb`, `local start-cloudfront`, `local start-agentcore` | Neither. The `--from-state` state read folds `--region` and `--stack-region` for its own S3 client, but nothing folds the environment variables. Spell the region lower-case on these four. |
+| `local start-service`, `local start-alb`, `local start-cloudfront`, `local start-agentcore` | Neither. On the three where `--from-state` is live it folds `--region` for the S3 client and `--stack-region` for the state-record match, but nothing folds the environment variables. Spell the region lower-case on these four. |
 
 The fold is not cosmetic. Everything downstream of the value is case-sensitive,
 and in different ways:
@@ -303,7 +303,7 @@ The `cdkd local` family adds two codes of its own:
 
 | Exit | Meaning |
 | --- | --- |
-| `130` | Interrupted by `^C`, on every `cdkd local` command. `local start-service` and `local start-alb` also exit `130` on SIGTERM, because they bind it to the same handler; the other servers exit `0` there. |
+| `130` | Interrupted by `^C`, on every `cdkd local` command. `local start-service` and `local start-alb` also exit `130` on SIGTERM, because they bind it to the same handler; `local start-api`, `local start-cloudfront` and `local start-agentcore` exit `0` there. |
 | `N` | `cdkd local run-task` propagates its essential container's own exit code. |
 
 Per-command detail is on each command's page under
