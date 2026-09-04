@@ -32,17 +32,21 @@ const ROOT = resolve(import.meta.dirname, '../../..');
 const DOCS = join(ROOT, 'docs');
 
 /**
- * The generator-written matrices. Their rows are a defect in the SCRIPT that
- * emits them, not in a page anyone edits, and one is open as
- * go-to-k/cdkd#2545 — the generator interpolates descriptions containing `|`
- * without escaping. They are excluded as SOURCES only; when that lands, delete
- * the entry rather than the check.
+ * The ONE generator-written page that currently emits ragged rows: its
+ * generator interpolates descriptions containing `|` without escaping, open as
+ * go-to-k/cdkd#2545. Excluded as a SOURCE only.
+ *
+ * Exactly one entry, deliberately. The first cut listed all three top-level
+ * coverage matrices; measured, the other two carry ZERO violations, so their
+ * entries removed 172 rows from the fence's reach while excusing nothing. And
+ * `docs/_generated/**` is NOT excluded at all — being machine-written is not
+ * the boundary, having a known open defect is.
+ *
+ * The entry cannot go stale silently: a test below asserts this file still HAS
+ * violations, so when go-to-k/cdkd#2545 lands the fence fails and tells you to
+ * delete the entry.
  */
-const GENERATOR_OWNED = new Set([
-  'cli-flag-coverage.md',
-  'integ-coverage.md',
-  'scenario-coverage.md',
-]);
+const GENERATOR_OWNED = new Set(['scenario-coverage.md']);
 
 const walk = (dir: string): string[] =>
   readdirSync(dir).flatMap((entry) => {
@@ -70,25 +74,42 @@ interface Ragged {
   text: string;
 }
 
-const scan = (markdown: string, file: string): Ragged[] => {
+interface ScanResult {
+  ragged: Ragged[];
+  /** Rows the scan actually EXAMINED — the floor's subject, so a regex that
+   *  stopped matching cannot hide behind a separate count. */
+  rowsExamined: number;
+}
+
+const scan = (markdown: string, file: string): ScanResult => {
   const out: Ragged[] = [];
+  let rowsExamined = 0;
   let fence: string | null = null;
   let header: number | null = null;
   let lineNo = 0;
   for (const line of markdown.split('\n')) {
     lineNo += 1;
+    // A CLOSING fence carries no info string, so the whole trimmed line must be
+    // the marker. Matching an opener as a closer desyncs the tracker: inside
+    // ```markdown a nested ```ts would close, and its own ``` would then open an
+    // unterminated fence that swallows the rest of the file.
     const fenceMark = /^ {0,3}(```+|~~~+)/.exec(line);
     if (fence !== null) {
-      if (fenceMark && fenceMark[1]!.startsWith(fence[0]!) && fenceMark[1]!.length >= fence.length) {
+      const closer = /^ {0,3}(```+|~~~+)\s*$/.exec(line);
+      if (closer && closer[1]![0] === fence[0] && closer[1]!.length >= fence.length) {
         fence = null;
       }
       continue;
     }
     if (fenceMark) {
       fence = fenceMark[1]!;
+      // A table abutting a fence with no blank line must not leak its width
+      // past the block.
+      header = null;
       continue;
     }
     if (/^\s*\|.*\|\s*$/.test(line)) {
+      rowsExamined += 1;
       const cells = cellCount(line);
       if (header === null) header = cells;
       else if (cells !== header) {
@@ -99,21 +120,24 @@ const scan = (markdown: string, file: string): Ragged[] => {
       header = null;
     }
   }
-  return out;
+  return { ragged: out, rowsExamined };
 };
 
 describe('published docs tables', () => {
   const files = walk(DOCS).filter((f) => !GENERATOR_OWNED.has(relative(DOCS, f)));
+  const scanned = files.map((f) => scan(readFileSync(f, 'utf8'), relative(DOCS, f)));
 
-  it('still SEES its input — floors on what the scan consumes', () => {
-    // Counting TABLE ROWS, not files: a scan that stopped recognising rows
-    // would report zero violations forever and look like a passing gate.
-    expect(files.length).toBeGreaterThan(30);
-    const rows = files.reduce((n, f) => {
-      const body = readFileSync(f, 'utf8');
-      return n + body.split('\n').filter((l) => /^\s*\|.*\|\s*$/.test(l)).length;
-    }, 0);
-    expect(rows).toBeGreaterThan(500);
+  it('still SEES its input — floors on what the scan itself examined', () => {
+    // Floored on `scan`'s OWN row count, not a second copy of the row regex: a
+    // duplicate counter stays truthful while the real one goes blind, which is
+    // the shape this floor exists to refuse.
+    //
+    // Measured 2026-09-04: 68 files, 2446 rows. The floors sit just under, not
+    // at 20% of, those numbers — at 30 / 500 a `walk` that stopped recursing
+    // (losing docs/design, docs/plans and docs/_generated: 17 files, 716 rows)
+    // still passed.
+    expect(files.length).toBeGreaterThan(60);
+    expect(scanned.reduce((n, r) => n + r.rowsExamined, 0)).toBeGreaterThan(2000);
   });
 
   it.each([
@@ -125,18 +149,42 @@ describe('published docs tables', () => {
     ['| a | b |\n| --- | --- |\n| 1 | x \\| y |', 0],
     // an UNESCAPED pipe inside inline code still splits the row
     ['| a | b |\n| --- | --- |\n| 1 | `x|y` |', 1],
-    // a fenced block full of pipes is not a table
-    ['```text\n| not | a | table |\n```', 0],
+    // A fenced block's pipe lines are not a table. TWO differing rows, because
+    // one row alone becomes its own header and compares against nothing — with
+    // that fixture, deleting fence tracking entirely changed no verdict.
+    ['```text\n| a | b |\n| c |\n```', 0],
+    // ...and the fence must still be tracked when the block follows a real table
+    ['| a | b |\n| --- | --- |\n| 1 | 2 |\n```text\n| x |\n```', 0],
+    // A closer carrying an info string is an OPENER, so the block stays open.
+    // Two differing rows AFTER the inner marker, because with only one the
+    // desynced tracker reaches a lone row that becomes its own header and
+    // compares against nothing — the loose closer survived that fixture.
+    ['```markdown\n| a | b |\n```ts\n| 1 |\n| 2 | 3 |\n```', 0],
+    // a table abutting a fence does not leak its width past the block
+    ['| a | b |\n| --- | --- |\n| 1 | 2 |\n```text\nx\n```\n| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |', 0],
     // two adjacent tables of different widths are each measured on their own
     ['| a | b |\n| --- | --- |\n| 1 | 2 |\n\n| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |', 0],
   ])('discriminates a ragged row from its look-alikes (%#)', (markdown, expected) => {
-    expect(scan(markdown as string, 'x.md')).toHaveLength(expected as number);
+    expect(scan(markdown as string, 'x.md').ragged).toHaveLength(expected as number);
   });
 
   it('has no row whose cell count differs from its header', () => {
-    const ragged = files.flatMap((f) => scan(readFileSync(f, 'utf8'), relative(DOCS, f)));
+    const ragged = scanned.flatMap((r) => r.ragged);
     expect(
       ragged.map((r) => `docs/${r.file}:${r.line} has ${r.cells} cells, header has ${r.header}`)
     ).toEqual([]);
+  });
+
+  it('still needs every file it excludes', () => {
+    // An exclusion that stopped excusing anything would sit there forever,
+    // quietly shrinking the fence's reach. When go-to-k/cdkd#2545 escapes the
+    // generator's pipes this fails, naming the entry to delete.
+    for (const name of GENERATOR_OWNED) {
+      const found = scan(readFileSync(join(DOCS, name), 'utf8'), name).ragged;
+      expect(
+        found.length,
+        `docs/${name} no longer has ragged rows — remove it from GENERATOR_OWNED`
+      ).toBeGreaterThan(0);
+    }
   });
 });

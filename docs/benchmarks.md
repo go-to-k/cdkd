@@ -20,9 +20,9 @@ with each other:
 | Region | See below | `us-east-1` |
 
 Times are in seconds; the `Speedup` columns are ratios. On the CloudFormation
-side only the Express-mode table records its run count and region — best of 3,
-`us-west-2` — and the other three tables state neither. Where a cell was
-re-measured later, the caption beneath its table says so.
+side only the Express-mode table records a run count and region for the whole
+table — best of 3, `us-west-2`. The other three state neither, beyond what a
+caption says about an individual re-measured cell.
 
 Synth is excluded from the CloudFormation comparison because it is identical on
 both sides — cdkd and the AWS CDK run the same user code through the same
