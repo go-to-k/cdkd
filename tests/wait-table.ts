@@ -46,7 +46,20 @@ const splitRow = (line: string): string[] => line.split('|').slice(1, -1).map((c
  * parser that quietly matches nothing reports "every provider is documented".
  */
 export function readWaitTable(deployDocPath: string): WaitTableRow[] {
-  const md = readFileSync(deployDocPath, 'utf8');
+  return parseWaitTable(readFileSync(deployDocPath, 'utf8'));
+}
+
+/**
+ * The parsing half, over the markdown text.
+ *
+ * Split from the file read so it can be exercised against fixture documents.
+ * Three successive review rounds each found a hole in this parser that only a
+ * hand-probe caught — a prose mention counted as a row, a moved column left
+ * both fences green, a foreign two-column table admitted a fake type. Probes
+ * find the hole someone thought to look for; `tests/unit/scripts/wait-table.test.ts`
+ * is what keeps the closed ones closed.
+ */
+export function parseWaitTable(md: string): WaitTableRow[] {
   const start = md.indexOf(WAIT_TABLE_HEADING);
   if (start < 0) {
     throw new Error(`cli-deploy.md must have a "${WAIT_TABLE_HEADING}" section`);
@@ -74,21 +87,38 @@ export function readWaitTable(deployDocPath: string): WaitTableRow[] {
       header = cells;
       continue;
     }
-    if (cells.every((c) => /^-+$/.test(c))) continue; // the `| --- |` separator
+    // A row of a DIFFERENT table in the same section must not be read under
+    // this table's validated column order — `header` binds to the first pipe
+    // line only, so nothing else would catch it. Measured: a two-column
+    // `| Type | Note |` table admitted a fake type with an empty `--full-wait`
+    // cell, which the filter reads as "not the default" and counts as affected.
+    if (cells.length !== EXPECTED_HEADER.length) continue;
     const types = cells[0]?.match(/AWS::[A-Za-z0-9]+::[A-Za-z0-9]+/g) ?? [];
-    if (types.length === 0) continue;
+    if (types.length === 0) continue; // also drops the `| --- |` separator
     rowCount += 1;
     for (const type of types) rows.push({ type, fullWait: cells[3] ?? '' });
   }
 
+  // Three checks, in the order that makes each failure name its own cause. An
+  // unclosed fence or a deleted table leaves no header at all, and reporting
+  // that as "the columns moved, found []" sends the reader after the wrong
+  // thing; conversely a DROPPED column leaves zero parseable rows, so the
+  // row-count message would hide the real edit.
+  if (header === null) {
+    throw new Error(
+      `found no table under "${WAIT_TABLE_HEADING}" — the section was renamed or ` +
+        `emptied, or an unclosed code fence swallowed it. These fences are ` +
+        `measuring nothing.`
+    );
+  }
   // Guard the guard. The column INDEX is what both fences read, and a reordered
-  // or dropped column leaves the row count untouched — measured: deleting the
-  // `--no-wait` column, or swapping `--full-wait` with `CloudFormation`, left
-  // both fences green while the full-wait filter silently matched every row.
-  if (header === null || header.join(' | ') !== EXPECTED_HEADER.join(' | ')) {
+  // column leaves the row count untouched — measured: swapping `--full-wait`
+  // with `CloudFormation` left both fences green while the full-wait filter
+  // silently matched every row.
+  if (header.join(' | ') !== EXPECTED_HEADER.join(' | ')) {
     throw new Error(
       `the wait table's columns moved: expected [${EXPECTED_HEADER.join(', ')}], ` +
-        `found [${(header ?? []).join(', ')}]. Both wait fences read by column index, ` +
+        `found [${header.join(', ')}]. Both wait fences read by column index, ` +
         `so update this list in the same commit as the table.`
     );
   }
