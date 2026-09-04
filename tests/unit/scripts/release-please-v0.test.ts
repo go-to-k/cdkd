@@ -30,6 +30,52 @@ import { describe, expect, it } from 'vite-plus/test';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 describe('release-please v0 fence', () => {
+  it('release-please splices the next entry at the TOP of CHANGELOG.md', () => {
+    // release-please's Changelog updater (updaters/changelog.ts) finds its
+    // insertion point with this regex and splices the new entry in FRONT of
+    // the match. The leading \n is load-bearing: a file that begins directly
+    // with a version header — what semantic-release wrote, with no title —
+    // never matches its OWN top entry, so the search lands on the SECOND
+    // header and every release is filed one section too low. Measured on
+    // release PR go-to-k/cdkd#2503, which ordered the file 0.285.13,
+    // 0.285.14, 0.285.12; the miss repeats at the same spot every release,
+    // so the disorder compounds. The `# Changelog` title is the fix, and
+    // it is also what release-please writes itself when creating the file.
+    //
+    // Asserting the title string alone would not be enough: the regex wants
+    // ## or ###, so an H1 version header (semantic-release used H1 for
+    // minor/major bumps) is invisible to it too. This asserts the OUTCOME —
+    // the splice point is immediately before the first version header —
+    // which covers both causes and any third.
+    const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    const spliceAt = changelog.search(/\n###? v?[0-9[]/s);
+    expect(spliceAt, 'no version header release-please could splice against').toBeGreaterThan(-1);
+    const firstHeaderAt = changelog.search(/^#{1,3} v?[0-9[]/m);
+    expect(firstHeaderAt, 'no version header at all').toBeGreaterThan(-1);
+    expect(
+      spliceAt + 1,
+      'release-please would file the next release BELOW the newest entry',
+    ).toBe(firstHeaderAt);
+  });
+
+  it('every CHANGELOG.md version header is the H2 form release-please emits', () => {
+    // The whole file was normalized to release-please's own shape (title, H2
+    // version headers) so that nothing has to be done per release for it to
+    // stay conformant: release-please only ever writes `## [x.y.z]`, so an H1
+    // version header can now only arrive by hand. semantic-release wrote H1
+    // for minor/major bumps, and one of those sitting on top is invisible to
+    // the splice regex above (it wants ## or ###) — this keeps the file from
+    // drifting back into the mixed state that made the splice miss possible.
+    const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    const h1Versions = changelog.match(/^# v?[0-9[].*$/gm) ?? [];
+    expect(h1Versions, 'H1 version headers must be H2').toEqual([]);
+    expect(
+      changelog.match(/^## v?[0-9[]/gm)?.length ?? 0,
+      'no H2 version headers found — is this the right file?',
+    ).toBeGreaterThan(100);
+  });
+
+
   it('bump-minor-pre-major keeps breaking changes below 1.0.0', () => {
     const config = JSON.parse(readFileSync(join(repoRoot, 'release-please-config.json'), 'utf8'));
     const pkg = config.packages?.['.'];
