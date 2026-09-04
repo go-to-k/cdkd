@@ -41,9 +41,9 @@ accept `--env-vars` or `--container-host`.
 | `--tls-key <path>` | — | PEM private key. Implies `--tls`. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda origin's base image and use the cached one. No-op for a distribution with no Lambda. |
 | `--cache-origin` | off | Keep objects fetched from a deployed S3 origin in memory for the session instead of re-reading each request. |
-| `--from-state` | off | Bind a Function URL origin's backing Lambda to cdkd's S3 state. Does **not** reach deployed-S3 origin content — that needs `--from-cfn-stack`. Mutually exclusive with it. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
-| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only meaningful with `--from-state`. |
+| `--from-state` | off | Accepted, but **does nothing on this command** — see [State sources](#state-sources). Use `--from-cfn-stack`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Inert here, like `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Inert here, like `--from-state`. |
 | `--from-cfn-stack [name]` | off | Bind the same values to a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the resolved stack name. |
 | `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region under `--from-cfn-stack`. |
 | `--assume-role [arn]` | off | Assume a Lambda origin's deployed execution role and forward temporary credentials into its container. Omit the flag to keep your own shell credentials in the container. |
@@ -61,6 +61,18 @@ accept `--env-vars` or `--container-host`.
 `--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
 form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
 See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
+
+## State sources
+
+**`--from-state` is inert on this command.** The three cdkd-state flags
+(`--from-state`, `--state-bucket`, `--state-prefix`) parse and are then ignored:
+the deployed-S3 origin reader and the KeyValueStore binding both look for
+`--from-cfn-stack` specifically, and the Lambda origin and Lambda@Edge boot
+paths resolve their environment without consulting cdkd state at all.
+
+`--from-cfn-stack [name]` is the state source that works here. It binds a
+deployed-S3 origin's bucket, backs `cf.kvs()` reads with the deployed
+KeyValueStore, and resolves a Function URL origin's backing Lambda.
 
 ## Target resolution
 
@@ -88,9 +100,10 @@ served per invocation.
 The `<originId>` in `--origin <originId=dir>` is matched verbatim against the
 distribution's `Origins[].Id` in the synthesized template — not a construct
 path and not a logical ID, and CDK generates those ids with a hash suffix. You
-do not have to go looking for one: an origin cdkd cannot resolve raises a
-boot-time warning that spells the whole flag out for you, ending
-`--origin <that id>=<dir>`.
+do not have to go looking for one: an S3 origin whose local source cannot be
+resolved raises a boot-time warning that spells the flag out for you, including
+`--origin <that id>=<dir>`. A custom (non-S3, non-Function-URL) origin warns too,
+but `--origin` does not apply to it — nothing serves it locally.
 
 S3 origin content is resolved out of the cloud assembly: the origin's bucket →
 its `BucketDeployment` custom resource → `SourceObjectKeys` → the staged asset

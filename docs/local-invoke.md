@@ -217,8 +217,8 @@ cdkd local invoke MyStack/MyApi/Handler --from-state \
 | `Fn::Sub` | Both the single-string and two-arg forms. `${LogicalId}` / `${LogicalId.attr}` / `${AWS::*}` placeholders are substituted in place; the two-arg form's bindings map may itself carry intrinsics, resolved recursively. |
 | `Fn::Join` | Every element is resolved recursively, then joined. |
 | `Ref: AWS::AccountId` / `Region` / `Partition` / `URLSuffix` | One `sts:GetCallerIdentity` plus the resolved region. |
-| `Fn::ImportValue` | The producer stack's state record, in a second pass. Same account and same region only. |
-| `Fn::GetStackOutput` | The named stack's outputs in the same state bucket. Same account and same region only. |
+| `Fn::ImportValue` | The producer stack's state record, in a second pass. Same account, same region. |
+| `Fn::GetStackOutput` | The named stack's outputs. Same account; the intrinsic's own `Region` argument is honoured, so cross-region works. |
 
 The last two open an extra client, so cdkd builds that resolver only when the
 function's environment actually references one of them.
@@ -270,8 +270,7 @@ cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack --stack-region eu-west-
 | `Ref: <LogicalId>` | `cloudformation:ListStackResources`, paginated, once per stack. |
 | `Fn::ImportValue: <ExportName>` | `cloudformation:ListExports`, paginated and memoized for one substitution pass. |
 | `Fn::GetAtt` in a **consumer Lambda's own** env vars | The deployed function's configuration (`lambda:GetFunctionConfiguration`). |
-| `Fn::GetAtt` on a same-stack ECR repository's `Arn` / `RepositoryUri`, in a container image URI | Synthesized from the recovered physical name plus the pseudo parameters. |
-| `Fn::GetAtt` anywhere else (e.g. an ECS container env) | Nothing — warned and dropped. Override the entry with `--env-vars` if the value is critical. |
+| `Fn::GetAtt` anywhere else | Nothing — warned and dropped. Override the entry with `--env-vars` if the value is critical. |
 | `Fn::GetStackOutput` | Nothing — rejected with a warn. |
 
 `ListStackResources` returns only `(LogicalResourceId, PhysicalResourceId,
@@ -388,8 +387,9 @@ Pass `--layer-role-arn <arn>` to `sts:AssumeRole` before
 typically a cross-account one. AWS-published public layers are readable from
 every account and need no role.
 
-**Only a commercial-partition layer ARN downloads.** An `aws-cn`, `aws-us-gov`
-or ISO-partition ARN passes cdkd's parse and then fails at the AWS call, because
+**Only a commercial-partition layer ARN downloads.** An ARN in any of the seven
+non-commercial partitions — `aws-cn`, `aws-us-gov`, `aws-eusc` and the four ISO
+partitions — passes cdkd's parse and then fails at the AWS call, because
 the download rebuilds the ARN with a hardcoded `aws` partition before calling
 `lambda:GetLayerVersion`.
 
@@ -508,9 +508,10 @@ The full cross-command table is in the [CLI Reference](cli-reference.md#exit-cod
 
 - The deprecated `go1.x` runtime is not emulated. Build Go handlers for
   `provided.al2023`, which is supported.
-- Cross-stack `Fn::ImportValue` and `Fn::GetStackOutput` resolve only within one
-  account and one region. A producer stack in another account or region is
-  warned and dropped.
+- Cross-stack references resolve within one AWS account only; a
+  `Fn::GetStackOutput` carrying a `RoleArn` for another account is refused.
+  `Fn::ImportValue` is additionally same-region — a producer stack in another
+  region is warned and dropped.
 - `Fn::Select`, `Fn::Split`, `Fn::If` and other intrinsics outside the
   [supported list](#supported-intrinsics) are warned and dropped rather than
   resolved.

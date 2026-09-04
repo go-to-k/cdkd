@@ -9,9 +9,9 @@ description: "Serve a CDK app's API Gateway routes — REST v1, HTTP API, WebSoc
 Gateway routes in your synthesized CDK app to local Lambda invocations against
 the AWS Lambda Runtime Interface Emulator. Reach for it when you want to
 exercise a whole API — routing, authorizers, CORS, stage variables — against
-real handler code without deploying to AWS. Every route it serves is backed by a
-Lambda; for a front door over running ECS replicas, use
-[`cdkd local start-alb`](local-start-alb.md).
+real handler code without deploying to AWS. Each route resolves to a Lambda, an
+HTTP upstream, or a response template; for a front door over running ECS
+replicas, use [`cdkd local start-alb`](local-start-alb.md).
 
 **Docker is required.** The first run pulls the Lambda base image (roughly
 600 MB, once per machine); pass `--no-pull` on later runs to skip the layer
@@ -204,7 +204,7 @@ All four non-`AWS_PROXY` REST v1 integration types are emulated end to end.
 | Type | One-line summary |
 | --- | --- |
 | `MOCK` | Answers from templates alone; no upstream call. |
-| `HTTP_PROXY` | Forwards the request to `Integration.Uri` verbatim. |
+| `HTTP_PROXY` | Forwards the request to `Integration.Uri`, body unchanged. |
 | `HTTP` | `HTTP_PROXY` plus VTL in both directions. |
 | `AWS` (Lambda non-proxy) | Builds the Lambda event from a VTL template and transforms the return value. |
 
@@ -747,13 +747,22 @@ endpoints; nothing about that path changes.
 
 ## `--debug-port-base`
 
-`--debug-port-base <port>` allocates one debugger port per routed Lambda,
-`port`, `port+1`, `port+2`, in the order the routes were discovered, and sets
-`NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` on each container.
+`--debug-port-base <port>` allocates one debugger port per distinct Lambda —
+`port`, `port+1`, `port+2`, in discovery order — and sets
+`NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` on that Lambda's container.
 
-`--inspect-brk` **suspends the handler until a debugger attaches**, so every
-route hangs until you connect to that Lambda's port. Serve a single API while
-debugging, and read the boot log to see which port each Lambda received.
+Two things to know before reaching for it:
+
+- The set is **every** Lambda the run touches, not just route handlers:
+  authorizer Lambdas and WebSocket-route Lambdas take ports from the same range,
+  in the same order.
+- `--inspect-brk` **suspends the process until a debugger attaches**, so a
+  request to a Node Lambda hangs until you connect to that Lambda's port.
+  `NODE_OPTIONS` is inert on the other runtimes, which are unaffected.
+
+Nothing prints the per-Lambda assignment, so debug one API at a time and count
+from the base in discovery order. Containers start lazily unless you pass
+`--warm`, so the port is not listening until the first request arrives.
 
 ## `--watch`
 

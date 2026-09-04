@@ -106,16 +106,16 @@ endpoints over your own network.
 
 Every `ContainerDefinitions[].PortMappings` entry is published on the host, at
 the entry's `HostPort` when the template names one and at the container port
-otherwise, bound to `--container-host` (`127.0.0.1` by default). One log line
-per published port names the endpoint, so a task declaring container port `8080`
-prints `Reach it at 127.0.0.1:8080` as its container starts.
+otherwise, bound to `--container-host` (`127.0.0.1` by default). A task
+declaring container port `8080` is reachable at `http://127.0.0.1:8080` as soon
+as its container starts.
 
-A **privileged host port** — anything below 1024, which a local publish cannot
-take without root, and which macOS Docker Desktop refuses outright — is
-auto-remapped to a free ephemeral port, with a warning naming the port chosen.
-`cdkd local run-task` has no flag to pin that choice; read it off the warning,
-or use [`cdkd local start-service`](local-start-service.md), whose
-`--host-port <containerPort=hostPort>` pins it.
+A **privileged host port** — anything the mapping would publish below 1024 —
+fails at `docker run`, because a local publish there needs root and macOS Docker
+Desktop refuses it outright. This command has neither a remap nor a flag to move
+it: run the container's service on an unprivileged port, or use
+[`cdkd local start-service`](local-start-service.md), which auto-remaps a
+privileged port and lets `--host-port <containerPort=hostPort>` pin the result.
 
 ## AWS credentials in containers
 
@@ -160,7 +160,8 @@ ECR. Three endpoint shapes are recognized — the plain
 `<account>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
 `<account>.dkr.ecr-fips.<region>.<urlSuffix>`, and the dual-stack
 `<account>.dkr-ecr[-fips].<region>.on.aws`, whose fixed `on.aws` suffix replaces
-the region's partition suffix. Host matching is case-insensitive, since DNS is;
+the region's partition suffix. A host spelled with the other family's suffix is
+refused. Host matching is case-insensitive, since DNS is;
 Docker accepts an upper-cased registry host but requires a lower-case repository
 path, so cdkd folds only the host.
 
@@ -177,8 +178,6 @@ The same region-to-partition mapping drives `${AWS::Partition}` and
 | `eu-isoe-*` | `aws-iso-e` | `cloud.adc-e.uk` |
 | `us-isof-*` | `aws-iso-f` | `csp.hci.ic.gov` |
 | `eusc-*` | `aws-eusc` | `amazonaws.eu` |
-
-A shape spelled with the other family's suffix is refused.
 
 Cross-account and cross-region pulls are supported: cdkd builds the ECR client
 for the URI's own region, and with `--ecr-role-arn <arn>` issues `sts:AssumeRole`

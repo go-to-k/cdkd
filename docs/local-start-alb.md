@@ -15,7 +15,8 @@ a deploy. Docker is required.
 
 Reach for [`cdkd local start-api`](local-start-api.md) instead when the front
 door you want to exercise is API Gateway: an ALB routes to running ECS replicas
-and Lambda target groups, API Gateway routes to Lambda alone.
+and to Lambda target groups, where API Gateway routes to Lambdas and HTTP
+upstreams.
 
 ```bash
 cdkd local start-alb MyStack/MyAlb                             # serve one ALB on its listener ports
