@@ -27,7 +27,8 @@
  * the suite green.
  */
 
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
@@ -45,6 +46,7 @@ import {
   lastTypeSegment,
   loadCachedReport,
   loadTier2,
+  readCachedSchema,
   renderMarkdown,
   runSelfProbe,
   schemaCachePath,
@@ -238,6 +240,38 @@ describe('the pure derivation functions', () => {
     expect(r.summary.schemasRead).toBe(1);
     expect(r.summary.schemasWithNoProperties).toBe(1);
     expect(floorViolations(r).some((v) => v.includes('no top-level properties'))).toBe(true);
+    // NEGATIVE CONTROL. Without it an unconditional increment also yields 1 on
+    // the case above, so the counter would be pinned to a constant rather than
+    // to the property it counts.
+    const withProps = deriveReport(['AWS::Probe::Full'], () => ({ properties: { Name: {} } }));
+    expect(withProps.summary.schemasRead).toBe(1);
+    expect(withProps.summary.schemasWithNoProperties).toBe(0);
+  });
+
+  it('readCachedSchema applies the coercion WHERE IT IS WIRED', () => {
+    // coerceRegistrySchema is unit-tested above, but reverting readCachedSchema
+    // to the bare cast — the exact defect the coercion closes — survived that.
+    // This drives the real read path against a real cache directory.
+    const dir = mkdtempSync(join(tmpdir(), 'stateful-cache-'));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'AWS-Probe-Bad.json'),
+      JSON.stringify({ createOnlyProperties: '/properties/Name', properties: { Name: {} } })
+    );
+    writeFileSync(
+      join(dir, 'AWS-Probe-Good.json'),
+      JSON.stringify({ createOnlyProperties: ['/properties/Name'], properties: { Name: {} } })
+    );
+    expect(readCachedSchema('AWS::Probe::Bad', dir)).toBeUndefined();
+    expect(readCachedSchema('AWS::Probe::Good', dir)?.createOnlyProperties).toEqual([
+      '/properties/Name',
+    ]);
+    expect(readCachedSchema('AWS::Probe::Absent', dir)).toBeUndefined();
+    // ...and the string form must not reach the classifier, where it would
+    // spread character by character into 17 fabricated createOnly entries.
+    const derived = deriveReport(['AWS::Probe::Bad'], (t) => readCachedSchema(t, dir));
+    expect(derived.unreadable).toEqual(['AWS::Probe::Bad']);
+    expect(derived.summary.candidateCount).toBe(0);
   });
 
   it('deriveReport sorts candidates and unreadable for a diff-stable artifact', () => {
@@ -324,22 +358,118 @@ describe('the pure derivation functions', () => {
     expect(schema).toBe('{"typeName":"AWS::Probe::Widget"}');
     expect(slept).toEqual([1, 2]);
 
+    // A non-throttle error must be rethrown WITHOUT retrying. Asserting only
+    // that it rejects passes for the wrong reason: with a one-entry delay list
+    // an always-retry classifier exhausts after one attempt and rethrows the
+    // same error. The discriminator is that nothing slept and `send` ran once.
     const denied = Object.assign(new Error('AccessDenied'), { name: 'AccessDeniedException' });
+    const deniedSleeps: number[] = [];
+    let deniedCalls = 0;
     await expect(
       describeSchemaWithRetry(
-        { send: async () => { throw denied; } },
+        {
+          send: async () => {
+            deniedCalls++;
+            throw denied;
+          },
+        },
         'AWS::Probe::Widget',
-        { retryDelaysMs: [1], sleep: async () => {} }
+        {
+          retryDelaysMs: [1, 2, 3],
+          sleep: async (ms) => {
+            deniedSleeps.push(ms);
+          },
+        }
       )
     ).rejects.toThrow('AccessDenied');
+    expect(deniedSleeps).toEqual([]);
+    expect(deniedCalls).toBe(1);
   });
 
-  it('renderMarkdown carries the summary, the signals and every candidate', () => {
+  it("describeSchemaWithRetry knows CloudFormation's OTHER throttle spelling", () => {
+    // CFn reports this as `Throttling` as well as `ThrottlingException`;
+    // dropping either alternative left the suite green.
+    return (async () => {
+      for (const name of ['Throttling', 'ThrottlingException']) {
+        const err = Object.assign(new Error('slow down'), { name });
+        let calls = 0;
+        const slept: number[] = [];
+        const schema = await describeSchemaWithRetry(
+          {
+            send: async () => {
+              calls++;
+              if (calls < 2) throw err;
+              return { Schema: '{}' };
+            },
+          },
+          'AWS::Probe::Widget',
+          { retryDelaysMs: [1, 2], sleep: async (ms) => { slept.push(ms); } }
+        );
+        expect(schema, `${name} was not treated as a throttle`).toBe('{}');
+        expect(slept, `${name} did not back off`).toEqual([1]);
+      }
+    })();
+  });
+
+  it('describeSchemaWithRetry gives up when the delay budget runs out', () => {
+    // The `attempt < delays.length` bound: without it a persistent throttle
+    // loops forever, which no other case here would notice.
+    return (async () => {
+      const err = Object.assign(new Error('slow down'), { name: 'ThrottlingException' });
+      let calls = 0;
+      const slept: number[] = [];
+      await expect(
+        describeSchemaWithRetry(
+          {
+            send: async () => {
+              calls++;
+              throw err;
+            },
+          },
+          'AWS::Probe::Widget',
+          { retryDelaysMs: [1, 2], sleep: async (ms) => { slept.push(ms); } }
+        )
+      ).rejects.toThrow('slow down');
+      expect(slept).toEqual([1, 2]);
+      expect(calls).toBe(3);
+    })();
+  });
+
+  it('renderMarkdown carries EVERY summary row, the signal counts and the guarded column', () => {
+    // Round 2 measured this block passing while the renderer inverted the
+    // guarded column, swapped the guarded/unguarded rows, dropped five summary
+    // rows, zeroed the signal-count column and reordered the candidate columns.
+    // The committed-file check elsewhere cannot catch any of that: it compares
+    // the file to the JSON, and a renderer change regenerates both.
     const r = deriveReport(tier2, read, new Set(['AWS::Probe::AlphaCluster']));
     const md = renderMarkdown(r);
-    expect(md).toContain('| Tier-2 types considered | 4 |');
-    expect(md).toContain('| Schemas unreadable (excluded, NOT cleared) | 1 |');
-    expect(md).toContain('`AWS::Probe::AlphaCluster`');
+    for (const row of [
+      '| Tier-2 types considered | 4 |',
+      '| Registry schemas read | 3 |',
+      '| ...of which declare a createOnly property | 2 |',
+      '| Schemas declaring no top-level properties | 0 |',
+      '| ...and fire a data-bearing signal (**candidates**) | 1 |',
+      '| Candidates already guarded | 1 |',
+      '| Candidates not guarded | 0 |',
+      '| Schemas unreadable (excluded, NOT cleared) | 1 |',
+    ]) {
+      expect(md, `renderMarkdown dropped the row: ${row}`).toContain(row);
+    }
+    // The signal table carries a real COUNT per signal, not a constant.
+    expect(md).toMatch(/\| `storage-capacity` \| 1 \|/);
+    expect(md).toMatch(/\| `data-store-noun` \| 1 \|/);
+    expect(md).toMatch(/\| `retention-window` \| 0 \|/);
+    // The candidate row, whole: type, guarded column, signals, createOnly —
+    // in that column order, with the createOnly prefix stripped.
+    expect(md).toContain(
+      '| `AWS::Probe::AlphaCluster` | yes | data-store-noun, storage-capacity | `Name` |'
+    );
+    // ...and the guarded column inverts with the guard list rather than being
+    // a constant.
+    const unguarded = renderMarkdown(deriveReport(tier2, read, new Set()));
+    expect(unguarded).toContain(
+      '| `AWS::Probe::AlphaCluster` | **no** | data-store-noun, storage-capacity | `Name` |'
+    );
     expect(md).toContain('`AWS::Probe::Missing`');
     for (const signal of STATEFUL_SIGNALS) {
       expect(md).toContain(`\`${signal.key}\``);
@@ -370,7 +500,9 @@ describe('the committed artifact is a real derivation', () => {
   it('floorViolations actually reports — each arm fails on its own mutation', () => {
     // Guard-the-guard. `toEqual([])` above is satisfied by `return []`, and on
     // this file's first revision every one of these arms could be deleted
-    // independently with the suite green.
+    // independently with the suite green. ONE CASE PER ARM: round 2 measured
+    // five arms still deletable because seven cases covered twelve arms and one
+    // case fired two, leaving the second free.
     const cases: Array<[string, (r: StatefulCandidateReport) => StatefulCandidateReport, RegExp]> = [
       [
         'a truncated candidates array with the summary left alone',
@@ -388,9 +520,52 @@ describe('the committed artifact is a real derivation', () => {
         /has been dropped silently/,
       ],
       [
+        'more types with a createOnly property than schemas read',
+        (r) => ({
+          ...r,
+          summary: { ...r.summary, withCreateOnly: r.summary.schemasRead + 1 },
+        }),
+        /exceeds schemasRead/,
+      ],
+      [
+        'more candidates than types with a createOnly property',
+        (r) => ({
+          ...r,
+          summary: { ...r.summary, withCreateOnly: r.summary.candidateCount - 1 },
+        }),
+        /exceeds withCreateOnly/,
+      ],
+      [
         'a tier2 count under the floor',
         (r) => ({ ...r, summary: { ...r.summary, tier2Count: 10, schemasRead: 10 } }),
         /tier2Count 10 is below the floor/,
+      ],
+      [
+        'a schemasRead count under the floor',
+        (r) => ({
+          ...r,
+          summary: { ...r.summary, schemasRead: 10, tier2Count: 10 + r.unreadable.length },
+        }),
+        /schemasRead 10 is below the floor/,
+      ],
+      [
+        'a withCreateOnly count under the floor',
+        (r) => ({ ...r, summary: { ...r.summary, withCreateOnly: 20 } }),
+        /withCreateOnly 20 is below the floor/,
+      ],
+      [
+        'a candidateCount under the floor',
+        (r) => ({
+          ...r,
+          candidates: r.candidates.slice(0, 4),
+          summary: {
+            ...r.summary,
+            candidateCount: 4,
+            guardedCount: r.candidates.slice(0, 4).filter((c) => c.guarded).length,
+            unguardedCount: r.candidates.slice(0, 4).filter((c) => !c.guarded).length,
+          },
+        }),
+        /candidateCount 4 is below the floor/,
       ],
       [
         'a schema that parsed but declares nothing',
@@ -421,6 +596,30 @@ describe('the committed artifact is a real derivation', () => {
       const violations = floorViolations(mutated(mutate));
       expect(violations.join('\n'), `no violation reported for: ${label}`).toMatch(needle);
     }
+  });
+
+  it('the signal ceiling is taken over the createOnly population, not over tier 2', () => {
+    // `SIGNAL_BOUNDS`' own comment calls that choice load-bearing — a future
+    // AWS release of pointer-only types must not loosen the bound — but
+    // swapping the denominator survived every other case here, because on the
+    // real report both denominators clear the widest signal. This value sits
+    // BETWEEN them: 0.15 x 1185 = 177 (fires) against 0.15 x 1371 = 205 (does
+    // not), so it fails the moment the wrong population is used.
+    const between =
+      Math.floor(report.summary.tier2Count * SIGNAL_BOUNDS.maxShareOfCreateOnlyTypes) - 5;
+    expect(between).toBeGreaterThan(
+      Math.floor(report.summary.withCreateOnly * SIGNAL_BOUNDS.maxShareOfCreateOnlyTypes)
+    );
+    const violations = floorViolations(
+      mutated((r) => ({
+        ...r,
+        summary: {
+          ...r.summary,
+          signalCounts: { ...r.summary.signalCounts, 'data-store-noun': between },
+        },
+      }))
+    );
+    expect(violations.join('\n')).toMatch(/over the ceiling/);
   });
 
   it('the floors and bounds are the measured literals', () => {
@@ -610,6 +809,47 @@ describe('the types issue #2553 names are guarded', () => {
     // it, the justification in the script header needs rewriting.
     const vault = report.candidates.find((c) => c.typeName === 'AWS::Backup::BackupVault');
     expect(vault?.signals).toEqual(['data-store-noun']);
+  });
+});
+
+describe('the shipped binary still consults its own guards', () => {
+  // Round 2 measured `CDKD_SELF_PROBE_FORCE_FAIL` DEAD: nothing spawned this
+  // script, so deleting the seam, deleting `runSelfProbe()` from `main()`, and
+  // deleting `validateArgs()` from `main()` all survived. These three cases run
+  // the real binary the vite task and the ci.yml step run.
+  const SCRIPT = join(REPO_ROOT, 'scripts/audit-stateful-candidates.ts');
+  const run = (args: string[], env: Record<string, string> = {}) =>
+    spawnSync(process.execPath, [SCRIPT, ...args], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    });
+
+  it('--check exits 0 on the committed report', () => {
+    const r = run(['--check']);
+    expect(r.stderr + r.stdout).toContain('candidates dispositioned');
+    expect(r.status).toBe(0);
+  });
+
+  it('the self-probe seam still reaches main() — a forced failure blocks the check', () => {
+    const r = run(['--check'], { CDKD_SELF_PROBE_FORCE_FAIL: '1' });
+    expect(r.stderr).toContain('self-probe FAILED');
+    expect(r.status).not.toBe(0);
+  });
+
+  it('a mistyped flag is refused instead of falling through to the summary reader', () => {
+    // The failure this closes: `--chekc` printed the cached summary and exited
+    // 0, so the same typo in the vite task or the ci.yml step made the CI
+    // critic a no-op that reports success.
+    const typo = run(['--chekc']);
+    expect(typo.stderr).toContain('unknown argument');
+    expect(typo.status).toBe(2);
+    expect(typo.stdout).not.toContain('Candidates:');
+    // ...and the same for a mode pair and a dangling --refetch.
+    expect(run(['--check', '--rederive']).status).toBe(2);
+    expect(run(['--refetch']).status).toBe(2);
+    expect(run(['--check', '--help']).status).toBe(2);
+    expect(run(['--help']).status).toBe(0);
   });
 });
 

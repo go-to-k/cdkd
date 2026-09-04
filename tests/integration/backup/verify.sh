@@ -52,6 +52,25 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
   fi
 }
 # ---------------------------------------------------------------------------
+# COUNT BY ROWS, never `--query 'length(...)'` with `--output text`: the CLI
+# applies --query PER PAGE, so a paginated listing prints one number per page
+# (`1000\n189`) and an `!= "1"` compare false-fails on a healthy account.
+# Projecting the NAME and counting exact matches is page-count-independent.
+# The intermediate capture carries `|| return 1` because errexit is CLEARED
+# inside `$( )`, so without it a failed probe would fall through to the
+# formatting tail and report a truthful-looking 0.
+count_backup_vaults() { # usage: count_backup_vaults <vault-name> -> row count
+  local out
+  out=$(aws backup list-backup-vaults --region "${REGION}" \
+    --query "BackupVaultList[?BackupVaultName=='$1'].BackupVaultName" --output text) || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | awk -v n="$1" '$0 == n { c++ } END { print c + 0 }'
+}
+count_backup_plans() { # usage: count_backup_plans <plan-name> -> row count
+  local out
+  out=$(aws backup list-backup-plans --region "${REGION}" \
+    --query "BackupPlansList[?BackupPlanName=='$1'].BackupPlanName" --output text) || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | awk -v n="$1" '$0 == n { c++ } END { print c + 0 }'
+}
 cd "$(dirname "$0")"
 
 STACK="CdkdBackupExample"
@@ -223,7 +242,16 @@ fi
 GUARD_LINE=$(printf '%s\n' "${RENAME_OUT}" \
   | grep -m1 'requires replacement (immutable property changed:' || true)
 if [ -z "${GUARD_LINE}" ]; then
-  echo "FAIL: no property-driven stateful refusal in the output (issue #2553 regression)" >&2
+  # SECOND SENTINEL. The first one covers a failure BEFORE the deploy names the
+  # stack; this one covers a failure after it. If cdkd reached the vault and
+  # failed there for some other reason (a throttle, a lock, an unrelated AWS
+  # rejection), blaming the guard sends the next reader to the wrong place.
+  if printf '%s\n' "${RENAME_OUT}" | grep -q 'Failed to update Vault'; then
+    echo "FAIL: the vault update failed for a reason OTHER than the stateful guard." >&2
+    echo "      This is NOT an issue #2553 regression -- read the output above." >&2
+  else
+    echo "FAIL: no property-driven stateful refusal in the output (issue #2553 regression)" >&2
+  fi
   exit 1
 fi
 for NEEDLE in 'AWS::Backup::BackupVault' 'BackupVaultName' 'but it is a stateful resource' \
@@ -244,16 +272,14 @@ echo "    the guard refused the rename (rc=${RENAME_RC})"
 
 # The refusal must be a REFUSAL, not a report issued after the damage: the
 # original vault is still there and the v2 vault was never created.
-if ! LIVE_V1=$(aws backup list-backup-vaults --region "${REGION}" \
-  --query "length(BackupVaultList[?BackupVaultName=='${VAULT}'] || \`[]\`)" --output text 2>&1); then
-  echo "FAIL: could not list backup vaults after the refused rename: ${LIVE_V1}" >&2; exit 1
+if ! LIVE_V1=$(count_backup_vaults "${VAULT}"); then
+  echo "FAIL: could not list backup vaults after the refused rename" >&2; exit 1
 fi
 if [ "${LIVE_V1}" != "1" ]; then
   echo "FAIL: the original vault ${VAULT} is gone after a REFUSED rename (count=${LIVE_V1})" >&2; exit 1
 fi
-if ! LIVE_V2=$(aws backup list-backup-vaults --region "${REGION}" \
-  --query "length(BackupVaultList[?BackupVaultName=='${VAULT_V2}'] || \`[]\`)" --output text 2>&1); then
-  echo "FAIL: could not list backup vaults after the refused rename: ${LIVE_V2}" >&2; exit 1
+if ! LIVE_V2=$(count_backup_vaults "${VAULT_V2}"); then
+  echo "FAIL: could not list backup vaults after the refused rename" >&2; exit 1
 fi
 if [ "${LIVE_V2}" != "0" ]; then
   echo "FAIL: the renamed vault ${VAULT_V2} exists -- the replacement was NOT blocked" >&2; exit 1
@@ -270,16 +296,14 @@ CDKD_TEST_RENAME_VAULT=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
   --force-stateful-recreation
 
-if ! LIVE_V1=$(aws backup list-backup-vaults --region "${REGION}" \
-  --query "length(BackupVaultList[?BackupVaultName=='${VAULT}'] || \`[]\`)" --output text 2>&1); then
-  echo "FAIL: could not list backup vaults after the forced rename: ${LIVE_V1}" >&2; exit 1
+if ! LIVE_V1=$(count_backup_vaults "${VAULT}"); then
+  echo "FAIL: could not list backup vaults after the forced rename" >&2; exit 1
 fi
 if [ "${LIVE_V1}" != "0" ]; then
   echo "FAIL: ${VAULT} still exists after the forced replacement (count=${LIVE_V1})" >&2; exit 1
 fi
-if ! LIVE_V2=$(aws backup list-backup-vaults --region "${REGION}" \
-  --query "length(BackupVaultList[?BackupVaultName=='${VAULT_V2}'] || \`[]\`)" --output text 2>&1); then
-  echo "FAIL: could not list backup vaults after the forced rename: ${LIVE_V2}" >&2; exit 1
+if ! LIVE_V2=$(count_backup_vaults "${VAULT_V2}"); then
+  echo "FAIL: could not list backup vaults after the forced rename" >&2; exit 1
 fi
 if [ "${LIVE_V2}" != "1" ]; then
   echo "FAIL: ${VAULT_V2} was not created by the forced replacement (count=${LIVE_V2})" >&2; exit 1
@@ -292,9 +316,8 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 
 # Strict capture (issue #1097 pattern 2): a silenced `|| echo 0` would read a
 # throttled list call as "0 remaining" and silently pass the leak check.
-if ! REMAINING_PLANS=$(aws backup list-backup-plans --region "${REGION}" \
-  --query "length(BackupPlansList[?BackupPlanName=='${PLAN}'] || \`[]\`)" --output text 2>&1); then
-  echo "FAIL: could not list backup plans after destroy: ${REMAINING_PLANS}" >&2; exit 1
+if ! REMAINING_PLANS=$(count_backup_plans "${PLAN}"); then
+  echo "FAIL: could not list backup plans after destroy" >&2; exit 1
 fi
 if [ "${REMAINING_PLANS}" != "0" ]; then
   echo "FAIL: backup plan ${PLAN} still exists after destroy" >&2; exit 1
@@ -305,15 +328,13 @@ fi
 # BOTH names: after Phase 1c the stack holds ${VAULT_V2}, so asserting only on
 # ${VAULT} would pass vacuously -- it was deleted by the replacement, not by
 # the destroy under test.
-if ! REMAINING_V2=$(aws backup list-backup-vaults --region "${REGION}" \
-  --query "length(BackupVaultList[?BackupVaultName=='${VAULT_V2}'] || \`[]\`)" --output text 2>&1); then
-  echo "FAIL: could not list backup vaults after destroy: ${REMAINING_V2}" >&2; exit 1
+if ! REMAINING_V2=$(count_backup_vaults "${VAULT_V2}"); then
+  echo "FAIL: could not list backup vaults after destroy" >&2; exit 1
 fi
 if [ "${REMAINING_V2}" != "0" ]; then
   echo "FAIL: backup vault ${VAULT_V2} still exists after destroy" >&2; exit 1
 fi
-if ! REMAINING_VAULTS=$(aws backup list-backup-vaults --region "${REGION}" \
-  --query "length(BackupVaultList[?BackupVaultName=='${VAULT}'] || \`[]\`)" --output text 2>&1); then
+if ! REMAINING_VAULTS=$(count_backup_vaults "${VAULT}"); then
   echo "FAIL: could not list backup vaults after destroy: ${REMAINING_VAULTS}" >&2; exit 1
 fi
 if [ "${REMAINING_VAULTS}" != "0" ]; then

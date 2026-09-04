@@ -274,9 +274,12 @@ export interface RegistrySchema {
  * Top-level property names, in schema order.
  *
  * `properties` is the object CloudFormation template authors write into, so
- * its KEYS are exactly the top-level property names. A schema without one is
- * not an error — a handful of registry entries are identifier-only — it simply
- * contributes no signal.
+ * its KEYS are exactly the top-level property names. Every tier-2 schema
+ * measured has one — `FLOORS.maxSchemasWithNoProperties` is 0 for that reason —
+ * so a schema without one is not a quiet "contributes no signal" case: it is
+ * either a truncated cache file or a genuinely new registry shape, and both
+ * want a human. `deriveReport` counts them rather than throwing, so the report
+ * says which types they were.
  */
 export function topLevelPropertyNames(schema: RegistrySchema): string[] {
   return Object.keys(schema.properties ?? {});
@@ -717,6 +720,35 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     schema: {
       createOnlyProperties: ['/properties/Name'],
       properties: { Name: {}, MySnapshotWindowOverride: {}, RetentionPeriodPolicyArn: {} },
+    },
+    expected: null,
+  },
+  {
+    label:
+      'a property name merely CONTAINING `AllocatedStorage` does not fire — anchoring is per ' +
+      'signal, and three of the six patterns were still unfenced after the first anchor pass',
+    typeName: 'AWS::Probe::Widget',
+    schema: {
+      createOnlyProperties: ['/properties/Name'],
+      properties: { Name: {}, PreAllocatedStorageHint: {}, StorageTypeOverride: {} },
+    },
+    expected: null,
+  },
+  {
+    label: 'a property name merely CONTAINING `DeletionProtection` does not fire',
+    typeName: 'AWS::Probe::Widget',
+    schema: {
+      createOnlyProperties: ['/properties/Name'],
+      properties: { Name: {}, DeletionProtectionPolicyArn: {} },
+    },
+    expected: null,
+  },
+  {
+    label: 'a property name merely CONTAINING `EncryptionAtRest` does not fire',
+    typeName: 'AWS::Probe::Widget',
+    schema: {
+      createOnlyProperties: ['/properties/Name'],
+      properties: { Name: {}, EncryptionAtRestOptionsArn: {} },
     },
     expected: null,
   },
@@ -1175,9 +1207,12 @@ export function renderSummaryToStdout(report: StatefulCandidateReport): string {
 }
 
 /** Read a cached raw schema, or `undefined` if it is absent or unparseable. */
-function readCachedSchema(typeName: string): RegistrySchema | undefined {
+export function readCachedSchema(
+  typeName: string,
+  dir: string = SCHEMA_CACHE_DIR
+): RegistrySchema | undefined {
   try {
-    return coerceRegistrySchema(JSON.parse(readFileSync(schemaCachePath(typeName), 'utf8')));
+    return coerceRegistrySchema(JSON.parse(readFileSync(schemaCachePath(typeName, dir), 'utf8')));
   } catch {
     return undefined;
   }
@@ -1304,6 +1339,11 @@ function check(): void {
   if (
     typeof report.summary !== 'object' ||
     report.summary === null ||
+    // `signalCounts` specifically: `floorViolations` indexes it per signal, so
+    // a summary missing THAT field throws the exact raw TypeError this guard
+    // exists to replace — measured, with the object check alone in place.
+    typeof report.summary.signalCounts !== 'object' ||
+    report.summary.signalCounts === null ||
     !Array.isArray(report.candidates) ||
     !Array.isArray(report.unreadable)
   ) {
@@ -1377,7 +1417,10 @@ export function validateArgs(args: readonly string[]): string | undefined {
   if (unknown.length > 0) {
     return `unknown argument(s): ${unknown.join(', ')}`;
   }
-  const modes = args.filter((a) => a !== '--refetch' && a !== '--help');
+  // `--help` counts as a mode: `--check --help` printed usage and exited 0
+  // WITHOUT checking anything, which is the guard's own failure class one
+  // spelling over.
+  const modes = args.filter((a) => a !== '--refetch');
   if (modes.length > 1) {
     return `at most one mode may be given, got: ${modes.join(', ')}`;
   }

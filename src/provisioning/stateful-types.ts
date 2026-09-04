@@ -303,9 +303,9 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // are written off, and the discriminator is in the schemas rather than in
   // the naming: this type declares `NodeType` and `NumShards` — it SIZES the
   // storage the regional clusters serve — while `AWS::RDS::GlobalCluster`
-  // declares only `Engine`, `EngineVersion`, `GlobalClusterIdentifier`,
-  // `SourceDBClusterIdentifier`, `StorageEncrypted` and `DeletionProtection`,
-  // every one of which points at member clusters that outlive it.
+  // declares NO sizing property at all. Its nearest equivalents are
+  // `SourceDBClusterIdentifier` and `GlobalClusterIdentifier`, which point at
+  // member clusters that outlive it.
   'AWS::MemoryDB::MultiRegionCluster',
   'AWS::ElastiCache::ServerlessCache',
   // Kafka. Topic data lives on the brokers' own storage; there is no
