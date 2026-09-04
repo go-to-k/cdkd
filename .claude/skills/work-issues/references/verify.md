@@ -62,8 +62,8 @@ by a probe or a trace, never by re-reading the diff:
   code; re-measured +0–3%). Confirm the probe reaches the added code, as §5
   requires of a mutation probe.
 
-**A fix that CLOSES a member falsifies every sentence that COUNTS the set**,
-and those counters sit OUTSIDE the diff — §8-g's COUNT bullet is the remedy.
+**A fix that CLOSES a member falsifies every sentence COUNTING the set**, in
+files the diff never touches — §8-g's COUNT bullet.
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
@@ -187,17 +187,27 @@ second and fourth measured on go-to-k/cdkd#2108 / go-to-k/cdkd#2109):
   something, a fixture whose ONLY difference is the skipped thing gives the
   command no work ("nothing to revert": two live writes, zero signal). Give
   the fixture a second, ORDINARY difference, and a phase proving the premise
-  before the phase that depends on it.
+  before the phase that depends on it. **A phase re-deploying a template
+  byte-identical to an earlier phase's is that trap with no fix to blame** —
+  the diff is `NO_CHANGE`, the flag under test is never read (the engine
+  consults it only under `case 'UPDATE'`), the phase cannot pass, and `set -e`
+  takes every later one with it (go-to-k/cdkd#2565: the fixture stopped at
+  that phase and the three proving the regression never ran, past every
+  author-side round). Make each phase assert its own change LANDED first.
 - **The arm's PREMISE is out of scope, and the tell is both counts zero** —
   `0 leaks AND 0 masks` is an arm that did nothing (go-to-k/cdkd#2176: the
   spelling used was one cdkd deliberately does not resolve, so nothing was
   ever plaintext). Prove the premise independently before reading the
   assertions.
-- **A negative assertion is a confluence point** — "the bad value was not
-  written" is satisfied by a correct refusal AND by any unrelated failure
-  that stopped short (measured: fix mutated back, arm stayed green because
-  the revert had errored instead of writing). Assert the POSITIVE marker only
-  the fixed path emits; demote the negative to a stated safety net.
+- **Any outcome REACHABLE BY TWO PATHS is a confluence point** — "the bad
+  value was not written" is satisfied by a correct refusal AND by any
+  unrelated failure that stopped short (measured: fix mutated back, arm
+  stayed green because the revert had errored instead of writing); a REFUSAL
+  is satisfied by the guard firing AND by the probe behind it failing
+  (go-to-k/cdkd#2565: a missing `logs:DescribeLogStreams` grant promotes to
+  the same refusal, so on a role that cannot probe, the phase passes
+  exercising nothing). Assert the POSITIVE marker only the intended path
+  emits; demote the other to a stated safety net.
 - **Every assertion PREDATES your change → the run is somebody else's
   regression net.** `git diff origin/main -- <fixture>` and ask which
   assertion could only pass AFTER your change; if none, add the
@@ -235,25 +245,10 @@ injection, redeploys, and runs a genuinely clean destroy.
 
 ### 8-e. Watching runs and pollers
 
-**Never leave a real-AWS run unwatched, and do not reach for `timeout`** — it
-does not exist on macOS (exit 127 in 0s reads as instant completion), and a
-hung integ is indistinguishable from a slow one (one wedged in `docker push`
-for 4h17m). Shell watchdog, firing made visible:
-
-```bash
-LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
-                # `> ""` is a loud failure that costs you the whole run
-bash verify.sh > "$LOG" 2>&1 &
-VPID=$!
-( sleep 1500; kill -9 $VPID 2>/dev/null; echo "WATCHDOG_FIRED" >> "$LOG" ) &
-WPID=$!
-wait "$VPID"; RC=$?
-kill "$WPID" 2>/dev/null
-grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
-```
-
-The `grep` is load-bearing (`kill -9` surfaces as rc=137, otherwise just a
-crash). Pair with a `Monitor` on phase lines AND log-growth stalling.
+**Never leave a real-AWS run unwatched** — a hung integ is indistinguishable
+from a slow one (one wedged in `docker push` for 4h17m). `/run-integ` step 5
+carries the watchdog recipe and why `timeout` is not the answer; pair it with
+a `Monitor` on phase lines AND on log-growth stalling.
 
 - **ANCHOR the predicate a poller waits on** — a premature DONE is acted on.
   Wait on a line the job writes only at the END, anchored
@@ -266,10 +261,8 @@ crash). Pair with a `Monitor` on phase lines AND log-growth stalling.
   call and read the log's own terminal line. Two nearby traps: a `cd` inside
   the backgrounded compound leaves the parent's `$VAR` unset, and `grep -c`
   exits 1 on a count of zero.
-- **A run blocked before its assertions is not a failing fix** — record `FAIL`
-  (the bar is exit-code-based) with a ledger note naming the blocker and any
-  hand-removed AWS resources, or the next reader reads the merged fix as
-  broken.
+- **A run blocked before its assertions is not a failing fix** — `/run-integ`'s
+  "Important" section owns that rule and the ledger note it requires.
 
 ### 8-f. Fixture environment prechecks
 
@@ -286,22 +279,8 @@ aws s3 ls "s3://cdkd-state-<acct>/cdkd-bootstrap/"                       # which
 the same code without it** (on the merits, not availability). When docker is
 required (`integ-local`), verify registry reach FIRST (`docker pull
 hello-world` under a 120s cap) — `docker version` says nothing about registry
-networking. **Do NOT restart Docker to fix a hang — on Docker Desktop the
-restart IS the likelier cause**: the daemon routes registry traffic through a
-proxy the Desktop APP serves, and a quit-and-reopen can leave the
-self-respawning backend up while the app never finishes launching (four
-consecutive hung pulls; only a manual app restart recovered). Diagnose in
-order, stopping at the first line that explains the symptom:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/  # 401 = HOST networking fine
-docker info 2>/dev/null | grep -i proxy         # the proxy the daemon depends on
-pgrep -f 'Docker Desktop' >/dev/null && echo app-running || echo APP-NOT-RUNNING
-```
-
-Ask the maintainer rather than escalating — a factory reset or deleting Docker
-data destroys local images and volumes, never yours to spend. Clean up your own probes (`kill`ing
-a `docker pull` wrapper leaves the `com.docker.cli` child running).
+networking. `/run-integ`'s "Important" section owns the hang diagnosis, the
+do-NOT-restart-Docker rule, and what is never yours to spend.
 
 ### 8-g. Prose claims are verified to the same bar as code
 
@@ -399,11 +378,16 @@ left orphans, delete them by direct AWS API call before doing anything else.
 writes it, run by the ORCHESTRATOR after its dispatched reviewers report and
 every blocker is addressed — a lane setting it is the "sub-agent self-review
 is not independent review" failure arriving through the marker (two of three
-lanes did exactly this on 2026-08-29, go-to-k/cdkd#2383 /
-go-to-k/cdk-local#631 — so name this marker in the lane's brief). Nothing
-mechanical catches it: the sha-bound sentinel is per-worktree and §9 merges
-from the lane's worktree, so a lane that sets it after its final push produces
-a matching sha. The rule is the only thing standing there.
+lanes on 2026-08-29, go-to-k/cdkd#2383 / go-to-k/cdk-local#631; twice more on
+2026-09-04, where the one lane whose BRIEF named the prohibition was the one
+that obeyed — so put it in the brief, not only here). The merge gate cannot
+catch it: the sentinel is per-worktree and §9 merges from the lane's
+worktree, so a lane setting it after its final push matches. The PARENT can,
+and it is a named step of its own round — read the marker
+BEFORE running `/review-pr`, since one already fresh there can only be the
+lane's (`mise exec -- markgate verify pr-review`, then
+`.markgate-pr-review-sha` against `git rev-parse HEAD`; a sha that is not HEAD
+is the tell). On a hit, review from scratch.
 
 **And your own review round is not optional because the lane already ran one.**
 A lane's reviewers are its children — same brief, same framing — so what they
@@ -416,7 +400,8 @@ author-side round COUNT does not converge on the author's blind spot
 (go-to-k/cdkd#2519: its lane rounds reported no blockers; later independent
 rounds kept finding deltas INSIDE the previous round's fix). Three rounds of
 that shape means change the METHOD, not add a round — §5's "three spellings in
-three rounds".
+three rounds". Review the FIXTURE as part of that diff, not as scaffolding
+around it — go-to-k/cdkd#2565's merge blocker was there (§8-d).
 
 **A reviewer's scratch COPY of a worktree is not detached from git.** A linked
 worktree's `.git` is a FILE pointing into the main repo, and `cp -R` carries

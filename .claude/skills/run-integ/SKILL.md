@@ -88,6 +88,26 @@ verify, clean up.
      - `node ../../../dist/cli.js deploy [--all] [<extra-deploy-args>] --region us-east-1 --state-bucket <bucket> --verbose`
      - `node ../../../dist/cli.js destroy [--all] --region us-east-1 --state-bucket <bucket> --force`
 
+   **Never run it unwatched, and do not reach for `timeout`** — it is not in
+   stock macOS (a Homebrew one may or may not be on PATH, and its absence is
+   exit 127 in 0s, which reads as instant completion), and a hung run is
+   indistinguishable from a slow one. Shell watchdog, firing made visible:
+
+   ```bash
+   LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
+                   # `> ""` is a loud failure that costs you the whole run
+   bash verify.sh > "$LOG" 2>&1 &
+   VPID=$!
+   ( sleep 1500; kill -9 $VPID 2>/dev/null; echo "WATCHDOG_FIRED" >> "$LOG" ) &
+   WPID=$!
+   wait "$VPID"; RC=$?
+   kill "$WPID" 2>/dev/null
+   grep -c WATCHDOG_FIRED "$LOG" || echo "watchdog did not fire"
+   ```
+
+   The `grep` is load-bearing (`kill -9` surfaces as rc=137, otherwise just a
+   crash).
+
 6. **Verify cleanup**:
    - `aws s3 ls s3://<bucket>/cdkd/ --region us-east-1` — no leftover state.
    - **The state bucket is VERSIONED**, so that listing shows nothing while
@@ -311,11 +331,31 @@ verify, clean up.
   was.** (`cdkd gc` refuses while ANY stack holds a lock — account-wide, by
   design — so a parallel session's lock can stop a gc fixture before its
   first assertion; happened twice on 2026-08-19 from foreign stacks.) Record
-  it as `FAIL` (the bar is exit-code-based) with a note naming the blocker,
-  clean up what the aborted run leaked, and WAIT for the blocker to clear.
+  it as `FAIL` (the bar is exit-code-based) with a ledger note naming the
+  blocker and any hand-removed AWS resources — or the next reader reads the
+  merged fix as broken — clean up what the aborted run leaked, and WAIT for
+  the blocker to clear.
   Never `cdkd force-unlock` a lock you did not take — it belongs to another
   session's in-flight deploy.
 - **Never report success on a successful deploy alone** — destroy must
   complete and the orphan check must pass.
+- **Do NOT restart Docker to fix a hung docker-dependent run (`local-*`, or
+  an ECR asset push) — on Docker Desktop the restart IS the likelier cause**:
+  the daemon routes registry traffic through a proxy the Desktop APP serves,
+  and a quit-and-reopen can leave the
+  self-respawning backend up while the app never finishes launching (four
+  consecutive hung pulls; only a manual app restart recovered). Diagnose in
+  order, stopping at the first line that explains the symptom:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/  # 401 = HOST networking fine
+  docker info 2>/dev/null | grep -i proxy         # the proxy the daemon depends on
+  pgrep -f 'Docker Desktop' >/dev/null && echo app-running || echo APP-NOT-RUNNING
+  ```
+
+  Ask the maintainer rather than escalating — a factory reset or deleting
+  Docker data destroys local images and volumes, never yours to spend. Clean
+  up your own probes (`kill`ing a `docker pull` wrapper leaves the
+  `com.docker.cli` child running).
 - **Never bypass this skill** with direct `cdkd deploy` / `cdkd destroy` —
   the orphan-cleanup contract is part of the test, not optional.

@@ -27,7 +27,11 @@ cannot sit open while site 1's fix drifts away. Two boundaries:
   not name. On a trip, STATE the call in one line — LOC so far, what the next
   widening adds, in-PR versus filed — before taking it, and `AskUserQuestion`
   when it would more than double the diff. Not "never fix a data-loss bug you
-  find": the second one is a DECISION made out loud, not a continuation.
+  find": the second one is a DECISION made out loud, not a continuation. What
+  the fix would leave WRONG if omitted — the remedy text its own refusal
+  prints — is a FORCED parallel change, not a widening, and spends no
+  tripwire: the test is whether the artifact ships false without it
+  (go-to-k/cdkd#2565).
 - **Sweep the same ROOT CAUSE, not the same AREA.** Two unrelated bugs in one
   provider are two issues; one wrong assumption at five call sites is one. The
   test: a single sentence describes the fix at every site.
