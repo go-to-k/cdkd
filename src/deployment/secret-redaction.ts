@@ -117,7 +117,9 @@ export function recordResolvedPair(
  * evidence — so a literal `Output` embedding one of two same-plaintext
  * references would fall back to the value scan and persist the sibling's
  * expression. The engine's other entry-by-entry copy — an `Export.Name`'s
- * secrets into the pass map — deliberately does NOT call this: a name never
+ * secrets into the pass map — deliberately does NOT call this (and `cdkd
+ * scrub`'s name loop resolves through a VIEW whose pairs never reach the pass
+ * map at all, issue #2531): a name never
  * positions a leaf, a value re-using the same token records its own pair at
  * the seam, and the only thing the merge could add is a CONFLICT (a
  * non-cacheable `{{resolve:ssm:X}}` whose value moved between the value pass

@@ -254,5 +254,14 @@ export class SecretsDynamicRefStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'FunctionName', { value: fn.functionName });
     new cdk.CfnOutput(this, 'SecretName', { value: secretName });
     new cdk.CfnOutput(this, 'ParamName', { value: paramName });
+    // An INTRINSIC export name (issue #2531): `cdkd scrub`'s outputs pass
+    // resolves a non-string `Export.Name` through its own view of the pass
+    // map before it walks any value, and no other scrub-exercising fixture
+    // declares one. Public value on purpose -- a secret-bearing name is
+    // refused, which is a different arm.
+    new cdk.CfnOutput(this, 'FunctionNameExport', {
+      value: fn.functionName,
+      exportName: cdk.Fn.sub('${AWS::StackName}-function-name'),
+    });
   }
 }

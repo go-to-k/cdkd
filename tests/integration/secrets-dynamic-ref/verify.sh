@@ -658,6 +658,33 @@ else
   exit 1
 fi
 
+# Guard 7b (issue #2531): that scrub run resolved an INTRINSIC `Export.Name`
+# through the outputs pass's name loop -- the arm that resolves each name
+# through its own view of the pass map. PREMISE first, from the synthesized
+# template: the name must be an intrinsic OBJECT (a plain string never enters
+# that arm), or the assertion below would pass over an arm scrub never ran.
+EXPORT_NAME_SHAPE=$(jq -r '.Outputs.FunctionNameExport.Export.Name | if . == null then "absent" else type end' "cdk.out/${STACK}.template.json")
+if [ "${EXPORT_NAME_SHAPE}" != "object" ]; then
+  echo "FAIL: premise: FunctionNameExport's Export.Name synthesized as '${EXPORT_NAME_SHAPE}', not an intrinsic object -- scrub's name-loop arm (#2531) is not what this run exercised" >&2
+  exit 1
+fi
+echo "    OK: premise: FunctionNameExport's Export.Name is an intrinsic (${EXPORT_NAME_SHAPE})"
+# The deploy wrote the resolved name as an alias key of `state.outputs`; a
+# scrub that mis-keyed or refused the outputs pass would have warned about the
+# name (masked, at default verbosity) and fallen back to the value scan.
+if printf '%s' "${SCRUB_OUT}" | grep -qF "could not be resolved during scrub"; then
+  echo "FAIL: scrub could not resolve the intrinsic Export.Name (#2531 arm refused)" >&2
+  diag_output "${SCRUB_OUT}"
+  exit 1
+fi
+EXPORT_ALIAS=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null | jq -r --arg k "${STACK}-function-name" '.state.outputs[$k] // empty')
+if [ "${EXPORT_ALIAS}" != "${FN_NAME}" ]; then
+  echo "FAIL: state.outputs['${STACK}-function-name'] is '${EXPORT_ALIAS}', expected the function name -- the resolved Export.Name alias did not survive the scrub pass" >&2
+  exit 1
+fi
+echo "    OK: scrub resolved the intrinsic Export.Name and kept its alias key (#2531)"
+
 # --- Phase 1d: `cdkd drift` and the secret expressions (issue #1914) -------
 # The drift command is state-driven, so its baseline is the REDACTED record —
 # `{{resolve:...}}` expressions — while `readCurrentState` returns the resolved
