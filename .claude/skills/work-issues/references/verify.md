@@ -191,9 +191,9 @@ second and fourth measured on go-to-k/cdkd#2108 / go-to-k/cdkd#2109):
   byte-identical to an earlier phase's is that trap with no fix to blame** —
   the diff is `NO_CHANGE`, the flag under test is never read (the engine
   consults it only under `case 'UPDATE'`), the phase cannot pass, and `set -e`
-  takes every later one with it (go-to-k/cdkd#2565: the three phases proving
-  the regression never ran, past six author-side rounds). Make each phase
-  assert its own change LANDED first.
+  takes every later one with it (go-to-k/cdkd#2565: the fixture stopped at
+  that phase and the three proving the regression never ran, past every
+  author-side round). Make each phase assert its own change LANDED first.
 - **The arm's PREMISE is out of scope, and the tell is both counts zero** —
   `0 leaks AND 0 masks` is an arm that did nothing (go-to-k/cdkd#2176: the
   spelling used was one cdkd deliberately does not resolve, so nothing was
@@ -247,8 +247,8 @@ injection, redeploys, and runs a genuinely clean destroy.
 
 **Never leave a real-AWS run unwatched** — a hung integ is indistinguishable
 from a slow one (one wedged in `docker push` for 4h17m). `/run-integ` step 5
-carries the watchdog recipe and why `timeout` is not an option on macOS; pair
-it with a `Monitor` on phase lines AND on log-growth stalling.
+carries the watchdog recipe and why `timeout` is not the answer; pair it with
+a `Monitor` on phase lines AND on log-growth stalling.
 
 - **ANCHOR the predicate a poller waits on** — a premature DONE is acted on.
   Wait on a line the job writes only at the END, anchored
@@ -378,16 +378,16 @@ left orphans, delete them by direct AWS API call before doing anything else.
 writes it, run by the ORCHESTRATOR after its dispatched reviewers report and
 every blocker is addressed — a lane setting it is the "sub-agent self-review
 is not independent review" failure arriving through the marker (two of three
-lanes on 2026-08-29, go-to-k/cdkd#2383 / go-to-k/cdk-local#631; twice more in
-one run on 2026-09-04, where the one lane whose BRIEF named the prohibition
-was the one that obeyed — so put it in the brief, not only here). The merge
-gate cannot catch it: the sentinel is per-worktree and §9 merges from the
-lane's worktree, so a lane setting it after its final push produces a matching
-sha. The PARENT can, and it is a named step of its own round — read the marker
+lanes on 2026-08-29, go-to-k/cdkd#2383 / go-to-k/cdk-local#631; twice more on
+2026-09-04, where the one lane whose BRIEF named the prohibition was the one
+that obeyed — so put it in the brief, not only here). The merge gate cannot
+catch it: the sentinel is per-worktree and §9 merges from the lane's
+worktree, so a lane setting it after its final push matches. The PARENT can,
+and it is a named step of its own round — read the marker
 BEFORE running `/review-pr`, since one already fresh there can only be the
 lane's (`mise exec -- markgate verify pr-review`, then
-`.markgate-pr-review-sha` against `git rev-parse HEAD`; a sha behind HEAD is
-the tell). On a hit, review from scratch.
+`.markgate-pr-review-sha` against `git rev-parse HEAD`; a sha that is not HEAD
+is the tell). On a hit, review from scratch.
 
 **And your own review round is not optional because the lane already ran one.**
 A lane's reviewers are its children — same brief, same framing — so what they

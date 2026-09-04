@@ -122,8 +122,8 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_641,
-    corpusBytes: 171_403,
-    largest: { file: 'verify.md', bytes: 27_034 },
+    corpusBytes: 171_399,
+    largest: { file: 'verify.md', bytes: 27_036 },
     runnerUp: { file: 'implement.md', bytes: 26_541 },
   },
 };
@@ -137,10 +137,10 @@ const MIN_REFERENCE_FILES = 6;
 // RE-DERIVED DOWNWARD 208_000 -> 145_000 by the 2026-09-04 corpus compression
 // pass, exactly the move the assertion's failure message prescribes for a
 // genuine compression ("re-derive it DOWNWARD in the same commit"). Inputs are
-// in MEASURED and asserted: corpus 171,403 B, largest verify.md 27,034 B,
+// in MEASURED and asserted: corpus 171,399 B, largest verify.md 27,036 B,
 // runner-up implement.md 26,541 B. The floor must clear `corpus - largest`
-// (144,369) and `corpus - runnerUp` (144,862, the binding direction);
-// 145,000 clears them by 631 and 138 B. Growth in a NON-leader file erodes
+// (144,363) and `corpus - runnerUp` (144,858, the binding direction);
+// 145,000 clears them by 637 and 142 B. Growth in a NON-leader file erodes
 // the either-largest margin first -- MEASURED's failure message reports both
 // margins, so the next lapse reds this file at the commit that causes it.
 // The 2026-09-04 retro (go-to-k/cdkd#2514's run) spent most of the 3,366 B the
@@ -154,7 +154,7 @@ const MIN_REFERENCE_FILES = 6;
 // by DISPLACING two blocks verify.md was carrying for another skill -- the
 // Docker-hang diagnosis and the real-AWS watchdog recipe now live in
 // .claude/skills/run-integ/SKILL.md, where the commands they wrap are run --
-// plus a de-duplicated blocked-run rule, leaving 138 B.
+// plus a de-duplicated blocked-run rule, leaving 142 B.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this

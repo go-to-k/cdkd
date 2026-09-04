@@ -88,9 +88,10 @@ verify, clean up.
      - `node ../../../dist/cli.js deploy [--all] [<extra-deploy-args>] --region us-east-1 --state-bucket <bucket> --verbose`
      - `node ../../../dist/cli.js destroy [--all] --region us-east-1 --state-bucket <bucket> --force`
 
-   **Never run it unwatched, and do not reach for `timeout`** — it does not
-   exist on macOS (exit 127 in 0s reads as instant completion), and a hung run
-   is indistinguishable from a slow one. Shell watchdog, firing made visible:
+   **Never run it unwatched, and do not reach for `timeout`** — it is not in
+   stock macOS (a Homebrew one may or may not be on PATH, and its absence is
+   exit 127 in 0s, which reads as instant completion), and a hung run is
+   indistinguishable from a slow one. Shell watchdog, firing made visible:
 
    ```bash
    LOG=$(mktemp)   # assign HERE: a separate block is a separate shell, and
@@ -338,9 +339,10 @@ verify, clean up.
   session's in-flight deploy.
 - **Never report success on a successful deploy alone** — destroy must
   complete and the orphan check must pass.
-- **Do NOT restart Docker to fix a hung `local-*` run — on Docker Desktop the
-  restart IS the likelier cause**: the daemon routes registry traffic through
-  a proxy the Desktop APP serves, and a quit-and-reopen can leave the
+- **Do NOT restart Docker to fix a hung docker-dependent run (`local-*`, or
+  an ECR asset push) — on Docker Desktop the restart IS the likelier cause**:
+  the daemon routes registry traffic through a proxy the Desktop APP serves,
+  and a quit-and-reopen can leave the
   self-respawning backend up while the app never finishes launching (four
   consecutive hung pulls; only a manual app restart recovered). Diagnose in
   order, stopping at the first line that explains the symptom:

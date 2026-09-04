@@ -64,8 +64,8 @@ rm -f /tmp/run-touched.$$
   reason the criterion no longer applies. When the run's own PRs ARE the
   follow-ups' subject — one lane, or several sharing a subsystem — expect
   EVERY one to hit and read the issue's REASON instead (go-to-k/cdkd#2514 10
-  of 10, go-to-k/cdkd#2558's run 12 of 12, all correctly held on scope
-  containment) — a run-wide hit rate is a property of the run's shape, not of
+  of 10, and again across go-to-k/cdkd#2558's two-lane run, every one
+  correctly held on scope containment) — a run-wide hit rate is a property of the run's shape, not of
   the deferrals.
 - **Re-read the REASON, not just the files** — classify-once freezes the
   DECISION, not the PREMISE: "that PR is still open" goes false when it
