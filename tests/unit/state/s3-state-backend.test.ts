@@ -651,6 +651,41 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       await expect(backend.stateExists('S', 'us-east-1')).resolves.toBe(false);
     });
+
+    // Issue #2550 split the three answers that used to read as one
+    // `undefined`. These pin which of them `stateExists` now says yes to.
+    it('returns true for a legacy body that names NO region, from any region', async () => {
+      // `getState` would return this record for any region — `tryGetLegacy`'s
+      // gate only refuses a body naming a DIFFERENT one. `stateExists` has to
+      // agree, or it reports "no state" for a record the next read returns.
+      s3Client.send.mockRejectedValueOnce(Object.assign(new Error('NF'), { name: 'NotFound' }));
+      s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) });
+
+      await expect(backend.stateExists('S', 'eu-west-1')).resolves.toBe(true);
+    });
+
+    it('returns false when the legacy key is absent', async () => {
+      // The case that makes the one-line fix wrong: `readLegacyRegion`
+      // returned `undefined` here too, so accepting `undefined` would report
+      // state for a stack that has none — and `reconcileRegionWithLegacyDefault`
+      // picks a region from this answer.
+      s3Client.send.mockRejectedValueOnce(Object.assign(new Error('NF'), { name: 'NotFound' }));
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })
+      );
+
+      await expect(backend.stateExists('S', 'us-east-1')).resolves.toBe(false);
+    });
+
+    it('returns false when the legacy key cannot be read', async () => {
+      // A denied or throttled read says nothing about who owns the record.
+      s3Client.send.mockRejectedValueOnce(Object.assign(new Error('NF'), { name: 'NotFound' }));
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' })
+      );
+
+      await expect(backend.stateExists('S', 'us-east-1')).resolves.toBe(false);
+    });
   });
 
   describe('deleteState', () => {
@@ -691,6 +726,343 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         .map((cmd: DeleteObjectCommand) => cmd.input.Key);
       expect(deletedKeys).not.toContain('cdkd/S/state.json');
       expect(deletedKeys).toContain('cdkd/S/us-east-1/state.json');
+    });
+
+    // Issue #2550. `tryGetLegacy` accepts a body naming NO region from any
+    // region, so `cdkd destroy` reads such a record and deletes the AWS
+    // resources. The sweep's old equality test answered
+    // `undefined === 'us-east-1'` — false — so the record survived a
+    // successful destroy and the next deploy of that name planned updates
+    // against resources that no longer existed.
+    it('sweeps a legacy key whose body names NO region', async () => {
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) }); // probe: no region
+      s3Client.send.mockResolvedValueOnce({}); // delete legacy key
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).toContain('cdkd/S/state.json');
+    });
+
+    it('does not sweep a legacy key it could not read', async () => {
+      // The arm that keeps the fix from being "treat undefined as a match":
+      // a 403 / 503 / malformed body says nothing about who owns the record,
+      // and a read that failed must never authorise a delete.
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' })
+      );
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
+    });
+
+    it('does not sweep a legacy body whose region is a non-string', async () => {
+      // `tryGetLegacy`'s gate is `state.region && state.region !== region`, so
+      // a truthy NON-string (a mangled `"region": 123`) makes the READ refuse
+      // from every region. Classifying it with the region-less bodies would
+      // have the sweep delete a record `getState` will not even read — issue
+      // #2550's asymmetry pointing the other way.
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ version: 1, stackName: 'S', region: 123, resources: {}, outputs: {}, lastModified: 1 })
+            ),
+        },
+      });
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
+    });
+
+    it('sweeps a legacy body whose region is the empty string', async () => {
+      // The mirrored trap: a string, so a `typeof` test files it under
+      // `region`, but falsy — so the read gate passes it from any region and
+      // an equality test (`'' === 'us-east-1'`) would refuse to sweep it,
+      // which is #2550 verbatim.
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ version: 1, stackName: 'S', region: '', resources: {}, outputs: {}, lastModified: 1 })
+            ),
+        },
+      });
+      s3Client.send.mockResolvedValueOnce({}); // delete legacy key
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).toContain('cdkd/S/state.json');
+    });
+
+    it('does not sweep when the probe response carries no body', async () => {
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockResolvedValueOnce({}); // probe: no Body
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
+    });
+
+    describe('the unreadable-probe warning', () => {
+      // Refusing to sweep on an unreadable probe is right — a read that
+      // failed must not authorise a delete — but the OUTCOME is issue #2550's
+      // symptom: a record surviving a destroy that reported success. The warn
+      // is what stops that being silent, and the not-firing cases are the
+      // real fence: `unreadable` is reachable on an ordinary destroy (a
+      // principal without s3:ListBucket sees a MISSING object as
+      // AccessDenied), so a warn on any other kind would be noise on every
+      // destroy of every stack.
+      // No local reset: the enclosing suite's beforeEach already runs
+      // vi.clearAllMocks(), which clears this hoisted mock.
+      // Only the warning under test: `deleteState`'s journal sweep emits its
+      // own unrelated warning under these mocks, and asserting over the joined
+      // text would let that one satisfy — or falsify — assertions about this
+      // one.
+      /** Every warning, unfiltered — for asserting that NONE was emitted. */
+      const allWarnings = (): string =>
+        childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+
+      const warned = (): string[] =>
+        childLoggerMock.warn.mock.calls
+          .map((c: unknown[]) => String(c[0]))
+          .filter((m: string) => m.includes('Could not read the legacy state record'));
+
+      /**
+       * The line under test, and proof there IS one. Every case below asserts
+       * absences, and an absence holds vacuously against the empty string —
+       * so a reworded headline would silence the filter and pass them all
+       * green while the defect was live.
+       */
+      const warnings = (): string => {
+        const lines = warned();
+        expect(lines).toHaveLength(1);
+        return lines[0]!;
+      };
+
+      it('warns with the error CLASS when the probe cannot be read', async () => {
+        s3Client.send.mockResolvedValueOnce({}); // delete new key
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(
+            new Error(
+              'User: arn:aws:sts::123456789012:assumed-role/deployer/session-42 is not authorized'
+            ),
+            { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }
+          )
+        );
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const line = warnings();
+        expect(line).toMatch(/Could not read the legacy state record for 'S'/);
+        expect(line).toContain('AccessDenied');
+        expect(line).toMatch(/left in place/);
+      });
+
+      it('keeps AWS\'s own wording out of the warning', async () => {
+        // On this warning's headline population S3 words AccessDenied as
+        // `User: arn:aws:sts::<account>:assumed-role/<role>/<session> ...`, so
+        // printing its message writes the caller's account, role and session
+        // into terminal and CI output on every destroy.
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(
+            new Error(
+              'User: arn:aws:sts::123456789012:assumed-role/deployer/session-42 is not authorized'
+            ),
+            { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }
+          )
+        );
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const line = warnings();
+        expect(line).not.toContain('123456789012');
+        expect(line).not.toContain('assumed-role');
+        expect(line).not.toContain('session-42');
+      });
+
+      it('suggests no command and prescribes no permission', async () => {
+        // Three review rounds of defects came from trying: the S3 key embeds
+        // the raw stack name, `displaySafe` keeps `'` so a quoted command can
+        // be broken out of, it maps non-ASCII to a space so the name may not
+        // be the stack's, and the remedy needs the very permission whose
+        // absence produces the commonest instance of this warning.
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(new Error('denied'), { name: 'AccessDenied' })
+        );
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const line = warnings();
+        expect(line).not.toContain('cdkd state orphan');
+        expect(line).not.toContain('s3:ListBucket');
+        expect(line).not.toContain('s3://');
+        expect(line).not.toContain(`${'cdkd'}/S/state.json`);
+      });
+
+      it('carries no attacker-controlled bytes from a hostile body', async () => {
+        // `JSON.parse`'s V8 SyntaxError embeds ~30 characters OF THE BODY in
+        // its message. A principal able to write the state bucket could put
+        // terminal escapes — or a neighbouring plaintext property value — into
+        // a default-verbosity warn through it, which is why `reason` carries
+        // an error CLASS and never a message.
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({
+          Body: {
+            // Measured against V8 on Node 24 rather than assumed: only the
+            // `Unexpected token` form embeds a snippet, and it shows the
+            // control run plus roughly the last ten characters of the value
+            // before it. So the payload puts the escape in a VALUE position
+            // right after a secret, which is the shape that leaks both.
+            transformToString: () =>
+              Promise.resolve('{"p":"s3cr3t","x":\u001b[2K\rok'),
+          },
+        });
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const line = warnings();
+        // No C0 / C1 control byte reaches the terminal.
+        expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        // The tail V8 actually shows — a longer needle would sit outside the
+        // window and pass whether or not the value leaked.
+        expect(line).not.toContain('cr3t');
+        // The class still gets through, so the line is still diagnosable.
+        expect(line).toContain('SyntaxError');
+      });
+
+      it('leaves a debug line for every unreadable shape, so --verbose is not a lie', async () => {
+        const debugFor = (): string =>
+          childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+
+        // (a) no body
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({});
+        await backend.deleteState('S', 'us-east-1');
+        expect(debugFor()).toMatch(/response carried no body/);
+
+        childLoggerMock.debug.mockClear();
+
+        // (b) region field of the wrong type
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                JSON.stringify({ version: 1, stackName: 'S', region: 123, resources: {}, outputs: {}, lastModified: 1 })
+              ),
+          },
+        });
+        await backend.deleteState('S', 'us-east-1');
+        expect(debugFor()).toMatch(/'region' is number, not a string/);
+
+        childLoggerMock.debug.mockClear();
+
+        // (c) the throwing branch
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(new Error('denied'), { name: 'AccessDenied' })
+        );
+        await backend.deleteState('S', 'us-east-1');
+        expect(debugFor()).toMatch(/Could not read legacy state region/);
+      });
+
+      it('warns for a body it could not classify, without the AWS advice', async () => {
+        // `reason` also carries the two non-throwing unreadable shapes. They
+        // are not permission problems, so nothing in the message may read as
+        // one.
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                JSON.stringify({ version: 1, stackName: 'S', region: 123, resources: {}, outputs: {}, lastModified: 1 })
+              ),
+          },
+        });
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const line = warnings();
+        expect(line).toMatch(/'region' field is number, not a string/);
+        expect(line).not.toContain('s3:ListBucket');
+      });
+
+      it('stays silent when the legacy key is simply absent', async () => {
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })
+        );
+
+        await backend.deleteState('S', 'us-east-1');
+
+        expect(allWarnings()).not.toMatch(/legacy state record/i);
+      });
+
+      it('stays silent when the legacy body names a region', async () => {
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S', 'us-east-1')) });
+        s3Client.send.mockResolvedValueOnce({}); // legacy delete
+
+        await backend.deleteState('S', 'us-east-1');
+
+        expect(allWarnings()).not.toMatch(/legacy state record/i);
+      });
+
+      it('stays silent when the legacy body names no region', async () => {
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) });
+        s3Client.send.mockResolvedValueOnce({}); // legacy delete
+
+        await backend.deleteState('S', 'us-east-1');
+
+        expect(allWarnings()).not.toMatch(/legacy state record/i);
+      });
+    });
+
+    it('issues no legacy delete when the legacy key is absent', async () => {
+      // The other reason the one-line fix was wrong: an absent key read as
+      // the same `undefined`, so accepting it would have sent a pointless
+      // DeleteObject on every ordinary destroy.
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })
+      );
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
     });
   });
 
