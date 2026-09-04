@@ -651,6 +651,41 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
       await expect(backend.stateExists('S', 'us-east-1')).resolves.toBe(false);
     });
+
+    // Issue #2550 split the three answers that used to read as one
+    // `undefined`. These pin which of them `stateExists` now says yes to.
+    it('returns true for a legacy body that names NO region, from any region', async () => {
+      // `getState` would return this record for any region — `tryGetLegacy`'s
+      // gate only refuses a body naming a DIFFERENT one. `stateExists` has to
+      // agree, or it reports "no state" for a record the next read returns.
+      s3Client.send.mockRejectedValueOnce(Object.assign(new Error('NF'), { name: 'NotFound' }));
+      s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) });
+
+      await expect(backend.stateExists('S', 'eu-west-1')).resolves.toBe(true);
+    });
+
+    it('returns false when the legacy key is absent', async () => {
+      // The case that makes the one-line fix wrong: `readLegacyRegion`
+      // returned `undefined` here too, so accepting `undefined` would report
+      // state for a stack that has none — and `reconcileRegionWithLegacyDefault`
+      // picks a region from this answer.
+      s3Client.send.mockRejectedValueOnce(Object.assign(new Error('NF'), { name: 'NotFound' }));
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })
+      );
+
+      await expect(backend.stateExists('S', 'us-east-1')).resolves.toBe(false);
+    });
+
+    it('returns false when the legacy key cannot be read', async () => {
+      // A denied or throttled read says nothing about who owns the record.
+      s3Client.send.mockRejectedValueOnce(Object.assign(new Error('NF'), { name: 'NotFound' }));
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' })
+      );
+
+      await expect(backend.stateExists('S', 'us-east-1')).resolves.toBe(false);
+    });
   });
 
   describe('deleteState', () => {
@@ -691,6 +726,62 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         .map((cmd: DeleteObjectCommand) => cmd.input.Key);
       expect(deletedKeys).not.toContain('cdkd/S/state.json');
       expect(deletedKeys).toContain('cdkd/S/us-east-1/state.json');
+    });
+
+    // Issue #2550. `tryGetLegacy` accepts a body naming NO region from any
+    // region, so `cdkd destroy` reads such a record and deletes the AWS
+    // resources. The sweep's old equality test answered
+    // `undefined === 'us-east-1'` — false — so the record survived a
+    // successful destroy and the next deploy of that name planned updates
+    // against resources that no longer existed.
+    it('sweeps a legacy key whose body names NO region', async () => {
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) }); // probe: no region
+      s3Client.send.mockResolvedValueOnce({}); // delete legacy key
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).toContain('cdkd/S/state.json');
+    });
+
+    it('does not sweep a legacy key it could not read', async () => {
+      // The arm that keeps the fix from being "treat undefined as a match":
+      // a 403 / 503 / malformed body says nothing about who owns the record,
+      // and a read that failed must never authorise a delete.
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' })
+      );
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
+    });
+
+    it('issues no legacy delete when the legacy key is absent', async () => {
+      // The other reason the one-line fix was wrong: an absent key read as
+      // the same `undefined`, so accepting it would have sent a pointless
+      // DeleteObject on every ordinary destroy.
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockRejectedValueOnce(
+        Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })
+      );
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
     });
   });
 

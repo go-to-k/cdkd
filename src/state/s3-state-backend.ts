@@ -113,6 +113,23 @@ export interface VerifyBucketExistsOptions {
  * for that region. Provisioning clients are unaffected — only the
  * state-bucket S3 client is region-corrected.
  */
+/**
+ * What the legacy `{prefix}/{stackName}/state.json` key holds, as four
+ * distinct answers rather than the single `undefined` that collapsed them
+ * (issue #2550).
+ *
+ * The collapse is what made the destroy bug hard to fix safely: `absent`,
+ * `no-region` and `unreadable` all read as "no region", so a caller could not
+ * tell "there is no record" from "there is a record that names no region"
+ * from "I could not look". `deleteState` needed the middle one to mean YES
+ * and `stateExists` needed the other two to mean NO.
+ */
+type LegacyStateProbe =
+  | { kind: 'absent' }
+  | { kind: 'no-region' }
+  | { kind: 'region'; region: string }
+  | { kind: 'unreadable' };
+
 export class S3StateBackend {
   private logger = getLogger().child('S3StateBackend');
   private s3Client: S3Client;
@@ -303,7 +320,7 @@ export class S3StateBackend {
       return true;
     }
 
-    return this.legacyMatchesRegion(stackName, region);
+    return this.legacyBelongsToRegion(stackName, region);
   }
 
   /**
@@ -502,7 +519,7 @@ export class S3StateBackend {
       );
 
       // Sweep the legacy key only if it belongs to the same region.
-      if (await this.legacyMatchesRegion(stackName, region)) {
+      if (await this.legacyBelongsToRegion(stackName, region)) {
         await this.s3Client.send(
           new DeleteObjectCommand({
             Bucket: this.config.bucket,
@@ -1089,7 +1106,7 @@ export class S3StateBackend {
    * `stateExists` / `deleteState` and for assigning a region to legacy
    * entries during `listStacks`.
    */
-  private async readLegacyRegion(stackName: string): Promise<string | undefined> {
+  private async probeLegacyState(stackName: string): Promise<LegacyStateProbe> {
     try {
       const response = await this.s3Client.send(
         new GetObjectCommand({
@@ -1098,23 +1115,62 @@ export class S3StateBackend {
           Key: this.getLegacyStateKey(stackName),
         })
       );
-      if (!response.Body) return undefined;
+      if (!response.Body) return { kind: 'unreadable' };
       const bodyString = await response.Body.transformToString();
       const state = JSON.parse(bodyString) as Partial<StackState>;
-      return typeof state.region === 'string' ? state.region : undefined;
+      return typeof state.region === 'string'
+        ? { kind: 'region', region: state.region }
+        : { kind: 'no-region' };
     } catch (error) {
-      if (isNoSuchKey(error)) return undefined;
+      if (isNoSuchKey(error)) return { kind: 'absent' };
       // Don't fail the whole list on a single bad legacy file — log & skip.
       this.logger.debug(
         `Could not read legacy state region for '${stackName}': ${error instanceof Error ? error.message : String(error)}`
       );
-      return undefined;
+      return { kind: 'unreadable' };
     }
   }
 
-  private async legacyMatchesRegion(stackName: string, region: string): Promise<boolean> {
-    const legacyRegion = await this.readLegacyRegion(stackName);
-    return legacyRegion === region;
+  /**
+   * The region a legacy record should be listed under, or `undefined` when it
+   * names none / could not be read. Preserves `listStacks`'s behaviour across
+   * the {@link probeLegacyState} split.
+   */
+  private async readLegacyRegion(stackName: string): Promise<string | undefined> {
+    const probe = await this.probeLegacyState(stackName);
+    return probe.kind === 'region' ? probe.region : undefined;
+  }
+
+  /**
+   * Whether an operation targeting `region` owns the legacy record — the
+   * DELETE-side counterpart of `tryGetLegacy`'s read gate, and issue #2550.
+   *
+   * The two must agree. `tryGetLegacy` accepts a body that names NO region
+   * from any region (`if (state.region && state.region !== region)` is false
+   * when the field is absent), so `cdkd destroy` reads such a record, deletes
+   * the AWS resources, and finishes. The old equality test here answered
+   * `undefined === 'us-east-1'` — false — so the record survived a successful
+   * destroy, kept appearing in `cdkd state list`, and the next deploy of that
+   * name planned updates against resources that were gone.
+   *
+   * `unreadable` is deliberately NOT treated as `no-region`: a 403, a 503 or a
+   * malformed body says nothing about who owns the record, and a read that
+   * failed must never authorise a delete. It collapsed into the same
+   * `undefined` as the other two before, which is why the one-line fix — make
+   * `undefined` match — was wrong: it would also have made `stateExists`
+   * report state for a stack that has none, since `absent` reads the same way.
+   */
+  private async legacyBelongsToRegion(stackName: string, region: string): Promise<boolean> {
+    const probe = await this.probeLegacyState(stackName);
+    switch (probe.kind) {
+      case 'region':
+        return probe.region === region;
+      case 'no-region':
+        return true;
+      case 'absent':
+      case 'unreadable':
+        return false;
+    }
   }
 
   /**
