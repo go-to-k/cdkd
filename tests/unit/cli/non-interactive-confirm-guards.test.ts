@@ -80,6 +80,17 @@ interface Site {
   readonly rendered: string;
   /** Substrings the refusal must carry: the command, then every way through. */
   readonly names: readonly string[];
+  /**
+   * Substrings the refusal must NOT carry.
+   *
+   * `names` is `toContain`-only, so DELETING an entry from it asserts nothing
+   * — which is how a refusal can go on advertising a command that no longer
+   * exists. Measured while removing `cdkd migrate` (issue
+   * go-to-k/cdkd#2572): re-adding `or cdkd migrate --retire-cfn-stack` to the
+   * refusal string left all 42 cases green. The removal of a name is a claim,
+   * and a claim needs its own assertion.
+   */
+  readonly absentNames?: readonly string[];
 }
 
 /**
@@ -135,9 +146,10 @@ const SITES: readonly Site[] = [
     command: 'cdkd import --migrate-from-cloudformation (CFn stack retirement)',
     call: retireConfirm,
     rendered: 'Proceed? [y/N] ',
-    // The only site reachable from TWO commands, so its refusal must name
-    // BOTH: a CI user who has just been told a flag is missing still has to
-    // know which invocation to put it on. It is also the only one that fires
+    // Reachable from ONE command since `cdkd migrate --retire-cfn-stack` was
+    // removed with its command (issue #2572), so the refusal names that one —
+    // a CI user who has just been told a flag is missing still has to know
+    // which invocation to put it on. It is also the only site that fires
     // AFTER its command's state write, so the refusal states that too —
     // `confirmOrRefuse`'s contract is that the refusal is the only thing that
     // user sees.
@@ -145,9 +157,19 @@ const SITES: readonly Site[] = [
       'CloudFormation stack retirement',
       '-y / --yes',
       'cdkd import --migrate-from-cloudformation',
-      'cdkd migrate --retire-cfn-stack',
       'cdkd state has already been written',
     ],
+    // The one user-visible claim of issue go-to-k/cdkd#2572: this refusal
+    // named `cdkd migrate --retire-cfn-stack` as a second way through, and
+    // must not any more.
+    //
+    // NO trailing space. A first draft had one, on the theory that it stopped
+    // an over-match; the only nearby command is `cdkd state migrate`, which
+    // does not contain the substring `cdkd migrate` at all (it has `state `
+    // between), so nothing was being guarded against -- while the space DID
+    // miss a sentence-final `... cdkd migrate.`, which is the exact shape this
+    // refusal now uses one clause earlier.
+    absentNames: ['cdkd migrate'],
   },
   {
     command: 'cdkd state migrate',
@@ -181,10 +203,13 @@ afterEach(() => {
 });
 
 describe('every mutating confirmation prompt refuses a non-interactive stdin (issue #2275)', () => {
-  it('covers all nine sites the issue enumerates', () => {
+  it('covers all ten sites that route through the guarded helper', () => {
     // A floor written as a LITERAL, so a row silently dropped from `SITES`
     // reds this rather than shrinking both sides of a derived comparison
-    // together. Nine sites, eight modules: `state.ts` holds two.
+    // together. TEN sites, nine modules: `state.ts` holds two. Issue #2275
+    // enumerated nine; `cdkd events prune` was folded in later by issue
+    // #2454, and the literal below has counted ten since — the title and this
+    // sentence had not caught up.
     expect(SITES).toHaveLength(10);
     expect(new Set(SITES.map((s) => s.command)).size).toBe(10);
   });
@@ -201,7 +226,7 @@ describe('every mutating confirmation prompt refuses a non-interactive stdin (is
       const error = await site.call('Proceed?').catch((e: unknown) => e);
 
       // The CODE, not merely that something threw: only `gc.ts` and
-      // `bootstrap-destroy.ts` carried it among the five originally guarded
+      // `bootstrap-destroy.ts` carried it among the four originally guarded
       // prompts, and matching them is what lets CI branch on the refusal.
       expect(error).toBeInstanceOf(CdkdError);
       expect((error as CdkdError).code).toBe('NON_INTERACTIVE_CONFIRM');
@@ -224,6 +249,12 @@ describe('every mutating confirmation prompt refuses a non-interactive stdin (is
 
       for (const needle of site.names) {
         expect(message, `refusal did not name ${needle}`).toContain(needle);
+      }
+      for (const needle of site.absentNames ?? []) {
+        expect(
+          message,
+          `refusal still advertises "${needle}", which no longer exists`
+        ).not.toContain(needle);
       }
       expect(message).toContain('non-interactive environment');
     }

@@ -386,7 +386,9 @@ describe('retireCloudFormationStack', () => {
   });
 
   it('forwards existing stack Parameters via UsePreviousValue on UpdateStack', async () => {
-    // Real cdkd bug surfaced by the cdkd migrate integ on 2026-05-22: when
+    // Real cdkd bug surfaced by the migrate-from-bare-cfn integ on
+    // 2026-05-22 (that fixture was retired with `cdkd migrate`, issue #2572,
+    // and this test is now the only guard on the behaviour): when
     // the source CFn stack has declared Parameters, UpdateStack without a
     // Parameters argument falls back to CFn template defaults. If a
     // parameter has no default the call validates-fails; if a parameter has
@@ -1387,6 +1389,103 @@ describe('retireCloudFormationStack (nested-stack-aware path)', () => {
     const deletes = s3SendCalls.filter((c) => c.name === 'DeleteObject');
     expect(puts).toHaveLength(1);
     expect(deletes).toHaveLength(1);
+  });
+
+  // The TWIN of the test above, and the only thing fencing the lazy arm at
+  // `retire-cfn-stack.ts`'s `resourceTree ?? (await
+  // getCloudFormationResourceTree(...))`. Issue #2572 removed `cdkd migrate`,
+  // which was the only caller that omitted `resourceTree` -- `cdkd import`'s
+  // migration path always supplies it -- so the arm survives on its CONTRACT
+  // (`resourceTree` is optional, and omitting it must stay correct) rather
+  // than on a production caller. A contract with no test is a comment, so the
+  // case is written here rather than the arm being deleted.
+  //
+  // The discriminator is the CFn call SEQUENCE, not the outcome: the
+  // caller-supplied twin above asserts NO `DescribeStackResources`, and this
+  // one asserts the two the lazy walk must issue, BY TARGET (the parent, then
+  // the child's physical id). An outcome-only assertion would pass with the
+  // recursion skipped entirely, which is precisely the failure that would let
+  // a nested parent be retired without Retain reaching its children -- and
+  // asserting only the COUNT left a wrong-target recursion green under probe,
+  // which is why the targets are named.
+  it('builds the tree lazily when the caller omits resourceTree, and still recurses into children', async () => {
+    const childArn = 'arn:aws:cloudformation:...:stack/Child/uuid';
+    const parentBody = JSON.stringify({
+      Resources: {
+        P: { Type: 'AWS::S3::Bucket' },
+        Child: {
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'https://old/child.json' },
+        },
+      },
+    });
+    const childBody = JSON.stringify({
+      Resources: { C: { Type: 'AWS::S3::Bucket' } },
+    });
+
+    const cfnCalls: { name: string; stackName: unknown }[] = [];
+    const send = vi.fn(async (cmd: FakeCommand) => {
+      cfnCalls.push({ name: cmd._name, stackName: cmd.input['StackName'] });
+      if (cmd._name === 'DescribeStacks') {
+        return { Stacks: [{ StackStatus: 'CREATE_COMPLETE', Capabilities: [] }] };
+      }
+      if (cmd._name === 'DescribeStackResources') {
+        // Bodies are returned by call ORDINAL, but the TARGETS are asserted
+        // below by `StackName`. Ordinal alone was NOT enough: a probe that
+        // made the recursion descend into the wrong physical id left this
+        // case GREEN, because an ordinal-keyed mock hands back the right body
+        // whatever it was asked for.
+        const n = cfnCalls.filter((c) => c.name === 'DescribeStackResources').length;
+        return n === 1
+          ? {
+              StackResources: [
+                { LogicalResourceId: 'P', PhysicalResourceId: 'p', ResourceType: 'AWS::S3::Bucket' },
+                {
+                  LogicalResourceId: 'Child',
+                  PhysicalResourceId: childArn,
+                  ResourceType: 'AWS::CloudFormation::Stack',
+                },
+              ],
+            }
+          : {
+              StackResources: [
+                { LogicalResourceId: 'C', PhysicalResourceId: 'c', ResourceType: 'AWS::S3::Bucket' },
+              ],
+            };
+      }
+      if (cmd._name === 'GetTemplate') {
+        return {
+          TemplateBody:
+            cfnCalls.filter((c) => c.name === 'GetTemplate').length === 1 ? parentBody : childBody,
+        };
+      }
+      if (cmd._name === 'UpdateStack') return { StackId: 'arn' };
+      if (cmd._name === 'DeleteStack') return {};
+      throw new Error(`Unexpected: ${cmd._name}`);
+    });
+
+    const result = await retireCloudFormationStack({
+      cfnStackName: 'Parent',
+      cfnClient: { send } as never,
+      yes: true,
+      stateBucket: 'state-bucket',
+      // resourceTree deliberately OMITTED -- this is the case under test.
+    });
+
+    expect(result).toEqual({ outcome: 'retired' });
+    // TWO DescribeStackResources, AND against the right targets: the parent
+    // first, then the child's physical id. The COUNT says the child was
+    // visited; the NAMES say it was the right child. One call would mean the
+    // child was never visited and its resources never got
+    // `DeletionPolicy: Retain` before the parent-side DeleteStack cascade.
+    expect(
+      cfnCalls.filter((c) => c.name === 'DescribeStackResources').map((c) => c.stackName)
+    ).toEqual(['Parent', childArn]);
+    // Both templates were fetched and the child body was staged + cleaned up,
+    // matching the caller-supplied twin's end state exactly.
+    expect(cfnCalls.filter((c) => c.name === 'GetTemplate')).toHaveLength(2);
+    expect(s3SendCalls.filter((c) => c.name === 'PutObject')).toHaveLength(1);
+    expect(s3SendCalls.filter((c) => c.name === 'DeleteObject')).toHaveLength(1);
   });
 
   it('throws on resourceTree.stackName / cfnStackName mismatch up front', async () => {

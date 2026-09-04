@@ -613,7 +613,7 @@ non-TTY rule as the destroy prompts above:
 | `cdkd import` | `Write state for <stack> with N resource(s)?` | `-y` / `--yes` |
 | `cdkd export` | the rollback-journal override, the migration confirm, and the nested-stack tree-wide confirm | `-y` / `--yes` |
 | `cdkd drift --accept` / `--revert` | `Update cdkd state...?` / `Push cdkd state values back into AWS...?` | `-y` / `--yes` |
-| `cdkd import --migrate-from-cloudformation`, `cdkd migrate --retire-cfn-stack` | `Set DeletionPolicy=Retain ... then delete the stack?` | `-y` / `--yes` |
+| `cdkd import --migrate-from-cloudformation` | `Set DeletionPolicy=Retain ... then delete the stack?` | `-y` / `--yes` |
 | `cdkd state migrate` | `Copy N object(s) from <bucket> -> <bucket>...?` | `-y` / `--yes` |
 | `cdkd events prune` | `Prune deployment-event history for <stack> (<region>): <scope>?` | `-y` / `--yes` |
 
@@ -654,14 +654,13 @@ these something already has:
   retirement.
 - **The CloudFormation retirement has already written, in two senses.** cdkd
   state is written *before* it is reached at all — it is the last step of
-  `cdkd import --migrate-from-cloudformation` / `cdkd migrate
-  --retire-cfn-stack` — so a refusal leaves the resources recorded in cdkd
-  state while the CloudFormation stack is still live. Its refusal message says
-  so, and names both commands. Separately, for a nested stack whose child
-  templates exceed CloudFormation's 51,200-byte inline limit, those child
-  bodies have already been uploaded to `cdkd-migrate-tmp/` in the state bucket
-  by the time the prompt fires; they are **deleted on the refusing path**,
-  exactly as they are when you answer `n`.
+  `cdkd import --migrate-from-cloudformation` — so a refusal leaves the
+  resources recorded in cdkd state while the CloudFormation stack is still
+  live. Its refusal message says so, and names that command. Separately, for a
+  nested stack whose child templates exceed CloudFormation's 51,200-byte inline
+  limit, those child bodies have already been uploaded to `cdkd-migrate-tmp/`
+  in the state bucket by the time the prompt fires; they are **deleted on the
+  refusing path**, exactly as they are when you answer `n`.
 
 Every other prompt refuses after read-only work only — the plan it was about to
 ask you to confirm, and nothing else.

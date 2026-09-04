@@ -21,7 +21,6 @@ import { createStateCommand } from './commands/state.js';
 import { createImportCommand } from './commands/import.js';
 import { createLocalCommand } from './commands/local-invoke.js';
 import { createExportCommand } from './commands/export.js';
-import { createMigrateCommand } from './commands/migrate-command.js';
 
 /**
  * Builds the full `cdkd` command tree.
@@ -81,7 +80,6 @@ export function buildProgram(): Command {
   program.addCommand(createStateCommand());
   program.addCommand(createLocalCommand());
   program.addCommand(createExportCommand());
-  program.addCommand(createMigrateCommand());
 
   // Issue #2556: the four `local start-*` commands inherit `--stack-region`
   // from cdk-local, so there is no declaration in this repo to attach the

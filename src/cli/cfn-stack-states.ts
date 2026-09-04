@@ -8,10 +8,11 @@
  * unhealthy state — callers gate AWS-side mutations behind this set so
  * the user can settle the source before paying for further work.
  *
- * Single source of truth — consumed by both `cdkd migrate`'s pre-flight
- * check (`src/cli/commands/migrate/cfn-stack-prefetch.ts`) and the
- * `cdkd import --migrate-from-cloudformation` retirement flow
- * (`src/cli/commands/retire-cfn-stack.ts`).
+ * Consumed by the `cdkd import --migrate-from-cloudformation` retirement
+ * flow (`src/cli/commands/retire-cfn-stack.ts`). It had a second consumer,
+ * `cdkd migrate`'s pre-flight check, until that command was removed (issue
+ * #2572); the module stays separate so the next CloudFormation-reading
+ * surface shares the set instead of re-spelling it.
  */
 export const STABLE_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   'CREATE_COMPLETE',

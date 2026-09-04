@@ -1409,18 +1409,19 @@ async function stateDestroyCommand(
       }
       process.stdout.write('\n');
       // NON-INTERACTIVE runs are refused BEFORE the prompt, which is this
-      // repo's existing answer to exactly this question. FIVE sites place the
+      // repo's existing answer to exactly this question. FOUR sites place the
       // guard the same way -- `gc.ts`, `bootstrap-destroy.ts`,
-      // `recreate-confirm-prompt.ts`, `prefix-migration-check.ts` and
-      // `migrate-command.ts` all test `process.stdin.isTTY` before creating
-      // the interface -- but only TWO share the error SHAPE this one copies:
-      // `gc.ts` and `bootstrap-destroy.ts` throw `CdkdError` with the
-      // `NON_INTERACTIVE_CONFIRM` code. The other three throw a bare `Error`
-      // (`recreate-confirm-prompt.ts`, `prefix-migration-check.ts`) or a
-      // `LocalMigrateError` (`migrate-command.ts`). Matching the two that
-      // carry the code is deliberate: a destroy refusal is something CI should
-      // be able to branch on. An earlier revision of this comment said all
-      // five threw the code, which is not true and was measured to be wrong.
+      // `recreate-confirm-prompt.ts` and `prefix-migration-check.ts` all test
+      // `process.stdin.isTTY` before creating the interface -- but only TWO
+      // share the error SHAPE this one copies: `gc.ts` and
+      // `bootstrap-destroy.ts` throw `CdkdError` with the
+      // `NON_INTERACTIVE_CONFIRM` code. The other two throw a bare `Error`
+      // (`recreate-confirm-prompt.ts`, `prefix-migration-check.ts`). Matching
+      // the two that carry the code is deliberate: a destroy refusal is
+      // something CI should be able to branch on. An earlier revision of this
+      // comment said all of them threw the code, which is not true and was
+      // measured to be wrong. The count was FIVE until `cdkd migrate` was
+      // removed (issue #2572); its prompt threw a `LocalMigrateError`.
       //
       // It closes the hang issue #1342 is about — `rl.question` never settles
       // when stdin is already at EOF, so `cdkd state destroy --all` without

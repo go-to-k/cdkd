@@ -170,9 +170,32 @@ function isAccountIdPseudoParameter(value: unknown): boolean {
  * [#1675](https://github.com/go-to-k/cdkd/issues/1675)).
  *
  * This is {@link importableString} plus a NUMBER arm, and the number arm is
- * load-bearing rather than defensive: `cdkd import --migrate-from-cloudformation`
- * reads the stack's ORIGINAL template (`cfn-stack-prefetch.ts`), where an
- * unquoted YAML `CatalogId: 123456789012` parses as a JSON number. Rejecting it
+ * load-bearing rather than defensive, and the reason is NOT the one this
+ * comment gave for three revisions. It claimed
+ * `cdkd import --migrate-from-cloudformation` (earlier: `cdkd migrate`) read
+ * the source stack's ORIGINAL CloudFormation template and handed those raw
+ * properties to providers. It never did. Both commands take properties from
+ * the SYNTH assembly; `cdkd migrate` reached `runImport` with
+ * `app: <assemblyDir>` plus a logical-id mapping, and the ORIGINAL template it
+ * fetched was consumed only by transform detection and by the Pass-2
+ * property-equality MATCH, never forwarded. The `GetTemplate` that survives in
+ * `retire-cfn-stack.ts` feeds Retain injection and the re-upload, and reaches
+ * no properties bag either. Do not restore any of that.
+ *
+ * The two producers that ARE real, both current:
+ *
+ *  1. A numeric literal in the synth template itself — `new CfnResource({
+ *     properties: { CatalogId: 123456789012 } })`, or an
+ *     `addPropertyOverride`. CDK emits the number verbatim; nothing between
+ *     synth and this provider stringifies it.
+ *  2. The macro-expanded deploy template. `src/synthesis/macro-expander.ts`
+ *     fetches `GetTemplate` at `TemplateStage: 'Processed'` and parses the
+ *     JSON body as the template deploy / diff / import then use, so a macro
+ *     that emits an unquoted number lands here as a number.
+ *
+ * The DELETE path reaches it too, from the other side: `destroy-runner.ts`
+ * hands the recorded `resource.properties` straight to `provider.delete`, so a
+ * state row holding either shape above replays it at teardown. Rejecting it
  * as "not a string" would drop the field and silently retarget the call at the
  * account's DEFAULT catalog — which on a DELETE can destroy a same-named
  * resource that happens to live there. `Number.isFinite` keeps `NaN` /
@@ -3538,9 +3561,12 @@ const FEDERATED_DATABASE_MEMBERS = ['ConnectionName', 'Identifier'] as const;
 
 /**
  * Is this leaf value one cdkd can put on the wire? A STRING or a NUMBER — CFn
- * is stringly typed and an unquoted YAML account id arrives as a number (the
- * reason `catalogIdForApi` exists) — and nothing else, so an unresolved
- * intrinsic cannot ride an unchecked cast into the request.
+ * is stringly typed, and an account id can reach a provider as a JSON number
+ * (the reason {@link catalogIdForApi} exists; that function's note carries the
+ * two producers, neither of which is a YAML read — an earlier version of this
+ * sentence said "an unquoted YAML account id" and was wrong the same way) —
+ * and nothing else, so an unresolved intrinsic cannot ride an unchecked cast
+ * into the request.
  */
 const isSendableLeaf = (value: unknown): boolean =>
   typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));

@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run scenario-coverage` to regenerate.
 
-**92 / 92 canonical scenarios** have at least one integ fixture exercising them. **195 / 290 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
+**91 / 91 canonical scenarios** have at least one integ fixture exercising them. **193 / 288 integ fixtures** carry a `.scenarios.json` sidecar (with 0+ tags); the rest are un-annotated and contributor-reviewed below.
 
 ## How this is computed
 
@@ -31,7 +31,7 @@ This report is a visibility tool, not a commit-time gate. Many cdkd fixtures leg
 
 _None._ Every canonical scenario has at least one integ fixture tagged with it.
 
-## Per-scenario coverage (92 scenarios)
+## Per-scenario coverage (91 scenarios)
 
 | Scenario | Description | Integ Fixture(s) |
 |---|---|---|
@@ -93,7 +93,6 @@ _None._ Every canonical scenario has at least one integ fixture tagged with it.
 | `local-lambda-rie-zip` | `cdkd local invoke` ZIP-runtime Lambda against the AWS Lambda Runtime Interface Emulator (RIE) container. | [`local-invoke`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke/)<br>[`local-invoke-dotnet`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-dotnet/)<br>[`local-invoke-from-cfn-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-from-cfn-stack/)<br>[`local-invoke-from-cfn-stack-multi-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-from-cfn-stack-multi-stack/)<br>[`local-invoke-from-state`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-from-state/)<br>[`local-invoke-java`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-java/)<br>[`local-invoke-layers`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-layers/)<br>[`local-invoke-provided`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-provided/)<br>[`local-invoke-python`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-python/)<br>[`local-invoke-ruby`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-ruby/) |
 | `local-region-case-fold` | Region CASE folding on the `cdkd local` path (issues #1795 / #1814 / #1836): an upper-cased region is structurally valid and nothing rejects it, while AWS SDK endpoint resolution, the partition table and cdkd's own state-record / marker-key comparisons are all case-SENSITIVE. Covers the two ends a Docker / real-AWS run can observe — the CONTAINER's own `AWS_REGION` (every SDK client the handler builds) must arrive canonical from an upper-cased shell, and an upper-cased `--stack-region` must still read the canonically-keyed `cdkd/{stack}/{region}/state.json` record instead of silently falling back to no state at all. | [`local-invoke`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke/)<br>[`local-invoke-from-state`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-invoke-from-state/) |
 | `local-websocket-api` | `cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane. | [`local-start-api-websocket`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-api-websocket/) |
-| `migrate-from-bare-cfn` | `cdkd migrate --from-cfn-stack <name>` end-to-end: bare CFn → `cdk migrate` codegen → 2-pass resource mapping → cdkd state + optional retire. | [`migrate-from-bare-cfn`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/migrate-from-bare-cfn/) |
 | `migrate-from-cfn-handover` | CloudFormation → cdkd migration via `--migrate-from-cloudformation` (UpdateStack with Retain + DeleteStack). | [`migrate-from-cfn`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/migrate-from-cfn/) |
 | `multi-asset` | Asset-publishing layer under concurrency: MANY assets of TWO kinds publish in ONE `cdkd deploy` — 1 Docker image asset (`DockerAssetPublisher` -> ECR build+push, ARM_64-pinned) + 3 distinct multi-file directory assets (three distinct `FileAssetPublisher` S3 uploads, one per zip Lambda) + 1 generic `s3_assets.Asset` (a 4th S3 upload read back at runtime via cdkd-resolved bucket/key env). Exercises FileAssetPublisher + DockerAssetPublisher concurrency, ECR + S3 in one run, and asset-ref intrinsics. Each Lambda returns a DISTINCT marker so a cross-wired asset (wrong Code ref) fails the test — proving each distinct asset uploaded AND was wired to the correct Lambda. Clean destroy: all 4 Lambdas + OUR pushed ECR image (by tag) gone; the shared bootstrap container-assets repo + asset bucket objects persist by design. | [`multi-asset`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/multi-asset/) |
 | `multi-region-state-key` | Same stackName + different regions = independent state files (`version: 2` region-prefixed key layout). | [`multi-region-same-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/multi-region-same-stack/) |
