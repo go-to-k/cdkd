@@ -55,6 +55,8 @@ import { assertRegionMatch } from '../provisioning/region-check.js';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { getLogger } from '../utils/logger.js';
 import type { Logger } from '../types/config.js';
+import { withRetry } from './retry.js';
+import { isThrottlingError } from './retryable-errors.js';
 
 /**
  * One validated recreate target. The `resourceType` + `physicalId` are
@@ -542,6 +544,15 @@ export interface StatefulProbeClients {
   /** `AWS::Logs::LogGroup` log-stream probe (issue [#2558]). */
   cloudWatchLogs: CloudWatchLogsClient;
   /**
+   * Sleep seam for the probes' throttle retry (issue [#2566]), threaded
+   * straight through to {@link withRetry}. Production leaves it unset and
+   * gets the real timer; a unit test injects a no-op so asserting the retry
+   * costs no wall-clock. It lives on the CLIENTS bag rather than in a fourth
+   * parameter because it is the same kind of thing as the clients — an
+   * injected dependency of the probe, not a behaviour knob a user chooses.
+   */
+  sleep?: (ms: number) => Promise<void>;
+  /**
    * `StackState.region` — the region the recorded resources are expected to
    * live in. Not a client, but it belongs to the same bag for the same reason
    * `DeleteContext` carries it: the ONLY consumer is the `not-found`-means-gone
@@ -643,6 +654,37 @@ export async function probeStatefulRecreateTargetsAsync(
   logger: Logger = getLogger().child('recreate-targets')
 ): Promise<RecreateTarget[]> {
   const promoted: RecreateTarget[] = [];
+  // Both probes retry a THROTTLE (issue [#2566]). A rate limit is the one
+  // failure here that a retry can clear, and the two arms answer a throttle
+  // differently by design -- the bucket falls through to its open failure
+  // arm, the log group to a refusal -- so an unretried throttle silently
+  // widens the S3 hole in one arm and refuses a deploy the user asked for in
+  // the other. Deliberately NOT the shared transient table: every other error
+  // here is either an answer (`ResourceNotFoundException`) or something a
+  // second identical call will not change, and this runs on the pre-flight
+  // path where a user is waiting.
+  //
+  // "Throttle" means what `isThrottlingError` means -- a throttling error
+  // NAME or a 429/503 -- and not the shared table's `Rate exceeded` MESSAGE
+  // backstop, which a custom `isRetryable` replaces rather than extends. Both
+  // services this probes raise a canonical name (`SlowDown` / a 503 for S3,
+  // `ThrottlingException` for CloudWatch Logs), so the narrower reading
+  // covers them; a rate limit arriving with a generic name would not retry.
+  //
+  // 3 retries = 4 attempts, sleeping 0.5s + 1s + 2s = 3.5s at worst, per
+  // target. `logger` is threaded so that wait is visible under `--verbose`
+  // instead of reading as a hang.
+  const probeRetryOptions = {
+    maxRetries: 3,
+    initialDelayMs: 500,
+    logger,
+    // `(classificationText, error)` — the ERROR is the second argument, and
+    // reading the first would hand `isThrottlingError` a string with no
+    // `.name` and classify every throttle as non-retryable. Same spelling the
+    // other narrow throttle-only call sites use.
+    isRetryable: (_message: string, error: unknown) => isThrottlingError(error),
+    ...(clients.sleep && { sleep: clients.sleep }),
+  };
   for (const target of targets) {
     if (target.statefulReason !== null) {
       promoted.push({ ...target });
@@ -650,24 +692,66 @@ export async function probeStatefulRecreateTargetsAsync(
     }
     if (target.resourceType === 'AWS::S3::Bucket') {
       try {
-        const result = await clients.s3.send(
-          new ListObjectVersionsCommand({
-            Bucket: target.physicalId,
-            MaxKeys: 1,
-          })
+        const result = await withRetry(
+          () =>
+            clients.s3.send(
+              new ListObjectVersionsCommand({
+                Bucket: target.physicalId,
+                MaxKeys: 1,
+              })
+            ),
+          target.logicalId,
+          probeRetryOptions
         );
-        // NOTE the asymmetry with the log-group arm below, which is
-        // deliberate and NOT an oversight: this arm still reads an ABSENT
-        // `Versions` / `DeleteMarkers` as zero and ignores `IsTruncated`, so
-        // two non-answers clear the guard here that would refuse there. The
-        // argument for tightening it is identical, but this arm fails OPEN by
-        // design (issue [#648], published in `docs/cli-deploy-safety.md`), so
-        // whether a non-answer belongs with the open failure arm or with the
-        // empty verdict is its own decision rather than a copy of the log
-        // group's. Issue [#2578] holds it.
+        // ONE of the log-group arm's two non-answers applies here; the other
+        // does NOT, and issue [#2578] asked for both. The difference is how
+        // each API encodes "none", which is a wire fact rather than a style:
+        //
+        //   - An ABSENT `Versions` / `DeleteMarkers` is NOT a non-answer.
+        //     S3 OMITS an empty collection rather than sending an empty array
+        //     — measured 2026-09-05, `us-east-1`, read-only
+        //     `ListObjectVersions(MaxKeys=1)` through this same client: a
+        //     bucket holding versions and no delete markers answered
+        //     `Versions` present with one entry and `DeleteMarkers` absent
+        //     from the response entirely. So an empty bucket omits BOTH, and
+        //     requiring a PRESENT empty pair — the shape the log-group arm
+        //     requires, correctly, because CloudWatch Logs sends `logStreams`
+        //     present-and-empty — would make EVERY empty bucket read as not
+        //     provably empty and turn this conditional arm into an
+        //     unconditional refusal. Reading absence as zero is right here.
+        //
+        //   - A CONTINUATION marker with no entry in either array IS a
+        //     non-answer, exactly as it is there: the listing is unfinished,
+        //     so this page's emptiness is not the BUCKET's emptiness. That
+        //     half was the real defect and is what this check adds.
+        //
+        // The fail-OPEN posture of the `catch` below is unchanged (issue
+        // [#648], published in `docs/cli-deploy-safety.md`): this is about a
+        // response that arrived, not about a probe that failed.
         const hasVersions = (result.Versions?.length ?? 0) > 0;
         const hasDeleteMarkers = (result.DeleteMarkers?.length ?? 0) > 0;
+        // Truthiness, not `!== undefined`, so an empty-string marker reads as
+        // ABSENT — the same reading the log-group twin's `!result.nextToken`
+        // gives the same shape. Measured: a complete listing carries
+        // `IsTruncated: false` and neither marker at all, so the two spellings
+        // agree today; they disagree only on a `''` marker, where
+        // `!== undefined` would refuse a genuinely empty bucket.
+        const truncated =
+          result.IsTruncated === true || !!result.NextKeyMarker || !!result.NextVersionIdMarker;
         if (hasVersions || hasDeleteMarkers) {
+          promoted.push({ ...target, statefulReason: 'has-objects' });
+        } else if (truncated) {
+          // Warned rather than passed silently, as the log-group arm does:
+          // the user is about to be refused, and the refusal alone would not
+          // say that the API answered without answering.
+          logger.warn(
+            `--recreate-via-cc-api / --recreate-via-sdk-provider: S3 answered the emptiness probe ` +
+              `for ${target.logicalId} (bucket ${target.physicalId}) without settling it (an empty ` +
+              `page carrying a continuation marker); treating the bucket as NOT provably empty. ` +
+              `Re-run to retry the probe, or — only if the bucket really is disposable — re-run ` +
+              `with --force-stateful-recreation (that flag has NO per-resource granularity and ` +
+              `clears the guard for every target in the run).`
+          );
           promoted.push({ ...target, statefulReason: 'has-objects' });
         } else {
           promoted.push({ ...target });
@@ -686,11 +770,16 @@ export async function probeStatefulRecreateTargetsAsync(
     }
     if (target.resourceType === 'AWS::Logs::LogGroup') {
       try {
-        const result = await clients.cloudWatchLogs.send(
-          new DescribeLogStreamsCommand({
-            logGroupName: target.physicalId,
-            limit: 1,
-          })
+        const result = await withRetry(
+          () =>
+            clients.cloudWatchLogs.send(
+              new DescribeLogStreamsCommand({
+                logGroupName: target.physicalId,
+                limit: 1,
+              })
+            ),
+          target.logicalId,
+          probeRetryOptions
         );
         // Only ONE response shape proves the group empty: a PRESENT,
         // zero-length `logStreams` with no continuation token. The other two

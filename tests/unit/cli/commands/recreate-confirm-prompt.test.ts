@@ -229,10 +229,12 @@ describe('promptRecreateConfirm (#649)', () => {
       // and warning over it would be a false alarm on the one path that did.
       //
       // Precisely for the LOG GROUP, which is what this case pins. The S3 arm
-      // fails OPEN, so a bucket whose `ListObjectVersions` threw also reaches
-      // here with `null` and no data-loss line — an under-warning this change
-      // does not close, tracked with the rest of that arm's non-answer
-      // handling in issue #2578.
+      // fails OPEN, so a bucket whose `ListObjectVersions` THREW also reaches
+      // here with `null` and no data-loss line — an under-warning that is
+      // still open. Issue #2578 closed the arm's non-ANSWER handling (a
+      // truncated page now refuses) but deliberately did not touch the
+      // fail-open posture of a probe that never answered at all, which is
+      // where this case lives.
       await promptRecreateConfirm({
         stackName: 'S',
         targets: [
