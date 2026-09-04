@@ -88,11 +88,12 @@ cdkd has three command families:
   you don't want to synth. `cdkd state destroy` is the CDK-app-free
   counterpart of `cdkd destroy`.
 - **`cdkd local ...` subcommands** (`local invoke` / `start-api` /
-  `run-task` / `start-service`) run synthesized workloads locally
-  inside Docker containers — no AWS deploy needed. Modeled on
+  `run-task` / `start-service` / `start-alb` / `start-cloudfront` /
+  `invoke-agentcore` / `start-agentcore`) run synthesized workloads
+  locally inside Docker containers — no AWS deploy needed. Modeled on
   `sam local *` but reads CDK state directly via `--from-state`
   (cdkd-managed) or `--from-cfn-stack` (CFn-managed). See
-  [Local execution](local-emulation.md).
+  [Local Execution](local-emulation.md).
 
 Options like `--app`, `--state-bucket`, and `--context` can be omitted if configured via `cdk.json` or environment variables (`CDKD_APP`, `CDKD_STATE_BUCKET`).
 

@@ -1,231 +1,367 @@
 ---
-title: local run-task
+title: cdkd local run-task
 description: "Run one ECS task definition locally on a Docker network with the ECS metadata sidecar, secrets resolution, and DependsOn container ordering."
 ---
 
-# `local run-task` (run an ECS task definition locally)
+# cdkd local run-task
 
-`cdkd local run-task <Stack/TaskDefinitionPath>` is the ECS counterpart
-of `cdkd local invoke`. It takes an `AWS::ECS::TaskDefinition` defined
-in a CDK app and starts every container on the developer's Docker host
-— no AWS deploy needed.
+`cdkd local run-task <target>` takes an `AWS::ECS::TaskDefinition` out of a CDK
+app and starts every one of its containers on your Docker host — no AWS deploy
+required. It is the ECS counterpart of [`cdkd local invoke`](local-invoke.md):
+one synchronous task run, each container's stdout/stderr streamed with a
+`[<name>]` prefix, and the essential container's exit code propagated to your
+shell.
 
-Implementation Phase 1: synchronous run of one task, stream every
-container's stdout/stderr with a `[<name>]` prefix, propagate the
-essential container's exit code. Phase 2 (`cdkd local start-service` —
-ECS Service replicas + restart policy) and Phase 3 (Service Connect /
-Cloud Map cross-service discovery via `--add-host` DNS overlay) are
-implemented; ALB-emulated path/host-based routing remains deferred.
+```bash
+cdkd local run-task MyStack/MyService/TaskDef              # run one task definition
+cdkd local run-task MyTaskDef --env-vars overrides.json    # SAM-shape env-var overrides
+cdkd local run-task MyStack:MyTaskDefABC123 --from-state   # resolve intrinsics from deployed state
+cdkd local run-task MyStack/Worker --assume-task-role      # containers run with the task role
+cdkd local run-task MyStack/Worker --detach                # start and return; you own teardown
+cdkd local run-task MyStack/Worker --keep-running          # leave stopped containers for a post-mortem
+```
 
-**Requires Docker.** The first run pulls the AWS-published
-`amazon/amazon-ecs-local-container-endpoints:latest-amd64` sidecar (a
-small Go binary maintained by awslabs) plus each container's image.
+Docker is required. The first run pulls the AWS-published
+`amazon/amazon-ecs-local-container-endpoints:latest-amd64` metadata sidecar
+alongside each container image; see
+[Local execution](local-emulation.md#requirements).
 
-### `local run-task` target resolution
+## Options
 
-Same target-syntax rules as `cdkd local invoke`:
-
-- CDK display path (`MyStack/MyService/TaskDef`) — preferred
-- Stack-qualified logical id (`MyStack:MyServiceTaskDefXYZ1234`)
-- Single-stack apps may omit the stack prefix (`MyTaskDef`)
-
-Path matching is prefix-based: an L2 path like `MyStack/MyService/TaskDef`
-resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
-
-### `local run-task` options
-
-| Flag | Default | Behavior |
+| Flag | Default | Description |
 | --- | --- | --- |
-| `--cluster <name>` | `cdkd-local` | Surfaced as `ECS_CONTAINER_METADATA_URI_V4`'s `Cluster` field and used as the docker network prefix (`<name>-task-<rand>`). |
-| `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names; `Parameters` is a global overlay. Same shape as `cdkd local invoke --env-vars`. |
-| `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
-| `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdkd substitutes the caller's account id (via STS `GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
-| `--from-state` | off | Load cdkd S3 state for the target stack and substitute deployed values into (a) `Fn::Sub` / `Fn::GetAtt` ECR image URIs that reference a same-stack `AWS::ECR::Repository`, AND (b) intrinsic-valued `ContainerDefinitions[].Environment[].Value` + `Secrets[].ValueFrom` entries (`Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::Join`). Without this flag, env / secret intrinsics are dropped with a per-key warning (matching `cdkd local invoke --from-state` semantics). See "ECR image resolution" and "Env / Secrets substitution" below. Off by default. The stack must have been deployed via `cdkd deploy` first. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. **Mutually exclusive with `--from-state`**. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `DescribeStackResources` does not return per-attribute values), except a same-stack ECR repository's `Arn` / `RepositoryUri` in a container image URI, which is synthesized from the recovered physical name + pseudo parameters. |
-| `--stack-region <region>` | unset | Region of the state record to read. Used with `--from-state` when the same stack name has state in multiple regions, and with `--from-cfn-stack` as the CFn client region. |
-| `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
-| `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR for cross-account / centralized registry pulls. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull` on every container whose `Image` resolves to an ECR registry host — the plain `<acct>.dkr.ecr.<region>.<urlSuffix>/...`, its FIPS sibling `<acct>.dkr.ecr-fips.<region>.<urlSuffix>/...`, or the dual-stack `<acct>.dkr-ecr[-fips].<region>.on.aws/...` (the partition suffix is derived from the region, so the partitions `derivePartitionAndUrlSuffix` knows — commercial, `aws-cn`, `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` — are matched too). Required when the caller's identity does not already have cross-account access to the target repository. Same-account / same-region pulls do not need this flag. No-op when `--no-pull` is set. |
-| `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | `linux/amd64` or `linux/arm64`. Threaded into every container's `docker run --platform`. |
-| `--keep-running` | off | Don't `docker rm -f` user containers on task exit (network + sidecar are still torn down). Use when you want to `docker exec` into a stopped container for post-mortems. |
-| `--detach` | off | Start the containers and return without streaming logs or auto-tearing them down. Useful in CI smoke tests; caller manages container lifecycle. |
+| `<target>` | — | CDK display path or stack-qualified logical id of the `AWS::ECS::TaskDefinition` to run. Required. |
+| `--cluster <name>` | `cdkd-local` | Cluster name reported by the metadata endpoint, and the prefix of the per-task Docker network name. |
+| `--env-vars <file>` | — | SAM-shape JSON env-var overrides, keyed by container name — see [Local execution](local-emulation.md#common-flags). |
+| `--container-host <ip>` | `127.0.0.1` | Host IP that published container ports bind to. Must be numeric — see [Local execution](local-emulation.md#common-flags). |
+| `--assume-task-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or the ARN you pass) and serve those credentials through the metadata sidecar. |
+| `--no-pull` | off | Skip `docker pull` for every container image and for the metadata sidecar — see [Local execution](local-emulation.md#common-flags). |
+| `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for cross-account or centralized registries. No-op with `--no-pull`. |
+| `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | Force `docker run --platform`. Accepts `linux/amd64` or `linux/arm64`. |
+| `--keep-running` | off | Leave the user containers in place when the task exits; the network and sidecar are still torn down. |
+| `--detach` | off | Start the containers in the background and exit, skipping log streaming and automatic teardown. |
+| `--from-state` | off | Substitute deployed values from cdkd's S3 state into image URIs, environment variables and secrets — see [Local execution](local-emulation.md#common-flags). |
+| `--from-cfn-stack [name]` | off | Substitute from a CloudFormation-deployed stack instead. Bare form uses the cdkd stack name. Mutually exclusive with `--from-state`. |
+| `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local execution](local-emulation.md#common-flags). |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state, for `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
+| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly — see [Local execution](local-emulation.md#common-flags). |
+| `--output <path>` | `cdk.out` | Output directory for synthesis. |
+| `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
+| `--profile <profile>` | — | AWS profile. Its credentials are forwarded to the sidecar and to the containers. |
+| `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls. Needs admin-equivalent permissions. |
+| `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
+| `--verbose` | off | Verbose logging. |
 
-Plus the standard shared options: `-a/--app`, `-c/--context`, `--profile`,
-`--role-arn`, `--region`, `--verbose`, `--output`.
+The region used for AWS API calls and for pseudo-parameter substitution is taken
+from `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the synthesized stack's own
+`env.region`. A deprecated `--region` flag still overrides all three; prefer the
+environment variable or your AWS profile.
 
-### Networking model
+## Target resolution
 
-For every task invocation cdkd:
+`<target>` accepts the same forms as [`cdkd local invoke`](local-invoke.md):
 
-1. Creates a fresh docker network `cdkd-local-task-<random>` (or
-   `--cluster <name>-task-<random>`) with subnet `169.254.170.0/24`.
-2. Starts the AWS-published
-   `amazon/amazon-ecs-local-container-endpoints:latest-amd64` sidecar
-   on the network at the well-known IP `169.254.170.2`.
-3. Starts every user container on the same network with
-   `--network-alias <container-name>` so siblings resolve each other by
-   their CFn `ContainerDefinitions[].Name`.
-4. Injects per-container env vars: `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<container-name>`
-   and (when `--assume-task-role` is set) `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<task-role-arn>`.
+| Form | Example |
+| --- | --- |
+| CDK display path (preferred) | `MyStack/MyService/TaskDef` |
+| Stack-qualified logical id | `MyStack:MyServiceTaskDefXYZ1234` |
+| Bare name, single-stack apps only | `MyTaskDef` |
 
-`awsvpc` network mode is mapped to `bridge` locally with a warn line —
-docker cannot emulate ENI-per-task. AWS SDK calls from inside the
-container still reach public AWS endpoints via the developer network.
+Path matching is prefix-based, so an L2 path such as `MyStack/MyService/TaskDef`
+resolves to the synthesized L1 child `MyStack/MyService/TaskDef/Resource`.
 
-### ECR image resolution
+## Networking model
 
-`ContainerDefinitions[].Image` is parsed in three tiers:
+Each task run creates its own Docker network and sidecar:
 
-1. **Public images** — `public.ecr.aws/...`, `docker.io/...`, `nginx:latest`, etc. → plain `docker pull` (subject to `--no-pull`).
-2. **Direct ECR URIs** — `<account>.dkr.ecr.<region>.<urlSuffix>/<repo>:<tag>` and the other served registry-host forms listed below (flat string, no intrinsics) → `pullEcrImage` (STS check + ECR auth + `docker pull`). The host suffix is matched against the one the URI's region actually uses — one suffix per region prefix: commercial and `us-gov-*` → `amazonaws.com`, `cn-*` → `amazonaws.com.cn`, `us-iso-*` → `c2s.ic.gov`, `us-isob-*` → `sc2s.sgov.gov`, `eu-isoe-*` → `cloud.adc-e.uk`, `us-isof-*` → `csp.hci.ic.gov`, `eusc-*` → `amazonaws.eu`. A look-alike host whose suffix does not belong to that region is deliberately NOT treated as ECR. The FIPS (`<account>.dkr.ecr-fips.<region>.<urlSuffix>`) and dual-stack (`<account>.dkr-ecr.<region>.on.aws`, `<account>.dkr-ecr-fips.<region>.on.aws`) registry endpoints are RECOGNIZED as ECR (the grammar is unified with `cdkd gc`'s — previously only the plain form matched here, so a genuine FIPS or dual-stack registry classified as a public image: anonymous pull, no `docker login`). The dual-stack forms carry the fixed `on.aws` suffix instead of the region's partition suffix, and a form spelled with the other's suffix is refused. **Recognition is not yet a working pull for those three forms**: `ecrLogin` authenticates against the PLAIN host (`<account>.dkr.ecr.<region>.<urlSuffix>`, which is what `GetAuthorizationToken` reports) while the pull targets the host the template names, and docker's credential store is keyed on the hostname verbatim — so the pull fails with `no basic auth credentials`. This is a known limitation; today only the plain form (in any casing) is end-to-end pull-capable. The case fold is unaffected, since an upper-cased plain host is reconciled to the same lower-case spelling on both sides. Every segment is matched case-INSENSITIVELY, since DNS is; docker accepts an upper-cased registry host but requires a lower-case repository path, and cdkd folds only the host. Cross-account / cross-region supported: cdkd builds the ECR client for the URI's region and (when `--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to gain credentials in the target account. Without `--ecr-role-arn`, cdkd falls through to the caller's credentials (succeeds when an IAM resource policy grants the caller direct cross-account access).
-3. **CDK-asset images** (`ContainerImage.fromAsset` / `DockerImageAsset`) → `cdk.out/<stack>.assets.json` lookup → `docker build` via the shared `src/assets/docker-build.ts` helper, tagged `cdkd-local-run-task-<asset-hash>`. An image URI is recognized as a CDK asset when it embeds a container-assets ECR repo — either the CDK-bootstrap repo `cdk-<qualifier>-container-assets-<acct>-<region>` (any qualifier, not only the `hnb659fds` default) or the cdkd-owned repo `cdkd-container-assets-<acct>-<region>` that `cdkd deploy` publishes into once a bootstrap marker exists; a migrated stack's rewritten template / `--from-state` state carries the latter, so both classify identically. Custom-named cdkd asset repos (`cdkd bootstrap --container-repo <name>`) are recognized too under `--from-state`: when a container's Image is an ECR-hosted URI whose repo component does not match the conventional shapes (recognized here by a THIRD, narrower host test than tier 2's — a literal `.dkr.ecr.` substring, so today it sees only the plain lower-case form and neither the FIPS / dual-stack endpoints nor a mixed-case host — a known limitation. A miss is a slow path, not a wrong pull: the image falls through to the tier-2 ECR-pull route), cdkd lazily reads the region's bootstrap marker from the state bucket and classifies the image as a CDK asset when its repo component equals the marker's `containerRepo` (best-effort — a missing/unreadable marker falls back to the prefix match, and without `--from-state` no marker read happens, so the image routes through the ECR-pull tier instead: correct, just slower).
+1. A fresh network `cdkd-local-task-<random>` (or `<--cluster>-task-<random>`)
+   with subnet `169.254.170.0/24`.
+2. The AWS-published `amazon/amazon-ecs-local-container-endpoints:latest-amd64`
+   sidecar on that network at the well-known address `169.254.170.2`.
+3. Every user container on the same network with
+   `--network-alias <container-name>`, so siblings resolve each other by their
+   `ContainerDefinitions[].Name`.
+4. Per-container environment:
+   `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<container-name>`, plus
+   `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<task-role-arn>` when
+   `--assume-task-role` is in play.
 
-For `Fn::Sub` / `Fn::GetAtt` shapes pointing at AWS pseudo parameters or a same-stack ECR repository (the typical `ContainerImage.fromEcrRepository(repo)` synthesis), two additional resolution tiers fire **before** the URI is fed to tier 2:
+The subnet is fixed, so only one `cdkd local run-task` can be active at a time:
+a second concurrent run fails on `docker network create` with a hint naming the
+subnet already in use. [`cdkd local start-service`](local-start-service.md)
+shares one network across every service in a run, and so is not affected.
 
-- **Tier 1 — AWS pseudo-parameter substitution (no state needed)**: `${AWS::AccountId}` → STS `GetCallerIdentity` (lazy, cached for the run); `${AWS::Region}` → `--region` / `AWS_REGION` / `AWS_DEFAULT_REGION`; `${AWS::Partition}` → derived from region (`cn-*` → `aws-cn`, `us-gov-*` → `aws-us-gov`, `us-iso-*` → `aws-iso`, `us-isob-*` → `aws-iso-b`, `us-isof-*` → `aws-iso-f`, `eu-isoe-*` → `aws-iso-e`, `eusc-*` → `aws-eusc`, else `aws`); `${AWS::URLSuffix}` → matches partition. Substituted URI then routes through tier 2.
-- **Tier 2 — same-stack ECR Repository reference (state needed)**: when the `Fn::Sub` body contains `${<LogicalId>}` against an `AWS::ECR::Repository`, or when the template uses `Fn::GetAtt: [<Repo>, 'RepositoryUri']`, cdkd needs the deployed physical repo name. Pass `--from-state` (the stack must have been deployed via `cdkd deploy`); cdkd loads state, substitutes the physical name, then routes through tier 2. Without `--from-state` the error message points back at this flag as the resolution path.
+Containers also get a `host.docker.internal` mapping where the Docker daemon
+supports one, so a container can reach a server bound to your host (a local
+endpoint, a tunnelled VPC resource). On a daemon that does not support it, no
+mapping is added and the run continues.
 
-### Env / Secrets substitution (`--from-state`)
+`awsvpc` network mode is mapped to a Docker bridge network with a warning:
+Docker cannot emulate an ENI per task, and security groups are not enforced
+locally. AWS SDK calls from inside a container still reach the public AWS
+endpoints over your own network.
 
-`ContainerDefinitions[].Environment[].Value` and `Secrets[].ValueFrom`
-entries are commonly intrinsic-valued in real-world CDK ECS apps —
-`table.tableName` synthesizes as `Ref`, `table.tableArn` as
-`Fn::GetAtt`, `ecs.Secret.fromSecretsManager(secret)` as `Ref` against
-the secret (returns the deployed ARN), `ecs.Secret.fromSsmParameter(p)`
-as `Fn::Join` over pseudo parameters + a `Ref` to the parameter, etc.
-Without `--from-state` these intrinsics are silently dropped (matching
-`cdkd local invoke` v1 semantics) and the developer sees an empty env
-var or a missing secret.
+## AWS credentials in containers
 
-`cdkd local run-task --from-state` substitutes every intrinsic-valued
-entry against cdkd's deployed S3 state plus AWS pseudo parameters:
+| Situation | What the containers see |
+| --- | --- |
+| Neither `--assume-task-role` nor `--profile` | The sidecar serves whatever the default credential chain resolves on the host. |
+| `--assume-task-role` (bare) | `sts:AssumeRole` against the task definition's resolved `TaskRoleArn`, once at startup; the temporary credentials are served by the sidecar. |
+| `--assume-task-role <arn>` | Same, against the ARN you supplied. |
+| `--profile <p>` without an effective `--assume-task-role` | The profile is resolved through the SDK chain (SSO, IAM Identity Center, `fromIni`, role assumption) and the resulting credentials are both served by the sidecar and written into a read-only shared-credentials file bind-mounted into every container under `[<p>]`. |
+
+`--assume-task-role` beats the profile file, which beats the plain sidecar
+pass-through. Bare `--assume-task-role` resolves a flat-string `TaskRoleArn`
+directly; for a `{Ref: <Role>}` or `{Fn::GetAtt: [<Role>, 'Arn']}` pointing at a
+same-stack `AWS::IAM::Role`, cdkd fills the caller's account id (from STS
+`GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. When the
+task definition has no resolvable `TaskRoleArn`, bare `--assume-task-role` is an
+error that tells you to pass the ARN explicitly.
+
+## ECR image resolution
+
+`ContainerDefinitions[].Image` is classified into three tiers:
+
+| Tier | Image shape | How cdkd gets it |
+| --- | --- | --- |
+| Public | `public.ecr.aws/...`, `docker.io/...`, `nginx:latest` | Plain `docker pull` (skipped by `--no-pull`). |
+| ECR | A flat-string ECR registry URI | STS identity check, ECR auth, then `docker pull`. |
+| CDK asset | An image published by `ContainerImage.fromAsset` / `DockerImageAsset` | `cdk.out/<stack>.assets.json` lookup, then `docker build`, tagged `cdkd-local-run-task-<asset-hash>`. |
+
+### Which registry hosts count as ECR
+
+A URI is treated as ECR only when its host suffix is the one its own region
+actually uses. A look-alike host carrying another region's suffix is
+deliberately not treated as ECR.
+
+The same region-to-partition mapping drives `${AWS::Partition}` and
+`${AWS::URLSuffix}` wherever cdkd substitutes them.
+
+| Region prefix | Partition | URL suffix |
+| --- | --- | --- |
+| everything else | `aws` | `amazonaws.com` |
+| `us-gov-*` | `aws-us-gov` | `amazonaws.com` |
+| `cn-*` | `aws-cn` | `amazonaws.com.cn` |
+| `us-iso-*` | `aws-iso` | `c2s.ic.gov` |
+| `us-isob-*` | `aws-iso-b` | `sc2s.sgov.gov` |
+| `eu-isoe-*` | `aws-iso-e` | `cloud.adc-e.uk` |
+| `us-isof-*` | `aws-iso-f` | `csp.hci.ic.gov` |
+| `eusc-*` | `aws-eusc` | `amazonaws.eu` |
+
+Three registry endpoint shapes are recognized: the plain
+`<account>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
+`<account>.dkr.ecr-fips.<region>.<urlSuffix>`, and the dual-stack
+`<account>.dkr-ecr.<region>.on.aws` /
+`<account>.dkr-ecr-fips.<region>.on.aws`. The dual-stack forms carry the fixed
+`on.aws` suffix rather than the region's partition suffix, and a form spelled
+with the other's suffix is refused. Host matching is case-insensitive, since DNS
+is; Docker accepts an upper-cased registry host but requires a lower-case
+repository path, and cdkd folds only the host.
+
+**Only the plain form pulls end to end today.** For the FIPS and dual-stack
+hosts, the ECR login authenticates against the plain host — that is what
+`GetAuthorizationToken` reports — while the pull targets the host the template
+names, and Docker's credential store is keyed on the hostname verbatim, so the
+pull fails with `no basic auth credentials`.
+
+Cross-account and cross-region pulls are supported: cdkd builds the ECR client
+for the URI's own region, and with `--ecr-role-arn <arn>` issues `sts:AssumeRole`
+to obtain credentials in the target account. Without the flag it falls through to
+your own credentials, which succeeds when a repository policy grants you direct
+cross-account access.
+
+### Which images count as CDK assets
+
+An image URI is treated as a CDK asset when it embeds a container-assets ECR
+repository — either the CDK bootstrap repository
+`cdk-<qualifier>-container-assets-<acct>-<region>` (any qualifier, not only the
+`hnb659fds` default) or the cdkd-owned `cdkd-container-assets-<acct>-<region>`
+that `cdkd deploy` publishes into once a bootstrap marker exists. A migrated
+stack's rewritten template and its `--from-state` state carry the latter, so both
+classify identically.
+
+Custom-named cdkd asset repositories (`cdkd bootstrap --container-repo <name>`)
+are recognized under `--from-state`: cdkd lazily reads the region's bootstrap
+marker from the state bucket and treats the image as a CDK asset when its
+repository component matches the marker's `containerRepo`. Two caveats:
+
+- The lookup is best-effort. A missing or unreadable marker falls back to the
+  conventional prefix match, and without `--from-state` no marker is read at all.
+- The host test on this path is narrower than the one above — it looks for a
+  literal `.dkr.ecr.` substring — so it sees only the plain lower-case form.
+
+A miss here is a slow path, not a wrong pull: the image simply routes through the
+ECR-pull tier instead.
+
+### Intrinsic-valued image URIs
+
+When `Image` is an `Fn::Sub` or `Fn::GetAtt` — the shape
+`ContainerImage.fromEcrRepository(repo)` synthesizes — two substitution passes run
+before the resulting URI is classified:
+
+| Pass | Resolves | Needs state? |
+| --- | --- | --- |
+| Pseudo parameters | `${AWS::AccountId}` from STS `GetCallerIdentity` (lazy, cached for the run); `${AWS::Region}` from the resolved region; `${AWS::Partition}` and `${AWS::URLSuffix}` derived from it | No |
+| Same-stack ECR repository | `${<LogicalId>}` against an `AWS::ECR::Repository`, and `Fn::GetAtt: [<Repo>, 'RepositoryUri']`, using the deployed physical repository name | Yes — pass `--from-state` |
+
+`${AWS::Partition}` and `${AWS::URLSuffix}` come from the region, per the table
+in [Which registry hosts count as ECR](#which-registry-hosts-count-as-ecr).
+Without `--from-state`, a same-stack repository reference fails with an error
+naming that flag as the way forward; the stack must have been deployed with
+`cdkd deploy` first.
+
+## Environment variables and secrets
+
+`ContainerDefinitions[].Environment[].Value` and `Secrets[].ValueFrom` are
+routinely intrinsic-valued in real CDK ECS apps: `table.tableName` synthesizes as
+`Ref`, `table.tableArn` as `Fn::GetAtt`,
+`ecs.Secret.fromSecretsManager(secret)` as a `Ref` returning the deployed ARN,
+`ecs.Secret.fromSsmParameter(p)` as an `Fn::Join` over pseudo parameters and a
+`Ref`. Without a state source those intrinsics are dropped and the container sees
+an empty variable or a missing secret.
+
+### Intrinsic substitution
+
+`--from-state` substitutes every intrinsic-valued entry against cdkd's deployed
+S3 state plus the AWS pseudo parameters:
 
 | Intrinsic | Source |
 | --- | --- |
-| `Ref: <LogicalId>` | `state.resources[<LogicalId>].physicalId` |
-| `Fn::GetAtt: [<LogicalId>, <Attr>]` | `state.resources[<LogicalId>].attributes[<Attr>]` |
-| `Fn::Sub: '...${X}...${AWS::Region}...'` | recursive substitution against state + pseudo parameters |
-| `Fn::Join: [<delim>, [<elements>]]` | recursive substitution of every element, then `Array.join` |
-| `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` / `AWS::URLSuffix` | STS `GetCallerIdentity` (lazy, cached) + the resolved region + region-derived partition / URL suffix |
+| `Ref: <LogicalId>` | The resource's recorded physical id |
+| `Fn::GetAtt: [<LogicalId>, <Attr>]` | The attribute captured for that resource at deploy time |
+| `Fn::Sub: '...${X}...${AWS::Region}...'` | Recursive substitution against state plus pseudo parameters |
+| `Fn::Join: [<delim>, [<elements>]]` | Recursive substitution of every element, then joined |
+| `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` / `AWS::URLSuffix` | STS `GetCallerIdentity` (lazy, cached), the resolved region, and the region-derived partition and URL suffix |
 
-Per-key best-effort: when a substitution can't be produced (state
-missing for a referenced logical ID, attribute not captured at deploy
-time, unsupported intrinsic), the env / secret entry is dropped and a
-per-key warning surfaces on the task's warnings line — the run-task
-invocation never aborts. State-load failures (no record, multi-region
-ambiguity without `--stack-region`, bucket resolution error) also
-degrade to warn-and-fall-back rather than hard-fail.
+Substitution is best-effort per key. When a value cannot be produced — no state
+for the referenced logical id, an attribute that was not captured at deploy time,
+an unsupported intrinsic — that one entry is dropped and a warning names it on the
+task's warnings line; the run itself continues. State-load failures (no record,
+multi-region ambiguity without `--stack-region`, a bucket that cannot be
+resolved) degrade the same way rather than failing the run.
 
-Resolved `Secrets[].ValueFrom` strings then flow into the standard
-SecretsManager / SSM resolver below.
+Cross-stack `Fn::ImportValue` and `Fn::GetStackOutput` in environment variables
+and secrets are resolved from the active state source in a second pass. With
+neither `--from-state` nor `--from-cfn-stack`, a warning names both flags as the
+way to substitute them.
 
-### Secrets / SSM parameter resolution
+Resolved `Secrets[].ValueFrom` strings then flow into the resolver below.
 
-`ContainerDefinitions[].Secrets[].ValueFrom` entries are resolved once at
-startup via the AWS SDK (after any `--from-state` intrinsic substitution
-above). Three accepted shapes:
+### Secrets Manager and SSM resolution
 
-| `valueFrom` | API |
+Every `Secrets[].ValueFrom` entry is resolved once at startup, after any
+intrinsic substitution. Three shapes are accepted:
+
+| `ValueFrom` | Call |
 | --- | --- |
-| `arn:aws:secretsmanager:<region>:<account>:secret:<name>` | `SecretsManagerClient.GetSecretValue` |
-| `arn:aws:secretsmanager:<region>:<account>:secret:<name>:<json-key>::` | `GetSecretValue`, then JSON.parse + extract `json-key` |
-| `arn:aws:ssm:<region>:<account>:parameter/<name>` | `SSMClient.GetParameter({ WithDecryption: true })` |
+| `arn:aws:secretsmanager:<region>:<account>:secret:<name>` | `GetSecretValue` |
+| `arn:aws:secretsmanager:<region>:<account>:secret:<name>:<json-key>::` | `GetSecretValue`, then JSON-parse and extract `<json-key>` |
+| `arn:aws:ssm:<region>:<account>:parameter/<name>` | `GetParameter` with decryption |
 
-Resolution failures (NotFound / AccessDenied / network error / invalid
-ARN) hard-fail with the offending container + secret name. The user
-fixes their AWS creds / IAM policy and re-runs. (Mirrors the
-`cdkd local invoke --from-state` philosophy: explicit failure beats
-silently-empty.)
+A resolution failure — not found, access denied, a network error, a malformed ARN
+— is a hard error naming the offending container and secret. Explicit failure
+beats a silently empty variable: fix the credentials or the IAM policy and re-run.
 
-**Secret names that are refused.** When a secret's name is accepted, its VALUE
-reaches the container through the `docker run` spawn environment (a value-less
-`-e KEY` flag, so the plaintext never appears on the argv / `/proc/<pid>/cmdline`).
-The NAME decides whether the secret is forwarded at all: two name shapes are
-**not passed to the container** — no `-e` flag and no spawn-env entry, so the
-value reaches neither the argv nor the spawn environment:
+### Secret names that are not forwarded
 
-- **A name that collides with a variable the docker CLI itself reads** —
-  matched case-insensitively (Windows env lookups are). This is a fixed exact
-  denylist (connection / TLS / behaviour, `PATH` / `PATHEXT` / `HOME` /
-  `USERPROFILE`, the loader / trust / runtime vars, the ssh exec-helper set,
-  and the AWS credential-helper vars `docker-credential-ecr-login` reads) plus
-  the `LD_` / `DYLD_` / `AWS_ENDPOINT_URL_` prefix families; the authoritative
-  list is `DOCKER_CLIENT_ENV_KEYS` / `DOCKER_CLIENT_ENV_PREFIXES` in
-  [src/utils/docker-cmd.ts](https://github.com/go-to-k/cdkd/blob/main/src/utils/docker-cmd.ts). Forwarding such a name
-  would let a template-controlled secret NAME redirect the docker client itself
-  (e.g. a secret named `DOCKER_HOST` pointing the client at a different daemon).
-- **A malformed name** — empty, or containing `=` / NUL. A name containing `=`
-  is the dangerous case: the OS parses the environ entry's name as everything
-  before the first `=`, so a secret named `PATH=/tmp/evil:` would be parsed as
-  `PATH` — a different variable than the collision check saw. An empty or
-  NUL-bearing name simply cannot form a valid environment variable.
+An accepted secret's value reaches the container through the `docker run` spawn
+environment as a value-less `-e KEY` flag, so the plaintext never appears in the
+process arguments. The secret's **name** decides whether it is forwarded at all.
+Two name shapes are dropped entirely — no `-e` flag and no spawn-environment
+entry:
 
-Each refusal is reported with a `warn` identifying the dropped secret(s) so the
-drop is never silent; rename the secret if the container needs the value.
+- **A name that collides with a variable the Docker CLI itself reads**, matched
+  case-insensitively. The set covers connection and TLS settings, behaviour
+  toggles, `PATH` / `PATHEXT` / `HOME` / `USERPROFILE`, the loader, trust and
+  runtime variables, the SSH exec-helper variables, and the AWS credential-helper
+  variables `docker-credential-ecr-login` reads, plus the `LD_`, `DYLD_` and
+  `AWS_ENDPOINT_URL_` prefix families. Forwarding such a name would let a
+  template-controlled secret name redirect the Docker client itself — a secret
+  named `DOCKER_HOST` could point it at a different daemon.
+- **A malformed name** — empty, or containing `=` or NUL. The `=` case is the
+  dangerous one: the OS parses an environment entry's name as everything before
+  the first `=`, so a secret named `PATH=/tmp/evil:` would land as `PATH`, a
+  different variable than the collision check inspected.
 
-### Container start ordering — `DependsOn`
+Each refusal is reported as a warning naming the dropped secret, so the drop is
+never silent. Rename the secret if the container needs its value.
+
+## Container start ordering
+
+Containers start in topological `DependsOn` order; siblings with no relation
+start in template order. A cyclic `DependsOn` is a hard error at discovery that
+names the cycle.
 
 | Condition | What cdkd waits for |
 | --- | --- |
-| `START` | Dependency's `docker run` has returned. |
-| `COMPLETE` | Dependency's container has exited (any code). |
-| `SUCCESS` | Dependency's container has exited with exit code 0. |
-| `HEALTHY` | Dependency's `HEALTHCHECK` reports `healthy` (polled every 1s, capped at 5 min). |
+| `START` | The dependency's `docker run` has returned. |
+| `COMPLETE` | The dependency's container has exited, with any code. |
+| `SUCCESS` | The dependency's container has exited `0`. A non-zero exit is an error naming both containers. |
+| `HEALTHY` | The dependency's `HEALTHCHECK` reports `healthy`, polled once a second and capped at five minutes. |
 
-Cyclic dependencies → hard-error at discovery with the offending cycle
-named. Topological sort decides the start order; siblings with no
-dependsOn relation start in template order.
-
-### Volumes
+## Volumes
 
 | `Volumes[]` shape | Local realization |
 | --- | --- |
-| `Host: { SourcePath: '/some/path' }` | `docker run -v /some/path:<containerPath>` bind mount (caller's responsibility that the host path exists; a missing path emits a warn) |
-| `Host` (no `SourcePath`) | Docker anonymous volume — empty per-task scratch |
-| `DockerVolumeConfiguration: { Scope: 'task' \| 'shared', Driver, DriverOpts }` | `docker volume create --driver <driver> --opt ...` per task; per-task scope is torn down at exit |
-| `EFSVolumeConfiguration` | **Hard-error**. Bind-mount a local directory at the same `containerPath` instead. |
-| `FSxWindowsFileServerVolumeConfiguration` | **Hard-error**. |
+| `Host: { SourcePath: '/some/path' }` | A `docker run -v /some/path:<containerPath>` bind mount. The host path is yours to create; a missing path warns. |
+| `Host` with no `SourcePath` | A Docker anonymous volume — empty per-task scratch space. |
+| `DockerVolumeConfiguration: { Scope, Driver, DriverOpts }` | `docker volume create --driver <driver> --opt ...` per task. A `task`-scoped volume is torn down on exit. |
+| `EFSVolumeConfiguration` | Hard error. Bind-mount a local directory at the same container path instead. |
+| `FSxWindowsFileServerVolumeConfiguration` | Hard error. |
 
-### Lifecycle + teardown
+`Host.SourcePath` may itself be an intrinsic (`Fn::Sub` / `Fn::Join`); it is
+resolved through the same substitution passes as environment variables.
 
-1. The first `essential: true` container (defaults to `containers[0]`
-   when no container declares `essential: false`) drives the task.
-2. When the essential container exits, cdkd `docker stop`s every other
-   container with a 10s grace then `docker rm -f`.
-3. The metadata sidecar is `docker rm -f`'d and the docker network is
-   removed.
+## Lifecycle and teardown
+
+A normal run:
+
+1. The first `essential: true` container drives the task. When no container
+   declares `essential: false`, that is the first container in the template.
+2. When the essential container exits, every other container is `docker stop`ped
+   with a ten-second grace period, then `docker rm -f`ed.
+3. The metadata sidecar is removed and the Docker network is deleted.
 4. cdkd exits with the essential container's exit code.
 
-`^C` triggers the same teardown. Double-`^C` exits 130 immediately
-(skipping container cleanup — same pattern as `cdkd local start-api`).
+`^C` runs the same teardown. A second `^C` exits `130` immediately, skipping
+container cleanup.
 
-`--detach` skips steps 1, 2, and 4. The sidecar and user containers
-stay running for the caller to manage. cdkd prints the network name on
-exit so you can `docker ps --filter network=<name>` to inspect.
-
-`--keep-running` skips step 2 only. The network + sidecar are still
-torn down. Use to `docker exec` into a stopped container post-mortem.
-
-### `local run-task` exit codes
-
-- `0` — essential container exited 0.
-- N (non-zero) — essential container exited N (cdkd propagates the code).
-- Various cdkd-side error codes (Docker missing, target not found,
-  network creation failed, secret resolution failed, ...) follow the
-  global handler's defaults (typically 1).
-
-### `local run-task` Phase 1 scope (out of scope, deferred)
-
-| Out of scope | Why |
+| Flag | Steps skipped |
 | --- | --- |
-| `AWS::ECS::Service` / `DesiredCount` / `LaunchType` | Use `cdkd local start-service` instead |
-| ALB / NLB target group registration / listener rules | Deferred follow-up — needs an HTTP proxy emulator |
-| Service Connect / Cloud Map | Implemented for `cdkd local start-service` via `--add-host` DNS overlay. `cdkd local run-task` is single-task by design; cross-service discovery is meaningful only with multiple long-running services, so it stays out of scope here. |
-| Auto Scaling / Deployment Strategy | Not meaningful locally |
-| Fargate vs EC2 launch-type differences (PID namespace, `awsvpc`-only, ephemeral storage cap) | Local Docker can't enforce these |
-| EFS / FSx volumes | Need real AWS NFS / SMB; hard-error with a routing hint |
-| ECS Exec | Use `docker exec` directly |
-| CloudWatch Logs auto-shipping (`logConfiguration.LogDriver: 'awslogs'`) | stdout/stderr already streamed; skip the driver |
-| X-Ray sidecar's AWS-API mocking | Run the daemon explicitly if you need it |
-| AWS App Mesh / Envoy fidelity | Not meaningful locally |
-| awsvpc / ENI complete fidelity | Map to docker bridge with a warn |
+| `--detach` | 1, 2 and 4. The sidecar and user containers stay up for you to manage; cdkd prints the network name so you can `docker ps --filter network=<name>` to inspect it. |
+| `--keep-running` | 2 only. The network and sidecar are still torn down, leaving the stopped containers for a `docker exec` post-mortem. |
 
+## Limitations
+
+| Not emulated | What to do instead |
+| --- | --- |
+| `AWS::ECS::Service`, `DesiredCount`, `LaunchType` | Use [`cdkd local start-service`](local-start-service.md). |
+| Load-balancer target-group registration and listener rules | Use [`cdkd local start-alb`](local-start-alb.md) for a local front door. |
+| Service Connect / Cloud Map discovery | `run-task` is single-task by design; cross-service discovery lives in [`cdkd local start-service`](local-start-service.md). |
+| Auto Scaling and deployment strategy | Not meaningful for a single local task. |
+| Fargate vs EC2 launch-type differences — PID namespace, `awsvpc`-only constraints, the ephemeral-storage cap | Local Docker cannot enforce them. |
+| `awsvpc` ENI-per-task fidelity, including security groups | Mapped to a Docker bridge network with a warning. Verify security-group behaviour against a real deploy. |
+| EFS and FSx volumes | Hard error; bind-mount a local directory at the same container path. |
+| ECS Exec | Use `docker exec` directly. |
+| CloudWatch Logs shipping via the `awslogs` log driver | stdout and stderr are already streamed, so the driver is skipped. |
+| The X-Ray sidecar's AWS-API mocking | Run the daemon yourself if you need it. |
+| App Mesh / Envoy fidelity | Not meaningful locally. |
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The essential container exited `0`, or `--detach` started the containers and returned. |
+| `N` | The essential container exited `N`; cdkd propagates the code verbatim. |
+| `1` | cdkd-side failure — Docker unavailable, target not found, network creation failed, secret resolution failed, an unsupported volume type. |
+| `130` | `^C`. A first `^C` tears the task down and then exits; a second exits immediately without container cleanup. |
+
+The full cross-command table is in the [CLI Reference](cli-reference.md#exit-codes).
+
+## Related
+
+- [`cdkd local start-service`](local-start-service.md) — the long-running counterpart, running `DesiredCount` replicas of an ECS Service
+- [`cdkd local start-alb`](local-start-alb.md) — put a local Application Load Balancer in front of those services
+- [`cdkd local invoke`](local-invoke.md) — the Lambda equivalent, sharing the target syntax and `--env-vars` shape
+- [Local Execution](local-emulation.md) — the subcommand index, Docker requirements, and the flags common to every `cdkd local` command
