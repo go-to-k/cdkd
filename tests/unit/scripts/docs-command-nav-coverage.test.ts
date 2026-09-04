@@ -101,15 +101,27 @@ const HUB_PAGE = '/cli-reference';
  * This is the discrimination claim as an assertion. Body mentions cannot tell
  * these apart from a real topic page -- `cdkd deploy` is named on 38 of the 50
  * navigation-listed pages -- so what makes the frontmatter rule worth having is
- * exactly that these four are rejected by it. Core Concepts is in the list
- * because it is the near miss: its description reads "How cdkd deploys CDK
- * apps", which a substring match accepts and the word boundary rejects.
+ * exactly that these are rejected by it. Core Concepts is the near miss: its
+ * description reads "How cdkd deploys CDK apps", which a substring match
+ * accepts and the word boundary rejects. The other three each name all five
+ * topic commands in their bodies, Troubleshooting and State Management 44 times
+ * apiece.
+ *
+ * The HUB is deliberately NOT in this list, even though it is the same kind of
+ * page. It is refused structurally by the topic check, and the header says that
+ * refusal exists precisely because a hub description listing the commands it
+ * indexes WOULD otherwise re-qualify it. Listing it here would make that reword
+ * a test failure and contradict the reason the structural refusal is there.
+ *
+ * A page can leave this list -- if one of them genuinely becomes a command's
+ * documentation, moving it out and into `COMMAND_TOPIC_PAGES` is the intended
+ * resolution, not a workaround.
  */
 const NON_DOCUMENTING_PAGES: readonly string[] = [
   '/getting-started',
   '/troubleshooting',
+  '/state-management',
   '/concepts',
-  HUB_PAGE,
 ];
 
 /**
@@ -226,11 +238,13 @@ function topLevelCommandNames(): string[] {
  * built site does not link to. Line comments were the spelling a review caught;
  * block comments are the same defect one spelling over. Line comments are
  * dropped FIRST, because a `/*` written inside one would otherwise open a
- * spurious block and swallow the real entries after it -- the scanned config
- * already carries a line comment containing a `/*`, one line above the array.
- * The path pattern is deliberately permissive (`[^']+`) so a future nested path is READ and then
- * judged by the existence check, rather than skipped and then reported as
- * missing from the navigation -- a true failure with a misleading reason.
+ * spurious block and swallow the real entries after it. The captured region
+ * holds no comment of either form today, so the ordering is a guard against a
+ * shape the config does not yet have rather than one it does -- which is why
+ * the ordering is probed rather than described with a citation. The path
+ * pattern is deliberately permissive (`[^']+`) so a future nested path is READ
+ * and then judged by the existence check, rather than skipped and then reported
+ * as missing from the navigation -- a true failure with a misleading reason.
  */
 function navPaths(): Set<string> {
   const source = readFileSync(DOCS_CONFIG, 'utf8');
@@ -422,24 +436,32 @@ describe('docs command/nav coverage', () => {
   });
 
   it('rejects every page that discusses commands without documenting one', () => {
-    const qualifying: string[] = [];
+    const problems: string[] = [];
     for (const navPath of NON_DOCUMENTING_PAGES) {
       const file = docFileFor(navPath);
-      expect(existsSync(file), `${navPath}: docs/${navPath.slice(1)}.md does not exist`).toBe(true);
+      if (!existsSync(file)) {
+        problems.push(`${navPath}: docs/${navPath.slice(1)}.md does not exist`);
+        continue;
+      }
       const fm = frontmatterOf(file);
-      expect(fm, `${navPath}: page has no frontmatter block to check`).not.toBeNull();
+      if (fm === null) {
+        problems.push(`${navPath}: page has no frontmatter block to check`);
+        continue;
+      }
       for (const name of Object.keys(COMMAND_TOPIC_PAGES)) {
-        if (namesCommand(fm as string, name)) {
-          qualifying.push(`${navPath} would qualify as the topic page for ${name}`);
+        if (namesCommand(fm, name)) {
+          problems.push(`${navPath} would qualify as the topic page for ${name}`);
         }
       }
     }
     expect(
-      qualifying.sort(),
+      problems.sort(),
       `One of these pages now names a command in its frontmatter, so the topic check ` +
-        `would accept a mapping repointed at it. Either the wording drifted -- reword it, ` +
-        `or tighten the match -- or the page genuinely became that command's ` +
-        `documentation, in which case move it out of NON_DOCUMENTING_PAGES deliberately.`
+        `would accept a mapping repointed at it. Two resolutions, both fine: reword the ` +
+        `description if the mention was incidental, or -- if the page genuinely became ` +
+        `that command's documentation -- move it out of NON_DOCUMENTING_PAGES and into ` +
+        `COMMAND_TOPIC_PAGES. Collect-then-assert so one missing page does not hide the ` +
+        `rest.`
     ).toEqual([]);
   });
 
