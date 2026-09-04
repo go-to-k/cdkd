@@ -51,10 +51,17 @@ const mockDeleteState = vi.fn<(stackName: string, region: string) => Promise<voi
 const mockListStacks =
   vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
 const mockVerifyBucketExists = vi.fn<() => Promise<void>>();
+// Issue #2537: the region-less legacy record is deleted through its OWN
+// backend method. `deleteState` requires a region and sweeps the legacy key
+// only when that key's body names the SAME region, so it can never reach a
+// record whose body names none — which is why the old code deleted nothing
+// and still reported success.
+const mockDeleteLegacyState = vi.fn<(stackName: string) => Promise<void>>();
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     stateExists: mockStateExists,
     deleteState: mockDeleteState,
+    deleteLegacyState: mockDeleteLegacyState,
     listStacks: mockListStacks,
     verifyBucketExists: mockVerifyBucketExists,
   })),
@@ -84,6 +91,7 @@ vi.mock('node:readline/promises', () => ({
 }));
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { StateError } from '../../../src/utils/error-handler.js';
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -129,6 +137,8 @@ describe('cdkd state orphan', () => {
     mockStateExists.mockReset();
     mockDeleteState.mockReset();
     mockDeleteState.mockResolvedValue();
+    mockDeleteLegacyState.mockReset();
+    mockDeleteLegacyState.mockResolvedValue();
     mockListStacks.mockReset();
     mockIsLocked.mockReset();
     warnSpy.mockReset();
@@ -433,6 +443,162 @@ describe('cdkd state orphan', () => {
 
       expect(mockDeleteState).toHaveBeenCalledWith('MyStack', 'us-east-1');
       expect(mockForceReleaseLock).toHaveBeenCalledWith('MyStack', 'us-east-1');
+    });
+  });
+
+  describe('a legacy record that names no region (issue #2537)', () => {
+    // `listStacks` yields a region-less ref ONLY for a legacy key whose body
+    // carries no `region` field. That branch used to call `forceReleaseLock`
+    // and nothing else — which deletes `{prefix}/{stack}/lock.json`, the LOCK,
+    // not `{prefix}/{stack}/state.json` — and then printed the success line
+    // anyway.
+    it('deletes the state file, not just the lock', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack' }]);
+      mockIsLocked.mockResolvedValue(false);
+
+      await runStateOrphan(['orphan', 'LegacyStack', '--yes']);
+
+      expect(mockDeleteLegacyState).toHaveBeenCalledWith('LegacyStack');
+      // The regression's exact shape: the lock released, the record left, and
+      // a success line regardless. Asserting the success line WITHOUT the
+      // delete is what used to pass, so both halves are pinned together.
+      expect(mockForceReleaseLock).toHaveBeenCalledWith('LegacyStack', undefined);
+      const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).toContain('Removed state for stack: LegacyStack');
+    });
+
+    it('does not route the region-less record through the region-scoped delete', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack' }]);
+      mockIsLocked.mockResolvedValue(false);
+
+      await runStateOrphan(['orphan', 'LegacyStack', '--yes']);
+
+      // `deleteState` would need a region to key its DeleteObject off; calling
+      // it with `undefined` would target a literal 'undefined' path segment.
+      expect(mockDeleteState).not.toHaveBeenCalled();
+    });
+
+    it('reports no removal when the state delete fails', async () => {
+      // The point of the fix is that the success line follows the delete. Make
+      // the delete throw and the line must not appear.
+      mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack' }]);
+      mockIsLocked.mockResolvedValue(false);
+      mockDeleteLegacyState.mockRejectedValue(
+        new StateError("Failed to delete legacy state for stack 'LegacyStack': AccessDenied")
+      );
+
+      await expect(runStateOrphan(['orphan', 'LegacyStack', '--yes'])).rejects.toThrow();
+
+      const printed = infoSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).not.toContain('Removed state for stack: LegacyStack');
+      // And the lock is not released either — the record still exists.
+      expect(mockForceReleaseLock).not.toHaveBeenCalled();
+      // The backend's message reaches the user rather than being swallowed.
+      // Its exact format is pinned in the backend suite; here the point is
+      // that the run fails instead of printing a removal.
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain(
+        'Failed to delete legacy state'
+      );
+    });
+
+    it('refuses a LOCKED region-less record, labelling it legacy', async () => {
+      // The lock guard labels a ref with no region `legacy`, and it must
+      // refuse BEFORE the new delete — a locked record stays put.
+      mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack' }]);
+      mockIsLocked.mockResolvedValue(true);
+
+      await expect(runStateOrphan(['orphan', 'LegacyStack', '--yes'])).rejects.toThrow();
+
+      const msg = String(errorSpy.mock.calls[0]?.[0] ?? '');
+      expect(msg).toContain("Stack 'LegacyStack' (legacy) is locked");
+      // Not '((legacy))': the message template supplies the parentheses.
+      expect(msg).not.toContain('((legacy))');
+      expect(mockDeleteLegacyState).not.toHaveBeenCalled();
+    });
+
+    it('--force removes a locked region-less record', async () => {
+      mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack' }]);
+      mockIsLocked.mockResolvedValue(true);
+      mockGetLockInfo.mockResolvedValue({
+        owner: 'bob@host:99',
+        operation: 'deploy',
+        expiresAt: Date.now() + 10 * 60_000,
+      });
+
+      await runStateOrphan(['orphan', 'LegacyStack', '--force']);
+
+      // The live-lock warning fires for the region-less arm too (it is passed
+      // `undefined`, not a region), and the removal still happens.
+      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(
+        /Force-releasing a LIVE lock/
+      );
+      expect(mockDeleteLegacyState).toHaveBeenCalledWith('LegacyStack');
+    });
+
+    it('routes each stack of a mixed invocation to its own arm', async () => {
+      mockListStacks.mockResolvedValue([
+        { stackName: 'LegacyStack' },
+        { stackName: 'ModernStack', region: 'us-east-1' },
+      ]);
+      mockIsLocked.mockResolvedValue(false);
+
+      await runStateOrphan(['orphan', 'LegacyStack', 'ModernStack', '--yes']);
+
+      expect(mockDeleteLegacyState).toHaveBeenCalledTimes(1);
+      expect(mockDeleteLegacyState).toHaveBeenCalledWith('LegacyStack');
+      expect(mockDeleteState).toHaveBeenCalledTimes(1);
+      expect(mockDeleteState).toHaveBeenCalledWith('ModernStack', 'us-east-1');
+    });
+
+    it('--stack-region excludes a region-less record rather than matching it', async () => {
+      // The target filter is `r.region === options.stackRegion`, so a ref with
+      // no region cannot match — the run errors instead of silently deleting
+      // the record the user did not name.
+      mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack' }]);
+      mockIsLocked.mockResolvedValue(false);
+
+      await expect(
+        runStateOrphan(['orphan', 'LegacyStack', '--stack-region', 'us-east-1', '--yes'])
+      ).rejects.toThrow();
+
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain('(legacy)');
+      expect(mockDeleteLegacyState).not.toHaveBeenCalled();
+    });
+
+    it('treats an EMPTY --stack-region as a value, not as absent', async () => {
+      // `--stack-region ''` is falsy. A truthy test skipped the region filter
+      // outright, so the flag the user passed to NARROW a destructive command
+      // silently widened it to every region. It must match nothing instead.
+      mockListStacks.mockResolvedValue([
+        { stackName: 'LegacyStack' },
+        { stackName: 'LegacyStack', region: 'us-east-1' },
+      ]);
+      mockIsLocked.mockResolvedValue(false);
+
+      await expect(
+        runStateOrphan(['orphan', 'LegacyStack', '--stack-region', '', '--yes'])
+      ).rejects.toThrow();
+
+      // Pin the message: `runStateOrphan` rejects via the process.exit mock on
+      // ANY failure, so a bare toThrow() would also accept a commander parse
+      // error and prove nothing about the branch.
+      expect(String(errorSpy.mock.calls[0]?.[0] ?? '')).toContain("in region ''");
+      expect(mockDeleteLegacyState).not.toHaveBeenCalled();
+      expect(mockDeleteState).not.toHaveBeenCalled();
+    });
+
+    it('still uses the region-scoped delete when the ref carries a region', async () => {
+      // The opposite polarity: a legacy key whose body DOES name a region is
+      // handed to `listStacks` as a region-carrying ref and must keep taking
+      // the existing path, whose legacy sweep is region-conditional.
+      mockListStacks.mockResolvedValue([{ stackName: 'LegacyStack', region: 'eu-west-1' }]);
+      mockIsLocked.mockResolvedValue(false);
+
+      await runStateOrphan(['orphan', 'LegacyStack', '--yes']);
+
+      expect(mockDeleteState).toHaveBeenCalledWith('LegacyStack', 'eu-west-1');
+      expect(mockDeleteLegacyState).not.toHaveBeenCalled();
     });
   });
 });

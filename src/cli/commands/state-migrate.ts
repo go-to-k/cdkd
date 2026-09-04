@@ -135,6 +135,30 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
         logger.info('Source bucket is empty — no objects to copy.');
       }
 
+      // Issue #2538: the dry-run bail comes BEFORE the prompt, not after.
+      // Asking a user to confirm a copy that will never run is backwards, and
+      // `confirmOrRefuse` throws NON_INTERACTIVE_CONFIRM on a non-TTY — which
+      // made `--dry-run` alone exit 1 in CI, the one place a preview is most
+      // useful. Everything the preview reports (both bucket names, the source
+      // bucket's real region, the object count) has already been printed by
+      // this point, so returning here loses nothing. Matches
+      // `state refresh-observed`, whose prompt is likewise skipped under
+      // `--dry-run`.
+      if (options.dryRun) {
+        // `--remove-legacy` is named NOWHERE above — the only place it
+        // surfaced was the prompt string this bail now precedes, so without
+        // this line the preview of the single destructive flag would say
+        // nothing about it.
+        if (options.removeLegacy) {
+          logger.info(
+            `--remove-legacy: '${legacyBucket}' would then be emptied ` +
+              `(every object version and delete marker) and deleted.`
+          );
+        }
+        logger.info('--dry-run: no changes will be made. Stopping here.');
+        return;
+      }
+
       if (!options.yes) {
         const action = options.removeLegacy
           ? 'and DELETE the source bucket'
@@ -146,11 +170,6 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
           logger.info('Migration cancelled.');
           return;
         }
-      }
-
-      if (options.dryRun) {
-        logger.info('--dry-run: no changes will be made. Stopping here.');
-        return;
       }
 
       const newS3 = await ensureDestinationBucket(newBucket, legacyRegion, accountId, logger);
@@ -406,7 +425,11 @@ async function emptyBucketAllVersions(s3: S3Client, bucket: string): Promise<voi
 /**
  * `cdkd state migrate`'s confirmation prompt. Its only call site is inside the
  * `if (!options.yes)` block above, which is what keeps `confirmOrRefuse`'s
- * non-interactive refusal (issue #2275) from firing on a `--yes` run.
+ * non-interactive refusal (issue #2275) from firing on a `--yes` run — and it
+ * sits BELOW the `--dry-run` bail (issue #2538), so a preview never reaches it
+ * either. Together those are the two ways not to be asked, matching
+ * `state refresh-observed`, whose prompt condition spells both:
+ * `!options.yes && !options.dryRun`.
  *
  * Exported for unit testing — internal to the command flow otherwise.
  */

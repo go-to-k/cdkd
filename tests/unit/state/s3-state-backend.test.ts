@@ -694,6 +694,65 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
     });
   });
 
+  describe('deleteLegacyState (issue #2537)', () => {
+    // The CLI-level cases in `tests/unit/cli/state-orphan.test.ts` assert this
+    // method is CALLED; only here can the key it builds be seen. A wrong key
+    // would satisfy every assertion over there.
+    it('deletes the region-less legacy key and nothing else', async () => {
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.deleteLegacyState('S');
+
+      const cmds = s3Client.send.mock.calls.map((c: unknown[]) => c[0]);
+      expect(cmds).toHaveLength(1);
+      expect(cmds[0]).toBeInstanceOf(DeleteObjectCommand);
+      const input = (cmds[0] as DeleteObjectCommand).input;
+      expect(input.Key).toBe('cdkd/S/state.json');
+      // The squatting hardening every other write on this backend carries —
+      // a new delete path is exactly where it goes missing unnoticed.
+      expect(input.ExpectedBucketOwner).toBe('999999999999');
+    });
+
+    it('reads no body first — the delete is unconditional', async () => {
+      // `deleteState` GetObjects the legacy key to compare its region before
+      // sweeping it. This method must not: its caller has already resolved a
+      // region-less ref, and a body read here would reintroduce the very gate
+      // that made the region-less record undeletable.
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.deleteLegacyState('S');
+
+      const cmds = s3Client.send.mock.calls.map((c: unknown[]) => c[0]);
+      expect(cmds.some((c: unknown) => c instanceof GetObjectCommand)).toBe(false);
+    });
+
+    it('sweeps no rollback journal', async () => {
+      // Journal keys exist only in the region-scoped layout, so there is no
+      // journal a region-less record could own. Pinning it keeps a later
+      // copy-paste from `deleteState` from adding a delete for a key whose
+      // region cannot be known here.
+      s3Client.send.mockResolvedValueOnce({});
+
+      await backend.deleteLegacyState('S');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).toEqual(['cdkd/S/state.json']);
+    });
+
+    it('wraps a failed delete in a StateError naming the stack', async () => {
+      // The caller prints its success line only after this resolves, so the
+      // throw is what stops a removal being reported that did not happen.
+      s3Client.send.mockRejectedValueOnce(new Error('AccessDenied'));
+
+      const caught = await backend.deleteLegacyState('S').catch((e: unknown) => e);
+      expect(caught).toBeInstanceOf(StateError);
+      expect((caught as Error).message).toMatch(/Failed to delete legacy state for stack 'S'/);
+    });
+  });
+
   describe('listRawObjects (issue #2052)', () => {
     const D1 = new Date('2026-01-01T00:00:00.000Z');
     const D2 = new Date('2026-02-01T00:00:00.000Z');

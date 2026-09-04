@@ -24,6 +24,8 @@ import {
 import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
+import { displaySafe } from '../utils/display-safe.js';
+import { UNRENDERABLE } from './lock-contention-message.js';
 import { StateError, normalizeAwsError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import {
@@ -543,6 +545,63 @@ export class S3StateBackend {
       // best-effort and never throws, so it cannot replace the in-flight
       // StateError.
       await this.deleteRollbackJournal(stackName, region);
+    }
+  }
+
+  /**
+   * Delete a legacy state file that names no region (issue #2537).
+   *
+   * `deleteState` cannot serve this case: it takes a region, keys the primary
+   * delete off it, and sweeps the legacy key only when that key's own `region`
+   * field matches. A `version: 1` blob whose body carries no `region` at all
+   * has nothing to match, so it falls through every branch there — which is
+   * how `cdkd state orphan` came to report a removal it never performed.
+   *
+   * Unconditional, and deliberately so — but NOT because the caller's ref
+   * proves the body names no region. `listStacks` derives that ref from
+   * `readLegacyRegion`, which also returns undefined on a swallowed 403 / 503
+   * / unparseable body, so a record that DOES name a region can surface
+   * region-less. The delete is still right there: the caller
+   * (`cdkd state orphan` with no `--stack-region`) means "every record for
+   * this name", and this key is one of them. A caller that means something
+   * narrower must not use this method.
+   *
+   * No rollback-journal sweep: journal keys exist only in the region-scoped
+   * layout (see `getRollbackJournalKey`), so a region-less record can have
+   * none.
+   */
+  async deleteLegacyState(stackName: string): Promise<void> {
+    await this.ensureClientForBucket();
+    const key = this.getLegacyStateKey(stackName);
+    try {
+      // Sanitized: `stackName` reaches here from an S3 key listing, and
+      // `formatError` prints a message verbatim — there is no central
+      // sanitization downstream (issue #2170's class).
+      // `key` embeds `stackName` verbatim, so logging it raw would defeat
+      // the sanitization on the line it sits in.
+      const safeStack = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+      this.logger.debug(
+        `Deleting legacy state: ${safeStack} (${displaySafe(key, { asciiOnly: true }) || UNRENDERABLE})`
+      );
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+        })
+      );
+      this.logger.debug(`Legacy state deleted: ${safeStack}`);
+    } catch (error) {
+      const normalized = normalizeAwsError(error, {
+        bucket: this.config.bucket,
+        operation: 'DeleteObject',
+      });
+      throw new StateError(
+        `Failed to delete legacy state for stack ` +
+          `'${displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE}': ` +
+          `${normalized.message}`,
+        normalized
+      );
     }
   }
 

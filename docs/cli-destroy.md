@@ -623,6 +623,10 @@ message names the command and the flag that avoids the prompt. Piping `y` in is
 not a substitute: pass the flag from the table, which short-circuits above the
 check and never consults stdin at all.
 
+Two rows carry a second escape. `cdkd state refresh-observed` and
+`cdkd state migrate` return at their `--dry-run` check before the prompt block,
+so a preview needs no flag from the table and runs unattended.
+
 Refusing rather than auto-confirming is uniform here because **every one of
 these guards a mutation** — a rollback replay, a state-record removal, an
 observed-property refresh, an orphan, an import, an export-then-delete-state, a
