@@ -12,9 +12,9 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-- **41 of the 42 hooks ship a `*.test.sh` suite** (`run-tests.sh` is the
+- **44 of the 45 hooks ship a `*.test.sh` suite** (`run-tests.sh` is the
   runner; only `post-merge-sync-reminder` has none — `stop-warn` got one via
-  issue #2396). `.claude/hooks/` holds 44 `*.test.sh` files:
+  issue #2396). `.claude/hooks/` holds 46 `*.test.sh` files:
   `markgate-gate-name-class` and `unresolved-target-class` are CLASS fences
   with no same-named `.sh`. **Recount rather than trusting this sentence** —
   it has been stale twice: `ls .claude/hooks/*.sh | grep -v '\.test\.sh$'`.
@@ -54,7 +54,7 @@ matches".
 
 # Other PreToolUse safety hooks
 
-Nineteen additional one-shot hooks block known foot-guns at the source.
+Twenty additional one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/commit-msg-heredoc-gate.sh`** blocks
   `git commit -m "$(cat <<'EOF' ... EOF)"`-style invocations — outer-shell
@@ -483,7 +483,45 @@ Nineteen additional one-shot hooks block known foot-guns at the source.
   scanned, the `edit` arm read its issue number from any `/issues/N` URL in
   the command, and a spaced `Severity:` in a `--title` outranked the body.
 
-All nineteen produce actionable error messages with the exact replacement
+- **`.claude/hooks/issue-deferral-criteria-gate.sh`** blocks `gh issue create`
+  (and the `gh api repos/<o>/<r>/issues` mint) when the body's
+  `Session-fit: next` line defers the work for a PR-SHAPED reason — `own PR`,
+  `separate PR`, `shar(e|ing) a PR`, `independent review surface`,
+  `unreviewable`, `own review`, case-insensitively. **An ESCALATION, not a new
+  rule**: `Session-fit` decides whether the work is finished in THIS session
+  and none of its criteria is about the pull request — splitting across
+  several PRs is normal and costs no session. That was written down three
+  times (`/work-issues` §3-b, §5-f, and
+  [session-report.md](session-report.md)'s own paragraph) and on 2026-09-04 an
+  agent deferred THREE findings on exactly that reasoning anyway
+  (go-to-k/cdkd#2587 / #2588 / #2590); all three were re-classified
+  `Session-fit: now` and finished in the same session. Retro §10-b: a rule in
+  the text and violated anyway escalates to a MECHANISM.
+  **Not a ritual** — an earlier design asked for a "criteria audit" line,
+  which boilerplate satisfies; this refuses the specific defect and leaves
+  every legitimate `next` (a NEW fixture, external input, an independent
+  subsystem) untouched. **Only `next` is gated**: a `now` line is never
+  refused whatever its reason says, and a body with no `Session-fit` line
+  passes — filing hygiene belongs to the two sibling issue gates. `gh issue
+  edit` / `comment` are NOT gated: re-classification is the outcome this gate
+  steers toward. The reason is read across WRAPPED lines (a 76-column body
+  puts "needs its own PR" on the next line), bounded by a blank line, the next
+  `Key:` field or a heading — mutation-probed, that boundary is what keeps a
+  sibling `Notes:` line out of the reason. Repo opt-in (`.markgate.yml`),
+  shared command-position matcher, fails CLOSED when the library is
+  unloadable. Unlike `issue-dup-check-gate`, an UNREADABLE `--body-file` does
+  NOT block — this gate objects to content it FINDS, so it falls back to
+  scanning the whole command (the heredoc window) rather than refusing
+  unclearably. Bypass `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, honored from the
+  env and from a leading assignment in the command text (#2368), for a body
+  QUOTING PR-shaped reasoning in order to argue against it. Smoke test:
+  `issue-deferral-criteria-gate.test.sh` (64 cases, bash 5.x + 3.2 via
+  `HOOK_BASH`). Mutation-probed: always-`exit 0` fails 35, always-`exit 2`
+  33; dropping the `next` polarity test fails exactly the two `now` cases;
+  dropping the continuation boundary exactly the sibling-field case;
+  reverting the segment scoping 4.
+
+All twenty produce actionable error messages with the exact replacement
 command.
 
 ## Bug-hunt cleanup safety
@@ -631,6 +669,46 @@ strictly. `CDKD_SKIP_CI_GREEN_GATE=1` is the documented bypass for a repo with
 genuinely no CI — never for merging a red PR. Smoke test:
 `ci-green-gate.test.sh` (stubbed `gh` for all-pass / skipping / fail /
 pending / no-checks / infra-error + the cdkd#563 quoted-body cases).
+
+## Integ base freshness (non-blocking)
+
+**`.claude/hooks/integ-stale-base-detector.sh`** — PreToolUse (`Bash`),
+**never blocks**. Warns, before a real-AWS integ fixture is spent, that the
+branch is behind `origin/main`, because a rebase after the run moves the merge
+base and can stale the very marker the run was spent to earn.
+
+An ESCALATION, not a new rule: `/work-issues` references/verify.md §8-b already
+says "Rebase BEFORE the integ", and go-to-k/cdkd#2589 followed it and still paid
+twice — six review rounds ran over ~2 h, `main` advanced during them, and the
+rebase moved the merge base past go-to-k/cdkd#2565 (`src/provisioning/providers/**`),
+flipping `integ-destroy` to `mismatch` after `drift-revert-vpc` and `lambda` had
+already been run. The re-run was CORRECT; what was missing is that nothing said
+so when the run was STARTED. The rule is written as a SEQUENCE while the real
+shape is a LOOP.
+
+**Placement is the design.** The obvious spot is beside `markgate set`, and it
+is wrong: by then the AWS run is spent, so the warning can only report a loss.
+This fires on the fixture INVOCATION — the last moment a rebase is still free.
+
+**Non-blocking on purpose**, unlike `integ-destroy-gate.sh`: a maintainer-driven
+run on a deliberately old base is legitimate (a bisect, a repro against a
+released tree), and a wrong refusal there costs more than the waste it prevents.
+It guards a SPEND, not a merge.
+
+Two arms with opposite advice, so it stays worth reading: when main's advance
+touches integ-gate scope it names the count and says rebase first; when it does
+not it says the marker will probably survive. It does NOT `git fetch` (a
+PreToolUse hook must stay fast and side-effect-free), so it reads the
+last-fetched `origin/main` and UNDER-reports on a stale ref — the safe direction
+for a nudge. Noise control: only a command that RUNS a fixture arms it; a
+`grep` / `cat` / `ls` of a `verify.sh` does not. Repo opt-in via `.markgate.yml`.
+Declared unexercisable in `unresolved-target-class.test.sh` — it refuses
+nothing, so it has no refusal to exercise. Smoke test:
+`integ-stale-base-detector.test.sh` (11 cases against real git fixtures).
+Mutation-probed 2026-09-04: an `exit 0` stub printing nothing fails 5 (the warn
+cases), a stub always printing the alarming arm fails 6 (the silence cases) —
+so neither direction passes vacuously, which is the specific risk of a hook
+whose exit code carries no signal.
 
 ## Markgate gate hooks (cwd-aware)
 

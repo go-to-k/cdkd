@@ -74,11 +74,22 @@ fixture.
   evidence does not); or **the user cannot use the result yet** (unreleased /
   undeployed — "merged" is not done; this criterion alone is decided by
   whether the request's purpose is met).
-- **`next`** — hand off. Any of: a NEW integ fixture must be WRITTEN; a
-  schema bump / behavior change that must not share a PR; bundling makes the
-  PR unreviewable; external input (a quota, a maintainer decision, an
-  upstream fix); an independent subsystem with no file overlap AND no `now`
-  criterion firing.
+- **`next`** — hand off. Any of: a NEW integ fixture must be WRITTEN;
+  external input (a quota, a maintainer decision, an upstream fix); an
+  independent subsystem with no file overlap AND no `now` criterion firing.
+
+**No `next` criterion is about the PR.** Two used to be — "a schema bump /
+behavior change that must not share a PR" and "bundling makes the PR
+unreviewable" — and both were PR-SPLITTING guidance filed under a
+SESSION-deferral heading. They contradicted `/work-issues` §3-b's "'It needs
+its own PR' is NOT a `next` reason" forty lines away, and the contradiction
+was load-bearing: an agent deferring three items in one session cited the
+PR-shaped branch for all three (2026-09-04, go-to-k/cdkd#2587 /
+go-to-k/cdkd#2588 / go-to-k/cdkd#2590 — all three were then re-classified
+`now` and finished in that same session). A rule that offers two answers is
+not a rule; the reader takes the cheaper one. Splitting the work across
+several PRs is normal and needs no permission from this list — decide it on
+review surface, and decide `Session-fit` on the criteria above.
 
 **Before writing `next`, NAME the next session's verification** — the
 concrete command a FRESH session will run, and that it will be able to run
