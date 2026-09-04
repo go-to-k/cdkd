@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 // Mock logger
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -34,6 +35,23 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),
 }));
+
+/**
+ * Every `code` on the error's cause chain. The engine wraps a per-resource
+ * refusal in its own `PROVISIONING_ERROR`, so the first code found is the
+ * wrapper's — the refusal's own sits deeper, and the assertion has to look for
+ * it rather than take whichever comes first.
+ */
+function codesInCauseChain(error: Error): string[] {
+  const codes: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string') codes.push(code);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return codes;
+}
 
 describe('DeployEngine - Resource Replacement', () => {
   // Shared mocks
@@ -488,7 +506,22 @@ describe('DeployEngine - Resource Replacement', () => {
     // that the bucket was NOT replaced — create / delete were never called,
     // i.e. the guard fired BEFORE any destructive op (contrast the parallel
     // "ALLOWS a non-stateful type" test, which DOES create + delete).
-    await expect(engine.deploy(stackName, template)).rejects.toThrow();
+    const deployError = await engine.deploy(stackName, template).then(
+      () => null,
+      (e) => e as Error
+    );
+    expect(deployError).not.toBeNull();
+    // The refusal is terminal by construction: a CLI flag and a state-recorded
+    // property bag decide it, and no retry can change either — while the
+    // message interpolates a template-controlled logical id into text the
+    // retry classifiers match by SUBSTRING. Pinned here because the twin guard
+    // on the update-failure fallback carries the same marker
+    // (`tests/unit/deployment/deploy-engine-replace.test.ts`), and an
+    // unmarked one of the pair is the hole the marker exists to close.
+    expect(isMarkedNonRetryable(deployError!)).toBe(true);
+    // ...and it is THIS refusal, not some other terminal failure: the marker
+    // alone is satisfied by any non-retryable error the deploy could raise.
+    expect(codesInCauseChain(deployError!)).toContain('STATEFUL_REPLACE_BLOCKED');
 
     expect(mockProvider.create).not.toHaveBeenCalled();
     expect(mockProvider.delete).not.toHaveBeenCalled();
@@ -616,5 +649,161 @@ describe('DeployEngine - Resource Replacement', () => {
 
     expect(mockProvider.create).toHaveBeenCalledTimes(1);
     expect(mockProvider.delete).toHaveBeenCalledTimes(1);
+  });
+
+  describe('the property-driven guard reads the RECORDED property bag, not the desired one', () => {
+    // Mirror of the same-named block in `deploy-engine-replace.test.ts`, which
+    // pinned the bag argument for the update-failure fallback's guard site but
+    // left the property-driven twin's argument unpinned. Every other stateful
+    // case in THIS file uses `AWS::S3::Bucket`, whose verdict is decided by the
+    // TYPE alone (`has-objects`, since a mid-deploy site cannot probe object
+    // count), so swapping the call site's second argument for `{}`, for the
+    // resolved desired bag, or for `change.desiredProperties` left all of them
+    // green while a real `AWS::Logs::LogGroup` with recorded retention would
+    // have been DELETE + CREATEd on a plain `cdkd deploy` with no consent.
+    //
+    // `AWS::Logs::LogGroup` is the discriminator, because its verdict is
+    // computed from the bag: `has-retention` iff `RetentionInDays > 0`. Putting
+    // the retention in exactly one bag and asserting both polarities makes any
+    // bag swap red in one direction or the other.
+    // The state record and `change.currentProperties` are built from ONE bag
+    // per case, because production cannot make them diverge: the diff derives
+    // `currentProperties` FROM the state record. Seeding a retention into the
+    // record that the change's bag lacks would make the ALLOWS case red on a
+    // swap to `currentResource.properties` — a behaviourally identical spelling
+    // of "recorded" — which is an over-strict false RED rather than a real
+    // discrimination. The twin makes the same point explicitly.
+    const makeLogGroupState = (properties: Record<string, unknown>): StackState => ({
+      version: 1,
+      stackName,
+      resources: {
+        MyLogGroup: {
+          physicalId: 'old-log-group',
+          resourceType: 'AWS::Logs::LogGroup',
+          properties,
+        },
+      },
+      outputs: {},
+      lastModified: Date.now(),
+    });
+
+    const logGroupTemplate: CloudFormationTemplate = {
+      Resources: {
+        MyLogGroup: {
+          Type: 'AWS::Logs::LogGroup',
+          Properties: { LogGroupName: 'new-log-group' },
+        },
+      },
+    };
+
+    /** A `LogGroupName` change is create-only, so it drives a replacement. */
+    const makeChanges = (
+      currentProperties: Record<string, unknown>,
+      desiredProperties: Record<string, unknown>
+    ): Map<string, ResourceChange> =>
+      new Map<string, ResourceChange>([
+        [
+          'MyLogGroup',
+          {
+            logicalId: 'MyLogGroup',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::Logs::LogGroup',
+            currentProperties,
+            desiredProperties,
+            propertyChanges: [
+              {
+                path: 'LogGroupName',
+                oldValue: 'old-log-group',
+                newValue: 'new-log-group',
+                requiresReplacement: true,
+              },
+            ],
+          },
+        ],
+      ]);
+
+    /**
+     * Seeds the recorded bag on BOTH sides at once, as production does, and
+     * the desired bag in the same call — so neither can be re-stated at a call
+     * site and drift from the other.
+     */
+    const seedCase = (
+      recorded: Record<string, unknown>,
+      desired: Record<string, unknown>
+    ): void => {
+      mockStateBackend.getState.mockResolvedValue({
+        state: makeLogGroupState(recorded),
+        etag: 'etag-123',
+      });
+      mockDiffCalculator.calculateDiff.mockResolvedValue(makeChanges(recorded, desired));
+    };
+
+    beforeEach(() => {
+      mockDagBuilder.getExecutionLevels.mockReturnValue([['MyLogGroup']]);
+      mockProvider.create.mockResolvedValue({ physicalId: 'new-log-group', attributes: {} });
+    });
+
+    it('BLOCKS when the RECORDED bag carries the retention and the desired bag does not', async () => {
+      seedCase(
+        { LogGroupName: 'old-log-group', RetentionInDays: 30 },
+        { LogGroupName: 'new-log-group' }
+      );
+
+      const engine = new DeployEngine(
+        mockStateBackend as any,
+        mockLockManager as any,
+        mockDagBuilder as any,
+        mockDiffCalculator as any,
+        mockProviderRegistry as any,
+        {}, // NO forceStatefulRecreation -> the guard must fire
+        'us-east-1'
+      );
+
+      const deployError = await engine.deploy(stackName, logGroupTemplate).then(
+        () => null,
+        (e) => e as Error
+      );
+      expect(deployError).not.toBeNull();
+      expect(codesInCauseChain(deployError!)).toContain('STATEFUL_REPLACE_BLOCKED');
+      // The reason renders the retention branch specifically, so this also pins
+      // that the guard reached the CONDITIONAL arm off the bag rather than some
+      // type-keyed shortcut that would survive a bag swap.
+      expect(deployError!.message + String(deployError!.cause)).toMatch(/log group retains data/);
+      // The load-bearing half: the guard fired BEFORE any destructive op.
+      expect(mockProvider.create).not.toHaveBeenCalled();
+      expect(mockProvider.delete).not.toHaveBeenCalled();
+    });
+
+    it('ALLOWS when only the DESIRED bag carries the retention', async () => {
+      // The other polarity, and the one that kills a swap to the desired bag.
+      // It pins BAG SELECTION only: the guard's predicate is
+      // `RetentionInDays > 0` on the RECORDED bag, so a template merely ADDING
+      // retention replaces with no flag.
+      //
+      // Deliberately NOT justified as "the recorded log group is ephemeral" —
+      // that reading is FALSE (an unset or zero retention is CloudWatch Logs'
+      // "never expire"). The predicate letting it through is a known gap,
+      // issue #2558, which this assertion records rather than endorses.
+      // The template ADDS retention, so only the DESIRED bag carries it.
+      seedCase(
+        { LogGroupName: 'old-log-group' },
+        { LogGroupName: 'new-log-group', RetentionInDays: 30 }
+      );
+
+      const engine = new DeployEngine(
+        mockStateBackend as any,
+        mockLockManager as any,
+        mockDagBuilder as any,
+        mockDiffCalculator as any,
+        mockProviderRegistry as any,
+        {}, // NO forceStatefulRecreation -> and none is needed
+        'us-east-1'
+      );
+
+      await engine.deploy(stackName, logGroupTemplate);
+
+      expect(mockProvider.create).toHaveBeenCalledTimes(1);
+      expect(mockProvider.delete).toHaveBeenCalledTimes(1);
+    });
   });
 });

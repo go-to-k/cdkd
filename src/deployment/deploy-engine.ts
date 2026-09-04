@@ -103,6 +103,7 @@ import {
   isMarkedNonRetryable,
   isNameCollisionError,
   isRecreateRetryableError,
+  markNonRetryable,
 } from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
@@ -419,10 +420,26 @@ export interface DeployEngineOptions {
 
   /**
    * `--force-stateful-recreation` — confirm a data-losing replacement of a
-   * stateful resource. Required alongside {@link replace} (and the existing
-   * `--recreate-via-*` flags) whenever the replacement target is a stateful
-   * type. Without it, the engine refuses the replacement and surfaces a clear
-   * error naming the resource + the data-loss reason.
+   * stateful resource. It is NOT merely a companion to {@link replace} / the
+   * `--recreate-via-*` flags: the guard also runs on replacement paths a plain
+   * `cdkd deploy` reaches with no flag at all — a property-driven replacement
+   * (an immutable / createOnly property changed in the template), and the
+   * update-failure fallback's Cloud Control trigger (issue [#2514]) — so a
+   * plain deploy can demand this flag on its own.
+   *
+   * It is NOT required on every replacement of a stateful type, and this
+   * comment must not be read as saying so. The property-driven site exempts a
+   * target whose template declares `UpdateReplacePolicy: Retain` (the old
+   * resource and its data survive, orphaned rather than deleted) and a
+   * `--recreate-via-*` target, which the pre-flight probe already validated.
+   * The update-failure fallback exempts neither, because it deletes the old
+   * resource before creating the new one. The exemptions are enumerated under
+   * "Three exemptions apply to this trigger specifically" in
+   * `docs/cli-deploy-safety.md`, whose per-path table separately enumerates
+   * the paths; prose here names examples and must not read as exhaustive.
+   *
+   * Without it, the engine refuses the replacement and surfaces a clear error
+   * naming the resource + the data-loss reason.
    */
   forceStatefulRecreation?: boolean;
 
@@ -4226,7 +4243,12 @@ export class DeployEngine {
         // replacement (the create-first path below leaves it in place — see the
         // "Retaining old" branch), so a property-driven replacement of a
         // Retain-policy resource loses NO data. Read it here so the stateful
-        // guard can honor it (and reuse it at the replace/delete site below).
+        // guard can honor it, and reused by every later site that asks what
+        // policy the user is applying NOW: the replace/delete sites below and
+        // the update-failure fallback's `Retain` note. The ONE read that does
+        // not use it is the fallback's SNAPSHOT read, which falls back to
+        // `currentResource.updateReplacePolicy`; the reason is stated at that
+        // call site.
         const updateReplacePolicy = template?.Resources?.[logicalId]?.UpdateReplacePolicy;
 
         if (needsReplacement) {
@@ -4255,13 +4277,23 @@ export class DeployEngine {
                 ?.filter((pc) => pc.requiresReplacement)
                 .map((pc) => pc.path)
                 .join(', ');
-              throw new CdkdError(
-                `${logicalId} (${resourceType}) requires replacement (immutable property changed: ` +
-                  `${immutableProps}) but it is a stateful resource — ` +
-                  `${renderStatefulReason(statefulReason)}. Re-run with ` +
-                  `--force-stateful-recreation to confirm the data loss, or change the resource ` +
-                  `definition to avoid the immutable-property change.`,
-                'STATEFUL_REPLACE_BLOCKED'
+              // `markNonRetryable`: the verdict is computed from a CLI flag and
+              // a state-recorded property bag, neither of which a retry can
+              // change — and the message interpolates a template-controlled
+              // logical id into text the SUBSTRING-matching retry classifiers
+              // read. The twin marker sits on the update-failure fallback's
+              // guard below; both are declarations, not fixes for an observed
+              // retry (the throws are outside `withRetry` today, but a nested
+              // stack's child engine re-throws into the parent's).
+              throw markNonRetryable(
+                new CdkdError(
+                  `${logicalId} (${resourceType}) requires replacement (immutable property changed: ` +
+                    `${immutableProps}) but it is a stateful resource — ` +
+                    `${renderStatefulReason(statefulReason)}. Re-run with ` +
+                    `--force-stateful-recreation to confirm the data loss, or change the resource ` +
+                    `definition to avoid the immutable-property change.`,
+                  'STATEFUL_REPLACE_BLOCKED'
+                )
               );
             }
           }
@@ -4834,7 +4866,9 @@ export class DeployEngine {
             // If UPDATE is not supported, fall back to DELETE → CREATE
             // (replacement). Two triggers:
             //   1. CC API `UnsupportedActionException` / "does not support
-            //      UPDATE" — auto-fallback, UNCONDITIONAL (pre-existing).
+            //      UPDATE" — auto-fallback, needs no flag to REACH the
+            //      replacement (issue #2514 left that half unchanged; only the
+            //      stateful guard below became common to both triggers).
             //   2. An SDK provider throwing a typed
             //      `ResourceUpdateNotSupportedError` (an immutable property
             //      changed on a type with no replacement rule) — gated on the
@@ -4846,27 +4880,108 @@ export class DeployEngine {
             const typedUnsupported = updateError instanceof ResourceUpdateNotSupportedError;
             const replaceOptIn = typedUnsupported && this.options.replace === true;
             if (ccUnsupported || replaceOptIn) {
-              // Stateful guard for the `--replace` opt-in path only (the CC
-              // auto-fallback keeps its long-standing unconditional behavior).
-              // A stateful type (RDS / DynamoDB / EFS / etc.) must not be
-              // silently DELETE+CREATEd — require --force-stateful-recreation.
-              if (replaceOptIn) {
-                // Conservative variant: --replace fires mid-deploy with no
-                // chance to run the async S3 object-count probe, so a deferred
-                // S3 bucket is treated as stateful (block unless forced).
-                const statefulReason = isStatefulRecreateTargetForReplace(
-                  resourceType,
-                  currentProps
+              // Stateful guard for BOTH triggers (issue #2514). A stateful
+              // type (RDS / DynamoDB / EFS / etc.) must not be silently
+              // DELETE+CREATEd — require --force-stateful-recreation.
+              //
+              // It used to sit inside `if (replaceOptIn)`, so the CC
+              // auto-fallback recreated a stateful resource on a plain
+              // `cdkd deploy` with neither `--replace` nor
+              // `--force-stateful-recreation`, while the SAME type behind an
+              // SDK provider was refused twice over. The discriminator was
+              // neither the resource nor the user's intent but which
+              // provisioning layer the type happened to route through — and
+              // routing is re-decided every deploy (`provisionedBy` is
+              // recorded, not pinned), so the guard's presence was not
+              // something a user could reason about. The delete below is
+              // identical on both triggers, so the data-loss consent belongs
+              // to the REPLACEMENT, not to the trigger.
+              //
+              // Conservative variant: this fires mid-deploy with no chance to
+              // run the async S3 object-count probe, so a deferred S3 bucket
+              // is treated as stateful (block unless forced).
+              //
+              // `UpdateReplacePolicy: Retain` is deliberately NOT an exemption
+              // here, unlike the property-driven replacement guard above: that
+              // path creates the replacement FIRST and leaves the old resource
+              // in place under `Retain` (nothing is lost), while this fallback
+              // deletes the old resource unconditionally a few lines down —
+              // whatever the policy says.
+              const statefulReason = isStatefulRecreateTargetForReplace(resourceType, currentProps);
+              if (statefulReason && this.options.forceStatefulRecreation !== true) {
+                // Both arms name the `Retain` trap: this path deletes the old
+                // resource unconditionally, so a user who reads the remedy and
+                // re-runs with the consent flag loses the data even though the
+                // template said `UpdateReplacePolicy: Retain`. The property-
+                // driven guard above needs no such clause — Retain exempts it
+                // outright there. (The divergence itself is issue #2518.)
+                // TEMPLATE ONLY — deliberately no `?? currentResource
+                // .updateReplacePolicy` fallback, which is where the snapshot
+                // attribute a few lines below DOES fall back to state. The two
+                // decisions are not the same shape: omitting a promised
+                // snapshot is destructive, so that read is conservative, while
+                // this note only describes the attribute the user is applying
+                // NOW. Falling back to state would tell someone whose template
+                // just dropped `Retain` that a policy they no longer declare
+                // fails to protect them.
+                //
+                // Hence the shared `updateReplacePolicy` binding, read once
+                // in this UPDATE branch's own scope: it IS the template-only read,
+                // so the property-driven guard's EXEMPTION and this note ask
+                // the same question ("what is the user applying now?") of the
+                // same value, and a future change to one cannot leave the
+                // other on an older spelling. The snapshot read below is the
+                // deliberate exception and stays spelled out with its state
+                // fallback.
+                // Only `'Retain'` is called out: `RetainExceptOnCreate` is a
+                // `DeletionPolicy` value CloudFormation rejects for
+                // `UpdateReplacePolicy`, so it cannot reach this note.
+                const retainNote =
+                  updateReplacePolicy === 'Retain'
+                    ? ` Note: UpdateReplacePolicy: Retain does NOT protect this path — the ` +
+                      `replacement deletes the old resource regardless.`
+                    : '';
+                // `markNonRetryable` for the same reason as the property-driven
+                // guard's twin above: a flag plus a state-recorded bag decide
+                // it, and the message carries a template-controlled logical id
+                // into substring-matching classifiers.
+                throw markNonRetryable(
+                  new CdkdError(
+                    (replaceOptIn
+                      ? `--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
+                        `(${resourceType}) — ${renderStatefulReason(statefulReason)}. Re-run with ` +
+                        `--force-stateful-recreation to confirm the data loss, or change the ` +
+                        `resource definition to avoid the immutable-property change.`
+                      : `${logicalId} (${resourceType}) cannot be updated in place by the ` +
+                        `provisioning layer it routes through, so applying this change would ` +
+                        `DELETE + CREATE it — but it is a stateful resource: ` +
+                        `${renderStatefulReason(statefulReason)}. Re-run with ` +
+                        `--force-stateful-recreation to confirm the data loss, or change the ` +
+                        `resource definition to avoid the update.`) + retainNote,
+                    'STATEFUL_REPLACE_BLOCKED',
+                    // Chain the rejection that routed us here: the message
+                    // above names no layer and no AWS text, so this is the
+                    // only place that rejection is retained.
+                    //
+                    // Where it actually SURFACES is narrower than the terminal
+                    // output: `formatError` (`src/utils/error-handler.ts`)
+                    // renders exactly ONE `Caused by:` level, and the error the
+                    // CLI prints is the `ProvisioningError` this method's catch
+                    // wraps the refusal in — so that one level is the refusal's
+                    // own message and the raw Cloud Control text stays a hop
+                    // below it, unprinted. It DOES reach the persisted
+                    // `RESOURCE_FAILED` event: `extractDeploymentEventError`
+                    // walks the whole chain for `awsErrorCode` / `requestId`,
+                    // so `cdkd events` can name the AWS rejection behind the
+                    // refusal (pinned in `tests/unit/types/deployment-events.test.ts`).
+                    //
+                    // Safe to chain now that the refusal is marked:
+                    // `isMarkedNonRetryable` is consulted before any chain-text
+                    // classification, and `ccUnsupported` reads only a
+                    // top-level message.
+                    updateError instanceof Error ? updateError : undefined
+                  )
                 );
-                if (statefulReason && this.options.forceStatefulRecreation !== true) {
-                  throw new CdkdError(
-                    `--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
-                      `(${resourceType}) — ${renderStatefulReason(statefulReason)}. Re-run with ` +
-                      `--force-stateful-recreation to confirm the data loss, or change the ` +
-                      `resource definition to avoid the immutable-property change.`,
-                    'STATEFUL_REPLACE_BLOCKED'
-                  );
-                }
               }
               this.logger.info(
                 `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
@@ -4879,8 +4994,12 @@ export class DeployEngine {
               // only what the LAST deploy used, so a template that just
               // gained `Snapshot` must not be overridden by a stale
               // `Delete`). State is the fallback for a template that omits
-              // the attribute. Same ordering as the other three replacement
-              // sites, which read the template-derived variable.
+              // the attribute, and this is the ONLY snapshot read on the
+              // replacement paths that has one: every other site above passes
+              // the shared `updateReplacePolicy` binding, which is template-only.
+              // The divergence is deliberate — omitting a promised snapshot is
+              // destructive, so this read is conservative, while a `Retain`
+              // NOTE only describes what the user is applying now.
               const fallbackFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
                 logicalId,
                 resourceType,

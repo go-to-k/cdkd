@@ -445,18 +445,49 @@ replacement can never proceed.
 `--replace` shares the [stateful-resource guard](#stateful-resource-guard):
 when the replacement target is a stateful type, the DELETE + CREATE loses all
 its data, so cdkd refuses unless `--force-stateful-recreation` is also passed.
-Three details are specific to this path:
+The details that matter here:
 
 - **The guard is evaluated mid-deploy**, at the moment the immutable-update
   rejection is caught — not at pre-flight, as it is for the `--recreate-via-*`
   flags. The error names the resource and the data-loss reason.
 - **Every `AWS::S3::Bucket` counts as stateful here**, empty or not. There is
   no opportunity mid-deploy to run the object-count probe the pre-flight path
-  uses, so cdkd assumes the bucket has data. Replacing any bucket via
-  `--replace` therefore needs `--force-stateful-recreation`.
-- **The Cloud Control `UnsupportedActionException` auto-fallback is not
-  guarded.** Only the `--replace` opt-in consults the stateful guard; the
-  auto-fallback replaces unconditionally, as it always has.
+  uses, so cdkd assumes the bucket has data. That applies to **both** triggers
+  this section covers, not only the `--replace` opt-in: replacing a bucket
+  needs `--force-stateful-recreation` whether you passed `--replace` or the
+  Cloud Control auto-fallback took you there on a plain `cdkd deploy`.
+- **The Cloud Control `UnsupportedActionException` auto-fallback is guarded on
+  the same terms.** That fallback still needs no flag to REACH the replacement
+  — when AWS rejects the in-place update because the type has no Cloud Control
+  UPDATE handler, cdkd replaces the resource on a plain `cdkd deploy`. But a
+  **stateful** target on that path now requires `--force-stateful-recreation`
+  too, exactly as the `--replace` opt-in does. Which of the two triggers fired
+  no longer decides whether the guard runs: the discriminator used to be the
+  provisioning layer a type happens to route through, which cdkd re-decides
+  every deploy. The error names the trigger the user actually hit rather than
+  `--replace`, which does not gate this path:
+
+  ```text
+  MyTable (AWS::DynamoDB::Table) cannot be updated in place by the provisioning
+  layer it routes through, so applying this change would DELETE + CREATE it —
+  but it is a stateful resource: destroy loses all data in the resource. Re-run
+  with --force-stateful-recreation to confirm the data loss, or change the
+  resource definition to avoid the update.
+  ```
+
+  `UpdateReplacePolicy: Retain` is **not** an exemption on either of the two
+  triggers this section covers — unlike the property-driven replacement
+  described below, which does exempt it. Both triggers here delete the old
+  resource before creating its replacement, so the data is destroyed whatever
+  the policy says. When the resource declares `Retain`, the refusal appends a
+  sentence saying exactly that, because the remedy it offers
+  (`--force-stateful-recreation`) would otherwise read as safe for a resource
+  the template asked to keep:
+
+  ```text
+  Note: UpdateReplacePolicy: Retain does NOT protect this path — the
+  replacement deletes the old resource regardless.
+  ```
 
 Non-stateful immutable types — LayerVersion, Glue SecurityConfiguration, ECS
 TaskDefinition, ApiGatewayV2 sub-resources — replace with `--replace` alone.
@@ -509,18 +540,21 @@ bucket, log lines in a log group, images in an ECR repository. AWS does not
 migrate any of it to the replacement.
 
 So cdkd refuses to destroy-and-recreate a stateful resource unless
-`--force-stateful-recreation` is passed as a second flag. That two-flag
-protection mirrors
+`--force-stateful-recreation` is passed. On the paths you reach by asking for a
+replacement — `--recreate-via-cc-api`, `--recreate-via-sdk-provider`,
+`--replace` — that is a second flag beside the first, mirroring
 [`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
-on destroy.
+on destroy. On the rest it is the **only** flag: a plain `cdkd deploy` can reach
+a replacement on its own, and then this is what it asks for.
 
-Four paths consult this guard:
+Every path that consults this guard:
 
 | Path | When the guard runs |
 | --- | --- |
 | `--recreate-via-cc-api` | Pre-flight, before any resource is touched |
 | `--recreate-via-sdk-provider` | Pre-flight, before any resource is touched |
 | `--replace` | Mid-deploy, when the immutable-update rejection is caught |
+| Cloud Control `UnsupportedActionException` auto-fallback | Mid-deploy, when AWS rejects the in-place update — no flag needed to reach it |
 | Property-driven replacement on a plain `cdkd deploy` | Mid-deploy, from the diff |
 
 ### Always-stateful types
@@ -530,21 +564,74 @@ Destroy loses all data for these, unconditionally.
 | Category | Types |
 | --- | --- |
 | Database | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` |
-| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::FSx::FileSystem`, `AWS::ECR::Repository`, `AWS::EC2::Volume` |
+| Data warehouse | `AWS::Redshift::Cluster` |
+| In-memory data store | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::ReplicationGroup` |
+| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::FSx::FileSystem`, `AWS::ECR::Repository`, `AWS::EC2::Volume`, `AWS::S3Express::DirectoryBucket` |
+| Table / vector storage | `AWS::S3Tables::TableBucket`, `AWS::S3Tables::Table`, `AWS::S3Tables::Namespace`, `AWS::S3Vectors::VectorBucket` — deleting a table bucket or a vector bucket empties it first, with no opt-in; the namespace is guarded on an open question, see below |
+| Managed compute with local storage | `AWS::EMR::Cluster` — terminating the cluster destroys the HDFS volumes on its core nodes, and the replacement comes back empty |
 | Streaming | `AWS::Kinesis::Stream` |
 | Search | `AWS::Elasticsearch::Domain`, `AWS::OpenSearchService::Domain` |
 | Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter` |
+| Encryption keys | `AWS::KMS::Key` — the delete schedules the key for deletion, and once the window elapses every ciphertext encrypted under it is unrecoverable, including data in other stacks that merely reference the key. `AWS::KMS::ReplicaKey` is guarded on the same terms, though whether a destroyed replica's ciphertexts survive through another key in its multi-region set is unmeasured, so the guard assumes they do not |
+| Source control | `AWS::CodeCommit::Repository` — the delete destroys the repository's entire git history |
 | Metadata catalog | `AWS::Glue::Database`, `AWS::Glue::Table` |
 | Edge | `AWS::CloudFront::Distribution` — the URL changes, which breaks consumers, and propagation takes roughly 20 minutes |
 
+The list has mechanical lower bounds cdkd enforces in unit tests, so it is
+checked rather than only hand-curated.
+
+- **Every type cdkd takes a final snapshot of before a destroy is on it.** cdkd
+  snapshots the types CloudFormation lets you tag `DeletionPolicy: Snapshot`,
+  and CloudFormation permits that attribute exactly where deleting the resource
+  destroys data worth capturing first — so a type cdkd snapshots on destroy
+  must not be replaceable mid-deploy without consent. `AWS::Redshift::Cluster`,
+  `AWS::ElastiCache::CacheCluster` and `AWS::ElastiCache::ReplicationGroup`
+  joined the guard for that reason.
+- **Every type whose delete consumes the `--force-stateful-recreation` consent
+  is on it.** A resource whose deletion needs that flag to clear its own data
+  guard is by definition data-bearing. `AWS::S3Express::DirectoryBucket` joined
+  for that reason.
+
+The rest are hand-curated, because no lower bound can see a delete that
+destroys data with **no opt-in at all**: `AWS::S3Tables::TableBucket` and
+`AWS::S3Vectors::VectorBucket` empty themselves first, `AWS::S3Tables::Table`
+holds the rows themselves rather than a catalog entry, `AWS::KMS::Key`
+schedules the key material for deletion (`AWS::KMS::ReplicaKey` is guarded on
+the same footing, but routes through Cloud Control and is unmeasured here), and
+`AWS::CodeCommit::Repository` drops the git history. `AWS::KMS::Alias` is
+deliberately not guarded — deleting an alias removes a pointer, not key
+material.
+
+`AWS::S3Tables::Namespace` is guarded on an **open question** rather than on a
+measurement, and the entry says so. cdkd's own delete for a namespace issues a
+bare `DeleteNamespace` and enumerates no tables. Whether AWS's API cascades
+server-side has not been measured — and a namespace rename is a property-driven
+replacement a plain `cdkd deploy` reaches with no flag, so a cascade would take
+out-of-band tables with it. The guard takes the fail-safe side until a live
+probe settles the question; if it turns out AWS refuses to delete a non-empty
+namespace, the type comes back off the list.
+
+Replacing a type in the table above asks for `--force-stateful-recreation`.
+The guard list widens over time and always in that direction; see
+[the changelog](changelog-cdkd.md) for when each type joined.
+
 ### Conditionally stateful types
 
-Two types are only stateful when the resource actually holds data.
+These types carry a CONDITION instead of being unconditionally stateful. The
+condition is what the guard evaluates; it is not a promise that a type failing
+it holds no data.
 
 | Type | Guard fires when | Guard does not fire when |
 | --- | --- | --- |
 | `AWS::S3::Bucket` | The bucket has at least one current version, prior version, or delete-marker | The bucket is empty — but see the per-path note below |
-| `AWS::Logs::LogGroup` | `RetentionInDays > 0` on the recorded state | Retention is unset or zero, so the log group is ephemeral |
+| `AWS::Logs::LogGroup` | `RetentionInDays > 0` on the recorded state | Retention is unset or zero — see the note below |
+
+**Known gap in the log-group condition.** An unset or zero `RetentionInDays`
+is CloudWatch Logs' **never expire** setting, not an empty log group. So the
+right-hand column above means only that the guard does not fire — it does
+**not** mean the log group holds nothing, and today a never-expiring log group
+can be replaced with no consent flag. Check the retention before renaming a log
+group you care about.
 
 ### How S3 buckets are judged, per path
 
@@ -567,9 +654,11 @@ without `--force-stateful-recreation`. The probe fails open, so treat that
 warning as a prompt to decide for yourself: pass
 `--force-stateful-recreation` if the bucket might hold data.
 
-**Mid-deploy** (`--replace` and property-driven replacement) there is no
-opportunity to run that probe, so cdkd assumes the bucket has data. Every
-bucket needs `--force-stateful-recreation` on those paths.
+**Mid-deploy** — `--replace`, property-driven replacement, and the Cloud
+Control `UnsupportedActionException` auto-fallback, which a plain `cdkd deploy`
+reaches with no flag — there is no opportunity to run that probe, so cdkd
+assumes the bucket has data. Every bucket needs `--force-stateful-recreation`
+on those paths.
 
 ### `--force-stateful-recreation`
 

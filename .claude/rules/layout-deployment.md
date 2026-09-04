@@ -105,8 +105,11 @@ Index of every area: [code-layout.md](code-layout.md).
     constraint lands on providers: one with a create-side pre-flight refusal
     must not re-create inside `update()`.
   - Under `UpdateReplacePolicy: Retain` (old resource orphaned): delete the
-    new one and re-adopt the old (`reverse-replacement-readopt`); stateful
-    types warn the old data is unrecoverable.
+    new one and re-adopt the old (`reverse-replacement-readopt`). The stateful
+    warn does NOT fire on this arm — it is on the plain `reverse-replacement`
+    arm — and its wording is scoped: the old data is NOT RECOVERED BY THIS
+    ROLLBACK, never "unrecoverable", which would be a claim about AWS this repo
+    has not measured.
   - The rolled-back CREATE's CURRENT record `DeletionPolicy` governs its
     delete (CFn semantics): `Retain` ORPHANS (dropped from state, left in
     AWS); `Snapshot` routes to `delete-with-final-snapshot` (snapshot THEN

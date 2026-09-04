@@ -140,9 +140,9 @@ Under `UpdateReplacePolicy: Retain` the orphaned old resource still exists, so i
 is simply re-adopted after the new one is deleted — a true clean revert.
 
 **Data caveat.** For a stateful type (DynamoDB, RDS, S3 and so on) the old
-resource's data was destroyed by the replacement and cannot be recovered: the
-re-created resource starts empty. The replay warns loudly, and the plan labels
-these items "reverse-replace".
+resource's data was destroyed by the replacement and is not recovered by the
+rollback: the re-created resource starts empty. The replay warns loudly, and
+the plan labels these items "reverse-replace".
 
 ### DeletionPolicy on a rolled-back CREATE
 

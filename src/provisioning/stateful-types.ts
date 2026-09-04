@@ -12,9 +12,16 @@
  *
  * To avoid an accidental data-loss footgun, cdkd refuses to recreate
  * any resource whose type is in {@link STATEFUL_TYPES} unless the user
- * ALSO passes `--force-stateful-recreation`. The two-flag protection
- * mirrors `--remove-protection`'s pattern (see
- * `src/cli/commands/destroy-runner.ts`).
+ * ALSO passes `--force-stateful-recreation`. On the `--recreate-via-*`
+ * and `--replace` opt-ins that is a two-flag protection, mirroring
+ * `--remove-protection`'s pattern (see
+ * `src/cli/commands/destroy-runner.ts`). It is NOT only that shape any
+ * more: the guard also runs on replacement paths a plain `cdkd deploy`
+ * reaches with no flag at all (a property-driven replacement, and the
+ * update-failure fallback's Cloud Control trigger — issue [#2514]),
+ * where `--force-stateful-recreation` is the ONLY flag involved. See
+ * {@link isStatefulRecreateTargetForReplace} for the mid-deploy variant
+ * those paths use.
  *
  * The list is hand-curated and intentionally **conservative**: every
  * type here carries user data that the AWS service does NOT
@@ -22,18 +29,59 @@
  * AWS service treats as ephemeral (e.g. Lambda Function, IAM Role)
  * are NOT in this list — recreate is cheap.
  *
- * Two entries are **conditionally stateful** — they only count when
- * the resource actually contains data:
+ * Two entries carry a CONDITION instead of counting unconditionally.
+ * The condition is what the guard evaluates; failing it is not a
+ * finding that the resource holds no data (see the LogGroup note):
  *
  *   - `AWS::S3::Bucket`: empty buckets are safe to recreate. The
- *     deploy engine probes `s3:ListObjectsV2` at plan time and only
+ *     deploy engine probes `s3:ListObjectVersions` at plan time and only
  *     refuses when the bucket has at least one object.
- *   - `AWS::Logs::LogGroup`: a log group with `RetentionInDays`
- *     undefined or zero is functionally ephemeral. The deploy engine
- *     refuses only when `RetentionInDays > 0`.
+ *   - `AWS::Logs::LogGroup`: the deploy engine refuses only when
+ *     `RetentionInDays > 0`. NOTE this is a KNOWN GAP, not a statement
+ *     that the rest are empty: an unset or zero retention is CloudWatch
+ *     Logs' "never expire", the most data-bearing setting there is, and
+ *     `LogsLogGroupProvider` writes `0` for precisely that. Issue
+ *     [#2558] tracks it; the predicate is left as-is here.
  *
  * Both conditional checks live in {@link isStatefulRecreateTarget};
  * the bare {@link STATEFUL_TYPES} set is the type-only first-cut.
+ *
+ * **Lower bound, enforced by a test** (issue [#2514]'s review round):
+ * every type in `final-snapshot.ts`'s `ATOMIC_FINAL_SNAPSHOT_TYPES` ∪
+ * `PRE_DELETE_SNAPSHOT_TYPES` must appear here. That union is the
+ * CloudFormation-documented `DeletionPolicy: Snapshot`-capable list, and
+ * CloudFormation permits the attribute exactly where deleting the resource
+ * destroys data worth capturing first — so membership there is an
+ * AWS-authored statement that the type is data-bearing. The types that were
+ * in that union and NOT here (`AWS::Redshift::Cluster`,
+ * `AWS::ElastiCache::ReplicationGroup`, `AWS::ElastiCache::CacheCluster`)
+ * meant cdkd took a final snapshot before a `cdkd destroy` of them
+ * while replacing them mid-deploy with no consent flag at all.
+ * `tests/unit/provisioning/stateful-types.test.ts` pins the subset
+ * relation so a future addition to either snapshot set cannot land without
+ * the guard entry.
+ *
+ * The relation is deliberately ONE-directional: most data-bearing types
+ * (S3, DynamoDB, LogGroup, ECR, …) have no snapshot API at all and
+ * CloudFormation rejects `DeletionPolicy: Snapshot` on them, so this set is
+ * a strict superset and the reverse containment would be wrong.
+ *
+ * **Second lower bound, also enforced by a test**: every resource type
+ * registered to a provider whose `delete()` consults
+ * `DeleteContext.forceDataDelete` must appear here. That field is set ONLY
+ * by the replacement / recreate delete sites under
+ * `--force-stateful-recreation`, so a provider reading it has already
+ * declared its delete destroys user data — which makes the guard list's
+ * agreement checkable rather than hand-curated.
+ * `AWS::S3Express::DirectoryBucket` was the one type on the wrong side.
+ *
+ * Neither fence can see a provider whose delete destroys data with NO opt-in
+ * at all — an unconditional empty (`S3TablesProvider.deleteTableBucket`,
+ * `S3VectorsProvider.deleteVectorBucket`) or a plainly destructive API call
+ * (`KMSProvider`'s `ScheduleKeyDeletion`,
+ * `CodeCommitRepositoryProvider`'s `DeleteRepository`). Those types are
+ * hand-added with the reason at the entry, and a provider added that way
+ * should be reviewed for whether it wants a `forceDataDelete` gate too.
  */
 
 export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
@@ -46,10 +94,71 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::Neptune::DBCluster',
   'AWS::DynamoDB::Table',
   'AWS::DynamoDB::GlobalTable',
+  // Data warehouse. A Redshift cluster's tables live on the cluster's own
+  // nodes; DELETE + CREATE starts an empty warehouse and AWS migrates
+  // nothing. CloudFormation supports `DeletionPolicy: Snapshot` on it and
+  // cdkd implements that snapshot (`PRE_DELETE_SNAPSHOT_TYPES`), which is
+  // the same statement about the data made from the destroy side.
+  'AWS::Redshift::Cluster',
+  // In-memory data stores. Both are `always`, not conditional: Redis /
+  // Valkey persist their dataset (RDB / AOF, and the automatic-backup
+  // window CFn's Snapshot policy captures), so a recreate loses real data,
+  // and even a pure Memcached cache comes back cold — the replacement
+  // starts empty and AWS migrates nothing. Both carry a CFn-documented
+  // `DeletionPolicy: Snapshot` (CacheCluster atomically at delete,
+  // ReplicationGroup via cdkd's pre-delete snapshot), so the destroy path
+  // already treats them as data-bearing.
+  'AWS::ElastiCache::CacheCluster',
+  'AWS::ElastiCache::ReplicationGroup',
   // Filesystem / blob.
   'AWS::EFS::FileSystem',
   'AWS::FSx::FileSystem',
   'AWS::S3::Bucket', // conditional — see isStatefulRecreateTarget
+  // S3 Express directory bucket. `S3DirectoryBucketProvider.delete` consumes
+  // `DeleteContext.forceDataDelete` and the CDK `autoDeleteObjects` tag
+  // (issue [#1344], the sibling of the general-purpose bucket's [#1340]
+  // guard), so the repo already classifies this type as data-bearing on the
+  // DESTROY side — it was the only such type absent from this list. `always`,
+  // not conditional like `AWS::S3::Bucket`, because of the probe cdkd HAS:
+  // `recreate-targets.ts` issues `ListObjectVersions`, a general-purpose-bucket
+  // API, so no CURRENT probe can report a directory bucket empty. Note the
+  // narrow claim — a probe is not impossible in principle, since
+  // `S3DirectoryBucketProvider.emptyBucket` enumerates these same buckets with
+  // `ListObjectsV2`. Until one is wired into the pre-flight, an unprovable
+  // emptiness must not read as empty, which is stricter than its
+  // general-purpose sibling gets there and deliberately so.
+  'AWS::S3Express::DirectoryBucket',
+  // S3 Tables. `S3TablesProvider.deleteTableBucket` calls `emptyTableBucket`
+  // UNCONDITIONALLY — no `forceDataDelete`, no tag opt-in — which walks every
+  // namespace and `DeleteTable`s every table in it. So a replacement of the
+  // BUCKET destroys every Iceberg table it holds with no flag at all, and a
+  // replacement of a TABLE starts an empty one (an S3 Tables table holds the
+  // rows themselves, unlike the `AWS::Glue::Table` catalog entry already on
+  // this list).
+  'AWS::S3Tables::TableBucket',
+  'AWS::S3Tables::Table',
+  // `AWS::S3Tables::Namespace` is here on the FAIL-SAFE side of an OPEN
+  // question rather than on a proof, and the distinction matters because an
+  // earlier revision excluded it. What the repo can state is only about cdkd's
+  // own delete: `S3TablesProvider.deleteNamespace` enumerates no tables and
+  // issues a bare `DeleteNamespace`. Whether AWS's `DeleteNamespace` cascades
+  // server-side is UNMEASURED — an earlier draft inferred "it does not" from
+  // `emptyTableBucket` deleting each table explicitly first, and that inference
+  // is withdrawn: it is equally consistent with merely defensive ordering.
+  // The question is load-bearing, which is why the unproven answer does not get
+  // to decide it: the type's createOnly properties make a RENAME a
+  // property-driven replacement that fires on a plain `cdkd deploy` with no
+  // flag, so a cascade would take out-of-band tables silently. Those properties
+  // are `Namespace` and `TableBucketARN` — read from the registry schema at
+  // diff time by `create-only-properties.ts`, and checked into this repo as
+  // `tests/fixtures/cfn-schemas/AWS-S3Tables-Namespace.json`, which is where
+  // that claim is verifiable rather than assumed. Issue [#2539] holds the live probe that settles it (delete
+  // a namespace holding a table, record what AWS answers); AWS refusing there
+  // is the only thing that is grounds to revisit this entry.
+  'AWS::S3Tables::Namespace',
+  // S3 Vectors. Same shape as the table bucket: `deleteVectorBucket` calls
+  // `emptyVectorBucket` unconditionally, deleting every vector index in it.
+  'AWS::S3Vectors::VectorBucket',
   'AWS::ECR::Repository',
   // An EBS volume carries a filesystem; DELETE+CREATE loses every byte and
   // AWS offers no migration. Added with the immutable-property
@@ -59,6 +168,19 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // not exempt it: a snapshot is a point-in-time copy, not a surviving
   // resource (see the deploy engine's property-driven replacement guard).
   'AWS::EC2::Volume',
+  // Managed compute clusters with LOCAL storage. `EMRClusterProvider.delete`
+  // issues `TerminateJobFlows`, which destroys the HDFS volumes on the core
+  // nodes; AWS migrates none of it to the replacement. Same argument the
+  // ElastiCache entries above are on — an EMR cluster is often treated as
+  // ephemeral compute over S3, but the local filesystem is real storage and
+  // the replacement comes back empty either way. It is reachable on a PLAIN
+  // deploy with no flag: the type has no `ReplacementRulesRegistry` entry, so
+  // `create-only-properties.ts` resolves the registry schema at diff time and
+  // its createOnly set (`Name`, `ReleaseLabel`, `Applications`,
+  // `Configurations`, ... — checked in at
+  // `tests/fixtures/cfn-schemas/AWS-EMR-Cluster.json`) classifies a change to
+  // any of them as a replacement.
+  'AWS::EMR::Cluster',
   // Streaming.
   'AWS::Kinesis::Stream',
   // Search.
@@ -68,6 +190,36 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::Cognito::UserPool',
   'AWS::SecretsManager::Secret',
   'AWS::SSM::Parameter',
+  // Encryption keys. `KMSProvider.delete` issues `ScheduleKeyDeletion`; once
+  // the window elapses the key material is gone and every ciphertext under it
+  // is undecryptable. Like the table and vector buckets above, the loss is not
+  // confined to the resource cdkd deleted — it lands on other resources, in
+  // other stacks, that merely reference the key. `always` rather than a
+  // conditional, and deliberately NOT conditional on the deletion window: the
+  // recorded bag CAN see one (`KMSProvider.delete` reads `PendingWindowInDays`
+  // from the properties, defaulting to 7), so the ground for `always` is not
+  // that the bag is blind to it. It is that a window only DELAYS the loss —
+  // cdkd never calls `CancelKeyDeletion` (grep says so; the string appears
+  // nowhere else in this repo), so nothing here will stop the schedule, and the
+  // blast radius reaches ciphertext in other stacks this deploy never looked
+  // at. A long window is not consent.
+  'AWS::KMS::Key',
+  // Guarded on the same UNMEASURED footing as `AWS::S3Tables::Namespace` above,
+  // and flagged as such rather than argued: whether a destroyed replica's
+  // ciphertexts stay decryptable through another key in the same multi-region
+  // set is a statement about AWS and about the user's topology, and this repo
+  // has measured neither. What IS repo-derivable: cdkd registers no SDK
+  // provider for the type (`register-providers.ts` has `AWS::KMS::Key` and
+  // `AWS::KMS::Alias` only), so a replacement routes through Cloud Control's
+  // DELETE — the population this guard hoist exists for. Fail-safe by the same
+  // rule as the directory bucket above: an unprovable recoverability must not
+  // read as recoverable. `AWS::KMS::Alias` is deliberately NOT here —
+  // `KMSProvider.delete` removes it with `DeleteAlias`, which drops a pointer
+  // and no key material, which IS repo-derivable.
+  'AWS::KMS::ReplicaKey',
+  // Source control. `CodeCommitRepositoryProvider.delete` issues
+  // `DeleteRepository`, which destroys the repository's entire git history.
+  'AWS::CodeCommit::Repository',
   // Metadata catalog.
   'AWS::Glue::Database',
   'AWS::Glue::Table',
@@ -111,7 +263,7 @@ export type StatefulReason = 'always' | 'has-objects' | 'has-retention' | null;
 
 /**
  * Cheap, synchronous read of the resource's recorded properties only.
- * For `AWS::S3::Bucket` this returns `null` — the live `ListObjectsV2`
+ * For `AWS::S3::Bucket` this returns `null` — the live `ListObjectVersions`
  * probe to distinguish empty buckets (safe to recreate) from
  * non-empty (data loss) lives in
  * `src/deployment/recreate-targets.ts#probeStatefulRecreateTargetsAsync`
@@ -142,17 +294,26 @@ export function isStatefulRecreateTargetSync(
 }
 
 /**
- * Conservative variant for the `cdkd deploy --replace` mid-deploy guard.
+ * Conservative variant for the deploy engine's mid-deploy guard sites, which
+ * between them serve the paths below — only one of which is reached by a flag:
  *
- * `--replace` catches a provider's immutable-update rejection while the deploy
- * is already in flight, so — unlike the `--recreate-via-*` pre-flight, which
+ *   - property-driven replacement (an immutable / createOnly property changed
+ *     in the template) — fires on a plain `cdkd deploy`, no flag;
+ *   - the update-failure fallback's Cloud Control trigger (an
+ *     `UnsupportedActionException` / "does not support UPDATE" rejection) —
+ *     also no flag (issue [#2514]);
+ *   - the same fallback's `--replace` trigger (an SDK provider's typed
+ *     `ResourceUpdateNotSupportedError`).
+ *
+ * All of them catch the rejection or classify the diff while the deploy is
+ * already in flight, so — unlike the `--recreate-via-*` pre-flight, which
  * runs {@link probeStatefulRecreateTargetsAsync} (`s3:ListObjectVersions`) —
  * there is no opportunity to probe an `AWS::S3::Bucket`'s object count. The
  * sync check returns `null` for S3 (it defers to that async probe), which would
  * let a NON-EMPTY bucket be DELETE + CREATEd (data loss) without
  * `--force-stateful-recreation`. To stay fail-safe, treat a deferred S3 bucket
  * as stateful here: the user must pass `--force-stateful-recreation` to replace
- * ANY S3 bucket via `--replace`, empty or not. Every other type matches
+ * ANY S3 bucket on any of those paths, empty or not. Every other type matches
  * {@link isStatefulRecreateTargetSync} exactly (the LogGroup retention check is
  * fully resolvable from recorded properties, so no conservatism is needed there).
  */

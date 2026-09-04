@@ -18,7 +18,7 @@
  *      bucket with objects, LogGroup with retention) MUST be matched
  *      by an explicit `--force-stateful-recreation` flag. The sync
  *      first-cut runs from the recorded properties alone; the live
- *      `s3:ListObjectsV2` probe (issue [#648]) promotes a `null`
+ *      `s3:ListObjectVersions` probe (issue [#648]) promotes a `null`
  *      reason to `'has-objects'` when a bucket actually contains data.
  *   4. Multi-region refusal: every named target whose resource type
  *      is in {@link MULTI_REGION_RECREATE_BLOCKED_TYPES} (e.g.
@@ -143,7 +143,7 @@ export interface RecreateTargetsValidation {
  *
  * Pure with respect to AWS — does NOT probe S3 bucket emptiness. Wrap
  * the result with {@link probeAndRevalidateStateful} to promote S3
- * targets' `statefulReason` via a live `s3:ListObjectsV2` round-trip
+ * targets' `statefulReason` via a live `s3:ListObjectVersions` round-trip
  * before rendering errors. The deploy command does this; the validator
  * itself stays sync so unit tests don't need an S3 mock.
  *

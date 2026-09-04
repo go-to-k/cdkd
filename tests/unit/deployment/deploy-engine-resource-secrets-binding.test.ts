@@ -356,7 +356,13 @@ describe('DeployEngine binds the nested-stack secrets scope at every provider ca
       throw new Error('UnsupportedActionException: this type does not support UPDATE');
     });
 
-    await engine().deploy(STACK, template);
+    // `forceStatefulRecreation` for the same reason sites 3 and 4 pass it:
+    // this fixture's resource is an `AWS::SSM::Parameter`, a stateful recreate
+    // target. Since issue #2514 the Cloud Control auto-fallback consults the
+    // stateful guard too — it used to be the ONE replacement path that did
+    // not — so reaching the call site under test now needs the same explicit
+    // data-loss consent every other replacement path already required.
+    await engine({ forceStatefulRecreation: true }).deploy(STACK, template);
 
     expect(mockProvider.delete).toHaveBeenCalled();
     expect(mockProvider.create).toHaveBeenCalledOnce();

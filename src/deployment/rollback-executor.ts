@@ -1862,15 +1862,26 @@ async function replaySingle(
           `  Rollback: Reversing replacement of ${op.logicalId} (${op.resourceType}) — ` +
             `re-creating the old resource and deleting the new one`
         );
-        // Advisory only (issue #1199 non-goal: data cannot be recovered —
+        // Advisory only (issue #1199 non-goal: cdkd does not recover the data —
         // surface clearly rather than silently "revert"). NOT counted in
         // result.warnings: the reverse-replacement op itself succeeds, and
         // warnings map to exit code 2.
+        //
+        // The claim is scoped to what THIS ROLLBACK does, not to what AWS
+        // permits. `STATEFUL_TYPES` is not uniform on that second question:
+        // most members' data is gone the moment the replacement's delete
+        // lands, but `KMSProvider.delete` deletes an `AWS::KMS::Key` by
+        // SCHEDULING a deletion, which a user may be able to act on out of
+        // band. (`AWS::KMS::ReplicaKey` has no SDK provider, so its delete
+        // routes through Cloud Control and this repo has not measured what
+        // that does.) A blanket "CANNOT be recovered" would be a statement
+        // about AWS that this repo has not measured — and, for KMS, would
+        // steer a user away from a recovery that may still exist.
         if (STATEFUL_TYPES.has(op.resourceType)) {
           logger.warn(
             `  ⚠ ${op.logicalId} (${op.resourceType}) is a stateful type — the old physical ` +
-              `resource's data was destroyed by the replacement and CANNOT be recovered; the ` +
-              `re-created resource starts empty.`
+              `resource's data was destroyed by the replacement and is NOT recovered by this ` +
+              `rollback; the re-created resource starts empty.`
           );
         }
         // Route the re-create via the OLD resource's recorded layer and the

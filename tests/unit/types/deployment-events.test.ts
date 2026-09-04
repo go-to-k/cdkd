@@ -19,6 +19,33 @@ function awsError(opts: {
 }
 
 describe('extractDeploymentEventError', () => {
+  it('reaches the AWS metadata under a stateful-replace refusal (issue #2514)', () => {
+    // Shape of the persisted RESOURCE_FAILED event when the update-failure
+    // fallback refuses a stateful replacement: the refusal now chains the
+    // rejection that routed it there, which chains the provider wrap, which
+    // chains the SDK error. The user-facing name/message stay the refusal's,
+    // while `awsErrorCode` / `requestId` come from the bottom of the chain —
+    // so `cdkd events` can say WHICH AWS rejection produced the refusal.
+    const sdkError = Object.assign(new Error('Resource type X does not support UPDATE action'), {
+      name: 'UnsupportedActionException',
+      $metadata: { requestId: 'req-2514' },
+    });
+    const providerWrap = Object.assign(new Error('UPDATE failed for MyTable'), {
+      cause: sdkError,
+    });
+    const refusal = Object.assign(
+      new Error('MyTable (AWS::DynamoDB::Table) cannot be updated in place ...'),
+      { name: 'CdkdError', cause: providerWrap }
+    );
+
+    const result = extractDeploymentEventError(refusal);
+
+    expect(result.name).toBe('CdkdError');
+    expect(result.message).toContain('cannot be updated in place');
+    expect(result.awsErrorCode).toBe('UnsupportedActionException');
+    expect(result.requestId).toBe('req-2514');
+  });
+
   it('takes name/message from the outermost error', () => {
     const err = new Error('top-level boom');
     err.name = 'ProvisioningError';
