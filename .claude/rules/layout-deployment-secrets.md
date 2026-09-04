@@ -343,8 +343,9 @@ Index of every area: [code-layout.md](code-layout.md).
     collapsed secretsmanager/secretsmanager pair. Recording is gated on the
     SPELLING rather than the resolver's `isSecret`: an `ssm` reference whose
     `Type` came back unclassifiable is secret for THAT resolution but must
-    stay unpinned so the next pass re-asks AWS (#1901) — such a pair still
-    falls back to the value scan.
+    stay unpinned so the next pass re-asks AWS (#1901) — it is still
+    recorded as pass-local evidence (`recordResolvedPair`), so a leaf
+    embedding it is positioned for THIS pass; only the pin is withheld.
   - The path pass ALSO runs with an EMPTY secrets map — the whole point for an
     UNCHANGED resource (never resolved this deploy, no `perResourceSecrets`
     entry, and an observed-capture refresh echoing a secret would persist

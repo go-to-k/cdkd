@@ -5784,13 +5784,17 @@ export class DeployEngine {
             for (const [plaintext, expression] of nameSecrets) {
               context.recordedSecretValues?.set(plaintext, expression);
             }
-            // ...and the pairs beside the entries (issue #2485), for the same
-            // "survives every exit" invariant; a name never positions a leaf,
-            // so this is symmetry with the outputs-bag merge below rather than
-            // a reachable difference.
-            if (context.recordedSecretValues) {
-              mergeResolvedPairs(nameSecrets, context.recordedSecretValues);
-            }
+            // The ENTRIES only — not the resolved pairs beside them (issue
+            // #2485). A name never positions a leaf, and a value re-using the
+            // same token already recorded its own pair at the seam, so the
+            // merge could add nothing; what it COULD do is mark a pair
+            // conflicting — an `ssm` reference whose `Type` came back
+            // unclassifiable is never cached (the resolver's `cacheable =
+            // false`), so a name resolving it re-asks AWS and can see a value
+            // that moved since the value pass — and destroy the positioning
+            // the value pass had earned. The outputs-bag merge
+            // below is the one that carries evidence, because that bag
+            // positions.
           }
         } catch (error) {
           this.handleOutputResolutionFailure(error, outputKey, outputs);

@@ -116,11 +116,14 @@ export function recordResolvedPair(
  * and without this the copy would keep the collapsed entries while dropping the
  * evidence — so a literal `Output` embedding one of two same-plaintext
  * references would fall back to the value scan and persist the sibling's
- * expression. (The engine's other entry-by-entry copy, an `Export.Name`'s
- * secrets into the pass map, needs no evidence: a name never positions a leaf,
- * and a value re-using the same token records its own pair at the seam.) A pair that
- * conflicts across the two maps is marked conflicting in `to`, the same rule
- * {@link recordResolvedPair} applies within one map.
+ * expression. The engine's other entry-by-entry copy — an `Export.Name`'s
+ * secrets into the pass map — deliberately does NOT call this: a name never
+ * positions a leaf, a value re-using the same token records its own pair at
+ * the seam, and the only thing the merge could add is a CONFLICT (a
+ * non-cacheable `{{resolve:ssm:X}}` whose value moved between the value pass
+ * and the name's resolution), which would destroy positioning the value pass
+ * had earned. A pair that conflicts across the two maps is marked conflicting
+ * in `to`, the same rule {@link recordResolvedPair} applies within one map.
  *
  * Deliberately NOT a general "copy the map" helper: every other new map is a
  * different PASS, and starting it without evidence is the safe direction.
@@ -2599,8 +2602,10 @@ function singleSpanFrame(
  * keeps out — and, by the same argument, any leaf the value scan would NOT
  * rewrite to exactly `prefix + survivor + suffix`: a middle shorter than the
  * scan's needle floor (an embedded 1-3 character secret stays the scan's
- * documented residual), a whole leaf that is itself another recorded
- * plaintext, a needle starting in the prefix and overlapping the middle. The
+ * documented residual — issue #2516 tracks closing it with a bound that
+ * proves the bag's generation, which this evidence does not), a whole leaf
+ * that is itself another recorded plaintext, a needle starting in the prefix
+ * and overlapping the middle. The
  * arm checks that equivalence against the scan's own answer rather than
  * re-deriving the scan's rules. Pinned by the cross-generation cases in
  * `secret-redaction-embedded-span.test.ts`.
@@ -2623,11 +2628,17 @@ function singleSpanFrame(
  * literal frame would be a reference the template never had at that offset —
  * the fabricated-baseline direction {@link preferPositionDecisions} refuses —
  * and the whole-token arm returns its source unscanned for the same reason.
+ *
+ * `scanned` is the caller's `redactSecretsForState(bag, secrets)` — the value
+ * scan's own answer for this leaf, computed ONCE because the caller falls
+ * through to it on every refusal. This arm only compares against it; it never
+ * scans on its own.
  */
 function positionByEmbeddedSpan(
   bag: string,
   source: string,
-  secrets: RecordedSecretValues
+  secrets: RecordedSecretValues,
+  scanned: string
 ): string | undefined {
   const frame = singleSpanFrame(bag, source);
   if (frame === undefined) return undefined;
@@ -2646,7 +2657,7 @@ function positionByEmbeddedSpan(
   // generation note in the docstring for why this bound matters.
   const survivor = secrets.get(middle);
   if (survivor === undefined) return undefined;
-  if (redactSecretsForState(bag, secrets) !== prefix + survivor + suffix) return undefined;
+  if (scanned !== prefix + survivor + suffix) return undefined;
   return prefix + token + suffix;
 }
 
@@ -2924,14 +2935,18 @@ function redactByPath(
       // expressions sharing one resolved value.
       return source;
     }
+    // The value scan's answer for this leaf, computed once: the span arm is
+    // BOUND to it (it accepts only a leaf the scan would rewrite to exactly the
+    // middle) and every refusal falls through to it.
+    const scanned = redactSecretsForState(bag, secrets);
     // A literal leaf EMBEDDING one token, positioned by the span its source
-    // states — exact where the value scan below is ambiguous (issue #2485).
-    const spanned = positionByEmbeddedSpan(bag, source, secrets);
+    // states — exact where the value scan is ambiguous (issue #2485).
+    const spanned = positionByEmbeddedSpan(bag, source, secrets, scanned);
     if (spanned !== undefined) return spanned;
     // Public reference, or an embedded token this pass cannot vouch for: keep
-    // the resolved value, but still value-scan it so a secret embedded beside
+    // the resolved value, but still value-scanned so a secret embedded beside
     // it is redacted.
-    return redactSecretsForState(bag, secrets);
+    return scanned;
   }
   if (typeof bag === 'string' && isPlainObject(source)) {
     // The source leaf is an intrinsic OBJECT, so there is no string to copy —

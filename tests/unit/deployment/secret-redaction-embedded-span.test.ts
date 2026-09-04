@@ -64,7 +64,10 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
     // The scan's substring arm ignores needles shorter than four characters,
     // and below that floor a rewrite would be a NEW claim on a bag this pass
     // did not necessarily produce (a previous generation's), so the arm keeps
-    // the scan's floor and the documented residual stands.
+    // the scan's floor and the documented residual stands. Issue #2516
+    // tracks closing it with a bound that proves the bag's generation; this
+    // case pins the residual until then, so that closing it is a deliberate
+    // change and not a side effect.
     const secrets: RecordedSecretValues = new Map([['ab', NAME_V1]]);
     recordResolvedPair(secrets, NAME, 'ab');
     recordResolvedPair(secrets, NAME_V1, 'ab');
@@ -296,6 +299,25 @@ describe('a literal leaf embedding one token is positioned by its own span (issu
         expect(persisted).toEqual({ Dsn: `${PREFIX}${NAME_V1}${SUFFIX}` });
       });
     }
+
+    it('for an EMPTY middle, even with hand-recorded evidence that the token resolved to nothing', () => {
+      // The resolver seam never records an empty resolution (`resolved` is
+      // tested truthily), so under the real producer this is unreachable. Under
+      // the CURRENT bound the frame refusal (`<=`) is not even load-bearing —
+      // an empty middle has no map entry, so `survivor` refuses it too, and
+      // the `<` mutant is equivalent. This case exists so the invariant (an
+      // empty middle is never positioned) has a pin of its own: the follow-up
+      // that relaxes the scan-equivalence bound (issue #2516) would make
+      // the frame refusal the ONLY thing standing here.
+      const secrets = collapsedOnto(NAME_V1);
+      recordResolvedPair(secrets, NAME, '');
+      const leaf = `${PREFIX}${SUFFIX}`;
+
+      const persisted = redactSecretsForState({ Dsn: leaf }, secrets, { Dsn: EMBEDDED_SOURCE });
+
+      expect(persisted).toEqual({ Dsn: redactSecretsForState(leaf, secrets) });
+      expect(persisted).toEqual({ Dsn: leaf });
+    });
 
     it('for a COPY of the map, which is not the pass that resolved anything', () => {
       const secrets = collapsedOnto(NAME_V1);

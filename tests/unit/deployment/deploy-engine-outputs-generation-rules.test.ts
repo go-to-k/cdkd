@@ -41,6 +41,22 @@ const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_A_PLAIN]: PLAINTEXT_A,
 };
 
+// A reference whose value MOVES between resolutions inside one deploy: the
+// real resolver never caches an `ssm` reference whose `Type` came back
+// unclassifiable (`cacheable = false`), so an `Export.Name` resolving it after
+// the value pass re-asks AWS and can see a rotated value. Modelled by returning
+// a different plaintext from the SECOND resolution of an expression the test
+// lists here; empty for every other test.
+const MOVED_PLAINTEXT_A = 'moved-secret-value-a';
+const movesAfterFirst = new Set<string>();
+const resolutionsOf = new Map<string, number>();
+function plaintextFor(expr: string): string {
+  const n = (resolutionsOf.get(expr) ?? 0) + 1;
+  resolutionsOf.set(expr, n);
+  const pt = SECRET_BY_EXPRESSION[expr]!;
+  return movesAfterFirst.has(expr) && n > 1 ? MOVED_PLAINTEXT_A : pt;
+}
+
 function resolveWithSecrets(
   value: unknown,
   ctx: { recordedSecretValues?: Map<string, string> }
@@ -55,8 +71,9 @@ function resolveWithSecrets(
     // An EMBEDDED expression (issue #2485): substitute it inside the string
     // and record the pair the way the real resolver's seam does.
     let out = value;
-    for (const [expr, pt] of Object.entries(SECRET_BY_EXPRESSION)) {
+    for (const expr of Object.keys(SECRET_BY_EXPRESSION)) {
       if (!out.includes(expr)) continue;
+      const pt = plaintextFor(expr);
       ctx.recordedSecretValues?.set(pt, expr);
       if (ctx.recordedSecretValues) recordResolvedPair(ctx.recordedSecretValues, expr, pt);
       out = out.split(expr).join(pt);
@@ -198,6 +215,8 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
       getExecutionLevels: vi.fn().mockReturnValue([['Fn']]),
       getDirectDependencies: vi.fn().mockReturnValue([]),
     };
+    movesAfterFirst.clear();
+    resolutionsOf.clear();
     mockDiffCalculator = {
       calculateDiff: vi.fn().mockResolvedValue(new Map<string, ResourceChange>()),
       hasChanges: vi.fn().mockReturnValue(false),
@@ -259,6 +278,46 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
     expect(saved.outputs['Dsn']).toBe(DSN);
     expect(saved.outputs['Whole']).toBe(EXPR_A);
     expect(JSON.stringify(saved)).not.toContain(PLAINTEXT_A);
+  });
+
+  it('does NOT merge the Export.Name resolution\'s pairs into the pass map: a value that moved there cannot conflict the evidence the value pass earned (issue #2485)', async () => {
+    // The name embeds the SAME token as `Dsn`, and its resolution sees a
+    // rotated value (the reference re-asks AWS). Its ENTRIES are still merged
+    // into the pass map — that is the "survives every exit" invariant — but
+    // merging its PAIRS would mark `EXPR_A_PLAIN` conflicting, and the arm that
+    // positions `Dsn` would refuse and fall to the value scan: the sibling's
+    // spelling, `pre-{{...:AWSCURRENT}}-post`. Re-adding
+    // `mergeResolvedPairs(nameSecrets, ...)` in the engine fails this case.
+    movesAfterFirst.add(EXPR_A_PLAIN);
+    const DSN = `pre-${EXPR_A_PLAIN}-post`;
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: { Type: 'AWS::Lambda::Function', Properties: { Handler: 'index.handler' } },
+      },
+      Outputs: {
+        Dsn: { Value: DSN },
+        Whole: { Value: EXPR_A },
+        // A public value whose export NAME resolves the token — the name is
+        // refused (it resolves a secret) and is not what this case is about;
+        // only the recording side effect of resolving it is.
+        Exporter: {
+          Value: 'public-endpoint',
+          Export: { Name: { 'Fn::Sub': `x-${EXPR_A_PLAIN}` } as never },
+        },
+      },
+    };
+
+    await makeEngine().deploy(stackName, template);
+
+    const saved = mockStateBackend.saveState!.mock.calls.at(-1)![2] as StackState;
+    // The name's resolution really did see the moved value (the premise).
+    expect(resolutionsOf.get(EXPR_A_PLAIN)).toBe(2);
+    expect(saved.outputs['Dsn']).toBe(DSN);
+    expect(saved.outputs['Whole']).toBe(EXPR_A);
+    // ...and the moved value, recorded by the name's resolution, is still an
+    // ENTRY of the pass map: nothing of it reaches state.
+    expect(JSON.stringify(saved)).not.toContain(PLAINTEXT_A);
+    expect(JSON.stringify(saved)).not.toContain(MOVED_PLAINTEXT_A);
   });
 
   it('does NOT descend positionally into a PREVIOUS generation outputs list', async () => {
