@@ -267,9 +267,23 @@ export async function partitionCoverage(
       return 'tier3-unsupported';
     });
 
+  // DEDUPED at the boundary, because `allTypes` is not a set and every
+  // consumer treats the tier lists as one. `paginateListTypes` yields whatever
+  // `ListTypes` returns, and AWS returned `AWS::Logs::LogStream` twice across
+  // pages (issue [#2571]: 1372 entries, 1371 distinct, with `tier2Count`
+  // reporting the inflated 1372). Left alone the duplicate costs a wasted
+  // `DescribeType`, publishes a tier count one too high, and reaches every
+  // downstream reader twice -- `scripts/audit-stateful-candidates.ts` had to
+  // dedupe at ITS boundary for exactly that reason. Fixing it here is what
+  // lets that consumer-side guard become redundant rather than load-bearing.
   const tier1: string[] = [];
   const nonTier1: string[] = [];
+  const seen = new Set<string>();
   for (const typeName of allTypes) {
+    if (seen.has(typeName)) {
+      continue;
+    }
+    seen.add(typeName);
     if (registeredTypes.has(typeName)) {
       tier1.push(typeName);
     } else {

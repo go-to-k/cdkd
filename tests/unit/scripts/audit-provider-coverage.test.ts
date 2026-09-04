@@ -240,6 +240,77 @@ describe('partitionCoverage', () => {
     } as CfnClientLike;
   }
 
+  it('every tier list is a SET — a type ListTypes returns twice appears once', async () => {
+    // AWS returned `AWS::Logs::LogStream` twice across `ListTypes` pages
+    // (issue #2571), and `partitionCoverage` walked `allTypes` straight into
+    // the tier arrays. The duplicate cost a wasted `DescribeType`, published a
+    // `tier2Count` one too high, and reached every downstream consumer twice —
+    // `scripts/audit-stateful-candidates.ts` had to dedupe at its own boundary
+    // for exactly that reason.
+    //
+    // Duplicates are injected in all THREE tiers, and in both page positions
+    // (adjacent and split across the rest of the list), because the walk is
+    // order-sensitive in neither direction and a single-tier case would leave
+    // the other two arms free.
+    const registered = new Set(['AWS::IAM::Role']);
+    const universe = [
+      'AWS::IAM::Role',
+      'AWS::Foo::Mutable',
+      'AWS::IAM::Role', // adjacent-ish repeat, tier 1
+      'AWS::Foo::Unsupported',
+      'AWS::Foo::Mutable', // repeat split across the list, tier 2
+      'AWS::Foo::Unsupported', // tier 3
+    ];
+    const described: string[] = [];
+    const client = {
+      send: async (cmd: DescribeTypeCommand) => {
+        if (cmd instanceof DescribeTypeCommand) {
+          described.push(cmd.input.TypeName ?? '');
+          return {
+            ProvisioningType: (
+              {
+                'AWS::Foo::Mutable': 'FULLY_MUTABLE',
+                'AWS::Foo::Unsupported': 'NON_PROVISIONABLE',
+              } as Record<string, string>
+            )[cmd.input.TypeName ?? ''],
+          };
+        }
+        throw new Error('unexpected');
+      },
+    } as unknown as CfnClientLike;
+
+    const report = await partitionCoverage(client, registered, universe, {
+      concurrency: 2,
+      sleep: async () => {},
+    });
+
+    for (const [label, list] of [
+      ['tier1', report.tier1],
+      ['tier2', report.tier2],
+      ['tier3', report.tier3],
+    ] as const) {
+      expect([...list].sort(), `${label} lost or gained an entry`).toEqual(
+        [...new Set(list)].sort()
+      );
+    }
+    expect(report.tier1).toEqual(['AWS::IAM::Role']);
+    expect(report.tier2).toEqual(['AWS::Foo::Mutable']);
+    expect(report.tier3).toEqual(['AWS::Foo::Unsupported']);
+    // The counts are the published numbers, so they are asserted as well as
+    // the arrays: the defect surfaced as `tier2Count` reading 1372 over 1371
+    // distinct entries.
+    expect(report.summary).toMatchObject({
+      tier1Count: 1,
+      tier2Count: 1,
+      tier3Count: 1,
+      totalCount: 3,
+    });
+    // ...and the duplicate no longer costs a second DescribeType. Asserted
+    // because the dedupe could otherwise be done at OUTPUT time, which would
+    // fix the counts while still paying for the wasted call.
+    expect(described.sort()).toEqual(['AWS::Foo::Mutable', 'AWS::Foo::Unsupported']);
+  });
+
   it('partitions into three tiers correctly', async () => {
     const registered = new Set(['AWS::IAM::Role', 'AWS::S3::Bucket']);
     const universe = [
