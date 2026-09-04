@@ -399,7 +399,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 45_000, 72_000],                            // measured  64,742
+  ['tests/setup.ts', 46_000, 72_000],                            // measured  64,742
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above

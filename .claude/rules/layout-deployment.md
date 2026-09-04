@@ -284,7 +284,9 @@ Index of every area: [code-layout.md](code-layout.md).
     `isTransientServerError(error)` (issue #2026): the same walk against
     `TRANSIENT_SERVER_ERROR_STATUS_CODES` (500/502/503/504, mirroring
     `@smithy/service-error-classification`). **A SEPARATE set — do not widen
-    `RETRYABLE_HTTP_STATUS_CODES`**: seven `isRetryable` sites across four
+    `RETRYABLE_HTTP_STATUS_CODES`**: seven `isRetryable` sites across four files (`describe-type.ts`,
+    `dynamodb-globaltable-provider.ts` x4, `export.ts`,
+    `intrinsic-function-resolver.ts`): four
     files pass `isThrottlingError` as a NARROW throttle-only classifier
     (`describe-type.ts` says so outright) and three more call it directly —
     widening would silently make every one "retry throttles AND server

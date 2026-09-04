@@ -173,7 +173,7 @@ exits 0 via its formatting tail (`local V=$(...)` masks the status entirely —
 split declaration from assignment). A `gone_probe`-then-requery site must guard
 the requery against the TOCTOU race: canonical not-found on the requery is still
 "gone", anything else hard-fails. Best-effort cleanup is exempt via `set +e[u]`
-spans; mark cleanup helpers with `set +eu` in a SUBSHELL body
+spans (bounded by the enclosing function); mark cleanup helpers with `set +eu` in a SUBSHELL body
 (`fn() { ( set +eu; ... ) }`) so calling them from a `set +eu` cleanup trap
 never re-arms strict mode mid-sweep. Enforced by
 `tests/unit/scripts/integ-verify-probe-not-found.test.ts`; user-facing writeup
@@ -203,8 +203,9 @@ specific `state destroy --force` case.
 
 Never hardcode a Lambda published-version literal: version counters are
 monotonic per function/layer NAME and never reset, so a `"${FN}:1"` probe
-passes only on the very first run in the account (issue #1324; third
-recurrence). Read version N from the live alias
+passes only on the very first run in the account, and a
+`[ "${V}" != "2" ]` assert is the same defect in the classifier's separate
+`literal-compare` verdict (issue #1324; third recurrence). Read version N from the live alias
 (`--query 'FunctionVersion'`), guard it numeric with a `case` pattern, and
 assert rotation as `EXPECTED=$((N + 1))` — see
 `codedeploy-lambda-deployment-group/verify.sh` for the reference shape. Alias
@@ -237,7 +238,7 @@ invocation's line or the line above.
 
 **Probe before you rely on an unfamiliar verb**:
 `AWS_CLI_AUTO_PROMPT=off aws <service> <verb> --help` settles existence in
-under a second.
+under a second; running it against a bogus id settles behavior.
 
 **When the verb is unavailable, call the SDK directly** rather than a different
 CLI verb that returns less. The repo root already depends on every
@@ -316,7 +317,8 @@ User-facing writeup in [docs/testing.md](../../docs/testing.md).
 The harness exports `STATE_BUCKET`; the CLI's env fallback is
 `CDKD_STATE_BUCKET` — a DIFFERENT name. A cleanup sweep that omits
 `--state-bucket` never reads the harness bucket: resolution is CLI flag >
-`CDKD_STATE_BUCKET` > `cdk.json` `context.cdkd.stateBucket` > STS default, so
+`CDKD_STATE_BUCKET` > `cdk.json` `context.cdkd.stateBucket` > STS default
+`cdkd-state-{accountId}` (`resolveStateBucketWithSource`), so
 the omission either resolves a fixture `cdk.json`'s placeholder bucket (dies,
 swallowed by the call's own `>/dev/null 2>&1` — those cleanups had failed on
 EVERY run, invisibly) or falls through to the STS default (working by

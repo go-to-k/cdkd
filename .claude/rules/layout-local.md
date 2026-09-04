@@ -42,7 +42,11 @@ Index of every area: [code-layout.md](code-layout.md).
     `--platform` like the IMAGE path), `env-resolver.ts` (template literals +
     SAM-shape `--env-vars`; intrinsic-valued entries warn-and-drop unless
     `--from-state` substituted them), `state-resolver.ts` (pure-functional
-    substituter against `state.resources`), `runtime-image.ts` (`Runtime` →
+    substituter against `state.resources`: `Ref` / `Fn::GetAtt` / `Fn::Sub` /
+    `Fn::Join` / `Fn::Select` / `Fn::Split`, plus async `Fn::ImportValue` /
+    `Fn::GetStackOutput` via a cross-stack resolver, with per-key unresolved
+    reasons — `docs/local-invoke.md`'s table still calls `Fn::Select` /
+    `Fn::Split` a future PR, which is STALE: they ship), `runtime-image.ts` (`Runtime` →
     `public.ecr.aws/lambda/<lang>:<v>` + source extension), `docker-runner.ts`
     (thin `execFile`/`spawn` wrappers around docker pull/run/logs/rm + free-
     port allocator; optional `--name` for orphan-sweep),
@@ -253,8 +257,10 @@ Index of every area: [code-layout.md](code-layout.md).
       resolve COMMERCIAL there even spelled canonically (table-COVERAGE
       divergence, issue #1821, pinned by a unit case).
     - Slice 9 (0.24.0): `state-resolver` (the `--from-state` /
-      `--from-cfn-stack` substituter + `CrossStackResolver` /
-      `SubstitutionContext` types). Clean superset; cdk-local genericized
+      `--from-cfn-stack` substituter over `Ref` / `Fn::GetAtt` / `Fn::Sub` /
+      `Fn::Join` / `Fn::Select` / `Fn::Split` plus async `Fn::ImportValue` /
+      `Fn::GetStackOutput`, + `CrossStackResolver` / `SubstitutionContext`
+      types). Clean superset; cdk-local genericized
       the USER-VISIBLE per-key unresolved-reason wording, and cdkd's two
       consumer-test reason-string assertions were flipped to the new
       wording.

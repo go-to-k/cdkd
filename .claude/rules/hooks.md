@@ -432,7 +432,9 @@ Nineteen additional one-shot hooks block known foot-guns at the source.
   `--body-file` spelling both directions, the mid-sentence marker,
   unreadable-path and unexpanded-`$VAR` blocks, the `cd` chain, ungated
   verbs, the `gh api` mint, subshell / `-R` / substitution spellings,
-  fail-closed library, the heredoc window, registration, cdkd#563
+  fail-closed library, the heredoc window (measured 2026-08-26: the
+  `gh pr create` spelling exits 2, the `gh issue create` spelling exits 0),
+  registration, cdkd#563
   quoted-body cases). **Every fence was mutation-probed**: always-`exit 0`
   stub fails 26, always-`exit 2` 31; opt-in guard removal exactly 2;
   anchored → loose swap exactly the mid-sentence case; `gh api` arm removal
@@ -831,7 +833,8 @@ hole sat in all six merge-time gates. The fix:
 `cmd_matches_verb <command> <verb-ere>` in `.claude/hooks/lib/command-match.sh`
 (1) NEUTRALISES the spans that are DATA — heredoc bodies, then quoted spans —
 then (2) matches the verb in COMMAND POSITION (line start or immediately
-after a `&&` / `||` / `;` / `|` control operator).
+after a `&&` / `||` / `;` / `|` control operator). `<(…)` / `>(…)` process
+substitution is a segment opener too, so a verb inside one arms the gates.
 
 - **A neutralised quoted span leaves a PLACEHOLDER, not a deletion** — the
   verb EREs carry value sub-patterns, so deleting a quoted value made

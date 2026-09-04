@@ -146,8 +146,9 @@ Four causes; the fix is to each cause, not the fourteen spellings:
 4. **`--` is checkout's pathspec separator and switch's end-of-options.**
    `git checkout <b> --` SWITCHES (measured), so "a `--` was seen" is the
    wrong rule; `git switch` has no pathspec form at all (measured:
-   `git switch -- main` prints "Already on 'main'") — checkout's grammar
-   applied to both verbs false-blocked it.
+   `git switch -- main` prints "Already on 'main'", while
+   `git switch -- some-feature` SWITCHES and must still be BLOCKED) —
+   checkout's grammar applied to both verbs false-blocked it.
 
 ## Round 4 — the stripper's default is inverted, not extended
 

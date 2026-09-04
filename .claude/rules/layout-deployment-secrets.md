@@ -38,7 +38,8 @@ Index of every area: [code-layout.md](code-layout.md).
     verdict that produced it, so another stack retracting the memo cannot stop
     this one redacting its own region's secret.
   - **Region-pinned lookups** (issue #1957): the resolver's `clientsForRegion`
-    builds region-pinned clients (`AwsClients.withRegion`) unless the ambient
+    builds region-pinned clients (`AwsClients.withRegion`, which carries the
+    ambient profile / credentials and overrides only the region) unless the ambient
     clients are PROVEN to already point at the resolver's region — "unknown"
     means SCOPE, not skip (failing open on the `~/.aws/config`-only case left
     the disclosure reachable). PROVEN means EXPLICITLY CONFIGURED
@@ -71,7 +72,8 @@ Index of every area: [code-layout.md](code-layout.md).
     ANYWHERE in the chain changed". Each link's clone copies the prototype
     and every own property DESCRIPTOR (symbols included) so
     `markNonRetryable`'s non-enumerable marker, `$metadata` / `Code` and
-    `name` survive for the retry classifiers and
+    `name` survive for the retry classifiers (`isMarkedNonRetryable` /
+    `isThrottlingError` / `isTransientServerError`) and
     `extractDeploymentEventError` (`Object.assign` would drop the marker);
     `message` and `cause` are deliberately NOT copied (both re-defined per
     link; copying a NON-CONFIGURABLE original would make the re-definition
