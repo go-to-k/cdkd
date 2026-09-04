@@ -563,19 +563,24 @@ Destroy loses all data for these, unconditionally.
 
 | Category | Types |
 | --- | --- |
-| Database | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` |
-| Data warehouse | `AWS::Redshift::Cluster` |
-| In-memory data store | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::ReplicationGroup` |
-| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::FSx::FileSystem`, `AWS::ECR::Repository`, `AWS::EC2::Volume`, `AWS::S3Express::DirectoryBucket` |
-| Table / vector storage | `AWS::S3Tables::TableBucket`, `AWS::S3Tables::Table`, `AWS::S3Tables::Namespace`, `AWS::S3Vectors::VectorBucket` — deleting a table bucket or a vector bucket empties it first, with no opt-in; the namespace is guarded on an open question, see below |
-| Managed compute with local storage | `AWS::EMR::Cluster` — terminating the cluster destroys the HDFS volumes on its core nodes, and the replacement comes back empty |
-| Streaming | `AWS::Kinesis::Stream` |
-| Search | `AWS::Elasticsearch::Domain`, `AWS::OpenSearchService::Domain` |
-| Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter` |
+| Database | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::DocDBElastic::Cluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::NeptuneGraph::Graph`, `AWS::NeptuneGraph::GraphSnapshot`, `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable`, `AWS::Cassandra::Table`, `AWS::Lightsail::Database`, `AWS::Timestream::Database`, `AWS::Timestream::Table`, `AWS::Timestream::InfluxDBCluster`, `AWS::Timestream::InfluxDBInstance`, `AWS::ODB::CloudVmCluster`, `AWS::ODB::CloudAutonomousVmCluster` |
+| Data warehouse | `AWS::Redshift::Cluster`, `AWS::RedshiftServerless::Namespace`, `AWS::RedshiftServerless::Snapshot` — the namespace owns the databases and a snapshot is a copy of them |
+| In-memory data store | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::ReplicationGroup`, `AWS::ElastiCache::ServerlessCache`, `AWS::MemoryDB::Cluster`, `AWS::MemoryDB::MultiRegionCluster` |
+| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::FSx::FileSystem`, `AWS::ECR::Repository`, `AWS::ECR::PublicRepository`, `AWS::EC2::Volume`, `AWS::WorkspacesInstances::Volume`, `AWS::S3Express::DirectoryBucket`, `AWS::Lightsail::Bucket`, `AWS::S3Outposts::Bucket`, `AWS::HealthImaging::Datastore`, `AWS::HealthLake::FHIRDatastore` |
+| Table / vector storage | `AWS::S3Tables::TableBucket`, `AWS::S3Tables::Table`, `AWS::S3Tables::Namespace`, `AWS::S3Vectors::VectorBucket`, `AWS::S3Vectors::Index` — deleting a table bucket or a vector bucket empties it first, with no opt-in; the namespace is guarded on an open question, see below |
+| Managed compute with local storage | `AWS::EMR::Cluster` — terminating the cluster destroys the HDFS volumes on its core nodes, and the replacement comes back empty. `AWS::EKS::Cluster` for the same reason one level up: the etcd store behind it holds every Kubernetes object the user created, and nothing in the template describes it. `AWS::SageMaker::Cluster` carries local and tiered storage holding training checkpoints |
+| Streaming / messaging | `AWS::Kinesis::Stream`, `AWS::KinesisVideo::Stream`, `AWS::MSK::Cluster`, `AWS::MSK::ServerlessCluster`, `AWS::MSK::Channel`, `AWS::AmazonMQ::Broker`, `AWS::OSIS::Pipeline`, `AWS::Events::Archive` — each retains records on its own storage rather than passing them straight through |
+| Search / index / collection | `AWS::Elasticsearch::Domain`, `AWS::OpenSearchService::Domain`, `AWS::OpenSearchServerless::Collection`, `AWS::OpenSearchServerless::Index`, `AWS::OpenSearchServerless::CollectionIndex`, `AWS::Kendra::Index`, `AWS::QBusiness::Index`, `AWS::QBusiness::Application`, `AWS::Rekognition::Collection`, `AWS::Location::GeofenceCollection`, `AWS::Bedrock::KnowledgeBase`, `AWS::Bedrock::DataAutomationLibrary` — the indexed documents, face vectors and geofences are written through the service API, never from the template |
+| Analytics pipelines | `AWS::IoTAnalytics::Channel`, `AWS::IoTAnalytics::Datastore`, `AWS::IoTAnalytics::Dataset`, `AWS::CleanRooms::IdMappingTable`, `AWS::CleanRooms::IntermediateTable` |
+| Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter`, `AWS::AppConfig::ConfigurationProfile` — a profile whose location is `hosted` owns its configuration versions |
+| Runtime-written stores | `AWS::CloudFront::KeyValueStore`, `AWS::Connect::DataTable` — seeded from the template at most once, then written through the service API |
+| Backup vaults | `AWS::Backup::BackupVault`, `AWS::Backup::LogicallyAirGappedBackupVault` — a vault holds the recovery points, the data whose whole purpose is to outlive the resource it was taken from |
+| Service domains holding records | `AWS::Cases::Domain`, `AWS::CustomerProfiles::Domain`, `AWS::DataZone::Domain`, `AWS::SageMaker::Domain` — these hold cases, profiles, a catalog and every user's home directory |
 | Encryption keys | `AWS::KMS::Key` — the delete schedules the key for deletion, and once the window elapses every ciphertext encrypted under it is unrecoverable, including data in other stacks that merely reference the key. `AWS::KMS::ReplicaKey` is guarded on the same terms, though whether a destroyed replica's ciphertexts survive through another key in its multi-region set is unmeasured, so the guard assumes they do not |
-| Source control | `AWS::CodeCommit::Repository` — the delete destroys the repository's entire git history |
+| Source control / artifacts | `AWS::CodeCommit::Repository` — the delete destroys the repository's entire git history. `AWS::CodeArtifact::Repository` holds the packages, and `AWS::CodeArtifact::Domain` is not a mere grouping: it owns the deduplicated asset storage every repository in it references |
 | Metadata catalog | `AWS::Glue::Database`, `AWS::Glue::Table` |
-| Edge | `AWS::CloudFront::Distribution` — the URL changes, which breaks consumers, and propagation takes roughly 20 minutes |
+| Retained records | `AWS::AIOps::InvestigationGroup`, `AWS::SES::MailManagerArchive` — both retain content for a configured period. `AWS::Rbin::Rule` joins them on the fail-safe side of an open question: the rule itself is fully template-declared, but what happens to the snapshots and AMIs already sitting in the Recycle Bin under it when it is deleted is unmeasured |
+| Edge / identifier immutability | `AWS::CloudFront::Distribution` — the URL changes, which breaks consumers, and propagation takes roughly 20 minutes. `AWS::SMSVOICE::PhoneNumber` and `AWS::SMSVOICE::SenderId` are the same class: a release returns the identifier to the pool, the replacement gets a different one, and the original may be unobtainable |
 
 The list has mechanical lower bounds cdkd enforces in unit tests, so it is
 checked rather than only hand-curated.
@@ -591,6 +596,33 @@ checked rather than only hand-curated.
   is on it.** A resource whose deletion needs that flag to clear its own data
   guard is by definition data-bearing. `AWS::S3Express::DirectoryBucket` joined
   for that reason.
+- **Every type a tier-2 sweep proposes is either on it or written off with a
+  reason.** The two bounds above are derived from cdkd's own SDK providers, so
+  neither can see the 1371 CloudFormation types that have no provider and route
+  a replacement through Cloud Control API — the larger population by two orders
+  of magnitude, and the one the guard was reaching with no flag at all. cdkd now
+  reads every one of their registry schemas and proposes the types that declare
+  an immutable property (so a rename replaces the resource on a plain
+  `cdkd deploy`) and look like they store something. Each proposal must end up
+  on this list or be written off in the sweep's own file with the reason; a
+  proposal in neither fails the build. Most of the table above joined this way.
+
+Unlike the first two, that third bound is a **heuristic**: no AWS-published
+artifact says "deleting this destroys user data", so what it buys is that the
+next widening is checkable, not that the current list is complete. Where it
+proposes a type whose answer is not knowable from the outside, the type is
+guarded — an unprovable emptiness must not read as empty. The write-offs are
+the cases where the schema settles it: `AWS::RDS::GlobalCluster`,
+`AWS::Neptune::GlobalCluster` and `AWS::DocDB::GlobalCluster` group regional
+clusters that outlive them; `AWS::RedshiftServerless::Workgroup` is compute
+against a namespace that is guarded; `AWS::Amplify::Domain`,
+`AWS::Cognito::UserPoolDomain` and `AWS::Lightsail::Domain` are DNS rather than
+stores; `AWS::EC2::TransitGatewayRouteTable` and its siblings hold nothing but
+tags, their routes being separate template resources. The full list of
+write-offs, each with its reason, is in
+`scripts/audit-stateful-candidates.ts`, and the proposals themselves — with the
+immutable properties that make each one reachable — in
+[`docs/_generated/stateful-candidates.md`](_generated/stateful-candidates.md).
 
 The rest are hand-curated, because no lower bound can see a delete that
 destroys data with **no opt-in at all**: `AWS::S3Tables::TableBucket` and

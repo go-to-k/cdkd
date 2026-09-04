@@ -138,6 +138,17 @@ jobs:
       # the integ-coverage step above.
       - run: vp run audit:coverage:check
 
+      # Issue #2553 — fail CI when a tier-2 stateful CANDIDATE in
+      # docs/_generated/stateful-candidates.json is neither in STATEFUL_TYPES
+      # nor dispositioned in the derivation's NOT_GUARDED map (and when a
+      # NOT_GUARDED entry has stopped being proposed, so it disposes of
+      # nothing). Offline check (<1s, no AWS calls); the regeneration via
+      # `vp run audit:stateful-candidates:regenerate` issues a DescribeType per
+      # tier-2 type and stays manual for the same reason
+      # audit:coverage:regenerate does. Bare `run` like audit:coverage:check —
+      # the critic is pass/fail with nothing to regenerate.
+      - run: vp run audit:stateful-candidates:check
+
       # Issue #2388 — fail CI when a file under src/ constructs an
       # @aws-sdk/client-* client without spreading awsClientDefaults() first.
       # The AWS SDK for JavaScript v3 does not read HTTPS_PROXY / HTTP_PROXY,

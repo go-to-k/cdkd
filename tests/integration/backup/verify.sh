@@ -52,12 +52,32 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
   fi
 }
 # ---------------------------------------------------------------------------
+# COUNT BY ROWS, never `--query 'length(...)'` with `--output text`: the CLI
+# applies --query PER PAGE, so a paginated listing prints one number per page
+# (`1000\n189`) and an `!= "1"` compare false-fails on a healthy account.
+# Projecting the NAME and counting exact matches is page-count-independent.
+# The intermediate capture carries `|| return 1` because errexit is CLEARED
+# inside `$( )`, so without it a failed probe would fall through to the
+# formatting tail and report a truthful-looking 0.
+count_backup_vaults() { # usage: count_backup_vaults <vault-name> -> row count
+  local out
+  out=$(aws backup list-backup-vaults --region "${REGION}" \
+    --query "BackupVaultList[?BackupVaultName=='$1'].BackupVaultName" --output text) || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | awk -v n="$1" '$0 == n { c++ } END { print c + 0 }'
+}
+count_backup_plans() { # usage: count_backup_plans <plan-name> -> row count
+  local out
+  out=$(aws backup list-backup-plans --region "${REGION}" \
+    --query "BackupPlansList[?BackupPlanName=='$1'].BackupPlanName" --output text) || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | awk -v n="$1" '$0 == n { c++ } END { print c + 0 }'
+}
 cd "$(dirname "$0")"
 
 STACK="CdkdBackupExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 VAULT="cdkdbackupexample-vault"
+VAULT_V2="cdkdbackupexample-vault-v2"
 PLAN="cdkdbackupexample-plan"
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -84,6 +104,12 @@ cleanup() {
       --region "${REGION}" >/dev/null 2>&1 || true
   done
   aws backup delete-backup-vault --backup-vault-name "${VAULT}" \
+    --region "${REGION}" >/dev/null 2>&1 || true
+  # Phase 1b's rename target. The guard is expected to REFUSE the rename so the
+  # v2 vault should never exist -- but a regression that let the replacement
+  # through would create it, and leaving it behind is exactly the leak
+  # `/run-integ`'s orphan sweep exists to catch.
+  aws backup delete-backup-vault --backup-vault-name "${VAULT_V2}" \
     --region "${REGION}" >/dev/null 2>&1 || true
   # The tag-based selection creates an IAM role (CDK default) that a direct
   # backup-resource cleanup above does NOT remove; delete it so a re-run's
@@ -180,15 +206,128 @@ case "${SELECTION_REF}" in
 esac
 echo "    SelectionRef resolved to the bare SelectionId (Ref segment fix #995 works)"
 
+# --- Phase 1b: the stateful guard refuses a rename ---------------------
+# Issue #2553. `AWS::Backup::BackupVault` has no SDK provider, so a rename
+# routes through Cloud Control's DELETE -- a property-driven replacement a
+# plain `cdkd deploy` reaches with NO flag. Before the tier-2 sweep the guard
+# list could not see the type at all and the deploy destroyed the vault's
+# recovery points silently. The deploy must now REFUSE.
+echo "==> Phase 1b: rename the vault; the stateful guard must refuse"
+set +e
+RENAME_OUT=$(CDKD_TEST_RENAME_VAULT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+RENAME_RC=$?
+set -e
+echo "${RENAME_OUT}"
+
+# SENTINEL FIRST, so a failure that never reached the guard is reported as
+# itself rather than as an issue #2553 regression. Synth errors, expired
+# credentials and a missing state bucket all die before the deploy names the
+# stack, and every assertion below would otherwise blame the guard for them.
+if ! printf '%s\n' "${RENAME_OUT}" | grep -q 'Deploying stack:'; then
+  echo "FAIL: the renamed deploy never reached the stack -- this is NOT a guard result." >&2
+  echo "      (synth / credentials / state-bucket failure; see the output above)" >&2
+  exit 1
+fi
+
+# The refusal must come from the PROPERTY-DRIVEN pre-flight guard
+# (deploy-engine.ts, the `requires replacement (immutable property changed:`
+# arm), not from the update-failure fallback that shares the phrase "but it is
+# a stateful resource". Matching the shared phrase alone would let a regression
+# that loses the pre-flight arm pass on the fallback's message.
+#
+# ONE LINE, not the whole captured output: `AWS::Backup::BackupVault` and
+# `BackupVaultName` both appear in ordinary plan output, so whole-output greps
+# would be satisfied by a deploy that never refused anything.
+GUARD_LINE=$(printf '%s\n' "${RENAME_OUT}" \
+  | grep -m1 'requires replacement (immutable property changed:' || true)
+if [ -z "${GUARD_LINE}" ]; then
+  # TWO more sentinels, in order of what they rule out. The first one above
+  # covers a failure BEFORE the deploy names the stack; these cover a failure
+  # after it, and a REWORD of the marker this fixture parses.
+  #
+  # `Failed to <op> <LogicalId>` is `deploy-engine.ts`'s per-resource failure
+  # line (`Failed to ${change.changeType.toLowerCase()} ${logicalId}`), so it
+  # appears for a guard refusal AND for any other failure on the vault --
+  # including one on the replacement's create or delete, which is why all three
+  # verbs are matched rather than `update` alone.
+  if printf '%s\n' "${RENAME_OUT}" | grep -q 'but it is a stateful resource'; then
+    echo "FAIL: a stateful refusal fired but not the PROPERTY-DRIVEN one this fixture parses." >&2
+    echo "      Either the pre-flight guard's wording drifted (update the needle in this" >&2
+    echo "      file and in tests/unit/provisioning/stateful-guard-message-sync.test.ts) or" >&2
+    echo "      the refusal came from the update-failure fallback instead." >&2
+  elif printf '%s\n' "${RENAME_OUT}" | grep -qE 'Failed to (update|create|delete) Vault'; then
+    echo "FAIL: the vault operation failed for a reason OTHER than the stateful guard." >&2
+    echo "      This is NOT an issue #2553 regression -- read the output above." >&2
+  else
+    echo "FAIL: no property-driven stateful refusal in the output (issue #2553 regression)" >&2
+  fi
+  exit 1
+fi
+for NEEDLE in 'AWS::Backup::BackupVault' 'BackupVaultName' 'but it is a stateful resource' \
+              'force-stateful-recreation'; do
+  case "${GUARD_LINE}" in
+    *"${NEEDLE}"*) ;;
+    *)
+      echo "FAIL: the refusal line does not carry '${NEEDLE}': ${GUARD_LINE}" >&2
+      exit 1
+      ;;
+  esac
+done
+if [ "${RENAME_RC}" = "0" ]; then
+  echo "FAIL: the refused deploy exited 0 -- the guard printed but did not block" >&2
+  exit 1
+fi
+echo "    the guard refused the rename (rc=${RENAME_RC})"
+
+# The refusal must be a REFUSAL, not a report issued after the damage: the
+# original vault is still there and the v2 vault was never created.
+if ! LIVE_V1=$(count_backup_vaults "${VAULT}"); then
+  echo "FAIL: could not list backup vaults after the refused rename" >&2; exit 1
+fi
+if [ "${LIVE_V1}" != "1" ]; then
+  echo "FAIL: the original vault ${VAULT} is gone after a REFUSED rename (count=${LIVE_V1})" >&2; exit 1
+fi
+if ! LIVE_V2=$(count_backup_vaults "${VAULT_V2}"); then
+  echo "FAIL: could not list backup vaults after the refused rename" >&2; exit 1
+fi
+if [ "${LIVE_V2}" != "0" ]; then
+  echo "FAIL: the renamed vault ${VAULT_V2} exists -- the replacement was NOT blocked" >&2; exit 1
+fi
+echo "    ${VAULT} still live and ${VAULT_V2} never created"
+
+# --- Phase 1c: the opt-in still lets it through -------------------------
+# The other polarity. Without it the guard could be a hard refusal with no
+# escape and every assertion above would still pass -- and the flag would be
+# credited to this fixture by `cli-flag-coverage` on the strength of appearing
+# in a failure message alone.
+echo "==> Phase 1c: re-run the rename with --force-stateful-recreation"
+CDKD_TEST_RENAME_VAULT=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --force-stateful-recreation
+
+if ! LIVE_V1=$(count_backup_vaults "${VAULT}"); then
+  echo "FAIL: could not list backup vaults after the forced rename" >&2; exit 1
+fi
+if [ "${LIVE_V1}" != "0" ]; then
+  echo "FAIL: ${VAULT} still exists after the forced replacement (count=${LIVE_V1})" >&2; exit 1
+fi
+if ! LIVE_V2=$(count_backup_vaults "${VAULT_V2}"); then
+  echo "FAIL: could not list backup vaults after the forced rename" >&2; exit 1
+fi
+if [ "${LIVE_V2}" != "1" ]; then
+  echo "FAIL: ${VAULT_V2} was not created by the forced replacement (count=${LIVE_V2})" >&2; exit 1
+fi
+echo "    --force-stateful-recreation replaced ${VAULT} with ${VAULT_V2}"
+
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 # Strict capture (issue #1097 pattern 2): a silenced `|| echo 0` would read a
 # throttled list call as "0 remaining" and silently pass the leak check.
-if ! REMAINING_PLANS=$(aws backup list-backup-plans --region "${REGION}" \
-  --query "length(BackupPlansList[?BackupPlanName=='${PLAN}'] || \`[]\`)" --output text 2>&1); then
-  echo "FAIL: could not list backup plans after destroy: ${REMAINING_PLANS}" >&2; exit 1
+if ! REMAINING_PLANS=$(count_backup_plans "${PLAN}"); then
+  echo "FAIL: could not list backup plans after destroy (probe failed)" >&2; exit 1
 fi
 if [ "${REMAINING_PLANS}" != "0" ]; then
   echo "FAIL: backup plan ${PLAN} still exists after destroy" >&2; exit 1
@@ -196,9 +335,17 @@ fi
 # AWS Backup masks a missing vault as AccessDeniedException ("Insufficient
 # privileges to perform this action"), NOT a not-found error, so gone_probe
 # cannot classify describe-backup-vault -- assert absence via a strict list.
-if ! REMAINING_VAULTS=$(aws backup list-backup-vaults --region "${REGION}" \
-  --query "length(BackupVaultList[?BackupVaultName=='${VAULT}'] || \`[]\`)" --output text 2>&1); then
-  echo "FAIL: could not list backup vaults after destroy: ${REMAINING_VAULTS}" >&2; exit 1
+# BOTH names: after Phase 1c the stack holds ${VAULT_V2}, so asserting only on
+# ${VAULT} would pass vacuously -- it was deleted by the replacement, not by
+# the destroy under test.
+if ! REMAINING_V2=$(count_backup_vaults "${VAULT_V2}"); then
+  echo "FAIL: could not list backup vaults after destroy" >&2; exit 1
+fi
+if [ "${REMAINING_V2}" != "0" ]; then
+  echo "FAIL: backup vault ${VAULT_V2} still exists after destroy" >&2; exit 1
+fi
+if ! REMAINING_VAULTS=$(count_backup_vaults "${VAULT}"); then
+  echo "FAIL: could not list backup vaults after destroy (probe failed)" >&2; exit 1
 fi
 if [ "${REMAINING_VAULTS}" != "0" ]; then
   echo "FAIL: backup vault ${VAULT} still exists after destroy" >&2; exit 1
@@ -207,4 +354,4 @@ echo "    Vault / Plan / Selection deleted"
 assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — BackupVaultArn Fn::GetAtt enrichment works end-to-end, 2 phases passed"
+echo "[verify] PASS — BackupVaultArn Fn::GetAtt enrichment works end-to-end and the tier-2 stateful guard refuses / allows the vault rename, 4 phases passed"

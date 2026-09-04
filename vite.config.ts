@@ -342,6 +342,31 @@ export default defineConfig({
         command: 'node scripts/audit-provider-coverage.ts --check',
         cache: false,
       },
+      // Tier-2 stateful-candidate derivation (issue #2553) — the third lower
+      // bound on `STATEFUL_TYPES`, and the only one that reads the
+      // Cloud-Control-routed population. Same shape as `audit:coverage` above
+      // and excluded from `gen:all-matrices` for the same reason: the
+      // regeneration needs AWS credentials and issues a `DescribeType` per
+      // tier-2 type. `:rederive` re-runs the signal derivation offline against
+      // the gitignored `.cache/cfn-tier2-schemas/` corpus, which is what a
+      // signal change actually needs; `:check` is the offline half `/verify-pr`
+      // and `tests/unit/scripts/stateful-candidates.test.ts` can afford.
+      'audit:stateful-candidates': {
+        command: 'node scripts/audit-stateful-candidates.ts',
+        cache: false,
+      },
+      'audit:stateful-candidates:regenerate': {
+        command: 'node scripts/audit-stateful-candidates.ts --regenerate',
+        cache: false,
+      },
+      'audit:stateful-candidates:rederive': {
+        command: 'node scripts/audit-stateful-candidates.ts --rederive',
+        cache: false,
+      },
+      'audit:stateful-candidates:check': {
+        command: 'node scripts/audit-stateful-candidates.ts --check',
+        cache: false,
+      },
       'audit:aws-client-defaults:check': {
         command: 'node scripts/check-aws-client-defaults.ts --check',
         cache: false,
