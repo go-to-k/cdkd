@@ -7,32 +7,18 @@ description: "Common cdkd issues and their solutions — lock problems, state ma
 
 This document summarizes common issues when using cdkd and their solutions.
 
-## Table of Contents
-
-1. [Lock Issues](#lock-issues)
-2. [State Management Issues](#state-management-issues)
-3. [Deployment Errors](#deployment-errors)
-4. [Asset Publishing Issues](#asset-publishing-issues)
-5. [Intrinsic Function Issues](#intrinsic-function-issues)
-6. [Permission Errors](#permission-errors)
-7. [Proxy / Corporate Network](#proxy-corporate-network)
-8. [Performance Issues](#performance-issues)
-9. [Orphaned Resources](#orphaned-resources)
-
----
-
 ## Lock Issues
 
-### Issue: "Failed to acquire lock" Error
+### "Failed to acquire lock" Error
 
-#### Symptoms
+**Symptoms:**
 
 ```
 Error: Failed to acquire lock for stack 'MyStack' after 3 attempts.
 Locked by: user@hostname:12345, operation: deploy
 ```
 
-#### Causes
+**Causes:**
 
 - Another process is deploying the same stack
 - Previous process crashed and lock remains
@@ -97,7 +83,7 @@ Locked by: user@hostname:12345, operation: deploy
 > leftover lock therefore means an ungraceful kill (`SIGKILL`, a force-quit
 > whose best-effort release did not complete, or a crash).
 
-#### Solutions
+**Solutions:**
 
 **1. Check if another process is running**
 
@@ -139,9 +125,9 @@ await lockManager.acquireLockWithRetry(
 );
 ```
 
-### Issue: Stale lock after a cancelled CI job
+### Stale lock after a cancelled CI job
 
-#### Symptoms
+**Symptoms:**
 
 A CI job running `cdkd deploy` was cancelled (manually, or automatically by a
 newer run), and the next run fails with `Failed to acquire lock` even though
@@ -158,7 +144,7 @@ concurrency:
 Consecutive pushes to the same PR target the **same stack**, so the cancelled
 run's stale lock blocks the run that replaced it.
 
-#### Causes
+**Causes:**
 
 Cancellation is not a clean `Ctrl-C`. GitHub Actions escalates
 `SIGINT` → `SIGTERM` (~7.5 s later) → `SIGKILL` (~2.5 s after that); other CI
@@ -174,7 +160,7 @@ lock. SIGTERM-only environments with a longer grace period (Kubernetes
 defaults to 30 s; `docker stop` to 10 s) give the graceful path a better
 chance to complete.
 
-#### Solutions
+**Solutions:**
 
 **1. Wait out the TTL** — a stale lock is reclaimed automatically after the
 lock TTL (**30 minutes** by default). The next run after that succeeds
@@ -216,20 +202,20 @@ can surface an "already exists" conflict that needs manual reconciliation
 
 ## State Management Issues
 
-### Issue: "State was modified by another process"
+### "State was modified by another process"
 
-#### Symptoms
+**Symptoms:**
 
 ```
 StateError: State was modified by another process. Expected ETag: "abc123", but state has changed.
 ```
 
-#### Causes
+**Causes:**
 
 - Two processes attempted to deploy simultaneously
 - Lock was acquired but conflict occurred when saving state
 
-#### Solutions
+**Solutions:**
 
 **1. Re-run deployment**
 
@@ -246,20 +232,20 @@ cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 private readonly lockTTL = 30 * 60 * 1000;  // Extend to 30 minutes
 ```
 
-### Issue: State File is Corrupted
+### State File is Corrupted
 
-#### Symptoms
+**Symptoms:**
 
 ```
 SyntaxError: Unexpected token in JSON at position 123
 ```
 
-#### Causes
+**Causes:**
 
 - S3 upload was interrupted
 - JSON error during manual editing
 
-#### Solutions
+**Solutions:**
 
 **1. Restore from S3 versioning**
 
@@ -307,18 +293,18 @@ aws s3 rm s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 ```
 
-### Issue: State and Resources Don't Match
+### State and Resources Don't Match
 
-#### Symptoms
+**Symptoms:**
 
 - Manually deleted/modified resources in AWS Console
 - cdkd tries to update non-existent resources
 
-#### Causes
+**Causes:**
 
 cdkd's state file and actual AWS resources have diverged.
 
-#### Solutions
+**Solutions:**
 
 **1. Reset state**
 
@@ -355,9 +341,9 @@ cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 
 ---
 
-### Issue: "UnknownError" / cross-region state bucket
+### "UnknownError" / cross-region state bucket
 
-#### Symptoms
+**Symptoms:**
 
 ```
 StateError: Failed to verify state bucket 'my-bucket': UnknownError
@@ -374,7 +360,7 @@ The bucket you are attempting to access must be addressed using the
 specified endpoint. Please send all future requests to this endpoint.
 ```
 
-#### Cause
+**Cause:**
 
 The state bucket lives in a region different from the one the AWS SDK
 client was constructed for. AWS SDK v3's region-redirect middleware does
@@ -382,7 +368,7 @@ not handle the empty-body 301 HEAD response S3 returns in this case
 cleanly — the protocol parser falls through and produces a synthetic
 `Unknown` exception with the literal message `UnknownError`.
 
-#### Solution
+**Solution:**
 
 cdkd resolves this automatically: the state backend (since
 v0.10.0), the lock manager (previously
@@ -409,9 +395,9 @@ control the SDK's default region for provisioning.
 
 ## Deployment Errors
 
-### Issue: "The following resources declare mutually exclusive properties"
+### "The following resources declare mutually exclusive properties"
 
-#### Symptoms
+**Symptoms:**
 
 ```
 The following resources declare mutually exclusive properties:
@@ -424,7 +410,7 @@ The following resources declare mutually exclusive properties:
       Declare at most one of: DestinationCidrBlock / DestinationIpv6CidrBlock / DestinationPrefixListId
 ```
 
-#### Causes
+**Causes:**
 
 The template declares two or more properties AWS accepts only one of. cdkd
 rejects this at pre-flight, before any AWS call. CloudFormation rejects the same
@@ -440,7 +426,7 @@ one of the declared values.
 but it does warn that part of the declared properties cannot be sent as
 declared — that warning and this error describe the same defect.
 
-#### Solutions
+**Solutions:**
 
 **1. Remove the extra properties**
 
@@ -472,21 +458,21 @@ of the two survives resolution:
 }
 ```
 
-### Issue: "Resource already exists" Error
+### "Resource already exists" Error
 
-#### Symptoms
+**Symptoms:**
 
 ```
 ProvisioningError: Resource already exists: my-bucket-name
 ResourceType: AWS::S3::Bucket
 ```
 
-#### Causes
+**Causes:**
 
 - Resource with same name already exists
 - Previous deployment failed midway and state was not saved
 
-#### Solutions
+**Solutions:**
 
 **1. Change resource name**
 
@@ -513,20 +499,20 @@ cdkd import MyStack --resource MyBucket=my-bucket-name
 
 See [Importing Existing Resources](import.md) for the full flag set.
 
-### Issue: "Provider not found" Error
+### "Provider not found" Error
 
-#### Symptoms
+**Symptoms:**
 
 ```
 Error: No provider registered for resource type: AWS::CustomService::Resource
 ```
 
-#### Causes
+**Causes:**
 
 - Resource not supported by Cloud Control API
 - SDK Provider not implemented
 
-#### Solutions
+**Solutions:**
 
 **1. Check Cloud Control API support status**
 
@@ -543,20 +529,20 @@ Refer to [Provider Development](./provider-development.md) to implement a custom
 
 For resources not supported by cdkd, use regular `cdk deploy`.
 
-### Issue: "Update requires replacement" Error
+### "Update requires replacement" Error
 
-#### Symptoms
+**Symptoms:**
 
 ```
 ProvisioningError: Cannot update property 'BucketName': Update requires replacement
 ```
 
-#### Causes
+**Causes:**
 
 - Attempting to change property marked "Update requires: Replacement" in CloudFormation
 - Provider hasn't implemented replacement handling
 
-#### Solutions
+**Solutions:**
 
 **1. Implement replacement handling in provider**
 
@@ -596,7 +582,7 @@ aws s3 rb s3://old-bucket-name --force
 cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 ```
 
-### Issue: "bucket is not empty" / "still contains images" on destroy
+### "bucket is not empty" / "still contains images" on destroy
 
 **Symptoms:**
 
@@ -641,7 +627,7 @@ resource opted in.
 See the "Destroy data guards" section in
 [Destroy flags & guards](cli-destroy.md#destroy-data-guards-non-empty-s3-buckets-and-image-carrying-ecr-repositories) for the full semantics.
 
-### Issue: "has DeletionPolicy: Snapshot, but ..." refusal on delete
+### "has DeletionPolicy: Snapshot, but ..." refusal on delete
 
 **Symptoms:**
 
@@ -674,7 +660,7 @@ See the "DeletionPolicy: Snapshot" section in
 
 ---
 
-### Issue: "OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table
+### "OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table
 
 **Symptoms:**
 
@@ -729,7 +715,7 @@ for the full probe transcript and rationale.
 
 ---
 
-### Issue: deleting a Cognito `Policies` sub-key changes nothing on the pool
+### deleting a Cognito `Policies` sub-key changes nothing on the pool
 
 **Symptoms:**
 
@@ -787,15 +773,15 @@ with every character-class requirement enabled plus
 
 ## Asset Publishing Issues
 
-### Issue: "Asset publishing failed"
+### "Asset publishing failed"
 
-#### Symptoms
+**Symptoms:**
 
 ```
 AssetPublisherError: Failed to publish asset: Access Denied
 ```
 
-#### Causes
+**Causes:**
 
 - Asset storage doesn't exist for the target: in cdkd-assets mode the
   `cdkd-assets-*` bucket / `cdkd-container-assets-*` repo (someone deleted
@@ -803,7 +789,7 @@ AssetPublisherError: Failed to publish asset: Access Denied
   (`cdk-hnb659fds-assets-*`)
 - Insufficient IAM permissions
 
-#### Solutions
+**Solutions:**
 
 **1. Run `cdkd bootstrap` for the region**
 
@@ -863,21 +849,21 @@ S3 read/write on the asset bucket — `cdkd-assets-*` in cdkd-assets mode
 (Docker image assets additionally need ECR push permissions on the
 container-asset repo.)
 
-### Issue: Lambda Deployment Fails
+### Lambda Deployment Fails
 
-#### Symptoms
+**Symptoms:**
 
 ```
 ProvisioningError: Failed to create Lambda function: InvalidParameterValueException
 The provided execution role does not have permissions to call CreateFunction.
 ```
 
-#### Causes
+**Causes:**
 
 - Lambda asset (zip file) not published
 - IAM Role not created
 
-#### Solutions
+**Solutions:**
 
 **1. Verify asset publishing**
 
@@ -907,15 +893,15 @@ const func = new lambda.Function(this, 'MyFunction', {
 
 ## Intrinsic Function Issues
 
-### Issue: "Unresolved intrinsic function" Error
+### "Unresolved intrinsic function" Error
 
-#### Symptoms
+**Symptoms:**
 
 ```
 Error: Cannot resolve intrinsic function: Fn::Select
 ```
 
-#### Causes
+**Causes:**
 
 CloudFormation intrinsic function not supported by cdkd is being used.
 
@@ -940,38 +926,32 @@ CloudFormation intrinsic function not supported by cdkd is being used.
 | `Fn::GetAZs` | ✅ |
 | `Fn::Base64` | ✅ |
 
-#### Solutions
+**Solution:**
 
-**1. All intrinsic functions are now supported**
+Every CloudFormation intrinsic function in the table above is supported, so
+this error means the installed cdkd predates one of them. Upgrade:
 
-All CloudFormation intrinsic functions are supported as of 2026-03-26, including `Fn::GetAZs`. If you encounter this error, ensure you are using the latest version of cdkd.
-
-**2. Extend intrinsic function implementation**
-
-If a new function needs support, add implementation to `src/deployment/intrinsic-function-resolver.ts`.
-
-Example for Fn::Base64:
-
-```typescript
-if ('Fn::Base64' in obj) {
-  const value = await this.resolveValue(obj['Fn::Base64'], context);
-  return Buffer.from(String(value)).toString('base64');
-}
+```bash
+npm i -g @go-to-k/cdkd
 ```
 
-### Issue: "AWS::AccountId not resolved"
+If you hit an intrinsic that is genuinely unsupported on the current release,
+[open an issue](https://github.com/go-to-k/cdkd/issues) naming it and the
+template shape you used.
 
-#### Symptoms
+### "AWS::AccountId not resolved"
+
+**Symptoms:**
 
 ```
 Output value contains unresolved reference: ${AWS::AccountId}
 ```
 
-#### Causes
+**Causes:**
 
 Pseudo parameter not resolved.
 
-#### Solutions
+**Solutions:**
 
 cdkd retrieves actual Account ID via STS GetCallerIdentity. Verify AWS credentials are properly configured:
 
@@ -991,20 +971,20 @@ aws sts get-caller-identity
 
 ## Permission Errors
 
-### Issue: "Access Denied" Error
+### "Access Denied" Error
 
-#### Symptoms
+**Symptoms:**
 
 ```
 ProvisioningError: Access Denied
 User: arn:aws:iam::123456789012:user/myuser is not authorized to perform: s3:CreateBucket
 ```
 
-#### Causes
+**Causes:**
 
 IAM user/role lacks required permissions.
 
-#### Solutions
+**Solutions:**
 
 **1. Grant required permissions**
 
@@ -1062,19 +1042,19 @@ When using IAM Role with Lambda, etc.:
 }
 ```
 
-### Issue: "You are not authorized to perform sts:AssumeRole"
+### "You are not authorized to perform sts:AssumeRole"
 
-#### Symptoms
+**Symptoms:**
 
 ```
 Error: You are not authorized to perform sts:AssumeRole on arn:aws:iam::...:role/cdk-*
 ```
 
-#### Causes
+**Causes:**
 
 Lack of AssumeRole permission for roles created by CDK Bootstrap.
 
-#### Solutions
+**Solutions:**
 
 **1. Check Bootstrap role trust policy**
 
@@ -1103,7 +1083,7 @@ aws iam get-role --role-name cdk-hnb659fds-deploy-role-123456789012-us-east-1
 
 ## Proxy / Corporate Network
 
-### Issue: "self-signed certificate in certificate chain" on the very first command
+### "self-signed certificate in certificate chain" on the very first command
 
 ```
 $ cdkd bootstrap --profile my-sso-profile
@@ -1209,20 +1189,20 @@ HTTPS_PROXY=http://127.0.0.1:1 cdkd state list --profile <a working profile>
 
 ## Performance Issues
 
-### Issue: Deployment is Slow
+### Deployment is Slow
 
-#### Symptoms
+**Symptoms:**
 
 - Takes 30+ seconds even for small stacks (5-10 resources)
 - Expected speedup not achieved
 
-#### Causes
+**Causes:**
 
 - Long dependency chains in the DAG (the critical path caps how fast a deploy can finish, even with event-driven dispatch)
 - Cloud Control API rate limits
 - Asset publishing takes time
 
-#### Solutions
+**Solutions:**
 
 **1. Check dependencies**
 
@@ -1253,15 +1233,15 @@ const role = new iam.Role(this, 'Role', { ... });
 // Dependencies auto-detected from Ref/GetAtt
 ```
 
-### Issue: Cloud Control API Rate Limit
+### Cloud Control API Rate Limit
 
-#### Symptoms
+**Symptoms:**
 
 ```
 Error: TooManyRequestsException: Rate exceeded
 ```
 
-#### Causes
+**Causes:**
 
 Cloud Control API has the following rate limits:
 
@@ -1269,7 +1249,7 @@ Cloud Control API has the following rate limits:
 - UpdateResource: 5 TPS
 - DeleteResource: 5 TPS
 
-#### Solutions
+**Solutions:**
 
 **1. Retry logic with exponential backoff (built-in)**
 
@@ -1340,7 +1320,7 @@ cdkd uses a multi-layered approach to prevent orphaned resources:
 
 5. **Rollback journal**: On a `--no-rollback` failure, a Ctrl+C interruption, or before an automatic rollback, cdkd writes a `rollback-journal.json` sibling of `state.json` recording exactly which operations completed. This is what lets the standalone `cdkd rollback` command revert the deploy later (see below). The journal is deleted on the next successful deploy and by `cdkd destroy`. After a **clean automatic rollback** it is settled to a failed-only segment instead of deleted: the completed ops are already reverted, but the failed resource's pre-op record is kept so `cdkd rollback --revert-failed` can still revert a possibly-half-applied resource; the next successful deploy clears it.
 
-### Issue: `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
+### `DistributionAlreadyExists` on a CloudFront deploy, and a distribution you did not ask for
 
 cdkd retries a `CreateDistribution` that answered HTTP 500 / 502 / 504, because
 those are usually transient. Some of them are not: the request can SUCCEED
@@ -1378,7 +1358,7 @@ aws cloudfront delete-distribution --id <ID> --if-match <NewETag>
 Then re-run `cdkd deploy`. The next run derives a fresh caller reference, so it
 will not collide with the deleted one.
 
-### Issue: an ACM certificate deploy fails with "did not reach ISSUED status"
+### an ACM certificate deploy fails with "did not reach ISSUED status"
 
 ```
 ACM certificate SiteCert (arn:aws:acm:us-east-1:123456789012:certificate/...) did not reach
@@ -1476,7 +1456,7 @@ cdkd rollback MyStack --force # skip the confirmation prompt
 - See [`cdkd rollback`](cli-rollback.md) for the full flag
   reference and known limitations.
 
-### Issue: destroy reports `N skipped` and exits 2
+### destroy reports `N skipped` and exits 2
 
 ```text
 ⚠ MyGlueTable (AWS::Glue::Table) skipped (malformed physicalId in state — no delete issued)
@@ -1640,20 +1620,20 @@ A: Yes, Lambda-backed custom resources (`Custom::*`) are supported.
 
 ---
 
-## Support
+## Getting help
 
-### Issue Reporting
+Nothing above matching? Report it on
+[GitHub Issues](https://github.com/go-to-k/cdkd/issues) with the failing
+command, its output, and the resource type involved. For a question rather than
+a defect, use
+[GitHub Discussions](https://github.com/go-to-k/cdkd/discussions).
 
-Report on GitHub Issues:
-https://github.com/go-to-k/cdkd/issues
+## Related
 
-### Questions
-
-Ask questions on GitHub Discussions:
-https://github.com/go-to-k/cdkd/discussions
-
-### Documentation
-
-- [Architecture](./architecture.md) - Overall architecture
-- [State Management](./state-management.md) - State management details
-- [Provider Development](./provider-development.md) - Provider implementation methods
+- [CLI Reference](cli-reference.md) — every command, the output-stream contract,
+  and the full exit-code table
+- [State Management](state-management.md) — the state record, the lock, and the
+  bucket layout behind most of the errors above
+- [Architecture](architecture.md) — the pipeline a deploy runs through
+- [Supported Resources](supported-resources.md) — whether a type is handled by
+  an SDK provider or the Cloud Control fallback

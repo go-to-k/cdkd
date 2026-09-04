@@ -1469,7 +1469,7 @@ period (~10 s total on GitHub Actions), so a long in-flight AWS operation
 can still die before the lock release runs. The lock is then reclaimed after
 the TTL above, or cleared immediately with `cdkd force-unlock <stack>`. See
 ["Stale lock after a cancelled CI job" in the troubleshooting
-guide](./troubleshooting.md#issue-stale-lock-after-a-cancelled-ci-job) for the
+guide](troubleshooting.md#stale-lock-after-a-cancelled-ci-job) for the
 full CI story and recommended workflow patterns.
 
 ## State Saving and Updating

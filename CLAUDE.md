@@ -143,10 +143,10 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 - **[docs/cli-reference.md](docs/cli-reference.md)** - CLI reference overview (output streams, `--region`, `--role-arn`, exit codes) + index of the per-command reference pages (`docs/cli-deploy.md`, `docs/cli-deploy-safety.md`, `docs/cli-deploy-tuning.md`, `docs/cli-bootstrap.md`, `docs/cli-gc.md`, `docs/cli-diff.md`, `docs/cli-drift.md`, `docs/cli-destroy.md`, `docs/cli-rollback.md`, `docs/cli-export.md`, `docs/cli-scrub.md`, `docs/cli-publish-assets.md`, `docs/cli-events.md`, `docs/cli-state.md`). The per-resource-type **wait-semantics table** (`--no-wait` / default / `--full-wait` next to CloudFormation and Terraform) lives in [docs/cli-deploy.md](docs/cli-deploy.md) — cdkd is template-compatible with CloudFormation but NOT wait-semantics-identical; that table is the single source of truth for what "done" means per type
 - **[docs/supported-resources.md](docs/supported-resources.md)** - Full per-type SDK Provider / Cloud Control coverage table
 - **[docs/import.md](docs/import.md)** - `cdkd import` full guide (modes, flags, CFn migration, provider coverage)
-- **[docs/provider-development.md](docs/provider-development.md)** - Provider implementation guide, best practices
+- **[docs/provider-development.md](docs/provider-development.md)** - Provider implementation guide: the interface, examples, registration, and the steps to add one. The rules each step implies (error handling, pre-flight refusal, removal semantics, drift read-back, property coverage) are in [docs/provider-rules.md](docs/provider-rules.md)
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and solutions
-- **[docs/testing.md](docs/testing.md)** - Testing guide, integration test examples
-- **[docs/cross-stack-references.md](docs/cross-stack-references.md)** - `Fn::ImportValue` strong reference design, exports index architecture, schema v4 migration
+- **[docs/testing.md](docs/testing.md)** - Testing guide and the integration walkthrough; the fixture rules it applies are in [docs/integ-fixture-conventions.md](docs/integ-fixture-conventions.md)
+- **[docs/cross-stack-references.md](docs/cross-stack-references.md)** - `Fn::ImportValue` strong references and `Fn::GetStackOutput` weak ones, from the user's side; the exports index, resolver flow and schema v4 migration are in [docs/cross-stack-internals.md](docs/cross-stack-internals.md)
 - **[docs/deployment-events.md](docs/deployment-events.md)** - Structured deployment events (`cdkd events`) — CloudFormation `DescribeStackEvents` equivalent, S3 `deployments/` key layout (separate from state.json, no schema bump), best-effort flush, `index.json` semantics (issue #808)
 
 ## Known Limitations

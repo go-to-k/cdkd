@@ -1062,7 +1062,7 @@ Each layer has clear responsibilities
   while a producer deployed by an earlier run has none and the consumer is
   refused. See
   [State Management](state-management.md#noecho-custom-resource-responses)
-  and [Cross-Stack References](cross-stack-references.md#a-redaction-mask-is-not-re-resolvable-and-only-one-run-can-bridge-it).
+  and [Cross-stack reference internals](cross-stack-internals.md#a-redaction-mask-is-not-re-resolvable-and-only-one-run-can-bridge-it).
 
 ## Limitations and Future Extensions
 
