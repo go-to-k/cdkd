@@ -9,8 +9,8 @@ description: "cdkd destroy — stack selection, confirmation prompts, the S3 / E
 state record itself. This page is the reference for the command and for the
 guards that can stop a delete: the S3 and ECR data guards, `DeletionPolicy:
 Snapshot`, deletion protection, and the confirmation prompts.
-`cdkd state destroy` is the CDK-app-free counterpart and behaves the same way
-except where noted.
+[`cdkd state destroy`](cli-state.md#cdkd-state-destroy) is the CDK-app-free
+counterpart and behaves the same way except where noted.
 
 ```bash
 cdkd destroy MyStack                        # one stack, with a confirmation prompt
@@ -665,6 +665,7 @@ ask you to confirm, and nothing else.
 ## Related
 
 - [CLI Reference](cli-reference.md) — every command and the full exit-code table
+- [`cdkd state`](cli-state.md) — the flags of `cdkd state destroy`, and the rest of the state command family
 - [Orphan vs Destroy](orphan-vs-destroy.md) — when to drop state instead of deleting resources
 - [`cdkd rollback`](cli-rollback.md) — reverting a failed or interrupted deploy
 - [State Management](state-management.md) — state records, locks, and force-unlock

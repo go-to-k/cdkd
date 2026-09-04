@@ -58,7 +58,7 @@ those the comparator falls back to `properties`, the user-templated intent.
 The difference matters: the observed baseline is what makes a console-side
 change to a key you never templated surface as drift, while the fallback only
 catches changes to keys you did template. Run
-[`cdkd state refresh-observed <stack>`](state-management.md) or redeploy to
+[`cdkd state refresh-observed <stack>`](cli-state.md#cdkd-state-refresh-observed) or redeploy to
 populate an observed baseline in place.
 
 The comparator only looks at keys present in cdkd state. AWS-managed fields
@@ -724,15 +724,15 @@ Without `--json`, nothing moves on `cdkd drift` — its human modes print to
 stdout as before.
 
 The same contract holds for **every `--json` surface**: `cdkd events --json`
-(and its `--format json` alias) and the four
-`cdkd state {list,resources,show,info} --json` subcommands route their
-`--verbose` debug output and the `Assumed role ...` notice from `--role-arn` /
-`CDKD_ROLE_ARN` runs to stderr while `--json` is in effect. `cdkd diff --json`
-instead demotes the logger to `warn`, which suppresses rather than moves its
-info-level lines.
+(and its `--format json` alias) and `cdkd state {resources,show,info} --json`
+route their `--verbose` debug output and the `Assumed role ...` notice from
+`--role-arn` / `CDKD_ROLE_ARN` runs to stderr while `--json` is in effect.
+`cdkd diff --json` instead demotes the logger to `warn`, which suppresses
+rather than moves its info-level lines.
 
-`cdkd list` is not in that list, because its reservation is not conditional:
-it reserves stdout in EVERY mode, `--json` or not, along with `cdkd synth`,
+Neither `cdkd list` nor [`cdkd state list`](cli-state.md#cdkd-state-list) is in
+that set, because their reservation is not conditional: they reserve stdout in
+EVERY mode, `--json` or not, along with `cdkd synth`,
 `cdkd local invoke` and `cdkd local invoke-agentcore` — see
 [Output streams: when stdout is a payload](cli-reference.md#output-streams-when-stdout-is-a-payload).
 

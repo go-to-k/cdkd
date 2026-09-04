@@ -39,6 +39,8 @@ The detailed per-command / per-flag reference is split across these pages:
 - **[`cdkd publish-assets`](cli-publish-assets.md)** — synth + build + publish
   without deploying.
 - **[`cdkd events`](cli-events.md)** — reading deployment-event history.
+- **[`cdkd state`](cli-state.md)** — inspecting and operating on the S3
+  state store directly, with no CDK app.
 
 The sections below cover the cross-command behaviours: output streams,
 `--region`, `--role-arn`, exit codes, and the `local *` command family.
@@ -321,6 +323,7 @@ collapse it into the general `1` bucket.
 | --- | --- |
 | `cdkd destroy`, `cdkd state destroy` | Per-resource delete failures, and per-resource **skips**. |
 | `cdkd deploy` | Resources left **unaddressed** — a skipped DELETE, or a replacement's surviving predecessor. Suppressible with `--allow-unaddressed`. |
+| `cdkd state refresh-observed` | Per-resource read-back failures; the affected resources keep their previous baseline. |
 | `cdkd publish-assets` | Per-stack asset publish failures. |
 | `cdkd rollback` | Per-op failures, or ops skipped with a warning. The journal is kept so the run can be repeated. |
 | `cdkd drift` | Nothing drifted, but cdkd **refused to compare** a secret-bearing property. |
