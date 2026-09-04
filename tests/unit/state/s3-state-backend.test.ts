@@ -829,6 +829,71 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(deletedKeys).not.toContain('cdkd/S/state.json');
     });
 
+    describe('the unreadable-probe warning', () => {
+      // Refusing to sweep on an unreadable probe is right — a read that
+      // failed must not authorise a delete — but the OUTCOME is issue #2550's
+      // symptom: a record surviving a destroy that reported success. The warn
+      // is what stops that being silent, and the not-firing cases are the
+      // real fence: `unreadable` is reachable on an ordinary destroy (a
+      // principal without s3:ListBucket sees a MISSING object as
+      // AccessDenied), so a warn on any other kind would be noise on every
+      // destroy of every stack.
+      beforeEach(() => {
+        childLoggerMock.warn.mockClear();
+      });
+
+      const warnings = (): string =>
+        childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+
+      it('warns, naming the cause and the remedy, when the probe cannot be read', async () => {
+        s3Client.send.mockResolvedValueOnce({}); // delete new key
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(new Error('denied'), { name: 'AccessDenied' })
+        );
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const warned = warnings();
+        expect(warned).toMatch(/Could not read the legacy state record for 'S'/);
+        // The cause, so the recurring no-ListBucket case is self-diagnosing
+        // rather than an unattributable line on every run.
+        expect(warned).toContain('AccessDenied');
+        expect(warned).toContain('s3:ListBucket');
+        expect(warned).toMatch(/cdkd state orphan 'S'/);
+      });
+
+      it('stays silent when the legacy key is simply absent', async () => {
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' })
+        );
+
+        await backend.deleteState('S', 'us-east-1');
+
+        expect(warnings()).not.toMatch(/Could not read the legacy state record/);
+      });
+
+      it('stays silent when the legacy body names a region', async () => {
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S', 'us-east-1')) });
+        s3Client.send.mockResolvedValueOnce({}); // legacy delete
+
+        await backend.deleteState('S', 'us-east-1');
+
+        expect(warnings()).not.toMatch(/Could not read the legacy state record/);
+      });
+
+      it('stays silent when the legacy body names no region', async () => {
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({ Body: bodyOf(v1State('S')) });
+        s3Client.send.mockResolvedValueOnce({}); // legacy delete
+
+        await backend.deleteState('S', 'us-east-1');
+
+        expect(warnings()).not.toMatch(/Could not read the legacy state record/);
+      });
+    });
+
     it('issues no legacy delete when the legacy key is absent', async () => {
       // The other reason the one-line fix was wrong: an absent key read as
       // the same `undefined`, so accepting it would have sent a pointless

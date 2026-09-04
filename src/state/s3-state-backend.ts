@@ -117,7 +117,7 @@ type LegacyStateProbe =
   | { kind: 'absent' }
   | { kind: 'no-region' }
   | { kind: 'region'; region: string }
-  | { kind: 'unreadable' };
+  | { kind: 'unreadable'; reason: string };
 
 /**
  * Does a legacy record classified by {@link LegacyStateProbe} belong to an
@@ -555,11 +555,18 @@ export class S3StateBackend {
         // delete — but the outcome is issue #2550's symptom exactly: a record
         // surviving a destroy that reported success. Say it at WARN so it is
         // not a silent no-op the way the original bug was.
+        // `stackName` reaches here from an S3 key segment, and this message
+        // both prints it and builds a pasteable command — the class issue
+        // #2170 closed for the force-unlock hint.
+        const safeName = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
         this.logger.warn(
-          `Could not read the legacy state record for '${stackName}' while cleaning up. ` +
-            `If one exists it was left in place; check ` +
+          `Could not read the legacy state record for '${safeName}' while cleaning up ` +
+            `(${legacyProbe.reason}). If one exists it was left in place; check ` +
             `s3://${this.config.bucket}/${this.getLegacyStateKey(stackName)} and remove it ` +
-            `with 'cdkd state orphan ${stackName}' if the stack is gone.`
+            `with: cdkd state orphan '${safeName}'\n` +
+            `A principal without s3:ListBucket sees a MISSING object as AccessDenied, so ` +
+            `this can appear on every destroy — grant it to silence the case where there ` +
+            `is nothing to clean up.`
         );
       }
       if (legacyProbeBelongsTo(legacyProbe, region)) {
@@ -1145,11 +1152,6 @@ export class S3StateBackend {
   }
 
   /**
-   * Read the legacy state's `region` field. Used for region matching during
-   * `stateExists` / `deleteState` and for assigning a region to legacy
-   * entries during `listStacks`.
-   */
-  /**
    * Read the legacy key and classify what is there — {@link LegacyStateProbe}
    * says what each answer means and which consumer acts on it.
    */
@@ -1162,7 +1164,7 @@ export class S3StateBackend {
           Key: this.getLegacyStateKey(stackName),
         })
       );
-      if (!response.Body) return { kind: 'unreadable' };
+      if (!response.Body) return { kind: 'unreadable', reason: 'the response carried no body' };
       const bodyString = await response.Body.transformToString();
       const state = JSON.parse(bodyString) as Partial<StackState>;
       // Mirror `tryGetLegacy`'s gate — `if (state.region && state.region !==
@@ -1181,15 +1183,15 @@ export class S3StateBackend {
       // from anywhere while an equality test would refuse to sweep it.
       const raw = (state as { region?: unknown }).region;
       if (!raw) return { kind: 'no-region' };
-      if (typeof raw !== 'string') return { kind: 'unreadable' };
+      if (typeof raw !== 'string')
+        return { kind: 'unreadable', reason: `its 'region' field is ${typeof raw}, not a string` };
       return { kind: 'region', region: raw };
     } catch (error) {
       if (isNoSuchKey(error)) return { kind: 'absent' };
       // Don't fail the whole list on a single bad legacy file — log & skip.
-      this.logger.debug(
-        `Could not read legacy state region for '${stackName}': ${error instanceof Error ? error.message : String(error)}`
-      );
-      return { kind: 'unreadable' };
+      const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      this.logger.debug(`Could not read legacy state region for '${stackName}': ${reason}`);
+      return { kind: 'unreadable', reason };
     }
   }
 
