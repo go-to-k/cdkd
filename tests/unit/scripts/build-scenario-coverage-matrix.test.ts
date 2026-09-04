@@ -285,7 +285,7 @@ describe('renderMarkdown', () => {
       unannotatedFixtures: [],
       invalidTagSites: [],
     });
-    expect(md).toContain('[`fa`](../tests/integration/fa/)');
+    expect(md).toContain('[`fa`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/fa/)');
   });
 
   it('renders un-annotated fixtures as a bullet list', () => {
@@ -298,6 +298,6 @@ describe('renderMarkdown', () => {
       invalidTagSites: [],
     });
     expect(md).toContain('Un-annotated fixtures (1)');
-    expect(md).toContain('- [`fa`](../tests/integration/fa/)');
+    expect(md).toContain('- [`fa`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/fa/)');
   });
 });

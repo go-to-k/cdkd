@@ -68,6 +68,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { githubTree, githubBlob } from './github-links.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -714,7 +715,9 @@ function renderMarkdown(report: CoverageReport): string {
   lines.push('## How this is computed');
   lines.push('');
   lines.push(
-    'For each fixture under `tests/integration/<name>/`, the script scans `lib/*.ts` and `bin/*.ts` for three signals against the resource types registered in [src/provisioning/register-providers.ts](../src/provisioning/register-providers.ts):'
+    'For each fixture under `tests/integration/<name>/`, the script scans `lib/*.ts` and `bin/*.ts` for three signals against the resource types registered in [src/provisioning/register-providers.ts](' +
+      githubBlob('src/provisioning/register-providers.ts') +
+      '):'
   );
   lines.push('');
   lines.push(
@@ -728,7 +731,9 @@ function renderMarkdown(report: CoverageReport): string {
   );
   lines.push('');
   lines.push(
-    'L2 detection is a hand-curated lower bound — a missed L2 wrapper produces a false-negative ("type appears uncovered"). When you add a fixture that uses an L2 the matrix does not see, extend `CDK_L2_TO_L1` in [scripts/build-integ-coverage-matrix.ts](../scripts/build-integ-coverage-matrix.ts).'
+    'L2 detection is a hand-curated lower bound — a missed L2 wrapper produces a false-negative ("type appears uncovered"). When you add a fixture that uses an L2 the matrix does not see, extend `CDK_L2_TO_L1` in [scripts/build-integ-coverage-matrix.ts](' +
+      githubBlob('scripts/build-integ-coverage-matrix.ts') +
+      ').'
   );
   lines.push('');
   if (report.orphans.length > 0) {
@@ -757,7 +762,9 @@ function renderMarkdown(report: CoverageReport): string {
     lines.push(`## Allow-listed providers (${report.allowListed.length})`);
     lines.push('');
     lines.push(
-      'Registered without an integ fixture, with an explicit `// allow-no-integ: <rationale>` comment on the register line in [src/provisioning/register-providers.ts](../src/provisioning/register-providers.ts). The hook accepts these — but each is a deliberate verification gap and should be revisited if a real-AWS bug surfaces against the type.'
+      'Registered without an integ fixture, with an explicit `// allow-no-integ: <rationale>` comment on the register line in [src/provisioning/register-providers.ts](' +
+        githubBlob('src/provisioning/register-providers.ts') +
+        '). The hook accepts these — but each is a deliberate verification gap and should be revisited if a real-AWS bug surfaces against the type.'
     );
     lines.push('');
     lines.push('| Resource Type | Rationale |');
@@ -776,7 +783,7 @@ function renderMarkdown(report: CoverageReport): string {
     const fixtures = entry.integs
       .map((f) => {
         const sig = entry.signals[f].join(',');
-        return `[\`${f}\`](../tests/integration/${f}/) (${sig})`;
+        return `[\`${f}\`](${githubTree(`tests/integration/${f}/`)}) (${sig})`;
       })
       .join('<br>');
     lines.push(`| \`${entry.resourceType}\` | ${fixtures} |`);

@@ -38,16 +38,6 @@ const handWrittenDocs = walkMarkdown(DOCS).filter(
   (f) => !relative(DOCS, f).startsWith('_generated')
 );
 
-// The three coverage matrices that live at docs/ top level rather than under
-// _generated/. They are written by scripts, so a defect in them is a defect in
-// the generator; `handWrittenDocs` keeps them because their cross-page links
-// are worth checking, but a check whose remedy is "edit the generator" says so.
-const GENERATED_TOP_LEVEL = new Set([
-  'cli-flag-coverage.md',
-  'integ-coverage.md',
-  'scenario-coverage.md',
-]);
-
 // Line-state fence tracking rather than a column-0 regex: docs/ carries
 // list-indented fences (e.g. state-management.md, troubleshooting.md) whose
 // contents must not surface as phantom headings or links.
@@ -196,15 +186,13 @@ describe('published docs cross-links', () => {
     // notes. The check is deliberately not limited to `.md`: the ones that hurt
     // most pointed at source files.
     //
-    // The three generated coverage matrices are exempt because they carry ~2,600
-    // of these, emitted by their generators as `../tests/integration/<fixture>/`.
-    // Fixing that means fixing three scripts and regenerating three matrices —
-    // issue #2510, kept separate so this fence can protect the hand-written
-    // corpus now. Retiring that issue retires the exemption.
+    // The three generated coverage matrices used to be exempt: their generators
+    // emitted `../tests/integration/<fixture>/` and they carried about 2,600 of
+    // these between them. The generators now emit GitHub URLs, so the exemption
+    // is gone and the whole corpus is covered.
     const failures: string[] = [];
     let checked = 0;
     for (const file of handWrittenDocs) {
-      if (GENERATED_TOP_LEVEL.has(relative(DOCS, file))) continue;
       const body = stripFences(readFileSync(file, 'utf8'));
       for (const m of body.matchAll(/\]\((\.\.\/[^)\s]+)\)/g)) {
         const [, target] = m;

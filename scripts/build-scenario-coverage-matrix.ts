@@ -67,6 +67,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { githubTree, githubBlob } from './github-links.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -502,7 +503,9 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
   lines.push('## How this is computed');
   lines.push('');
   lines.push(
-    'Each `tests/integration/<fixture>/.scenarios.json` sidecar declares which canonical real-AWS regression patterns the fixture exercises. The canonical taxonomy lives in [scripts/build-scenario-coverage-matrix.ts](../scripts/build-scenario-coverage-matrix.ts) as `KNOWN_SCENARIOS` — sidecar tags outside the taxonomy are rejected at parse time so typos surface immediately.'
+    'Each `tests/integration/<fixture>/.scenarios.json` sidecar declares which canonical real-AWS regression patterns the fixture exercises. The canonical taxonomy lives in [scripts/build-scenario-coverage-matrix.ts](' +
+      githubBlob('scripts/build-scenario-coverage-matrix.ts') +
+      ') as `KNOWN_SCENARIOS` — sidecar tags outside the taxonomy are rejected at parse time so typos surface immediately.'
   );
   lines.push('');
   lines.push('**Sidecar shape**:');
@@ -548,7 +551,7 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
   for (const entry of report.perScenarioCoverage) {
     const fixtures = entry.fixtures.length === 0
       ? '_(orphan)_'
-      : entry.fixtures.map((f) => `[\`${f}\`](../tests/integration/${f}/)`).join('<br>');
+      : entry.fixtures.map((f) => `[\`${f}\`](${githubTree(`tests/integration/${f}/`)})`).join('<br>');
     lines.push(`| \`${entry.scenario}\` | ${entry.description} | ${fixtures} |`);
   }
   lines.push('');
@@ -562,7 +565,7 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
     );
     lines.push('');
     for (const name of report.unannotatedFixtures) {
-      lines.push(`- [\`${name}\`](../tests/integration/${name}/)`);
+      lines.push(`- [\`${name}\`](${githubTree(`tests/integration/${name}/`)})`);
     }
     lines.push('');
   } else {
