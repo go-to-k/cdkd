@@ -70,7 +70,7 @@ export AWS_PAGER=""
 # 141 — so a NEGATIVE check (`if grep -q <bad thing>; then FAIL`) reads "not
 # found" precisely when the bad thing WAS found.
 #
-# MEASURED on this repo's dev host (bash 5.3, macOS), needle on line 1, five
+# MEASURED 2026-09-05 on this repo's dev host (bash 5.3, macOS), needle on line 1, five
 # attempts per size: 3 KB and 31 KB → 0/5 non-zero; 155 KB, 310 KB, 620 KB and
 # 1.5 MB → 5/5 non-zero. So the failure needs a capture somewhere between
 # ~32 KB and ~155 KB, which THIS fixture's dry-run logs are well under today —
@@ -386,6 +386,17 @@ if [ "${P3_RC}" -eq 0 ]; then
   exit 1
 fi
 assert_stateful_refusal "phase 3" "${P3_OUT}"
+# The refusal has TWO arms and only one of them is this phase's subject. A
+# missing `logs:DescribeLogStreams` permission, or a throttle, promotes to
+# `has-log-events` too (`recreate-targets.ts`) -- so without this check the
+# phase passes for the wrong reason on a role that cannot probe at all, and
+# the run reports a guard it never exercised.
+if grep -qF -- "live CloudWatch Logs probe failed for" <<<"${P3_OUT}" \
+  || grep -qF -- "without settling it" <<<"${P3_OUT}"; then
+  echo "FAIL: phase 3 refused because the probe could NOT RUN, not because it found a stream — grant logs:DescribeLogStreams (or retry a throttle); this run proves nothing about the guard" >&2
+  printf '%s\n' "${P3_OUT}" | tail -20 >&2
+  exit 1
+fi
 DATA_STREAMS_P3="$(lg_stream_count "${DATA_LG}")"
 if [ "${DATA_STREAMS_P3}" -lt 1 ]; then
   echo "FAIL: the seeded log group lost its stream despite the refusal" >&2
@@ -405,10 +416,21 @@ echo "    pre-flight refused; log group and its stream intact"
 # `--dry-run` keeps it a pre-flight assertion: the plan is printed, nothing is
 # destroyed, and the seeded stream is asserted intact below either way.
 echo "==> Phase 3b: the same target WITH --force-stateful-recreation (expect a DATA LOSS plan row)"
+# Capture the rc like phases 3/4/5 do. A bare `$(...)` under `set -e` aborts
+# the whole run SILENTLY on a non-zero exit -- no FAIL line, no output tail --
+# which reads as a crash rather than as this phase failing.
+set +e
 P3B_OUT="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --dry-run \
   --force-stateful-recreation \
   --recreate-via-cc-api "${DATA_LOGICAL_ID}" 2>&1)"
+P3B_RC=$?
+set -e
+if [ "${P3B_RC}" -ne 0 ]; then
+  echo "FAIL: phase 3b: the consented dry-run exited ${P3B_RC}; --force-stateful-recreation should carry it past the guard" >&2
+  printf '%s\n' "${P3B_OUT}" | tail -20 >&2
+  exit 1
+fi
 if ! grep -qF -- "**DATA LOSS** ${DATA_LOGICAL_ID} (AWS::Logs::LogGroup)" <<<"${P3B_OUT}"; then
   echo "FAIL: phase 3b: the consented plan did not mark ${DATA_LOGICAL_ID} as DATA LOSS — a never-expiring log group is about to be destroyed with no warning on the plan" >&2
   printf '%s\n' "${P3B_OUT}" | tail -20 >&2
