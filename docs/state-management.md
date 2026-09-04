@@ -1020,7 +1020,7 @@ CloudFormation itself refuses `AWS::Glue::Table`,
 `AWS::Route53::RecordSet`, `AWS::AppSync::ApiKey` and
 `AWS::EC2::NetworkAclEntry` in IMPORT changesets. `cdkd export` detects
 that up front and names every affected resource — see
-[`cdkd export`](cli-export.md#cdkd-export-hand-a-stack-over-to-cloudformation).
+[`cdkd export`](cli-export.md#resource-types-cloudformation-cannot-import).
 
 Two more types **accept** a composite id without producing one:
 

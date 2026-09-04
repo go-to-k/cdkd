@@ -6913,7 +6913,7 @@ export function createExportCommand(): Command {
     .option(
       '--no-recreate-import-unsupported',
       'Block instead of auto-handling resource types AWS does NOT support in IMPORT ' +
-        'changesets (currently only AWS::ApiGatewayV2::Stage, emitted by CDK HttpApi). ' +
+        'changesets (AWS::ApiGatewayV2::Stage and AWS::IAM::Policy). ' +
         'Default behavior: cdkd skips these from phase 1, deletes the AWS-side resource ' +
         'between phases, and lets CFn re-CREATE in phase 2 (brief unavailability window). ' +
         'With this flag, the export aborts with a clear error instead.'

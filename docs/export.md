@@ -6,12 +6,11 @@ description: Hand a cdkd-managed stack back to CloudFormation with cdkd export �
 # Exporting a stack back to CloudFormation
 
 `cdkd export` is the mirror of [`cdkd import`](import.md): it hands a
-cdkd-managed stack back to CloudFormation via a CFn
-`ChangeSetType=IMPORT` changeset. AWS resources are unchanged across
-the migration; cdkd state for the exported stack is deleted on success.
-From then on the stack is managed by `cdk deploy` /
-`aws cloudformation`. Accepts JSON and YAML templates (shorthand
-intrinsics round-trip).
+cdkd-managed stack back to CloudFormation via a `ChangeSetType=IMPORT`
+changeset. AWS resources are unchanged across the migration, and cdkd state for
+the exported stack is deleted on success. From then on the stack is managed by
+`cdk deploy` / `aws cloudformation`. JSON and YAML templates are both accepted,
+and shorthand intrinsics round-trip.
 
 ```bash
 cdkd export MyStack                           # confirmation prompt; CFn stack name = cdkd stack name
@@ -21,26 +20,45 @@ cdkd export MyStack --include-non-importable  # 2-phase: IMPORT importable + CFn
 cdkd export MyApp                             # nested-stack tree: leaf-first per-stack IMPORT loop
 ```
 
-**Lambda-backed Custom Resources** (`Custom::*` /
-`AWS::CloudFormation::CustomResource`) are NOT directly CFn-importable.
-`--include-non-importable` opts into a 2-phase migration that re-CREATEs
-them through CFn — the Custom Resource Lambda must be idempotent.
-**Nested stacks** are supported via a leaf-first per-stack IMPORT loop
-(AWS rejects `--include-nested-stacks` for IMPORT changesets).
-**Some resource types CloudFormation cannot import at all** (`AWS::Glue::Table`,
-`AWS::Route53::RecordSet` / `::RecordSetGroup`, `AWS::AppSync::ApiKey`,
-`AWS::EC2::NetworkAclEntry`, `AWS::SQS::QueuePolicy`,
-`AWS::SNS::TopicPolicy`, …). cdkd detects those from the resource type's
-CloudFormation registry schema and names every affected resource at once —
-before acquiring the stack lock, and before submitting anything — so you fix
-them in one pass instead of one per re-run.
-`--skip-import-support-preflight` bypasses the check if AWS has since made a
-type importable.
+## What to know before you export
 
-See **[`cdkd export`](cli-export.md)** for the full reference — every flag,
-the Custom Resource 2-phase flow, and nested-stack adoption mechanics
-(`--cfn-child-stack-name` per-child overrides, AWS's "Nest an existing
-stack" pattern). The design rationale is in the
-[nested-stack export/import design note](design/464-nested-stacks-export-import.md).
-For the opposite direction — bringing CloudFormation-managed resources
-under cdkd — see [`cdkd import`](import.md).
+- **Custom Resources need an opt-in.** Lambda-backed Custom Resources
+  (`Custom::*` and `AWS::CloudFormation::CustomResource`) are not
+  CloudFormation-importable. `--include-non-importable` opts into a 2-phase
+  migration that re-creates them through CloudFormation, which re-invokes each
+  backing Lambda's `onCreate` handler — so that handler must be idempotent.
+- **Nested stacks are supported** via a leaf-first per-stack IMPORT loop. Each
+  cdkd child stack becomes its own CloudFormation stack. AWS rejects
+  `IncludeNestedStacks` on an IMPORT changeset, so a single atomic changeset is
+  not an option.
+- **Some resource types CloudFormation cannot import at all.** cdkd detects
+  them from the type's CloudFormation registry schema and names every affected
+  resource at once — before acquiring the stack lock and before submitting
+  anything — so you fix them in one pass rather than one per re-run.
+  `--skip-import-support-preflight` bypasses the check if AWS has since made a
+  type importable.
+- **CLI `-c` context overrides are refused by default,** because they are not
+  persisted and a later `cdk deploy` without them would synthesize a different
+  template. Move them into `cdk.json`, or pass `--accept-transient-context`.
+
+### Types CloudFormation refuses to import
+
+| Resource type | What to do instead |
+| --- | --- |
+| `AWS::Glue::Table` | Remove it from the stack before exporting — it stays in AWS and can be re-declared in CloudFormation afterwards — or destroy it and let CloudFormation create it fresh. |
+| `AWS::Route53::RecordSet` | Same. |
+| `AWS::Route53::RecordSetGroup` | Same. |
+| `AWS::AppSync::ApiKey` | Same. |
+| `AWS::EC2::NetworkAclEntry` | Same. |
+| `AWS::SQS::QueuePolicy` | Same. |
+| `AWS::SNS::TopicPolicy` | Same. |
+
+## Where to go next
+
+- [`cdkd export`](cli-export.md) — the full reference: every flag, the blocked
+  set, identifier resolution, template preprocessing, the Custom Resource
+  2-phase flow, and the nested-stack adoption mechanics.
+- [`cdkd import`](import.md) — the opposite direction, bringing
+  CloudFormation-managed resources under cdkd.
+- [nested-stack export/import design note](design/464-nested-stacks-export-import.md)
+  — the design rationale behind the per-stack loop.
