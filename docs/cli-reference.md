@@ -204,12 +204,11 @@ so cdkd reads it too and stays in step with a CLI command you just ran.
 The last three steps — `AWS_DEFAULT_REGION`, the profile, and the `us-east-1`
 fallback — apply to the **bootstrap-marker family**: `cdkd bootstrap`,
 `cdkd gc`, and `cdkd bootstrap --destroy`. These three move together because one
-writes the key the other two read.
+writes the key the other two read. Every other command resolves `--region` →
+`AWS_REGION` and falls back to the `us-east-1` literal.
 
-The `cdkd local` family reads `AWS_DEFAULT_REGION` too, and adds a fourth step
-of its own: `--region`, then `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
-region the target stack was synthesized or recorded for. It falls back to the
-`us-east-1` literal only when none of those resolves.
+The `cdkd local` family resolves its region per command; each command's page
+gives its own chain.
 
 ### The reconciliation
 

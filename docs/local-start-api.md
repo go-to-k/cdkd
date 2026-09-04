@@ -722,8 +722,8 @@ once:
   produced a matching `dockerImages` entry. `docker build` then runs against the
   recorded build context.
 - **ECR pull**, when no asset matches. The ECR client is built for the image
-  URI's own region, so cross-region works. Cross-account works only when the
-  repository policy grants your identity directly: this command has no
+  URI's own region, so cross-region works. Cross-account works only when your own
+  credentials are already permitted on the target repository: this command has no
   `--ecr-role-arn`, so to assume a role first use
   [`cdkd local invoke`](local-invoke.md#container-image-lambdas).
 

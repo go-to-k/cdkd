@@ -226,7 +226,7 @@ With neither state flag, a same-stack repository reference fails with an error
 naming them as the way forward; the stack must have been deployed first.
 
 Under `--from-cfn-stack`, an `Fn::GetAtt` in a container's `Environment[].Value`
-is dropped with a warning — a stack's resource listing carries no per-attribute
+or `Secrets[].ValueFrom` is dropped with a warning — a stack's resource listing carries no per-attribute
 values. Image URIs are not affected: the repository ARN and URI are rebuilt from
 the recovered physical name plus the pseudo parameters, so no per-attribute
 lookup is needed.
