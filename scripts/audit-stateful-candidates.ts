@@ -278,8 +278,10 @@ export interface RegistrySchema {
  * measured has one — `FLOORS.maxSchemasWithNoProperties` is 0 for that reason —
  * so a schema without one is not a quiet "contributes no signal" case: it is
  * either a truncated cache file or a genuinely new registry shape, and both
- * want a human. `deriveReport` counts them rather than throwing, so the report
- * says which types they were.
+ * want a human. `deriveReport` COUNTS them rather than throwing — the count is
+ * what `FLOORS.maxSchemasWithNoProperties` reads; the types themselves are not
+ * recorded, so the remedy is to re-run with `--regenerate --refetch` rather
+ * than to look one up in the report.
  */
 export function topLevelPropertyNames(schema: RegistrySchema): string[] {
   return Object.keys(schema.properties ?? {});
@@ -697,7 +699,7 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     typeName: 'AWS::Probe::Widget',
     schema: {
       createOnlyProperties: ['/properties/Name'],
-      properties: { Name: {}, BackupPlanId: {} },
+      properties: { Name: {}, BackupPlanId: {}, SourceBackupWindow: {} },
     },
     expected: null,
   },
@@ -719,7 +721,17 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     typeName: 'AWS::Probe::Widget',
     schema: {
       createOnlyProperties: ['/properties/Name'],
-      properties: { Name: {}, MySnapshotWindowOverride: {}, RetentionPeriodPolicyArn: {} },
+      properties: {
+        Name: {},
+        MySnapshotWindowOverride: {},
+        RetentionPeriodPolicyArn: {},
+        // SUFFIX shape as well as prefix: a prefix-extended name only fences the
+        // TRAILING anchor. Dropping the LEADING `^` needs a name the pattern
+        // matches at its end.
+        SourceSnapshotWindow: {},
+        SnapshotWindowOverride: {},
+        DefaultRetentionPeriod: {},
+      },
     },
     expected: null,
   },
@@ -730,7 +742,12 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     typeName: 'AWS::Probe::Widget',
     schema: {
       createOnlyProperties: ['/properties/Name'],
-      properties: { Name: {}, PreAllocatedStorageHint: {}, StorageTypeOverride: {} },
+      properties: {
+        Name: {},
+        PreAllocatedStorageHint: {},
+        StorageTypeOverride: {},
+        PreAllocatedStorage: {},
+      },
     },
     expected: null,
   },
@@ -739,7 +756,7 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     typeName: 'AWS::Probe::Widget',
     schema: {
       createOnlyProperties: ['/properties/Name'],
-      properties: { Name: {}, DeletionProtectionPolicyArn: {} },
+      properties: { Name: {}, DeletionProtectionPolicyArn: {}, HasDeletionProtection: {} },
     },
     expected: null,
   },
@@ -748,7 +765,7 @@ export const SELF_PROBE_CASES: ReadonlyArray<{
     typeName: 'AWS::Probe::Widget',
     schema: {
       createOnlyProperties: ['/properties/Name'],
-      properties: { Name: {}, EncryptionAtRestOptionsArn: {} },
+      properties: { Name: {}, EncryptionAtRestOptionsArn: {}, RequireEncryptionAtRest: {} },
     },
     expected: null,
   },
@@ -1319,10 +1336,10 @@ function rederive(): void {
   writeReport(deriveReport(loadTier2(), readCachedSchema));
 }
 
-function check(): void {
+export function check(jsonPath: string = OUTPUT_JSON): void {
   let report: StatefulCandidateReport;
   try {
-    report = loadCachedReport();
+    report = loadCachedReport(jsonPath);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[stateful-candidates] cannot read cached report: ${msg}`);
@@ -1394,9 +1411,9 @@ Modes (at most one):
   --regenerate  fetch missing tier-2 registry schemas from AWS, then derive
   --rederive    re-derive offline from the cached schemas (no AWS calls)
   --check       fail if a candidate is undispositioned or an entry went stale
+  --help        print this and exit 0
 
-  --refetch     with --regenerate only: re-fetch every schema, ignoring the cache
-  --help        print this and exit 0`;
+  --refetch     with --regenerate only: re-fetch every schema, ignoring the cache`;
 
 /**
  * Reject anything outside the known argument set, and reject two modes at once.

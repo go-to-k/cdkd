@@ -28,7 +28,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
@@ -38,6 +38,7 @@ import {
   SELF_PROBE_CASES,
   SIGNAL_BOUNDS,
   STATEFUL_SIGNALS,
+  check,
   classifyCandidate,
   coerceRegistrySchema,
   deriveReport,
@@ -208,6 +209,43 @@ describe('the pure derivation functions', () => {
   const read = (t: string): RegistrySchema | undefined => schemas[t];
   const tier2 = ['AWS::Probe::AlphaCluster', 'AWS::Probe::Widget', 'AWS::Probe::Bare', 'AWS::Probe::Missing'];
 
+  /**
+   * A SECOND corpus, sized so every summary row carries a DISTINCT value
+   * (8 / 6 / 5 / 0 / 4 / 3 / 1 / 2). The corpus above has duplicates, and with
+   * duplicates a renderer that transposes two like-valued rows survives every
+   * assertion — measured.
+   */
+  const distinctSchemas: Record<string, RegistrySchema> = {
+    'AWS::Probe::AlphaCluster': {
+      createOnlyProperties: ['/properties/Name'],
+      properties: { Name: {}, AllocatedStorage: {} },
+    },
+    'AWS::Probe::BetaVault': {
+      createOnlyProperties: ['/properties/Name'],
+      properties: { Name: {}, RetentionPeriod: {} },
+    },
+    'AWS::Probe::GammaTable': {
+      createOnlyProperties: ['/properties/Name'],
+      properties: { Name: {} },
+    },
+    'AWS::Probe::DeltaLedger': {
+      createOnlyProperties: ['/properties/Name'],
+      properties: { Name: {} },
+    },
+    'AWS::Probe::Widget': { createOnlyProperties: ['/properties/Name'], properties: { Name: {} } },
+    'AWS::Probe::Bare': { properties: { RetentionPeriod: {} } },
+  };
+  const distinctTier2 = [
+    ...Object.keys(distinctSchemas),
+    'AWS::Probe::Missing',
+    'AWS::Probe::AlsoMissing',
+  ];
+  const distinctGuarded = new Set([
+    'AWS::Probe::AlphaCluster',
+    'AWS::Probe::BetaVault',
+    'AWS::Probe::GammaTable',
+  ]);
+
   it('deriveReport counts read / unreadable / createOnly / candidates separately', () => {
     const r = deriveReport(tier2, read, new Set(['AWS::Probe::AlphaCluster']));
     expect(r.summary.tier2Count).toBe(4);
@@ -253,7 +291,6 @@ describe('the pure derivation functions', () => {
     // to the bare cast — the exact defect the coercion closes — survived that.
     // This drives the real read path against a real cache directory.
     const dir = mkdtempSync(join(tmpdir(), 'stateful-cache-'));
-    mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, 'AWS-Probe-Bad.json'),
       JSON.stringify({ createOnlyProperties: '/properties/Name', properties: { Name: {} } })
@@ -268,7 +305,7 @@ describe('the pure derivation functions', () => {
     ]);
     expect(readCachedSchema('AWS::Probe::Absent', dir)).toBeUndefined();
     // ...and the string form must not reach the classifier, where it would
-    // spread character by character into 17 fabricated createOnly entries.
+    // spread character by character into 16 fabricated createOnly entries.
     const derived = deriveReport(['AWS::Probe::Bad'], (t) => readCachedSchema(t, dir));
     expect(derived.unreadable).toEqual(['AWS::Probe::Bad']);
     expect(derived.summary.candidateCount).toBe(0);
@@ -317,6 +354,49 @@ describe('the pure derivation functions', () => {
     const raw = JSON.parse(readFileSync(COVERAGE_JSON, 'utf8')) as { tier2: string[] };
     expect(raw.tier2.length).toBeGreaterThan(real.length);
     expect(() => loadTier2(REPORT_JSON)).toThrow(/No tier2 entries/);
+  });
+
+  it('check() refuses a report missing the fields floorViolations indexes', () => {
+    // A new production branch shipped in a fencing PR, and deleting the whole
+    // block left the suite green: `check()` reads a fixed path and the spawn
+    // block feeds it only the committed report. `signalCounts` is the arm that
+    // matters — it is what `floorViolations` indexes, so without it the guard
+    // is bypassed by the exact TypeError it exists to replace.
+    const dir = mkdtempSync(join(tmpdir(), 'stateful-malformed-'));
+    const write = (name: string, body: unknown) => {
+      const f = join(dir, name);
+      writeFileSync(f, JSON.stringify(body));
+      return f;
+    };
+    const errors: string[] = [];
+    const spy = { error: (m: string) => errors.push(m) };
+    const originalError = console.error;
+    const originalCode = process.exitCode;
+    console.error = spy.error as unknown as typeof console.error;
+    try {
+      for (const [label, body] of [
+        ['no summary', { schemaVersion: 1, candidates: [], unreadable: [] }],
+        [
+          'summary without signalCounts',
+          { schemaVersion: 1, summary: {}, candidates: [], unreadable: [] },
+        ],
+        [
+          'candidates not an array',
+          { schemaVersion: 1, summary: { signalCounts: {} }, candidates: {}, unreadable: [] },
+        ],
+      ] as const) {
+        errors.length = 0;
+        process.exitCode = 0;
+        // Must not THROW — the point is an actionable message, not a raw
+        // TypeError out of the floors.
+        expect(() => check(write(`${label}.json`, body)), label).not.toThrow();
+        expect(errors.join('\n'), label).toMatch(/missing `summary`, `candidates` or `unreadable`/);
+        expect(process.exitCode, label).toBe(1);
+      }
+    } finally {
+      console.error = originalError;
+      process.exitCode = originalCode;
+    }
   });
 
   it('loadCachedReport refuses a schemaVersion it does not understand', () => {
@@ -441,24 +521,25 @@ describe('the pure derivation functions', () => {
     // rows, zeroed the signal-count column and reordered the candidate columns.
     // The committed-file check elsewhere cannot catch any of that: it compares
     // the file to the JSON, and a renderer change regenerates both.
-    const r = deriveReport(tier2, read, new Set(['AWS::Probe::AlphaCluster']));
+    const r = deriveReport(distinctTier2, (t) => distinctSchemas[t], distinctGuarded);
     const md = renderMarkdown(r);
     for (const row of [
-      '| Tier-2 types considered | 4 |',
-      '| Registry schemas read | 3 |',
-      '| ...of which declare a createOnly property | 2 |',
+      '| Tier-2 types considered | 8 |',
+      '| Registry schemas read | 6 |',
+      '| ...of which declare a createOnly property | 5 |',
       '| Schemas declaring no top-level properties | 0 |',
-      '| ...and fire a data-bearing signal (**candidates**) | 1 |',
-      '| Candidates already guarded | 1 |',
-      '| Candidates not guarded | 0 |',
-      '| Schemas unreadable (excluded, NOT cleared) | 1 |',
+      '| ...and fire a data-bearing signal (**candidates**) | 4 |',
+      '| Candidates already guarded | 3 |',
+      '| Candidates not guarded | 1 |',
+      '| Schemas unreadable (excluded, NOT cleared) | 2 |',
     ]) {
       expect(md, `renderMarkdown dropped the row: ${row}`).toContain(row);
     }
     // The signal table carries a real COUNT per signal, not a constant.
     expect(md).toMatch(/\| `storage-capacity` \| 1 \|/);
-    expect(md).toMatch(/\| `data-store-noun` \| 1 \|/);
-    expect(md).toMatch(/\| `retention-window` \| 0 \|/);
+    expect(md).toMatch(/\| `data-store-noun` \| 4 \|/);
+    expect(md).toMatch(/\| `retention-window` \| 1 \|/);
+    expect(md).toMatch(/\| `snapshot-or-backup` \| 0 \|/);
     // The candidate row, whole: type, guarded column, signals, createOnly —
     // in that column order, with the createOnly prefix stripped.
     expect(md).toContain(
@@ -466,11 +547,15 @@ describe('the pure derivation functions', () => {
     );
     // ...and the guarded column inverts with the guard list rather than being
     // a constant.
-    const unguarded = renderMarkdown(deriveReport(tier2, read, new Set()));
+    expect(md).toContain('| `AWS::Probe::DeltaLedger` | **no** | data-store-noun | `Name` |');
+    const unguarded = renderMarkdown(
+      deriveReport(distinctTier2, (t) => distinctSchemas[t], new Set())
+    );
     expect(unguarded).toContain(
       '| `AWS::Probe::AlphaCluster` | **no** | data-store-noun, storage-capacity | `Name` |'
     );
     expect(md).toContain('`AWS::Probe::Missing`');
+    expect(md).toContain('`AWS::Probe::AlsoMissing`');
     for (const signal of STATEFUL_SIGNALS) {
       expect(md).toContain(`\`${signal.key}\``);
     }
@@ -827,7 +912,9 @@ describe('the shipped binary still consults its own guards', () => {
 
   it('--check exits 0 on the committed report', () => {
     const r = run(['--check']);
-    expect(r.stderr + r.stdout).toContain('candidates dispositioned');
+    // STDOUT specifically: `--check`'s success line is the one a human reads
+    // out of a CI log, and the rest of this block is stream-specific.
+    expect(r.stdout).toContain('candidates dispositioned');
     expect(r.status).toBe(0);
   });
 
@@ -849,7 +936,12 @@ describe('the shipped binary still consults its own guards', () => {
     expect(run(['--check', '--rederive']).status).toBe(2);
     expect(run(['--refetch']).status).toBe(2);
     expect(run(['--check', '--help']).status).toBe(2);
-    expect(run(['--help']).status).toBe(0);
+    // `--help` PRINTS, on stdout — asserting only its exit code left the
+    // output unfenced, and a deleted print block exits 0 just as happily.
+    const help = run(['--help']);
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('Usage: node scripts/audit-stateful-candidates.ts');
+    expect(help.stdout).toContain('--rederive');
   });
 });
 

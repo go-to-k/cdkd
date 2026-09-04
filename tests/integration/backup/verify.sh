@@ -242,12 +242,22 @@ fi
 GUARD_LINE=$(printf '%s\n' "${RENAME_OUT}" \
   | grep -m1 'requires replacement (immutable property changed:' || true)
 if [ -z "${GUARD_LINE}" ]; then
-  # SECOND SENTINEL. The first one covers a failure BEFORE the deploy names the
-  # stack; this one covers a failure after it. If cdkd reached the vault and
-  # failed there for some other reason (a throttle, a lock, an unrelated AWS
-  # rejection), blaming the guard sends the next reader to the wrong place.
-  if printf '%s\n' "${RENAME_OUT}" | grep -q 'Failed to update Vault'; then
-    echo "FAIL: the vault update failed for a reason OTHER than the stateful guard." >&2
+  # TWO more sentinels, in order of what they rule out. The first one above
+  # covers a failure BEFORE the deploy names the stack; these cover a failure
+  # after it, and a REWORD of the marker this fixture parses.
+  #
+  # `Failed to <op> <LogicalId>` is `deploy-engine.ts`'s per-resource failure
+  # line (`Failed to ${change.changeType.toLowerCase()} ${logicalId}`), so it
+  # appears for a guard refusal AND for any other failure on the vault --
+  # including one on the replacement's create or delete, which is why all three
+  # verbs are matched rather than `update` alone.
+  if printf '%s\n' "${RENAME_OUT}" | grep -q 'but it is a stateful resource'; then
+    echo "FAIL: a stateful refusal fired but not the PROPERTY-DRIVEN one this fixture parses." >&2
+    echo "      Either the pre-flight guard's wording drifted (update the needle in this" >&2
+    echo "      file and in tests/unit/provisioning/stateful-guard-message-sync.test.ts) or" >&2
+    echo "      the refusal came from the update-failure fallback instead." >&2
+  elif printf '%s\n' "${RENAME_OUT}" | grep -qE 'Failed to (update|create|delete) Vault'; then
+    echo "FAIL: the vault operation failed for a reason OTHER than the stateful guard." >&2
     echo "      This is NOT an issue #2553 regression -- read the output above." >&2
   else
     echo "FAIL: no property-driven stateful refusal in the output (issue #2553 regression)" >&2
@@ -317,7 +327,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 # Strict capture (issue #1097 pattern 2): a silenced `|| echo 0` would read a
 # throttled list call as "0 remaining" and silently pass the leak check.
 if ! REMAINING_PLANS=$(count_backup_plans "${PLAN}"); then
-  echo "FAIL: could not list backup plans after destroy" >&2; exit 1
+  echo "FAIL: could not list backup plans after destroy (probe failed)" >&2; exit 1
 fi
 if [ "${REMAINING_PLANS}" != "0" ]; then
   echo "FAIL: backup plan ${PLAN} still exists after destroy" >&2; exit 1
@@ -335,7 +345,7 @@ if [ "${REMAINING_V2}" != "0" ]; then
   echo "FAIL: backup vault ${VAULT_V2} still exists after destroy" >&2; exit 1
 fi
 if ! REMAINING_VAULTS=$(count_backup_vaults "${VAULT}"); then
-  echo "FAIL: could not list backup vaults after destroy: ${REMAINING_VAULTS}" >&2; exit 1
+  echo "FAIL: could not list backup vaults after destroy (probe failed)" >&2; exit 1
 fi
 if [ "${REMAINING_VAULTS}" != "0" ]; then
   echo "FAIL: backup vault ${VAULT} still exists after destroy" >&2; exit 1
