@@ -844,6 +844,10 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // own unrelated warning under these mocks, and asserting over the joined
       // text would let that one satisfy — or falsify — assertions about this
       // one.
+      /** Every warning, unfiltered — for asserting that NONE was emitted. */
+      const allWarnings = (): string =>
+        childLoggerMock.warn.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+
       const warned = (): string[] =>
         childLoggerMock.warn.mock.calls
           .map((c: unknown[]) => String(c[0]))
@@ -874,10 +878,10 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        const warned = warnings();
-        expect(warned).toMatch(/Could not read the legacy state record for 'S'/);
-        expect(warned).toContain('AccessDenied');
-        expect(warned).toMatch(/left in place/);
+        const line = warnings();
+        expect(line).toMatch(/Could not read the legacy state record for 'S'/);
+        expect(line).toContain('AccessDenied');
+        expect(line).toMatch(/left in place/);
       });
 
       it('keeps AWS\'s own wording out of the warning', async () => {
@@ -897,10 +901,10 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        const warned = warnings();
-        expect(warned).not.toContain('123456789012');
-        expect(warned).not.toContain('assumed-role');
-        expect(warned).not.toContain('session-42');
+        const line = warnings();
+        expect(line).not.toContain('123456789012');
+        expect(line).not.toContain('assumed-role');
+        expect(line).not.toContain('session-42');
       });
 
       it('suggests no command and prescribes no permission', async () => {
@@ -916,10 +920,11 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        const warned = warnings();
-        expect(warned).not.toContain('cdkd state orphan');
-        expect(warned).not.toContain('s3:ListBucket');
-        expect(warned).not.toContain('s3://');
+        const line = warnings();
+        expect(line).not.toContain('cdkd state orphan');
+        expect(line).not.toContain('s3:ListBucket');
+        expect(line).not.toContain('s3://');
+        expect(line).not.toContain(`${'cdkd'}/S/state.json`);
       });
 
       it('carries no attacker-controlled bytes from a hostile body', async () => {
@@ -931,8 +936,13 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         s3Client.send.mockResolvedValueOnce({});
         s3Client.send.mockResolvedValueOnce({
           Body: {
+            // Measured against V8 on Node 24 rather than assumed: only the
+            // `Unexpected token` form embeds a snippet, and it shows the
+            // control run plus roughly the last ten characters of the value
+            // before it. So the payload puts the escape in a VALUE position
+            // right after a secret, which is the shape that leaks both.
             transformToString: () =>
-              Promise.resolve('{"a":1,"b": \u001b[2K\rdestroy completed successfully'),
+              Promise.resolve('{"p":"s3cr3t","x":\u001b[2K\rok'),
           },
         });
 
@@ -941,9 +951,47 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         const line = warnings();
         // No C0 / C1 control byte reaches the terminal.
         expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
-        expect(line).not.toContain('destroy completed successfully');
+        // The tail V8 actually shows — a longer needle would sit outside the
+        // window and pass whether or not the value leaked.
+        expect(line).not.toContain('cr3t');
         // The class still gets through, so the line is still diagnosable.
         expect(line).toContain('SyntaxError');
+      });
+
+      it('leaves a debug line for every unreadable shape, so --verbose is not a lie', async () => {
+        const debugFor = (): string =>
+          childLoggerMock.debug.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+
+        // (a) no body
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({});
+        await backend.deleteState('S', 'us-east-1');
+        expect(debugFor()).toMatch(/response carried no body/);
+
+        childLoggerMock.debug.mockClear();
+
+        // (b) region field of the wrong type
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({
+          Body: {
+            transformToString: () =>
+              Promise.resolve(
+                JSON.stringify({ version: 1, stackName: 'S', region: 123, resources: {}, outputs: {}, lastModified: 1 })
+              ),
+          },
+        });
+        await backend.deleteState('S', 'us-east-1');
+        expect(debugFor()).toMatch(/'region' is number, not a string/);
+
+        childLoggerMock.debug.mockClear();
+
+        // (c) the throwing branch
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockRejectedValueOnce(
+          Object.assign(new Error('denied'), { name: 'AccessDenied' })
+        );
+        await backend.deleteState('S', 'us-east-1');
+        expect(debugFor()).toMatch(/Could not read legacy state region/);
       });
 
       it('warns for a body it could not classify, without the AWS advice', async () => {
@@ -962,9 +1010,9 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        const warned = warnings();
-        expect(warned).toMatch(/not a string/);
-        expect(warned).not.toContain('s3:ListBucket');
+        const line = warnings();
+        expect(line).toMatch(/'region' field is number, not a string/);
+        expect(line).not.toContain('s3:ListBucket');
       });
 
       it('stays silent when the legacy key is simply absent', async () => {
@@ -975,7 +1023,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        expect(warned()).toEqual([]);
+        expect(allWarnings()).not.toMatch(/legacy state record/i);
       });
 
       it('stays silent when the legacy body names a region', async () => {
@@ -985,7 +1033,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        expect(warned()).toEqual([]);
+        expect(allWarnings()).not.toMatch(/legacy state record/i);
       });
 
       it('stays silent when the legacy body names no region', async () => {
@@ -995,7 +1043,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        expect(warned()).toEqual([]);
+        expect(allWarnings()).not.toMatch(/legacy state record/i);
       });
     });
 

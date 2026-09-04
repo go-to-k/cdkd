@@ -567,7 +567,7 @@ export class S3StateBackend {
         // commonest instance of this warning. The operator knows the stack
         // they just destroyed; what they cannot see is that a record may have
         // survived it.
-        const safeName = displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+        const safeName = this.displayName(stackName);
         this.logger.warn(
           `Could not read the legacy state record for '${safeName}' while cleaning up ` +
             `(${legacyProbe.reason}). If one exists it was left in place. ` +
@@ -1160,6 +1160,15 @@ export class S3StateBackend {
    * Read the legacy key and classify what is there — {@link LegacyStateProbe}
    * says what each answer means and which consumer acts on it.
    */
+  /**
+   * A stack name safe to put in a log line. Names reach this class from S3
+   * key segments, which anyone able to write the bucket controls, so every
+   * message that renders one goes through here (issue #2170's class).
+   */
+  private displayName(stackName: string): string {
+    return displaySafe(stackName, { asciiOnly: true }) || UNRENDERABLE;
+  }
+
   private async probeLegacyState(stackName: string): Promise<LegacyStateProbe> {
     try {
       const response = await this.s3Client.send(
@@ -1170,7 +1179,9 @@ export class S3StateBackend {
         })
       );
       if (!response.Body) {
-        this.logger.debug(`Legacy state probe for '${stackName}': response carried no body`);
+        this.logger.debug(
+          `Legacy state probe for '${this.displayName(stackName)}': response carried no body`
+        );
         return { kind: 'unreadable', reason: 'the response carried no body' };
       }
       const bodyString = await response.Body.transformToString();
@@ -1192,11 +1203,15 @@ export class S3StateBackend {
       const raw = (state as { region?: unknown }).region;
       if (!raw) return { kind: 'no-region' };
       if (typeof raw !== 'string') {
-        // `typeof` only — never the value, which is body content.
+        // `typeof` only — never the value, which is body content. It is a
+        // bounded token (one of seven), so it is safe in `reason` too and
+        // tells the operator whether the field is a number, an array or an
+        // object without showing them any of it.
         this.logger.debug(
-          `Legacy state probe for '${stackName}': 'region' is ${typeof raw}, not a string`
+          `Legacy state probe for '${this.displayName(stackName)}': ` +
+            `'region' is ${typeof raw}, not a string`
         );
-        return { kind: 'unreadable', reason: `its 'region' field is not a string` };
+        return { kind: 'unreadable', reason: `its 'region' field is ${typeof raw}, not a string` };
       }
       return { kind: 'region', region: raw };
     } catch (error) {
@@ -1212,7 +1227,14 @@ export class S3StateBackend {
       // put terminal escapes, or a neighbouring plaintext property value, into
       // a default-verbosity warn. A class name cannot carry either.
       const { detail } = describeAwsFailure(error);
-      this.logger.debug(`Could not read legacy state region for '${stackName}': ${detail}`);
+      // Sanitized, unlike the usual detail-at-debug site: the failure that
+      // reaches here is `JSON.parse` on the legacy body, so `detail` is a
+      // snippet OF THAT BODY rather than AWS's own wording. Debug is quieter
+      // than warn, not a different terminal.
+      this.logger.debug(
+        `Could not read legacy state region for '${this.displayName(stackName)}': ` +
+          `${displaySafe(detail, { asciiOnly: true }) || UNRENDERABLE}`
+      );
       const cls = error instanceof Error && error.name ? error.name : 'an unknown error';
       return { kind: 'unreadable', reason: displaySafe(cls, { asciiOnly: true }) || UNRENDERABLE };
     }
