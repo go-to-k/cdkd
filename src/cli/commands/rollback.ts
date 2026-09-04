@@ -5,6 +5,7 @@ import {
   deprecatedRegionOption,
   skipFinalSnapshotOption,
   warnIfDeprecatedRegion,
+  parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { AwsClients, setAwsClients } from '../../utils/aws-clients.js';
@@ -58,7 +59,7 @@ function stackRegionOption(): Option {
   return new Option(
     '--stack-region <region>',
     'Region of the target stack when the same name has state in multiple regions'
-  );
+  ).argParser(parseStackRegion);
 }
 
 /**

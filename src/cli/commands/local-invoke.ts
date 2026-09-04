@@ -11,6 +11,7 @@ import {
   parseContextOptions,
   stateOptions,
   warnIfDeprecatedRegion,
+  parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -1805,7 +1806,7 @@ export function createLocalCommand(): Command {
         '--stack-region <region>',
         'Region of the state record to read. Used with --from-state when the same stack name has state in multiple regions, ' +
           'and with --from-cfn-stack as the CFn client region (cdkd does not have a separate --cfn-stack-region flag).'
-      )
+      ).argParser(parseStackRegion)
     )
     .action(withErrorHandling(localInvokeCommand));
 

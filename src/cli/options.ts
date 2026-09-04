@@ -184,6 +184,37 @@ export interface ResourceTimeoutOption {
 }
 
 /**
+ * Commander `argParser` for every `--stack-region` declaration (issue #2556).
+ *
+ * An empty value is rejected at PARSE time rather than being handed to the
+ * commands. `--stack-region ''` is falsy, so every consumer that tested the
+ * option for truthiness read it as ABSENT — and absent means "all regions" on
+ * the commands that take `--all`, so a flag passed to NARROW a destructive
+ * operation silently WIDENED it. `drift --all --revert --stack-region ''`
+ * wrote cdkd state values into AWS across every stack in every region.
+ *
+ * Rejecting here rather than adding a presence test to each consumer: there
+ * are eleven declarations and more consumers than that, the option is threaded
+ * through helpers that cannot see how it was spelled, and no region is
+ * legitimately empty — so the value never needs to reach them. A new
+ * `--stack-region` consumer inherits the guard instead of having to know
+ * about it.
+ *
+ * Whitespace-only is rejected for the same reason: `' '` is truthy, so it
+ * takes the filter branch and matches no ref, which reads as "no state in
+ * that region" rather than as the typo it is.
+ */
+export function parseStackRegion(value: string): string {
+  if (value.trim() === '') {
+    throw new Error(
+      'Invalid --stack-region: expected a region name (e.g. us-east-1), got an empty value. ' +
+        'Omit the flag entirely to operate on every region a stack has state in.'
+    );
+  }
+  return value;
+}
+
+/**
  * Validate that a token's left-hand side looks like a CloudFormation
  * resource type (e.g. `AWS::S3::Bucket`). The check is intentionally
  * loose — we don't maintain a closed list of types — but it does reject

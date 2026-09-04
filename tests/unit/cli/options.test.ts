@@ -10,6 +10,7 @@ import {
   effectiveResourceTimeoutMs,
   parseContextOptions,
   parseDuration,
+  parseStackRegion,
   resourceTimeoutOptions,
   validateResourceTimeouts,
   warnIfDeprecatedRegion,
@@ -819,5 +820,67 @@ describe('applyWaitFlagEnv (issue #1291 items 1 + 6)', () => {
     );
     expect(deploySrc).toMatch(/applyWaitFlagEnv\(options\)/);
     expect(deploySrc).not.toMatch(/process\.env\['CDKD_(NO_WAIT|FULL_WAIT|WAIT_FLAGS_AVAILABLE)'\]\s*=/);
+  });
+});
+
+describe('parseStackRegion (issue #2556)', () => {
+  // `--stack-region ''` is falsy, so every consumer that tested the option for
+  // truthiness read it as ABSENT. Absent means "all regions" on the commands
+  // that take `--all`, so a flag passed to NARROW a destructive operation
+  // silently WIDENED it — `drift --all --revert --stack-region ''` wrote state
+  // values into AWS across every stack in every region. The guard lives at
+  // parse time so no consumer has to know.
+  it('rejects an empty value', () => {
+    expect(() => parseStackRegion('')).toThrow(/Invalid --stack-region/);
+  });
+
+  it('rejects a whitespace-only value', () => {
+    // Truthy, so it would take the filter branch and match no ref — which
+    // reads as "no state in that region" rather than as the typo it is.
+    expect(() => parseStackRegion('   ')).toThrow(/Invalid --stack-region/);
+  });
+
+  it('names the remedy, since omitting the flag is what the user meant', () => {
+    expect(() => parseStackRegion('')).toThrow(/Omit the flag entirely/);
+  });
+
+  it('passes a real region through unchanged', () => {
+    expect(parseStackRegion('us-east-1')).toBe('us-east-1');
+  });
+
+  it('does not trim — a padded value is the caller\'s, not ours to reinterpret', () => {
+    expect(parseStackRegion(' us-east-1')).toBe(' us-east-1');
+  });
+
+  describe('is wired to every --stack-region declaration', () => {
+    // A declaration without the parser is the bug, unfixed, on that command.
+    // Driving the real commands is what catches a new one added later.
+    const cases: Array<[string, () => Command, string[]]> = [
+      ['state orphan', () => createStateCommand(), ['orphan', 'Foo', '--stack-region', '']],
+      ['state destroy', () => createStateCommand(), ['destroy', 'Foo', '--stack-region', '']],
+      ['state show', () => createStateCommand(), ['show', 'Foo', '--stack-region', '']],
+      ['state resources', () => createStateCommand(), ['resources', 'Foo', '--stack-region', '']],
+      [
+        'state refresh-observed',
+        () => createStateCommand(),
+        ['refresh-observed', 'Foo', '--stack-region', ''],
+      ],
+    ];
+
+    for (const [name, make, argv] of cases) {
+      it(`${name} rejects an empty --stack-region at parse time`, () => {
+        const cmd = make();
+        cmd.exitOverride();
+        // No-op action stubs: `parse` RUNS the registered handler, and the
+        // point of this case is that the parser refuses before it would. If a
+        // declaration ever loses the parser the case must fail on the missing
+        // throw, not crash the process on the real handler's rejection.
+        cmd.commands.forEach((sub) => {
+          sub.exitOverride();
+          sub.action(() => {});
+        });
+        expect(() => cmd.parse(argv, { from: 'user' })).toThrow(/Invalid --stack-region/);
+      });
+    }
   });
 });

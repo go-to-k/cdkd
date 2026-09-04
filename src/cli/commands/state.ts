@@ -16,6 +16,7 @@ import {
   warnIfDeprecatedRegion,
   validateResourceTimeouts,
   type ResourceTimeoutOption,
+  parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
@@ -1251,7 +1252,7 @@ function stackRegionOption(): Option {
   return new Option(
     '--stack-region <region>',
     'Region of the stack record to operate on. Required when the same stack name has state in multiple regions.'
-  );
+  ).argParser(parseStackRegion);
 }
 
 /**
