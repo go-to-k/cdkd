@@ -85,4 +85,4 @@ schema, legacy `version: 1` migration, bucket-name migration via
 - [Orphan vs Destroy](orphan-vs-destroy.md) — the two ways a resource leaves cdkd's management
 - [Wait Modes](wait-modes.md) — choose what "done" means per deploy
 - [CLI Reference](cli-reference.md) — every flag, including the
-  [VPC route DependsOn relaxation](cli-deploy-tuning.md#vpc-route-dependson-relaxation-default-on)
+  [VPC route DependsOn relaxation](cli-deploy-tuning.md#no-aggressive-vpc-parallel)

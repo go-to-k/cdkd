@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readWaitTable } from '../../wait-table.js';
 
 /**
  * Enforce that every SDK provider whose stabilization wait is gated on
- * `CDKD_NO_WAIT` is documented in the `--no-wait` resource table of
+ * `CDKD_NO_WAIT` is documented in the per-type wait table of
  * `docs/cli-deploy.md`. When a new provider adds a `--no-wait`-eligible
  * async resource, its resource type MUST appear in that table — otherwise the
  * user-facing "which resources does --no-wait skip" list silently rots.
@@ -18,16 +19,6 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const providersDir = join(repoRoot, 'src', 'provisioning', 'providers');
 const deployDocPath = join(repoRoot, 'docs', 'cli-deploy.md');
-
-/** Extract the `## `--no-wait`` section (up to the next `## ` heading). */
-function noWaitSection(): string {
-  const md = readFileSync(deployDocPath, 'utf8');
-  const start = md.indexOf('## `--no-wait`');
-  expect(start, 'cli-deploy.md must have a `--no-wait` section').toBeGreaterThanOrEqual(0);
-  const rest = md.slice(start + 1);
-  const next = rest.indexOf('\n## ');
-  return next >= 0 ? rest.slice(0, next) : rest;
-}
 
 function handledTypes(source: string): string[] {
   const matches = source.match(/'AWS::[A-Za-z0-9]+::[A-Za-z0-9]+'/g) ?? [];
@@ -52,18 +43,18 @@ describe('--no-wait doc coverage', () => {
     expect(noWaitProviders.length).toBeGreaterThanOrEqual(8);
   });
 
-  it('documents each CDKD_NO_WAIT provider in the cli-deploy.md --no-wait table', () => {
-    const section = noWaitSection();
+  it('documents each CDKD_NO_WAIT provider in the cli-deploy.md wait table', () => {
+    const rowTypes = new Set(readWaitTable(deployDocPath).map((r) => r.type));
     const undocumented = noWaitProviders.filter((p) => {
       const types = handledTypes(p.source);
-      // At least one of the provider's handled types must appear in the
-      // --no-wait table (a provider like EC2 handles many types but only its
-      // NAT Gateway wait is --no-wait-gated, so one documented type suffices).
-      return !types.some((t) => section.includes(t));
+      // At least one of the provider's handled types must have its own ROW in
+      // the wait table (a provider like EC2 handles many types but only its NAT
+      // Gateway wait is --no-wait-gated, so one documented type suffices).
+      return !types.some((t) => rowTypes.has(t));
     });
     expect(
       undocumented.map((p) => p.file),
-      'these providers honor --no-wait but no handled type appears in the cli-deploy.md --no-wait table; add a row'
+      'these providers honor --no-wait but no handled type appears in the cli-deploy.md wait table; add a row'
     ).toEqual([]);
   });
 });
