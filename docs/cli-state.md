@@ -279,7 +279,7 @@ handling, strong-reference blocks, lock behavior, and exit codes are the same.
 | `--allow-unsupported-types <types>` | — | Comma-separated escape hatch routing otherwise-unprovisionable types through Cloud Control. |
 | `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation has been running longer than this. Repeatable. |
 | `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that exceeds this. Repeatable. |
-| `--stack-region <region>` | — | Act on the record in this region, plus any record predating the region-scoped layout. A name whose only record is elsewhere is warned about and skipped; omitting the flag on a name with records in several regions is an error, `--all` included. |
+| `--stack-region <region>` | — | Act on the record in this region, plus any record that does not name a region at all. A name whose only record is elsewhere is warned about and skipped; omitting the flag on a name with records in several regions is an error, `--all` included. |
 
 Three differences from `cdkd destroy` are worth knowing before you script it:
 
@@ -383,7 +383,8 @@ defaults and keys your template never set.
 Why it exists: `cdkd deploy` already maintains the baseline in two ways — it
 captures a fresh one for every resource it creates, updates, or replaces, and
 it reads back any resource whose baseline is missing, including ones that
-deploy left unchanged. What it does not do is re-read a resource that was
+deploy left unchanged. Both of those reach only the resources whose provider
+can read state back. What deploy does not do is re-read a resource that was
 unchanged *and* already had a baseline; that one keeps whatever was captured
 the last time the resource was touched, however long ago.
 

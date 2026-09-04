@@ -56,8 +56,9 @@ upgraded in memory by the current binary; the next write persists the new
 shape silently. Upgrading cdkd never asks you to migrate a record's *contents*.
 
 Two things around the record are not covered by that. A record still written
-under the original key layout, from before keys carried a region, is moved to
-the current one by the next `cdkd deploy`. And the bucket *name* changed once:
+under the original key layout, from before keys carried a region, is rewritten
+under the current one by the next `cdkd deploy` into that region. And the
+bucket *name* changed once:
 installations predating the region-free default need a one-time
 `cdkd state migrate` per region, which both the deprecation warning and
 `cdkd state info` point at.
