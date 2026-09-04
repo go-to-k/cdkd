@@ -619,6 +619,54 @@ describe('classifyReplaySecretRegion (issue #2057)', () => {
     });
   });
 
+  // Issue #2482: `ssm-secure` is classified like `ssm`, and the name parser
+  // must strip the WHOLE service — a fixed `'ssm:'.length` turned
+  // `ssm-secure:/pw` into `secure:/pw`.
+  it('refuses a region-less ssm-secure reference the same way, with the name intact', () => {
+    expect(
+      classifyReplaySecretRegion('{{resolve:ssm-secure:/prod/db/pw}}', CONSUMER_REGION, [
+        PRODUCER_REGION,
+      ])
+    ).toEqual({
+      kind: 'ambiguous',
+      secretName: '/prod/db/pw',
+      foreignProducerRegions: [PRODUCER_REGION],
+    });
+  });
+
+  it('keeps a trailing :<version> in the ssm-secure parameter name', () => {
+    expect(
+      classifyReplaySecretRegion('{{resolve:ssm-secure:/db/pw:3}}', CONSUMER_REGION, [
+        PRODUCER_REGION,
+      ])
+    ).toEqual({
+      kind: 'ambiguous',
+      secretName: '/db/pw:3',
+      foreignProducerRegions: [PRODUCER_REGION],
+    });
+  });
+
+  it('binds the region an ssm-secure ARN names (a cdkd-only extension of the spelling)', () => {
+    // CloudFormation's `ssm-secure` grammar takes a name and a numeric version
+    // only; the ARN form is accepted because `resolveSSMReference` hands the
+    // tail to GetParameter as-is, which SSM accepts.
+    expect(
+      classifyReplaySecretRegion(`{{resolve:ssm-secure:${SSM_PRODUCER_ARN}}}`, CONSUMER_REGION, [
+        PRODUCER_REGION,
+      ])
+    ).toEqual({
+      kind: 'named-region',
+      secretName: SSM_PRODUCER_ARN,
+      region: PRODUCER_REGION,
+    });
+  });
+
+  it('waves through a region-less ssm-secure reference with no foreign producer on record', () => {
+    expect(
+      classifyReplaySecretRegion('{{resolve:ssm-secure:/prod/db/pw}}', CONSUMER_REGION, undefined)
+    ).toEqual({ kind: 'local' });
+  });
+
   it('deduplicates producer regions case-insensitively and drops the consumer own', () => {
     const verdict = classifyReplaySecretRegion(NAME_EXPR, CONSUMER_REGION, [
       CONSUMER_REGION,

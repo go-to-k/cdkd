@@ -5411,8 +5411,8 @@ export class IntrinsicFunctionResolver {
     // used to claim it was.
     //
     // `isSecretExpressionByVerdictOrSpelling(value)` is the test that is
-    // actually ABOUT this token: `secretsmanager` by spelling, or an `ssm`
-    // reference this process PROVED to be a `SecureString`. A plain `String`
+    // actually ABOUT this token: `secretsmanager` / `ssm-secure` by spelling,
+    // or an `ssm` reference this process PROVED to be a `SecureString`. A plain `String`
     // parameter answers false — for the consumer's own region, where a
     // definitive public verdict RETRACTS a stale memo.
     //
@@ -6819,8 +6819,15 @@ export class IntrinsicFunctionResolver {
       // is public config and stays RESOLVED in state, so it is never recorded.
       // Recorded on the cache-hit path too, so a second reference to the same
       // secret in the same pass is still redacted.
+      // `ssm-secure` is a secret by SPELLING too (issue #2482): CloudFormation
+      // defines that service for SecureString parameters only, so no lookup is
+      // needed to know the value must not be persisted — and on the comparison
+      // path below it is left unresolved WITHOUT a `GetParameter`, exactly like
+      // `secretsmanager`.
       const isKnownSecret =
-        service === 'secretsmanager' || recordedSecretExpressions.has(fullMatch);
+        service === 'secretsmanager' ||
+        service === 'ssm-secure' ||
+        recordedSecretExpressions.has(fullMatch);
 
       // Diff / no-op comparison path: leave SECRET references UNRESOLVED (the
       // expression is what state stores, so comparing keeps like-for-like and
@@ -7040,6 +7047,44 @@ export class IntrinsicFunctionResolver {
           }
         }
         resolved = param.value;
+      } else if (service === 'ssm-secure') {
+        // Issue #2482. Before this arm existed the spelling fell through to
+        // the unsupported-service warning below and the LITERAL TOKEN went to
+        // AWS as the property's value — cdkd never passes through
+        // CloudFormation, so nothing resolved it server-side, and where the
+        // service API accepted the string (an IAM console password does) the
+        // live credential WAS the template text, with the deploy exiting 0.
+        //
+        // The value is a secret by SPELLING and the verdict does not depend on
+        // the response: CloudFormation defines `ssm-secure` for SecureString
+        // parameters only, and every reader that asks whether an expression is
+        // secret (`isKnownSecret` above, `isSecretExpressionByVerdictOrSpelling`
+        // in `secret-redaction.ts`) answers from the spelling. The expression is
+        // still RECORDED into the process-wide store at the shared tail below,
+        // beside `secretsmanager`, because that store is also ENUMERATED (the
+        // #1916 losing-member recovery) — not because a verdict needs a memo.
+        // The lookup itself is the `ssm` arm's, with decryption —
+        // `isKnownSecret` kept the comparison path away from here, so
+        // `decrypt` is unconditional. A definitive `String` / `StringList` answer is
+        // REFUSED rather than resolved under a secret spelling: the template
+        // says the value is secret and the parameter says it is not, and
+        // resolving it would record a public value as a redaction needle over
+        // that disagreement. `markNonRetryable` because the parameter's type
+        // is not something a retry can change.
+        const param = await this.resolveSSMReference(parts, true, 'ssm-secure');
+        if (!param.secure) {
+          // `secure` is false only for the two PUBLIC types the predicate
+          // names, so `type` is a definitive `String` / `StringList` here.
+          throw markNonRetryable(
+            new IntrinsicResolutionRefusalError(
+              `Refusing to resolve ${fullMatch}: the parameter is a ${param.type} ` +
+                `parameter, and the ssm-secure spelling is defined for SecureString parameters only. ` +
+                `Reference it as {{resolve:ssm:...}} if it is public configuration.`
+            )
+          );
+        }
+        isSecret = true;
+        resolved = param.value;
       } else {
         this.logger.warn(`Unsupported dynamic reference service: ${service}`);
         continue;
@@ -7065,8 +7110,15 @@ export class IntrinsicFunctionResolver {
         // so that the next pass re-asks AWS instead of inheriting a transient
         // answer — recording it here would pin it for the process and undo
         // exactly that (issue #1901). Such a pair therefore still falls back to
-        // the value scan, i.e. to today's behavior.
-        if (service === 'secretsmanager') this.pinSecretVerdict(fullMatch, true);
+        // the value scan, i.e. to today's behavior. `ssm-secure` is secret by
+        // spelling exactly like `secretsmanager` (issue #2482), so it is
+        // recorded here for the same reason: `positionByIntrinsicSkeleton`
+        // enumerates this set to name a LOSING member, and without the entry
+        // two intrinsic-shaped `ssm-secure` references sharing a value would
+        // persist the winner's expression at the loser's position.
+        if (service === 'secretsmanager' || service === 'ssm-secure') {
+          this.pinSecretVerdict(fullMatch, true);
+        }
       }
       // Replacer FUNCTION — see the cache-hit arm above for why a replacement
       // STRING is unsafe here.
@@ -7388,15 +7440,19 @@ export class IntrinsicFunctionResolver {
    */
   private async resolveSSMReference(
     parts: string[],
-    decrypt = true
+    decrypt = true,
+    // The spelling being resolved — `ssm` or, since issue #2482, `ssm-secure`.
+    // Log-only: it names the reference in the debug / retry / warning lines so
+    // an `ssm-secure` lookup is not reported as an `ssm` one.
+    service: 'ssm' | 'ssm-secure' = 'ssm'
   ): Promise<{ value: string; secure: boolean; type: string | undefined }> {
     const parameterName = parts.slice(1).join(':');
 
     if (!parameterName) {
-      throw new Error('Dynamic reference: ssm PARAMETER_NAME is required');
+      throw new Error(`Dynamic reference: ${service} PARAMETER_NAME is required`);
     }
 
-    this.logger.debug(`Resolving dynamic reference: ssm:${parameterName}`);
+    this.logger.debug(`Resolving dynamic reference: ${service}:${parameterName}`);
 
     // Region-sensitive in BOTH of its outputs: the value, and the `Type` this
     // method reports back. A region-B `SecureString` classified against a
@@ -7410,7 +7466,7 @@ export class IntrinsicFunctionResolver {
 
     const response = await this.sendWithThrottleRetry(
       () => client.send(command),
-      `ssm:${parameterName}`
+      `${service}:${parameterName}`
     );
     const paramValue = response.Parameter?.Value;
 
@@ -7456,7 +7512,7 @@ export class IntrinsicFunctionResolver {
       const reported = paramType === undefined ? '(absent)' : `'${String(paramType)}'`;
       this.logger.warn(
         `SSM parameter '${parameterName}' reported an unrecognized Type ${reported} — treating ` +
-          `its value as a secret, so cdkd will persist the {{resolve:ssm:...}} expression rather ` +
+          `its value as a secret, so cdkd will persist the {{resolve:${service}:...}} expression rather ` +
           `than the resolved value. Declare the parameter as String / StringList if it is ` +
           `public config.`
       );

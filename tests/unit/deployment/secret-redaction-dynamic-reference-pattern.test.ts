@@ -169,16 +169,15 @@ describe('the dynamic-reference token pattern agrees with the resolver (issue #1
     expect(DYNAMIC_REFERENCE_TOKEN_SCAN.global).toBe(true);
 
     // The BEHAVIOURAL half, at the unit that owns the property. Drop `g` and
-    // `.match` silently returns first-match-only, so drift.ts's
-    // `survivors.some(isSecretBySpelling)` would miss an `ssm-secure` token
-    // that is not FIRST — reporting the CFn-resolved plaintext unmasked in the
-    // drift report, `--json` and `--accept`. Fenced HERE rather than through
-    // drift, where `isSecretBySpelling` blocks such a leaf on its own and the
-    // case could not tell the two guards apart.
-    const publicFirst = '{{resolve:ssm:/app/stage}}-{{resolve:ssm-secure:/db/pw}}';
+    // `.match` silently returns first-match-only, so drift.ts's survivor
+    // report would name only the FIRST token of a leaf and the
+    // `unresolvedToken` cause would go unrecorded for a second one. Fenced
+    // HERE rather than through drift, where the report's join of the tokens
+    // is one string and the case could not tell one token from two.
+    const publicFirst = '{{resolve:ssm:/app/stage}}-{{resolve:notaservice:/db/pw}}';
     expect(dynamicReferenceTokens(publicFirst)).toEqual([
       '{{resolve:ssm:/app/stage}}',
-      '{{resolve:ssm-secure:/db/pw}}',
+      '{{resolve:notaservice:/db/pw}}',
     ]);
   });
 });
@@ -233,33 +232,29 @@ describe('a braced reference is not persisted as plaintext (issue #1936)', () =>
 });
 
 describe('drift.ts reads the same predicate (issue #1936)', () => {
-  it('preserves the live value at a braced ssm-secure token and registers it', () => {
+  it('preserves the live value at a braced look-alike token', () => {
     // `preserveLiveValuesAtUnresolvedTokens` gates on the whole-token predicate,
     // and its failure mode is the mirror image of the persist one: the strict
     // spelling made a braced token "not whole", so `--revert` pushed the LITERAL
-    // `{{resolve:...}}` string over the working secret AWS holds (a CFn-migrated
-    // record holds the token in state while AWS holds the plaintext), and the
-    // moved value was registered with nothing that masks.
-    const token = '{{resolve:ssm-secure:/db/pw{v}}';
+    // `{{resolve:...}}` string over whatever AWS holds at that position (a
+    // CFn-migrated record, or an out-of-band edit). The token is a spelling
+    // cdkd resolves for nobody: since issue #2482 `ssm-secure` resolves and
+    // never reaches this pass.
+    const token = '{{resolve:notaservice:/db/pw{v}}';
     // ANCHOR the fixture's SHAPE, same as its twin below. This token only
     // discriminates the two spellings while its `{` stays UNBALANCED: a
     // "typo fix" to `pw{v}` (balanced) or `pwv` (brace-free) would leave this
     // case green under the strict-class mutation and silently void the fence.
     expect(/^\{\{resolve:[^}]+\}\}$/.test(token), 'braced: the resolver matches').toBe(true);
     expect(/^\{\{resolve:[^{}]*\}\}$/.test(token), 'braced: the old class does NOT').toBe(false);
-    const live = 'the-live-secure-parameter-value';
-    const secrets: RecordedSecretValues = new Map();
+    const live = 'the-live-value-at-that-position';
 
     const send = preserveLiveValuesAtUnresolvedTokens(
       { MasterUserPassword: token },
-      { MasterUserPassword: live },
-      secrets
+      { MasterUserPassword: live }
     );
 
     expect(send['MasterUserPassword']).toBe(live);
-    // Registration is the half that is easy to lose: moving plaintext into a bag
-    // without telling the maskers is its own defect class.
-    expect(secrets.get(live)).toBe(token);
   });
 });
 

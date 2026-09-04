@@ -24,17 +24,22 @@ import { canonicalizeRegion } from '../utils/aws-partition.js';
 /**
  * The `{{resolve:<service>:...}}` families whose value can be a SECRET, and
  * therefore the only ones the region question below is asked about: every
- * `secretsmanager` reference by spelling, and every `ssm` one, which is secret
- * exactly when its parameter is a `SecureString` (issue #1901).
+ * `secretsmanager` reference by spelling, every `ssm-secure` one by spelling
+ * (issue #2482 — it is resolved through the same `GetParameter` as `ssm`, so
+ * the wrong region answers it in exactly the same way), and every `ssm` one,
+ * which is secret exactly when its parameter is a `SecureString` (issue #1901).
  *
- * Every OTHER service is `local` because cdkd cannot resolve it at all, NOT
- * because it is public. `ssm-secure` is the live example and is emphatically
- * not public: `resolveDynamicReferences` has no arm for it, so the literal
- * token is passed through to AWS and CloudFormation resolves it SERVER-side.
- * cdkd never holds its value, so there is no region for cdkd to get wrong —
- * which is the only reason it can be waved through here.
+ * Every OTHER service is `local` because cdkd cannot resolve it at all — the
+ * resolver's unsupported-service arm leaves such a token in place, so there
+ * is no lookup for a region to get wrong. None of CloudFormation's three
+ * services is in that position any more; the arm exists for a spelling that
+ * is not a dynamic reference at all, or one AWS adds later.
  */
-const REPLAY_SECRET_SERVICES: ReadonlySet<string> = new Set(['secretsmanager', 'ssm']);
+const REPLAY_SECRET_SERVICES: ReadonlySet<string> = new Set([
+  'secretsmanager',
+  'ssm',
+  'ssm-secure',
+]);
 
 /**
  * Which region must answer for one `{{resolve:...}}` reference in a bag being
@@ -97,7 +102,11 @@ function secretsManagerSecretId(inner: string): string {
  *    a different thing in the refusal message than the one that would be read.
  */
 function ssmParameterName(inner: string): string {
-  return inner.substring('ssm:'.length);
+  // Strip the SERVICE, whatever its spelling: `ssm:` and `ssm-secure:` both
+  // reach here (issue #2482), and a fixed `'ssm:'.length` would turn
+  // `ssm-secure:/pw` into `secure:/pw`. The first colon ends the service; a
+  // parameter name may legitimately carry colons after it (an ARN does).
+  return inner.substring(inner.indexOf(':') + 1);
 }
 
 /**

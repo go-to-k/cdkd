@@ -13,6 +13,7 @@ import {
   PartialFailureError,
   ResourceUpdateNotSupportedError,
   withErrorHandling,
+  IntrinsicResolutionRefusalError,
 } from '../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -89,10 +90,13 @@ import type { ResourceState, StackState } from '../../types/state.js';
  *     the reference as a full ARN, which names its region), and pre-#2108 the
  *     same resources exited `1` because the wrong-region resolution reported
  *     phantom drift — so a non-zero exit PRESERVES what CI consumers had.
- *   - `unresolvedToken` — a `{{resolve:...}}` token simply survived the pass, in
- *     practice `{{resolve:ssm-secure:...}}`, which cdkd resolves for NOBODY.
- *     A large PRE-EXISTING population unrelated to #2108 and permanent by
- *     construction: it can never clear on a re-run. Driving the exit code off it
+ *   - `unresolvedToken` — a `{{resolve:...}}` token simply survived the pass:
+ *     a spelling cdkd resolves for NOBODY. Until issue #2482 that was
+ *     `{{resolve:ssm-secure:...}}`, a large PRE-EXISTING population; it now
+ *     resolves like `ssm`, so no CloudFormation service lands here and what
+ *     remains is text that merely looks like a reference (or a service AWS
+ *     adds later). The argument is unchanged: the cause is unrelated to #2108
+ *     and permanent by construction, so it can never clear on a re-run. Driving the exit code off it
  *     would make `cdkd drift` exit non-zero forever, in CI, for every one of
  *     those users, over a defect this change did not introduce — the same
  *     "permanently non-zero" hazard `docs/cli-reference.md` already cites as a
@@ -225,7 +229,7 @@ export type DriftOutcome =
        * lists from the deliberately-unredacted `awsProperties` and masks them
        * with `secrets`. `secrets.size === 0` is NOT the same question: a
        * resource with one resolvable `secretsmanager` reference AND one
-       * `ssm-secure` survivor has a non-empty map that still cannot mask what
+       * look-alike survivor has a non-empty map that still cannot mask what
        * the survivor's position holds.
        *
        * Required rather than optional so the construction site must SAY which
@@ -365,9 +369,9 @@ class DriftDetectedError extends CdkdError {
  *
  * SCOPED TO THE CLEARABLE CAUSES, not to everything the report calls
  * `notCompared`. The roll-up also contains resources whose only problem is a
- * surviving `{{resolve:ssm-secure:...}}` token — a pre-existing population cdkd resolves
- * for nobody, which can never clear on a re-run, and which this change did not
- * create. Exiting non-zero for them would break `cdkd drift` in CI forever over
+ * surviving `{{resolve:...}}` token cdkd resolves for nobody — a look-alike
+ * spelling, since issue #2482 moved `ssm-secure` onto the `ssm` path — which
+ * can never clear on a re-run, and which this change did not create. Exiting non-zero for them would break `cdkd drift` in CI forever over
  * an unrelated defect, so the exit reads `refused` and `readFailed` while the
  * report covers all three. See `NotComparedCause` and `outcomeExitSignal`.
  *
@@ -401,12 +405,15 @@ class DriftDetectedError extends CdkdError {
  * honest SENTENCE, since their no-drift line claimed a clean bill of health for
  * a stack they had not read. See {@link incompleteRemediationMessage}.
  *
- * WHAT DOES NOT TRIGGER IT: a stack whose properties reference
- * `{{resolve:ssm-secure:...}}` still exits 0. Those properties genuinely are not
- * compared and the report says so, but nothing REFUSED them — cdkd has never
- * resolved that spelling — so the condition is permanent, unclearable by any
- * action the user can take, and predates this change. It is reported as
- * information and kept out of the exit code.
+ * WHAT DOES NOT TRIGGER IT: a stack whose properties carry a `{{resolve:...}}`
+ * spelling cdkd resolves for nobody still exits 0. Those properties genuinely
+ * are not compared and the report says so, but nothing REFUSED them — cdkd has
+ * never resolved that spelling — so the condition is permanent, unclearable by
+ * any action the user can take, and predates this change. It is reported as
+ * information and kept out of the exit code. (`ssm-secure` was that spelling
+ * when this was written; since issue #2482 it resolves like `ssm`, and a
+ * lookup that fails for it lands with the other resolution failures, not
+ * here.)
  *
  * Carries no message of its own for the same reason {@link DriftDetectedError}
  * does -- the report was already printed.
@@ -486,8 +493,7 @@ function notComparedOutcomes(
  * code covers only the CLEARABLE ones — `refused` (the population #2108 created)
  * and `readFailed` (issues #2151 / #1945). Exiting non-zero on
  * `unresolvedToken` would break `cdkd drift` in CI forever for every stack
- * holding an `{{resolve:ssm-secure:...}}` reference — permanent, unclearable,
- * and unrelated. See {@link NotComparedCause}.
+ * holding such a spelling — permanent, unclearable, and unrelated. See {@link NotComparedCause}.
  *
  * A `drifted` outcome reports `drifted` even when its own comparison was
  * refused: drift is the stronger, actionable signal and the caller ranks it
@@ -687,7 +693,7 @@ function uncomparedTally(reports: StackDriftReport[]): Map<UncomparedReason, num
  *
  *   - The TRIGGER is `anyIncomplete`, i.e. {@link outcomeExitSignal}'s
  *     `incomplete`. It is narrow on purpose: a stack whose ONLY uncompared
- *     resource holds a `{{resolve:ssm-secure:...}}` token must not start
+ *     resource holds a `{{resolve:...}}` token cdkd resolves for nobody must not start
  *     shouting on every run about a comparison no action of the user's can ever
  *     complete -- the same CI-forever hazard that cause is kept out of the exit
  *     code on.
@@ -1186,26 +1192,6 @@ function carriesRecordedSecret(value: string, secrets: RecordedSecretValues): bo
 }
 
 /**
- * Is this unresolvable token one whose value is a SECRET by definition?
- *
- * `ssm-secure` is the only such spelling, and it is decidable with no lookup:
- * CloudFormation defines exactly three dynamic-reference services (`ssm`,
- * `ssm-secure`, `secretsmanager`), cdkd resolves the other two, and
- * `ssm-secure` is the encrypted one.
- *
- * Anything else reaching the survivor arm is not a CloudFormation dynamic
- * reference at all — it is text that merely looks like one — and treating it as
- * secret is not the safe direction it appears to be: the path would be masked
- * to `***`, refused by `--accept`, and pinned to the live value by
- * {@link preserveLiveValuesAtUnresolvedTokens}, which is permanently stuck
- * drift with no remedy the user can apply. Such a token is still REPORTED; it
- * just does not claim to be a secret.
- */
-function isSecretBySpelling(token: string): boolean {
-  return token.startsWith('{{resolve:ssm-secure:');
-}
-
-/**
  * Every `{{resolve:...}}` token still present in `value`.
  *
  * Used to NAME an unresolvable reference without quoting the string it sits in.
@@ -1393,10 +1379,13 @@ class DriftSecretRefusalError extends CdkdError {
 /**
  * Whether an error thrown out of `resolveStateSecretExpressions` is a
  * deliberate REFUSAL rather than a failed read. See
- * {@link DriftSecretRefusalError}.
+ * {@link DriftSecretRefusalError} — drift's own region refusal — and
+ * `IntrinsicResolutionRefusalError`, the resolver's: since issue #2482 the
+ * `ssm-secure` arm refuses a definitive `String` / `StringList` parameter with
+ * the latter, and that is a decision, not an IAM problem to go hunting for.
  */
 function isDriftSecretRefusal(err: unknown): boolean {
-  return err instanceof DriftSecretRefusalError;
+  return err instanceof DriftSecretRefusalError || err instanceof IntrinsicResolutionRefusalError;
 }
 
 /**
@@ -1664,17 +1653,19 @@ async function resolveDriftLeafByRegion(
  *
  * A `{{resolve:...}}` token that SURVIVES the pass is reported through
  * `onUnresolved` and left in place — it is not an error. The resolver's
- * unsupported-service arm (`ssm-secure:` is the live example) warns and returns
- * the literal, and `cdkd deploy` resolves through the very same code, so AWS is
- * ALREADY holding that literal string and state records it. Replaying it is
- * therefore a correct no-op, and failing the resource over it would take every
- * other drifted property on that resource down with it (plus exit 2). The
- * report exists so the user learns cdkd is shipping a token it cannot resolve,
- * which is a real thing to know and not a reason to stop.
+ * unsupported-service arm warns and returns the literal (`ssm-secure:` was the
+ * live example until issue #2482 gave it an arm; what reaches it now is text
+ * that merely looks like a reference), and `cdkd deploy` resolves through the
+ * very same code, so AWS is ALREADY holding that literal string and state
+ * records it. Replaying it is therefore a correct no-op, and failing the
+ * resource over it would take every other drifted property on that resource
+ * down with it (plus exit 2). The report exists so the user learns cdkd is
+ * shipping a token it cannot resolve, which is a real thing to know and not a
+ * reason to stop.
  *
  * Only the TOKENS are reported, never the leaf that held them: the leaf is
  * partially substituted by this point, so a mixed `secretsmanager` +
- * `ssm-secure` string comes back carrying real plaintext.
+ * look-alike string comes back carrying real plaintext.
  *
  * Returns the input by identity when it holds no dynamic reference, so the
  * non-secret path is unchanged down to object identity.
@@ -1743,14 +1734,16 @@ async function resolveStateSecretExpressions(
       // the very warning that exists to avoid printing values.
       const survivors = survivingDynamicReferences(resolved).filter((t) => v.includes(t));
       if (survivors.length > 0) {
-        // The position is secret-bearing even though nothing was recorded for
-        // it — but only for a spelling that IS a secret. `ssm-secure` is, by
-        // definition, and the value at such a path is emphatically not safe to
-        // print: CloudFormation resolves it SERVER-side, so a record adopted by
-        // `cdkd import --migrate-from-cloudformation` has the literal token in
-        // state while AWS holds the PLAINTEXT. Without this the report, the
-        // `--json` payload and `--accept` all see it unmasked.
-        if (survivors.some(isSecretBySpelling)) secretPaths?.add(path);
+        // NOT marked secret-bearing. Since issue #2482 every CloudFormation
+        // dynamic-reference service resolves (or throws), so a survivor is text
+        // that merely LOOKS like a reference, and treating it as a secret is
+        // not the safe direction it appears to be: the path would be masked to
+        // `***`, refused by `--accept`, and pinned to the live value by
+        // `preserveLiveValuesAtUnresolvedTokens` — permanently stuck drift with
+        // no remedy the user can apply. (Before #2482 `ssm-secure` survived here
+        // and WAS marked, because CloudFormation resolves it server-side and a
+        // migrated record held the plaintext on AWS; that record now resolves,
+        // and its position is marked by the ordinary recorded-pair route.)
         onUnresolved?.(survivors, path);
       }
       // A recorded plaintext at this leaf means the leaf is secret-bearing —
@@ -2548,7 +2541,7 @@ async function runDriftForStack(
           //
           // The revert clause is deliberately conditional. Preservation only
           // applies where the property's WHOLE value is the token; a token
-          // EMBEDDED in a larger string (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`)
+          // EMBEDDED in a larger string (`"jdbc:...password={{resolve:...}}"`)
           // is not preserved, and this is the message the user reads immediately
           // before the confirmation prompt — promising an untouched live value
           // there would misinform someone about to authorise a destructive write.
@@ -2558,8 +2551,8 @@ async function runDriftForStack(
               `are NOT compared. A revert leaves a property whose WHOLE value is one of these ` +
               `tokens untouched; where a token is EMBEDDED in a longer string, the revert writes ` +
               `that string with the token literal, exactly as 'cdkd deploy' does — so a resolved ` +
-              `value AWS holds there WOULD be overwritten. cdkd resolves 'secretsmanager' and ` +
-              `'ssm' references only.`
+              `value AWS holds there WOULD be overwritten. cdkd resolves 'secretsmanager', 'ssm' ` +
+              `and 'ssm-secure' references; anything else is left as written.`
           );
         }
         // Observed-baseline blind spot (issue #1498): the snapshot is captured
@@ -3601,19 +3594,24 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
  * warning, on the premise that `cdkd deploy` resolves through the
  * resolver's same unsupported-service arm — so AWS already holds the literal
  * and replaying it is a no-op. **That premise holds only for records cdkd
- * deployed.** CloudFormation resolves `ssm-secure` SERVER-side, so a record
- * adopted by `cdkd import --migrate-from-cloudformation` has the literal token
- * in state while the live resource holds the PLAINTEXT. `diffAt` skips such a
- * leaf, so it never drifts — but `buildRevertNewProperties` overlays the whole
- * top-level subtree when any SIBLING key drifts, which would push the literal
- * token over a resolved value. That is defect 1 of this issue surviving in a
- * narrower case, on a live AWS write.
+ * deployed.** A record adopted by `cdkd import --migrate-from-cloudformation`,
+ * or one whose position was edited out of band, holds something ELSE there.
+ * `diffAt` skips such a leaf, so it never drifts — but
+ * `buildRevertNewProperties` overlays the whole top-level subtree when any
+ * SIBLING key drifts, which would push the literal token over that value. That
+ * is defect 1 of this issue surviving in a narrower case, on a live AWS write.
+ *
+ * (When this was written the population was `ssm-secure`, which CloudFormation
+ * resolves SERVER-side, so a migrated record held the PLAINTEXT on AWS. Since
+ * issue #2482 cdkd resolves that spelling itself and the token never reaches
+ * this pass; what survives is a spelling nobody resolves, so the live value
+ * here is whatever the user or another tool put at that position.)
  *
  * Deciding by PROVENANCE would need a flag state does not carry. Deciding by
  * what AWS actually holds needs nothing and is exact in both directions: for a
  * cdkd-deployed record AWS holds the token, so copying it back is the same
- * no-op the premise described; for a migrated record AWS holds the resolved
- * value, which is left untouched.
+ * no-op the premise described; for any other record AWS holds a value cdkd
+ * cannot compare, which is left untouched.
  *
  * Falls back to KEEPING the token wherever AWS has nothing at that position —
  * that is what `cdkd deploy` sends, so it is the safe residual rather than
@@ -3623,22 +3621,22 @@ function mergeUntemplatedValue(awsValue: unknown, desiredValue: unknown): unknow
  */
 export function preserveLiveValuesAtUnresolvedTokens(
   send: Record<string, unknown>,
-  awsProperties: Record<string, unknown>,
-  secrets: RecordedSecretValues
+  awsProperties: Record<string, unknown>
 ): Record<string, unknown> {
   const walk = (value: unknown, live: unknown): unknown => {
     if (typeof value === 'string' && value.includes('{{resolve:')) {
       // ONLY a whole token is preserved, and this gate is a disclosure boundary
       // rather than a tidiness rule (issue #1914).
       //
-      // A MIXED leaf (`{{ssm-secure:/host}}:{{secretsmanager:db}}`) arrives here
-      // already PARTIALLY resolved. Copying the live value in would move the
-      // ssm-secure plaintext into the payload — and the registration below
-      // correctly declines to register it, because the send string is not a
-      // token and would substitute the secretsmanager half's plaintext into
-      // state if it were. So the mechanism would CREATE an exposure it then
-      // cannot mask: unmaskable in the #1644 narrowing delta, the retry log and
-      // the AWS error text alike.
+      // A MIXED leaf (`{{notaservice:/host}}:{{secretsmanager:db}}`) arrives
+      // here already PARTIALLY resolved: the secretsmanager half is plaintext.
+      // Copying the live value in would move whatever AWS holds at the other
+      // half into the payload beside it, and nothing could mask that: the send
+      // string is not a token, so it cannot be registered as a replacement
+      // expression without substituting the secretsmanager half's plaintext
+      // into state. So the mechanism would CREATE an exposure it then cannot
+      // mask — unmaskable in the #1644 narrowing delta, the retry log and the
+      // AWS error text alike.
       //
       // Returning the send string unchanged restores the pre-#1914 behaviour
       // for that shape — the literal token ships, which is what `cdkd deploy`
@@ -3648,79 +3646,28 @@ export function preserveLiveValuesAtUnresolvedTokens(
       //
       // The shape is ANY leaf whose whole value is not the token, which is
       // wider than the two-reference case: a single token embedded in a longer
-      // string (`"jdbc:...password={{resolve:ssm-secure:/pw}}"`) is not
-      // preserved either, so a revert triggered by a sibling key writes that
-      // string over whatever AWS holds. Both user-facing warnings say so,
-      // because the detection one is read immediately before the confirmation
-      // prompt. Masking by SPAN, which is what would let these cases be both
-      // preserved and safe, is issue #2102. (NOT #1935, which fixed the
-      // value scan's SPLICE for a leaf it can MATCH; this leaf has no map
-      // entry at all, which is the whole reason it is here.)
+      // string (`"jdbc:...password={{resolve:...}}"`) is not preserved either,
+      // so a revert triggered by a sibling key writes that string over whatever
+      // AWS holds. Both user-facing warnings say so, because the detection one
+      // is read immediately before the confirmation prompt. Masking by SPAN,
+      // which is what would let these cases be both preserved and safe, is
+      // issue #2102. (NOT #1935, which fixed the value scan's SPLICE for a leaf
+      // it can MATCH; this leaf has no map entry at all, which is the whole
+      // reason it is here.)
       if (!isWholeDynamicReference(value)) return value;
       if (live === undefined) return value;
-      // REGISTER what was just moved. Nothing was recorded FOR THIS LEAF —
-      // that is what made the token a survivor — so copying the live value in
-      // and leaving the mask sets untouched hands a plaintext to three readers
-      // that would each have masked it: the retry logger, the AWS-error report,
-      // and the #1644 narrowing delta (whose `descendArrays: false` rules reach
-      // an array-nested leaf only where every level is KEY-IDENTIFIABLE -- since
-      // issue #1944 an ECS `ContainerDefinitions[].Environment[]` is, both
-      // levels carrying `Name` -- and fall back to the value scan for the rest,
-      // which is the population this registration is still needed for).
-      //
-      // (`secrets` itself is NOT necessarily empty here: a resource can hold
-      // one resolvable `secretsmanager` reference AND one `ssm-secure`
-      // survivor, which is exactly the shape a `notComparedCause` describes.
-      // Reading the sentence above as "the map is empty" would make the guards
-      // below look unreachable, and they are not.)
-      //
-      // The rule this is an instance of: a mechanism that deliberately moves
-      // plaintext into a bag must also register that plaintext with everything
-      // that masks. Moving the value and not the metadata is its own defect
-      // class.
-      //
-      // THREE conditions, each removing a different way of being wrong:
-      //
-      //  - `isWholeDynamicReference(value)` — the map's VALUE is what
-      //    `redactSecretsForState` substitutes IN, so it must be an expression
-      //    and nothing else. On a MIXED leaf
-      //    (`user:{{secretsmanager:...}}@{{ssm-secure:...}}`) the send string is
-      //    already PARTIALLY RESOLVED, so registering it whole would write the
-      //    secretsmanager half's plaintext into state — the GHSA class, through
-      //    the mechanism that exists to prevent it. That half is already
-      //    covered by its own map entry from the value scan.
-      //  - `isSecretBySpelling(value)` — the same rule the path marking uses
-      //    one function up. Registering a look-alike spelling's live value
-      //    makes a redaction NEEDLE out of ordinary data.
-      //  - the needle floor — `redactSecretsForState`'s whole-value branch
-      //    matches at ANY length, so a live `"1"` or `"prod"` would rewrite
-      //    every unrelated delta leaf equal to it into this token: the #1904
-      //    wrong-reference corruption, after which the next deploy ships the
-      //    literal token to AWS.
-      //
-      // A non-string live value is NOT registered, and is NOT reachable by the
-      // position pass either — `redactByPath`'s expression arm requires a
-      // string on both sides, so an object or a number lands in the value scan
-      // with no entry. It is still copied, because the alternative is sending
-      // the token over a live value; it is a stated residual, unmaskable if the
-      // provider later echoes it CHANGED.
-      // The whole-token condition is NOT repeated here: the gate above already
-      // returned for anything else, so a second copy would be a line no
-      // mutation can red.
-      //
-      // Two degenerate cases, both left alone deliberately. For a
-      // cdkd-DEPLOYED record `live === value`, so the entry is `token -> token`
-      // and every substitution it can drive is the identity. And `set`
-      // overwrites when a secretsmanager secret and an ssm-secure parameter
-      // share a value — in which case both expressions resolve to that same
-      // value, so either substitution is correct.
-      if (
-        typeof live === 'string' &&
-        live.length >= MIN_SECRET_NEEDLE_LENGTH &&
-        isSecretBySpelling(value)
-      ) {
-        secrets.set(live, value);
-      }
+      // NOTHING IS REGISTERED for the moved value. Until issue #2482 this arm
+      // registered `live -> token` into the secrets map when the token was
+      // `ssm-secure` — a secret by spelling, whose live value CloudFormation
+      // had resolved server-side — so the retry logger, the AWS-error report
+      // and the #1644 narrowing delta could mask a plaintext this pass had
+      // just moved into the payload. That spelling now resolves before it can
+      // reach here, and no other survivor is a secret by definition: it is
+      // text that merely looks like a reference, so the live value at its
+      // position is ordinary data. Registering ordinary data would make a
+      // redaction NEEDLE out of it — every unrelated delta leaf equal to it
+      // rewritten into this token, after which the next deploy ships the token
+      // to AWS (the #1904 wrong-reference corruption, one spelling over).
       return live;
     }
     if (Array.isArray(value)) {
@@ -4276,8 +4223,8 @@ async function runRevert(
           // A warning, not a failure — failing would abandon every OTHER
           // drifted property on the resource and exit 2. The wording claims
           // neither that replaying the token is a no-op (true only for a record
-          // cdkd deployed, false for a CFn-migrated one where CloudFormation
-          // resolved the reference server-side) NOR that the live value is
+          // cdkd deployed, false where the position was adopted from elsewhere
+          // or edited out of band) NOR that the live value is
           // always preserved: `preserveLiveValuesAtUnresolvedTokens` preserves
           // it only where the property's WHOLE value is the token, and declines
           // for an embedded one.
@@ -4320,11 +4267,12 @@ async function runRevert(
           );
           // Issue #1914: a token cdkd could not resolve must never be WRITTEN
           // over whatever AWS holds — see the helper for why the "it is already
-          // there" premise is false on a CFn-migrated record. Skipped entirely
-          // when nothing survived, so the ordinary revert is byte-identical.
+          // there" premise holds only for a record cdkd deployed. Skipped
+          // entirely when nothing survived, so the ordinary revert is
+          // byte-identical.
           const tokenPreserved =
             unresolvedTokens.size > 0
-              ? preserveLiveValuesAtUnresolvedTokens(overlaid, outcome.awsProperties, secrets)
+              ? preserveLiveValuesAtUnresolvedTokens(overlaid, outcome.awsProperties)
               : overlaid;
           // Issue #2274: a REDACTION MASK in the baseline must never be written
           // to AWS either. Run UNCONDITIONALLY, unlike the token pass above:
@@ -4488,7 +4436,8 @@ async function runRevert(
                 //
                 // RESIDUAL, stated here because this is where it lands: cdkd
                 // cannot mask a value for a reference it never RESOLVED. For an
-                // unresolvable one (`ssm-secure`) the provider can echo its own
+                // unresolvable one (a spelling cdkd resolves for nobody —
+                // `ssm-secure` until issue #2482) the provider can echo its own
                 // readback in `effectiveProperties`, and this write persists
                 // that echo — with no map entry to match and, on a MIXED leaf,
                 // no single token on the source side to position against
@@ -4520,17 +4469,18 @@ async function runRevert(
                 // Positional descent over an equal-length, differently-ordered
                 // array would write a sibling's expression onto the wrong
                 // element: the #1904 wrong-reference class, on a write path.
-                // Those leaves fall to the value scan instead, and TWO things
-                // keep that scan complete rather than one: the
-                // `properties`-side map completion above, and
-                // `preserveLiveValuesAtUnresolvedTokens` registering every live
-                // value it copied in. Since issue #1944 the path pass DOES reach
-                // a KEY-IDENTIFIABLE array element — an ECS
-                // `ContainerDefinitions[].Environment[]`, the shape this
-                // advisory keeps landing in, is keyed by `Name` at both levels —
-                // so the registration is what covers the arrays that carry no
-                // such key, which reach neither pass and land in `state.json` as
-                // plaintext without it.
+                // Those leaves fall to the value scan instead, which the
+                // `properties`-side map completion above keeps complete.
+                // (Until issue #2482 `preserveLiveValuesAtUnresolvedTokens`
+                // was a second source, registering every live value it copied
+                // in over an `ssm-secure` survivor; a survivor is no longer a
+                // secret, so the value it copies needs no entry.) Since issue
+                // #1944 the path pass DOES reach a KEY-IDENTIFIABLE array
+                // element — an ECS `ContainerDefinitions[].Environment[]`, the
+                // shape this advisory keeps landing in, is keyed by `Name` at
+                // both levels — so the value scan is what covers the arrays
+                // that carry no such key, which reach neither pass and would
+                // land in `state.json` as plaintext without it.
                 narrowedByLogicalId.set(
                   outcome.logicalId,
                   // Since issue #1926 this rules constant ALSO runs the
@@ -5255,8 +5205,8 @@ function writeHumanReport(reports: StackDriftReport[]): void {
       // The glyph follows THIS REPORT's question — "was everything actually
       // compared" — and NOT the exit code, which asks the narrower "did cdkd
       // refuse anything" (issue #2108). The two differ for a stack whose only
-      // uncompared properties hold a surviving `{{resolve:ssm-secure:...}}`
-      // token: it warns here and still exits 0, deliberately. Keying the glyph
+      // uncompared properties hold a surviving `{{resolve:...}}` token cdkd
+      // resolves for nobody: it warns here and still exits 0, deliberately. Keying the glyph
       // on the exit code's subset instead would put a ✓ and a `1 resource
       // checked` directly above a `PARTIALLY compared` block naming that same
       // resource, which is the contradiction this branch exists to remove. The

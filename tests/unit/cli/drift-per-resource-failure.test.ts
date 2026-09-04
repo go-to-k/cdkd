@@ -904,9 +904,10 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   it('each not-compared entry names its own cause, and a mixed population is counted apart', async () => {
     mockGetState.mockResolvedValue(
       makeState({
-        // `ssm-secure` is the spelling cdkd resolves for nobody -> unresolvedToken.
+        // A spelling cdkd resolves for nobody -> unresolvedToken. (Since issue
+        // #2482 that is no CloudFormation service; `ssm-secure` resolves now.)
         Tokened: resource(LAMBDA, {
-          Environment: { Variables: { PW: '{{resolve:ssm-secure:/pw}}' } },
+          Environment: { Variables: { PW: '{{resolve:notaservice:/pw}}' } },
         }),
         Thrower: resource(QUEUE, { QueueName: 'ok' }),
       })
@@ -1305,7 +1306,9 @@ describe('a remediation run that compared nothing does not report no drift (#220
   /**
    * The OTHER negative direction, and the one that fences the TRIGGER -- which
    * is a different population from the COUNT (see `incompleteRemediationMessage`).
-   * A `{{resolve:ssm-secure:...}}` resource IS in the `notCompared` roll-up, and
+   * A resource holding a `{{resolve:...}}` spelling cdkd resolves for nobody
+   * (a look-alike; since issue #2482 no CloudFormation service survives the
+   * pass) IS in the `notCompared` roll-up, and
    * IS counted once the line fires, but it must not FIRE the line on its own: it
    * is permanent, unclearable, and the reason the detection exit code does not
    * fire on it either. Widening the trigger from `outcomeExitSignal`'s
@@ -1317,7 +1320,7 @@ describe('a remediation run that compared nothing does not report no drift (#220
     mockGetState.mockResolvedValue(
       makeState({
         Tokened: resource(LAMBDA, {
-          Environment: { Variables: { PW: '{{resolve:ssm-secure:/pw}}' } },
+          Environment: { Variables: { PW: '{{resolve:notaservice:/pw}}' } },
         }),
       })
     );
@@ -1430,7 +1433,7 @@ describe('a remediation run that compared nothing does not report no drift (#220
     mockGetState.mockResolvedValue(
       makeState({
         Tokened: resource(LAMBDA, {
-          Environment: { Variables: { PW: '{{resolve:ssm-secure:/pw}}' } },
+          Environment: { Variables: { PW: '{{resolve:notaservice:/pw}}' } },
         }),
         Thrower: resource(QUEUE, { QueueName: 'ok' }),
         NoReadPath: resource('AWS::Some::Type', {}),

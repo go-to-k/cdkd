@@ -4158,6 +4158,7 @@
         "sns-event-source",
         "sns-sqs-event",
         "sqs-esm-max-concurrency",
+        "ssm-secure-dynamic-ref",
         "stack-lock-renewal",
         "stepfunctions",
         "tags-propagation",
@@ -4474,6 +4475,10 @@
         ],
         "sqs-esm-max-concurrency": [
           "l2"
+        ],
+        "ssm-secure-dynamic-ref": [
+          "l2",
+          "literal"
         ],
         "stack-lock-renewal": [
           "l2"

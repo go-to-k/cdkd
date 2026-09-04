@@ -5,7 +5,14 @@ import {
   resetAccountInfoCache,
   dynamicReferenceRetryDelays,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
-import { redactSecretsForState } from '../../../src/deployment/secret-redaction.js';
+import {
+  redactSecretsForState,
+  isSecretExpressionByVerdictOrSpelling,
+  isRecordedSecretExpression,
+  clearRecordedSecretExpressions,
+} from '../../../src/deployment/secret-redaction.js';
+import { IntrinsicResolutionRefusalError } from '../../../src/utils/error-handler.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 // Mock logger. The spies are module-level rather than created fresh inside the
@@ -859,6 +866,203 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
   // (issue #1933). It used to be a process-global map keyed by the expression
   // alone, so its key and its lifetime were both narrower than the values they
   // stood for: no region component, and no reset between stacks.
+  // Issue #2482: `ssm-secure` used to fall through to the unsupported-service
+  // arm, so the LITERAL TOKEN reached the provider and, where the service API
+  // accepted it, became the live credential. It now resolves through the same
+  // GetParameter as `ssm`, is a secret by SPELLING, and is refused for a
+  // parameter that is definitively not a SecureString.
+  describe('ssm-secure resolution (issue #2482)', () => {
+    const secureExpr = '{{resolve:ssm-secure:/prod/db/password}}';
+
+    /** The `input` of the Nth GetParameter call. */
+    const inputOfCall = (n: number): { Name?: string; WithDecryption?: unknown } =>
+      (mockSSMSend.mock.calls[n]![0] as { input: { Name?: string; WithDecryption?: unknown } })
+        .input;
+
+    it('resolves to the decrypted value, records the pair, and warns about nothing', async () => {
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: 'decrypted-password', Type: 'SecureString' },
+      });
+      const recordedSecretValues = new Map<string, string>();
+
+      const result = await resolver.resolveDynamicReferences(secureExpr, {
+        ...defaultContext,
+        recordedSecretValues,
+      });
+
+      // The provider receives the concrete value — not the token text.
+      expect(result).toBe('decrypted-password');
+      expect(recordedSecretValues.get('decrypted-password')).toBe(secureExpr);
+      expect(inputOfCall(0).Name).toBe('/prod/db/password');
+      expect(inputOfCall(0).WithDecryption).toBe(true);
+      // Pre-fix this arm logged `Unsupported dynamic reference service` and
+      // moved on; the token surviving was the only symptom.
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+    });
+
+    it('resolves a token EMBEDDED in a longer string and records the plaintext', async () => {
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: 'decrypted-password', Type: 'SecureString' },
+      });
+      const recordedSecretValues = new Map<string, string>();
+
+      const result = await resolver.resolveDynamicReferences(
+        `jdbc:postgresql://db/app?password=${secureExpr}`,
+        { ...defaultContext, recordedSecretValues }
+      );
+
+      expect(result).toBe('jdbc:postgresql://db/app?password=decrypted-password');
+      expect(result).not.toContain('{{resolve:');
+      expect(recordedSecretValues.get('decrypted-password')).toBe(secureExpr);
+    });
+
+    it('is left UNRESOLVED on the comparison path with NO GetParameter, like secretsmanager', async () => {
+      // A secret by spelling: the diff compares expression against expression,
+      // so no lookup is needed to learn what the `ssm` arm has to ask for.
+      const result = await resolver.resolveDynamicReferences(secureExpr, {
+        ...defaultContext,
+        skipDynamicReferences: true,
+      });
+
+      expect(result).toBe(secureExpr);
+      expect(mockSSMSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps a trailing :<version> in the parameter name, as SSM parses it', async () => {
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: 'v3-password', Type: 'SecureString' },
+      });
+
+      const result = await resolver.resolveDynamicReferences(
+        '{{resolve:ssm-secure:/prod/db/password:3}}',
+        { ...defaultContext, recordedSecretValues: new Map() }
+      );
+
+      expect(result).toBe('v3-password');
+      expect(inputOfCall(0).Name).toBe('/prod/db/password:3');
+    });
+
+    it('REFUSES a definitive String parameter under the ssm-secure spelling, non-retryably', async () => {
+      // CloudFormation defines `ssm-secure` for SecureString parameters only;
+      // resolving a public value under a secret spelling would record it as
+      // a redaction needle. The message names the type, never the value.
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'public-config', Type: 'String' } });
+      const recordedSecretValues = new Map<string, string>();
+
+      let error: unknown;
+      try {
+        await resolver.resolveDynamicReferences(secureExpr, {
+          ...defaultContext,
+          recordedSecretValues,
+        });
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error).toBeInstanceOf(IntrinsicResolutionRefusalError);
+      const message = (error as Error).message;
+      expect(message).toContain('ssm-secure spelling is defined for SecureString parameters only');
+      // The TYPE is interpolated, not the fixed text's "SecureString parameters".
+      expect(message).toContain('is a String parameter');
+      expect(message).not.toContain('public-config');
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(recordedSecretValues.size).toBe(0);
+    });
+
+    it('REFUSES a definitive StringList parameter the same way', async () => {
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'a,b,c', Type: 'StringList' } });
+
+      await expect(
+        resolver.resolveDynamicReferences(secureExpr, {
+          ...defaultContext,
+          recordedSecretValues: new Map<string, string>(),
+        })
+      ).rejects.toMatchObject({ message: expect.stringContaining('is a StringList parameter') });
+    });
+
+    it('RECORDS the expression into the process-wide set the skeleton positioner enumerates', async () => {
+      // The value-keyed map collapses two expressions sharing one plaintext
+      // onto the last one; `positionByIntrinsicSkeleton` recovers the LOSING
+      // member by enumerating `recordedSecretExpressions` (issue #1916). An
+      // `ssm-secure` expression must land there like a `secretsmanager` one,
+      // or two intrinsic-shaped references to one value persist the winner's
+      // expression at the loser's position.
+      clearRecordedSecretExpressions();
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: 'decrypted-password', Type: 'SecureString' },
+      });
+      expect(isRecordedSecretExpression(secureExpr)).toBe(false);
+
+      try {
+        await resolver.resolveDynamicReferences(secureExpr, {
+          ...defaultContext,
+          recordedSecretValues: new Map<string, string>(),
+        });
+
+        expect(isRecordedSecretExpression(secureExpr)).toBe(true);
+      } finally {
+        // The store is process-wide: a throw above must not leak the entry
+        // into later tests.
+        clearRecordedSecretExpressions();
+      }
+    });
+
+    it('is secret by SPELLING for every reader, before anything is recorded', () => {
+      // The redaction-side predicate that the #2059 recording seam and the
+      // position pass consult must answer from the spelling alone, so that an
+      // `ssm-secure` expression is secret at those readers BEFORE this process
+      // has resolved (and recorded) it — a `false` here would treat it like a
+      // public `ssm` reference until the first resolution.
+      clearRecordedSecretExpressions();
+      expect(isSecretExpressionByVerdictOrSpelling('{{resolve:ssm-secure:/cdkd/test/secure}}')).toBe(
+        true
+      );
+      expect(isSecretExpressionByVerdictOrSpelling('{{resolve:ssm:/cdkd/test/secure}}')).toBe(false);
+    });
+
+    it('treats an unclassifiable Type as secret (fails closed) and still resolves', async () => {
+      mockSSMSend.mockResolvedValue({ Parameter: { Value: 'odd-password' } });
+      const recordedSecretValues = new Map<string, string>();
+
+      const result = await resolver.resolveDynamicReferences(secureExpr, {
+        ...defaultContext,
+        recordedSecretValues,
+      });
+
+      expect(result).toBe('odd-password');
+      expect(recordedSecretValues.get('odd-password')).toBe(secureExpr);
+      // The unrecognized-Type warning names THIS spelling as the one that will
+      // be persisted, not the `ssm` one the shared helper used to hard-code.
+      const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('{{resolve:ssm-secure:...}}');
+      expect(warned).not.toContain('{{resolve:ssm:...}}');
+    });
+
+    it('redacts the resolved value back to its ssm-secure expression for persisted state', async () => {
+      mockSSMSend.mockResolvedValue({
+        Parameter: { Value: 'decrypted-password', Type: 'SecureString' },
+      });
+      const recordedSecretValues = new Map<string, string>();
+
+      const resolved = (await resolver.resolve(
+        { Environment: { Variables: { PW: secureExpr, URL: `pg://u:${secureExpr}@h` } } },
+        { ...defaultContext, recordedSecretValues }
+      )) as { Environment: { Variables: { PW: string; URL: string } } };
+
+      // The resolve REALLY happened — without this the assertions below are
+      // satisfied by an untouched expression (measured: green with the arm
+      // disabled), which is the vacuous pass this case exists to fence.
+      expect(resolved.Environment.Variables.PW).toBe('decrypted-password');
+      expect(resolved.Environment.Variables.URL).toBe('pg://u:decrypted-password@h');
+
+      const persisted = redactSecretsForState(resolved, recordedSecretValues) as {
+        Environment: { Variables: { PW: string; URL: string } };
+      };
+      expect(persisted.Environment.Variables.PW).toBe(secureExpr);
+      expect(persisted.Environment.Variables.URL).toBe(`pg://u:${secureExpr}@h`);
+    });
+  });
+
   describe('resolved-value cache scope (issue #1933)', () => {
     const sharedSecretExpr = '{{resolve:secretsmanager:shared/db:SecretString}}';
     const sharedSsmExpr = '{{resolve:ssm:/shared/db/password}}';

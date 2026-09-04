@@ -937,15 +937,14 @@ const DYNAMIC_REFERENCE_OPENING = '{{resolve:';
  * unactionable for prose. Requiring the service makes the count a count of
  * SECRET references rather than of the characters `{{resolve:`.
  *
- * `secretsmanager` / `ssm` mirror `REPLAY_SECRET_SERVICES` in
- * `rollback-executor.ts`, whose {@link classifyReplaySecretRegion} is what
- * classifies the tokens below — the same set on both sides, so the count and
- * the classification never disagree about what is in scope. `ssm-secure` is
- * added on top: it IS a CloudFormation secret spelling, and although cdkd does
- * not resolve it today (the resolver's unsupported-service arm leaves it
- * verbatim, so it can never become a wrong-region needle), counting it costs
- * only an assembled `ssm-secure` reference in a cross-region stack and keeps
- * the guard correct the day that arm changes.
+ * All three mirror `REPLAY_SECRET_SERVICES` in
+ * `secret-region-classification.ts`, whose {@link classifyReplaySecretRegion}
+ * is what classifies the tokens below — the same set on both sides, so the
+ * count and the classification never disagree about what is in scope. Until
+ * issue #2482 `ssm-secure` was counted here AHEAD of that set (cdkd did not
+ * resolve it, so it could never become a wrong-region needle, and counting it
+ * kept the guard correct for the day the resolver's arm changed); that day
+ * came, and the two lists agree again.
  *
  * THE TRADE, stated rather than hidden: an `Fn::Join` that splits BEFORE the
  * service name (`['{{resolve:', 'secretsmanager:db:SecretString:pw}}']`) has no
@@ -2691,8 +2690,9 @@ function makeCrossStackPrePass(deps: {
       //
       // This SUBSUMES the old `carriesDynamicReference(resolved)` fast path:
       // resolution never introduces an expression, so a resolved value carrying
-      // one (an `ssm-secure` reference cdkd resolves for nobody) implies the
-      // stored value carries one too, and this arm returns for it.
+      // one (a spelling cdkd resolves for nobody — since issue #2482 that is
+      // no CloudFormation service, only text that merely looks like one)
+      // implies the stored value carries one too, and this arm returns for it.
       const stored = await storedProducerValue(producer, context.stateBackend);
       // No readable producer record, or no such key in it — cannot classify, so
       // do not refuse. DELIBERATELY UNFENCED, and measured rather than assumed:

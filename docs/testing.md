@@ -1775,8 +1775,10 @@ that failed, but never everything cdkd did not compare -- so the phase
 also asserts the run's own output says `refused to resolve` -- without that, an
 exit `2` could have come from the broader `notCompared` bucket, which is
 deliberately kept out of the exit code (a stack whose only uncompared property
-holds a surviving `{{resolve:ssm-secure:...}}` token is reported and still exits
-`0`; the unit suite covers that half, since this fixture has no such resource).
+holds a surviving `{{resolve:...}}` token cdkd resolves for nobody is reported
+and still exits `0`; since issue #2482 that is no longer `ssm-secure`, which is
+resolved like `ssm` — the unit suite covers that half with a synthetic
+spelling, since this fixture has no such resource).
 
 Phases 2b2 / 2c then tamper the live parameter and revert it, and the shape of
 that tamper is the load-bearing part. `SecretEcho`'s only secret-bearing
