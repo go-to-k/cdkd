@@ -29,6 +29,10 @@ import { buildProgram } from '../../../src/cli/program.js';
  * The current membership of each group is the three structures below; they are
  * the record, so this paragraph does not restate it.
  *
+ * The distinction is not academic: the fence's first run put `list` and `synth`
+ * in `UNDOCUMENTED` where a naming convention would have hidden them among the
+ * commands documented elsewhere, and they got reference pages as a result.
+ *
  * So a command is claimed in one of three ways, each CHECKED differently, and
  * the strength of the check follows the strength of the claim:
  *
@@ -167,10 +171,12 @@ const COMMAND_REFERENCE_PAGES: Readonly<Record<string, string>> = {
   export: '/cli-export',
   'force-unlock': '/cli-force-unlock',
   gc: '/cli-gc',
+  list: '/cli-list',
   'publish-assets': '/cli-publish-assets',
   rollback: '/cli-rollback',
   scrub: '/cli-scrub',
   state: '/cli-state',
+  synth: '/cli-synth',
 };
 
 /**
@@ -216,16 +222,6 @@ const COMMAND_TOPIC_PAGES: Readonly<Record<string, { path: string; reason: strin
  * visible in review as adding a command.
  */
 const UNDOCUMENTED: Readonly<Record<string, string>> = {
-  list:
-    'No page of its own. What exists is spread through the CLI Reference cross-command ' +
-    'sections -- its output in each mode, worked examples, and `--long` / ' +
-    '`--show-dependencies` -- plus the `ls` alias named on the state page. Tracked by ' +
-    'go-to-k/cdkd#2577.',
-  synth:
-    'No page of its own. Its material is scattered: the CLI Reference covers the stdout ' +
-    'contract on a multi-stack app and names `--output` there, and the deploy-tuning page ' +
-    'documents `--strict` / `--ignore-errors` as also accepted by it. Tracked by ' +
-    'go-to-k/cdkd#2577.',
   migrate:
     'Held pending the deprecation decision in go-to-k/cdkd#2572 -- it is the only ' +
     'command that requires the AWS CDK CLI binary, so whether it stays at all is ' +

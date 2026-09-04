@@ -30,6 +30,10 @@ The detailed per-command / per-flag reference is split across these pages:
 - **[`cdkd bootstrap`](cli-bootstrap.md)** — provisioning the state bucket and
   per-region cdkd-owned asset storage.
 - **[`cdkd gc`](cli-gc.md)** — garbage-collecting cdkd-owned storage.
+- **[`cdkd list`](cli-list.md)** — listing the stacks an app synthesizes, and
+  the patterns that select them.
+- **[`cdkd synth`](cli-synth.md)** — synthesizing templates, the assembly
+  directory, and CDK annotation handling.
 - **[`cdkd diff`](cli-diff.md)** — previewing what a deploy would change.
 - **[`cdkd drift`](cli-drift.md)** — detecting and resolving drift against live
   AWS resources.
