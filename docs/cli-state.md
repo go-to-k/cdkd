@@ -1,6 +1,6 @@
 ---
 title: cdkd state
-description: "Inspect and operate on cdkd's S3 state store directly — list, show, orphan, destroy, migrate, and refresh stacks without a CDK app."
+description: "The cdkd state subcommands — inspect the S3 state store, and orphan, destroy, migrate, or re-baseline the records in it without a CDK app."
 ---
 
 # cdkd state
@@ -11,8 +11,8 @@ of them synthesizes and none of them needs the source that deployed a stack —
 which is what makes them work from a CI runner after the branch is gone, or
 from a laptop that never had the repository. The unit of work is the state
 record, not the stack in your app: `cdkd state list` shows everything the
-bucket knows about, and `--all` on the mutating subcommands acts across the
-whole estate in one invocation.
+bucket knows about, and `--all` — on `state destroy` and
+`state refresh-observed` — acts across the whole estate in one invocation.
 
 ```bash
 cdkd state info                          # which bucket, which region, how many stacks
@@ -25,18 +25,18 @@ cdkd state orphan MyStack                # delete ONLY the record; AWS resources
 cdkd state refresh-observed MyStack      # repopulate the drift baseline without deploying
 ```
 
-## The eight subcommands
+## Subcommands
 
-| Subcommand | Mutates | What it does |
+| Subcommand | What it changes | What it does |
 | --- | --- | --- |
-| [`info`](#cdkd-state-info) | no | Reports the bucket cdkd resolved, its region, where the name came from, and how many records it holds. |
-| [`list`](#cdkd-state-list) | no | Lists the stacks registered in the bucket, flat or as a nested-stack tree. |
-| [`resources`](#cdkd-state-resources) | no | Lists one stack's recorded resources. |
-| [`show`](#cdkd-state-show) | no | Prints one stack's full record — metadata, lock, outputs, resources with properties. |
-| [`orphan`](#cdkd-state-orphan) | state only | Removes a state record and leaves the AWS resources running. |
-| [`destroy`](#cdkd-state-destroy) | AWS + state | Deletes the AWS resources and then the record, with no CDK app. |
-| [`migrate`](#cdkd-state-migrate) | bucket | Copies a legacy region-suffixed state bucket into the region-free one. |
-| [`refresh-observed`](#cdkd-state-refresh-observed) | state only | Repopulates `observedProperties` — the drift baseline — from live AWS. |
+| [`info`](#cdkd-state-info) | nothing | Reports the bucket cdkd resolved, its region, where the name came from, and how many records it holds. |
+| [`list`](#cdkd-state-list) | nothing | Lists the stacks registered in the bucket, flat or as a nested-stack tree. |
+| [`resources`](#cdkd-state-resources) | nothing | Lists one stack's recorded resources. |
+| [`show`](#cdkd-state-show) | nothing | Prints one stack's full record — metadata, lock, outputs, resources with properties. |
+| [`orphan`](#cdkd-state-orphan) | the state record | Removes a state record and leaves the AWS resources running. |
+| [`destroy`](#cdkd-state-destroy) | AWS resources, then the record | Deletes the AWS resources and then the record, with no CDK app. |
+| [`migrate`](#cdkd-state-migrate) | the bucket the records live in | Copies a legacy region-suffixed state bucket into the region-free one. |
+| [`refresh-observed`](#cdkd-state-refresh-observed) | the state record | Repopulates `observedProperties` — the drift baseline — from live AWS. |
 
 ## Options shared by every subcommand
 
@@ -55,17 +55,18 @@ only what is specific to it.
 `--region` is deprecated — prefer `AWS_REGION` or your AWS profile — but it is
 still honored if passed, and it is not a no-op.
 
-Two exceptions to the table above: [`cdkd state info`](#cdkd-state-info) does
-not accept `--region` at all, and [`cdkd state migrate`](#cdkd-state-migrate)
-takes neither `--state-bucket` nor `--state-prefix` — it names its two buckets
-with its own flags, and its `--region` is a required-in-practice selector
-rather than the deprecated one.
+Two subcommands break that pattern. [`cdkd state info`](#cdkd-state-info)
+does not accept `--region` at all — it reports the bucket's own region, so
+there is nothing for the flag to select. [`cdkd state migrate`](#cdkd-state-migrate)
+takes neither `--state-bucket` nor `--state-prefix`, naming its two buckets
+with its own flags instead, and its `--region` is a real selector rather than
+the deprecated one.
 
-Where a stack name has records in more than one region, the subcommand that
-reads or writes a single record takes `--stack-region <region>` to
-disambiguate. It is deliberately not spelled `--region`: the deprecated global
-option picks the AWS client's region, whereas `--stack-region` picks *which
-record* to act on.
+Every subcommand that touches a specific record — all of them except `info`,
+`list`, and `migrate` — also takes `--stack-region <region>`, which is required
+when one stack name has records in more than one region. It is deliberately not
+spelled `--region`: the deprecated global option picks the AWS client's region,
+whereas `--stack-region` picks *which record* to act on.
 
 ## `cdkd state info`
 
@@ -143,8 +144,9 @@ NestedStackDeep (us-east-1)
 Flat output stays the default so scripts that grep `cdkd state list` keep
 working. A child whose parent record is missing — parent destroyed
 out-of-band, or state hand-deleted — surfaces at the root rather than
-vanishing. `--long` and `--tree` both read every record, so they cost one
-extra S3 read per stack; the plain listing does not.
+vanishing. `--long` and `--tree` both read every record, so they cost extra
+S3 requests per stack — two for `--long` (the record and its lock), one for
+`--tree`. The plain listing reads none of them.
 
 The equivalent low-level query, when you want it without cdkd:
 
@@ -204,7 +206,9 @@ with its properties, attributes, dependencies, and `provisionedBy` routing.
 key `<parent>~<childLogicalId>`, loads
 `cdkd/<parent>~<childLogicalId>/<region>/state.json`, and recurses. It fails
 fast on a torn tree — a parent listing a nested-stack row whose child record
-does not exist — and names the remediation in the error.
+does not exist — rather than printing a partial tree. Repair it by re-deploying
+the parent, by finishing whatever partial operation tore it, or, failing both,
+by [`cdkd state orphan <parent>`](#cdkd-state-orphan) and re-importing.
 
 The `--json` shape under `--show-nested` is recursive
 `{state, lock, children: [...]}`, with `children` always present (an empty
@@ -324,16 +328,24 @@ no record body is rewritten.
 | `--legacy-bucket <name>` | derived from the account and region | Override the source bucket name. |
 | `--new-bucket <name>` | `cdkd-state-{accountId}` | Override the destination bucket name. |
 | `--dry-run` | off | Stop before any mutation, after reporting what would be copied. |
-| `--remove-legacy` | off | Delete the source bucket after the copy is verified. |
+| `--remove-legacy` | off | Delete the source bucket after the copy is verified. Irreversible: it empties every object version and delete marker first, so the source bucket's version history is gone. |
 
 It takes no `--state-bucket` / `--state-prefix`, and its `--region` is a real
 selector rather than the deprecated global option.
+
+Unlike [`refresh-observed --dry-run`](#cdkd-state-refresh-observed), which
+skips the prompt, `migrate --dry-run` still asks for confirmation before
+printing the plan, so an unattended preview needs `-y` alongside it.
 
 The migration is idempotent: the destination is reused when it already exists,
 each object copy is idempotent per key, and the post-copy verification tolerates
 a destination that already holds objects, so a re-run resumes a partial
 migration. The source bucket is kept unless `--remove-legacy` is passed, and it
 is only deleted after the object count at the destination has been verified.
+That deletion is not recoverable: emptying the bucket removes every prior
+object version and delete marker, so the copy at the destination becomes the
+only history you have. Leave the source in place until you are satisfied with
+the migrated bucket.
 
 It refuses to start while any `lock.json` exists in the source bucket, naming
 the offending keys — wait for the in-flight operation, or clear a stale lock
@@ -360,17 +372,22 @@ defaults and keys your template never set.
 | --- | --- | --- |
 | `[stacks...]` | — | Stack name(s) to refresh, as physical CloudFormation names. Required unless `--all` is given. |
 | `--all` | off | Refresh every stack in the state bucket. |
-| `--dry-run` | off | Print the per-stack refresh count without taking a lock, calling AWS, or writing state. |
+| `--dry-run` | off | Print the per-stack refresh count without taking a lock, reading resources back from AWS, or writing state. The records themselves are still read from S3. |
 | `--stack-region <region>` | — | Region of the record to refresh. Required when one stack name has state in more than one region. |
 
-Why it exists: `cdkd deploy` populates the baseline only for resources it
-actually creates or updates, so a resource that a deploy skipped as unchanged
-keeps whatever baseline it had — or none at all, on a stack first deployed
-before the baseline existed. With a baseline present, `cdkd drift` walks the
-union of the recorded and live keys and catches a console-side edit to a key
-your template never mentions; without one, it falls back to comparing only the
-keys in state. This command opts a whole stack into the richer comparison in
-one shot.
+Why it exists: `cdkd deploy` fills in a *missing* baseline for you — it reads
+back every resource that has none, including ones the deploy itself skipped as
+unchanged — but it never re-reads a resource that already has one. A baseline
+captured months ago therefore stays as it was. This command re-reads the whole
+stack on demand, which is also the only way to establish a baseline at all
+without deploying: on a stack deployed with
+[`--no-capture-observed-state`](cli-deploy-tuning.md#no-capture-observed-state),
+or when you simply do not want to deploy.
+
+The baseline is what makes the comparison thorough. With one present,
+`cdkd drift` walks the union of the recorded and the live keys, so a
+console-side edit to a key your template never mentions still surfaces;
+without one, it falls back to comparing only the keys in state.
 
 Run [`cdkd scrub`](cli-scrub.md) first on state written by a pre-GHSA binary.
 The readback is redacted **by position** against the existing record: the

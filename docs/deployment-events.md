@@ -23,7 +23,7 @@ cdkd events MyStack                    # list recorded runs, newest first
 cdkd events MyStack --run <id>         # one run's full ordered event stream
 cdkd events MyStack --format json      # machine-readable, for tooling
 cdkd events MyStack --stack-region us-east-1   # disambiguate a multi-region name
-cdkd events prune MyStack              # keep the newest 20 runs, delete the rest
+cdkd events prune MyStack --yes        # keep the newest 20 runs, delete the rest
 cdkd events prune MyStack --all --yes  # purge all history for the stack
 ```
 

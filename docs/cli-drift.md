@@ -724,10 +724,13 @@ Without `--json`, nothing moves on `cdkd drift` — its human modes print to
 stdout as before.
 
 The same contract holds for **every `--json` surface**: `cdkd events --json`
-(and its `--format json` alias) and the four
-`cdkd state {list,resources,show,info} --json` subcommands route their
+(and its `--format json` alias) and
+`cdkd state {resources,show,info} --json` route their
 `--verbose` debug output and the `Assumed role ...` notice from `--role-arn` /
-`CDKD_ROLE_ARN` runs to stderr while `--json` is in effect. `cdkd diff --json`
+`CDKD_ROLE_ARN` runs to stderr while `--json` is in effect.
+[`cdkd state list`](cli-state.md#cdkd-state-list) does the same, but
+unconditionally — its default output is a payload too, so it never depends on
+`--json`. `cdkd diff --json`
 instead demotes the logger to `warn`, which suppresses rather than moves its
 info-level lines.
 

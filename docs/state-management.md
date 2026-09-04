@@ -2001,8 +2001,9 @@ aws s3api get-object \
 The `cdkd state` command family reads and writes this store directly, with no
 CDK app: `cdkd state list` enumerates the records (`--tree` for the
 nested-stack hierarchy), `cdkd state show` prints one record in full,
-`cdkd state info` reports which bucket was resolved and how, and the mutating
-subcommands act on one stack, several, or the whole bucket with `--all`.
+`cdkd state info` reports which bucket was resolved and how, and
+`cdkd state destroy` / `cdkd state refresh-observed` act on one stack, several,
+or every stack in the bucket with `--all`.
 
 Every subcommand, its flags, and its exit codes are documented on
 [`cdkd state`](cli-state.md); [State Store](state-store.md) is the shorter

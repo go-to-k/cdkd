@@ -52,10 +52,14 @@ commands applies.
 
 The record carries a schema version, and every older version is read and
 upgraded in memory by the current binary; the next write persists the new
-shape silently. Upgrading cdkd never asks you to migrate anything. The one
-exception is the bucket *name*: installations from before the region-free
-default need a one-time `cdkd state migrate` per region, which the deprecation
-warning and `cdkd state info` both point at.
+shape silently. Upgrading cdkd never asks you to migrate a record's *contents*.
+
+Two things around the record are not covered by that. A record still on the
+original pre-region key layout is upgraded by the next `cdkd deploy` — until
+then, the subcommands that read a single record refuse it and say so. And the
+bucket *name* changed once: installations predating the region-free default
+need a one-time `cdkd state migrate` per region, which both the deprecation
+warning and `cdkd state info` point at.
 
 See **[`cdkd state`](cli-state.md)** for the full reference: every subcommand,
 its flags, the confirmation and lock behavior, and the exit codes. The record
