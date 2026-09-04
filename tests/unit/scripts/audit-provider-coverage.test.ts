@@ -17,6 +17,7 @@ import {
   paginateListTypes,
   parseCliArgs,
   parseRegisteredTypes,
+  isRetryableDescribeTypeError,
   partitionCoverage,
   renderMarkdown,
   renderSummaryToStdout,
@@ -227,6 +228,32 @@ describe('describeTypeWithRetry', () => {
   });
 });
 
+describe('isRetryableDescribeTypeError', () => {
+  it('accepts throttles and transient transport failures, refuses the rest', () => {
+    const named = (name: string, message = 'x') => Object.assign(new Error(message), { name });
+    for (const err of [
+      named('ThrottlingException'),
+      named('Throttling'),
+      named('TimeoutError'),
+      // The measured shape: a plain Error whose NAME carries nothing.
+      new Error('socket hang up'),
+      Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      Object.assign(new Error('getaddrinfo EAI_AGAIN'), { code: 'EAI_AGAIN' }),
+    ]) {
+      expect(isRetryableDescribeTypeError(err), `${err.name}: ${err.message}`).toBe(true);
+    }
+    for (const err of [
+      named('AccessDeniedException', 'User is not authorized'),
+      named('ValidationException', 'Type not found'),
+      named('TypeNotFoundException'),
+      'not an error',
+      undefined,
+    ]) {
+      expect(isRetryableDescribeTypeError(err)).toBe(false);
+    }
+  });
+});
+
 describe('partitionCoverage', () => {
   function buildClient(provisioningByType: Record<string, ProvisioningType | string>): CfnClientLike {
     return {
@@ -342,6 +369,81 @@ describe('partitionCoverage', () => {
     });
     expect(report.schemaVersion).toBe(1);
     expect(report.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('retries a transient TRANSPORT failure instead of calling it Tier 3', async () => {
+    // Measured 2026-09-04 (issue #2571): one `socket hang up` during a
+    // 1737-type walk classified `AWS::OpenSearchService::Domain` as
+    // NON_PROVISIONABLE, which is codegen'd into
+    // `src/provisioning/unsupported-types.generated.ts` and makes cdkd REFUSE
+    // the type at pre-flight. A blip must not become a committed refusal.
+    // The retry keyed on ThrottlingException alone could not see it: a socket
+    // hang-up arrives as a plain `Error` whose NAME is `Error`.
+    let calls = 0;
+    const client = {
+      send: async () => {
+        calls++;
+        if (calls === 1) {
+          throw new Error('socket hang up');
+        }
+        return { ProvisioningType: 'FULLY_MUTABLE' };
+      },
+    } as unknown as CfnClientLike;
+
+    const report = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1],
+      sleep: async () => {},
+    });
+    expect(report.tier2).toEqual(['AWS::Foo::Bar']);
+    expect(report.tier3).toEqual([]);
+    expect(report.undetermined).toBeUndefined();
+    expect(calls).toBe(2);
+  });
+
+  it('records a type it could NOT classify instead of guessing it into a tier', async () => {
+    // The structural half. Tier 3 is not a neutral bucket, so an unresolved
+    // type is excluded from every tier and reported — `regenerate` then
+    // refuses to write the report at all.
+    const client = {
+      send: async () => {
+        throw new Error('socket hang up');
+      },
+    } as unknown as CfnClientLike;
+
+    const report = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1],
+      sleep: async () => {},
+    });
+    expect(report.undetermined).toEqual(['AWS::Foo::Bar']);
+    expect(report.tier2).toEqual([]);
+    expect(report.tier3).toEqual([]);
+    expect(report.summary).toMatchObject({ tier2Count: 0, tier3Count: 0, totalCount: 0 });
+  });
+
+  it('a NON-retryable failure is still undetermined, not Tier 3', async () => {
+    // The polarity that matters for the guess: a missing IAM permission is
+    // permanent, but it is still not evidence that the type is
+    // NON_PROVISIONABLE. Both arms of the classifier land in `undetermined`.
+    const denied = Object.assign(new Error('User is not authorized'), {
+      name: 'AccessDeniedException',
+    });
+    let calls = 0;
+    const client = {
+      send: async () => {
+        calls++;
+        throw denied;
+      },
+    } as unknown as CfnClientLike;
+
+    const report = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1, 2, 3],
+      sleep: async () => {},
+    });
+    expect(report.undetermined).toEqual(['AWS::Foo::Bar']);
+    expect(report.tier3).toEqual([]);
+    // ...and it was not retried, since retrying a permission error only
+    // lengthens an audit that is already 10-30 minutes.
+    expect(calls).toBe(1);
   });
 
   it('classifies DescribeType missing ProvisioningType as Tier 3', async () => {

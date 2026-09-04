@@ -68,6 +68,12 @@ export type CoverageTier = 'tier1-sdk-provider' | 'tier2-cc-api-fallback' | 'tie
 export interface CoverageReport {
   readonly schemaVersion: number;
   readonly generatedAt: string;
+  /**
+   * Types whose `DescribeType` never resolved. Kept OUT of every tier — a
+   * guess here becomes a committed pre-flight refusal — and non-empty is a
+   * regeneration failure, not a result.
+   */
+  readonly undetermined?: readonly string[];
   readonly summary: {
     readonly tier1Count: number;
     readonly tier2Count: number;
@@ -174,6 +180,42 @@ function isThrottlingError(err: unknown): boolean {
 }
 
 /**
+ * Transient TRANSPORT failures, which are retryable for the same reason a
+ * throttle is: the answer would differ on a later attempt.
+ *
+ * Split from {@link isThrottlingError} rather than merged into it because the
+ * two are asked different questions elsewhere, and because the name matters
+ * here: a socket hang-up arrives as a plain `Error` whose NAME is `Error`, so
+ * only the message identifies it. Measured 2026-09-04 (issue #2571): a single
+ * `socket hang up` on `AWS::OpenSearchService::Domain` during a 1737-type walk
+ * was classified `NON_PROVISIONABLE` and would have shipped into
+ * `unsupported-types.generated.ts`, making cdkd REFUSE to deploy an OpenSearch
+ * domain at pre-flight. A transient blip must not become a permanent refusal.
+ */
+function isTransientTransportError(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  const name = err.name;
+  if (name === 'TimeoutError' || name === 'RequestTimeout' || name === 'AbortError') {
+    return true;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (
+    typeof code === 'string' &&
+    ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)
+  ) {
+    return true;
+  }
+  return /socket hang up|ECONNRESET|EPIPE|ETIMEDOUT|EAI_AGAIN|network|timeout/i.test(err.message);
+}
+
+/** Retryable: the answer could differ on a later attempt. */
+export function isRetryableDescribeTypeError(err: unknown): boolean {
+  return isThrottlingError(err) || isTransientTransportError(err);
+}
+
+/**
  * Sleep for `ms` milliseconds. Replaceable by tests to skip real delays.
  */
 export type Sleep = (ms: number) => Promise<void>;
@@ -207,7 +249,7 @@ export async function describeTypeWithRetry(
       );
       return resp.ProvisioningType;
     } catch (err) {
-      if (isThrottlingError(err) && attempt < delays.length) {
+      if (isRetryableDescribeTypeError(err) && attempt < delays.length) {
         // Guard above ensures delays[attempt] is defined for a non-empty
         // number[]; the `?? 1000` fallback covers the `retryDelaysMs: []`
         // case where attempt < 0 is impossible but TS still narrows
@@ -243,7 +285,7 @@ export interface PartitionOptions {
    * stderr and classifying the type as Tier 3 (safer than silently
    * dropping it). Throws bubble up to abort the whole audit.
    */
-  readonly onError?: (typeName: string, err: unknown) => CoverageTier;
+  readonly onError?: (typeName: string, err: unknown) => CoverageTier | undefined;
 }
 
 /**
@@ -259,12 +301,22 @@ export async function partitionCoverage(
 ): Promise<CoverageReport> {
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   const limit = pLimit(concurrency);
+  // An UNDETERMINED type is recorded, never guessed. The previous default
+  // classified any failure as Tier 3, and Tier 3 is not a neutral bucket: it
+  // is codegen'd into `src/provisioning/unsupported-types.generated.ts` and
+  // makes cdkd REFUSE the type at pre-flight. So a blip during the audit
+  // became a permanent, committed refusal — measured on a single `socket hang
+  // up` for `AWS::OpenSearchService::Domain` (issue #2571). Retrying transport
+  // errors (see `isRetryableDescribeTypeError`) removes most of them; this
+  // makes whatever survives LOUD instead of wrong.
+  const undetermined: string[] = [];
   const onError =
     options.onError ??
-    ((typeName: string, err: unknown): CoverageTier => {
+    ((typeName: string, err: unknown): CoverageTier | undefined => {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[audit] DescribeType failed for ${typeName}: ${msg}; treating as Tier 3`);
-      return 'tier3-unsupported';
+      console.error(`[audit] DescribeType could not be resolved for ${typeName}: ${msg}`);
+      undetermined.push(typeName);
+      return undefined;
     });
 
   // DEDUPED at the boundary, because `allTypes` is not a set and every
@@ -305,7 +357,14 @@ export async function partitionCoverage(
           });
           tier = classifyProvisioningType(provisioningType);
         } catch (err) {
-          tier = onError(typeName, err);
+          const handled = onError(typeName, err);
+          if (handled === undefined) {
+            // Undetermined: excluded from every tier rather than guessed into
+            // one. `regenerate` refuses to write a report that has any.
+            done++;
+            return;
+          }
+          tier = handled;
         }
         if (tier === 'tier2-cc-api-fallback') {
           tier2.push(typeName);
@@ -334,6 +393,7 @@ export async function partitionCoverage(
     tier1,
     tier2,
     tier3,
+    ...(undetermined.length > 0 && { undetermined: [...undetermined].sort() }),
   };
 }
 
@@ -502,6 +562,19 @@ async function regenerate(): Promise<void> {
         }
       },
     });
+
+    // REFUSE to write a report carrying an undetermined type. The tier lists
+    // are consumed as facts — tier 3 is codegen'd into a pre-flight refusal —
+    // so a partial walk must not become the committed answer. Re-run; the
+    // retry above already absorbs the transient cases.
+    if (report.undetermined !== undefined && report.undetermined.length > 0) {
+      throw new Error(
+        `[audit] ${report.undetermined.length} type(s) could not be classified, so the ` +
+          `report was NOT written (a guess here becomes a committed pre-flight refusal):\n` +
+          report.undetermined.map((t) => `  ${t}`).join('\n') +
+          `\nRe-run \`vp run audit:coverage:regenerate\`.`
+      );
+    }
 
     atomicWriteFile(OUTPUT_JSON, JSON.stringify(report, null, 2) + '\n');
     atomicWriteFile(OUTPUT_MARKDOWN, renderMarkdown(report));
