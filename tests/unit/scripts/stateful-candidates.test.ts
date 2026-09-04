@@ -384,6 +384,23 @@ describe('the pure derivation functions', () => {
           'candidates not an array',
           { schemaVersion: 1, summary: { signalCounts: {} }, candidates: {}, unreadable: [] },
         ],
+        // The three `=== null` / `!Array.isArray` disjuncts, each of which a
+        // `typeof x === 'object'` check alone lets through — `typeof null` is
+        // `'object'`, and an array satisfies it too.
+        ['summary is null', { schemaVersion: 1, summary: null, candidates: [], unreadable: [] }],
+        [
+          'signalCounts is null',
+          {
+            schemaVersion: 1,
+            summary: { signalCounts: null },
+            candidates: [],
+            unreadable: [],
+          },
+        ],
+        [
+          'unreadable not an array',
+          { schemaVersion: 1, summary: { signalCounts: {} }, candidates: [], unreadable: 'none' },
+        ],
       ] as const) {
         errors.length = 0;
         process.exitCode = 0;
@@ -536,10 +553,21 @@ describe('the pure derivation functions', () => {
       expect(md, `renderMarkdown dropped the row: ${row}`).toContain(row);
     }
     // The signal table carries a real COUNT per signal, not a constant.
-    expect(md).toMatch(/\| `storage-capacity` \| 1 \|/);
-    expect(md).toMatch(/\| `data-store-noun` \| 4 \|/);
-    expect(md).toMatch(/\| `retention-window` \| 1 \|/);
-    expect(md).toMatch(/\| `snapshot-or-backup` \| 0 \|/);
+    // The signal table, in DECLARATION order and as one block. Per-row
+    // `toMatch` is order-blind, and the counts are not all distinct, so a
+    // transposition among like-valued rows survived it.
+    const signalRows = md
+      .split('\n')
+      .filter((l) => /^\| `[a-z-]+` \| \d+ \|/.test(l))
+      .map((l) => l.slice(0, l.indexOf('|', l.indexOf('|', 2) + 1) + 1));
+    expect(signalRows).toEqual([
+      '| `snapshot-or-backup` | 0 |',
+      '| `retention-window` | 1 |',
+      '| `storage-capacity` | 1 |',
+      '| `deletion-protection` | 0 |',
+      '| `encryption-at-rest` | 0 |',
+      '| `data-store-noun` | 4 |',
+    ]);
     // The candidate row, whole: type, guarded column, signals, createOnly —
     // in that column order, with the createOnly prefix stripped.
     expect(md).toContain(

@@ -14,7 +14,11 @@
  *
  * Each case pins BOTH sides — the emitting source still contains the template,
  * and the fixture still greps it — so a reword reds here naming the pair to
- * update, instead of silently blinding the integ.
+ * update, instead of silently blinding the integ. The one exception is the
+ * `renderStatefulReason` case: the fixture does not grep the reason text
+ * directly, but the refusal INTERPOLATES it between two needles the fixture
+ * does grep, so a reword there changes the observed line while the guard is
+ * unchanged. That case is deliberately source-only.
  */
 
 import { readFileSync } from 'node:fs';
@@ -47,6 +51,18 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
     expect(VERIFY_SH).toContain("grep -qE 'Failed to (update|create|delete) Vault'");
   });
 
+  it('the deploy still announces the stack with `Deploying stack:`', () => {
+    // Phase 1b's FIRST sentinel keys on this to tell a failure that never
+    // reached the stack from one the guard should have refused. Unpinned it
+    // drifts into a permanent false FAIL — the safe direction, but a loud one.
+    expect(
+      readFileSync(join(REPO_ROOT, 'src/cli/commands/deploy.ts'), 'utf8'),
+      "deploy.ts no longer prints `Deploying stack:` — update the first sentinel in " +
+        "tests/integration/backup/verify.sh's Phase 1b"
+    ).toContain("cyan('Deploying stack:')");
+    expect(VERIFY_SH).toContain("grep -q 'Deploying stack:'");
+  });
+
   it('the property-driven guard still says `requires replacement (immutable property changed:`', () => {
     // This is the marker Phase 1b PARSES, and it is deliberately narrower than
     // the phrase the two guard sites share: it belongs to the pre-flight
@@ -75,14 +91,27 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
   });
 
   it('the refusal still names the opt-in flag the fixture asserts and then uses', () => {
-    expect(DEPLOY_ENGINE).toContain('--force-stateful-recreation');
+    // Scoped to the property-driven refusal's OWN template. A whole-file
+    // `toContain` passes for the wrong reason — the flag is named in five
+    // comments in this file, so renaming it inside the message left every case
+    // green (measured). The slice runs from the marker the fixture parses to
+    // the end of that template literal.
+    const marker = 'requires replacement (immutable property changed: ';
+    const start = DEPLOY_ENGINE.indexOf(marker);
+    expect(start, 'the property-driven refusal template moved').toBeGreaterThan(0);
+    const refusal = DEPLOY_ENGINE.slice(start, start + 500);
+    expect(
+      refusal,
+      'the property-driven refusal no longer names --force-stateful-recreation — the ' +
+        'fixture asserts that flag in the refusal AND then passes it in Phase 1c'
+    ).toContain('--force-stateful-recreation');
     expect(VERIFY_SH).toContain("'force-stateful-recreation'");
     // Phase 1c actually PASSES the flag — the credit `cli-flag-coverage` gives
     // this fixture must rest on a real invocation, not on the failure message.
     expect(VERIFY_SH).toMatch(/\n\s+--force-stateful-recreation\n/);
   });
 
-  it('the reason text the refusal interpolates is still the `always` one', () => {
+  it('the reason text the refusal interpolates is still the `always` one (source side only)', () => {
     // `renderStatefulReason('always')` supplies the tail of the line Phase 1b
     // reads. A reword there changes the fixture's observed output even though
     // the guard is unchanged.
