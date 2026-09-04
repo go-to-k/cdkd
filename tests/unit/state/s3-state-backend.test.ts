@@ -766,6 +766,69 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       expect(deletedKeys).not.toContain('cdkd/S/state.json');
     });
 
+    it('does not sweep a legacy body whose region is a non-string', async () => {
+      // `tryGetLegacy`'s gate is `state.region && state.region !== region`, so
+      // a truthy NON-string (a mangled `"region": 123`) makes the READ refuse
+      // from every region. Classifying it with the region-less bodies would
+      // have the sweep delete a record `getState` will not even read — issue
+      // #2550's asymmetry pointing the other way.
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ version: 1, stackName: 'S', region: 123, resources: {}, outputs: {}, lastModified: 1 })
+            ),
+        },
+      });
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
+    });
+
+    it('sweeps a legacy body whose region is the empty string', async () => {
+      // The mirrored trap: a string, so a `typeof` test files it under
+      // `region`, but falsy — so the read gate passes it from any region and
+      // an equality test (`'' === 'us-east-1'`) would refuse to sweep it,
+      // which is #2550 verbatim.
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockResolvedValueOnce({
+        Body: {
+          transformToString: () =>
+            Promise.resolve(
+              JSON.stringify({ version: 1, stackName: 'S', region: '', resources: {}, outputs: {}, lastModified: 1 })
+            ),
+        },
+      });
+      s3Client.send.mockResolvedValueOnce({}); // delete legacy key
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).toContain('cdkd/S/state.json');
+    });
+
+    it('does not sweep when the probe response carries no body', async () => {
+      s3Client.send.mockResolvedValueOnce({}); // delete new key
+      s3Client.send.mockResolvedValueOnce({}); // probe: no Body
+
+      await backend.deleteState('S', 'us-east-1');
+
+      const deletedKeys = s3Client.send.mock.calls
+        .map((c: unknown[]) => c[0])
+        .filter((cmd: unknown) => cmd instanceof DeleteObjectCommand)
+        .map((cmd: DeleteObjectCommand) => cmd.input.Key);
+      expect(deletedKeys).not.toContain('cdkd/S/state.json');
+    });
+
     it('issues no legacy delete when the legacy key is absent', async () => {
       // The other reason the one-line fix was wrong: an absent key read as
       // the same `undefined`, so accepting it would have sent a pointless
