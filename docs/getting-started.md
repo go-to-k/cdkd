@@ -20,9 +20,8 @@ to track deployed resources, plus cdkd-owned asset storage (by default a
 `--asset-bucket` / `--container-repo`, skip with `--no-assets`; see
 [`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap)). Per-region asset
 storage is added automatically on the first `cdkd deploy` into each region.
-Existing setups, legacy-mode opt-outs, and how this relates to `cdk bootstrap`:
-see [`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap). If you bootstrapped
-under an earlier cdkd, see
+That page also covers existing setups, legacy-mode opt-outs, and how this
+relates to `cdk bootstrap`. If you bootstrapped under an earlier cdkd, see
 [Upgrading from an earlier cdkd version](#upgrading-from-an-earlier-cdkd-version).
 
 ## Installation
@@ -120,7 +119,7 @@ cdkd events MyStack --run <runId>   # one run's full event stream
 ```bash
 cdkd destroy MyStack
 cdkd orphan MyStack/MyBucket        # drop one resource from state (AWS resource stays)
-cdkd force-unlock MyStack           # clear a stale lock from an interrupted deploy or cancelled CI job
+cdkd force-unlock MyStack           # clear a stale lock left by a force-quit or cancelled CI job
 cdkd gc --dry-run                   # reclaim unreferenced cdkd-owned assets (S3 + ECR)
 ```
 

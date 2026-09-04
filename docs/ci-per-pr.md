@@ -82,19 +82,20 @@ record alone, so it works even after the branch is gone.
 
 ## Making the teardown complete
 
-The destroy job above runs `cdkd state destroy`, and all three of these flags
-exist on it as well as on `cdkd destroy` — an ephemeral PR environment has
-nothing worth protecting, so a teardown that needs a second pass is a teardown
-that leaves resources billing.
+The destroy job above runs `cdkd state destroy`. The first two flags exist on
+it and on `cdkd destroy` alike; the third is `cdkd destroy`-only. An ephemeral
+PR environment has nothing worth protecting, so a teardown that needs a second
+pass is a teardown that leaves resources billing.
 
 | Flag | Reach for it when | Without it |
 | --- | --- | --- |
 | [`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy) | The environment has RDS or DynamoDB deletion protection, EC2 termination protection, or any other protection-enabled resource | Those resources survive the job and linger until the next sweep |
 | [`--skip-final-snapshot`](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) | The environment's data is disposable and a resource carries `DeletionPolicy: Snapshot` | A final snapshot accumulates on every PR close |
-| `--purge-events` | You want the state bucket to return fully empty | The stack's deployment-event history is kept as post-mortem context |
+| `--purge-events` (`cdkd destroy` only) | You want the state bucket to return fully empty | The stack's deployment-event history is kept as post-mortem context |
 
-`--purge-events` is the one that differs by command: on `cdkd state destroy` the
-equivalent is a separate `cdkd events prune <stack> --all`.
+`cdkd state destroy` does not accept `--purge-events` — passing it is an
+unknown-option error. Run `cdkd events prune <stack> --all` after the teardown
+instead.
 
 ## Housekeeping
 

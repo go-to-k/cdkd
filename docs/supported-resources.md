@@ -434,7 +434,7 @@ The deploy still fails; it just fails later and less helpfully.
 `CfnTable.IcebergInputProperty` declares only `metadataOperation` and
 `version` — it does NOT declare `icebergTableInput`, and the L1 renderer drops
 undeclared members silently. So an ordinary CDK app cannot emit this property
-at all; verified 2026-08-10 by synthesizing it and reading the template. It
+at all, as synthesizing it and reading the template shows. It
 reaches a deploy only from a hand-written CloudFormation template, a
 `cdkd import --migrate-from-cloudformation` of one, or an explicit
 `addPropertyOverride('OpenTableFormatInput.IcebergInput.IcebergTableInput', …)`.

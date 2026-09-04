@@ -16,12 +16,13 @@ with each other:
 | --- | --- | --- |
 | What is timed | Deploy phase only | Cold end-to-end wall clock |
 | Includes synth / plan | No | Yes |
-| Runs per cell | Median of 7 |
-| Region | `us-east-1` |
+| Runs per cell | See below | Median of 7 |
+| Region | See below | `us-east-1` |
 
-Every number is in seconds. The CloudFormation tables state their own run count
-and region where they were recorded; a cell re-measured later says so in the
-caption beneath its table.
+Times are in seconds; the `Speedup` columns are ratios. On the CloudFormation
+side only the Express-mode table records its run count and region — best of 3,
+`us-west-2` — and the other three tables state neither. Where a cell was
+re-measured later, the caption beneath its table says so.
 
 Synth is excluded from the CloudFormation comparison because it is identical on
 both sides — cdkd and the AWS CDK run the same user code through the same
