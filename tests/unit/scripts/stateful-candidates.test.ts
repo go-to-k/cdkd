@@ -930,6 +930,12 @@ describe('the shipped binary still consults its own guards', () => {
   // deleting `validateArgs()` from `main()` all survived. These three cases run
   // the real binary the vite task and the ci.yml step run.
   const SCRIPT = join(REPO_ROOT, 'scripts/audit-stateful-candidates.ts');
+  // Each case boots Node and type-strips a ~1400-line TypeScript file, several
+  // times over. Vitest's default 5s timeout is calibrated for in-process tests
+  // and is not enough on a loaded CI runner — measured: green locally in ~2s,
+  // timed out in CI where the same suite spent 517s just importing. The bound
+  // is generous on purpose; it exists to stop a HANG, not to police latency.
+  const SPAWN_TIMEOUT_MS = 60_000;
   const run = (args: string[], env: Record<string, string> = {}) =>
     spawnSync(process.execPath, [SCRIPT, ...args], {
       cwd: REPO_ROOT,
@@ -943,13 +949,13 @@ describe('the shipped binary still consults its own guards', () => {
     // out of a CI log, and the rest of this block is stream-specific.
     expect(r.stdout).toContain('candidates dispositioned');
     expect(r.status).toBe(0);
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('the self-probe seam still reaches main() — a forced failure blocks the check', () => {
     const r = run(['--check'], { CDKD_SELF_PROBE_FORCE_FAIL: '1' });
     expect(r.stderr).toContain('self-probe FAILED');
     expect(r.status).not.toBe(0);
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('a mistyped flag is refused instead of falling through to the summary reader', () => {
     // The failure this closes: `--chekc` printed the cached summary and exited
@@ -969,7 +975,7 @@ describe('the shipped binary still consults its own guards', () => {
     expect(help.status).toBe(0);
     expect(help.stdout).toContain('Usage: node scripts/audit-stateful-candidates.ts');
     expect(help.stdout).toContain('--rederive');
-  });
+  }, SPAWN_TIMEOUT_MS);
 });
 
 describe('the derivation is wired into the toolchain', () => {
