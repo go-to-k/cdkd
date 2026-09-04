@@ -46,7 +46,7 @@ import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js
  *
  * `drift --revert` round-trips `observedProperties` (= a previous
  * `readCurrentState` snapshot) back through `provider.update`. The risks
- * documented in docs/provider-development.md § 3b ("Read-update round-trip
+ * documented in docs/provider-rules.md "readCurrentState() for drift detection" ("Read-update round-trip
  * test") are:
  *
  * - **Class 1**: a placeholder always emitted by readCurrentState that AWS

@@ -817,7 +817,7 @@ export class CloudTrailProvider implements ResourceProvider {
     // Always-emit user-controllable top-level keys with placeholders so
     // console-side adds become visible to drift (the comparator's top-
     // level walk is state-keys-only, so an omitted key is invisible
-    // forever). See docs/provider-development.md § 3b.
+    // forever). See docs/provider-rules.md "readCurrentState() for drift detection".
     const result: Record<string, unknown> = {};
     if (trail.Name !== undefined) result['TrailName'] = trail.Name;
     // S3BucketName is required to create a trail; AWS always returns it.

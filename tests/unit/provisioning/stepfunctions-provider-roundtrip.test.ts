@@ -61,7 +61,7 @@ function findUpdateInput(): UpdateInput | undefined {
 /**
  * Round-trip tests for `StepFunctionsProvider`. These mechanically guard the
  * three latent bug classes documented in
- * `docs/provider-development.md § 3b "Read-update round-trip test"`:
+ * `docs/provider-rules.md "readCurrentState() for drift detection" "Read-update round-trip test"`:
  *
  *   - Class 1 (type-discriminator-dependent fields): n/a for SFN —
  *     LoggingConfiguration / TracingConfiguration are valid on both STANDARD

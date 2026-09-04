@@ -544,7 +544,7 @@ describe('SQSQueueProvider.update', () => {
 
   it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {
     // Mechanical guard for Class 2 placeholder regression. See
-    // docs/provider-development.md § 3b "Read-update round-trip test".
+    // docs/provider-rules.md "readCurrentState() for drift detection" "Read-update round-trip test".
     //
     // 1. AWS-minimum response (queue with no DLQ, no KMS, no tags)
     //    triggers the always-emit placeholders that BIT us in PR #161.

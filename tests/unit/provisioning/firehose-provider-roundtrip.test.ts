@@ -108,7 +108,7 @@ describe('FirehoseProvider read-update round-trip', () => {
   });
 
   it('always emits Tags (even when ListTagsForDeliveryStream fails on a non-NotFound error)', async () => {
-    // Per docs/provider-development.md § 3b: omitting `Tags` on the
+    // Per docs/provider-rules.md "readCurrentState() for drift detection": omitting `Tags` on the
     // failure path means the comparator's state-keys-only walk skips
     // Tags forever, hiding console-side tag adds from drift on the
     // unlucky run that hit the Tags API throttle.

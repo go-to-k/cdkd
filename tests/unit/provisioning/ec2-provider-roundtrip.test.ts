@@ -52,7 +52,7 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
  * must reject loudly with `ResourceUpdateNotSupportedError` instead of
  * silently no-op'ing.
  *
- * See `docs/provider-development.md § 3b` and the canonical
+ * See `docs/provider-rules.md "readCurrentState() for drift detection"` and the canonical
  * `tests/unit/provisioning/sns-topic-provider-roundtrip.test.ts`.
  */
 describe('EC2Provider read-update round-trip', () => {

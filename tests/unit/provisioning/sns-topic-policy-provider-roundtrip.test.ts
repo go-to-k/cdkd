@@ -86,7 +86,7 @@ describe('SNSTopicPolicyProvider read-update round-trip', () => {
   it('round-trip: readCurrentState output survives update() without AWS-invalid inputs', async () => {
     // Mechanical guard for Class 1 / Class 2 / truthy-gate regressions
     // on the read-then-update round-trip path (cdkd drift --revert).
-    // See docs/provider-development.md § 3b.
+    // See docs/provider-rules.md "readCurrentState() for drift detection".
 
     // 1. readCurrentState
     mockSend.mockResolvedValueOnce({

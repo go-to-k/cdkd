@@ -145,7 +145,7 @@ Unit tests under `tests/unit/**` (Vitest, AWS SDK mocked via `vi.mock()`). Integ
 - **[docs/import.md](docs/import.md)** - `cdkd import` full guide (modes, flags, CFn migration, provider coverage)
 - **[docs/provider-development.md](docs/provider-development.md)** - Provider implementation guide: the interface, examples, registration, and the steps to add one. The rules each step implies (error handling, pre-flight refusal, removal semantics, drift read-back, property coverage) are in [docs/provider-rules.md](docs/provider-rules.md)
 - **[docs/troubleshooting.md](docs/troubleshooting.md)** - Common issues and solutions
-- **[docs/testing.md](docs/testing.md)** - Testing guide and the integration walkthrough; the fixture rules it applies are in [docs/integ-fixture-conventions.md](docs/integ-fixture-conventions.md)
+- **[docs/testing.md](docs/testing.md)** - Testing guide and the integration walkthrough; the fixture and unit-test conventions it applies are in [docs/integ-fixture-conventions.md](docs/integ-fixture-conventions.md)
 - **[docs/cross-stack-references.md](docs/cross-stack-references.md)** - `Fn::ImportValue` strong references and `Fn::GetStackOutput` weak ones, from the user's side; the exports index, resolver flow and schema v4 migration are in [docs/cross-stack-internals.md](docs/cross-stack-internals.md)
 - **[docs/deployment-events.md](docs/deployment-events.md)** - Structured deployment events (`cdkd events`) — CloudFormation `DescribeStackEvents` equivalent, S3 `deployments/` key layout (separate from state.json, no schema bump), best-effort flush, `index.json` semantics (issue #808)
 

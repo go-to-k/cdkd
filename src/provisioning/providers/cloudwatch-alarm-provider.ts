@@ -375,7 +375,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     // a console-side ADD on a key the alarm wasn't templated with. That
     // makes `cdkd drift --revert` round-trip those placeholders back
     // through this method (Class 1 / Class 2 in
-    // docs/provider-development.md § 3b):
+    // docs/provider-rules.md "readCurrentState() for drift detection"):
     //
     //   - Class 1 (type-discriminator): `Metrics: []` is the metric-math
     //     discriminator. An empty array IS truthy in JS, so a naive

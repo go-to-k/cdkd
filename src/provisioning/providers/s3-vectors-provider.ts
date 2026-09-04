@@ -427,7 +427,7 @@ export class S3VectorsProvider implements ResourceProvider {
       if (sseType !== undefined) {
         enc['SseType'] = sseType;
       }
-      // Class 1 guard (docs/provider-development.md § 3b): KmsKeyArn is
+      // Class 1 guard (docs/provider-rules.md "readCurrentState() for drift detection"): KmsKeyArn is
       // KMS-only — only valid when SseType === 'aws:kms'. AWS will not
       // return kmsKeyArn for AES256-encrypted buckets, but defend
       // against a future SDK that surfaces an account-default KMS key

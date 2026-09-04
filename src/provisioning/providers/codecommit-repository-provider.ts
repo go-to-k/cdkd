@@ -589,7 +589,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    *
    * Every user-controllable top-level key `update()` can mutate is emitted
    * ALWAYS — with a `?? ''` / `?? []` placeholder when AWS returns the field
-   * as undefined / empty (docs/provider-development.md §3b). Omitting the key
+   * as undefined / empty (docs/provider-rules.md "readCurrentState() for drift detection"). Omitting the key
    * on the empty path would let a resource deployed WITHOUT a description
    * never carry `RepositoryDescription` in `observedProperties`, making a
    * console-side ADD of a description invisible to drift forever. `Tags` are

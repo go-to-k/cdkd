@@ -46,7 +46,7 @@ describe('AgentCoreRuntimeProvider read-update round-trip', () => {
 
   it('round-trip: readCurrentState placeholders survive update() without AWS-invalid inputs', async () => {
     // Mechanical guard for the 3 latent bug classes documented in
-    // docs/provider-development.md § 3b "Read-update round-trip test".
+    // docs/provider-rules.md "readCurrentState() for drift detection" "Read-update round-trip test".
     //
     //   - Truthy gate: empty Description ('') from readCurrentState
     //     must reach UpdateAgentRuntime input (the field is optional,

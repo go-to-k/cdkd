@@ -28,14 +28,14 @@ You are checking whether documentation is up to date with recent code changes in
    - `src/synthesis/` changes → check docs/architecture.md synthesis section, CLAUDE.md synthesis section
    - `src/assets/` changes → check docs/architecture.md asset section, CLAUDE.md asset section
    - `src/deployment/` changes → check docs/architecture.md deployment section, CLAUDE.md deployment section
-   - `src/provisioning/` changes → check docs/provider-development.md, CLAUDE.md provider section. For a NEW SDK provider ALSO check docs/supported-resources.md + docs/import.md (per `.claude/rules/providers.md` "Adding a New SDK Provider"). **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), its resource type MUST appear in the per-type wait-semantics table + its intro in docs/cli-deploy.md, and the `noWaitOption` help + JSDoc in src/cli/options.ts (the README no longer enumerates flags — that content lives in docs/cli-deploy.md's table). Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (CI fails if a `CDKD_NO_WAIT` provider is absent from the cli-deploy.md `--no-wait` table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — this bullet + that test are the backstop.
+   - `src/provisioning/` changes → check docs/provider-development.md AND docs/provider-rules.md (the rules corpus split out of it), plus the CLAUDE.md provider section. For a NEW SDK provider ALSO check docs/supported-resources.md + docs/import.md (per `.claude/rules/providers.md` "Adding a New SDK Provider"). **If the provider gates a stabilization wait on `process.env['CDKD_NO_WAIT']`** (i.e. `--no-wait` skips a multi-minute poll for this type), its resource type MUST appear in the per-type wait-semantics table + its intro in docs/cli-deploy.md, and the `noWaitOption` help + JSDoc in src/cli/options.ts (the README no longer enumerates flags — that content lives in docs/cli-deploy.md's table). Enforced by `tests/unit/provisioning/no-wait-doc-coverage.test.ts` (CI fails if a `CDKD_NO_WAIT` provider is absent from the cli-deploy.md `--no-wait` table). The `AWS::Lambda::MicrovmImage` provider shipped honoring `--no-wait` but missed this list — this bullet + that test are the backstop.
    - `src/analyzer/` changes → check docs/architecture.md analysis section
    - `src/state/` changes → check docs/state-management.md
    - New files added → check if they're mentioned in CLAUDE.md "Key Files and Directories"
    - New exports in `src/index.ts` → check if public API docs are updated
    - `package.json` dependency changes → check CLAUDE.md "Dependencies" section
    - New CLI options → check docs/getting-started.md and the per-command pages under docs/ (the README's usage cheatsheet moved there)
-   - New integration tests → check docs/testing.md
+   - New integration tests → check docs/testing.md AND docs/integ-fixture-conventions.md (the fixture rules split out of it)
 
 4. **Read the relevant documentation sections** and compare with the actual code to find:
    - Missing mentions of new files, features, or options

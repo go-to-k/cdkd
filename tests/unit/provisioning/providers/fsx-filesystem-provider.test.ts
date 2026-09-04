@@ -956,7 +956,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
     ).resolves.toBeUndefined();
   });
 
-  // ─── docs/provider-development.md §3b mandatory placeholder block ────
+  // ─── docs/provider-rules.md "readCurrentState() for drift detection" mandatory placeholder block ────
   //
   // The expected key set is DISCRIMINATOR-DEPENDENT, so §3b's single
   // "complete key list" assertion is written once per FileSystemType. The
@@ -1336,7 +1336,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     expect(openzfs['RootVolumeConfiguration']).toBeUndefined();
   });
 
-  // Mandatory round-trip guard (docs/provider-development.md §3b): `cdkd drift
+  // Mandatory round-trip guard (docs/provider-rules.md "readCurrentState() for drift detection"): `cdkd drift
   // --revert` feeds a readCurrentState snapshot back through update(). Only the
   // variant block matching FileSystemType is ever emitted, so the Class 1
   // type-discriminator hazard cannot fire; this pins that contract.
@@ -1471,7 +1471,7 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
   });
 
-  // docs/provider-development.md §3b Class 2: a nested sub-block AWS returns
+  // docs/provider-rules.md "readCurrentState() for drift detection" Class 2: a nested sub-block AWS returns
   // only partially populated (AUTOMATIC mode omits Iops) must still be a legal
   // UpdateFileSystem input when --revert pushes the state values back.
   it('round-trip: a partially-populated nested DiskIopsConfiguration reverts without an invalid input', async () => {

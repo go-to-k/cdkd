@@ -51,7 +51,7 @@ describe('S3TablesProvider read-update round-trip', () => {
   });
 
   // Mechanical guard for the 3 latent bug classes documented in
-  // docs/provider-development.md § 3b "Read-update round-trip test".
+  // docs/provider-rules.md "readCurrentState() for drift detection" "Read-update round-trip test".
   //
   // S3 Tables resources are immutable: update() is a documented no-op
   // that returns { physicalId, wasReplaced: false } without touching

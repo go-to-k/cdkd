@@ -642,6 +642,8 @@ falsifies a fixture.
 
 ## Reporting a skipped delete
 
+Written for issue [#1752](https://github.com/go-to-k/cdkd/issues/1752).
+
 `delete()` returning normally means **"the resource is gone"** — a delete
 call succeeded, or the resource was already absent (the `*NotFound`
 idempotent arm above, `CustomResourceProvider`'s backing-Lambda-is-gone
@@ -916,6 +918,8 @@ the NEW resource after the old one was already re-created, where the delete is
 best-effort and a skip only warns.
 
 ## A create that mints a server-side id needs an idempotency token
+
+Written for issue [#2039](https://github.com/go-to-k/cdkd/issues/2039).
 
 The deploy engine wraps every `provider.create()` in its outer transient-error
 retry, and HTTP 500 / 502 / 504 are retryable (issue #2026). So a 500 whose

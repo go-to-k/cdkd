@@ -212,3 +212,4 @@ faithful to CFn.
 - [Stack Outputs](stack-outputs.md) — declaring the values a consumer imports
 - [Destroy flags & guards](cli-destroy.md) — the refusal this page's guard
   produces
+- [CLI Reference](cli-reference.md) — every command and the full exit-code table

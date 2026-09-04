@@ -169,7 +169,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
   });
 
   // Structural regression test for the always-emit-placeholder convention
-  // (docs/provider-development.md § 3b). Ensures every user-controllable
+  // (docs/provider-rules.md "readCurrentState() for drift detection"). Ensures every user-controllable
   // top-level CFn key is present in the result even when AWS returns
   // the resource with all optional fields undefined / empty. A future
   // refactor that drops a placeholder for any of these keys must update

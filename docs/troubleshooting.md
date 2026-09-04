@@ -921,23 +921,25 @@ CloudFormation intrinsic function not supported by cdkd is being used.
 | `Fn::Or` | ✅ |
 | `Fn::Not` | ✅ |
 | `Fn::ImportValue` | ✅ |
-| `Fn::GetStackOutput` | ✅ (same-account; cross-account `RoleArn` not yet implemented) |
+| `Fn::GetStackOutput` | ✅ (cdkd-specific; cross-account via its `RoleArn` argument) |
 | `Fn::FindInMap` | ✅ |
 | `Fn::GetAZs` | ✅ |
 | `Fn::Base64` | ✅ |
+| `Fn::Cidr` | ✅ |
+| `Fn::Transform` | ✅ |
 
 **Solution:**
 
-Every CloudFormation intrinsic function in the table above is supported, so
-this error means the installed cdkd predates one of them. Upgrade:
+If the intrinsic in the error is **not** in the table, cdkd does not implement
+it — `Fn::ToJsonString` and `Fn::ForEach` are the two you are most likely to
+meet. [Open an issue](https://github.com/go-to-k/cdkd/issues) naming it and the
+template shape you used; there is no flag that works around it.
+
+If it **is** in the table, the installed cdkd predates its support. Upgrade:
 
 ```bash
 npm i -g @go-to-k/cdkd
 ```
-
-If you hit an intrinsic that is genuinely unsupported on the current release,
-[open an issue](https://github.com/go-to-k/cdkd/issues) naming it and the
-template shape you used.
 
 ### "AWS::AccountId not resolved"
 

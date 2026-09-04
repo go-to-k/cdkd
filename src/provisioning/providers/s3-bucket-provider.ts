@@ -6826,7 +6826,7 @@ export class S3BucketProvider implements ResourceProvider {
    * `ServerSideEncryptionConfigurationNotFoundError`, `NoSuchTagSet`,
    * `NoSuchPublicAccessBlockConfiguration`, etc.) — those are caught
    * individually and the corresponding key is emitted as a CFn-shape
-   * placeholder (per docs/provider-development.md § 3b: always-emit
+   * placeholder (per docs/provider-rules.md "readCurrentState() for drift detection": always-emit
    * user-controllable top-level keys), NOT treated as the bucket being
    * absent.
    *
@@ -6929,7 +6929,7 @@ export class S3BucketProvider implements ResourceProvider {
   // -------------------------------------------------------------------
   // readCurrentState helpers — one per sub-config. Each catches the
   // "feature not configured" error and returns the always-emit
-  // placeholder shape per docs/provider-development.md § 3b.
+  // placeholder shape per docs/provider-rules.md "readCurrentState() for drift detection".
   // -------------------------------------------------------------------
 
   private async readVersioning(bucket: string): Promise<Record<string, unknown>> {

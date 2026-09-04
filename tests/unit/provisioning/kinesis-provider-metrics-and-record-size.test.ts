@@ -514,7 +514,7 @@ describe('KinesisStreamProvider create-path PRE-FLIGHT (issue #609)', () => {
   // skips it: the stream is orphaned, absent from state, and — because the
   // generated name is a deterministic hash — the retry after the user fixes
   // the template collides with ResourceInUseException and wedges the stack.
-  // See docs/provider-development.md §1a.
+  // See docs/provider-rules.md "Pre-flight refusal".
   // Each row is bound to its OWN message: with a bare `.rejects.toThrow()`
   // both rows pass when either branch throws the other property's error, so
   // one of the two pre-flights could be deleted undetected.

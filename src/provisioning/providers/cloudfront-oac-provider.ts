@@ -265,7 +265,7 @@ export class CloudFrontOACProvider implements ResourceProvider {
    * identical, so the reverse mapping is a straight per-field copy.
    *
    * Every field is emitted unconditionally, with `?? ''` standing in for an
-   * AWS response that omits it (docs/provider-development.md § 3b): the
+   * AWS response that omits it (docs/provider-rules.md "readCurrentState() for drift detection"): the
    * optional `Description` is user-controllable and mutable, so dropping the
    * key when AWS returns nothing would leave it out of `observedProperties`
    * on a stack that never templated it — and the drift comparator's

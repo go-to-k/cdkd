@@ -6,7 +6,7 @@ import {
 
 // Mechanical guard for the 3 latent bug classes (Class 1 / Class 2 /
 // truthy gate) that surface only on `cdkd drift --revert` round-trips
-// through `provider.update()`. See docs/provider-development.md § 3b
+// through `provider.update()`. See docs/provider-rules.md "readCurrentState() for drift detection"
 // "Read-update round-trip test" and the canonical SQS / SNS tests.
 //
 // The shape of the round-trip is:

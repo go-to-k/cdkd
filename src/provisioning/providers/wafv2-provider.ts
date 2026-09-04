@@ -47,7 +47,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
  * through `update()` and surface as a hard AWS rejection, so we sanitize
  * the wire-layer payload while keeping the read-side placeholder
  * intact. This is the Class 2 pattern from
- * `docs/provider-development.md § 3b`.
+ * `docs/provider-rules.md "readCurrentState() for drift detection"`.
  */
 function sanitizeDescription(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;

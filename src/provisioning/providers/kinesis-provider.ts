@@ -298,7 +298,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       (properties['Name'] as string | undefined) ||
       generateResourceName(logicalId, { maxLength: 128 });
 
-    // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-development.md §1a).
+    // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-rules.md "Pre-flight refusal").
     // Refusing from inside it would throw AFTER `CreateStream` already ran, and
     // a failed CREATE journals no physical id — so `rollback-executor` skips it
     // and the stream is orphaned, untracked and unrollbackable. `streamName` is

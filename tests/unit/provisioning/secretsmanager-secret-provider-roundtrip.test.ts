@@ -50,7 +50,7 @@ describe('SecretsManagerSecretProvider read-update round-trip', () => {
 
   it('Class 2 — empty-string KmsKeyId placeholder is sanitized away on round-trip', async () => {
     // Mechanical guard for Class 2 placeholder regression. See
-    // docs/provider-development.md § 3b "Read-update round-trip test".
+    // docs/provider-rules.md "readCurrentState() for drift detection" "Read-update round-trip test".
     //
     // readCurrentState emits `KmsKeyId: ''` as a placeholder for "no
     // customer-managed KMS key" (so the comparator's top-level walk can

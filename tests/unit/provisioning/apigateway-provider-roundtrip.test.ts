@@ -43,7 +43,7 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
  * Read-update round-trip suite for ApiGatewayProvider.
  *
  * Mechanical guard for the three latent failure modes documented in
- * docs/provider-development.md § 3b — Class 1 (type-discriminator-
+ * docs/provider-rules.md "readCurrentState() for drift detection" — Class 1 (type-discriminator-
  * dependent fields), Class 2 (structurally-incomplete-when-empty
  * fields), and the truthy-gate `update()` bug — all of which only
  * surface on the `cdkd drift --revert` round-trip
