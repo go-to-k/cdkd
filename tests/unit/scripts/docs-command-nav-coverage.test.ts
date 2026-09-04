@@ -251,6 +251,53 @@ const MIN_COMMANDS = 15;
 const MIN_NAV_PATHS = 30;
 
 /**
+ * The EXACT registered top-level command set, as a sorted literal.
+ *
+ * The floors above and the three structures below are both derived from
+ * `buildProgram()`, so they move WITH the tree: adding or removing a command
+ * shifts both sides of every comparison together, and nothing here says which
+ * commands cdkd is supposed to ship. That gap is issue
+ * [#2588](https://github.com/go-to-k/cdkd/issues/2588), found while removing
+ * `cdkd migrate` ([#2572](https://github.com/go-to-k/cdkd/issues/2572)):
+ * re-registering a removed command passes every assertion in this file as long
+ * as it is also given an `UNDOCUMENTED` entry, and adding one there is a single
+ * plausible-looking line.
+ *
+ * A literal fixes that in both directions. Adding a command is a deliberate
+ * one-line edit here with a reviewer looking at it; REMOVING one is the same,
+ * which is the direction a derived comparison can never notice.
+ *
+ * Deliberately NOT the union of the three structures: `UNDOCUMENTED` is empty
+ * as of #2572, so a union-based pin would assert nothing about a command that
+ * ships undocumented -- the case this file exists for. It is keyed on what
+ * commander DISPATCHES, so `list`'s `ls` alias is absent (an alias is not a
+ * command; `src/cli/index.ts`'s `SUBCOMMANDS` is the set that needs aliases,
+ * pinned separately in `tests/unit/cli/subcommand-reorder-population.test.ts`).
+ * `help` is commander's auto-generated command and is filtered by
+ * `topLevelCommandNames`.
+ */
+const REGISTERED_COMMANDS: readonly string[] = [
+  'bootstrap',
+  'deploy',
+  'destroy',
+  'diff',
+  'drift',
+  'events',
+  'export',
+  'force-unlock',
+  'gc',
+  'import',
+  'list',
+  'local',
+  'orphan',
+  'publish-assets',
+  'rollback',
+  'scrub',
+  'state',
+  'synth',
+];
+
+/**
  * Floors on the two CHECKED structures, and on the decoy list.
  *
  * Without them a command can be moved from a checked structure into
@@ -471,6 +518,18 @@ describe('docs command/nav coverage', () => {
       `A command belongs to exactly one of the three structures. Remove the stale entry ` +
         `-- a command listed twice is one whose weaker claim is never checked.`
     ).toEqual([]);
+  });
+
+  it('ships exactly the commands the pinned list names', () => {
+    expect(
+      [...commands].sort(),
+      `The registered top-level command set changed. This is the one assertion in ` +
+        `this file that is not derived from buildProgram(), so it is what makes ADDING ` +
+        `or REMOVING a command a deliberate edit rather than something the derived ` +
+        `checks absorb silently. If the change is intended, update REGISTERED_COMMANDS ` +
+        `in the same commit -- and if a command was ADDED, give it an entry in one of ` +
+        `the three structures too, which the assertions above will demand anyway.`
+    ).toEqual([...REGISTERED_COMMANDS].sort());
   });
 
   it('keeps every structure free of commands that no longer exist', () => {
