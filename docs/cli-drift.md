@@ -31,7 +31,7 @@ from AWS. CloudFormation's drift detection only compares
 template-declared properties, so this matches its behavior for that
 class; an undeclared key captured with a real value (an AWS-side
 default) is still compared.
-See [docs/state-management.md](state-management.md) for the schema
+See [State Management](state-management.md) for the schema
 details.
 
 Detection is the default behavior — pass `--accept` or `--revert` to
@@ -325,7 +325,7 @@ normally) or gate on `--json` and filter the known position out.
 
 A property whose real value happens to BE the string `***` is treated the same
 way, since nothing in state distinguishes the two — see
-[state-management.md](state-management.md#noecho-custom-resource-responses).
+[State Management](state-management.md#noecho-custom-resource-responses).
 
 **Known limitation.** cdkd cannot mask a value for a reference it never
 resolved, so for `{{resolve:ssm-secure:...}}` the protections above are not
@@ -423,7 +423,7 @@ The following SDK Providers ship with first-class `readCurrentState`
 > `cdkd state resources` print and what
 > `cdkd import --resource <logicalId>=<physicalId>` expects — quote it on
 > a shell command line. The per-type format table is in
-> [state-management.md](state-management.md#composite-pipe-delimited-physicalids).
+> [State Management](state-management.md#composite-pipe-delimited-physicalids).
 
 Tag drift is supported across the SDK Providers listed above (and the CC
 API fallback). cdkd filters out CDK / AWS-internal `aws:`-prefixed entries

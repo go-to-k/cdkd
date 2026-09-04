@@ -37,8 +37,10 @@ them in one pass instead of one per re-run.
 `--skip-import-support-preflight` bypasses the check if AWS has since made a
 type importable.
 
-See **[import.md](import.md)** for the full guide — Custom Resource
-2-phase flow, nested-stack adoption mechanics (`--cfn-child-stack-name`
-per-child overrides, AWS's "Nest an existing stack" pattern), and the
-design rationale at
-[design/464-nested-stacks-export-import.md](design/464-nested-stacks-export-import.md).
+See **[`cdkd export`](cli-export.md)** for the full reference — every flag,
+the Custom Resource 2-phase flow, and nested-stack adoption mechanics
+(`--cfn-child-stack-name` per-child overrides, AWS's "Nest an existing
+stack" pattern). The design rationale is in the
+[nested-stack export/import design note](design/464-nested-stacks-export-import.md).
+For the opposite direction — bringing CloudFormation-managed resources
+under cdkd — see [`cdkd import`](import.md).

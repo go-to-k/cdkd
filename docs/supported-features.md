@@ -7,8 +7,8 @@ description: "CloudFormation feature parity in cdkd — which intrinsic function
 
 CloudFormation feature parity for cdkd. For per-resource-type provisioning
 support (SDK Providers vs Cloud Control API fallback), see
-[supported-resources.md](supported-resources.md). For `cdkd local invoke`
-runtime / handler support, see [cli-reference.md](cli-reference.md).
+[Supported Resources](supported-resources.md). For `cdkd local invoke`
+runtime / handler support, see [CLI Reference](cli-reference.md).
 
 ## Intrinsic Functions
 
@@ -54,7 +54,7 @@ type** is handled via the Cloud Control API fallback (async polling).
 Resource types not supported by either path fail at deploy time with a
 clear error.
 
-See [supported-resources.md](supported-resources.md) for the full
+See [Supported Resources](supported-resources.md) for the full
 per-type table.
 
 ## Other Features

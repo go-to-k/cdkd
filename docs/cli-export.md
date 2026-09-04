@@ -79,7 +79,7 @@ cdkd export                                       # auto-detect single-stack app
    changeset" design was found infeasible by the 2026-05-24 AWS spike —
    AWS rejects that flag combination with
    `ValidationError: IncludeNestedStacks is not supported for changeSet type: IMPORT`;
-   see [docs/design/464-nested-stacks-export-import.md](design/464-nested-stacks-export-import.md)
+   see the [nested-stack export/import design note](design/464-nested-stacks-export-import.md)
    §4.0 / §4.3 for the per-stack-loop algorithm. `--dry-run` prints
    the per-stack plan summary without acquiring child locks or
    submitting any changeset.
@@ -145,7 +145,7 @@ cdkd export                                       # auto-detect single-stack app
    `attributes` instead, and blocks the resource with an actionable
    message when state does not carry it (a record written before cdkd
    started recording the ARN — re-deploy the stack once to heal it, as
-   [state-management.md](state-management.md#the-composite-id-is-not-what-ref-returns)
+   [State Management](state-management.md#the-composite-id-is-not-what-ref-returns)
    describes). `AWS::EC2::SecurityGroupIngress` is the fourth member and
    works the same way: CFn identifies a rule by the `sgr-...` id AWS
    mints, which cdkd records as the rule's `Id` attribute while its
@@ -360,7 +360,8 @@ cdkd export                                       # auto-detect single-stack app
   adopt their just-imported children via the AWS-docs "Nest an
   existing stack" pattern (the original
   `--include-nested-stacks` design was found infeasible by the
-  2026-05-24 AWS spike — see [design/464-nested-stacks-export-import.md](design/464-nested-stacks-export-import.md)
+  2026-05-24 AWS spike — see the
+  [nested-stack export/import design note](design/464-nested-stacks-export-import.md)
   §4.0 / §4.3 for the per-stack-loop algorithm). On per-stack failure,
   cdkd state for the failed stack and every yet-to-be-imported stack
   is preserved; the error message names which stacks moved and which

@@ -581,7 +581,7 @@ Two traps when auditing this by hand:
 - **Hidden options do not appear in `--help`**, so help text alone is not
   decisive — the option set has to come from the command tree itself.
 - **`--region` is not a no-op** on the commands that accept it. It is the
-  highest-precedence region source (see [cli-reference.md](cli-reference.md)),
+  highest-precedence region source (see [CLI Reference](cli-reference.md)),
   so "cleaning up" deprecated `--region` flags would silently change region
   resolution.
 
@@ -2010,7 +2010,7 @@ If you use other resources not supported by Cloud Control API, an error message 
 
 ### Integration Test Coverage Matrix
 
-[`docs/integ-coverage.md`](integ-coverage.md) lists every registered SDK Provider with the integ fixtures that exercise it (and surfaces orphan providers — those registered but lacking any integ coverage). Generated from `src/provisioning/register-providers.ts` + `tests/integration/*/{lib,bin}/*.ts`.
+The [integration test coverage matrix](integ-coverage.md) lists every registered SDK Provider with the integ fixtures that exercise it (and surfaces orphan providers — those registered but lacking any integ coverage). Generated from `src/provisioning/register-providers.ts` + `tests/integration/*/{lib,bin}/*.ts`.
 
 ```bash
 vp run integ-coverage
@@ -2022,17 +2022,17 @@ The hook `.claude/hooks/provider-integ-gate.sh` blocks `git commit` when a new `
 
 ### CLI Flag Coverage (visibility report)
 
-[`docs/cli-flag-coverage.md`](cli-flag-coverage.md) lists every CLI flag declared in `src/cli/options.ts` and the integ fixtures whose `verify.sh` exercises it. Generated via `vp run cli-flag-coverage`.
+The [CLI flag coverage matrix](cli-flag-coverage.md) lists every CLI flag declared in `src/cli/options.ts` and the integ fixtures whose `verify.sh` exercises it. Generated via `vp run cli-flag-coverage`.
 
 **The coverage numbers are a visibility report, NOT a CI gate.** Many cdkd flags (`--dry-run`, `--verbose`, `--profile`, etc.) are tested adequately at the unit-test level rather than via an integ shell invocation — surfacing those as "uncovered" would produce >50% false-positive noise. The "no integ verify.sh mention" section is a question for the reviewer ("does THIS flag warrant a real-AWS test?"), not an answer.
 
-Contrast with the provider-coverage matrix in [docs/integ-coverage.md](integ-coverage.md), where a coverage gate IS appropriate because every registered provider is expected to have real-AWS verification.
+Contrast with the [integration test coverage matrix](integ-coverage.md), where a coverage gate IS appropriate because every registered provider is expected to have real-AWS verification.
 
 **CI hard-fails on staleness** (issue #1071): the `check-build-test` job in `.github/workflows/ci.yml` runs `vp run cli-flag-coverage` and fails on a non-empty `git diff` of the regenerated `docs/cli-flag-coverage.md` / `docs/_generated/cli-flag-coverage.json`, so a forgotten regeneration cannot reach main. Same staleness shape as the integ-coverage / scenario-coverage matrices — it guards freshness of the generated file, not coverage %.
 
 ### Scenario Coverage (visibility report)
 
-[`docs/scenario-coverage.md`](scenario-coverage.md) maps each cdkd-canonical real-AWS regression pattern (e.g. `vpc-lambda-eni-release`, `nat-gateway-cleanup`, `multi-stack-importvalue-strong-ref`) to the integ fixtures that exercise it. Generated via `vp run scenario-coverage`.
+The [scenario coverage matrix](scenario-coverage.md) maps each cdkd-canonical real-AWS regression pattern (e.g. `vpc-lambda-eni-release`, `nat-gateway-cleanup`, `multi-stack-importvalue-strong-ref`) to the integ fixtures that exercise it. Generated via `vp run scenario-coverage`.
 
 Per-fixture annotations live in a `tests/integration/<fixture>/.scenarios.json` sidecar:
 
@@ -2050,7 +2050,7 @@ Adding a new scenario: (1) add an entry to `KNOWN_SCENARIOS` with a one-line des
 
 ### Integ-run Ledger (normalized shape)
 
-[`docs/_generated/integ-last-run.tsv`](_generated/integ-last-run.tsv) records, one row per integration test, when it last ran and whether it passed. `/run-integ` writes it on every run (pass or fail) and `/pick-integ` ranks staleness from it.
+The [integ-run ledger](_generated/integ-last-run.tsv) records, one row per integration test, when it last ran and whether it passed. `/run-integ` writes it on every run (pass or fail) and `/pick-integ` ranks staleness from it.
 
 Unlike the three matrices above it is not derived from the tree — it is accumulated run history, so it cannot simply be regenerated. What IS enforced is its **shape**: exactly one row per test, rows sorted by test name. `vp run integ-ledger-normalize` rewrites the file into that shape (keeping the newest `last_run_iso` per test), and `--check` reports violations without writing.
 

@@ -21,7 +21,7 @@ storage). Creates:
    CloudFormation stack templates — cdkd-deployed stacks have no CFn stack,
    so assets published to the CDK bootstrap bucket/repo look isolated to gc
    and get deleted. cdkd-owned storage is structurally out of gc's reach.
-   See [docs/design/1002-cdkd-asset-storage.md](design/1002-cdkd-asset-storage.md).
+   See the [asset-storage design note](design/1002-cdkd-asset-storage.md).
 
 Flags:
 

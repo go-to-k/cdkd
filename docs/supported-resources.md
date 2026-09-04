@@ -11,7 +11,7 @@ with cdkd before installing.
 
 For the import-side view of these providers (which can be auto-discovered
 by `aws:cdk:path` tag vs which require `--resource` overrides), see
-[docs/import.md](import.md).
+[Importing Existing Resources](import.md).
 
 ## Provider strategy
 
@@ -53,8 +53,8 @@ with a rationale) sets. Any unhandled top-level property in the CFn schema
 triggers a fast-fail with the silently-dropped property name, the
 rationale, a 1-click GitHub issue link to request support, and the exact
 `--allow-unsupported-properties <ResourceType>:<PropertyName>` re-run
-command. See [docs/cli-deploy-safety.md `--allow-unsupported-properties`](cli-deploy-safety.md#allow-unsupported-properties-deploy)
-for the escape hatch.
+command. The escape hatch itself is documented under
+[`--allow-unsupported-properties`](cli-deploy-safety.md#allow-unsupported-properties-deploy).
 
 Coverage data is generated from the CFn schema fixtures + each SDK
 provider's declarations into the runtime at
@@ -72,9 +72,9 @@ silently; they cannot be set from the template side.
 
 For a full machine-checked view of every public AWS CFn resource type
 partitioned into Tier 1 (SDK Provider) / Tier 2 (CC API fallback) / Tier 3
-(unsupported), see the auto-generated report at
-[_generated/provider-coverage.md](_generated/provider-coverage.md). The
-JSON counterpart at [_generated/provider-coverage.json](_generated/provider-coverage.json)
+(unsupported), see the auto-generated
+[provider coverage matrix](_generated/provider-coverage.md). Its
+[JSON counterpart](_generated/provider-coverage.json)
 is the machine-readable source-of-truth. Regenerate with:
 
 ```bash
@@ -463,7 +463,7 @@ register it in `src/provisioning/register-providers.ts`, also add the
 resource type to:
 
 1. The table above (this file).
-2. The relevant section in [docs/import.md](import.md) (auto-lookup vs
+2. The relevant section in [Importing Existing Resources](import.md) (auto-lookup vs
    override-only vs sub-resource attachment).
 
 Both lists derive from `register-providers.ts` but show different

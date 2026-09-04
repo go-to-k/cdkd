@@ -154,7 +154,7 @@ for a second producer:
   responses. `ResourceState` has no durable field for it, which is why cdkd
   REFUSES rather than guessing when a later deploy has to write a value it can
   only read back as the mask — see
-  [state-management.md](state-management.md#noecho-custom-resource-responses)
+  [State Management](state-management.md#noecho-custom-resource-responses)
   for the user-facing consequences, and issue
   [#2449](https://github.com/go-to-k/cdkd/issues/2449) for the schema bump that
   would close it.
@@ -3413,7 +3413,7 @@ return {
 
 ## References
 
-- [architecture.md](./architecture.md) - Overall architecture
+- [Architecture](./architecture.md) - Overall architecture
 - [AWS Cloud Control API Supported Resources](https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/supported-resources.html)
 - [CloudFormation Resource Reference](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html)
 - [AWS SDK for JavaScript v3](https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/)

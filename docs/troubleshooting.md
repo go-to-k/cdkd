@@ -236,7 +236,7 @@ StateError: State was modified by another process. Expected ETag: "abc123", but 
 Protected automatically by optimistic locking, so simply re-running should succeed:
 
 ```bash
-node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
+cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 ```
 
 **2. Adjust lock timeout**
@@ -304,7 +304,7 @@ aws s3 cp /tmp/state-backup.json \
 aws s3 rm s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 
 # Redeploy (will error if existing resources exist)
-node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
+cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 ```
 
 ### Issue: State and Resources Don't Match
@@ -327,7 +327,7 @@ cdkd's state file and actual AWS resources have diverged.
 aws s3 rm s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 
 # Redeploy (all resources treated as CREATE)
-node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
+cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 ```
 
 **2. Manually fix state (advanced)**
@@ -347,10 +347,10 @@ aws s3 cp /tmp/state.json s3://${STATE_BUCKET}/cdkd/MyStack/us-east-1/state.json
 
 ```bash
 # Delete all resources
-node dist/cli.js destroy MyStack --force
+cdkd destroy MyStack --force
 
 # Redeploy
-node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
+cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 ```
 
 ---
@@ -505,11 +505,13 @@ new s3.Bucket(this, 'MyBucket', {
 aws s3 rb s3://my-bucket-name --force
 ```
 
-**3. Import existing resource to state (planned for future implementation)**
+**3. Adopt the existing resource into state**
 
 ```bash
-# cdkd import --stack MyStack --resource MyBucket=s3://my-bucket-name
+cdkd import MyStack --resource MyBucket=my-bucket-name
 ```
+
+See [Importing Existing Resources](import.md) for the full flag set.
 
 ### Issue: "Provider not found" Error
 
@@ -535,7 +537,7 @@ Error: No provider registered for resource type: AWS::CustomService::Resource
 
 **2. Implement SDK Provider**
 
-Refer to [provider-development.md](./provider-development.md) to implement a custom provider.
+Refer to [Provider Development](./provider-development.md) to implement a custom provider.
 
 **3. Temporarily use CloudFormation**
 
@@ -591,7 +593,7 @@ async update(...): Promise<ResourceUpdateResult> {
 aws s3 rb s3://old-bucket-name --force
 
 # Redeploy
-node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET}
+cdkd deploy --app "..." --state-bucket ${STATE_BUCKET}
 ```
 
 ### Issue: "bucket is not empty" / "still contains images" on destroy
@@ -637,7 +639,7 @@ resource opted in.
    ```
 
 See the "Destroy data guards" section in
-[cli-destroy.md](cli-destroy.md#destroy-data-guards-non-empty-s3-buckets-and-image-carrying-ecr-repositories) for the full semantics.
+[Destroy flags & guards](cli-destroy.md#destroy-data-guards-non-empty-s3-buckets-and-image-carrying-ecr-repositories) for the full semantics.
 
 ### Issue: "has DeletionPolicy: Snapshot, but ..." refusal on delete
 
@@ -668,7 +670,7 @@ itself would refuse the attribute on.
    snapshotting.
 
 See the "DeletionPolicy: Snapshot" section in
-[cli-destroy.md](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics.
+[Destroy flags & guards](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) for the per-type mechanics.
 
 ---
 
@@ -691,7 +693,7 @@ replays from cdkd state rather than from your template, so refusing there would
 leave you no remedy but hand-editing `state.json`. That matters for tables
 created by an older cdkd build, whose state records still
 carry the key. See "Glue table Iceberg support" in
-[supported-resources.md](supported-resources.md) for what the restored table
+[Supported Resources](supported-resources.md) for what the restored table
 looks like.) It is a
 deliberate parity divergence — CloudFormation forwards the property instead of
 validating it, but a live probe showed the spec is
@@ -820,7 +822,7 @@ auto-create was declined / opted out (`--no-auto-asset-storage`), failed
 the bucket/repo after opt-in. Deploys that stay in **legacy mode** publish
 to the CDK bootstrap bucket instead, which then must exist
 (`npx cdk bootstrap aws://123456789012/us-east-1`). See
-[cli-bootstrap.md](cli-bootstrap.md#cdkd-bootstrap).
+[`cdkd bootstrap`](cli-bootstrap.md#cdkd-bootstrap).
 
 > **Custom bootstrap**: If you use a custom qualifier (e.g., `--qualifier myqualifier`), CDK synthesis will embed the custom bucket name in the asset manifest. cdkd reads destinations from the manifest (and, in cdkd-assets mode, redirects default-bootstrap-shaped destinations to cdkd-owned storage), so custom qualifiers are fully supported.
 
@@ -828,7 +830,7 @@ to the CDK bootstrap bucket instead, which then must exist
 
 ```bash
 # Skip during deployment
-node dist/cli.js deploy --app "..." --skip-assets
+cdkd deploy --app "..." --skip-assets
 ```
 
 **3. Check IAM permissions**
@@ -1226,7 +1228,7 @@ HTTPS_PROXY=http://127.0.0.1:1 cdkd state list --profile <a working profile>
 
 ```bash
 # Check execution plan with diff command
-node dist/cli.js diff --app "..." --state-bucket ${STATE_BUCKET} --verbose
+cdkd diff --app "..." --state-bucket ${STATE_BUCKET} --verbose
 
 # Example output:
 # Execution levels:
@@ -1249,15 +1251,6 @@ role.node.addDependency(bucket);  // ← Unnecessary dependency
 const bucket = new s3.Bucket(this, 'Bucket');
 const role = new iam.Role(this, 'Role', { ... });
 // Dependencies auto-detected from Ref/GetAtt
-```
-
-**3. Parallelize asset publishing (planned for future implementation)**
-
-```typescript
-// Parallel execution in asset-publisher.ts
-await Promise.all(
-  assets.map(asset => publishAsset(asset))
-);
 ```
 
 ### Issue: Cloud Control API Rate Limit
@@ -1480,7 +1473,7 @@ cdkd rollback MyStack --force # skip the confirmation prompt
   success) or the process was killed before the journal was written (a
   SIGKILL before the PUT). In the latter case use `cdkd deploy` to resume or
   `cdkd destroy` to clean up.
-- See [docs/cli-rollback.md](cli-rollback.md#cdkd-rollback-revert-a-failed-deploy) for the full flag
+- See [`cdkd rollback`](cli-rollback.md#cdkd-rollback-revert-a-failed-deploy) for the full flag
   reference and known limitations.
 
 ### Issue: destroy reports `N skipped` and exits 2
@@ -1541,30 +1534,6 @@ aws cloudcontrol list-resources --type-name AWS::S3::Bucket
 aws cloudcontrol list-resources --type-name AWS::Lambda::Function
 ```
 
-### Future: `cdkd orphans` Command
-
-A dedicated `cdkd orphans` (or `cdkd check`) command is planned to automate orphan detection. The approach:
-
-1. **Read the state file** for the target stack to get all tracked resources and their physical IDs.
-2. **Read the synthesized template** to get all expected resource types and logical IDs.
-3. **Query AWS** for each resource type in the template using Cloud Control API `GetResource` with the expected physical ID pattern, or by listing resources and matching tags/naming conventions.
-4. **Compare**: Resources that exist in AWS but are not in the state file are potential orphans. Resources in the state file but not in AWS indicate state drift.
-5. **Report**: Display a table of orphaned/drifted resources with recommended actions (import to state, delete from AWS, or remove from state).
-
-Example planned interface:
-
-```bash
-# Check for orphaned resources
-cdkd orphans MyStack
-
-# Example output:
-# Orphaned Resources (exist in AWS but not in state):
-#   AWS::IAM::Role    my-stack-role-abc123    (likely from failed deploy on 2026-03-25)
-#   AWS::S3::Bucket   my-stack-bucket-xyz     (likely from failed deploy on 2026-03-25)
-#
-# Recommended: Run 'cdkd deploy MyStack' to reconcile, or delete manually.
-```
-
 ### Recovering from Orphaned Resources
 
 **If state was saved (most cases)**:
@@ -1597,7 +1566,7 @@ chargeable final backup behind: cdkd keeps CloudFormation parity and calls
 `DeleteFileSystem` with API defaults, which take a final backup for
 Windows/ONTAP (observed on OpenZFS too). The backup is typically untagged, so
 find it via the backup's persisted `FileSystem.FileSystemId` rather than tags.
-See [supported-resources.md, "FSx final backup on destroy"](supported-resources.md#fsx-final-backup-on-destroy)
+See ["FSx final backup on destroy" in Supported Resources](supported-resources.md#fsx-final-backup-on-destroy)
 for the details and the `aws fsx describe-backups` / `aws fsx delete-backup`
 commands.
 
@@ -1609,11 +1578,11 @@ commands.
 
 ```bash
 # Enable verbose logging
-node dist/cli.js deploy --app "..." --verbose
+cdkd deploy --app "..." --verbose
 
 # Set log level with environment variable
 export LOG_LEVEL=debug
-node dist/cli.js deploy --app "..."
+cdkd deploy --app "..."
 ```
 
 ### Check State File
@@ -1642,24 +1611,8 @@ aws cloudtrail lookup-events \
 
 ```bash
 # Show plan only without actual execution
-node dist/cli.js deploy --app "..." --state-bucket ${STATE_BUCKET} --dry-run
+cdkd deploy --app "..." --state-bucket ${STATE_BUCKET} --dry-run
 ```
-
----
-
-## Previously Known Destroy Issues (All Resolved)
-
-### CloudFront OAI DELETE
-
-Resolved via dedicated SDK Provider (`cloudfront-oai-provider.ts`).
-
-### Bedrock AgentCore Runtime IAM Propagation
-
-Resolved via dedicated SDK Provider (`agentcore-runtime-provider.ts`).
-
-### Lambda Permission "No policy found"
-
-Handled automatically by cdkd's idempotent delete logic (not-found errors treated as success).
 
 ---
 
@@ -1692,15 +1645,15 @@ A: Yes, Lambda-backed custom resources (`Custom::*`) are supported.
 ### Issue Reporting
 
 Report on GitHub Issues:
-https://github.com/YOUR_REPO/cdkd/issues
+https://github.com/go-to-k/cdkd/issues
 
 ### Questions
 
 Ask questions on GitHub Discussions:
-https://github.com/YOUR_REPO/cdkd/discussions
+https://github.com/go-to-k/cdkd/discussions
 
 ### Documentation
 
-- [architecture.md](./architecture.md) - Overall architecture
-- [state-management.md](./state-management.md) - State management details
-- [provider-development.md](./provider-development.md) - Provider implementation methods
+- [Architecture](./architecture.md) - Overall architecture
+- [State Management](./state-management.md) - State management details
+- [Provider Development](./provider-development.md) - Provider implementation methods

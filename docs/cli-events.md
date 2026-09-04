@@ -31,7 +31,7 @@ purge:
 ```bash
 cdkd events prune MyStack                 # keep the newest 20 (default)
 cdkd events prune MyStack --keep 5        # keep the newest 5
-cdkd events prune MyStack --older-than 24h# delete runs older than 24h
+cdkd events prune MyStack --older-than 24h  # delete runs older than 24h
 cdkd events prune MyStack --all           # purge everything (+ the index)
 cdkd events prune MyStack --all --yes     # skip the confirmation (CI)
 ```
@@ -42,7 +42,7 @@ newest-N window AND older than the cutoff. Prompts for confirmation unless
 `-y` / `--yes`; `--stack-region` disambiguates a multi-region stack.
 
 State-driven (no synth, no lock). See
-**[docs/deployment-events.md](deployment-events.md)** for the full
+**[Deployment Events](deployment-events.md)** for the full
 reference: event types, S3 key layout, flush strategy, `index.json`
 semantics, and the retention model.
 

@@ -40,7 +40,9 @@ via the RIE container, so Docker is required in that case.
 
 ## Common flags
 
-Shared across all three subcommands:
+`-a, --app`, `--no-pull`, `--from-state` and `--stack-region` are accepted by
+every `cdkd local` subcommand. `--env-vars` and `--container-host` are
+accepted by all of them **except `start-cloudfront`**.
 
 - `-a, --app <cmd-or-dir>` — CDK app command or pre-synthesized
   `cdk.out` directory. Defaults to synth-every-time; pass `-a cdk.out`

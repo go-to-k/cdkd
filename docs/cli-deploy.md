@@ -60,7 +60,7 @@ and repeated attempts do not accumulate certificates. That costs nothing: ACM
 reuses a domain's validation CNAME across certificates, so records you add after
 the failure validate the retry. `--no-wait` is the supported way to KEEP a
 `PENDING_VALIDATION` certificate instead — see
-[troubleshooting.md](troubleshooting.md).
+[Troubleshooting](troubleshooting.md).
 
 Three wait modes, least to most waiting:
 

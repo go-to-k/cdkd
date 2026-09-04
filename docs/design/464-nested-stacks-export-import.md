@@ -199,7 +199,7 @@ entries:
 
 **Status: SHIPPED in PR B1 (#571)** — `AWS::CloudFormation::Stack` was
 lifted from `NEVER_IMPORTABLE_TYPES` in
-[src/cli/commands/export.ts](../../src/cli/commands/export.ts) and
+[src/cli/commands/export.ts](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/export.ts) and
 routed through the dedicated branch in `buildImportPlan` that populates
 `nestedStackRows: NestedStackRow[]`. The orchestrator's PR B1 hard-error
 on `nestedStackRows.length > 0` has been replaced (PR B2) by the
@@ -346,7 +346,7 @@ candidate submission patterns:
    excluded state, so the subsequent parent IMPORT fails.
 
 Both constraints were verified by running the
-[tests/integration/export-nested-stack/verify.sh](../../tests/integration/export-nested-stack/verify.sh)
+[tests/integration/export-nested-stack/verify.sh](https://github.com/go-to-k/cdkd/blob/main/tests/integration/export-nested-stack/verify.sh)
 fixture against real AWS — see the integ output captured under
 issue tracking the PR B2 design follow-up.
 
@@ -362,7 +362,7 @@ issue tracking the PR B2 design follow-up.
 > (Phase 1A CREATE-via-IMPORT leaves-only + Phase 1B
 > UPDATE-via-IMPORT adoption) is documented in §4.3 and verified
 > end-to-end against real AWS in
-> [tests/integration/export-nested-stack/](../../tests/integration/export-nested-stack/).
+> [tests/integration/export-nested-stack/](https://github.com/go-to-k/cdkd/blob/main/tests/integration/export-nested-stack/).
 > The section below is preserved for historical context — the
 > deferral language is no longer current.
 
@@ -375,7 +375,7 @@ pointer + two workarounds (keep on cdkd, or destroy children
 leaf-first and re-export the flattened parent).
 
 PR B1.5 (this branch) adds the
-[tests/integration/export-nested-stack/](../../tests/integration/export-nested-stack/)
+[tests/integration/export-nested-stack/](https://github.com/go-to-k/cdkd/blob/main/tests/integration/export-nested-stack/)
 real-AWS integ fixture that verifies the walker correctly handles a
 real cdkd-state nested tree AND that the hard-error path surfaces
 the documented "PR B2 follow-up" message — a regression test for
@@ -653,13 +653,13 @@ disjoint migration directions:
    `IMPORT_COMPLETE` to `UPDATE_COMPLETE` via a no-op tag-only
    `UpdateStack --use-previous-template` (the only status set AWS accepts
    for adoption is `CREATE_COMPLETE` / `UPDATE_COMPLETE`). Shipped: `runPerStackImportLoop` orchestrator in
-   [src/cli/commands/export.ts](../../src/cli/commands/export.ts) plus
+   [src/cli/commands/export.ts](https://github.com/go-to-k/cdkd/blob/main/src/cli/commands/export.ts) plus
    the helper surface (`cdkd2cfnStackName` / `parseCfnChildStackNameOverrides`
    / `extractChildImportParameters` / `injectRetainAndRewriteTemplateUrl`
    / `buildPerStackImportNodes` / `submitImportChangeSet` /
    `fetchCfnStackTemplate`); new `--cfn-child-stack-name` CLI flag for
    per-child name overrides; new
-   [tests/integration/export-nested-stack/](../../tests/integration/export-nested-stack/)
+   [tests/integration/export-nested-stack/](https://github.com/go-to-k/cdkd/blob/main/tests/integration/export-nested-stack/)
    real-AWS fixture (parent + 1 nested child, 2 SSM Parameters per
    stack) that asserts the IMPORT loop ends with both CFn stacks
    adopted via `DescribeStackResources(Child)` PhysicalResourceId =

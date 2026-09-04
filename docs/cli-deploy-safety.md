@@ -595,6 +595,6 @@ or an export-name typo failing fast instead of accidentally matching an
 unrelated CloudFormation export in the account. Nested-stack child
 deploys inherit the flag from the parent deploy; `cdkd diff` honors it in
 its best-effort resolvers so preview and apply resolve identically. See
-[docs/cross-stack-references.md](cross-stack-references.md) for the full
+[Cross-Stack References](cross-stack-references.md) for the full
 design.
 

@@ -51,6 +51,6 @@ How it behaves:
   resolving its outputs through the fallback (no leaf-first ordering
   requirement).
 
-See **[cross-stack-references.md](cross-stack-references.md)**
+See **[Cross-Stack References](cross-stack-references.md)**
 for the full design (resolution order, weak-vs-strong reference
 semantics, cross-region / cross-account forms).

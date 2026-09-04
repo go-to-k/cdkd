@@ -26,7 +26,12 @@ back from AWS at deploy time — not against the raw template. Each
 baseline predates observed-state capture (or when you want to reset it
 without deploying), `cdkd state refresh-observed` populates it in place.
 
-See **[cli-drift.md `cdkd drift`](cli-drift.md#cdkd-drift)**
-for the full reference: `--no-capture-observed-state` deploy opt-out
-(per-command vs per-project, mid-flight reversibility), v2→v3 state
-upgrade flow, exit codes, and what changes when capture is off.
+See **[`cdkd drift`](cli-drift.md)** for the full reference: every flag,
+exit codes, how secret and unresolvable references are reported, and the
+`--accept` / `--revert` resolution paths.
+
+The deploy-side opt-out that turns baseline capture off —
+[`--no-capture-observed-state`](cli-deploy-tuning.md#no-capture-observed-state)
+— is documented on the deploy tuning page, along with what drift reports
+once capture is off and the v2 → v3 upgrade flow that backfills the
+baseline on the first deploy after an upgrade from cdkd earlier than 0.49.

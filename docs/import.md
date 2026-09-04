@@ -139,10 +139,10 @@ counterpart) but you want cdkd to find the rest automatically.
 | Flag | Purpose |
 | --- | --- |
 | `--dry-run` | Preview what would be imported. State is NOT written. |
-| `--yes` | Skip the confirmation prompt before writing state (and the CloudFormation retirement prompt under `--migrate-from-cloudformation`). **Required in CI**: both prompts REFUSE a non-interactive stdin (`NON_INTERACTIVE_CONFIRM`, exit 1) rather than hanging on it — see [cli-destroy.md](cli-destroy.md#every-other-mutating-confirmation-prompt-is-interactive-only-too). |
+| `--yes` | Skip the confirmation prompt before writing state (and the CloudFormation retirement prompt under `--migrate-from-cloudformation`). **Required in CI**: both prompts REFUSE a non-interactive stdin (`NON_INTERACTIVE_CONFIRM`, exit 1) rather than hanging on it — see [Destroy flags & guards](cli-destroy.md#every-other-mutating-confirmation-prompt-is-interactive-only-too). |
 | `--force` | Confirm a destructive write to existing state — see below. |
 | `--migrate-from-cloudformation [name]` | After cdkd state is written, retire the source CloudFormation stack: inject `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` on every resource via `UpdateStack`, then `DeleteStack`. AWS resources are NOT deleted. See [Migrating from `cdk deploy` (CloudFormation) to cdkd](#migrating-from-cdk-deploy-cloudformation-to-cdkd) below. |
-| `--use-cdk-bootstrap-assets` | Keep the CDK bootstrap asset destinations verbatim (skip the cdkd asset-storage rewrite) even when the region is opted in via `cdkd bootstrap`. Without it, import rewrites asset references (Lambda `Code`, image URIs, …) to the cdkd-owned storage — but records the **pre-rewrite** values in state, so the first post-import `cdkd deploy` repoints the live resources. See [Importing a stack into a cdkd-assets region](#importing-a-stack-into-a-cdkd-assets-region) below and the asset-destinations section in [docs/cli-bootstrap.md](cli-bootstrap.md#asset-destinations-after-opt-in-cdkd-assets-mode). |
+| `--use-cdk-bootstrap-assets` | Keep the CDK bootstrap asset destinations verbatim (skip the cdkd asset-storage rewrite) even when the region is opted in via `cdkd bootstrap`. Without it, import rewrites asset references (Lambda `Code`, image URIs, …) to the cdkd-owned storage — but records the **pre-rewrite** values in state, so the first post-import `cdkd deploy` repoints the live resources. See [Importing a stack into a cdkd-assets region](#importing-a-stack-into-a-cdkd-assets-region) below and the asset-destinations section in [`cdkd bootstrap`](cli-bootstrap.md#asset-destinations-after-opt-in-cdkd-assets-mode). |
 
 `--force` is only needed when the import would lose data:
 
@@ -262,7 +262,7 @@ Limitations:
   `s3:DeleteObjectVersion` on the state bucket, and without them the
   migration still succeeds while a warning names the two grants and the
   previous versions survive — see
-  [state-management.md](state-management.md#recommended-bucket-policy-with-least-privilege). Templates over the 1 MB
+  [State Management](state-management.md#recommended-bucket-policy-with-least-privilege). Templates over the 1 MB
   CloudFormation `TemplateURL` ceiling are structurally
   unsubmittable — cdkd fails with a clear error. cdkd state has
   already been written at that point, so re-runs and manual cleanup
@@ -342,7 +342,7 @@ implement import are reported as `unsupported` and skipped.
 > `cdkd state resources` print. Quote it on a shell command line
 > (`--resource 'Id=db|table'`); no escaping is needed inside a
 > `--resource-mapping` JSON file. The full per-type format table lives in
-> [state-management.md](state-management.md#composite-pipe-delimited-physicalids).
+> [State Management](state-management.md#composite-pipe-delimited-physicalids).
 
 ### Auto-resolved (no `--resource` flag needed)
 
@@ -539,8 +539,9 @@ stack row as `unsupported` — there is no per-resource `import()` on the
 use `cdkd import --migrate-from-cloudformation` instead, which recursively
 walks the tree, writes one v6-keyed state file per child
 (`cdkd/<parent>~<childLogicalId>/<region>/state.json`), and retires the
-whole tree via a single parent-side `DeleteStack` cascade. See the
-`--migrate-from-cloudformation` section below for details.
+whole tree via a single parent-side `DeleteStack` cascade. See
+[Migrating from `cdk deploy` (CloudFormation) to cdkd](#migrating-from-cdk-deploy-cloudformation-to-cdkd)
+above for details.
 
 `AWS::AutoScaling::AutoScalingGroup` is also currently unsupported —
 the SDK provider exists for create / update / delete / readCurrentState

@@ -99,5 +99,5 @@ hangs.
 ECS Services on Fargate require `awsvpc`. cdkd maps `awsvpc` to a
 per-task docker bridge network with a startup warn; security groups
 are NOT enforced locally and per-task ENIs are not emulated. Full
-rationale at [design/461-awsvpc-decision.md](design/461-awsvpc-decision.md).
+rationale in the [awsvpc emulation design note](design/461-awsvpc-decision.md).
 
