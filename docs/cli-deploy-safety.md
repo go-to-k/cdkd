@@ -22,9 +22,9 @@ cdkd deploy MyStack --strict-getatt          # fail on any guessed Fn::GetAtt va
 cdkd deploy MyStack --no-cfn-fallback        # cdkd-state-only cross-stack resolution
 ```
 
-## Flags
+## Options
 
-| Flag | Applies to | What it does |
+| Flag | Applies to | Description |
 | --- | --- | --- |
 | `--allow-unsupported-types <types>` | deploy, destroy, state destroy | Attempt a resource type cdkd rejects at pre-flight as unsupported. |
 | `--allow-unsupported-properties <entries>` | deploy | Pin a resource to the SDK provider and accept a silently dropped property, instead of the default Cloud Control auto-route. |
@@ -769,7 +769,10 @@ resolvers so preview and apply resolve identically.
 | --- | --- |
 | `0` | The deploy finished and every resource cdkd was responsible for was addressed. |
 | `1` | A guard on this page refused the run, or the deploy failed. |
-| `2` | A partial outcome: a resource was left unaddressed, a macro failed to expand, or an update was rejected as unsupported. `--allow-unaddressed` turns the first of those into `0`. |
+| `2` | A partial outcome: a resource left unaddressed, a macro that failed to expand, or an update rejected as unsupported. |
+
+`--allow-unaddressed` turns the first of those `2` cases back into `0`; the
+other two are unaffected by it.
 
 ## Related
 

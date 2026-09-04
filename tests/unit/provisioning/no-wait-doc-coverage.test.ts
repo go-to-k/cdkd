@@ -22,8 +22,17 @@ const deployDocPath = join(repoRoot, 'docs', 'cli-deploy.md');
 /** The single H2 holding the per-resource-type wait table. */
 const WAIT_TABLE_HEADING = '## Wait behaviour by resource type';
 
-/** Extract the wait-table section (up to the next `## ` heading). */
-function noWaitSection(): string {
+/**
+ * The types named in the table's FIRST column, one entry per row.
+ *
+ * Deliberately parses ROWS rather than the section's text: the section also
+ * carries prose that names resource types, and a type mentioned only there
+ * would satisfy a substring check while being absent from the table a reader
+ * consults. Measured — with a whole-section check, deleting the
+ * `AWS::Lambda::MicrovmImage` row left this suite green, because the routing
+ * caveat below the table names that type in a sentence.
+ */
+function waitTableRowTypes(): { type: string; fullWait: string }[] {
   const md = readFileSync(deployDocPath, 'utf8');
   const start = md.indexOf(WAIT_TABLE_HEADING);
   expect(
@@ -32,7 +41,22 @@ function noWaitSection(): string {
   ).toBeGreaterThanOrEqual(0);
   const rest = md.slice(start + 1);
   const next = rest.indexOf('\n## ');
-  return next >= 0 ? rest.slice(0, next) : rest;
+  const section = next >= 0 ? rest.slice(0, next) : rest;
+
+  const rows: { type: string; fullWait: string }[] = [];
+  for (const line of section.split('\n')) {
+    if (!line.startsWith('|')) continue;
+    // | type | --no-wait | default | --full-wait | CloudFormation | Terraform |
+    const cells = line.split('|').slice(1, -1);
+    if (cells.length < 4) continue;
+    const types = cells[0]!.match(/AWS::[A-Za-z0-9]+::[A-Za-z0-9]+/g) ?? [];
+    for (const type of types) rows.push({ type, fullWait: cells[3]!.trim() });
+  }
+  expect(
+    rows.length,
+    `parsed no rows out of "${WAIT_TABLE_HEADING}" — the table's shape changed and this fence is measuring nothing`
+  ).toBeGreaterThanOrEqual(10);
+  return rows;
 }
 
 function handledTypes(source: string): string[] {
@@ -59,13 +83,13 @@ describe('--no-wait doc coverage', () => {
   });
 
   it('documents each CDKD_NO_WAIT provider in the cli-deploy.md wait table', () => {
-    const section = noWaitSection();
+    const rowTypes = new Set(waitTableRowTypes().map((r) => r.type));
     const undocumented = noWaitProviders.filter((p) => {
       const types = handledTypes(p.source);
-      // At least one of the provider's handled types must appear in the wait
-      // table (a provider like EC2 handles many types but only its NAT Gateway
-      // wait is --no-wait-gated, so one documented type suffices).
-      return !types.some((t) => section.includes(t));
+      // At least one of the provider's handled types must have its own ROW in
+      // the wait table (a provider like EC2 handles many types but only its NAT
+      // Gateway wait is --no-wait-gated, so one documented type suffices).
+      return !types.some((t) => rowTypes.has(t));
     });
     expect(
       undocumented.map((p) => p.file),

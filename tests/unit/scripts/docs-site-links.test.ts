@@ -38,6 +38,16 @@ const handWrittenDocs = walkMarkdown(DOCS).filter(
   (f) => !relative(DOCS, f).startsWith('_generated')
 );
 
+// The three coverage matrices that live at docs/ top level rather than under
+// _generated/. They are written by scripts, so a defect in them is a defect in
+// the generator; `handWrittenDocs` keeps them because their cross-page links
+// are worth checking, but a check whose remedy is "edit the generator" says so.
+const GENERATED_TOP_LEVEL = new Set([
+  'cli-flag-coverage.md',
+  'integ-coverage.md',
+  'scenario-coverage.md',
+]);
+
 // Line-state fence tracking rather than a column-0 regex: docs/ carries
 // list-indented fences (e.g. state-management.md, troubleshooting.md) whose
 // contents must not surface as phantom headings or links.
@@ -175,6 +185,42 @@ describe('published docs cross-links', () => {
       }
     }
     expect(checked).toBeGreaterThanOrEqual(50);
+    expect(failures).toEqual([]);
+  });
+
+  it('no relative link escapes docs/, whatever it points at', () => {
+    // `existsSync` is satisfied by `../CLAUDE.md` and `../src/x.ts` — they exist
+    // in the repo. They do not exist on the SITE: only `docs/` is published, so
+    // such a link 404s for every reader. Twenty-three of them were live before
+    // this fence, three on the changelog page and twenty across the design
+    // notes. The check is deliberately not limited to `.md`: the ones that hurt
+    // most pointed at source files.
+    //
+    // The three generated coverage matrices are exempt because they carry ~2,600
+    // of these, emitted by their generators as `../tests/integration/<fixture>/`.
+    // Fixing that means fixing three scripts and regenerating three matrices —
+    // issue #2510, kept separate so this fence can protect the hand-written
+    // corpus now. Retiring that issue retires the exemption.
+    const failures: string[] = [];
+    let checked = 0;
+    for (const file of handWrittenDocs) {
+      if (GENERATED_TOP_LEVEL.has(relative(DOCS, file))) continue;
+      const body = stripFences(readFileSync(file, 'utf8'));
+      for (const m of body.matchAll(/\]\((\.\.\/[^)\s]+)\)/g)) {
+        const [, target] = m;
+        checked += 1;
+        const resolved = resolve(dirname(file), target.split('#')[0]!);
+        if (relative(DOCS, resolved).startsWith('..')) {
+          failures.push(
+            `${relative(ROOT, file)} -> ${target} escapes docs/ and 404s on the site; use the GitHub blob URL`
+          );
+        }
+      }
+    }
+    // Anti-vacuity floor: the design notes and plans/README carry a handful of
+    // legitimate `../` links that stay inside docs/. A regex that stopped
+    // matching would otherwise report a silent zero.
+    expect(checked).toBeGreaterThanOrEqual(4);
     expect(failures).toEqual([]);
   });
 });

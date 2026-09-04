@@ -59,22 +59,25 @@ to actually be serving, **not** on where the deploy runs:
 
 ## Wait behaviour by resource type
 
-Only the types below behave differently across the three modes. Every other
-type returns when its create or update call returns, in all three modes.
+These are the types whose behaviour differs across the three modes. Other
+types are unaffected by the flags — which does not mean they never wait: a
+DynamoDB table, an EFS file system, an EMR cluster and a dozen others wait for
+their own readiness on create in every mode, because their provider needs the
+result.
 
 | Resource type | `--no-wait` | Default | `--full-wait` | CloudFormation | Terraform |
 | --- | --- | --- | --- | --- | --- |
-| `AWS::CloudFront::Distribution` | same as default | Return after the create / update call | Wait for `Deployed` (3-15 min) | Waits | Waits |
-| `AWS::ECS::Service` | same as default | Return after `CreateService` / `UpdateService` | Wait for steady state | Waits for steady state | Does not wait |
-| `AWS::CertificateManager::Certificate` | Return while `PENDING_VALIDATION` | Wait for `ISSUED` | same as default | Waits | Does not wait |
+| `AWS::CloudFront::Distribution` | same as default | Return after the create / update call | Wait for `Deployed` (3-15 min) | Waits | Waits (`wait_for_deployment`, default true) |
+| `AWS::ECS::Service` | same as default | Return after `CreateService` / `UpdateService` | Wait for steady state | Waits for steady state | Does not wait (`wait_for_steady_state`, default false) |
+| `AWS::CertificateManager::Certificate` | Return while `PENDING_VALIDATION` | Wait for `ISSUED` | same as default | Waits | Does not wait (waiting is a separate `aws_acm_certificate_validation` resource) |
 | `AWS::RDS::DBCluster` / `DBInstance` | Return after the create call | Wait for `available` (5-10 min) | same as default | Waits | Waits |
 | `AWS::DocDB::DBCluster` / `DBInstance` | Return after the create call | Wait for `available` (5-10 min) | same as default | Waits | Waits |
 | `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create call | Wait for `available` (5-10 min) | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after the create call | Wait for `available` | same as default | Waits | Waits |
 | `AWS::EC2::NatGateway` | Return while `pending` | Wait for `available` (1-2 min) | same as default | Waits | Waits |
-| `AWS::EC2::Instance` | Return while `pending` | Wait for `running` (30-60 s) | same as default | Waits | Waits |
-| `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning` | Wait for `active` (90-180 s) | same as default | Waits | Waits |
-| `AWS::Lambda::MicrovmImage` | Return while `CREATING` | Wait for `CREATED` | same as default | Waits | n/a |
+| `AWS::EC2::Instance` | Return while `pending`; `PublicIp` / `PrivateIp` may be empty | Wait for `running` (30-60 s) | same as default | Waits | Waits |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning`; `DNSName` 503s until active | Wait for `active` (90-180 s) | same as default | Waits | Waits |
+| `AWS::Lambda::MicrovmImage` | Return while `CREATING`; the image ARN resolves first, so outputs still work | Wait for `CREATED` | same as default | Waits | n/a |
 
 Two of these have a routing caveat: for CloudFront and
 `AWS::Lambda::MicrovmImage`, only the SDK provider takes the fast side. A
@@ -191,7 +194,9 @@ The steady-state wait itself is capped at 600 seconds, matching Terraform's
 large task count, a slow-pulling image, a long health-check grace period — can
 lift the cap with
 [`--resource-timeout`](cli-deploy-tuning.md#per-resource-timeout), e.g.
-`--resource-timeout AWS::ECS::Service=20m`. The flag only raises the cap.
+`--resource-timeout AWS::ECS::Service=20m`. The flag only raises the cap, never
+lowers it, and the same value governs the outer per-resource deadline, so the
+two cannot undercut each other.
 
 A service that never stabilizes fails the deploy. On create, cdkd best-effort
 deletes the service it just created before failing, so the next deploy does
@@ -210,7 +215,8 @@ aws cloudfront wait distribution-deployed --id <distribution-id>
 
 Under `--full-wait` the wait budget is about 20 minutes, lifted by an explicit
 [`--resource-timeout`](cli-deploy-tuning.md#per-resource-timeout), e.g.
-`--resource-timeout AWS::CloudFront::Distribution=40m`.
+`--resource-timeout AWS::CloudFront::Distribution=40m` — again raise-only, and
+sharing the outer per-resource deadline.
 
 Unlike the ECS timeout, a CloudFront wait timeout does **not** fail the
 deploy. A distribution still `InProgress` at the budget is slow, not broken —
@@ -246,6 +252,19 @@ These are per-run choices, not capability limits. A pipeline that wants
 CloudFormation-parity completion semantics — a smoke-test gate, a
 production-leaning promotion step — can bake `--full-wait` into its deploy
 invocation as a standing setting.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Every resource was deployed. |
+| `1` | Hard error — bad arguments (including `--no-wait` together with `--full-wait`), auth failure, a synth crash, or a resource failure that the automatic rollback then handled. |
+| `2` | Resources were left unaddressed: a skipped DELETE, or a replacement whose predecessor survives. State is preserved; re-running usually clears it. `--allow-unaddressed` restores `0`. |
+
+An ECS service that never stabilizes under `--full-wait` fails the deploy, so it
+exits non-zero rather than `2`. A CloudFront wait that runs out does not fail
+the deploy at all. The full cross-command table is in the
+[CLI Reference](cli-reference.md#exit-codes).
 
 ## Related
 

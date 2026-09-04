@@ -16,7 +16,7 @@ Every page opens with frontmatter, an H1 that matches the frontmatter `title`,
 and one to three sentences saying what the page covers. A CLI reference page
 then follows this order:
 
-```markdown
+````markdown
 ---
 title: cdkd <cmd>
 description: "One sentence. Becomes the meta description and the OG image caption."
@@ -43,7 +43,7 @@ description: "One sentence. Becomes the meta description and the OG image captio
 | --- | --- |
 
 ## Related
-```
+````
 
 Sections a page has nothing to say about are omitted, never left empty. A page
 that is not a CLI reference keeps the H1 + intro and then uses whatever H2
@@ -52,6 +52,15 @@ sequence its subject calls for.
 **Every page needs an H1.** Several CLI pages historically opened at H2, which
 makes their first heading smaller than every other page's and leaves the
 browser tab title as the only page name.
+
+**A section documenting one flag is headed by the flag alone** — `` ## `--fail` ``
+— with two allowed extensions, both of which carry information the flag name
+does not: a `(scope)` suffix on a page that mixes scopes
+(`` ## `--allow-unsupported-types` (deploy + destroy) ``), and a `: short gloss`
+where the flag name alone does not say what it does
+(`` ## `--purge-events`: also delete deployment-event history on destroy ``).
+Pick one form per page and stay with it. Renaming an existing flag heading
+changes its anchor, so check what links to it first.
 
 ## Rules
 

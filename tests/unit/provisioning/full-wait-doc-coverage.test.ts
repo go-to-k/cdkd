@@ -23,8 +23,19 @@ const deployDocPath = join(repoRoot, 'docs', 'cli-deploy.md');
 /** The single H2 holding the per-resource-type wait table. */
 const WAIT_TABLE_HEADING = '## Wait behaviour by resource type';
 
-/** Extract the wait-table section (up to the next `## ` heading). */
-function fullWaitSection(): string {
+/**
+ * The types whose row says `--full-wait` does something the default does not.
+ *
+ * Both halves of that are load-bearing. Parsing ROWS rather than the section's
+ * text keeps a type named only in the surrounding prose from satisfying the
+ * check. Filtering on the `--full-wait` COLUMN is what keeps this fence
+ * distinct from its `--no-wait` sibling now that both read one merged table:
+ * eleven types have a row, but only the two that `--full-wait` actually
+ * changes should count here — otherwise a provider newly gating a wait on
+ * `CDKD_FULL_WAIT` passes silently because one of its types already appears
+ * for an unrelated `--no-wait` reason.
+ */
+function fullWaitRowTypes(): string[] {
   const md = readFileSync(deployDocPath, 'utf8');
   const start = md.indexOf(WAIT_TABLE_HEADING);
   expect(
@@ -33,7 +44,26 @@ function fullWaitSection(): string {
   ).toBeGreaterThanOrEqual(0);
   const rest = md.slice(start + 1);
   const next = rest.indexOf('\n## ');
-  return next >= 0 ? rest.slice(0, next) : rest;
+  const section = next >= 0 ? rest.slice(0, next) : rest;
+
+  let rows = 0;
+  const types: string[] = [];
+  for (const line of section.split('\n')) {
+    if (!line.startsWith('|')) continue;
+    // | type | --no-wait | default | --full-wait | CloudFormation | Terraform |
+    const cells = line.split('|').slice(1, -1);
+    if (cells.length < 4) continue;
+    const rowTypes = cells[0]!.match(/AWS::[A-Za-z0-9]+::[A-Za-z0-9]+/g) ?? [];
+    if (rowTypes.length === 0) continue;
+    rows += 1;
+    if (cells[3]!.trim().toLowerCase() === 'same as default') continue;
+    types.push(...rowTypes);
+  }
+  expect(
+    rows,
+    `parsed no rows out of "${WAIT_TABLE_HEADING}" — the table's shape changed and this fence is measuring nothing`
+  ).toBeGreaterThanOrEqual(10);
+  return types;
 }
 
 function handledTypes(source: string): string[] {
@@ -55,17 +85,17 @@ describe('--full-wait doc coverage', () => {
   });
 
   it('documents each CDKD_FULL_WAIT provider in the cli-deploy.md wait table', () => {
-    const section = fullWaitSection();
+    const affected = new Set(fullWaitRowTypes());
     const undocumented = fullWaitProviders.filter((p) => {
       const types = handledTypes(p.source);
-      // At least one of the provider's handled types must appear in the wait
-      // table (a provider handling many types may gate only one wait on
-      // --full-wait, so one documented type suffices).
-      return !types.some((t) => section.includes(t));
+      // At least one of the provider's handled types must have a row whose
+      // --full-wait column is not "same as default" (a provider handling many
+      // types may gate only one wait on --full-wait, so one suffices).
+      return !types.some((t) => affected.has(t));
     });
     expect(
       undocumented.map((p) => p.file),
-      'these providers honor --full-wait but no handled type appears in the cli-deploy.md wait table; add a row'
+      "these providers honor --full-wait but no handled type has a wait-table row whose --full-wait column differs from the default; add or correct a row"
     ).toEqual([]);
   });
 });

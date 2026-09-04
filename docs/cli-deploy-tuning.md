@@ -27,7 +27,7 @@ cdkd deploy --strict                            # fail on warning annotations to
 | --- | --- | --- |
 | `--no-aggressive-vpc-parallel` | off (relaxation on) | Keep the CDK-injected defensive `DependsOn` edges from VPC Lambdas onto private-subnet routes. |
 | `--no-capture-observed-state` | off (capture on) | Skip recording each resource's AWS-current properties as the drift baseline. |
-| `--prefix-user-supplied-names` | off | Prefix user-declared physical names with the stack name, the way cdkd did before 0.94.0. |
+| `--prefix-user-supplied-names` | off | Prefix user-declared physical names with the stack name. |
 | `--no-prefix-user-supplied-names` | — | Deprecated. Already the default; setting it warns and changes nothing. |
 | `--resource-warn-after <duration>` or `<TYPE>=<duration>` | `5m` | Warn when one resource operation has been running longer than this. Repeatable. |
 | `--resource-timeout <duration>` or `<TYPE>=<duration>` | `30m` | Abort one resource operation that exceeds this. Repeatable. |
@@ -249,8 +249,8 @@ on a first deploy, on a stack that never used the prefix, and whenever
 
 The check reads the state cdkd has already loaded under the stack lock, so it
 sees exactly what the diff will consume and no concurrent deploy can change it
-in between. The lock is held while the prompt is open and released as soon as
-you answer.
+in between. The lock is held while the prompt is open; declining releases it,
+and accepting keeps it for the deploy that follows.
 
 ## Per-resource timeout
 

@@ -211,7 +211,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['cli-internals.md', 48],
   ['code-layout.md', 261],
   ['delete-outcome.md', 5], // literal list: EXACT, see below
-  ['docs-page-template.md', 70], // `docs/**`; measured 79 tracked files
+  ['docs-page-template.md', 63], // `docs/**`; measured 79 tracked files (80%, per the convention above)
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
@@ -263,7 +263,11 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // satellite's size; `docs/_generated/**` additionally pulls layout-scripts.md
   // in, which is why the representative path is an ordinary page rather than a
   // generated one.
-  ['docs/cli-deploy.md', 4_200, 12_000], // measured 4,820 at registration
+  // Measured 5,383. The cap is ~30% over rather than the 2.5x a round number
+  // would have given: at 12_000 there was room for a whole second `docs/**`
+  // satellite to land unnoticed, which is the hazard the s3-bucket-provider row
+  // above was re-derived to close.
+  ['docs/cli-deploy.md', 4_800, 7_000],
   ['src/provisioning/providers/s3-bucket-provider.ts', 210_000, 265_000], // measured 239,539; the cap was 300_000, whose 60,639 B of slack silently absorbed a whole 59 KB satellite in a review probe
   // A provisioning path OUTSIDE `providers/**`, and it is the row that makes
   // the provider half of this table bind at all. Review probe, 2026-08-25:
@@ -614,7 +618,7 @@ const CORPUS_FILE_COUNT = 43; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  + docs-page-template.md (2026-09-04): a NEW file rather than a
                               //  split -- the page shape and voice rules for `docs/**`, which is
                               //  the source of the public cdkd.dev site and had no written
-                              //  convention at all. 4,822 B under a single `docs/**` glob, so it
+                              //  convention at all. 5,383 B under a single `docs/**` glob, so it
                               //  loads only for a session editing the site and no existing file
                               //  shrank. That makes 43.
 const CORPUS_BYTES_MIN = 817_000;   // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04

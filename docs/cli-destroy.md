@@ -58,8 +58,9 @@ synthesis to succeed, because a state record only carries physical names — so
 `cdkd state destroy`, which never synthesizes, matches physical names only.
 When the app defines a single stack, no name is needed.
 
-`--all` targets every stack in the current CDK app, ordered so that a consumer
-stack is destroyed before the producers it reads from.
+`--all` targets every stack in the current CDK app. Whenever more than one stack
+is selected — by `--all` or by naming several — they are ordered so that a
+consumer stack is destroyed before the producers it reads from.
 
 A nested-stack **child** cannot be destroyed directly: `cdkd destroy <child>`
 is refused, because the parent's `AWS::CloudFormation::Stack` row would then
@@ -75,7 +76,8 @@ reference dangling.
 
 | Prompt | Raised by | Skipped by |
 | --- | --- | --- |
-| Per-stack (`Are you sure you want to destroy stack "X" ...`) | `cdkd destroy <stack>`, `cdkd destroy --all`, `cdkd state destroy <stack>` | `-y` / `--yes`, `-f` / `--force` |
+| Per-stack (`Are you sure you want to destroy stack "X" ...`) | `cdkd destroy <stack>`, `cdkd destroy --all` | `-y` / `--yes`, `-f` / `--force` |
+| Per-stack, same prompt | `cdkd state destroy <stack>` | `-y` / `--yes` only — `cdkd state destroy` does not accept `-f` / `--force` |
 | Batch — one prompt for the whole batch, asked before anything is touched | `cdkd state destroy --all` | `-y` / `--yes` |
 
 Under `--remove-protection` the per-stack prompt names the protected resources
@@ -147,7 +149,7 @@ refuses by default while they still hold data:
 | --- | --- |
 | `AWS::S3::Bucket` | CDK `autoDeleteObjects: true`, which templates as the `aws-cdk:auto-delete-objects` tag. |
 | `AWS::ECR::Repository` | CDK `emptyOnDelete: true` (`EmptyOnDelete: true` in the template), or the legacy `autoDeleteImages` (the `aws-cdk:auto-delete-images` tag). |
-| `AWS::S3Express::DirectoryBucket` | Set the `aws-cdk:auto-delete-objects` tag to `true` in the bucket's `Tags` — a handled property. CDK has no `autoDeleteObjects` sugar for directory buckets, so declare the tag explicitly on the L1. |
+| `AWS::S3Express::DirectoryBucket` | The `aws-cdk:auto-delete-objects` tag set to `true` in the bucket's `Tags`. CDK has no `autoDeleteObjects` sugar here, so declare the tag on the L1. |
 
 Both bucket types share a bounded empty-retry loop, so the auto-empty absorbs
 concurrent writes — including the race where objects (ALB access logs, for
@@ -208,14 +210,32 @@ cost and latency are unwanted, and the escape hatch for the refusal below.
 | `AWS::RDS::DBCluster` | `DeleteDBCluster(SkipFinalSnapshot=false, FinalDBSnapshotIdentifier=<generated>)` |
 | `AWS::Neptune::DBCluster` | `DeleteDBCluster(...FinalDBSnapshotIdentifier)` (Neptune SDK) |
 | `AWS::DocDB::DBCluster` | `DeleteDBCluster(...FinalDBSnapshotIdentifier)` (DocDB SDK) |
-| `AWS::ElastiCache::CacheCluster` | `DeleteCacheCluster(FinalSnapshotIdentifier=<generated>)` — Redis engine only; a Memcached cluster under `Snapshot` surfaces AWS's rejection, matching CFn's `DELETE_FAILED` |
-| `AWS::EC2::Volume` | Pre-delete `CreateSnapshot` (tagged `cdkd:final-snapshot-of: <volumeId>`), **waited to `completed`**, then the normal delete — the type is Cloud-Control-routed and `DeleteVolume` has no snapshot parameter. Idempotent: a destroy re-run reuses the tagged snapshot instead of creating a second one. |
-| `AWS::Redshift::Cluster` | Pre-delete `CreateClusterSnapshot` (`<clusterId>-final-<ts>`), **waited to `available`**, then a bounded wait for the CLUSTER itself to settle (the fresh snapshot leaves it busy and the delete would otherwise 400 with "There is an operation running on the Cluster"), then the CC-routed delete. |
-| `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the CC-routed delete. The snapshot source depends on cluster mode: a cluster-mode-ENABLED (sharded) group is snapshotted by `ReplicationGroupId`, while the cluster-mode-DISABLED default must name its PRIMARY member cache cluster instead (AWS rejects the group form with "Please specify a cache cluster instead") — cdkd resolves this automatically. Redis only; Memcached / snapshot-incapable node types surface AWS's rejection, matching CFn's `DELETE_FAILED`. |
+| `AWS::ElastiCache::CacheCluster` | `DeleteCacheCluster(FinalSnapshotIdentifier=<generated>)` — Redis engine only |
+| `AWS::EC2::Volume` | Pre-delete `CreateSnapshot`, waited to `completed`, then the normal delete. |
+| `AWS::Redshift::Cluster` | Pre-delete `CreateClusterSnapshot`, waited to `available`, then the delete. |
+| `AWS::ElastiCache::ReplicationGroup` | Pre-delete ElastiCache `CreateSnapshot`, waited to `available`, then the delete. Redis only. |
 
 Generated snapshot identifiers are deterministic and logged:
 `<physicalId>-final-<utcTimestamp>` (sanitized to the snapshot-identifier
 character rules).
+
+Three of those rows carry behaviour worth knowing before you rely on them:
+
+- **`AWS::EC2::Volume`** is Cloud-Control-routed and `DeleteVolume` takes no
+  snapshot parameter, which is why the snapshot is a separate pre-delete step.
+  cdkd tags it `cdkd:final-snapshot-of: <volumeId>`, so a destroy re-run reuses
+  the existing snapshot instead of creating and charging for a second one.
+- **`AWS::Redshift::Cluster`** waits a second time after the snapshot, for the
+  cluster itself to settle: a fresh snapshot leaves it busy and the delete would
+  otherwise fail with `There is an operation running on the Cluster`.
+- **`AWS::ElastiCache::ReplicationGroup`** picks its snapshot source by cluster
+  mode. A cluster-mode-enabled (sharded) group is snapshotted by
+  `ReplicationGroupId`; the cluster-mode-disabled default must name its primary
+  member cache cluster instead, because AWS rejects the group form with
+  `Please specify a cache cluster instead`. cdkd resolves this for you.
+  Memcached and snapshot-incapable node types surface AWS's rejection, matching
+  CloudFormation's `DELETE_FAILED` — the same is true of a Memcached
+  `AWS::ElastiCache::CacheCluster`.
 
 Final snapshots are billed AWS resources that survive the destroy by design —
 delete them manually when no longer needed.
@@ -247,8 +267,8 @@ replacement is data-losing.
 | `cdkd destroy` / `cdkd state destroy` | Snapshot, then delete. |
 | `cdkd deploy`'s DELETE of a resource removed from the template | Snapshot, then delete. |
 | Replacement: the delete-first / recreate delete of the OLD resource | Snapshot, then delete. A snapshot failure fails the resource — that delete is load-bearing for the re-create. |
-| Replacement: the post-replacement CLEANUP delete of the OLD resource | A TRANSIENT snapshot failure warns and skips the delete, so the old resource is leaked with a warning rather than deleted un-snapshotted. |
-| Rollback of a COMPLETED CREATE (automatic after a failed deploy, or `cdkd rollback`) | Snapshot, then delete. A refusal counts as a rollback failure, so the journal is kept for a re-run. `DeletionPolicy: Retain` orphans instead, which is what that policy asks for. |
+| Replacement: the post-replacement CLEANUP delete of the OLD resource | A TRANSIENT snapshot failure warns and skips the delete, leaking the old resource rather than deleting it un-snapshotted. |
+| Rollback of a COMPLETED CREATE (automatic after a failed deploy, or `cdkd rollback`) | Snapshot, then delete; a refusal is a rollback failure, so the journal is kept. `Retain` orphans instead. |
 | `cdkd rollback --revert-failed`'s delete of a CREATE that FAILED mid-flight | Same policy matrix — see below. |
 | Rollback's delete of the NEW resource (reversing a replacement, i.e. `UpdateReplacePolicy`) | Only the atomic SDK-routed types get a final snapshot; the other shapes keep the plain delete, which is load-bearing for same-name re-creation. |
 
@@ -481,9 +501,9 @@ replacement. Each site handles it in the way that resource's situation allows:
 
 | Deploy-side site | On a skip |
 | --- | --- |
-| A resource removed from the template | Warns, prints `⚠ <id> (<type>) skipped (<reason>)`, **keeps the state record**, and counts it under `Skipped (not deleted)` in the summary. Because the record is kept, the resource is still a pending DELETE and the next `cdkd deploy` re-attempts it — but the run exits `2`, since the template as written was not applied. |
-| The old resource of a replacement (`--replace`, `--recreate-via-*`, an UPDATE the type does not support in place) | **Fails the resource** — the replacement create would otherwise run beside a live old one, or collide with its name. |
-| The cleanup delete after a create-first replacement | Warns. The new resource is already created and recorded, so the old one is untracked whether the delete failed or was skipped. Delete it by hand. |
+| A resource removed from the template | **Warns and keeps the state record**, counting it under `Skipped (not deleted)`. The run exits `2`. |
+| The old resource of a replacement (`--replace`, `--recreate-via-*`, an in-place-unsupported UPDATE) | **Fails the resource** — the replacement create would otherwise run beside a live old one, or collide with its name. |
+| The cleanup delete after a create-first replacement | **Warns.** The old resource is untracked either way; delete it by hand. |
 | A rollback delete (automatic, or `cdkd rollback`) | Counted as a per-op **failure** at four of the five arms, so the journal segment is kept and re-running `cdkd rollback` re-attempts it. |
 
 The rollback exception is the delete of the **new** resource after the old one

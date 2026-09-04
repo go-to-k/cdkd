@@ -89,8 +89,12 @@ tree, a metadata block — is not.
 | Command | When stdout is reserved |
 | --- | --- |
 | `cdkd synth`, `cdkd list`, `cdkd state list`, `cdkd local invoke`, `cdkd local invoke-agentcore` | Always, in every mode. |
-| `cdkd state resources`, `cdkd state show`, `cdkd state info`, `cdkd drift`, `cdkd events` | Under `--json` only. Their flagless output is a formatted human view with no record-set mode behind it, so reserving stdout there would move an operator's prose off the stream they are reading it on. |
+| `cdkd state resources`, `cdkd state show`, `cdkd state info`, `cdkd drift`, `cdkd events` | Under `--json` only — see below. |
 | `cdkd deploy`, and the long-running `cdkd local` servers — `start-api`, `run-task`, `start-service`, `start-agentcore`, `start-alb`, `start-cloudfront` | Never. Their stdout is a human surface: the deploy banner and progress, the route table, task output, prefixed container logs. |
+
+The middle row is gated on `--json` because those commands' flagless output is a
+formatted human view with no record-set mode behind it. Reserving stdout there
+would move an operator's prose off the stream they are reading it on.
 
 `cdkd state list --long` and `--tree` are formatted views and are swept along:
 the reservation is taken at command entry, before the mode is known, so those
@@ -186,11 +190,11 @@ profile resolves** → `us-east-1`.
 The AWS JS SDK does not read `AWS_DEFAULT_REGION` on its own; the AWS CLI does,
 so cdkd reads it too and stays in step with a CLI command you just ran.
 
-The last two steps — the profile and the `us-east-1` fallback — apply to the
-**bootstrap-marker family**: `cdkd bootstrap`, `cdkd gc`, and
-`cdkd bootstrap --destroy`. These three move together because one writes the key
-the other two read. Every other command resolves `--region` → `AWS_REGION` and
-falls back to the `us-east-1` literal.
+The last three steps — `AWS_DEFAULT_REGION`, the profile, and the `us-east-1`
+fallback — apply to the **bootstrap-marker family**: `cdkd bootstrap`,
+`cdkd gc`, and `cdkd bootstrap --destroy`. These three move together because one
+writes the key the other two read. Every other command resolves `--region` →
+`AWS_REGION` and falls back to the `us-east-1` literal.
 
 ### The reconciliation
 
@@ -352,3 +356,10 @@ The full reference for all `cdkd local *` subcommands (`local invoke` /
 `local start-api` / `local run-task` / `local start-service` / `local start-alb` /
 `local start-cloudfront` / `local invoke-agentcore` / `local start-agentcore`)
 lives in **[Local Execution](local-emulation.md)**.
+
+## Related
+
+- [Installation & Quick Start](getting-started.md) — the basic invocations
+- [Core Concepts](concepts.md) — what cdkd stores and how it decides what to change
+- [Troubleshooting](troubleshooting.md) — symptom-first index of common failures
+- [Supported Resources](supported-resources.md) — per-type provider coverage

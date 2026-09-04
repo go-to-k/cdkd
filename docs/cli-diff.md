@@ -25,6 +25,8 @@ cdkd diff MyStack --json                   # machine-readable payload
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--all` | off | Diff every stack in the app. |
+| `--stack <name>` | — | A single stack name, as an alternative to the positional argument. |
+| `--output <path>` | `cdk.out` | Synthesis output directory. |
 | `--recursive` | off | Descend into each `AWS::CloudFormation::Stack` row and diff every nested child against its own state. |
 | `--fail` | off | Exit `1` when any change is detected. |
 | `--json` | off | Emit the diff as JSON instead of human-readable text. |
@@ -399,7 +401,11 @@ type names.
 | Code | Meaning |
 | --- | --- |
 | `0` | The diff was computed. This is the exit code even when changes are present, unless `--fail` was passed. |
-| `1` | Either `--fail` was passed and at least one change was detected, or the command failed — synth crash, auth error, an unresolvable cross-stack reference, no stack matching the given patterns, or more than one stack in the app with no selection given. |
+| `1` | `--fail` was passed and something changed, or the command itself failed. |
+
+The failures behind the second meaning of `1` are a synth crash, an auth error,
+an unresolvable cross-stack reference, no stack matching the patterns you gave,
+and more than one stack in the app with no selection given.
 
 `cdkd diff` never exits `2`. That code means partial failure, which is a
 property of commands that mutate AWS.
