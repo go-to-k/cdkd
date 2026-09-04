@@ -571,7 +571,7 @@ export class S3StateBackend {
         this.logger.warn(
           `Could not read the legacy state record for '${safeName}' while cleaning up ` +
             `(${legacyProbe.reason}). If one exists it was left in place. ` +
-            `Re-run with --verbose for the underlying error.`
+            `Re-run with --verbose for the details.`
         );
       }
       if (legacyProbeBelongsTo(legacyProbe, region)) {
@@ -1169,7 +1169,10 @@ export class S3StateBackend {
           Key: this.getLegacyStateKey(stackName),
         })
       );
-      if (!response.Body) return { kind: 'unreadable', reason: 'the response carried no body' };
+      if (!response.Body) {
+        this.logger.debug(`Legacy state probe for '${stackName}': response carried no body`);
+        return { kind: 'unreadable', reason: 'the response carried no body' };
+      }
       const bodyString = await response.Body.transformToString();
       const state = JSON.parse(bodyString) as Partial<StackState>;
       // Mirror `tryGetLegacy`'s gate — `if (state.region && state.region !==
@@ -1188,20 +1191,30 @@ export class S3StateBackend {
       // from anywhere while an equality test would refuse to sweep it.
       const raw = (state as { region?: unknown }).region;
       if (!raw) return { kind: 'no-region' };
-      if (typeof raw !== 'string')
-        return { kind: 'unreadable', reason: `its 'region' field is ${typeof raw}, not a string` };
+      if (typeof raw !== 'string') {
+        // `typeof` only — never the value, which is body content.
+        this.logger.debug(
+          `Legacy state probe for '${stackName}': 'region' is ${typeof raw}, not a string`
+        );
+        return { kind: 'unreadable', reason: `its 'region' field is not a string` };
+      }
       return { kind: 'region', region: raw };
     } catch (error) {
       if (isNoSuchKey(error)) return { kind: 'absent' };
       // Don't fail the whole list on a single bad legacy file — log & skip.
-      // The class at default verbosity, AWS's own text at debug: on this
-      // warning's headline population S3 words `AccessDenied` as `User:
-      // arn:aws:sts::<account>:assumed-role/<role>/<session> is not authorized
-      // to perform: ...`, so the summary is what may be printed and the detail
-      // is not.
-      const { summary, detail } = describeAwsFailure(error);
+      // `reason` is a BOUNDED value — an error class name, never a message.
+      //
+      // `describeAwsFailure().summary` is not safe here: it withholds AWS's
+      // own wording only for AWS-AUTHORED failures, and returns `error.message`
+      // verbatim for anything else. The failure that matters is `JSON.parse`
+      // on the body, whose V8 `SyntaxError` embeds ~30 characters OF THAT BODY
+      // in its message — so a principal able to write the state bucket could
+      // put terminal escapes, or a neighbouring plaintext property value, into
+      // a default-verbosity warn. A class name cannot carry either.
+      const { detail } = describeAwsFailure(error);
       this.logger.debug(`Could not read legacy state region for '${stackName}': ${detail}`);
-      return { kind: 'unreadable', reason: summary };
+      const cls = error instanceof Error && error.name ? error.name : 'an unknown error';
+      return { kind: 'unreadable', reason: displaySafe(cls, { asciiOnly: true }) || UNRENDERABLE };
     }
   }
 

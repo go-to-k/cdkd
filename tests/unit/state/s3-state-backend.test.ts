@@ -844,11 +844,22 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
       // own unrelated warning under these mocks, and asserting over the joined
       // text would let that one satisfy — or falsify — assertions about this
       // one.
-      const warnings = (): string =>
+      const warned = (): string[] =>
         childLoggerMock.warn.mock.calls
           .map((c: unknown[]) => String(c[0]))
-          .filter((m: string) => m.includes('Could not read the legacy state record'))
-          .join('\n');
+          .filter((m: string) => m.includes('Could not read the legacy state record'));
+
+      /**
+       * The line under test, and proof there IS one. Every case below asserts
+       * absences, and an absence holds vacuously against the empty string —
+       * so a reworded headline would silence the filter and pass them all
+       * green while the defect was live.
+       */
+      const warnings = (): string => {
+        const lines = warned();
+        expect(lines).toHaveLength(1);
+        return lines[0]!;
+      };
 
       it('warns with the error CLASS when the probe cannot be read', async () => {
         s3Client.send.mockResolvedValueOnce({}); // delete new key
@@ -911,6 +922,30 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
         expect(warned).not.toContain('s3://');
       });
 
+      it('carries no attacker-controlled bytes from a hostile body', async () => {
+        // `JSON.parse`'s V8 SyntaxError embeds ~30 characters OF THE BODY in
+        // its message. A principal able to write the state bucket could put
+        // terminal escapes — or a neighbouring plaintext property value — into
+        // a default-verbosity warn through it, which is why `reason` carries
+        // an error CLASS and never a message.
+        s3Client.send.mockResolvedValueOnce({});
+        s3Client.send.mockResolvedValueOnce({
+          Body: {
+            transformToString: () =>
+              Promise.resolve('{"a":1,"b": \u001b[2K\rdestroy completed successfully'),
+          },
+        });
+
+        await backend.deleteState('S', 'us-east-1');
+
+        const line = warnings();
+        // No C0 / C1 control byte reaches the terminal.
+        expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+        expect(line).not.toContain('destroy completed successfully');
+        // The class still gets through, so the line is still diagnosable.
+        expect(line).toContain('SyntaxError');
+      });
+
       it('warns for a body it could not classify, without the AWS advice', async () => {
         // `reason` also carries the two non-throwing unreadable shapes. They
         // are not permission problems, so nothing in the message may read as
@@ -940,7 +975,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        expect(warnings()).not.toMatch(/Could not read the legacy state record/);
+        expect(warned()).toEqual([]);
       });
 
       it('stays silent when the legacy body names a region', async () => {
@@ -950,7 +985,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        expect(warnings()).not.toMatch(/Could not read the legacy state record/);
+        expect(warned()).toEqual([]);
       });
 
       it('stays silent when the legacy body names no region', async () => {
@@ -960,7 +995,7 @@ describe('S3StateBackend region-prefixed key layout (PR 1)', () => {
 
         await backend.deleteState('S', 'us-east-1');
 
-        expect(warnings()).not.toMatch(/Could not read the legacy state record/);
+        expect(warned()).toEqual([]);
       });
     });
 
