@@ -41,12 +41,15 @@ const SECRET_BY_EXPRESSION: Record<string, string> = {
   [EXPR_A_PLAIN]: PLAINTEXT_A,
 };
 
-// A reference whose value MOVES between resolutions inside one deploy: the
-// real resolver never caches an `ssm` reference whose `Type` came back
-// unclassifiable (`cacheable = false`), so an `Export.Name` resolving it after
-// the value pass re-asks AWS and can see a rotated value. Modelled by returning
-// a different plaintext from the SECOND resolution of an expression the test
-// lists here; empty for every other test.
+// A reference whose value MOVES between resolutions inside one deploy. The
+// real resolver reaches that state only for an `ssm` reference whose `Type`
+// came back unclassifiable (`cacheable = false`), so an `Export.Name` resolving
+// it after the value pass re-asks AWS and can see a rotated value. The stub
+// models the SHAPE, not that resolver state: the expression it moves is this
+// file's `secretsmanager` spelling (the plain/staged collision the case needs
+// is inherently `secretsmanager`-shaped, and the real resolver would cache it),
+// and it caches nothing, returning a different plaintext from the SECOND
+// resolution of an expression the test lists here; empty for every other test.
 const MOVED_PLAINTEXT_A = 'moved-secret-value-a';
 const movesAfterFirst = new Set<string>();
 const resolutionsOf = new Map<string, number>();
@@ -314,8 +317,12 @@ describe('DeployEngine - redactOutputs takes the TEMPLATE_SOURCED rules (issue #
     expect(resolutionsOf.get(EXPR_A_PLAIN)).toBe(2);
     expect(saved.outputs['Dsn']).toBe(DSN);
     expect(saved.outputs['Whole']).toBe(EXPR_A);
-    // ...and the moved value, recorded by the name's resolution, is still an
-    // ENTRY of the pass map: nothing of it reaches state.
+    // No plaintext reaches state. The second line is a plain leak guard, not a
+    // pin of the entries copy: the name is REFUSED (it resolves a secret), so
+    // the moved value never enters a bag and this holds with the entries loop
+    // deleted. That copy is pinned where it is observable — the "a REFUSED
+    // export name still RECORDS its secret" case in
+    // `deploy-engine-outputs-export-name-collision.test.ts`.
     expect(JSON.stringify(saved)).not.toContain(PLAINTEXT_A);
     expect(JSON.stringify(saved)).not.toContain(MOVED_PLAINTEXT_A);
   });

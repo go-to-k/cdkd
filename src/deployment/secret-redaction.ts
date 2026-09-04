@@ -2629,22 +2629,24 @@ function singleSpanFrame(
  * the fabricated-baseline direction {@link preferPositionDecisions} refuses —
  * and the whole-token arm returns its source unscanned for the same reason.
  *
- * `scanned` is the caller's `redactSecretsForState(bag, secrets)` — the value
- * scan's own answer for this leaf, computed ONCE because the caller falls
- * through to it on every refusal. This arm only compares against it; it never
- * scans on its own.
+ * RETURNS THE VALUE SCAN'S ANSWER ON EVERY REFUSAL, not `undefined`: the scan
+ * is computed once, here, for `(bag, secrets)` — the arm's bound below compares
+ * against it, and every fall-through IS it — so the compared value provably
+ * comes from the same bag and map the arm positions. An earlier revision took
+ * the scan as a parameter, which left the bound one wrong caller away from
+ * comparing against a scan of some other bag with no type error.
  */
 function positionByEmbeddedSpan(
   bag: string,
   source: string,
-  secrets: RecordedSecretValues,
-  scanned: string
-): string | undefined {
+  secrets: RecordedSecretValues
+): string {
+  const scanned = redactSecretsForState(bag, secrets);
   const frame = singleSpanFrame(bag, source);
-  if (frame === undefined) return undefined;
+  if (frame === undefined) return scanned;
   const { token, prefix, suffix, middle } = frame;
   const recorded = resolvedPlaintextOf(secrets, token);
-  if (recorded === undefined || recorded !== middle) return undefined;
+  if (recorded === undefined || recorded !== middle) return scanned;
   // THE SAME CLASS OF ANSWER AS THE VALUE SCAN, proven rather than argued: the
   // arm accepts only a leaf the scan itself would rewrite to
   // `prefix + <the map's survivor for the middle> + suffix` — the middle and
@@ -2656,8 +2658,8 @@ function positionByEmbeddedSpan(
   // that needle instead (so does this arm, by falling through to it). See the
   // generation note in the docstring for why this bound matters.
   const survivor = secrets.get(middle);
-  if (survivor === undefined) return undefined;
-  if (scanned !== prefix + survivor + suffix) return undefined;
+  if (survivor === undefined) return scanned;
+  if (scanned !== prefix + survivor + suffix) return scanned;
   return prefix + token + suffix;
 }
 
@@ -2935,18 +2937,12 @@ function redactByPath(
       // expressions sharing one resolved value.
       return source;
     }
-    // The value scan's answer for this leaf, computed once: the span arm is
-    // BOUND to it (it accepts only a leaf the scan would rewrite to exactly the
-    // middle) and every refusal falls through to it.
-    const scanned = redactSecretsForState(bag, secrets);
     // A literal leaf EMBEDDING one token, positioned by the span its source
-    // states — exact where the value scan is ambiguous (issue #2485).
-    const spanned = positionByEmbeddedSpan(bag, source, secrets, scanned);
-    if (spanned !== undefined) return spanned;
-    // Public reference, or an embedded token this pass cannot vouch for: keep
-    // the resolved value, but still value-scanned so a secret embedded beside
-    // it is redacted.
-    return scanned;
+    // states — exact where the value scan is ambiguous (issue #2485). On every
+    // refusal (a public reference, an embedded token this pass cannot vouch
+    // for) the arm returns the value scan of the leaf itself, computed once
+    // inside it, so a secret embedded beside the token is still redacted.
+    return positionByEmbeddedSpan(bag, source, secrets);
   }
   if (typeof bag === 'string' && isPlainObject(source)) {
     // The source leaf is an intrinsic OBJECT, so there is no string to copy —
