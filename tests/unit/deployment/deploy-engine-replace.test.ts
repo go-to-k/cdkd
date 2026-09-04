@@ -27,8 +27,14 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
-import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
-import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../../src/utils/error-handler.js';
+import {
+  isMarkedNonRetryable,
+  isUpdateUnsupportedError,
+} from '../../../src/deployment/retryable-errors.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
 
@@ -181,7 +187,10 @@ describe('DeployEngine — --replace wire-through', () => {
     // `RetentionInDays > 0` — so these two knobs let a test put the retention
     // in exactly one bag and pin which one the guard consulted.
     bags?: { recorded?: Record<string, unknown>; desired?: Record<string, unknown> }
-  ): Promise<void> {
+    // Returns the state record map the engine wrote into, so a test can assert
+    // what the deploy PERSISTED (which physical id survived, which template
+    // attributes were carried) rather than only which provider calls ran.
+  ): Promise<Record<string, StateRecord>> {
     const recordedProps = bags?.recorded ?? { Mode: 'a' };
     const desiredProps = bags?.desired ?? { Mode: 'b' };
     const change: ResourceChange = {
@@ -240,6 +249,7 @@ describe('DeployEngine — --replace wire-through', () => {
       }
     ).provisionResource.bind(engine);
     await provisionResource('MyResource', change, stateResources, 'MyStack', template);
+    return stateResources;
   }
 
   it('replace=true on a non-stateful type falls back to DELETE then CREATE', async () => {
@@ -333,40 +343,55 @@ describe('DeployEngine — --replace wire-through', () => {
   });
 
   describe('the Cloud Control auto-fallback consults the same stateful guard (issue #2514)', () => {
-    // This arm is reached off the update error's MESSAGE, not off a flag:
-    // `msg.includes('UnsupportedActionException') || msg.includes('does not
-    // support UPDATE')`. Either substring alone fires the fallback, so both
-    // spellings are pinned — a fence for one says nothing about the other.
+    // This arm is reached off the update REJECTION, not off a flag. Since
+    // issue #2520 the engine classifies it with `isUpdateUnsupportedError`,
+    // which reads the exception NAME down the bounded cause chain and keeps
+    // AWS's prose as a TOP-LEVEL-only fallback. Both accepted shapes are
+    // pinned below — a fence for one says nothing about the other.
     //
-    // Fixture 1 is REAL AWS TEXT, not invented: probing Cloud Control on
-    // 2026-09-04 with `aws cloudcontrol update-resource --type-name
-    // AWS::DocDB::DBCluster` (a type whose `ProvisioningType` is
-    // `NON_PROVISIONABLE`, so it ships no UPDATE handler) answered
-    // `UnsupportedActionException` with the message `Resource type
-    // AWS::DocDB::DBCluster does not support UPDATE action`. That is the text
-    // `CloudControlProvider.handleError` interpolates into the error the deploy
-    // engine sees, which is how the second substring matches in production.
+    // Neither is invented. Probing Cloud Control on 2026-09-04 with `aws
+    // cloudcontrol update-resource --type-name AWS::DocDB::DBCluster` (a type
+    // whose `ProvisioningType` is `NON_PROVISIONABLE`, so it ships no UPDATE
+    // handler) answered an error whose `name` is `UnsupportedActionException`
+    // and whose `message` is `Resource type AWS::DocDB::DBCluster does not
+    // support UPDATE action` — the name is NOT repeated in the message.
+    // `CloudControlProvider.handleError` then wraps it in a
+    // `ProvisioningError`, interpolating `err.message` only and passing the
+    // raw error as `cause`.
     //
-    // Fixture 2 pins the OTHER substring, and its own reachability is doubtful:
-    // `handleError` (`src/provisioning/cloud-control-provider.ts`) interpolates
-    // `err.message` only and never `err.name`, and AWS's message text (above)
-    // does not repeat the name — so nothing cdkd produces is known to satisfy
-    // `includes('UnsupportedActionException')`. The case stays because the
-    // engine's predicate accepts it and an unfenced accepted branch is worse
-    // than one whose production reachability is stated; issue #2520 tracks
-    // replacing that half with the structured `ccErrorCode` cdkd already has.
-    const CC_UNSUPPORTED_MESSAGES: ReadonlyArray<readonly [string, string]> = [
+    // Fixture 1 is that full production object graph: the wrapper AND its
+    // cause. It is what makes the STRUCTURED read load-bearing — the wrapper's
+    // own message carries no name, so only the cause link can supply it.
+    // Fixture 2 is the flat prose a provider could rethrow, which the
+    // top-level fallback still accepts.
+    //
+    // The shape that is deliberately GONE is the exception name quoted inside
+    // a message (`Error: UnsupportedActionException: ...`): the pre-#2520
+    // predicate accepted it, nothing cdkd produces emits it, and its negative
+    // is pinned in `tests/unit/deployment/retryable-errors.test.ts`.
+    const CC_UNSUPPORTED_REJECTIONS: ReadonlyArray<readonly [string, () => unknown]> = [
       [
-        "production's byte shape: handleError's wrapper plus AWS's own text",
-        'Resource type AWS::DynamoDB::Table is not supported by Cloud Control API and no SDK ' +
-          'provider is registered.\nPlease report this issue at ' +
-          'https://github.com/go-to-k/cdkd/issues so we can add SDK provider support.\n' +
-          'Error: Resource type AWS::DynamoDB::Table does not support UPDATE action',
+        "production's object graph: handleError's wrapper over the named cause",
+        () => {
+          const raw = new Error(
+            'Resource type AWS::DynamoDB::Table does not support UPDATE action'
+          );
+          raw.name = 'UnsupportedActionException';
+          return new ProvisioningError(
+            'Resource type AWS::DynamoDB::Table is not supported by Cloud Control API and no ' +
+              'SDK provider is registered.\nPlease report this issue at ' +
+              'https://github.com/go-to-k/cdkd/issues so we can add SDK provider support.\n' +
+              `Error: ${raw.message}`,
+            'AWS::DynamoDB::Table',
+            'MyResource',
+            'old-pid',
+            raw
+          );
+        },
       ],
       [
-        'the exception NAME, the predicate\'s other accepted substring',
-        'Resource type AWS::DynamoDB::Table is not supported by Cloud Control API and no SDK ' +
-          'provider is registered.\nError: UnsupportedActionException: update not available',
+        "AWS's prose, flat at the top level — the retained fallback",
+        () => new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
       ],
     ];
 
@@ -374,9 +399,9 @@ describe('DeployEngine — --replace wire-through', () => {
       updateRejection = () => new Error(message);
     }
 
-    for (const [label, message] of CC_UNSUPPORTED_MESSAGES) {
+    for (const [label, makeRejection] of CC_UNSUPPORTED_REJECTIONS) {
       it(`blocks a STATEFUL type with no flags at all — ${label}`, async () => {
-        rejectWith(message);
+        updateRejection = makeRejection;
         // Neither --replace nor --force-stateful-recreation: exactly the plain
         // `cdkd deploy` that used to DELETE + CREATE a DynamoDB table.
         const engine = makeEngine({});
@@ -467,27 +492,205 @@ describe('DeployEngine — --replace wire-through', () => {
       expect(replaceErr!.cause?.message).toMatch(/--replace would DELETE \+ CREATE/);
     });
 
-    it('blocks a stateful type even under UpdateReplacePolicy: Retain, and says so', async () => {
-      // The asymmetry this fixes in the DOCS: the property-driven replacement
-      // guard EXEMPTS `Retain` (that path creates first and orphans the old
-      // resource), while this fallback deletes unconditionally a few lines
-      // below the guard — so `Retain` protects nothing here and must not be
-      // read as an exemption. Without this test, adding
-      // `&& updateReplacePolicy !== 'Retain'` to the new guard keeps every
-      // other case in this file green while silently re-opening the data loss.
+    it('EXEMPTS a stateful type under UpdateReplacePolicy: Retain, retaining the old resource (issue #2518)', async () => {
+      // The asymmetry #2518 closed: the property-driven replacement guard
+      // EXEMPTS `Retain` because that path creates first and orphans the old
+      // resource, while this fallback used to delete unconditionally a few
+      // lines below the guard — so the SAME template attribute decided
+      // retention on one path and nothing on the other.
+      //
+      // Now both paths retain. A stateful DynamoDB table declaring `Retain` is
+      // therefore replaced with NO consent flag, because the replacement
+      // destroys nothing: demanding `--force-stateful-recreation` here would
+      // have been a refusal whose only remedy deletes the resource the user
+      // explicitly asked to keep.
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain');
+      // The behavioural half, not just the absence of a throw: NO delete at
+      // all, and the create still ran. A guard that merely stopped refusing
+      // would show `['update', 'delete', 'create']` here.
+      expect(callOrder).toEqual(['update', 'create']);
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('deletes the old resource when the template declares NO Retain (the exemption is conditional)', async () => {
+      // The other polarity of the same knob, on the type whose verdict the
+      // exemption changes. Without it, an exemption that fired unconditionally
+      // — `retainOldOnReplace = true` — would satisfy the case above while
+      // silently leaking every replaced resource.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      await invokeProvision(makeEngine({ forceStatefulRecreation: true }), 'AWS::DynamoDB::Table');
+      expect(callOrder).toEqual(['update', 'delete', 'create']);
+    });
+
+    it('reads Retain from the TEMPLATE for the retain decision too, not from the state record', async () => {
+      // The exemption asks the same template-only question the refusal note
+      // used to: a policy the previous deploy applied but the template being
+      // applied has DROPPED must not keep a resource alive that the user has
+      // stopped asking to keep. State says Retain, template says nothing.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      const err = await invokeProvision(
+        makeEngine({}),
+        'AWS::DynamoDB::Table',
+        undefined,
+        'Retain'
+      ).then(
+        () => null,
+        (e) => e as Error & { cause?: { code?: string } }
+      );
+      expect(err).not.toBeNull();
+      expect(err!.cause?.code).toBe('STATEFUL_REPLACE_BLOCKED');
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('never prepares a final snapshot on the Retain arm', async () => {
+      // `UpdateReplacePolicy` is ONE attribute, so `Retain` and `Snapshot`
+      // cannot both be applied — but the snapshot read a few lines down is the
+      // one site with a STATE fallback, and a future edit that hoisted it
+      // above the retain branch would take a snapshot of a resource nobody is
+      // deleting. Pinned through the observable the snapshot reaches: the
+      // delete's `finalSnapshotIdentifier`. Nothing deletes here, so the
+      // strongest available assertion is that no delete happened at all AND
+      // the recorded `Snapshot` on state did not turn this into one.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain', 'Snapshot');
+      expect(callOrder).toEqual(['update', 'create']);
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('refuses with NAMED_REPLACEMENT_COLLISION when the retained resource still holds the name', async () => {
+      // Retaining makes this create-FIRST, so a physical name the retained old
+      // resource still holds can never be reused — the same verdict, and the
+      // same error code, the property-driven create-first path already
+      // reaches. The failure has to be LOUD and name the cause: without the
+      // translation the user sees a bare `AlreadyExists` with no link to the
+      // policy that produced it.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        throw new Error('Table already exists: my-table');
+      });
       const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain').then(
         () => null,
         (e) => e as Error & { cause?: { message?: string; code?: string } }
       );
       expect(err).not.toBeNull();
-      expect(err!.cause?.code).toBe('STATEFUL_REPLACE_BLOCKED');
-      // The remedy it offers is `--force-stateful-recreation`, which DELETES —
-      // so the message has to say that Retain will not save the data, or the
-      // advice is a trap for exactly the user who declared Retain.
-      expect(err!.cause?.message).toMatch(/Retain does NOT protect this path/);
+      expect(err!.cause?.code).toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(err!.cause?.message).toMatch(/UpdateReplacePolicy: Retain pins that resource/);
+      // The remedy must be actionable AND honest about its cost — dropping
+      // Retain is the only way forward and it destroys the old resource.
+      expect(err!.cause?.message).toMatch(/Removing UpdateReplacePolicy: Retain/);
+      // Nothing destructive ran on the way to the refusal.
       expect(provider.delete).not.toHaveBeenCalled();
-      expect(callOrder).toEqual(['update']);
+    });
+
+    it('marks both Retain refusals non-retryable, and chains the create rejection on the collision one', async () => {
+      // Both interpolate a template-controlled logical id (and, on the
+      // collision arm, the AWS collision text riding on `cause`) into exactly
+      // what the substring-matching retry classifiers read — and
+      // `isNameCooldownError`'s spellings ARE retryable, so an unmarked
+      // refusal carrying one would burn the full 64s schedule on a path that
+      // cannot succeed. The chain is what makes the refusal diagnosable, and
+      // it is safe only because the marker is consulted before any chain-text
+      // classification.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        throw new Error('Table already exists: my-table');
+      });
+      const collision = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain').then(
+        () => null,
+        (e) => e as Error & { cause?: Error & { cause?: Error; code?: string } }
+      );
+      expect(collision!.cause?.code).toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(isMarkedNonRetryable(collision!.cause!)).toBe(true);
+      expect(collision!.cause?.cause?.message).toBe('Table already exists: my-table');
+
+      callOrder = [];
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        return { physicalId: 'old-pid', attributes: {} };
+      });
+      const idempotent = await invokeProvision(
+        makeEngine({}),
+        'AWS::DynamoDB::Table',
+        'Retain'
+      ).then(
+        () => null,
+        (e) => e as Error & { cause?: Error & { cause?: unknown; code?: string } }
+      );
+      expect(idempotent!.cause?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+      expect(isMarkedNonRetryable(idempotent!.cause!)).toBe(true);
+      // Nothing to chain: the create SUCCEEDED and returned the wrong id.
+      // Asserted so a future edit cannot put a non-Error on `cause`, where
+      // `formatError` would read `.message` off it and render `undefined`.
+      expect(idempotent!.cause?.cause).toBeUndefined();
+    });
+
+    it('neither Retain refusal can re-fire the fallback it was raised from', async () => {
+      // `isUpdateUnsupportedError` reads the exception NAME down the cause
+      // chain since issue #2520, and the collision refusal now CHAINS the
+      // create rejection — so the pre-#2520 guarantee that a refusal cannot
+      // satisfy its own trigger has to be re-established against the new
+      // predicate rather than assumed from the old message check.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        throw new Error('Table already exists: my-table');
+      });
+      const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain').then(
+        () => null,
+        (e) => e as Error
+      );
+      expect(isUpdateUnsupportedError(err!, 'MyResource')).toBe(false);
+      expect(isUpdateUnsupportedError(err!.cause as Error, 'MyResource')).toBe(false);
+    });
+
+    it('lets a NON-collision create failure through untranslated', async () => {
+      // The other direction of the same translation: only a name collision is
+      // rewritten. A throttle or a validation error must surface as itself, or
+      // every failed replacement would be reported as a Retain problem.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        throw new Error('ValidationException: BillingMode is invalid');
+      });
+      const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain').then(
+        () => null,
+        (e) => e as Error & { cause?: { message?: string; code?: string } }
+      );
+      expect(err).not.toBeNull();
+      expect(err!.cause?.code).not.toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(err!.cause?.message).toMatch(/BillingMode is invalid/);
+    });
+
+    it('refuses with NAMED_REPLACEMENT_IDEMPOTENT_CREATE when the create returns the retained resource', async () => {
+      // Issue #1238's shape on this path: a name-idempotent Create API returns
+      // the EXISTING resource rather than colliding. Recording that id as the
+      // "new" resource would re-adopt the very resource Retain just orphaned,
+      // with the new properties never applied — so the refusal has to happen
+      // BEFORE any state bookkeeping.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        return { physicalId: 'old-pid', attributes: {} };
+      });
+      const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain').then(
+        () => null,
+        (e) => e as Error & { cause?: { message?: string; code?: string } }
+      );
+      expect(err).not.toBeNull();
+      expect(err!.cause?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+      expect(err!.cause?.message).toMatch(/name-idempotent/);
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('does NOT refuse when the create returns a genuinely new id (the idempotency check is conditional)', async () => {
+      // The polarity that kills a check comparing the wrong pair: a create
+      // returning a fresh id is the normal Retain outcome and must proceed.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain');
+      expect(callOrder).toEqual(['update', 'create']);
     });
 
     it('does not add the Retain note when the template declares no such policy', async () => {
@@ -540,22 +743,30 @@ describe('DeployEngine — --replace wire-through', () => {
       expect(callOrder).toEqual(['update']);
     });
 
-    it('--replace on a Retain-declaring stateful type carries the Retain note too', async () => {
-      // The note is appended to the COMBINED ternary, so both arms have it
-      // today — but nothing pinned the `--replace` half, and a future split of
-      // the two messages would drop it there silently. The trap is identical
-      // on that arm: `--force-stateful-recreation` deletes a resource the
-      // template asked to retain.
-      const err = await invokeProvision(
-        makeEngine({ replace: true }),
-        'AWS::DynamoDB::Table',
-        'Retain'
-      ).then(
+    it('the Retain exemption covers the --replace trigger too, not only the Cloud Control one', async () => {
+      // Both triggers share this block, so a fix applied to one of them is the
+      // classic half-landed change. The default `updateRejection` here is the
+      // typed `ResourceUpdateNotSupportedError` an SDK provider raises, so this
+      // is the OTHER trigger entirely — and it must retain identically.
+      await invokeProvision(makeEngine({ replace: true }), 'AWS::DynamoDB::Table', 'Retain');
+      expect(callOrder).toEqual(['update', 'create']);
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('no refusal message anywhere still claims Retain fails to protect this path', async () => {
+      // PR #2519 shipped a note reading "UpdateReplacePolicy: Retain does NOT
+      // protect this path — the replacement deletes the old resource
+      // regardless." That sentence is now FALSE, and false documentation of a
+      // data-loss path is worse than none. It cannot be reached any more —
+      // `Retain` short-circuits the guard — so this asserts on the only shape
+      // that still produces the refusal, with the policy ABSENT.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      const err = await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table').then(
         () => null,
         (e) => e as Error & { cause?: { message?: string } }
       );
-      expect(err!.cause?.message).toMatch(/--replace would DELETE \+ CREATE/);
-      expect(err!.cause?.message).toMatch(/Retain does NOT protect this path/);
+      expect(err!.cause?.message).not.toMatch(/does NOT protect this path/);
+      expect(err!.cause?.message).not.toMatch(/Retain/);
     });
 
     it('reads the Retain policy from the TEMPLATE, not from the state record', async () => {
@@ -695,26 +906,38 @@ describe('DeployEngine — --replace wire-through', () => {
       });
     });
 
-    it('honours `--force-stateful-recreation` under Retain by actually DELETING the old resource', async () => {
-      // The Retain asymmetry is asserted elsewhere only as message TEXT, which
-      // proves the note is rendered, not that the behaviour behind it is real.
-      // This is the behavioural half: `Retain` exempts the property-driven
-      // guard (that path creates first and orphans the old resource), while on
-      // THIS path the consent flag deletes the old resource regardless of the
-      // policy. If a future edit ever taught this path to honour `Retain`, the
-      // note would become a lie and only this assertion would catch it.
-      // (The divergence itself is issue #2518.)
+    it('`--force-stateful-recreation` does NOT override Retain — the old resource still survives', async () => {
+      // Retain wins over the consent flag, and that ordering is the point
+      // (issue #2518). `--force-stateful-recreation` means "yes, lose the
+      // data"; `UpdateReplacePolicy: Retain` means "keep the resource". Since
+      // nothing is lost when the old resource survives, there is no data loss
+      // for the flag to consent to, and deleting anyway would honour a flag
+      // over an explicit template attribute. The property-driven path makes
+      // the same call — its `Retain` cleanup branch never consults the flag.
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       const engine = makeEngine({ forceStatefulRecreation: true });
       await invokeProvision(engine, 'AWS::DynamoDB::Table', 'Retain');
-      expect(callOrder).toEqual(['update', 'delete', 'create']);
-      expect(provider.delete).toHaveBeenCalledWith(
-        'MyResource',
-        'old-pid',
+      expect(callOrder).toEqual(['update', 'create']);
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('the retained old resource is dropped from state in favour of the new physical id', async () => {
+      // What "orphaned" MEANS, asserted on the record the deploy writes rather
+      // than on a log line: state points at the NEW resource, so the old one
+      // is alive and no longer tracked. `rollback-executor.ts` reads exactly
+      // this pair — a `previousState.updateReplacePolicy` of `Retain` makes it
+      // classify the op as `reverse-replacement-readopt`, which deletes the
+      // new resource and points state back at the old physical id WITHOUT
+      // re-creating it. That rollback re-adopted a DELETED id until this fix,
+      // so the two now agree.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      const state = await invokeProvision(
+        makeEngine({}),
         'AWS::DynamoDB::Table',
-        expect.anything(),
-        expect.objectContaining({ forceDataDelete: true })
+        'Retain'
       );
+      expect(state['MyResource']?.physicalId).toBe('new-pid');
+      expect(state['MyResource']?.updateReplacePolicy).toBe('Retain');
     });
 
     describe('a provider that rejects with a non-Error value', () => {

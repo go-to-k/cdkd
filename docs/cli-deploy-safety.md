@@ -443,7 +443,9 @@ create-first order has a free name to take.
 
 `UpdateReplacePolicy: Retain` hard-fails in both shapes **regardless of
 `--replace`**: with Retain the old resource keeps the name, so a same-name
-replacement can never proceed.
+replacement can never proceed. The same two shapes, and the same two error
+codes, are reachable from the update-failure fallback covered below — under
+`Retain` that path also creates first, so it inherits the same constraint.
 
 ### The stateful guard on this path
 
@@ -482,19 +484,35 @@ The details that matter here:
   resource definition to avoid the update.
   ```
 
-  `UpdateReplacePolicy: Retain` is **not** an exemption on either of the two
-  triggers this section covers — unlike the property-driven replacement
-  described below, which does exempt it. Both triggers here delete the old
-  resource before creating its replacement, so the data is destroyed whatever
-  the policy says. When the resource declares `Retain`, the refusal appends a
-  sentence saying exactly that, because the remedy it offers
-  (`--force-stateful-recreation`) would otherwise read as safe for a resource
-  the template asked to keep:
+  `UpdateReplacePolicy: Retain` **is** an exemption on both of the triggers
+  this section covers, exactly as it is for the property-driven replacement
+  described below. Under `Retain` the replacement becomes create-ONLY: cdkd
+  leaves the old physical resource in place — orphaned, with its data, and no
+  longer tracked in state — and only creates the new one. Nothing is destroyed,
+  so there is no data loss for `--force-stateful-recreation` to confirm, and
+  the flag is not required. It is also not an override: passing it does **not**
+  make cdkd delete a resource the template asked to keep.
+
+  Retaining means the replacement create runs beside the live old resource, so
+  it cannot reuse a physical name that resource still holds. Both shapes of
+  that collision hard-fail, with the same error codes the property-driven path
+  uses (see [Same-name replacement](#same-name-replacement-delete-first-ordering)):
 
   ```text
-  Note: UpdateReplacePolicy: Retain does NOT protect this path — the
-  replacement deletes the old resource regardless.
+  MyTable (AWS::DynamoDB::Table) requires replacement because the provisioning
+  layer cannot update it in place — but its physical name is still held by the
+  existing resource AND UpdateReplacePolicy: Retain pins that resource in place.
+  The resource has a user-supplied physical name (my-table). Either rename the
+  resource in your CDK code (a fresh name lets the safe create-first order
+  proceed) — with Retain, the old resource keeps the name, so a same-name
+  replacement can never proceed. Removing UpdateReplacePolicy: Retain lets cdkd
+  delete the old resource first, which destroys it and any data it holds.
   ```
+
+  Until cdkd 0.287 this path deleted the old resource whatever the policy said,
+  and the refusal appended a note stating so. Both are gone: a resource
+  explicitly marked to survive its replacement is no longer destroyed by the
+  update-failure fallback.
 
 Non-stateful immutable types — LayerVersion, Glue SecurityConfiguration, ECS
 TaskDefinition, ApiGatewayV2 sub-resources — replace with `--replace` alone.

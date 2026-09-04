@@ -103,6 +103,7 @@ import {
   isMarkedNonRetryable,
   isNameCollisionError,
   isRecreateRetryableError,
+  isUpdateUnsupportedError,
   markNonRetryable,
 } from './retryable-errors.js';
 import { withResourceDeadline } from './resource-deadline.js';
@@ -4864,23 +4865,83 @@ export class DeployEngine {
               updateProvider
             );
           } catch (updateError) {
-            // If UPDATE is not supported, fall back to DELETE → CREATE
-            // (replacement). Two triggers:
-            //   1. CC API `UnsupportedActionException` / "does not support
-            //      UPDATE" — auto-fallback, needs no flag to REACH the
-            //      replacement (issue #2514 left that half unchanged; only the
-            //      stateful guard below became common to both triggers).
+            // If UPDATE is not supported, fall back to a replacement. Two
+            // triggers:
+            //   1. CC API `UnsupportedActionException` — auto-fallback, needs
+            //      no flag to REACH the replacement (issue #2514 left that
+            //      half unchanged; only the stateful guard below became common
+            //      to both triggers).
             //   2. An SDK provider throwing a typed
             //      `ResourceUpdateNotSupportedError` (an immutable property
             //      changed on a type with no replacement rule) — gated on the
             //      user opting in via `--replace`, because for some of these
             //      types the replacement is a data-losing DELETE + CREATE.
-            const msg = updateError instanceof Error ? updateError.message : String(updateError);
-            const ccUnsupported =
-              msg.includes('UnsupportedActionException') || msg.includes('does not support UPDATE');
+            //
+            // Trigger 1 is classified STRUCTURALLY since issue #2520:
+            // `isUpdateUnsupportedError` walks the bounded cause chain for the
+            // exception NAME (and the async `ccErrorCode`), because the
+            // provider's wrapper never copies the name into its message — the
+            // predicate's old `includes('UnsupportedActionException')` half
+            // therefore matched nothing cdkd produces. AWS's prose is retained
+            // as a TOP-LEVEL-only fallback.
+            //
+            // `logicalId` is passed because a chain walk is otherwise WIDER
+            // than the message read it replaces: a nested stack's child deploy
+            // runs inside THIS `provider.update()` call, so a child resource's
+            // Cloud Control rejection is reachable down the parent's cause
+            // chain — and reading it here would DELETE + CREATE the whole
+            // child stack. The classifier's doc comment carries that, the
+            // measured wire shape, and the codes it deliberately refuses.
+            const ccUnsupported = isUpdateUnsupportedError(updateError, logicalId);
             const typedUnsupported = updateError instanceof ResourceUpdateNotSupportedError;
             const replaceOptIn = typedUnsupported && this.options.replace === true;
             if (ccUnsupported || replaceOptIn) {
+              // `UpdateReplacePolicy: Retain` on the fallback replacement
+              // (issue #2518). Until this landed, the fallback deleted the old
+              // resource whatever the policy said, while every OTHER
+              // replacement path in this engine honoured `Retain`: the
+              // property-driven cleanup below logs "Retaining old ...", the
+              // `--recreate-via-*` path warns and leaks it, and both
+              // delete-first fallbacks refuse the replacement outright. The
+              // same template attribute therefore decided retention on one
+              // path and nothing on the other, so a resource the user
+              // explicitly marked to survive its replacement was destroyed —
+              // and for a stateful type, its data with it.
+              //
+              // Two things made honouring it the right arm rather than
+              // refusing the replacement outright:
+              //   - It is what the SIBLING path already does. A refusal here
+              //     would have swapped one internal divergence (retain there,
+              //     delete here) for another (retain there, refuse here), and
+              //     CloudFormation itself retains on replacement.
+              //   - `rollback-executor.ts`'s replacement rollback ALREADY
+              //     assumes it: an op whose `previousState.updateReplacePolicy`
+              //     is `Retain` classifies as `reverse-replacement-readopt`,
+              //     which deletes the new resource and points state back at
+              //     the old physical id WITHOUT re-creating it. With the old
+              //     resource deleted, that rollback re-adopted a dead id.
+              //
+              // So under `Retain` this path becomes create-ONLY: the old
+              // resource is left in place (orphaned, exactly as the
+              // property-driven path leaves it) and only the replacement
+              // create runs. `Retain` and `Snapshot` are alternative values of
+              // one attribute, so nothing is skipped by not preparing a final
+              // snapshot on this arm.
+              //
+              // The order flip is safe in the same direction as the
+              // property-driven path's: creating first keeps the old resource
+              // alive if the create fails. What it CANNOT do is reuse a
+              // physical name the retained resource still holds, so both
+              // shapes that follow from that are refused LOUDLY below with the
+              // same error codes the property-driven path already uses.
+              //
+              // TEMPLATE ONLY, via the shared `updateReplacePolicy` binding —
+              // the same read the property-driven guard's exemption uses, so
+              // the two ask "what is the user applying NOW?" of one value.
+              // Only `'Retain'` is honoured: `RetainExceptOnCreate` is a
+              // `DeletionPolicy` value CloudFormation rejects for
+              // `UpdateReplacePolicy`, so it cannot reach here.
+              const retainOldOnReplace = updateReplacePolicy === 'Retain';
               // Stateful guard for BOTH triggers (issue #2514). A stateful
               // type (RDS / DynamoDB / EFS / etc.) must not be silently
               // DELETE+CREATEd — require --force-stateful-recreation.
@@ -4904,63 +4965,66 @@ export class DeployEngine {
               // Logs' never-expire (issue #2558) — is treated as stateful
               // (block unless forced).
               //
-              // `UpdateReplacePolicy: Retain` is deliberately NOT an exemption
-              // here, unlike the property-driven replacement guard above: that
-              // path creates the replacement FIRST and leaves the old resource
-              // in place under `Retain` (nothing is lost), while this fallback
-              // deletes the old resource unconditionally a few lines down —
-              // whatever the policy says.
-              const statefulReason = isStatefulRecreateTargetForReplace(resourceType, currentProps);
+              // `UpdateReplacePolicy: Retain` IS an exemption here since issue
+              // #2518, exactly as it is on the property-driven replacement
+              // guard above and for the same reason: the old resource and its
+              // data survive the replacement (orphaned, not deleted), so there
+              // is no data loss for `--force-stateful-recreation` to confirm.
+              // Demanding the consent flag for a replacement that destroys
+              // nothing would be a refusal whose only remedy is a flag that
+              // means "yes, lose the data" — advice that was actively wrong
+              // for the one user who had already asked to keep it.
+              //
+              // `Snapshot` stays NON-exempt on both paths: cdkd does take the
+              // final snapshot, but a snapshot is a point-in-time copy, not a
+              // surviving resource.
+              const statefulReason = retainOldOnReplace
+                ? null
+                : isStatefulRecreateTargetForReplace(resourceType, currentProps);
               if (statefulReason && this.options.forceStatefulRecreation !== true) {
-                // Both arms name the `Retain` trap: this path deletes the old
-                // resource unconditionally, so a user who reads the remedy and
-                // re-runs with the consent flag loses the data even though the
-                // template said `UpdateReplacePolicy: Retain`. The property-
-                // driven guard above needs no such clause — Retain exempts it
-                // outright there. (The divergence itself is issue #2518.)
-                // TEMPLATE ONLY — deliberately no `?? currentResource
-                // .updateReplacePolicy` fallback, which is where the snapshot
-                // attribute a few lines below DOES fall back to state. The two
-                // decisions are not the same shape: omitting a promised
-                // snapshot is destructive, so that read is conservative, while
-                // this note only describes the attribute the user is applying
-                // NOW. Falling back to state would tell someone whose template
-                // just dropped `Retain` that a policy they no longer declare
-                // fails to protect them.
+                // No `Retain` note here any more (issue #2518): reaching this
+                // throw MEANS the template is not applying `Retain`, because
+                // `retainOldOnReplace` short-circuits `statefulReason` to
+                // `null` above. The note this replaced said "Retain does NOT
+                // protect this path", which is now false — and it was advice
+                // whose remedy (`--force-stateful-recreation`) deleted the very
+                // resource the user had asked to keep.
                 //
-                // Hence the shared `updateReplacePolicy` binding, read once
-                // in this UPDATE branch's own scope: it IS the template-only read,
-                // so the property-driven guard's EXEMPTION and this note ask
-                // the same question ("what is the user applying now?") of the
-                // same value, and a future change to one cannot leave the
-                // other on an older spelling. The snapshot read below is the
-                // deliberate exception and stays spelled out with its state
-                // fallback.
-                // Only `'Retain'` is called out: `RetainExceptOnCreate` is a
-                // `DeletionPolicy` value CloudFormation rejects for
-                // `UpdateReplacePolicy`, so it cannot reach this note.
-                const retainNote =
-                  updateReplacePolicy === 'Retain'
-                    ? ` Note: UpdateReplacePolicy: Retain does NOT protect this path — the ` +
-                      `replacement deletes the old resource regardless.`
-                    : '';
+                // The `Retain` read stays TEMPLATE ONLY — deliberately no
+                // `?? currentResource.updateReplacePolicy` fallback, which is
+                // where the snapshot attribute a few lines below DOES fall
+                // back to state. The two decisions are not the same shape:
+                // omitting a promised snapshot is destructive, so that read is
+                // conservative, while this one describes the attribute the user
+                // is applying NOW. Falling back to state would retain a
+                // resource on the strength of a policy the template being
+                // applied has since dropped.
+                //
+                // Hence the shared `updateReplacePolicy` binding, read once in
+                // this UPDATE branch's own scope: it IS the template-only read,
+                // so the property-driven guard's exemption and this path's ask
+                // the same question of the same value, and a future change to
+                // one cannot leave the other on an older spelling. The snapshot
+                // read below is the deliberate exception and stays spelled out
+                // with its state fallback.
+                //
                 // `markNonRetryable` for the same reason as the property-driven
                 // guard's twin above: a flag plus a state-recorded bag decide
                 // it, and the message carries a template-controlled logical id
                 // into substring-matching classifiers.
                 throw markNonRetryable(
                   new CdkdError(
-                    (replaceOptIn
+                    replaceOptIn
                       ? `--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
-                        `(${resourceType}) — ${renderStatefulReason(statefulReason)}. Re-run with ` +
-                        `--force-stateful-recreation to confirm the data loss, or change the ` +
-                        `resource definition to avoid the immutable-property change.`
+                          `(${resourceType}) — ${renderStatefulReason(statefulReason)}. Re-run with ` +
+                          `--force-stateful-recreation to confirm the data loss, or change the ` +
+                          `resource definition to avoid the immutable-property change.`
                       : `${logicalId} (${resourceType}) cannot be updated in place by the ` +
-                        `provisioning layer it routes through, so applying this change would ` +
-                        `DELETE + CREATE it — but it is a stateful resource: ` +
-                        `${renderStatefulReason(statefulReason)}. Re-run with ` +
-                        `--force-stateful-recreation to confirm the data loss, or change the ` +
-                        `resource definition to avoid the update.`) + retainNote,
+                          `provisioning layer it routes through, so applying this change would ` +
+                          `DELETE + CREATE it — but it is a stateful resource: ` +
+                          `${renderStatefulReason(statefulReason)}. Re-run with ` +
+                          `--force-stateful-recreation to confirm the data loss, or change the ` +
+                          `resource definition to avoid the update.`,
                     'STATEFUL_REPLACE_BLOCKED',
                     // Chain the rejection that routed us here: the message
                     // above names no layer and no AWS text, so this is the
@@ -4980,83 +5044,96 @@ export class DeployEngine {
                     //
                     // Safe to chain now that the refusal is marked:
                     // `isMarkedNonRetryable` is consulted before any chain-text
-                    // classification, and `ccUnsupported` reads only a
-                    // top-level message.
+                    // classification, and `ccUnsupported` reads the exception
+                    // NAME down the chain plus a top-level message only — a
+                    // refusal that quotes neither cannot re-fire the fallback.
                     updateError instanceof Error ? updateError : undefined
                   )
                 );
               }
               this.logger.info(
-                `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
+                retainOldOnReplace
+                  ? `UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
+                      `(CREATE only — UpdateReplacePolicy: Retain keeps the old resource)`
+                  : `UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
               );
-              // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
-              // old resource before the fallback replacement's delete. The
-              // TEMPLATE is authoritative here — unlike a destroy, an update
-              // necessarily has the resource in the template, and the
-              // attribute being applied is the desired one (state records
-              // only what the LAST deploy used, so a template that just
-              // gained `Snapshot` must not be overridden by a stale
-              // `Delete`). State is the fallback for a template that omits
-              // the attribute, and this is the ONLY snapshot read on the
-              // replacement paths that has one: every other site above passes
-              // the shared `updateReplacePolicy` binding, which is template-only.
-              // The divergence is deliberate — omitting a promised snapshot is
-              // destructive, so this read is conservative, while a `Retain`
-              // NOTE only describes what the user is applying now.
-              const fallbackFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
-                logicalId,
-                resourceType,
-                currentResource,
-                template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
-                  currentResource.updateReplacePolicy
-              );
-              // Initialized because the catch below can leave it unassigned.
-              let fallbackDeleteResult: void | ResourceDeleteResult = undefined;
-              try {
-                fallbackDeleteResult = await updateProvider.delete(
+              if (!retainOldOnReplace) {
+                // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
+                // old resource before the fallback replacement's delete. The
+                // TEMPLATE is authoritative here — unlike a destroy, an update
+                // necessarily has the resource in the template, and the
+                // attribute being applied is the desired one (state records
+                // only what the LAST deploy used, so a template that just
+                // gained `Snapshot` must not be overridden by a stale
+                // `Delete`). State is the fallback for a template that omits
+                // the attribute, and this is the ONLY snapshot read on the
+                // replacement paths that has one: every other site above passes
+                // the shared `updateReplacePolicy` binding, which is template-only.
+                // The divergence is deliberate — omitting a promised snapshot is
+                // destructive, so this read is conservative, while the `Retain`
+                // decision above only describes what the user is applying now.
+                //
+                // Unreachable under `Retain` (issue #2518) and not merely
+                // skipped: `UpdateReplacePolicy` is ONE attribute, so a
+                // template applying `Retain` is not applying `Snapshot`, and
+                // the state fallback cannot reintroduce it — `??` only fires
+                // when the template omits the attribute entirely, which is
+                // exactly when `retainOldOnReplace` is false.
+                const fallbackFinalSnapshotId = await this.prepareFinalSnapshotForDelete(
                   logicalId,
-                  currentResource.physicalId,
                   resourceType,
-                  currentProps,
-                  {
-                    expectedRegion: this.stackRegion,
-                    forceDataDelete: this.options.forceStatefulRecreation === true,
-                    ...(fallbackFinalSnapshotId !== undefined && {
-                      finalSnapshotIdentifier: fallbackFinalSnapshotId,
-                    }),
-                  }
+                  currentResource,
+                  template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                    currentResource.updateReplacePolicy
                 );
-              } catch (deleteError) {
-                // If old resource doesn't exist (already deleted), proceed with CREATE
-                const deleteMsg =
-                  deleteError instanceof Error ? deleteError.message : String(deleteError);
-                if (
-                  deleteMsg.includes('does not exist') ||
-                  deleteMsg.includes('not found') ||
-                  deleteMsg.includes('NotFound')
-                ) {
-                  this.logger.debug(
-                    `Old resource ${logicalId} already gone, proceeding with CREATE`
-                  );
-                } else {
-                  throw deleteError;
-                }
-              }
-              // Issue #1762: a skip fails the resource here too — the CREATE
-              // below re-provisions the resource, so proceeding would leave
-              // the old one alive and untracked. Deliberately OUTSIDE the
-              // catch: the classifier above reads "already gone" out of an
-              // error MESSAGE, and a skip must never be read that way.
-              const fallbackSkipReason = deleteSkipReason(fallbackDeleteResult);
-              if (fallbackSkipReason !== undefined) {
-                throw new Error(
-                  deleteSkippedMessage(
+                // Initialized because the catch below can leave it unassigned.
+                let fallbackDeleteResult: void | ResourceDeleteResult = undefined;
+                try {
+                  fallbackDeleteResult = await updateProvider.delete(
                     logicalId,
                     currentResource.physicalId,
-                    fallbackSkipReason,
-                    'during the UPDATE-not-supported replacement'
-                  )
-                );
+                    resourceType,
+                    currentProps,
+                    {
+                      expectedRegion: this.stackRegion,
+                      forceDataDelete: this.options.forceStatefulRecreation === true,
+                      ...(fallbackFinalSnapshotId !== undefined && {
+                        finalSnapshotIdentifier: fallbackFinalSnapshotId,
+                      }),
+                    }
+                  );
+                } catch (deleteError) {
+                  // If old resource doesn't exist (already deleted), proceed with CREATE
+                  const deleteMsg =
+                    deleteError instanceof Error ? deleteError.message : String(deleteError);
+                  if (
+                    deleteMsg.includes('does not exist') ||
+                    deleteMsg.includes('not found') ||
+                    deleteMsg.includes('NotFound')
+                  ) {
+                    this.logger.debug(
+                      `Old resource ${logicalId} already gone, proceeding with CREATE`
+                    );
+                  } else {
+                    throw deleteError;
+                  }
+                }
+                // Issue #1762: a skip fails the resource here too — the CREATE
+                // below re-provisions the resource, so proceeding would leave
+                // the old one alive and untracked. Deliberately OUTSIDE the
+                // catch: the classifier above reads "already gone" out of an
+                // error MESSAGE, and a skip must never be read that way.
+                const fallbackSkipReason = deleteSkipReason(fallbackDeleteResult);
+                if (fallbackSkipReason !== undefined) {
+                  throw new Error(
+                    deleteSkippedMessage(
+                      logicalId,
+                      currentResource.physicalId,
+                      fallbackSkipReason,
+                      'during the UPDATE-not-supported replacement'
+                    )
+                  );
+                }
               }
               // The replacement create gets a fresh routing decision.
               const replDecision = this.providerRegistry.getProviderFor({
@@ -5068,18 +5145,110 @@ export class DeployEngine {
                 replDecision.provisionedBy === 'cc-api'
                   ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
                   : resolvedProps;
-              const createResult = await this.withRetry(
-                () =>
-                  withCurrentResourceSecrets(updateSecrets, () =>
-                    replProvider.create(logicalId, resourceType, replProps, {
-                      maskSecrets: createSecretMasker(updateSecrets),
-                    })
-                  ),
-                logicalId,
-                undefined,
-                undefined,
-                replProvider
-              );
+              let createResult: Awaited<ReturnType<ResourceProvider['create']>>;
+              try {
+                createResult = await this.withRetry(
+                  () =>
+                    withCurrentResourceSecrets(updateSecrets, () =>
+                      replProvider.create(logicalId, resourceType, replProps, {
+                        maskSecrets: createSecretMasker(updateSecrets),
+                      })
+                    ),
+                  logicalId,
+                  undefined,
+                  undefined,
+                  replProvider
+                );
+              } catch (createError) {
+                // Only `Retain` turned this into a create-FIRST path, so only
+                // `Retain` owes the name-collision translation (issue #2518).
+                // Without it the user reads a raw `AlreadyExists` and has no
+                // way to connect it to the policy that caused it.
+                if (!retainOldOnReplace) throw createError;
+                const createMsg =
+                  createError instanceof Error ? createError.message : String(createError);
+                // Same message HEURISTIC, and the same bounded blast radius, as
+                // the property-driven create-first path's: a false positive
+                // only rewrites the error text — nothing destructive follows
+                // either branch here, because this arm never deletes.
+                if (!isNameCollisionError(createMsg)) throw createError;
+                const nameOrigin = this.replacementNameOrigin(
+                  logicalId,
+                  currentResource.physicalId
+                );
+                // Verbatim the property-driven twin's verdict and code: with
+                // Retain the old resource keeps the name, so a same-name
+                // replacement can never proceed — under ANY flag, since the
+                // only escape hatches (`--replace`, `--force-stateful-
+                // recreation`) both work by deleting the resource Retain
+                // pins in place.
+                //
+                // `markNonRetryable` for the same reason as the stateful
+                // guard's refusal above: a template attribute and a physical
+                // name decide it, neither of which a retry can change, and the
+                // message interpolates a template-controlled logical id — plus
+                // the name-collision text of its own `cause` — into exactly
+                // what the SUBSTRING-matching retry classifiers read. Chaining
+                // the create rejection is what makes the refusal diagnosable
+                // (`extractDeploymentEventError` walks the chain for
+                // `awsErrorCode`), and it is safe only BECAUSE of the marker:
+                // `isNameCooldownError`'s spellings are retryable, so an
+                // unmarked refusal carrying one would burn the full 64s
+                // schedule on a path that cannot succeed.
+                throw markNonRetryable(
+                  new CdkdError(
+                    `${logicalId} (${resourceType}) requires replacement because the ` +
+                      `provisioning layer cannot update it in place — but its physical name ` +
+                      `is still held by the existing resource AND ` +
+                      `UpdateReplacePolicy: Retain pins that resource in place. ` +
+                      `${nameOrigin.descriptor}. ${nameOrigin.remedy} — with Retain, the old ` +
+                      `resource keeps the name, so a same-name replacement can never proceed. ` +
+                      `Removing UpdateReplacePolicy: Retain lets cdkd delete the old resource ` +
+                      `first, which destroys it and any data it holds.`,
+                    'NAMED_REPLACEMENT_COLLISION',
+                    createError instanceof Error ? createError : undefined
+                  )
+                );
+              }
+              if (retainOldOnReplace) {
+                // Issue #1238's shape, on this path: a name-idempotent Create
+                // API (e.g. SQS `CreateQueue` with an unchanged `QueueName`)
+                // returns the EXISTING resource instead of colliding. With the
+                // old resource retained, recording that id as the "new" one
+                // would re-adopt the very resource Retain just orphaned —
+                // without the new properties ever being applied — so fail
+                // before any state bookkeeping runs. The property-driven twin
+                // makes the same call with the same code.
+                if (createResult.physicalId === currentResource.physicalId) {
+                  const idempotentNameOrigin = this.replacementNameOrigin(
+                    logicalId,
+                    currentResource.physicalId
+                  );
+                  // Marked for the same reason as its collision sibling: the
+                  // verdict is two recorded physical ids plus a template
+                  // attribute, and the message carries template-controlled
+                  // text into the substring classifiers. Nothing to chain —
+                  // the create SUCCEEDED; the failure is what it returned.
+                  throw markNonRetryable(
+                    new CdkdError(
+                      `${logicalId} (${resourceType}) requires replacement, but its Create ` +
+                        `API is name-idempotent: the create returned the existing resource ` +
+                        `(${currentResource.physicalId}) instead of creating a new one, and ` +
+                        `UpdateReplacePolicy: Retain pins that resource in place, so the new ` +
+                        `properties were not applied. ${idempotentNameOrigin.descriptor}. ` +
+                        `${idempotentNameOrigin.remedy} — with Retain, the old resource keeps ` +
+                        `the name, so a same-name replacement can never proceed.`,
+                      'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
+                    )
+                  );
+                }
+                // Same line the property-driven cleanup logs, deliberately —
+                // it is the one user-visible record that a physical resource
+                // is now outside cdkd's state.
+                this.logger.info(
+                  `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
+                );
+              }
               // Annotated rather than inferred: `result` is an evolving `let`,
               // and a conditional spread makes the literal's type a union that
               // TS then checks against the wrong constituent.

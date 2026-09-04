@@ -1270,3 +1270,114 @@ export function isNameCooldownError(message: string): boolean {
 export function isRecreateRetryableError(message: string): boolean {
   return isNameCollisionError(message) || isNameCooldownError(message);
 }
+
+/**
+ * The Cloud Control exception NAME for "this resource type ships no handler
+ * for the action you asked for" (issue
+ * [#2520](https://github.com/go-to-k/cdkd/issues/2520)).
+ *
+ * A NAME, not a message fragment: AWS SDK v3 sets `error.name` to the service
+ * exception's own identifier, which is a wire-level contract, while the prose
+ * beside it is text AWS is free to reword. The sibling READ classifier in
+ * `src/cli/commands/drift.ts` (`NO_READ_HANDLER_NAMES`) already keys on this
+ * same name for the GET direction.
+ */
+export const CC_UNSUPPORTED_ACTION_ERROR_NAME = 'UnsupportedActionException';
+
+/**
+ * The AWS prose the update-not-supported classifier accepted before the
+ * structured signal existed. Kept as a TOP-LEVEL-only fallback — see
+ * {@link isUpdateUnsupportedError} for why it is not walked down the chain.
+ */
+export const CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK = 'does not support UPDATE';
+
+/**
+ * True when a failed `provider.update()` for `logicalId` was rejected because
+ * the resource type has no UPDATE handler at all — the signal the deploy
+ * engine's update-failure fallback fires on, turning the update into a
+ * replacement.
+ *
+ * ## Why the chain is walked
+ *
+ * `CloudControlProvider.handleError` WRAPS the raw AWS rejection in a
+ * `ProvisioningError` and interpolates `err.message` only; the exception name
+ * is never copied into the wrapper's text. Measured 2026-09-04: `aws
+ * cloudcontrol update-resource --type-name AWS::DocDB::DBCluster` answers
+ * `UnsupportedActionException` with the message `Resource type
+ * AWS::DocDB::DBCluster does not support UPDATE action`, which does not repeat
+ * the name. That is why the predicate's pre-#2520
+ * `message.includes('UnsupportedActionException')` half matched nothing cdkd
+ * produces, and why the structured read has to look one link down.
+ *
+ * Two structured signals, both read off a link rather than out of prose:
+ *
+ *  - `name` — the synchronous `UpdateResource` rejection, one cause link below
+ *    the provider's wrapper.
+ *  - `ccErrorCode` — the field `CloudControlOperationFailedError` carries for
+ *    an asynchronous progress-event failure, read structurally exactly as
+ *    `cloud-control-provider.ts` reads it for `AlreadyExists` / `NotFound`. No
+ *    async occurrence has been MEASURED (`UnsupportedActionException` is
+ *    raised synchronously by `UpdateResource` today); the arm exists so the
+ *    async shape cannot silently fall through to prose, and it is pinned by a
+ *    unit case built from the real error class.
+ *
+ * ## Why the walk stops at another resource's error
+ *
+ * `logicalId` is not decoration — it is the fence that keeps a chain walk from
+ * being WIDER than the message read it replaces. `NestedStackProvider.update`
+ * runs a whole child deploy inside the PARENT's `provider.update()` call, so a
+ * child resource's Cloud Control rejection propagates into the parent's update
+ * catch, several cause links down. An unanchored walk would classify that as
+ * "the nested stack cannot be updated in place" and DELETE + CREATE the entire
+ * child stack. The pre-#2520 message read was immune by accident — the child
+ * engine's wrapper is `Failed to update resource <child>`, which quotes no AWS
+ * text — and this anchor makes the immunity deliberate: `ProvisioningError`
+ * and `ResourceUpdateNotSupportedError` both carry `logicalId`, so the walk
+ * stops dead at the first link that names a resource other than the one being
+ * updated.
+ *
+ * The prose fallback is read at the TOP LEVEL ONLY, exactly as the pre-#2520
+ * predicate did, and for the same asymmetry: missing the signal fails the
+ * deploy (safe), matching it too broadly replaces a resource nobody asked to
+ * replace (unsafe).
+ *
+ * ## Codes deliberately NOT matched
+ *
+ * The Cloud Control handler error code `NotUpdatable` reports "this particular
+ * patch is not applicable" (a create-only property, an invalid document)
+ * rather than "the type has no UPDATE handler", and cdkd already routes the
+ * create-only case through its own property-driven replacement — accepting it
+ * here would convert ordinary update rejections into replacements.
+ * `TypeNotFoundException`, which `handleError` wraps into the SAME sentence as
+ * the unsupported-action case, is not matched either: an unregistered type has
+ * no replacement story, so it must keep failing the deploy rather than
+ * deleting the resource.
+ */
+export function isUpdateUnsupportedError(error: unknown, logicalId: string): boolean {
+  // Byte-identical to the read this predicate replaced in `deploy-engine.ts`,
+  // `String(error)` arm included: a provider is free to `throw 'text'`, and
+  // narrowing to `Error | string` here would silently stop classifying any
+  // other thrown shape the old code did classify.
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- deliberate: the pre-#2520 predicate stringified whatever was thrown
+  const topMessage = error instanceof Error ? error.message : String(error);
+  if (topMessage.includes(CC_UPDATE_UNSUPPORTED_MESSAGE_FALLBACK)) return true;
+
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    current !== null && current !== undefined && depth < MAX_CAUSE_CHAIN_DEPTH;
+    depth++
+  ) {
+    const link = current as {
+      name?: unknown;
+      ccErrorCode?: unknown;
+      logicalId?: unknown;
+      cause?: unknown;
+    };
+    if (typeof link.logicalId === 'string' && link.logicalId !== logicalId) return false;
+    if (link.name === CC_UNSUPPORTED_ACTION_ERROR_NAME) return true;
+    if (link.ccErrorCode === CC_UNSUPPORTED_ACTION_ERROR_NAME) return true;
+    current = link.cause;
+  }
+  return false;
+}
