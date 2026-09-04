@@ -37,13 +37,13 @@ import { buildProgram } from '../../../src/cli/program.js';
  *     Checked by H1 IDENTITY (`# cdkd <command>`) rather than by a mention, so
  *     the mapping cannot drift onto a page that merely name-drops the command.
  *   - `COMMAND_TOPIC_PAGES` -- the command is documented inside a page covering
- *     a broader topic, with the reason recorded. Checked by mention, which is
- *     weaker; the hub page is REFUSED as a target for it (see below).
+ *     a broader topic, with the reason recorded. Checked by the page's own
+ *     FRONTMATTER naming the command, plus a structural refusal of the hub.
  *   - `UNDOCUMENTED` -- shipped with no documentation, with the reason recorded.
  *
  * HOW A TOPIC CLAIM IS CHECKED, AND WHY NOT BY A BODY MENTION. A body mention
- * decides nothing here. Measured over the 50 navigation-listed pages:
- * `cdkd deploy` is named in the body of 38 of them, `destroy` 29, `local` 16,
+ * decides nothing here. Measured over the 50 navigation-listed pages,
+ * whole-file: `cdkd deploy` is named on 38 of them, `destroy` 29, `local` 16,
  * `import` 13, `orphan` 7 -- `/getting-started` and `/troubleshooting` alone
  * would satisfy a mention check for every topic mapping, so any of the five
  * could be repointed at either and stay green. That is exactly the regression
@@ -53,11 +53,19 @@ import { buildProgram } from '../../../src/cli/program.js';
  * one destination out of dozens, and the claim was the more serious error.
  *
  * The evidence is the page's FRONTMATTER instead: its own `title` or
- * `description` must name `cdkd <command>`. That is the page declaring the
- * command to be part of its subject rather than something it happens to
- * mention, and it discriminates -- measured, all five topic pages name their
- * command there, while `/getting-started`, `/troubleshooting` and the hub name
- * none at all.
+ * `description` must name `cdkd <command>`, matched at a word boundary so an
+ * inflected verb does not qualify (`How cdkd deploys CDK apps` contains the
+ * substring `cdkd deploy`, and Core Concepts is written exactly that way). That
+ * is the page declaring the command to be part of its subject rather than
+ * something it happens to mention, and it discriminates -- measured across the
+ * 50 pages, frontmatter versus whole-file: `deploy` 4 against 38, `destroy` 2
+ * against 29, `local` 9 against 16, `import` 1 against 13, `orphan` 1 against 7.
+ *
+ * The hub is ALSO refused structurally, not left to the frontmatter rule. Its
+ * description names no command today, so the rule happens to reject it -- but
+ * that is a fact about current wording, and a hub description listing the
+ * commands it indexes would re-qualify it. The refusal is the invariant; the
+ * frontmatter rule is what generalises it to the other forty-nine pages.
  *
  * WHAT THIS DOES NOT PROVE:
  *
@@ -65,6 +73,11 @@ import { buildProgram } from '../../../src/cli/program.js';
  *     proves a page is titled after the command; the frontmatter check proves a
  *     topic page declares the command part of its subject. Neither grades the
  *     prose, and neither can tell a thorough page from a stub.
+ *   - That a topic mapping points at the BEST page for the command. `local`
+ *     has eight sibling subcommand pages whose frontmatter also names
+ *     `cdkd local`, so the overview could be swapped for one of them and stay
+ *     green. They do document the command family, so this is a worse-page
+ *     risk rather than a no-page one -- the class this fence is for.
  *   - Anything about SUBCOMMANDS. `cdkd state *`, `cdkd local *` and
  *     `cdkd events prune` are out of scope, so one of those can still ship
  *     undocumented -- the same class as the `migrate` incident, one level down.
@@ -72,6 +85,9 @@ import { buildProgram } from '../../../src/cli/program.js';
  */
 const repoRoot = join(import.meta.dirname, '..', '..', '..');
 const DOCS_CONFIG = join(repoRoot, 'vite.docs.config.ts');
+
+/** The hub. Refused as a topic-page target regardless of its wording. */
+const HUB_PAGE = '/cli-reference';
 
 /**
  * Command -> the navigation path of ITS OWN reference page.
@@ -185,7 +201,11 @@ function topLevelCommandNames(): string[] {
  * scan would accept a `path:` in an example, and an unstripped one would accept
  * a commented-out entry -- either way reporting a page as reachable that the
  * built site does not link to. Line comments were the spelling a review caught;
- * block comments are the same defect one spelling over. The path pattern is
+ * block comments are the same defect one spelling over. Line comments are
+ * dropped FIRST, because a `/*` written inside one would otherwise open a
+ * spurious block and swallow the real entries after it (this file already
+ * contains a line comment carrying a `/*`, just outside the array). The path
+ * pattern is
  * deliberately permissive (`[^']+`) so a future nested path is READ and then
  * judged by the existence check, rather than skipped and then reported as
  * missing from the navigation -- a true failure with a misleading reason.
@@ -201,16 +221,28 @@ function navPaths(): Set<string> {
   ).not.toBeNull();
   const body = (block as RegExpExecArray)[1] as string;
   const uncommented = body
-    .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n')
     .filter((line) => !line.trimStart().startsWith('//'))
-    .join('\n');
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
   return new Set([...uncommented.matchAll(/path:\s*'([^']+)'/g)].map((m) => m[1] as string));
 }
 
 /** `/cli-gc` -> `docs/cli-gc.md`. */
 function docFileFor(navPath: string): string {
   return join(repoRoot, 'docs', `${navPath.slice(1)}.md`);
+}
+
+/**
+ * Does this text name the command, at a word boundary?
+ *
+ * The boundary is load-bearing: `docs/concepts.md`'s description reads "How
+ * cdkd deploys CDK apps", which CONTAINS the substring `cdkd deploy` -- so a
+ * plain `includes` would let the `deploy` mapping be repointed at Core Concepts
+ * and stay green.
+ */
+function namesCommand(text: string, command: string): boolean {
+  return new RegExp(`cdkd ${command}\\b`).test(text);
 }
 
 /** The page's frontmatter block, or `null` when it has none. */
@@ -337,6 +369,10 @@ describe('docs command/nav coverage', () => {
   it('declares the command in the frontmatter of every topic page', () => {
     const problems: string[] = [];
     for (const [name, { path: navPath, reason }] of Object.entries(COMMAND_TOPIC_PAGES)) {
+      if (navPath === HUB_PAGE) {
+        problems.push(`${name} -> ${navPath}: the hub indexes every command, so it is never the page that documents one`);
+        continue;
+      }
       if (reason.trim().length < MIN_REASON_LENGTH) {
         problems.push(`${name} -> ${navPath}: no reason recorded for the absence of its own page`);
       }
@@ -350,7 +386,7 @@ describe('docs command/nav coverage', () => {
         problems.push(`${name} -> ${navPath}: page has no frontmatter block`);
         continue;
       }
-      if (!fm.includes(`cdkd ${name}`)) {
+      if (!namesCommand(fm, name)) {
         problems.push(`${name} -> ${navPath}: frontmatter never names \`cdkd ${name}\``);
       }
     }
@@ -358,8 +394,8 @@ describe('docs command/nav coverage', () => {
       problems.sort(),
       `A COMMAND_TOPIC_PAGES entry claims a broader page documents the command, and the ` +
         `page's own title or description must say so. A body mention is not evidence: ` +
-        `\`cdkd deploy\` is named in the body of 38 of the 50 navigation-listed pages, so ` +
-        `a mapping repointed at Getting Started or Troubleshooting would pass on one.`
+        `\`cdkd deploy\` is named on 38 of the 50 navigation-listed pages, so a mapping ` +
+        `repointed at Getting Started or Troubleshooting would pass on one.`
     ).toEqual([]);
   });
 
