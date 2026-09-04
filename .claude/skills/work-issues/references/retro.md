@@ -61,9 +61,10 @@ rm -f /tmp/run-touched.$$
   token is path-shaped or the diff is mostly dotfiles.
 - **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
   citation from a target. Do the item, or re-classify it in the issue with the
-  reason the criterion no longer applies. In a SINGLE-lane run whose PR is the
-  follow-ups' own subject, expect EVERY one to hit and read the issue's REASON
-  instead (go-to-k/cdkd#2514: 10 of 10, all correctly held on scope
+  reason the criterion no longer applies. When the run's own PRs ARE the
+  follow-ups' subject — one lane, or several sharing a subsystem — expect
+  EVERY one to hit and read the issue's REASON instead (go-to-k/cdkd#2514 10
+  of 10, go-to-k/cdkd#2558's run 12 of 12, all correctly held on scope
   containment) — a run-wide hit rate is a property of the run's shape, not of
   the deferrals.
 - **Re-read the REASON, not just the files** — classify-once freezes the
