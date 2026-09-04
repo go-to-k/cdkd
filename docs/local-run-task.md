@@ -24,7 +24,7 @@ cdkd local run-task MyStack/Worker --keep-running          # leave stopped conta
 Docker is required. The first run pulls the AWS-published
 `amazon/amazon-ecs-local-container-endpoints:latest-amd64` metadata sidecar
 alongside each container image; see
-[Local execution](local-emulation.md#requirements).
+[Local Execution](local-emulation.md#requirements).
 
 ## Options
 
@@ -32,20 +32,20 @@ alongside each container image; see
 | --- | --- | --- |
 | `<target>` | — | CDK display path or stack-qualified logical id of the `AWS::ECS::TaskDefinition` to run. Required. |
 | `--cluster <name>` | `cdkd-local` | Cluster name reported by the metadata endpoint, and the prefix of the per-task Docker network name. |
-| `--env-vars <file>` | — | SAM-shape JSON env-var overrides, keyed by container name — see [Local execution](local-emulation.md#common-flags). |
-| `--container-host <ip>` | `127.0.0.1` | Host IP that published container ports bind to. Must be numeric — see [Local execution](local-emulation.md#common-flags). |
+| `--env-vars <file>` | — | SAM-shape JSON env-var overrides, keyed by container name — see [Local Execution](local-emulation.md#common-flags). |
+| `--container-host <ip>` | `127.0.0.1` | Host IP that published container ports bind to. Must be numeric — see [Local Execution](local-emulation.md#common-flags). |
 | `--assume-task-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or the ARN you pass) and serve those credentials through the metadata sidecar. |
-| `--no-pull` | off | Skip `docker pull` for every container image and for the metadata sidecar — see [Local execution](local-emulation.md#common-flags). |
+| `--no-pull` | off | Skip `docker pull` for every container image and for the metadata sidecar — see [Local Execution](local-emulation.md#common-flags). |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for cross-account or centralized registries. No-op with `--no-pull`. |
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | Force `docker run --platform`. Accepts `linux/amd64` or `linux/arm64`. |
 | `--keep-running` | off | Leave the user containers in place when the task exits; the network and sidecar are still torn down. |
 | `--detach` | off | Start the containers in the background and exit, skipping log streaming and automatic teardown. |
-| `--from-state` | off | Substitute deployed values from cdkd's S3 state into image URIs, environment variables and secrets — see [Local execution](local-emulation.md#common-flags). |
+| `--from-state` | off | Substitute deployed values from cdkd's S3 state into image URIs, environment variables and secrets — see [Local Execution](local-emulation.md#common-flags). |
 | `--from-cfn-stack [name]` | off | Substitute from a CloudFormation-deployed stack instead. Bare form uses the cdkd stack name. Mutually exclusive with `--from-state`. |
-| `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local execution](local-emulation.md#common-flags). |
+| `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local Execution](local-emulation.md#common-flags). |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state, for `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
-| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly — see [Local execution](local-emulation.md#common-flags). |
+| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly — see [Local Execution](local-emulation.md#common-flags). |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
 | `--profile <profile>` | — | AWS profile. Its credentials are forwarded to the sidecar and to the containers. |
@@ -102,6 +102,21 @@ Docker cannot emulate an ENI per task, and security groups are not enforced
 locally. AWS SDK calls from inside a container still reach the public AWS
 endpoints over your own network.
 
+### Reaching a container from the host
+
+Every `ContainerDefinitions[].PortMappings` entry is published on the host, at
+the entry's `HostPort` when the template names one and at the container port
+otherwise, bound to `--container-host` (`127.0.0.1` by default). One log line
+per published port names the endpoint, so a task declaring container port `8080`
+prints `Reach it at 127.0.0.1:8080` as its container starts.
+
+A **privileged host port** — anything below 1024, which a local publish cannot
+take without root, and which macOS Docker Desktop refuses outright — is
+auto-remapped to a free ephemeral port, with a warning naming the port chosen.
+`cdkd local run-task` has no flag to pin that choice; read it off the warning,
+or use [`cdkd local start-service`](local-start-service.md), whose
+`--host-port <containerPort=hostPort>` pins it.
+
 ## AWS credentials in containers
 
 | Situation | What the containers see |
@@ -131,9 +146,23 @@ error that tells you to pass the ARN explicitly.
 
 ### Which registry hosts count as ECR
 
-A URI is treated as ECR only when its host suffix is the one its own region
-actually uses. A look-alike host carrying another region's suffix is
-deliberately not treated as ECR.
+**Only the plain `<account>.dkr.ecr.<region>.<urlSuffix>` host pulls end to
+end.** A FIPS or dual-stack ECR host is recognized as ECR, but the pull fails
+with `no basic auth credentials`: ECR's `GetAuthorizationToken` issues its
+credential against the plain host, the pull targets the host the template names,
+and Docker's credential store is keyed on the hostname verbatim. Point the
+template at the plain host to run the task locally.
+
+The rest of this section is the recognition rule behind that. A URI is treated
+as ECR only when its host suffix is the one its own region actually uses; a
+look-alike host carrying another region's suffix is deliberately not treated as
+ECR. Three endpoint shapes are recognized — the plain
+`<account>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
+`<account>.dkr.ecr-fips.<region>.<urlSuffix>`, and the dual-stack
+`<account>.dkr-ecr[-fips].<region>.on.aws`, whose fixed `on.aws` suffix replaces
+the region's partition suffix. Host matching is case-insensitive, since DNS is;
+Docker accepts an upper-cased registry host but requires a lower-case repository
+path, so cdkd folds only the host.
 
 The same region-to-partition mapping drives `${AWS::Partition}` and
 `${AWS::URLSuffix}` wherever cdkd substitutes them.
@@ -149,21 +178,7 @@ The same region-to-partition mapping drives `${AWS::Partition}` and
 | `us-isof-*` | `aws-iso-f` | `csp.hci.ic.gov` |
 | `eusc-*` | `aws-eusc` | `amazonaws.eu` |
 
-Three registry endpoint shapes are recognized: the plain
-`<account>.dkr.ecr.<region>.<urlSuffix>`, its FIPS sibling
-`<account>.dkr.ecr-fips.<region>.<urlSuffix>`, and the dual-stack
-`<account>.dkr-ecr.<region>.on.aws` /
-`<account>.dkr-ecr-fips.<region>.on.aws`. The dual-stack forms carry the fixed
-`on.aws` suffix rather than the region's partition suffix, and a form spelled
-with the other's suffix is refused. Host matching is case-insensitive, since DNS
-is; Docker accepts an upper-cased registry host but requires a lower-case
-repository path, and cdkd folds only the host.
-
-**Only the plain form pulls end to end today.** For the FIPS and dual-stack
-hosts, the ECR login authenticates against the plain host — that is what
-`GetAuthorizationToken` reports — while the pull targets the host the template
-names, and Docker's credential store is keyed on the hostname verbatim, so the
-pull fails with `no basic auth credentials`.
+A shape spelled with the other family's suffix is refused.
 
 Cross-account and cross-region pulls are supported: cdkd builds the ECR client
 for the URI's own region, and with `--ecr-role-arn <arn>` issues `sts:AssumeRole`
@@ -203,13 +218,16 @@ before the resulting URI is classified:
 | Pass | Resolves | Needs state? |
 | --- | --- | --- |
 | Pseudo parameters | `${AWS::AccountId}` from STS `GetCallerIdentity` (lazy, cached for the run); `${AWS::Region}` from the resolved region; `${AWS::Partition}` and `${AWS::URLSuffix}` derived from it | No |
-| Same-stack ECR repository | `${<LogicalId>}` against an `AWS::ECR::Repository`, and `Fn::GetAtt: [<Repo>, 'RepositoryUri']`, using the deployed physical repository name | Yes — pass `--from-state` |
+| Same-stack ECR repository | `${<LogicalId>}` against an `AWS::ECR::Repository`, and `Fn::GetAtt: [<Repo>, 'Arn' \| 'RepositoryUri']`, using the deployed physical repository name | Yes — `--from-state` or `--from-cfn-stack` |
 
 `${AWS::Partition}` and `${AWS::URLSuffix}` come from the region, per the table
 in [Which registry hosts count as ECR](#which-registry-hosts-count-as-ecr).
-Without `--from-state`, a same-stack repository reference fails with an error
-naming that flag as the way forward; the stack must have been deployed with
-`cdkd deploy` first.
+With neither state flag, a same-stack repository reference fails with an error
+naming them as the way forward; the stack must have been deployed first.
+
+This ECR case is the one exception to `--from-cfn-stack`'s "`Fn::GetAtt` is
+dropped" rule below: the repository ARN and URI are rebuilt from the recovered
+physical name plus the pseudo parameters, so no per-attribute lookup is needed.
 
 ## Environment variables and secrets
 
@@ -365,3 +383,4 @@ The full cross-command table is in the [CLI Reference](cli-reference.md#exit-cod
 - [`cdkd local start-alb`](local-start-alb.md) — put a local Application Load Balancer in front of those services
 - [`cdkd local invoke`](local-invoke.md) — the Lambda equivalent, sharing the target syntax and `--env-vars` shape
 - [Local Execution](local-emulation.md) — the subcommand index, Docker requirements, and the flags common to every `cdkd local` command
+- [CLI Reference](cli-reference.md) — every cdkd command, the output-stream contract, and the full exit-code table

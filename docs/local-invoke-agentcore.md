@@ -9,7 +9,10 @@ description: "Invoke a Bedrock AgentCore Runtime once in a local container over 
 your CDK app in a local Docker container and invokes it once over whichever
 AgentCore protocol the runtime declares. Reach for it to exercise an agent
 against a real request payload before deploying — the agent's outbound calls to
-managed AWS services still reach real AWS.
+managed AWS services still reach real AWS. To drive the same agent repeatedly
+from a client rather than firing one payload, use
+[`cdkd local start-agentcore`](local-start-agentcore.md), which keeps the
+container warm.
 
 ```bash
 cdkd local invoke-agentcore MyStack/MyAgent -e prompt.json     # one-shot POST /invocations
@@ -185,7 +188,7 @@ The runtime's env vars are substituted the same way
 Lambda's. Without a state source, intrinsic-valued entries are warned and
 dropped; `--from-state` reads cdkd's S3 state for the target stack, and
 `--from-cfn-stack [name]` reads a deployed CloudFormation stack via
-`DescribeStackResources` for apps deployed through the upstream CDK CLI. The
+`ListStackResources` for apps deployed through the upstream CDK CLI. The
 two flags are mutually exclusive, and `--env-vars` overrides win over both.
 
 A state source also feeds image resolution: a same-stack ECR repository

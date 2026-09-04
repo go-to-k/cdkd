@@ -18,7 +18,7 @@ cdkd local start-agentcore MyStack/MyAgent                       # serve on an O
 cdkd local start-agentcore                                       # pick a runtime interactively (TTY)
 cdkd local start-agentcore MyStack/MyAgent --port 8080           # pin the host port
 cdkd local start-agentcore MyStack/MyAgent --bearer-token "$JWT" # default token for a customJwtAuthorizer runtime
-cdkd local start-agentcore MyStack/MyAgent --sigv4               # sign forwarded requests for a SigV4 runtime
+cdkd local start-agentcore MyStack/MyAgent --sigv4               # sign forwarded requests when the runtime has no JWT authorizer
 cdkd local start-agentcore MyStack/MyAgent --from-state --watch  # bind cdkd state, reload the container on edits
 ```
 
@@ -59,6 +59,11 @@ cdkd local start-agentcore MyStack/MyAgent --from-state --watch  # bind cdkd sta
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
+
+**Spell the region lower-case.** This command does not fold an upper-cased
+`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
+form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
 ## Target resolution
 
@@ -133,7 +138,7 @@ The container boots without a token being required up front, so `--bearer-token`
 is a default rather than a prerequisite. An unreachable or malformed discovery
 URL falls back to accepting the request, so offline work is not blocked.
 
-### SigV4 runtimes
+### Runtimes with no `customJwtAuthorizer`
 
 `--sigv4` signs each forwarded request with AWS SigV4 for the
 `bedrock-agentcore` service, so the warm container sees the same `Authorization`
@@ -207,3 +212,5 @@ The full cross-command table is in the
   container
 - [Local Execution](local-emulation.md) — every `cdkd local` subcommand, Docker
   requirements, and the flags they share
+- [CLI Reference](cli-reference.md) — every cdkd command, the output-stream
+  contract, and the full exit-code table

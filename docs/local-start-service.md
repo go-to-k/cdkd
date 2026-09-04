@@ -17,12 +17,12 @@ Connect registry so they can discover each other.
 cdkd local start-service MyStack/Orders                       # one service, DesiredCount replicas
 cdkd local start-service MyStack/Orders MyStack/Frontend      # two services that discover each other
 cdkd local start-service                                      # pick services interactively (TTY only)
-cdkd local start-service MyStack/Orders --max-tasks 1 --host-port 80=8080
+cdkd local start-service MyStack/Orders --max-tasks 1 --host-port 80=8080   # one replica, so a host port can be published
 cdkd local start-service MyStack/Orders --from-state          # resolve intrinsics from deployed state
-cdkd local start-service MyStack/Orders --watch --image-override MyStack/Orders=./Dockerfile
+cdkd local start-service MyStack/Orders --watch --image-override MyStack/Orders=./Dockerfile  # build locally, roll on edits
 ```
 
-Docker is required — see [Local execution](local-emulation.md#requirements).
+Docker is required — see [Local Execution](local-emulation.md#requirements).
 
 ## Options
 
@@ -30,7 +30,7 @@ Docker is required — see [Local execution](local-emulation.md#requirements).
 | --- | --- | --- |
 | `[targets...]` | interactive picker | One or more CDK display paths or stack-qualified logical ids of `AWS::ECS::Service` resources. Omit in a TTY to multi-select. |
 | `--cluster <name>` | `cdkd-local` | Cluster name reported by the metadata endpoint, and the prefix of the shared Docker network and per-replica cluster names. |
-| `--max-tasks <n>` | `3` | Hard cap on the local replica count, applied over the template's `DesiredCount`. Must be between `1` and `83`. |
+| `--max-tasks <n>` | `3` | Hard cap on the local replica count, applied over the template's `DesiredCount`. Must be between `1` and `83` — the range of the per-replica link-local subnet allocator. |
 | `--restart-policy <policy>` | `on-failure` | How to react when a replica's essential container exits: `on-failure`, `always`, or `none`. |
 | `--host-port <containerPort=hostPort...>` | host port equals container port | Publish a container port on a specific host port, e.g. `80=8080`. Repeatable. Single-replica services only. |
 | `--no-logs` | off (logs stream) | Stop streaming each replica's container output to your terminal. `docker logs -f <id>` stays available. |
@@ -42,20 +42,20 @@ Docker is required — see [Local execution](local-emulation.md#requirements).
 | `--image-target <stage or svc=stage...>` | — | A `docker build --target` stage for every override build. Repeatable. `<service>=<stage>` scopes it and beats the global value. |
 | `--no-interactive-overrides` | off (prompts) | Suppress the boot prompt asking for a Dockerfile per pinned target, and the picker fired by a bare `--image-override`. |
 | `--strict-overrides` | off | Fail at boot when any pinned target is still uncovered after `--image-override` and the boot prompt have resolved. |
-| `--env-vars <file>` | — | SAM-shape JSON env-var overrides, keyed by container name — see [Local execution](local-emulation.md#common-flags). |
-| `--container-host <ip>` | `127.0.0.1` | Host IP that published container ports bind to. Must be numeric — see [Local execution](local-emulation.md#common-flags). |
+| `--env-vars <file>` | — | SAM-shape JSON env-var overrides, keyed by container name — see [Local Execution](local-emulation.md#common-flags). |
+| `--container-host <ip>` | `127.0.0.1` | Host IP that published container ports bind to. Must be numeric — see [Local Execution](local-emulation.md#common-flags). |
 | `--assume-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or the ARN you pass) and serve those credentials through the metadata sidecar. |
-| `--assume-task-role [arn]` | off | Deprecated alias of `--assume-role`. Both work; `--assume-role` is the cross-command name. |
-| `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar — see [Local execution](local-emulation.md#common-flags). |
+| `--assume-task-role [arn]` | off | Deprecated alias of `--assume-role` on this command. Both work here; note that `cdkd local run-task` accepts only `--assume-task-role`. |
+| `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar — see [Local Execution](local-emulation.md#common-flags). |
 | `--no-build` | off | Skip `docker build` on the CDK-asset path and reuse the previously built tag. Errors when that tag is not in the local registry. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for cross-account or centralized registries. |
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | Force `docker run --platform`. Accepts `linux/amd64` or `linux/arm64`. |
-| `--from-state` | off | Substitute deployed values from cdkd's S3 state into images, environment variables, secrets, role ARNs and volumes — see [Local execution](local-emulation.md#common-flags). |
+| `--from-state` | off | Substitute deployed values from cdkd's S3 state into images, environment variables, secrets, role ARNs and volumes — see [Local Execution](local-emulation.md#common-flags). |
 | `--from-cfn-stack [name]` | off | Substitute from a CloudFormation-deployed stack instead. Bare form uses the cdkd stack name. Mutually exclusive with `--from-state`. |
-| `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local execution](local-emulation.md#common-flags). |
+| `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local Execution](local-emulation.md#common-flags). |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state, for `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
-| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly — see [Local execution](local-emulation.md#common-flags). |
+| `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly — see [Local Execution](local-emulation.md#common-flags). |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
 | `--region <region>` | `AWS_REGION`, the stack's region, then the profile's | AWS region for SDK calls. |
@@ -63,6 +63,11 @@ Docker is required — see [Local execution](local-emulation.md#requirements).
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
+
+**Spell the region lower-case.** This command does not fold an upper-cased
+`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
+form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
 ## Target resolution
 
@@ -158,9 +163,11 @@ later replicas fail to boot with
 `Bind for 127.0.0.1:<port> failed: port is already allocated`, and it would not
 match production, where each task has its own ENI.
 
-`--host-port` is most useful on macOS: mapping a privileged container port
-(below 1024) to a non-privileged host port avoids the Docker Desktop
-admin-password prompt.
+A privileged container port — anything the template would publish below 1024,
+which a local publish cannot take without root and which macOS Docker Desktop
+refuses outright — is auto-remapped to a free ephemeral port, with a warning
+naming the port chosen. `--host-port <containerPort>=<hostPort>` pins that
+choice instead of leaving it to the allocator.
 
 ## Image overrides
 
@@ -263,8 +270,21 @@ secret-name refusals and container start ordering all behave as described in
 
 | Code | Meaning |
 | --- | --- |
-| `1` | Hard error — Docker unavailable, no target resolved, a target that is not an ECS Service, an unsupported `TaskDefinition` reference, `--max-tasks` out of range, shared-network creation failed, `--strict-overrides` with an uncovered pinned target, or a conflicting state-source flag combination. |
+| `1` | Hard error, or a cancelled interactive picker. |
 | `130` | Shut down by `^C` or `SIGTERM`. The first signal tears every replica down and then exits; a second exits immediately with no cleanup. |
+
+The refusals behind exit `1`:
+
+| Refusal | When |
+| --- | --- |
+| Docker unavailable | The daemon is not running, or `docker` is not on `PATH`. |
+| No target resolved | Nothing matched, or the terminal is non-interactive and no target was named. |
+| Wrong resource type | The target is a `TaskDefinition`, or any type other than `AWS::ECS::Service`. |
+| Unsupported `TaskDefinition` reference | The service points at a cross-stack or `Fn::ImportValue` task definition. |
+| `--max-tasks` out of range | Outside `1`-`83`. |
+| Shared network creation failed | Usually a leaked network from an interrupted run holding the subnet. |
+| `--strict-overrides` with an uncovered target | A registry-pinned target had no `--image-override` and no prompt answer. |
+| Conflicting state-source flags | `--from-state` with `--from-cfn-stack`, or an explicit `--from-cfn-stack <name>` across several stacks. |
 
 The emulator runs until it is signalled, so there is no exit-`0` path once the
 services are up. The full cross-command table is in the
@@ -275,3 +295,4 @@ services are up. The full cross-command table is in the
 - [`cdkd local run-task`](local-run-task.md) — the one-shot counterpart, and the source of the networking, secrets, volume and ordering behaviour each replica inherits
 - [`cdkd local start-alb`](local-start-alb.md) — put a local Application Load Balancer in front of these services for path, host, header and weighted routing
 - [Local Execution](local-emulation.md) — the subcommand index, Docker requirements, and the flags common to every `cdkd local` command
+- [CLI Reference](cli-reference.md) — every cdkd command, the output-stream contract, and the full exit-code table

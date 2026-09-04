@@ -34,14 +34,14 @@ accept `--env-vars` or `--container-host`.
 | `[target]` | interactive picker | The distribution to serve, as a CDK construct path (`MyStack/MyDist`), an ancestor prefix, or a stack-qualified logical ID. Omit in a TTY to pick from a list. |
 | `--port <port>` | `0` (auto-allocate) | Port the local HTTP server listens on. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
-| `--origin <originId=dir>` | — | Serve one origin from a local directory. Repeatable. Use it when the origin's `BucketDeployment` source cannot be resolved. |
+| `--origin <originId=dir>` | — | Serve one origin from a local directory. Repeatable. `<originId>` is the distribution's own `Origins[].Id` — see [Origins](#origins). |
 | `--kvs-file <key=file.json>` | — | Back a CloudFront Function's `cf.kvs()` reads with a flat local JSON map. Repeatable. |
 | `--tls` | off | Terminate real HTTPS, using `--tls-cert` / `--tls-key` when supplied and an auto-generated self-signed certificate otherwise. |
 | `--tls-cert <path>` | — | PEM server certificate. Implies `--tls`. |
 | `--tls-key <path>` | — | PEM private key. Implies `--tls`. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda origin's base image and use the cached one. No-op for a distribution with no Lambda. |
 | `--cache-origin` | off | Keep objects fetched from a deployed S3 origin in memory for the session instead of re-reading each request. |
-| `--from-state` | off | Bind a Function URL origin's backing Lambda and a deployed-S3 origin's bucket name to cdkd's S3 state. Mutually exclusive with `--from-cfn-stack`. |
+| `--from-state` | off | Bind a Function URL origin's backing Lambda to cdkd's S3 state. Does **not** reach deployed-S3 origin content — that needs `--from-cfn-stack`. Mutually exclusive with it. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only meaningful with `--from-state`. |
 | `--from-cfn-stack [name]` | off | Bind the same values to a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the resolved stack name. |
@@ -56,6 +56,11 @@ accept `--env-vars` or `--container-host`.
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
+
+**Spell the region lower-case.** This command does not fold an upper-cased
+`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
+form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
 ## Target resolution
 
@@ -79,6 +84,13 @@ served per invocation.
 | CDN caching and edge locations | Not reproduced. `--cache-origin` is an origin read-through cache, not CloudFront's. |
 
 ### Origins
+
+The `<originId>` in `--origin <originId=dir>` is matched verbatim against the
+distribution's `Origins[].Id` in the synthesized template — not a construct
+path and not a logical ID, and CDK generates those ids with a hash suffix. You
+do not have to go looking for one: an origin cdkd cannot resolve raises a
+boot-time warning that spells the whole flag out for you, ending
+`--origin <that id>=<dir>`.
 
 S3 origin content is resolved out of the cloud assembly: the origin's bucket →
 its `BucketDeployment` custom resource → `SourceObjectKeys` → the staged asset
@@ -181,3 +193,5 @@ The full cross-command table is in the
   front door
 - [Local Execution](local-emulation.md) — every `cdkd local` subcommand, Docker
   requirements, and the flags they share
+- [CLI Reference](cli-reference.md) — every cdkd command, the output-stream
+  contract, and the full exit-code table

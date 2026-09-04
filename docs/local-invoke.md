@@ -52,6 +52,11 @@ reuse the cached one.
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging (on stderr). |
 
+The region used for AWS API calls and for pseudo-parameter substitution is taken
+from `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the synthesized stack's own
+`env.region`. A deprecated `--region` flag still overrides all three; prefer the
+environment variable or your AWS profile.
+
 ### `--no-pull` and `--no-build` by code path
 
 | Code path | `--no-pull` | `--no-build` |
@@ -212,6 +217,11 @@ cdkd local invoke MyStack/MyApi/Handler --from-state \
 | `Fn::Sub` | Both the single-string and two-arg forms. `${LogicalId}` / `${LogicalId.attr}` / `${AWS::*}` placeholders are substituted in place; the two-arg form's bindings map may itself carry intrinsics, resolved recursively. |
 | `Fn::Join` | Every element is resolved recursively, then joined. |
 | `Ref: AWS::AccountId` / `Region` / `Partition` / `URLSuffix` | One `sts:GetCallerIdentity` plus the resolved region. |
+| `Fn::ImportValue` | The producer stack's state record, in a second pass. Same account and same region only. |
+| `Fn::GetStackOutput` | The named stack's outputs in the same state bucket. Same account and same region only. |
+
+The last two open an extra client, so cdkd builds that resolver only when the
+function's environment actually references one of them.
 
 Pseudo-parameter resolution runs only when the env map actually contains an
 intrinsic — a literal-only map skips the STS hop entirely. The region used for
@@ -236,7 +246,7 @@ back to the no-state behaviour rather than aborting the invoke.
 `--from-state` only works for stacks deployed by `cdkd deploy`, because that is
 the only thing that writes cdkd's S3 state. For CDK apps deployed through the
 upstream CDK CLI (`cdk deploy` → CloudFormation), use `--from-cfn-stack`: cdkd
-calls `cloudformation:DescribeStackResources` against the named stack to build
+calls `cloudformation:ListStackResources` against the named stack to build
 the same per-logical-ID physical-ID map, then runs the same substitution engine
 over it.
 
@@ -257,14 +267,15 @@ cdkd local invoke MyStack/MyApi/Handler --from-cfn-stack --stack-region eu-west-
 
 | Intrinsic | Resolved from |
 | --- | --- |
-| `Ref: <LogicalId>` | `cloudformation:DescribeStackResources` — one API call per stack. |
+| `Ref: <LogicalId>` | `cloudformation:ListStackResources`, paginated, once per stack. |
 | `Fn::ImportValue: <ExportName>` | `cloudformation:ListExports`, paginated and memoized for one substitution pass. |
 | `Fn::GetAtt` in a **consumer Lambda's own** env vars | The deployed function's configuration (`lambda:GetFunctionConfiguration`). |
+| `Fn::GetAtt` on a same-stack ECR repository's `Arn` / `RepositoryUri`, in a container image URI | Synthesized from the recovered physical name plus the pseudo parameters. |
 | `Fn::GetAtt` anywhere else (e.g. an ECS container env) | Nothing — warned and dropped. Override the entry with `--env-vars` if the value is critical. |
 | `Fn::GetStackOutput` | Nothing — rejected with a warn. |
 
-`DescribeStackResources` returns only `(LogicalResourceId,
-PhysicalResourceId, ResourceType)` triplets, with no per-attribute values. But
+`ListStackResources` returns only `(LogicalResourceId, PhysicalResourceId,
+ResourceType)` triplets, with no per-attribute values. But
 CloudFormation already resolved every intrinsic at deploy time, so a consumer
 Lambda's `Environment.Variables` already holds the concrete value: cdkd reads it
 back from the deployed function config, which covers `Fn::GetAtt` / `Fn::Sub` /
@@ -285,7 +296,7 @@ synth-derived stack region. There is deliberately no separate
 
 When none of those signals is set, the command **throws** with a remediation
 message rather than falling back to a literal region the way `--from-state`
-does. `DescribeStackResources` queries one specific region, and silently
+does. The CloudFormation client queries one specific region, and silently
 choosing `us-east-1` would query the wrong environment.
 
 ### Multi-stack routing
@@ -301,10 +312,10 @@ multi-stack apps, or run one cdkd invocation per stack.
 
 ### CloudFormation failure handling
 
-`DescribeStackResources` failures — stack not found, access denied, throttling —
+`ListStackResources` failures — stack not found, access denied, throttling —
 degrade to a per-key warn and drop, the same as `--from-state`. `ListExports`
 failures affect only `Fn::ImportValue`; same-stack `Ref` substitutions still
-succeed, because they need only the `DescribeStackResources` result.
+succeed, because they need only the resource listing.
 
 ## `--assume-role`: run under the deployed execution role
 
@@ -377,19 +388,19 @@ Pass `--layer-role-arn <arn>` to `sts:AssumeRole` before
 typically a cross-account one. AWS-published public layers are readable from
 every account and need no role.
 
-The ARN's **partition is derived from its region** rather than matched against a
-fixed list, so an ARN in any of the eight partitions — commercial, `aws-cn`,
+**Only a commercial-partition layer ARN downloads.** An `aws-cn`, `aws-us-gov`
+or ISO-partition ARN passes cdkd's parse and then fails at the AWS call, because
+the download rebuilds the ARN with a hardcoded `aws` partition before calling
+`lambda:GetLayerVersion`.
+
+The parse itself accepts all eight partitions — commercial, `aws-cn`,
 `aws-us-gov`, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f`, `aws-eusc` —
-parses. The two segments must agree: `arn:aws-cn:lambda:us-east-1:...` is
-refused, naming the disagreement, because `us-east-1` does not belong to
+because the partition is derived from the ARN's region rather than matched
+against a fixed list. The two segments must agree: `arn:aws-cn:lambda:us-east-1:...`
+is refused, naming the disagreement, because `us-east-1` does not belong to
 `aws-cn`. A region cdkd's partition table does not recognise resolves to the
 commercial partition, so a brand-new commercial region keeps working with
 `arn:aws:`.
-
-Parsing is not the whole path, and the **download is commercial-only**: the
-underlying layer download rebuilds the ARN with a hardcoded `aws` partition
-before calling `lambda:GetLayerVersion`. A layer ARN in any non-commercial
-partition therefore gets past cdkd's parse and then fails at the AWS call.
 
 ### Rejected layer entries
 
@@ -497,8 +508,9 @@ The full cross-command table is in the [CLI Reference](cli-reference.md#exit-cod
 
 - The deprecated `go1.x` runtime is not emulated. Build Go handlers for
   `provided.al2023`, which is supported.
-- Cross-stack `Fn::ImportValue` and `Fn::GetStackOutput` are not resolved by
-  `--from-state`.
+- Cross-stack `Fn::ImportValue` and `Fn::GetStackOutput` resolve only within one
+  account and one region. A producer stack in another account or region is
+  warned and dropped.
 - `Fn::Select`, `Fn::Split`, `Fn::If` and other intrinsics outside the
   [supported list](#supported-intrinsics) are warned and dropped rather than
   resolved.

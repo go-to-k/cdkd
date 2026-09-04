@@ -9,7 +9,9 @@ description: "Serve a CDK app's API Gateway routes — REST v1, HTTP API, WebSoc
 Gateway routes in your synthesized CDK app to local Lambda invocations against
 the AWS Lambda Runtime Interface Emulator. Reach for it when you want to
 exercise a whole API — routing, authorizers, CORS, stage variables — against
-real handler code without deploying to AWS.
+real handler code without deploying to AWS. Every route it serves is backed by a
+Lambda; for a front door over running ECS replicas, use
+[`cdkd local start-alb`](local-start-alb.md).
 
 **Docker is required.** The first run pulls the Lambda base image (roughly
 600 MB, once per machine); pass `--no-pull` on later runs to skip the layer
@@ -30,34 +32,34 @@ cdkd local start-api --from-state --stage prod  # resolve env vars from deployed
 | --- | --- | --- |
 | `[target]` | every discovered API | Serve only the named API. See [Target selection](#target-selection). |
 | `--port <port>` | `0` (auto-allocate) | Port for the first server; later servers take `port+1`, `port+2`, and so on. |
-| `--host <host>` | `127.0.0.1` | Bind address for every server. |
+| `--host <host>` | `127.0.0.1` | Bind address for every API server — the address **you** connect to. |
 | `--stack <name>` | single-stack auto-detect | Stack to serve, when neither the target nor `--from-cfn-stack` identifies one. |
 | `--warm` | off | Pre-start one container per routed Lambda at boot, trading RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Container-pool size cap per Lambda. Values above `4` are clamped to `4` with a warn. |
 | `--no-pull` | off | Skip `docker pull` and use the cached base image — see [Local Execution](local-emulation.md#common-flags). |
-| `--container-host <host>` | `127.0.0.1` | Numeric IP the host binds and probes the emulator port on — see [Local Execution](local-emulation.md#common-flags). |
-| `--debug-port-base <port>` | unset | Reserve a contiguous debugger port range, one port per routed Lambda. |
-| `--env-vars <file>` | unset | JSON env-var overrides in SAM's shape — see [Local Execution](local-emulation.md#common-flags). |
-| `--assume-role <arn-or-pair>` | unset | Assume an execution role and forward temporary credentials. See [`--assume-role` and `--assume-role-auto`](#assume-role-and-assume-role-auto). |
+| `--container-host <host>` | `127.0.0.1` | Numeric IP the Lambda **containers'** emulator ports bind to — not where you connect, which is `--host`. See [Local Execution](local-emulation.md#common-flags). |
+| `--debug-port-base <port>` | — | Reserve a contiguous debugger port range, one port per routed Lambda. Every handler blocks until a debugger attaches. See [`--debug-port-base`](#debug-port-base). |
+| `--env-vars <file>` | — | JSON env-var overrides in SAM's shape — see [Local Execution](local-emulation.md#common-flags). |
+| `--assume-role <arn-or-pair>` | — | Assume an execution role and forward temporary credentials. See [`--assume-role` and `--assume-role-auto`](#assume-role-and-assume-role-auto). |
 | `--assume-role-auto` | off | Resolve each routed Lambda's own execution role instead of one global default. |
 | `--watch` | off | Re-synth and re-discover routes when the app source changes. See [`--watch`](#watch). |
 | `--stage <name>` | first attached Stage | Select an API Gateway Stage by `StageName`, per API. See [Stage variables](#stage-variables). |
-| `--api <id>` | unset | Deprecated alias for the positional `[target]`; warns on use and cannot be combined with it. |
-| `--layer-role-arn <arn>` | unset | Role to assume before reading literal-ARN entries in `Properties.Layers`. See [Lambda layers](#lambda-layers). |
+| `--api <id>` | — | Deprecated alias for the positional `[target]`; warns on use and cannot be combined with it. |
+| `--layer-role-arn <arn>` | — | Role to assume before reading literal-ARN entries in `Properties.Layers`. See [Lambda layers](#lambda-layers). |
 | `--from-state` | off | Substitute deployed physical ids from cdkd's S3 state into Lambda env vars. See [`--from-state`](#from-state). |
 | `--from-cfn-stack [cfn-stack-name]` | off | Substitute deployed physical ids from a CloudFormation stack. See [`--from-cfn-stack`](#from-cfn-stack). |
 | `--stack-region <region>` | auto-discovered | Region of the state record to read, and the CloudFormation client region for `--from-cfn-stack` — see [Local Execution](local-emulation.md#common-flags). |
-| `--mtls-truststore <path>` | unset | PEM CA bundle that switches the server to HTTPS with client-certificate verification. See [Mutual TLS](#mutual-tls). |
-| `--mtls-cert <path>` | unset | PEM server certificate. Must be set together with the other two `--mtls-*` flags. |
-| `--mtls-key <path>` | unset | PEM server private key matching `--mtls-cert`. Must be set together with the other two `--mtls-*` flags. |
+| `--mtls-truststore <path>` | — | PEM CA bundle that switches the server to HTTPS with client-certificate verification. See [Mutual TLS](#mutual-tls). |
+| `--mtls-cert <path>` | — | PEM server certificate. Must be set together with the other two `--mtls-*` flags. |
+| `--mtls-key <path>` | — | PEM server private key matching `--mtls-cert`. Must be set together with the other two `--mtls-*` flags. |
 | `--strict-sigv4` | off | Deny requests whose `AWS_IAM` SigV4 signature cannot be verified. See [`--strict-sigv4`](#strict-sigv4). |
 | `--verbose` | off | Verbose logging. |
-| `--profile <profile>` | unset | AWS profile for cdkd's own AWS calls and for the credentials handed to containers. |
+| `--profile <profile>` | — | AWS profile for cdkd's own AWS calls and for the credentials handed to containers. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls, such as state and CloudFormation reads. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a pre-synthesized cloud assembly directory — see [Local Execution](local-emulation.md#common-flags). |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
-| `-c`, `--context <key=value...>` | unset | Set a CDK context value. Repeatable. |
+| `-c`, `--context <key=value...>` | — | Set a CDK context value. Repeatable. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding cdkd state. Read only with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Read only with `--from-state`. |
 
@@ -199,12 +201,48 @@ Incremental delivery only shows up against the deployed Lambda runtime.
 
 All four non-`AWS_PROXY` REST v1 integration types are emulated end to end.
 
-| Type | Behaviour | Notes |
-| --- | --- | --- |
-| `MOCK` | Renders `Integration.RequestTemplates['application/json']` to extract `{"statusCode": N}`, matches it against `IntegrationResponses[].StatusCode`, then renders that entry's `ResponseTemplates[<content-type>]` against an empty input context. | With no request template, the entry with no `SelectionPattern` is used. Literal `ResponseParameters` headers apply; mapping expressions (`integration.response.*` / `context.*`) are skipped with a warn. |
-| `HTTP_PROXY` | Forwards the request to `Integration.Uri` with `{paramName}` path substitution, honouring `Integration.IntegrationHttpMethod`. | Body is forwarded verbatim. `IntegrationResponses[].SelectionPattern` (a regex against the upstream status as a string) drives the final status; `ResponseParameters` applies. Header mappings (`'literal'` / `method.request.header.X`) apply; querystring and path mappings are recognized but skipped — use `{param}` URI substitution instead. |
-| `HTTP` | `HTTP_PROXY` plus VTL in both directions: `RequestTemplates[<content-type>]` transforms the outgoing body, `IntegrationResponses[].ResponseTemplates[<content-type>]` transforms the upstream body. | Same `RequestParameters` semantics as `HTTP_PROXY`. |
-| `AWS` (Lambda non-proxy) | The VTL request template builds the Lambda event payload — parsed as JSON when the rendered template is valid JSON, otherwise passed through as a string, matching deployed behaviour. The Lambda runs in the same warm container pool as `AWS_PROXY`. | The error envelope (`{errorMessage, errorType?, stackTrace?}`) routes through `SelectionPattern` matched against `errorMessage`. The response template runs with `$inputRoot` set to the parsed Lambda return value. |
+| Type | One-line summary |
+| --- | --- |
+| `MOCK` | Answers from templates alone; no upstream call. |
+| `HTTP_PROXY` | Forwards the request to `Integration.Uri` verbatim. |
+| `HTTP` | `HTTP_PROXY` plus VTL in both directions. |
+| `AWS` (Lambda non-proxy) | Builds the Lambda event from a VTL template and transforms the return value. |
+
+### `MOCK`
+
+Renders `Integration.RequestTemplates['application/json']` to extract
+`{"statusCode": N}`, matches it against `IntegrationResponses[].StatusCode`,
+then renders that entry's `ResponseTemplates[<content-type>]` against an empty
+input context. With no request template, the entry carrying no
+`SelectionPattern` is used. Literal `ResponseParameters` headers apply; mapping
+expressions (`integration.response.*` / `context.*`) are skipped with a warn.
+
+### `HTTP_PROXY`
+
+Forwards the request to `Integration.Uri` with `{paramName}` path substitution,
+honouring `Integration.IntegrationHttpMethod`. The body is forwarded verbatim.
+`IntegrationResponses[].SelectionPattern` — a regex matched against the upstream
+status as a string — drives the final status, and `ResponseParameters` applies.
+Header mappings (`'literal'` / `method.request.header.X`) apply; querystring and
+path mappings are recognized but skipped, so use `{param}` URI substitution
+instead.
+
+### `HTTP`
+
+`HTTP_PROXY` plus VTL in both directions: `RequestTemplates[<content-type>]`
+transforms the outgoing body, and
+`IntegrationResponses[].ResponseTemplates[<content-type>]` transforms the
+upstream body. `RequestParameters` behaves exactly as under `HTTP_PROXY`.
+
+### `AWS` (Lambda non-proxy)
+
+The VTL request template builds the Lambda event payload — parsed as JSON when
+the rendered template is valid JSON, and otherwise passed through as a string,
+matching deployed behaviour. The Lambda runs in the same warm container pool as
+`AWS_PROXY`. The error envelope (`{errorMessage, errorType?, stackTrace?}`)
+routes through `SelectionPattern` matched against `errorMessage`, and the
+response template runs with `$inputRoot` bound to the parsed Lambda return
+value.
 
 `AWS` integrations pointing at a non-Lambda service are not emulated; they
 surface as unsupported 501 routes. Deploy to AWS, or point an `HTTP_PROXY`
@@ -360,18 +398,33 @@ state to resolve them against.
 
 Four authorizer kinds run in front of any discovered route.
 
-| Kind | Declared as | Identity source | Allow | Deny |
-| --- | --- | --- | --- | --- |
-| Lambda TOKEN (REST v1) | `AWS::ApiGateway::Authorizer` with `Type: 'TOKEN'` | The header named by `IdentitySource`, defaulting to `method.request.header.Authorization`, forwarded as `event.authorizationToken` | Context flattened under `event.requestContext.authorizer` | HTTP 403 on policy deny; HTTP 401 without invoking the Lambda when the identity header is missing |
-| Lambda REQUEST | `Type: 'REQUEST'` (REST v1) or `AuthorizerType: 'REQUEST'` (HTTP v2) | The full request snapshot — headers, query string, path parameters | Context under `event.requestContext.authorizer` | REST v1 returns HTTP 401 without invoking the Lambda when identity is missing; HTTP v2 falls through |
-| Cognito User Pool (REST v1) | `Type: 'COGNITO_USER_POOLS'` | `Authorization: Bearer <token>`, verified against the pool's published JWKS | Claims under `event.requestContext.authorizer.claims` | HTTP 403 |
-| JWT (HTTP v2) | `AuthorizerType: 'JWT'` | `Authorization: Bearer <token>`, verified against the issuer's JWKS with `aud` / `client_id` matched against `JwtConfiguration.Audience` | Claims under `event.requestContext.authorizer.jwt.claims` | HTTP 401 |
+| Kind | Declared as | Identity source |
+| --- | --- | --- |
+| Lambda TOKEN (REST v1) | `AWS::ApiGateway::Authorizer` with `Type: 'TOKEN'` | The header named by `IdentitySource`, defaulting to `method.request.header.Authorization`, forwarded as `event.authorizationToken`. |
+| Lambda REQUEST | `Type: 'REQUEST'` (REST v1) or `AuthorizerType: 'REQUEST'` (HTTP v2) | The full request snapshot — headers, query string, path parameters. |
+| Cognito User Pool (REST v1) | `Type: 'COGNITO_USER_POOLS'` | `Authorization: Bearer <token>`, verified against the pool's published JWKS. |
+| JWT (HTTP v2) | `AuthorizerType: 'JWT'` | `Authorization: Bearer <token>`, verified against the issuer's JWKS, with `aud` / `client_id` matched against `JwtConfiguration.Audience`. |
+
+What each one does with the verdict:
+
+| Kind | On allow | On deny |
+| --- | --- | --- |
+| Lambda TOKEN (REST v1) | Context flattened under `event.requestContext.authorizer`. | HTTP 403 on a policy deny; HTTP 401 without invoking the Lambda when the identity header is missing. |
+| Lambda REQUEST | Context under `event.requestContext.authorizer`. | REST v1 returns HTTP 401 without invoking the Lambda when identity is missing; HTTP v2 falls through. |
+| Cognito User Pool (REST v1) | Claims under `event.requestContext.authorizer.claims`. | HTTP 403. |
+| JWT (HTTP v2) | Claims under `event.requestContext.authorizer.jwt.claims`. | HTTP 401. |
 
 A TOKEN authorizer's response must carry a `policyDocument` with at least one
 `{ Effect: 'Allow', Resource: <methodArn> }` statement. cdkd matches `Resource`
 against the request's method ARN — literally, or with `*` / `?` wildcards — on
 every request, and re-evaluates cached verdicts against the new method ARN, so
 a narrow-`Resource` Allow does not leak across routes.
+
+A REQUEST authorizer on an HTTP API v2 route may answer in either shape: the
+IAM-style `policyDocument`, or API Gateway's simple format
+`{ "isAuthorized": true|false, "context": { ... } }`. cdkd reads the simple
+format when `isAuthorized` is a boolean and falls back to the policy parse
+otherwise.
 
 Any other `Type` or `AuthorizerType` is a hard error at discovery, with the
 offending route's location named.
@@ -577,7 +630,7 @@ the default location.
 
 ### `--from-cfn-stack`
 
-Reads a deployed CloudFormation stack through `DescribeStackResources` and
+Reads a deployed CloudFormation stack through `ListStackResources` and
 substitutes `Ref` and `Fn::ImportValue` in Lambda env vars with the deployed
 physical ids and exports. Use it for CDK apps deployed with the upstream CDK
 CLI.
@@ -691,6 +744,16 @@ VPC-only endpoint will fail. Each affected Lambda gets a warn line at startup:
 AWS SDK calls from the container still use your shell credentials, or the
 temporary credentials `--assume-role` issued, and reach the public AWS
 endpoints; nothing about that path changes.
+
+## `--debug-port-base`
+
+`--debug-port-base <port>` allocates one debugger port per routed Lambda,
+`port`, `port+1`, `port+2`, in the order the routes were discovered, and sets
+`NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` on each container.
+
+`--inspect-brk` **suspends the handler until a debugger attaches**, so every
+route hangs until you connect to that Lambda's port. Serve a single API while
+debugging, and read the boot log to see which port each Lambda received.
 
 ## `--watch`
 

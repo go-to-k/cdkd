@@ -13,6 +13,10 @@ query-string and source-IP — against the running replicas. Reach for it when a
 routing rule, a weighted split or an auth action needs to be exercised without
 a deploy. Docker is required.
 
+Reach for [`cdkd local start-api`](local-start-api.md) instead when the front
+door you want to exercise is API Gateway: an ALB routes to running ECS replicas
+and Lambda target groups, API Gateway routes to Lambda alone.
+
 ```bash
 cdkd local start-alb MyStack/MyAlb                             # serve one ALB on its listener ports
 cdkd local start-alb                                           # pick the load balancers interactively (TTY)
@@ -49,7 +53,7 @@ cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed s
 | `--restart-policy <policy>` | `on-failure` | What happens when an essential container exits: `on-failure`, `always`, or `none` (run degraded). |
 | `--no-logs` | off | Stop streaming each replica's container output to the terminal. |
 | `--assume-role [arn]` | off | Assume the task definition's `TaskRoleArn` (or an explicit ARN) and forward temporary credentials through the metadata sidecar. |
-| `--assume-task-role [arn]` | off | Deprecated alias of `--assume-role`. Both forms work; `--assume-role` is the cross-command name. |
+| `--assume-task-role [arn]` | off | Deprecated alias of `--assume-role` on this command. Both forms work here; note that `cdkd local run-task` accepts only `--assume-task-role`. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR, for cross-account or centralized registries. |
 | `--platform <platform>` | task `RuntimePlatform` | Force `linux/amd64` or `linux/arm64` for every container. |
 
@@ -97,6 +101,11 @@ cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed s
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
+
+**Spell the region lower-case.** This command does not fold an upper-cased
+`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
+form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
 ## Target resolution
 
@@ -224,8 +233,8 @@ requested host ports each time.
 
 | Code | Meaning |
 | --- | --- |
-| `1` | Hard error — bad target, synthesis failure, docker or AWS failure, or a boot refused by `--strict-overrides`. |
-| `130` | Shut down on `^C` / SIGTERM, on a second signal (cleanup skipped), or because the interactive picker was cancelled. |
+| `1` | Hard error — bad target, synthesis failure, docker or AWS failure, a boot refused by `--strict-overrides`, or a cancelled interactive picker. |
+| `130` | Shut down on `^C` / SIGTERM, or on a second signal with cleanup skipped. |
 
 The front door runs until it is signalled, so a successful session ends at `130`
 rather than `0`. The full cross-command table is in the
@@ -237,7 +246,11 @@ rather than `0`. The full cross-command table is in the
   that runs the backends this command fronts
 - [`cdkd local start-api`](local-start-api.md) — the API Gateway counterpart of
   this front door
+- [`cdkd local run-task`](local-run-task.md) — the rules every backing container
+  follows for secrets, volumes and `DependsOn` start ordering
 - [`cdkd local invoke`](local-invoke.md) — one-shot Lambda invoke, the same RIE
   container a Lambda target group uses
 - [Local Execution](local-emulation.md) — every `cdkd local` subcommand, Docker
   requirements, and the flags they share
+- [CLI Reference](cli-reference.md) — every cdkd command, the output-stream
+  contract, and the full exit-code table

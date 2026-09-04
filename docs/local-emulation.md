@@ -69,7 +69,7 @@ Every `cdkd local` subcommand accepts these.
 | `--from-state` | off | Resolve intrinsic-valued properties against cdkd's deployed S3 state. Mutually exclusive with `--from-cfn-stack`. |
 | `--from-cfn-stack [name]` | — | Resolve them against a deployed CloudFormation stack instead, for apps deployed with the AWS CDK CLI. Bare form uses the cdkd stack name. |
 | `--stack-region <region>` | — | Which region's record to read, and the CloudFormation client region under `--from-cfn-stack`. |
-| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding the state read by `--from-state`. |
+| `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding the state read by `--from-state`. The default means `--from-state` works with no configuration on a bootstrapped account. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
@@ -101,11 +101,16 @@ optional `Parameters` object for values that apply everywhere.
 
 A `null` value clears the key rather than setting it to the string `"null"`.
 
-For Lambda targets — `local invoke` and `local start-api` — the resource key may
-be either the logical ID or the **CDK display path** (`MyStack/MyHandler`), the
-same form the `<target>` argument accepts; it is matched against the resource's
-`aws:cdk:path` metadata. The two forms coexist in one file, and when both name
-the same key the later JSON entry wins, matching SAM's apply-in-order semantics.
+What the top-level key names depends on what the command runs:
+
+| Command | Key |
+| --- | --- |
+| `local invoke`, `local start-api` | The Lambda's logical ID, or its **CDK display path** (`MyStack/MyHandler`) — the same form the `<target>` argument accepts, matched against the resource's `aws:cdk:path` metadata. |
+| `local run-task`, `local start-service`, `local start-alb` | The **container name**, i.e. `ContainerDefinitions[].Name`. |
+| `local invoke-agentcore`, `local start-agentcore` | The runtime's logical ID or CDK display path. |
+
+For Lambda targets the two forms coexist in one file, and when both name the
+same key the later JSON entry wins, matching SAM's apply-in-order semantics.
 
 ### `--from-state` and `--from-cfn-stack`: resolving deployed values
 
