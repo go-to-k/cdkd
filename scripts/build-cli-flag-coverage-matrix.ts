@@ -46,6 +46,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { githubTree, githubBlob } from './github-links.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -304,7 +305,7 @@ function renderMarkdown(report: FlagCoverageReport): string {
   lines.push('|---|---|');
   for (const entry of report.covered) {
     const fixtures = entry.integs
-      .map((f) => `[\`${f}\`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/${f}/)`)
+      .map((f) => `[\`${f}\`](${githubTree(`tests/integration/${f}/`)})`)
       .join('<br>');
     lines.push(`| \`${entry.flag}\` | ${fixtures} |`);
   }
