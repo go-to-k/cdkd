@@ -375,11 +375,29 @@ case "${EMB_IDX}${SAME_IDX}" in *null*|"")
   echo "FAIL: premise: could not locate SSM_SECURE_EMBEDDED / SSM_SECURE_VERSIONED_SAME in the synthesized env (${EMB_IDX} / ${SAME_IDX})" >&2
   exit 1 ;;
 esac
-if [ "${SAME_IDX}" -le "${EMB_IDX}" ]; then
-  echo "FAIL: premise: SSM_SECURE_VERSIONED_SAME (index ${SAME_IDX}) must follow SSM_SECURE_EMBEDDED (index ${EMB_IDX}) in the synthesized env (#2485)" >&2
+# ...and it must be the LAST of EVERY key resolving to this parameter, not just
+# later than the embedded one. The map keeps one expression per PLAINTEXT, so
+# the survivor is decided by whichever of the colliding keys resolves last --
+# `SSM_SECURE_WHOLE` reads the same parameter and sits at index 0 today, but
+# moving it below `SSM_SECURE_VERSIONED_SAME` would make the survivor the
+# embedded leaf's OWN token and the exact assertion below vacuous, with a
+# pairwise guard still green. Matched on the token boundary (`}}` or `:`) so
+# `cdkd-test-ssm-secure-versioned-<acct>` cannot count as this parameter.
+MAX_SAME_PARAM_IDX=$(jq -r --arg p "${PARAM_NAME}" '
+  [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
+  | to_entries | to_entries
+  | map(select(.value.value | type == "string"
+        and (contains("ssm-secure:" + $p + "}}") or contains("ssm-secure:" + $p + ":"))))
+  | map(.key) | max' "${SYNTH_TEMPLATE}")
+case "${MAX_SAME_PARAM_IDX}" in ''|null)
+  echo "FAIL: premise: found no env key referencing ${PARAM_NAME} in the synthesized template" >&2
+  exit 1 ;;
+esac
+if [ "${SAME_IDX}" -le "${EMB_IDX}" ] || [ "${SAME_IDX}" -ne "${MAX_SAME_PARAM_IDX}" ]; then
+  echo "FAIL: premise: SSM_SECURE_VERSIONED_SAME (index ${SAME_IDX}) must follow SSM_SECURE_EMBEDDED (index ${EMB_IDX}) AND be the LAST key resolving to ${PARAM_NAME} (last index ${MAX_SAME_PARAM_IDX}); otherwise the collision does not collapse onto the :1 spelling and the embedded assertion is vacuous (#2485)" >&2
   exit 1
 fi
-echo "    OK: premise: SSM_SECURE_VERSIONED_SAME (index ${SAME_IDX}) follows SSM_SECURE_EMBEDDED (index ${EMB_IDX})"
+echo "    OK: premise: SSM_SECURE_VERSIONED_SAME (index ${SAME_IDX}) follows SSM_SECURE_EMBEDDED (index ${EMB_IDX}) and is the last key resolving to ${PARAM_NAME}"
 
 assert_live_env "Phase 1"
 assert_state_redacted "Phase 1"

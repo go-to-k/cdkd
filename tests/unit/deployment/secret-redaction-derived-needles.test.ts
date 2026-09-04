@@ -117,6 +117,53 @@ describe('secret-redaction - derived needles (issue #2012)', () => {
     expect(out['AwsAdded']).toBe(PLAINTEXT);
   });
 
+  // ONE ANCHOR AT A TIME. The case above breaks the prefix AND the suffix
+  // together, so it passes with either `bag.startsWith(prefix)` or
+  // `bag.endsWith(suffix)` deleted from `singleSpanFrame` -- measured: dropping
+  // either disjunct alone leaves the whole unit suite green, with a failure set
+  // byte-identical to the baseline. The two below break exactly one end each,
+  // so each disjunct has a case that dies without it.
+  //
+  // This matters for `learnMixedLeafNeedle` specifically, not for
+  // `positionByEmbeddedSpan`: the span arm is additionally bound to the value
+  // scan's own answer, which masks a misalignment, while the learner takes the
+  // frame's `middle` straight to `learnNeedle` with only the length floor and
+  // the is-a-token refusal left in front of it. A misaligned slice that clears
+  // `MIN_NEEDLE_LENGTH` would be learned as a needle mapping arbitrary text
+  // onto the expression, and a needle is a REWRITE with a blast radius.
+  it('refuses to extract when only the PREFIX fails to match', () => {
+    // The suffix still matches, so only `bag.startsWith(prefix)` stands between
+    // this leaf and a needle. THE FIXTURE HAD TO BE CHOSEN: a mismatched prefix
+    // of the SAME length slices the plaintext out correctly by accident, and a
+    // mismatched prefix that is merely different yields a slice no other leaf
+    // contains -- both pass with the guard deleted. This one is SHORTER, so the
+    // slice cuts INTO the plaintext and the misaligned needle is a SUBSTRING of
+    // it; `AwsAdded` then shows the rewrite, which is the blast radius a needle
+    // has. Measured: deleting `!bag.startsWith(prefix)` makes this case fail.
+    const out = readback(
+      { Url: `xy:${PLAINTEXT}@h`, AwsAdded: PLAINTEXT },
+      { Url: `postgres://u:${EXPR}@h` }
+    );
+
+    expect(out['Url']).toBe(`postgres://u:${EXPR}@h`);
+    expect(out['AwsAdded'], 'a misaligned slice must not become a needle').toBe(PLAINTEXT);
+  });
+
+  it('refuses to extract when only the SUFFIX fails to match', () => {
+    // The mirror, chosen the same way: the bag's tail is SHORTER than the
+    // source's, so the slice stops early and the misaligned needle is again a
+    // substring of the plaintext rather than something longer than it (which
+    // would match nothing and pass with the guard deleted). Measured: deleting
+    // `!bag.endsWith(suffix)` makes this case fail.
+    const out = readback(
+      { Url: `postgres://u:${PLAINTEXT}@h`, AwsAdded: PLAINTEXT },
+      { Url: `postgres://u:${EXPR}@host` }
+    );
+
+    expect(out['Url']).toBe(`postgres://u:${EXPR}@host`);
+    expect(out['AwsAdded'], 'a misaligned slice must not become a needle').toBe(PLAINTEXT);
+  });
+
   it('refuses to extract from a leaf carrying TWO references, CONSERVATIVELY', () => {
     // With two spans the text between them cannot be split between the two
     // resolved values without guessing, and a guess here is a needle.

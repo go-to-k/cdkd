@@ -503,11 +503,29 @@ case "${DSN_IDX}${STAGED_IDX}" in *null*|"")
   echo "FAIL: premise: could not locate DB_DSN_LITERAL / SECRET_PASSWORD_STAGED in the synthesized env (${DSN_IDX} / ${STAGED_IDX})" >&2
   exit 1 ;;
 esac
-if [ "${DSN_IDX}" -ge "${STAGED_IDX}" ]; then
-  echo "FAIL: premise: DB_DSN_LITERAL (index ${DSN_IDX}) must precede SECRET_PASSWORD_STAGED (index ${STAGED_IDX}) in the synthesized env, or the collision cannot collapse onto the staged spelling and Guard 3a-literal is vacuous" >&2
+# ...and STAGED must be the LAST of EVERY key resolving to that same plaintext,
+# not merely later than the literal one. The map keeps one expression per
+# PLAINTEXT, so the survivor is whichever colliding key resolves last:
+# `SECRET_PASSWORD` reads the same `:SecretString:password` and sits at index 0
+# today, and moving it below STAGED would make the survivor a spelling that is
+# NOT the staged one, leaving Guard 3a-literal green either way. Matched by
+# flattening each value, because these leaves are a MIX of shapes -- the
+# account-token ones synthesize as `Fn::Join` objects while DB_DSN_LITERAL is a
+# plain string, which is the whole point of the shape guard above.
+MAX_PW_IDX=$(jq -r '
+  [.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables] | first
+  | to_entries | to_entries
+  | map(select((.value.value | tostring) | contains(":SecretString:password")))
+  | map(.key) | max' "${SYNTH_TEMPLATE}")
+case "${MAX_PW_IDX}" in ''|null)
+  echo "FAIL: premise: found no env key resolving :SecretString:password in the synthesized template" >&2
+  exit 1 ;;
+esac
+if [ "${DSN_IDX}" -ge "${STAGED_IDX}" ] || [ "${STAGED_IDX}" -ne "${MAX_PW_IDX}" ]; then
+  echo "FAIL: premise: DB_DSN_LITERAL (index ${DSN_IDX}) must precede SECRET_PASSWORD_STAGED (index ${STAGED_IDX}) AND STAGED must be the LAST key resolving to :SecretString:password (last index ${MAX_PW_IDX}); otherwise the collision does not collapse onto the staged spelling and Guard 3a-literal is vacuous" >&2
   exit 1
 fi
-echo "    OK: premise: DB_DSN_LITERAL (index ${DSN_IDX}) precedes SECRET_PASSWORD_STAGED (index ${STAGED_IDX})"
+echo "    OK: premise: DB_DSN_LITERAL (index ${DSN_IDX}) precedes SECRET_PASSWORD_STAGED (index ${STAGED_IDX}), which is the last key resolving to :SecretString:password"
 
 # Guard 3a-literal (issue #2485): the LITERAL leaf embedding the `:password`
 # reference must persist ITS OWN spelling. Before the span arm it was redacted
