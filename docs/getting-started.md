@@ -35,6 +35,10 @@ cdkd list
 cdkd diff
 cdkd deploy
 
+# The headline flag: return as soon as each create call returns, and let AWS
+# settle the slow ones (CloudFront, RDS, ElastiCache, NAT) in the background
+cdkd deploy --no-wait
+
 # Tear down
 cdkd destroy
 ```
@@ -80,7 +84,7 @@ cdkd deploy MyStack                 # by name (or 'MyStage/Api' display path)
 cdkd deploy --all
 cdkd deploy --dry-run               # show the changes without applying them
 cdkd deploy --no-rollback           # Terraform-style: keep partial state on failure
-cdkd deploy --no-wait               # skip multi-minute waits (RDS / ElastiCache / NAT)
+cdkd deploy --no-wait               # return early; AWS settles the slow resources
 cdkd deploy --full-wait             # also wait where the default does not (ECS steady state, CloudFront Deployed)
 cdkd publish-assets                 # synth + upload assets only, no deploy (typical CI split)
 
