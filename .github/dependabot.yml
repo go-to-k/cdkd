@@ -1,10 +1,16 @@
 # Dependabot version updates.
 #
-# Commit-message prefixes are chosen against this repo's semantic-release
-# rules (.releaserc): `chore(...)` / `ci(...)` do NOT cut a release, which is
-# deliberate — runtime deps use caret ranges, so users already pick up newer
-# AWS SDK clients on install; a lockfile/range bump only affects dev + CI.
-# All prefixes are in pr-title-check.yml's allowed types.
+# Dependabot is this repo's ONLY dependency-update bot — the Renovate config
+# was removed once Dependabot was live, so nothing else opens bump PRs here.
+#
+# Commit-message prefixes are chosen against release-please's conventional-
+# commit rules (release-please-config.json, release-type `node`): `chore(...)`
+# and `ci(...)` produce no changelog entry, so they never open or advance the
+# standing release PR the way `feat` / `fix` / `perf` do — the only three
+# section headings CHANGELOG.md has ever grown. That is deliberate — runtime
+# deps use caret ranges, so users already pick up newer AWS SDK clients on
+# install; a lockfile/range bump only affects dev + CI. All prefixes are in
+# pr-title-check.yml's allowed types.
 version: 2
 updates:
   - package-ecosystem: "npm"
