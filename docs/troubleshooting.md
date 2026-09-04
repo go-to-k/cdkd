@@ -1473,7 +1473,7 @@ cdkd rollback MyStack --force # skip the confirmation prompt
   success) or the process was killed before the journal was written (a
   SIGKILL before the PUT). In the latter case use `cdkd deploy` to resume or
   `cdkd destroy` to clean up.
-- See [`cdkd rollback`](cli-rollback.md#cdkd-rollback-revert-a-failed-deploy) for the full flag
+- See [`cdkd rollback`](cli-rollback.md) for the full flag
   reference and known limitations.
 
 ### Issue: destroy reports `N skipped` and exits 2
