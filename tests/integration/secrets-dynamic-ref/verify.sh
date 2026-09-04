@@ -142,6 +142,12 @@ EXPECTED_SECURE="cdkd-known-secure-value-456"
 # secretsmanager pair — because any ssm expression satisfies it. Pinning the
 # parameter NAME is what makes the assertion about THIS reference.
 EXPECTED_DB_URL_EXPR="postgres://app-svc:{{resolve:ssm:${SECURE_PARAM_NAME}}}@db.${REGION}.internal:5432/app"
+# The LITERAL embedded leaf (issue #2485): its persisted form must carry ITS
+# OWN `:password}}` spelling, never the staged sibling's — the two share one
+# plaintext, and the leaf sits above SECRET_PASSWORD_STAGED in the template so
+# the collapsed map's survivor is the staged one (see the stack's comment).
+EXPECTED_DB_DSN_LITERAL_EXPR="postgres://app-svc:{{resolve:secretsmanager:${SECRET_NAME}:SecretString:password}}@db.internal:5432/app"
+EXPECTED_DB_DSN_LITERAL="postgres://app-svc:${EXPECTED_PASSWORD}@db.internal:5432/app"
 # The SecureString reference as a WHOLE token, which is what SSM_SECURE_VALUE
 # and SSM_SECURE_COPY must both hold in state (issues #1901 / #2012).
 EXPECTED_SECURE_EXPR="{{resolve:ssm:${SECURE_PARAM_NAME}}}"
@@ -295,6 +301,7 @@ ENV_SECRET_PASSWORD_STAGED=$(get_env SECRET_PASSWORD_STAGED)
 ENV_SSM_VALUE=$(get_env SSM_VALUE)
 ENV_SSM_SECURE_VALUE=$(get_env SSM_SECURE_VALUE)
 ENV_DB_URL=$(get_env DB_URL)
+ENV_DB_DSN_LITERAL=$(get_env DB_DSN_LITERAL)
 ENV_SSM_SECURE_COPY=$(get_env SSM_SECURE_COPY)
 ENV_PUBLIC_URL=$(get_env PUBLIC_URL)
 
@@ -330,6 +337,7 @@ check_not_literal SECRET_PASSWORD_STAGED "${ENV_SECRET_PASSWORD_STAGED}"
 check_not_literal SSM_VALUE "${ENV_SSM_VALUE}"
 check_not_literal SSM_SECURE_VALUE "${ENV_SSM_SECURE_VALUE}"
 check_not_literal DB_URL "${ENV_DB_URL}"
+check_not_literal DB_DSN_LITERAL "${ENV_DB_DSN_LITERAL}"
 check_not_literal SSM_SECURE_COPY "${ENV_SSM_SECURE_COPY}"
 check_not_literal PUBLIC_URL "${ENV_PUBLIC_URL}"
 
@@ -344,6 +352,10 @@ check_equals "SECRET_PASSWORD_STAGED (secretsmanager :SecretString:<jsonkey>:AWS
   "${ENV_SECRET_PASSWORD_STAGED}" "${EXPECTED_PASSWORD}"
 check_equals "SSM_VALUE (ssm:<name> plaintext param)" \
   "${ENV_SSM_VALUE}" "${EXPECTED_SSM}"
+# The literal embedded leaf reaches AWS with the password spliced in (#2485
+# changes what STATE holds for it, never what the provider is handed).
+check_equals "DB_DSN_LITERAL (literal string embedding :SecretString:<jsonkey>)" \
+  "${ENV_DB_DSN_LITERAL}" "${EXPECTED_DB_DSN_LITERAL}"
 # The MIXED leaf must reach AWS with the reference SUBSTITUTED INTO the
 # surrounding text (issue #1926 review). This is the PREMISE of Phase 1g: the
 # live resource holds the decrypted value, so a readback of it is a disclosure
@@ -412,6 +424,7 @@ STATE_SECRET_FULL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_FULL // empty')
 STATE_SSM_VALUE=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SSM_VALUE // empty')
 STATE_SSM_SECURE_VALUE=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SSM_SECURE_VALUE // empty')
 STATE_SECRET_PASSWORD_STAGED=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD_STAGED // empty')
+STATE_DB_DSN_LITERAL=$(printf '%s' "${LAMBDA_ENV}" | jq -r '.DB_DSN_LITERAL // empty')
 
 # Guard 3: each secretsmanager env var in STATE must be the UNRESOLVED
 # expression, not the plaintext. (We can print the expression — it names the
@@ -457,6 +470,61 @@ if [ "${STATE_DB_URL}" = "${EXPECTED_DB_URL_EXPR}" ]; then
   echo "    OK: state DB_URL kept the EMBEDDED expression: ${STATE_DB_URL}"
 else
   echo "FAIL: state DB_URL is not the expected embedded form: $(mask "${STATE_DB_URL}")" >&2
+  redaction_fail=1
+fi
+
+# PREMISE GUARD for Guard 3a-literal below: the leaf must have synthesized as a
+# plain STRING, not an `Fn::Join` — the arm under test is the literal-string
+# one, and an intrinsic-shaped leaf takes a different (skeleton) path that
+# cannot fix this defect, so the assertion below would then fail for the wrong
+# reason (or pass for one, if a later change made it whole-token).
+SYNTH_TEMPLATE="cdk.out/${STACK}.template.json"
+if [ ! -f "${SYNTH_TEMPLATE}" ]; then
+  echo "FAIL: premise: no synthesized template at ${SYNTH_TEMPLATE} to check DB_DSN_LITERAL's shape" >&2
+  exit 1
+fi
+# `string` for the literal, `object` for an Fn::Join, `null` for a Lambda
+# without the key, `absent` for no Lambda at all — each named so the message
+# says what was actually found.
+DSN_SHAPE=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables.DB_DSN_LITERAL | if . == null then "null" else type end] | first // "absent"' "${SYNTH_TEMPLATE}")
+if [ "${DSN_SHAPE}" != "string" ]; then
+  echo "FAIL: premise: DB_DSN_LITERAL synthesized as '${DSN_SHAPE}', not a plain string — the literal-leaf arm (#2485) is not what this deploy exercised (is CDK_DEFAULT_ACCOUNT reaching the app?)" >&2
+  exit 1
+fi
+echo "    OK: premise: DB_DSN_LITERAL synthesized as a plain string"
+# ...and BEFORE SECRET_PASSWORD_STAGED in the synthesized env (the template
+# keeps the stack's declaration order; CDK sorts env keys only under
+# `currentVersion`): the collision only collapses onto the STAGED spelling
+# when STAGED resolves later, which is what makes Guard 3a-literal below able
+# to fail without the fix.
+DSN_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("DB_DSN_LITERAL")] | first' "${SYNTH_TEMPLATE}")
+STAGED_IDX=$(jq -r '[.Resources[] | select(.Type=="AWS::Lambda::Function") | .Properties.Environment.Variables | keys_unsorted | index("SECRET_PASSWORD_STAGED")] | first' "${SYNTH_TEMPLATE}")
+case "${DSN_IDX}${STAGED_IDX}" in *null*|"")
+  echo "FAIL: premise: could not locate DB_DSN_LITERAL / SECRET_PASSWORD_STAGED in the synthesized env (${DSN_IDX} / ${STAGED_IDX})" >&2
+  exit 1 ;;
+esac
+if [ "${DSN_IDX}" -ge "${STAGED_IDX}" ]; then
+  echo "FAIL: premise: DB_DSN_LITERAL (index ${DSN_IDX}) must precede SECRET_PASSWORD_STAGED (index ${STAGED_IDX}) in the synthesized env, or the collision cannot collapse onto the staged spelling and Guard 3a-literal is vacuous" >&2
+  exit 1
+fi
+echo "    OK: premise: DB_DSN_LITERAL (index ${DSN_IDX}) precedes SECRET_PASSWORD_STAGED (index ${STAGED_IDX})"
+
+# Guard 3a-literal (issue #2485): the LITERAL leaf embedding the `:password`
+# reference must persist ITS OWN spelling. Before the span arm it was redacted
+# by the value-keyed map, whose survivor for the shared plaintext is the STAGED
+# sibling's expression (that key resolves later), so state read
+# `...:password:AWSCURRENT}}@...` here and the deploy diff reported the leaf on
+# every run. Exact equality, not a glob: a glob accepting any secretsmanager
+# expression passes on exactly the collapsed spelling this guard exists for.
+if [ "${STATE_DB_DSN_LITERAL}" = "${EXPECTED_DB_DSN_LITERAL_EXPR}" ]; then
+  echo "    OK: state DB_DSN_LITERAL kept its OWN embedded expression: ${STATE_DB_DSN_LITERAL}"
+else
+  case "${STATE_DB_DSN_LITERAL}" in
+    *':AWSCURRENT}}@'*)
+      echo "FAIL: state DB_DSN_LITERAL took the STAGED sibling's expression — the embedded leaf collapsed onto the map's survivor (#2485)" >&2 ;;
+    *)
+      echo "FAIL: state DB_DSN_LITERAL is not the expected embedded form: $(mask "${STATE_DB_DSN_LITERAL}")" >&2 ;;
+  esac
   redaction_fail=1
 fi
 
@@ -1236,6 +1304,16 @@ RB_LAMBDA_ENV=$(printf '%s' "${RB_STATE}" | jq -c '.state.resources | to_entries
 RB_STATE_PW=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD // empty')
 RB_STATE_SECURE=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SSM_SECURE_VALUE // empty')
 RB_STATE_PW_STAGED=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.SECRET_PASSWORD_STAGED // empty')
+RB_STATE_DSN=$(printf '%s' "${RB_LAMBDA_ENV}" | jq -r '.DB_DSN_LITERAL // empty')
+# Issue #2485: the rollback replay re-resolves the journal's OWN tokens and
+# persists through the same span arm, so the literal embedded leaf must come
+# back on its own spelling here too — a collapsed re-persist in THIS phase
+# would otherwise pass silently behind the Phase 1 assertion.
+if [ "${RB_STATE_DSN}" != "${EXPECTED_DB_DSN_LITERAL_EXPR}" ]; then
+  echo "FAIL: post-rollback state DB_DSN_LITERAL is not its own embedded expression (#2485): $(mask "${RB_STATE_DSN}")" >&2
+  exit 1
+fi
+echo "    OK: post-rollback state kept DB_DSN_LITERAL's OWN embedded expression"
 case "${RB_STATE_PW}" in
   '{{resolve:secretsmanager:'*) echo "    OK: post-rollback state kept the SECRET_PASSWORD expression" ;;
   *) echo "FAIL: post-rollback state SECRET_PASSWORD is NOT the {{resolve:...}} expression: $(mask "${RB_STATE_PW}")" >&2; exit 1 ;;
@@ -1876,10 +1954,24 @@ echo "    OK: the plain deploy re-captured the baseline"
 
 deploy_redaction_fail=0
 G_DB_URL=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_URL // empty')
+G_DSN_LITERAL=$(printf '%s' "${G_OBSERVED}" | jq -r '.DB_DSN_LITERAL // empty')
 if [ "${G_DB_URL}" = "${EXPECTED_DB_URL_EXPR}" ]; then
   echo "    OK: re-captured DB_URL kept the EMBEDDED expression: ${G_DB_URL}"
 else
   echo "FAIL: re-captured observed DB_URL is not the expected embedded expression: $(mask "${G_DB_URL}")" >&2
+  deploy_redaction_fail=1
+fi
+# The literal embedded leaf on the EMPTY-map readback path. This is NOT a
+# #2485 fence — with no map the span arm has no evidence and never fires; the
+# spelling here comes from the same-generation POSITIONAL refusal
+# (`refuseUncertifiedReadbackPositions`), which substitutes the source leaf
+# whole, and it passes with or without the span arm. It is pinned as the
+# invariant the arm must not break: the #2485 fences are Phase 1 (persist) and
+# Phase 1e (rollback replay), where the map IS populated.
+if [ "${G_DSN_LITERAL}" = "${EXPECTED_DB_DSN_LITERAL_EXPR}" ]; then
+  echo "    OK: re-captured DB_DSN_LITERAL kept its embedded expression (empty-map positional invariant)"
+else
+  echo "FAIL: re-captured DB_DSN_LITERAL is not its embedded expression: $(mask "${G_DSN_LITERAL}")" >&2
   deploy_redaction_fail=1
 fi
 

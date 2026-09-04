@@ -149,7 +149,7 @@ intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 stale
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-04T01:27:30Z	PASS	95	verify.sh	pre-merge re-verify of PR 2492 (broad gate); rc ok, orph clean
+lambda	2026-09-04T03:07:00Z	PASS	102	verify.sh	issue #2485 broad gate (deploy-engine.ts + intrinsic-function-resolver.ts + secret-redaction.ts cross-cutting), re-run on the rebased build; 9 deleted 0 errors 0 orphans
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
@@ -260,7 +260,7 @@ schema-v7-to-v8-migration	2026-08-01T09:51:12Z	PASS	92	verify.sh	0801 regression
 schema-v8-to-v9-migration	2026-08-26T02:45:22Z	PASS	171	verify.sh	maintainer-side run at post-blocker-fix head; v8 shadow repro + v9 migration, 0 err 0 orphans
 sdk-ccapi-crossref	2026-08-10T04:23:28Z	PASS	85	verify.sh	0810 sweep b2; post-#1355 CC snapshot path, heterogeneous routing, 4 del 0 err, 0 orph
 secrets-array-nested	2026-08-26T17:19:35Z	PASS	215	verify.sh	gating PR 2295, RE-RUN on the final tree after a round-3 review fix to the arm helper. The identity check in assert_unkeyed_string_array sat AFTER the all-strings check, which rejects any array containing an object first, so the identity branch was UNREACHABLE -- its comment claimed the probe answers true on this fixture Environment[], which was true of the jq expression and false of the helper. Measured before/after: BEFORE reported "elements are object, not all plain strings", AFTER reports the identity message. That guard is the arm own premise, so it is not a nit. POSITIVE: the gate PAIRED the unkeyed Command array and persisted the expression. NEGATIVE CONTROL: it REFUSED the indistinguishable twin. destroy 2 deleted / 0 errors, 0 orphans, 0 surviving state object versions
-secrets-dynamic-ref	2026-09-03T18:06:00Z	PASS	487	verify.sh	issue #2482 sibling fixture (ssm-secure skip note now points at ssm-secure-dynamic-ref); 4 deleted 0 errors 0 orphans, 0 surviving state versions
+secrets-dynamic-ref	2026-09-04T02:57:00Z	PASS	487	verify.sh	issue #2485 live arm (DB_DSN_LITERAL literal embedded leaf beside the staged sibling; asserted at persist, rollback replay and re-capture; key-order premise asserted), re-run on the rebased build after go-to-k/cdkd#2492 merged; a pre-fix binary FAILS the persist guard; 4 deleted 0 errors 0 orphans, 0 surviving state versions
 secrets-rotation-schedule	2026-07-26T19:05:27Z	PASS	66	verify.sh	0727b sweep-b8 staleness re-run (rc=0); account clean
 secretsmanager-update-value-source	2026-09-04T00:49:00Z	PASS	70	verify.sh	rc ok, orph clean, versions swept (maintainer merge-gate rerun of PR 2476)
 serverless-api	2026-07-26T19:45:58Z	PASS	58	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
@@ -276,7 +276,7 @@ sns-subscription-filter	2026-08-10T05:38:11Z	PASS	39	verify.sh	0810 P2 sweep b9;
 sns-subscription-update	2026-08-20T11:53:45Z	PASS	70	verify.sh	#1967 new fixture, 4 phases. First real-AWS coverage of SNSSubscriptionProvider.update at all: phase 2 proves the internal replacement ran (SubscriptionArn changed, exactly one subscription, state in sync); phase 3 corrupts the physicalId so Unsubscribe throws and asserts cdkd ABORTS -- deploy exit 1, no Subscribe issued, old subscription untouched. Destroy clean, 0 orphans
 sqs-cloudwatch	2026-08-13T11:19:53Z	PASS	-	standard	issue 1815 partition ARN builders; rc 0, destroy clean, 0 orphans
 sqs-esm-max-concurrency	2026-08-10T04:23:28Z	PASS	76	verify.sh	0810 sweep b2; lambda-eventsource re-verify, 5 del 0 err, 0 orph
-ssm-secure-dynamic-ref	2026-09-04T01:22:57Z	PASS	106	verify.sh	pre-merge re-verify of PR 2492; rc ok, orph clean
+ssm-secure-dynamic-ref	2026-09-04T03:09:00Z	PASS	234	verify.sh	issue #2485 second live arm: SSM_SECURE_VERSIONED_SAME restores the measured same-parameter collision beside the embedded leaf, embedded state spelling asserted exact; 2 deleted 0 errors 0 orphans, S3 versions swept
 stack-lock-renewal	2026-08-23T02:58:02Z	PASS	539	verify.sh	issue #2168 lock renewal final: 8 probe receipts (S3 answers NoSuchKey/404 for a conditional delete of an absent object) + 29 deploy samples, expiresAt +363s never lapsed never absent; destroy 0 err 0 orph
 state-destroy	2026-08-13T06:35:09Z	PASS	95	standard	PR 1774 gate; state destroy exit-code path, 1 del 0 err, zero-skip run byte-identical (no skipped suffix), orph clean
 state-info-command	2026-08-02T05:07:05Z	PASS	31	verify.sh	new verify.sh (#1335): state info human+json, flag+env sources, 1 del/0 err, 0 orphans

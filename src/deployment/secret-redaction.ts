@@ -51,6 +51,109 @@ export type RecordedSecretValues = Map<string, string>;
 export const SECRET_MASK = '***';
 
 /**
+ * The UNCOLLAPSED companion of a {@link RecordedSecretValues} map: for each map
+ * instance, every `expression -> plaintext` pair the resolver recorded INTO IT,
+ * keyed by EXPRESSION (issue [#2485](https://github.com/go-to-k/cdkd/issues/2485)).
+ *
+ * WHY IT EXISTS. The map is keyed by PLAINTEXT, so two expressions resolving to
+ * one value keep ONE entry — whichever the resolver recorded last. A WHOLE-token
+ * leaf is immune (the position pass copies its own source), but a leaf that
+ * EMBEDS a token in a literal string is redacted by the value scan, which can
+ * only write the map's surviving expression: the versioned sibling's, for a
+ * template that spells the un-versioned one, and the next deploy diffs that
+ * leaf forever. Recovering the losing expression needs evidence the map has
+ * discarded, and it has to be PASS-LOCAL: `recordedSecretExpressions` is
+ * process-wide and says only that an expression IS secret, never what it
+ * resolved to in THIS resource — so it cannot tell "the source token lost the
+ * map slot to its sibling" from "the source token was never resolved here"
+ * (a previous generation's bag, where writing today's expression over the
+ * framed value would record something that was never deployed).
+ *
+ * Keyed by the map INSTANCE, so the evidence is exactly as pass-local as the
+ * map itself: a map the resolver populated (the deploy's `perResourceSecrets`
+ * entry, and equally the map drift / scrub / import hand their own resolution)
+ * carries the pairs of THAT resolution, while a map the resolver did not
+ * populate — a derived needle map, a nested-stack inheritance copy, a
+ * `new Map(secrets)` copy — starts with no entries here and takes the
+ * pre-#2485 fall-through, the safe direction. A copy loses the evidence
+ * deliberately: a copy is not the pass that resolved anything.
+ *
+ * `CONFLICTING_PLAINTEXT` marks an expression this map saw resolve to TWO
+ * values (a region-pinned re-resolution of one spelling, say); it then vouches
+ * for nothing, which is the same "answer nothing you cannot prove" rule
+ * {@link plaintextIndexOf} applies to the collapsed map's reverse index.
+ */
+const resolvedPairsOf = new WeakMap<RecordedSecretValues, Map<string, string | symbol>>();
+
+/**
+ * Record that `expression` resolved to `plaintext` in the pass that owns
+ * `secrets` — the resolver's recording seam calls this beside its
+ * `secrets.set(plaintext, expression)`, so the two never disagree about which
+ * pass the evidence belongs to. Mask-only map entries (value `SECRET_MASK`)
+ * never pass through that seam — they came from no `{{resolve:...}}` token —
+ * so nothing here special-cases the mask string: a secret whose plaintext
+ * happens to BE `***` is a secret like any other.
+ */
+export function recordResolvedPair(
+  secrets: RecordedSecretValues,
+  expression: string,
+  plaintext: string
+): void {
+  let pairs = resolvedPairsOf.get(secrets);
+  if (pairs === undefined) {
+    pairs = new Map();
+    resolvedPairsOf.set(secrets, pairs);
+  }
+  const previous = pairs.get(expression);
+  if (previous === undefined) pairs.set(expression, plaintext);
+  else if (previous !== plaintext) pairs.set(expression, CONFLICTING_PLAINTEXT);
+}
+
+/**
+ * Carry the resolved pairs of `from` into `to`, for the one copy of a
+ * resolver-populated map that POSITIONS anything: the deploy engine accumulates
+ * each stack's output resolution into its `outputSecrets` bag entry by entry,
+ * and without this the copy would keep the collapsed entries while dropping the
+ * evidence — so a literal `Output` embedding one of two same-plaintext
+ * references would fall back to the value scan and persist the sibling's
+ * expression. (The engine's other entry-by-entry copy, an `Export.Name`'s
+ * secrets into the pass map, needs no evidence: a name never positions a leaf,
+ * and a value re-using the same token records its own pair at the seam.) A pair that
+ * conflicts across the two maps is marked conflicting in `to`, the same rule
+ * {@link recordResolvedPair} applies within one map.
+ *
+ * Deliberately NOT a general "copy the map" helper: every other new map is a
+ * different PASS, and starting it without evidence is the safe direction.
+ */
+export function mergeResolvedPairs(from: RecordedSecretValues, to: RecordedSecretValues): void {
+  const pairs = resolvedPairsOf.get(from);
+  if (pairs === undefined) return;
+  for (const [expression, plaintext] of pairs) {
+    if (typeof plaintext === 'string') recordResolvedPair(to, expression, plaintext);
+    else {
+      let target = resolvedPairsOf.get(to);
+      if (target === undefined) {
+        target = new Map();
+        resolvedPairsOf.set(to, target);
+      }
+      target.set(expression, CONFLICTING_PLAINTEXT);
+    }
+  }
+}
+
+/**
+ * The plaintext `expression` resolved to in the pass that owns `secrets`, or
+ * `undefined` when that pass recorded nothing for it (or two different values).
+ */
+function resolvedPlaintextOf(
+  secrets: RecordedSecretValues,
+  expression: string
+): string | undefined {
+  const recorded = resolvedPairsOf.get(secrets)?.get(expression);
+  return typeof recorded === 'string' ? recorded : undefined;
+}
+
+/**
  * Every `{{resolve:...}}` expression this process has PROVEN resolves to a
  * secret, as a SET — uncollapsed by resolved value (issue #1910).
  *
@@ -2426,6 +2529,128 @@ function positionByIntrinsicSkeleton(
 }
 
 /**
+ * The ONE-span frame shared by {@link positionByEmbeddedSpan} and
+ * {@link learnMixedLeafNeedle}: a source holding exactly one `{{resolve:...}}`
+ * token, and a bag that starts with the source's prefix and ends with its
+ * suffix with something non-empty between them that is NOT itself a complete
+ * token (an already-redacted record is a persisted answer, not a plaintext).
+ * `undefined` for any other shape. One helper rather than two copies so the
+ * two refusals cannot drift apart.
+ */
+function singleSpanFrame(
+  bag: string,
+  source: string
+): { token: string; prefix: string; suffix: string; middle: string } | undefined {
+  const spans = dynamicReferenceSpans(source);
+  if (spans.length !== 1) return undefined;
+  const [span] = spans as [{ start: number; end: number }];
+  const token = source.slice(span.start, span.end);
+  const prefix = source.slice(0, span.start);
+  const suffix = source.slice(span.end);
+  if (bag.length <= prefix.length + suffix.length) return undefined;
+  if (!bag.startsWith(prefix) || !bag.endsWith(suffix)) return undefined;
+  const middle = bag.slice(prefix.length, bag.length - suffix.length);
+  if (isSingleDynamicReferenceToken(middle)) return undefined;
+  return { token, prefix, suffix, middle };
+}
+
+/**
+ * Position a literal source leaf that EMBEDS exactly one `{{resolve:...}}`
+ * token — `postgres://app-svc:{{resolve:ssm-secure:NAME}}@db/app` — by the
+ * span the source states, writing `prefix + token + suffix` (issue
+ * [#2485](https://github.com/go-to-k/cdkd/issues/2485)).
+ *
+ * WHY THE VALUE SCAN IS NOT ENOUGH HERE. The scan writes the map's surviving
+ * expression for a plaintext, and the map keeps one expression per plaintext:
+ * a whole-value `NAME:1` sibling that resolved LAST leaves `NAME:1` as the only
+ * expression for the value, so the embedded leaf persists the versioned
+ * spelling for a template that spells `NAME`, and the deploy diff — expression
+ * against expression — reports that leaf on every run. The whole-token arm of
+ * {@link redactByPath} is immune because it copies its own source; this arm
+ * gives the one-span literal leaf the same immunity.
+ *
+ * THE EVIDENCE, and why the shape of the frame is not enough on its own: the
+ * frame check (`bag` starts with the source's prefix and ends with its suffix,
+ * with something between) is what {@link learnMixedLeafNeedle} already uses to
+ * LEARN a needle, and it proves only that the bag has the source's shape. The
+ * bag can also be a PREVIOUS generation's (`cdkd scrub`, a state-sourced walk)
+ * with an earlier plaintext framed exactly like this, and writing today's
+ * token over it would record an expression that was never deployed at that
+ * position — the hazard `sourceIsSameGeneration` exists for on the whole-token
+ * arm. So the middle must EQUAL what THIS pass recorded the source token
+ * resolving to ({@link recordResolvedPair}, per map instance): that is evidence
+ * of this resolution, not of shape, and it is absent by construction for every
+ * bag this pass did not produce. It is also what keeps a PUBLIC `ssm` token
+ * resolved (issue #1901) — the resolver records only secret verdicts — and what
+ * keeps a mask-only `NoEcho` value out (never recorded).
+ *
+ * WHAT THIS EVIDENCE DOES NOT CLAIM, stated because a reviewer asked: it does
+ * not prove the bag was produced FROM this source. A previous generation's bag
+ * whose framed middle happens to EQUAL a plaintext this pass resolved the
+ * source token to (`cdkd scrub` walking an old record against today's template,
+ * or a failed deploy persisting an old bag) takes this arm and persists TODAY's
+ * expression at that position. That is not a new claim: the value scan the
+ * arm replaces rewrites that same plaintext onto one of THIS pass's expressions
+ * regardless of generation — the map holds no other — so the class of answer
+ * is unchanged and only the choice within it improves (the source's own
+ * token rather than the map's survivor). The generation hazard this arm must
+ * not create is the whole-token arm's: a middle that is ALREADY an expression
+ * (a persisted answer from another generation), which the token refusal below
+ * keeps out — and, by the same argument, any leaf the value scan would NOT
+ * rewrite to exactly `prefix + survivor + suffix`: a middle shorter than the
+ * scan's needle floor (an embedded 1-3 character secret stays the scan's
+ * documented residual), a whole leaf that is itself another recorded
+ * plaintext, a needle starting in the prefix and overlapping the middle. The
+ * arm checks that equivalence against the scan's own answer rather than
+ * re-deriving the scan's rules. Pinned by the cross-generation cases in
+ * `secret-redaction-embedded-span.test.ts`.
+ *
+ * One shape reaches this arm that a reader may not expect: a WHOLE-token
+ * source that FAILED the whole-token arm's `isKnownSecretExpression` gate (an
+ * `ssm` token whose type came back unclassifiable and which lost the map slot
+ * to a sibling). Its "frame" is empty, and if this pass recorded it resolving
+ * to the bag it is written back as itself — an expression, and the leaf's own,
+ * where the scan wrote the survivor. Stated so it is not mistaken for a leak.
+ *
+ * Everything else keeps the pre-#2485 fall-through: two or more spans (which
+ * span produced which value is genuinely ambiguous when they share one), an
+ * `Fn::Sub` / `Fn::Join` source (an object, not this arm at all — issue #2320's
+ * placeholder primitive), a frame mismatch, a middle that is itself a complete
+ * token (an already-redacted record, per the same refusal
+ * {@link learnMixedLeafNeedle} makes), and a middle this pass cannot vouch for.
+ *
+ * The frame is copied from the SOURCE, not scanned. A needle occurring in the
+ * literal frame would be a reference the template never had at that offset —
+ * the fabricated-baseline direction {@link preferPositionDecisions} refuses —
+ * and the whole-token arm returns its source unscanned for the same reason.
+ */
+function positionByEmbeddedSpan(
+  bag: string,
+  source: string,
+  secrets: RecordedSecretValues
+): string | undefined {
+  const frame = singleSpanFrame(bag, source);
+  if (frame === undefined) return undefined;
+  const { token, prefix, suffix, middle } = frame;
+  const recorded = resolvedPlaintextOf(secrets, token);
+  if (recorded === undefined || recorded !== middle) return undefined;
+  // THE SAME CLASS OF ANSWER AS THE VALUE SCAN, proven rather than argued: the
+  // arm accepts only a leaf the scan itself would rewrite to
+  // `prefix + <the map's survivor for the middle> + suffix` — the middle and
+  // nothing else. That is what makes the substitution a CHOICE among this
+  // pass's expressions rather than a new claim: below the scan's needle floor
+  // the scan leaves the middle alone (so does this arm); where another
+  // recorded plaintext matches the WHOLE leaf, or starts in the prefix and
+  // overlaps the middle, the scan's whole-value / leftmost precedence picks
+  // that needle instead (so does this arm, by falling through to it). See the
+  // generation note in the docstring for why this bound matters.
+  const survivor = secrets.get(middle);
+  if (survivor === undefined) return undefined;
+  if (redactSecretsForState(bag, secrets) !== prefix + survivor + suffix) return undefined;
+  return prefix + token + suffix;
+}
+
+/**
  * Keys tried, in order, when pairing two arrays whose ORDER cannot be trusted
  * (issue #1915).
  *
@@ -2699,8 +2924,13 @@ function redactByPath(
       // expressions sharing one resolved value.
       return source;
     }
-    // Public reference: keep the resolved value, but still value-scan it so a
-    // secret embedded beside it is redacted.
+    // A literal leaf EMBEDDING one token, positioned by the span its source
+    // states — exact where the value scan below is ambiguous (issue #2485).
+    const spanned = positionByEmbeddedSpan(bag, source, secrets);
+    if (spanned !== undefined) return spanned;
+    // Public reference, or an embedded token this pass cannot vouch for: keep
+    // the resolved value, but still value-scan it so a secret embedded beside
+    // it is redacted.
     return redactSecretsForState(bag, secrets);
   }
   if (typeof bag === 'string' && isPlainObject(source)) {
@@ -3730,9 +3960,17 @@ function learnMixedLeafNeedle(
   bag: string,
   source: string
 ): void {
-  const spans = dynamicReferenceSpans(source);
-  if (spans.length !== 1) return;
-  const [span] = spans as [{ start: number; end: number }];
+  // The frame — one span, prefix / suffix anchored at the ends, a non-empty
+  // middle that is not itself a complete token — is `singleSpanFrame`, shared
+  // with `positionByEmbeddedSpan` so the two refusals cannot drift. The token
+  // refusal it carries is the one this function used to spell out here: a
+  // slice that is ITSELF a complete `{{resolve:...}}` token is not a
+  // plaintext, it is an already-redacted record (a re-scrub, a second
+  // `refresh-observed`), and pairing it would put a reference string in the
+  // needle set — the asymmetry with the whole-token arm the security review
+  // found.
+  const frame = singleSpanFrame(bag, source);
+  if (frame === undefined) return;
   // The TOKEN, never the whole leaf. The needle's replacement is what gets
   // written wherever the plaintext is found NEXT, and those positions carry
   // only the secret — an AWS-added field holding the bare password, say. Pairing
@@ -3741,23 +3979,8 @@ function learnMixedLeafNeedle(
   // baseline content, which `--revert` then pushes to the live resource. Pinned
   // by `learns from a MIXED leaf, which is the DOMINANT CDK shape`, which
   // measured exactly that output before this line said `token`.
-  const token = source.slice(span.start, span.end);
+  const { token, middle: plaintext } = frame;
   if (!expressionMaySeedANeedle(token)) return;
-  const prefix = source.slice(0, span.start);
-  const suffix = source.slice(span.end);
-  if (bag.length <= prefix.length + suffix.length) return;
-  if (!bag.startsWith(prefix) || !bag.endsWith(suffix)) return;
-  const plaintext = bag.slice(prefix.length, bag.length - suffix.length);
-  // The same refusal {@link learnWholeTokenNeedle} makes, for the same reason
-  // and at the only other place a plaintext enters the collector: a slice that
-  // is ITSELF a complete `{{resolve:...}}` token is not a plaintext, it is an
-  // already-redacted record (a re-scrub, a second `refresh-observed`), and
-  // pairing it would put a reference string in the needle set. Today this is an
-  // identity rewrite at worst — the slice is the token, so the pair maps the
-  // expression onto itself — but the guard is what keeps that a property of the
-  // INPUTS rather than a coincidence, and it is stated here because the
-  // asymmetry with the whole-token arm was the security review's finding.
-  if (isSingleDynamicReferenceToken(plaintext)) return;
   learnNeedle(collector, plaintext, token);
 }
 

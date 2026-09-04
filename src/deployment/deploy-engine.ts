@@ -31,6 +31,7 @@ import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import {
   redactSecretsForState,
+  mergeResolvedPairs,
   scrubResourceRecord,
   maskSecretsInText,
   maskSecretsInError,
@@ -5783,6 +5784,13 @@ export class DeployEngine {
             for (const [plaintext, expression] of nameSecrets) {
               context.recordedSecretValues?.set(plaintext, expression);
             }
+            // ...and the pairs beside the entries (issue #2485), for the same
+            // "survives every exit" invariant; a name never positions a leaf,
+            // so this is symmetry with the outputs-bag merge below rather than
+            // a reachable difference.
+            if (context.recordedSecretValues) {
+              mergeResolvedPairs(nameSecrets, context.recordedSecretValues);
+            }
           }
         } catch (error) {
           this.handleOutputResolutionFailure(error, outputKey, outputs);
@@ -5896,6 +5904,11 @@ export class DeployEngine {
         for (const [value, expr] of context.recordedSecretValues) {
           this.outputSecrets.set(value, expr);
         }
+        // ...and the uncollapsed evidence beside the entries (issue #2485):
+        // without it a literal Output embedding one of two same-plaintext
+        // references would lose its span positioning and persist the sibling's
+        // expression.
+        mergeResolvedPairs(context.recordedSecretValues, this.outputSecrets);
       }
       // ...and the POSITION source must GO, for the same reason it now matters.
       // The post-loop pass below never ran, so this bag holds only the alias

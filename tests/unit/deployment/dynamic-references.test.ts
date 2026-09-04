@@ -385,6 +385,63 @@ describe('IntrinsicFunctionResolver - Dynamic References', () => {
     });
   });
 
+  describe('a literal leaf embedding a reference beside a whole-value sibling (issue #2485)', () => {
+    const SECRET = 'cdkd-test-secret';
+    const PLAIN = `{{resolve:secretsmanager:${SECRET}:SecretString:password}}`;
+    const STAGED = `{{resolve:secretsmanager:${SECRET}:SecretString:password:AWSCURRENT}}`;
+    const DSN = `postgres://app-svc:${PLAIN}@db.internal:5432/app`;
+
+    beforeEach(() => {
+      mockSecretsManagerSend.mockResolvedValue({
+        SecretString: JSON.stringify({ password: 'shared-pw-2485' }),
+      });
+    });
+
+    for (const [label, template] of [
+      ['the whole-value sibling resolves LAST', { Dsn: DSN, Staged: STAGED }],
+      ['the embedded leaf resolves LAST', { Staged: STAGED, Dsn: DSN }],
+    ] as const) {
+      it(`persists each leaf's own expression through the real resolver when ${label}`, async () => {
+        const recordedSecretValues = new Map<string, string>();
+        const resolved = (await resolver.resolve(template, {
+          ...defaultContext,
+          recordedSecretValues,
+        })) as Record<string, string>;
+        expect(resolved['Dsn']).toBe('postgres://app-svc:shared-pw-2485@db.internal:5432/app');
+        expect(resolved['Staged']).toBe('shared-pw-2485');
+        // The collapsed map holds ONE entry for the shared plaintext...
+        expect(recordedSecretValues.size).toBe(1);
+
+        // ...and the persisted record still spells each leaf its own way.
+        const persisted = redactSecretsForState(resolved, recordedSecretValues, template);
+        expect(persisted).toEqual({ Dsn: DSN, Staged: STAGED });
+      });
+    }
+
+    it('records the pair on the CACHE-HIT seam too, so a second resource embedding a warm token is positioned', async () => {
+      // The common shape: `perResourceSecrets` hands each resource its own
+      // map, and the second resource's reference is answered from the
+      // instance cache without a lookup — the pair must still land in THAT
+      // resource's map.
+      const warm = new Map<string, string>();
+      await resolver.resolve({ Warm: PLAIN }, { ...defaultContext, recordedSecretValues: warm });
+      expect(mockSecretsManagerSend).toHaveBeenCalledTimes(1);
+
+      const second = new Map<string, string>();
+      const template = { Dsn: DSN, Staged: STAGED };
+      const resolved = (await resolver.resolve(template, {
+        ...defaultContext,
+        recordedSecretValues: second,
+      })) as Record<string, string>;
+      // PLAIN was a cache hit; only STAGED went to AWS.
+      expect(mockSecretsManagerSend).toHaveBeenCalledTimes(2);
+      expect(resolved['Dsn']).toBe('postgres://app-svc:shared-pw-2485@db.internal:5432/app');
+
+      const persisted = redactSecretsForState(resolved, second, template);
+      expect(persisted).toEqual({ Dsn: DSN, Staged: STAGED });
+    });
+  });
+
   describe('resolveValue integration with dynamic references', () => {
     it('should resolve dynamic references in property values during resolve()', async () => {
       mockSSMSend.mockResolvedValue({

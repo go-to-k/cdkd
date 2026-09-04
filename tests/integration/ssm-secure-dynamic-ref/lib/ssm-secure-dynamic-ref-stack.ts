@@ -32,15 +32,23 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * create one, so verify.sh seeds them out of band (`aws ssm put-parameter
  * --type SecureString`) before the first deploy and removes them in cleanup.
  *
- * The versioned form names a SECOND parameter with its own value, on purpose.
- * Two expressions in one resource that resolve to the SAME plaintext make the
- * EMBEDDED leaf's persisted spelling ambiguous: an embedded leaf is redacted by
- * the value scan, which carries one expression per plaintext, so `NAME` and
- * `NAME:1` behind one value persisted the composed string with whichever was
- * recorded last (measured: `...:{{resolve:ssm-secure:NAME:1}}@...` for a
- * template that spells `NAME`), and the next deploy then diffs that leaf
- * forever. A pre-existing limitation of the value scan, not of this arm — see
- * the verify.sh header for the issue that tracks it.
+ * The versioned form appears TWICE. `SSM_SECURE_VERSIONED` names a SECOND
+ * parameter with its own value, so the `<name>:<version>` grammar is covered
+ * independently of any collision. `SSM_SECURE_VERSIONED_SAME` names the FIRST
+ * parameter — the shape this fixture's first real-AWS run measured (issue
+ * #2485): two expressions in one resource resolving to the SAME plaintext,
+ * with the embedded leaf redacted by a value scan that carried one expression
+ * per plaintext, persisted `...:{{resolve:ssm-secure:NAME:1}}@...` for a
+ * template that spells `NAME`, and the next deploy diffed that leaf forever.
+ * Since #2485 the embedded leaf is positioned by its own span, and this key is
+ * what makes the state assertion on `SSM_SECURE_EMBEDDED` able to fail without
+ * that fix. ORDER IS LOAD-BEARING: the template keeps this object's
+ * declaration order (CDK sorts env keys only under `currentVersion`), cdkd
+ * resolves them in that order, and the value-keyed map keeps the LAST
+ * expression recorded for a plaintext — so `SSM_SECURE_VERSIONED_SAME` is
+ * declared AFTER `SSM_SECURE_EMBEDDED` and the map's survivor is the `:1`
+ * spelling. Move it above and the assertion passes with or without the fix;
+ * verify.sh asserts the synthesized order.
  * The `{{resolve:...}}` strings are set as LITERALS on purpose — CDK's
  * `SecretValue` / `ssmSecureString` helpers synthesize to exactly this
  * spelling, and the literal keeps the fixture independent of the helper's
@@ -74,6 +82,9 @@ export class SsmSecureDynamicRefStack extends cdk.Stack {
         // Version-selector form (the parameter is seeded once, so version 1).
         // A separate parameter — see the docstring above for why.
         SSM_SECURE_VERSIONED: `{{resolve:ssm-secure:${versionedParamName}:1}}`,
+        // The SAME parameter as the whole / embedded forms, version-pinned: the
+        // #2485 collision shape — see the docstring above.
+        SSM_SECURE_VERSIONED_SAME: `{{resolve:ssm-secure:${paramName}:1}}`,
         // A public control value, so a state scan that finds NO plaintext is
         // not vacuous over an env block that persisted nothing at all.
         PUBLIC_CONTROL: 'cdkd-2482-public-control',

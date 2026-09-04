@@ -93,6 +93,17 @@ Index of every area: [code-layout.md](code-layout.md).
     (#1904). The value scan stays for every leaf the source cannot position
     (diverged shape, missing key, a leaf that merely EMBEDS a secret, a
     cross-stack leaf the source does not literally spell).
+  - **`positionByEmbeddedSpan`** (issue #2485) positions a LITERAL leaf that
+    EMBEDS one token (`postgres://u:{{resolve:...}}@h`) by the span its source
+    states — the other shape the value scan collapses. Gated on PASS-LOCAL
+    evidence: `recordResolvedPair`, the per-map-instance `expression ->
+    plaintext` record the resolver writes beside `secrets.set` (the collapsed
+    map cannot tell "lost the slot to a sibling" from "never resolved here",
+    nor can the process-wide expression set), AND equivalence with the value
+    scan's own answer, so it only chooses WHICH of this pass's expressions is
+    written, never whether. A map no resolver populated (a derived needle
+    map, an inheritance copy, a `new Map` copy) keeps the value scan, as does
+    an embedded 1-3 character secret (the scan's residual).
   - **`positionByIntrinsicSkeleton`** (issue #1916) positions `Fn::Join` /
     `Fn::Sub` source leaves — the DOMINANT CDK shape
     (`secret.secretValueFromJson(...)` renders the ARN as a `Ref`, so every
