@@ -57,8 +57,8 @@ subcommand's own table lists only what is specific to it.
 still honored if passed, and it is not a no-op.
 
 Two subcommands treat `--region` differently.
-[`cdkd state info`](#cdkd-state-info) does not accept it at all — it reports
-the bucket's own region, so there is nothing to select. On
+[`cdkd state info`](#cdkd-state-info) does not accept it at all, and errors on
+it; the region it reports is the bucket's own, detected from S3. On
 [`cdkd state migrate`](#cdkd-state-migrate) it is a real selector rather than
 the deprecated option: it names which legacy bucket to migrate.
 
