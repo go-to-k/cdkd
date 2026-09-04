@@ -14,10 +14,10 @@ with each other:
 
 | | vs CloudFormation | vs Terraform |
 | --- | --- | --- |
-| What is timed | Deploy phase only | Cold end-to-end wall clock |
+| What is timed | Deploy phase only, unless a table says otherwise | Cold end-to-end wall clock |
 | Includes synth / plan | No | Yes |
-| Runs per cell | Best of 3 | Median of 7 |
-| Region | `us-west-2` | `us-east-1` |
+| Runs per cell | Stated per table | Median of 7 |
+| Region | Stated per table | `us-east-1` |
 
 Synth is excluded from the CloudFormation comparison because it is identical on
 both sides — cdkd and the AWS CDK run the same user code through the same
@@ -62,7 +62,7 @@ CloudFormation's [Express mode](https://aws.amazon.com/about-aws/whats-new/2026/
 | SQS | 83 | 22 | **9** | 9 |
 | SQS + CloudWatch | 87 | 44 | 30 | 31 |
 
-The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3): the default no longer waits for CloudFront `Deployed`, so NAT stabilization is the critical path. The other cells are from the original campaign.
+Best of 3 runs, seconds, `us-west-2`. The `VPC + Lambda + SQS + CloudFront` stack is 1 VPC (2 AZs, NAT Gateway, public + private subnets) + VPC Lambda + Lambda Function URL + CloudFront Distribution + SQS + EventSourceMapping + Consumer Lambda. Its cdkd default cell was re-measured 2026-07-31 on cdkd 0.272.0 (96 / 107 / 115s, best of 3): the default no longer waits for CloudFront `Deployed`, so NAT stabilization is the critical path. The other cells are from the original campaign.
 
 - **~1.5–2x faster than Express on most stacks** — e.g. SQS finishes in 9s vs Express's 22s (~2.4x).
 - **Async-heavy stacks are where the gap explodes.** On the VPC + CloudFront stack the cdkd default finishes in 96s vs Express's 366s (~3.8x) — the default already leaves CloudFront propagation to complete in the background — and `--no-wait` (40s, ~9x) additionally skips the NAT stabilization wait.

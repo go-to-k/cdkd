@@ -93,7 +93,7 @@ cdkd deploy --dry-run               # plan only, no changes
 cdkd deploy --no-rollback           # Terraform-style: keep partial state on failure
 cdkd rollback MyStack               # revert a failed --no-rollback / interrupted deploy
 cdkd deploy --no-wait               # skip multi-minute waits (RDS / ElastiCache / NAT)
-cdkd deploy --full-wait             # also wait where the default does not (ECS steady state, CloudFront)
+cdkd deploy --full-wait             # also wait where the default does not (ECS steady state, CloudFront Deployed)
 ```
 
 ### See what would change
