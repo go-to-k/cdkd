@@ -55,6 +55,7 @@ const navigation: SsgNavigationGroup[] = [
       { title: 'cdkd bootstrap', path: '/cli-bootstrap' },
       { title: 'cdkd gc', path: '/cli-gc' },
       { title: 'cdkd rollback', path: '/cli-rollback' },
+      { title: 'cdkd force-unlock', path: '/cli-force-unlock' },
       { title: 'cdkd export', path: '/cli-export' },
       { title: 'cdkd scrub', path: '/cli-scrub' },
       { title: 'cdkd publish-assets', path: '/cli-publish-assets' },

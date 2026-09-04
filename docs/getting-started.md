@@ -120,8 +120,12 @@ cdkd drift MyStack --revert         # AWS ← state
 
 ```bash
 cdkd rollback MyStack               # revert a failed --no-rollback / interrupted deploy
-cdkd force-unlock MyStack           # clear a stale lock left by a force-quit or cancelled CI job
+cdkd force-unlock MyStack           # clear a lock left by a force-quit or cancelled CI job
 ```
+
+A lock expires on its own 30 minutes after its owner stops renewing it, so
+[`cdkd force-unlock`](cli-force-unlock.md) is for when you would rather not wait
+— or when the lock object itself is unreadable.
 
 ### Tear down
 
