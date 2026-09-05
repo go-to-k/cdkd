@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vite-plus/test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   createLocalStartAlbCommand,
   warnUnresolvedLambdaTargetEnv,
 } from '../../../src/cli/commands/local-start-alb.js';
 import { cdkdExtraStateProviders } from '../../../src/cli/commands/local-state-source.js';
-import type {
-  EmulatorStrategy,
-  FrontDoorPlan,
-  PlannedForwardTarget,
-  PlannedFrontDoorListener,
+import {
+  albStrategy,
+  type EmulatorStrategy,
+  type FrontDoorPlan,
+  type PlannedForwardTarget,
+  type PlannedFrontDoorListener,
 } from '../../../src/cli/commands/ecs-service-emulator.js';
 
 // Unit coverage for the cdkd-specific wiring around `cdkd local start-alb`:
@@ -374,5 +377,75 @@ describe('start-alb --from-state help text', () => {
       ?.description;
     expect(help).toContain('Lambda target group');
     expect(help).toContain('go-to-k/cdk-local#707');
+  });
+});
+
+describe('warnUnresolvedLambdaTargetEnv against the REAL albStrategy (issue #2602)', () => {
+  // The cases above stub `resolveBoots`, which pins the decorator but says
+  // nothing about the plan SHAPE cdk-local actually produces — the two could
+  // drift on an upstream bump and every stubbed case would stay green. This
+  // case drives the production `albStrategy` (and through it cdk-local's
+  // `resolveAlbFrontDoor`) over `tests/fixtures/alb-lambda-target/template.json`,
+  // a REAL `cdk synth` output (aws-cdk-lib 2.244.0) trimmed to the nine
+  // resources the resolver reads: an ALB whose listener DEFAULT action
+  // forwards to an ECS service and whose `/api/*` RULE forwards to a
+  // `TargetType: lambda` target group. That is the exact topology #2602 is
+  // about, and no integration fixture carries it today.
+  //
+  // To regenerate: synth a CDK app with `new elbv2.ApplicationLoadBalancer`,
+  // a `FargateService` behind the listener's default action, and a
+  // `targets.LambdaTarget(fn)` target group behind a `pathPatterns(['/api/*'])`
+  // rule; keep only the ALB / Listener / ListenerRule / both TargetGroups /
+  // Cluster / Service / TaskDefinition / Function resources. The VPC, IAM and
+  // Lambda::Permission resources the app also emits are dropped -- the
+  // resolver never reads them, and keeping them would make the fixture 5x
+  // larger for no coverage.
+  const template = JSON.parse(
+    readFileSync(
+      join(import.meta.dirname, '../../fixtures/alb-lambda-target/template.json'),
+      'utf8'
+    )
+  ) as Record<string, unknown>;
+
+  const stacks = [
+    {
+      stackName: 'LiveAlbProbeStack',
+      displayName: 'LiveAlbProbeStack',
+      artifactId: 'LiveAlbProbeStack',
+      template,
+      dependencyNames: [],
+      region: 'us-east-1',
+      account: '111122223333',
+    },
+  ];
+
+  // `albStrategy` reads only `lbPort` off the bag; `fromState` is the
+  // decorator's input. Cast at this one boundary rather than stubbing 20
+  // unread option fields, which would suggest the strategy reads them.
+  const resolveWith = (fromState: boolean) =>
+    warnUnresolvedLambdaTargetEnv(albStrategy({ fromState } as never), { fromState }).resolveBoots(
+      stacks as never,
+      ['Alb16C2F182']
+    );
+
+  const lambdaWarning = (warnings: string[]): string | undefined =>
+    warnings.find((w) => w.includes('does not reach the container environment'));
+
+  it('names the Lambda the real resolver found behind the rule action', () => {
+    const { warnings } = resolveWith(true);
+    // The logical id is the synthesized one, so this fails if the resolver
+    // stops qualifying Lambda targets or the walk stops reaching rule actions.
+    expect(lambdaWarning(warnings)).toContain('ApiFnE0725F78');
+  });
+
+  it('still boots the ECS service the default action forwards to', () => {
+    // The discriminator against a fix-by-refusal: the ECS half of this ALB
+    // must keep working, and `--from-state` is what it works WITH.
+    const { boots } = resolveWith(true);
+    expect(boots).toEqual([{ target: 'LiveAlbProbeStack:WebService7F8A1763' }]);
+  });
+
+  it('emits nothing on the same real plan without --from-state', () => {
+    expect(lambdaWarning(resolveWith(false).warnings)).toBeUndefined();
   });
 });
