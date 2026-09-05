@@ -299,8 +299,15 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
+        // Issue [#2610] site 13, the twin of
+        // `dlm-lifecycle-policy-provider.ts`'s: `--replace` is a BOOLEAN option
+        // and `cdkd deploy` takes `[stacks...]`, so the appended logical id was
+        // parsed as a STACK NAME. The head of
+        // `ResourceUpdateNotSupportedError` already names the resource.
         `GroupName addresses the schedule (${previousGroupName ?? 'default'} -> ${groupName ?? 'default'}); ` +
-          `re-run with \`cdkd deploy --replace ${logicalId}\` to recreate it in the new group`
+          `re-run with \`cdkd deploy --replace\` to recreate it in the new group ` +
+          `(--replace is a boolean flag and takes no resource id; it applies to every ` +
+          `resource in the run whose in-place update is refused)`
       );
     }
 

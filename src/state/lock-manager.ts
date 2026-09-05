@@ -14,6 +14,7 @@ import { displaySafe } from '../utils/display-safe.js';
 import { LockError } from '../utils/error-handler.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
 import { purgeNoncurrentKeyVersions } from './s3-noncurrent-version-purge.js';
+import { buildForceUnlockCommand } from './lock-contention-message.js';
 import { hostname } from 'os';
 
 /**
@@ -841,8 +842,11 @@ export class LockManager {
   /**
    * Force release a lock regardless of owner or expiry status
    *
-   * This is intended for CLI usage (e.g., --force-unlock flag) when a lock
-   * is stuck and needs manual intervention.
+   * This is intended for CLI usage -- it is what the `cdkd force-unlock
+   * <stack>` SUBCOMMAND calls -- when a lock is stuck and needs manual
+   * intervention. There is no `--force-unlock` FLAG anywhere in `src/`; this
+   * comment said there was, and issue [#2610] site 14 records that the message
+   * `acquireLockWithRetry` used to raise had inherited the same mistake.
    *
    * Pass `region: undefined` to operate on a legacy
    * `{prefix}/{stackName}/lock.json` file.
@@ -1392,14 +1396,40 @@ export class LockManager {
     const lockInfo = await this.getLockInfo(stackName, region);
     const expiresIn = lockInfo ? this.formatDuration(lockInfo.expiresAt - Date.now()) : 'unknown';
 
+    // Issue [#2610] site 14. This used to read "Use --force-unlock to manually
+    // release the lock", and NO `--force-unlock` Option is registered anywhere
+    // in `src/` -- `force-unlock` is a SUBCOMMAND (`cdkd force-unlock
+    // <stack>`), and `./lock-contention-message.ts` exists precisely to build
+    // that line with the `--stack-region` qualifier that decides WHICH lock
+    // object it resolves to. Six sibling contention sites already went through
+    // that builder; this one bypassed it.
+    //
+    // `buildForceUnlockCommand` returns '' when the stack name or region has
+    // nothing that can be reproduced safely on a command line, in which case
+    // the advice degrades rather than naming a command that would address a
+    // DIFFERENT lock -- see that module for why suggesting none is the honest
+    // answer there.
+    //
+    // No `LockRecoveryContext` is threaded: `acquireLockWithRetry` is handed a
+    // stack name and a region and holds neither the caller's `--profile` nor
+    // the resolved state bucket. The command is therefore region-qualified but
+    // not account-qualified, which is strictly better than the flag that does
+    // not exist; widening it means threading the context through all four
+    // callers and is left to issue [#2610].
+    const forceUnlockCommand = buildForceUnlockCommand(stackName, region);
+    const recovery = forceUnlockCommand
+      ? `If you are certain no other process is active, run: ${forceUnlockCommand}`
+      : `If you are certain no other process is active, inspect the lock object directly: ` +
+        `the name or region recorded for this stack cannot be reproduced safely on a ` +
+        `command line, so any command shown here would address a different lock.`;
     throw new LockError(
       `Failed to acquire lock for stack '${stackName}' (${region}) after ${maxRetries + 1} attempts. ` +
         (lockInfo
           ? `Locked by: ${lockInfo.owner}` +
             `${lockInfo.operation ? `, operation: ${lockInfo.operation}` : ''}` +
             `, expires in: ${expiresIn}. ` +
-            `Use --force-unlock to manually release the lock.`
-          : 'Lock exists but could not read lock info.')
+            recovery
+          : `Lock exists but could not read lock info. ${recovery}`)
     );
   }
 }

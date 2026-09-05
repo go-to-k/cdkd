@@ -42,6 +42,7 @@ import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString, type ConfigStringOptions } from '../config-shape.js';
 import { maskDeep } from '../masked-retry-logger.js';
+import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -2140,7 +2141,20 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         physicalId,
         resourceType,
         properties['Schema'] as SchemaAttributeType[] | undefined,
-        previousProperties['Schema'] as SchemaAttributeType[] | undefined
+        previousProperties['Schema'] as SchemaAttributeType[] | undefined,
+        // Issue [#2610] site 4. Which bag answers "is this pool protected right
+        // now" is decided by ORDER, and this site is the one exception to the
+        // read-the-recorded-bag rule in
+        // `../replacement-protection-advice.ts`: the `UpdateUserPool` call a
+        // few lines above has ALREADY applied the desired
+        // `DeletionProtection`, so by the time the schema refusal fires AWS
+        // holds the DESIRED value. The gate up there is a TRUTHINESS test
+        // (`if (properties['DeletionProtection'])`), so an absent / empty
+        // desired value was never sent and AWS still holds the recorded one —
+        // which is why this mirrors that gate rather than using `??`.
+        (properties['DeletionProtection']
+          ? properties['DeletionProtection']
+          : previousProperties['DeletionProtection']) === 'ACTIVE'
       );
 
       // EnabledMfas / email-OTP message+subject / WebAuthn config are NOT on
@@ -2227,7 +2241,15 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     newSchema: SchemaAttributeType[] | undefined,
-    oldSchema: SchemaAttributeType[] | undefined
+    oldSchema: SchemaAttributeType[] | undefined,
+    /**
+     * Whether `DeletionProtection` is `ACTIVE` on the pool AWS holds at the
+     * moment the immutable-Schema refusal below fires. Defaults to `false` so
+     * the short advice is the fallback for any future caller that cannot
+     * answer — the same direction issue [#2579] took for protection enabled
+     * out of band.
+     */
+    deletionProtected = false
   ): Promise<void> {
     const newAttrs = newSchema ?? [];
     const oldAttrs = oldSchema ?? [];
@@ -2281,13 +2303,27 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       ...addedStandard.map((n) => `added standard attribute '${n}'`),
     ];
     if (immutableChanges.length > 0) {
+      const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
+      const remedy = deletionProtected
+        ? protectedReplacementAdvice({
+            evidence: "cdkd's properties for this user pool carry DeletionProtection: ACTIVE",
+            replaceFlags,
+            // `UpdateUserPool` is a FULL-REPLACE API — every member the request
+            // omits is reset — so a bare one-liner would silently wipe the
+            // pool's configuration. Say so rather than shipping the shorter
+            // command (`../replacement-protection-advice.ts`, `disableCommand`).
+            disableCommand:
+              `aws cognito-idp update-user-pool --user-pool-id '${physicalId}' ` +
+              `--deletion-protection INACTIVE — and note UpdateUserPool RESETS every member ` +
+              `the request omits, so send your complete pool configuration alongside that flag`,
+          })
+        : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
         `the Schema change (${immutableChanges.join('; ')}) is immutable on AWS — AWS can only ADD ` +
           `custom attributes in place, so removing or modifying an attribute requires recreating the ` +
-          `pool. AWS::Cognito::UserPool is a stateful type, so re-run with ` +
-          `cdkd deploy --replace --force-stateful-recreation to recreate it (this deletes all users in the pool)`
+          `pool. ${remedy}`
       );
     }
 
