@@ -501,10 +501,20 @@ const SPLIT_ADVICE =
  * parser has the stack already.
  *
  * `marked` does not produce an anchor for a link inside a code block, so
- * "extract every `<a href>`" IS the visibility question, and the residuals the
- * old implementation had to document -- tabs, blockquotes, nested fences,
- * comments, reference and collapsed and shortcut link forms, titles, angle
- * brackets, link text containing brackets -- are simply gone.
+ * every residual the old implementation had to document -- tabs, blockquotes,
+ * nested fences, comments, reference and collapsed and shortcut link forms,
+ * titles, angle brackets, link text containing brackets -- is gone with it.
+ *
+ * What is NOT true is the tempting summary, that "extract every `<a href>`" IS
+ * the visibility question. Review found three places where it is not, each now
+ * handled in the code below and named here so the claim stays honest: YAML
+ * frontmatter is metadata a reader never sees; an anchor with empty link text
+ * renders as nothing to click; and a stray unclosed `<table>` would pair with
+ * a later table's close and lend prose the strength a table index withholds.
+ * The first revision of this paragraph said the residuals were "simply gone",
+ * which was the overclaim this file elsewhere warns about -- and it was
+ * written in the same commit that deleted a false "everything fails closed"
+ * claim for the same reason.
  *
  * It is a devDependency used by this one test and never bundled: `vp pack`
  * does not see it. It was already in the tree transitively through mermaid at
@@ -512,23 +522,50 @@ const SPLIT_ADVICE =
  * reported `downloaded 0, added 0`) and no new supply-chain surface.
  */
 function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
-  const html = marked.parse(lines.join('\n'), { async: false }).replace(/<!--[\s\S]*?-->/g, '');
-  // `rowsOnly` is the table-index contract, and against rendered HTML it can
-  // be asked literally: is the anchor inside a TABLE? The old form tested
-  // whether the source line began with a pipe, which a blockquoted pipe-line
-  // satisfied while rendering as an ordinary paragraph.
+  // YAML frontmatter is METADATA, not page content -- GitHub strips it and no
+  // reader sees a link inside `description:`. Feeding it to the renderer let a
+  // pointer moved out of the body and into the frontmatter keep a satellite
+  // "reachable" while the page showed nothing.
+  const body = [...lines];
+  if (body[0]?.trim() === '---') {
+    const close = body.findIndex((l, i) => i > 0 && l.trim() === '---');
+    if (close !== -1) body.splice(0, close + 1);
+  }
+  // The strip is for a RAW `<a>` written inside an HTML comment, which marked
+  // passes through verbatim. A markdown link inside a comment never becomes an
+  // anchor, and an inline `<!--` is escaped to `&lt;!--`, so the only text this
+  // can match is a genuine raw HTML comment block. Residual, stated rather than
+  // claimed away: two raw HTML blocks could in principle supply the open and
+  // the close separately, and the span between them would be dropped -- which
+  // would silence the dangling-pointer half rather than credit anything.
+  const html = marked.parse(body.join('\n'), { async: false }).replace(/<!--[\s\S]*?-->/g, '');
+  // `rowsOnly` is the table-index contract, asked literally: is the anchor
+  // inside a TABLE? The old source-side form tested whether a line began with a
+  // pipe, which a blockquoted pipe-line satisfied while rendering as a
+  // paragraph. `(?!<table)` stops a stray unclosed `<table>` from pairing with
+  // a LATER table's close and swallowing the prose between them.
   const scope = rowsOnly
-    ? [...html.matchAll(/<table[\s\S]*?<\/table>/g)].map((m) => m[0]).join('\n')
+    ? [...html.matchAll(/<table(?:(?!<table)[\s\S])*?<\/table>/g)].map((m) => m[0]).join('\n')
     : html;
-  return [...scope.matchAll(/<a\s[^>]*href="([^"]*)"/g)].map((m) =>
-    m[1]!
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .split('#')[0]!,
-  );
+  const targets: string[] = [];
+  for (const m of scope.matchAll(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)) {
+    // An anchor with no visible TEXT is not a pointer a reader can follow:
+    // `[](layout-utils.md)` renders as a zero-width link with nothing to click.
+    // So "every <a href>" is nearly, but not exactly, the visibility question.
+    if (m[2]!.replace(/<[^>]*>/g, '').trim() === '') continue;
+    targets.push(
+      m[1]!
+        // `&amp;` LAST: decoding it first would turn `&amp;lt;` into `&lt;` and
+        // then into `<`, inventing a character the author never wrote.
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#(?:39|x27);/gi, "'")
+        .replace(/&amp;/g, '&')
+        .split('#')[0]!,
+    );
+  }
+  return targets;
 }
 
 /**
