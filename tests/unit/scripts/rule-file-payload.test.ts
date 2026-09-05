@@ -531,7 +531,14 @@ const SPLIT_ADVICE =
  * the absence safe, and the corpus case below asserts it holds everywhere.
  */
 function rendersSurvivingComment(markdown: string): boolean {
-  return marked.parse(markdown, { async: false }).includes('<!--');
+  // Comments are not the only raw passthrough. CommonMark HTML block types
+  // 3/4/5 -- `<?...?>`, `<!DOCTYPE ...>`, `<![CDATA[...]]>` -- also reach the
+  // output verbatim, and a browser's bogus-comment parse ends them at the
+  // first `>` (inside the `<a` tag), so an anchor inside one is invisible to a
+  // reader exactly like one inside a comment. Detecting only `<!--` would have
+  // left the docblock's claim -- that this predicate is what makes the absent
+  // stripper safe -- true of one shape out of four.
+  return /<(?:!--|\?|![A-Za-z]|!\[CDATA\[)/.test(marked.parse(markdown, { async: false }));
 }
 
 function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
@@ -584,14 +591,40 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
     // spaces. `String.trim()` removes White_Space only, so a zero-width space
     // or an `&nbsp;` left a cell blank on the page while still crediting the
     // pointer.
+    // DECODE, then ask whether anything is left that a reader could see.
+    //
+    // The first cut was an alternation of entity spellings, and review found
+    // it had `&#x2028;` where `&#x200b;` belonged -- a transposition, so the
+    // hex zero-width space was credited over a blank cell. Patching the list
+    // would not have helped: `&#x00a0;`, `&#0160;` and `&#08203;` are all
+    // legal spellings of characters the list already named, so any hand list
+    // is wrong by construction. Decoding numerically removes the whole class,
+    // and it is why this is a decoder rather than a longer alternation.
+    const NAMED_BLANK: Record<string, string> = {
+      nbsp: '\u00a0',
+      shy: '\u00ad',
+      zwnj: '\u200c',
+      zwj: '\u200d',
+      ensp: '\u2002',
+      emsp: '\u2003',
+      thinsp: '\u2009',
+      numsp: '\u2007',
+      hairsp: '\u200a',
+    };
     const visible = m[2]!
-      .replace(/<(?:img|svg|picture|video|canvas|object)\b[^>]*>/gi, 'x')
+      // Media renders on its own, so an image-only anchor IS clickable and
+      // must count. `picture` and `object` are containers that render nothing
+      // without children -- and a `<picture>` with an `<img>` inside is caught
+      // by the `img` arm anyway, so listing them only invented false content.
+      .replace(/<(?:img|svg|video|canvas)\b[^>]*>/gi, 'x')
       .replace(/<[^>]*>/g, '')
-      .replace(
-        /&nbsp;|&shy;|&z(?:wnj|wj);|&(?:en|em|thin)sp;|&#(?:32|160|173|8203|8204|8205|8194|8195|8201|65279);|&#x(?:20|a0|ad|200b|200c|200d|2002|2003|2009|feff);/gi,
-        ' ',
-      )
-      .replace(/[\u200b-\u200d\ufeff\u00a0]/g, '');
+      .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
+      .replace(/&([a-z]+);/gi, (whole, n: string) => NAMED_BLANK[n.toLowerCase()] ?? whole)
+      // Everything here is zero-width or a separator: nothing a reader sees.
+      // `trim()` alone would not do it -- it removes White_Space only, and a
+      // zero-width space is not White_Space.
+      .replace(/[\u00ad\u200b-\u200f\u2028\u2029\u2060\ufeff]/g, '');
     if (visible.trim() === '') continue;
     targets.push(
       m[1]!
@@ -1405,12 +1438,43 @@ describe('.claude/rules payload fence', () => {
     // it today, so replacing the predicate with `() => false` left the whole
     // suite green when probed. These two are what make the corpus assertion
     // mean something.
-    expect(rendersSurvivingComment('<!-- <a href="ghost.md">x</a> -->')).toBe(true);
+    // All FOUR raw-passthrough block types, because the predicate's job is to
+    // make the absent comment-stripper safe and a comment is only one of the
+    // ways raw HTML reaches the output. Probing showed that reverting the
+    // widening to `<!--` alone left the whole suite green: nothing in the
+    // corpus carries the other three, so these are the only thing under them.
+    for (const raw of [
+      '<!-- <a href="ghost.md">x</a> -->',
+      '<?x <a href="ghost.md">y</a> ?>',
+      '<!X <a href="ghost.md">y</a> >',
+      '<![CDATA[<a href="ghost.md">y</a>]]>',
+    ]) {
+      expect(rendersSurvivingComment(raw), `${raw} reaches the output raw`).toBe(true);
+    }
+    // ...and the negative, so the loop cannot pass by answering `true` always.
+    // Every comment in this corpus is of this shape -- inside a code span.
     expect(rendersSurvivingComment('text with a `<!-- coded -->` span')).toBe(false);
+    expect(rendersSurvivingComment('# plain\n\nsee [x](a.md)')).toBe(false);
 
-    const surviving = ruleFiles
-      .filter((r) => rendersSurvivingComment(r.text))
-      .map((r) => r.name);
+    // CLAUDE.md is IN the population. It is not a rule file, but it is a link
+    // SOURCE -- `topLevel` is derived from it and it seeds the reachability
+    // walk -- so a raw comment there could hide an anchor that both promotes a
+    // satellite to top-level and marks it reachable. The first cut of this
+    // case checked 46 of the 47 files and omitted exactly the one the fence's
+    // roots come from: a precondition applied to everything except the root is
+    // not a precondition.
+    const sources = [
+      ...ruleFiles.map((r) => ({ name: r.name, text: r.text })),
+      { name: 'CLAUDE.md', text: readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf-8') },
+    ];
+    // The POPULATION is asserted, not assumed. With a clean corpus, dropping
+    // CLAUDE.md changes no verdict, so probing found that removal left the
+    // suite green -- the population bug this case was just fixed for would
+    // have been reintroducible in silence.
+    expect(sources.map((r) => r.name)).toContain('CLAUDE.md');
+    expect(sources.length).toBe(ruleFiles.length + 1);
+
+    const surviving = sources.filter((r) => rendersSurvivingComment(r.text)).map((r) => r.name);
     expect(
       surviving,
       `${surviving.join(', ')} render a raw HTML comment. That is allowed in itself, but it means a raw <a href> could be written inside one and would be credited by visibleLinkTargets while a reader sees nothing. Either put the comment inside a code span, or give visibleLinkTargets a comment-stripper AND pin it -- read the note there first, three attempts at one were each wrong in a different direction.`,
@@ -1466,10 +1530,48 @@ describe('.claude/rules payload fence', () => {
     expect(t('<!-->\n\nsee [x](real.md)\n\n<!-- c -->')).toEqual(['real.md']);
     // Media other than <img> is clickable content too.
     expect(t('[<svg width="1"></svg>](real.md)')).toEqual(['real.md']);
-    // Entity spellings of invisible space, including the hex ZWSP the first
-    // list transposed into `&#x2028;`.
-    expect(t('[&#x200b;](ghost.md)')).toEqual([]);
-    expect(t('[&#8203;](ghost.md)')).toEqual([]);
+    // Every invisible spelling is asserted, not a sample. Review measured that
+    // 24 of the 26 alternatives in the hand-list this replaces were unpinned:
+    // deleting them left the suite green, which is the "latent guard with
+    // nothing under it" standard this same file asserts elsewhere. A table is
+    // the only way that stays true as the set changes.
+    for (const blank of [
+      '', // no text at all
+      '&#x200b;',
+      '&#8203;',
+      '&#x0200b;', // leading zeros are legal and defeated the old list
+      '&#08203;',
+      '&#x00a0;',
+      '&#0160;',
+      '&nbsp;',
+      '&shy;',
+      '&zwnj;',
+      '&zwj;',
+      '&ensp;',
+      '&emsp;',
+      '&thinsp;',
+      '&numsp;',
+      '&hairsp;',
+      '&#x2060;', // word joiner
+      '&#8288;',
+      '&#x2028;', // line separator -- deleted by the first correction, restored
+      '&#x2029;',
+      '\u200b', // the literal characters, not just their entities
+      '\u00ad',
+      '\ufeff',
+    ]) {
+      expect(t(`[${blank}](ghost.md)`), `[${blank}](...) renders blank`).toEqual([]);
+    }
+    // ...and the visible controls, so the loop above cannot pass by rejecting
+    // everything. A NON-breaking space is invisible; an ordinary letter is not.
+    for (const seen of ['x', '&amp;', '&#65;', '&lt;', '0']) {
+      expect(t(`[${seen}](real.md)`), `[${seen}](...) renders something`).toEqual(['real.md']);
+    }
+    // Media that renders on its own is content; a container that renders
+    // nothing without children is not.
+    for (const media of ['<img src="i.png">', '<svg></svg>', '<video></video>', '<canvas></canvas>']) {
+      expect(t(`[${media}](real.md)`), `${media} is visible content`).toEqual(['real.md']);
+    }
 
     // `rowsOnly` asks whether the anchor is in a TABLE. A stray unclosed
     // `<table>` must not pair with a later table's close and lend the prose
