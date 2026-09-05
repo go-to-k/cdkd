@@ -103,6 +103,32 @@ run_case 0 "Bash '>> article.md' on main in non-opted-in repo" \
   "$(jq -nc --arg cmd "echo more >> $OPTOUT/article.md" --arg cwd "$OPTOUT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
+# 11-13. A QUOTED or ESCAPED `cd` must steer the gate exactly as the literal
+# one does (go-to-k/cdkd#2614). The payload cwd is a DIFFERENT tree on purpose,
+# so the command's own `cd` is the only thing that can reach the main tree --
+# without it these read as "wrote a relative path somewhere else" and pass for
+# the wrong reason. Measured against the pre-fix hook: the literal spelling
+# exited 2 while all three of these exited 0, because the gate matched the verb
+# `cd` as literal text while already unquoting its VALUE one line later.
+for cd_spelling in '"cd"' "'cd'" '\cd'; do
+  run_case 2 "Bash ${cd_spelling} <main tree> && '> ledger.tsv'" \
+    "$(jq -nc --arg cmd "${cd_spelling} $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+
+# 14. The literal control for the three above, from the SAME foreign cwd -- so
+# a change that broke `cd` resolution entirely would redden this too rather
+# than leaving the trio passing vacuously.
+run_case 2 "Bash literal cd <main tree> && '> ledger.tsv'" \
+  "$(jq -nc --arg cmd "cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 15. And the other direction: a `cd` into the FEATURE worktree must still
+# pass, so the fix cannot be "resolve every cd to the main tree".
+run_case 0 "Bash \"cd\" <feature worktree> && '> ledger.tsv'" \
+  "$(jq -nc --arg cmd "\"cd\" $WT && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
 echo "----"
 echo "passed=$pass failed=$fail"
 [[ "$fail" -eq 0 ]]

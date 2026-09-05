@@ -40,6 +40,36 @@
 
 set -u
 
+# Shared command-position matcher. This gate used to resolve a leading `cd`
+# with a regex of its own, and go-to-k/cdkd#2614 measured what that cost: the
+# verb `cd` was matched as LITERAL text, so `"cd" <main-tree> && echo x > <a
+# tracked file>` and its `'cd'` / `\cd` spellings left `base_dir` at the
+# payload cwd and the gate exited 0 over the main tree -- while the literal
+# spelling exited 2. The token was already being UNQUOTED one line later, so
+# the parser expected quoting on the VALUE and not on the verb: the same
+# asymmetry go-to-k/cdkd#2333 found in the shared matcher.
+#
+# `cmd_last_cd_target` is that resolution done once, for every gate. It also
+# does two things the local regex did not: it follows EVERY `cd` in command
+# position and composes relative ones, and it SKIPS an unexpanded `$VAR` rather
+# than resolving it to a path no `git -C` can read.
+# shellcheck source=lib/command-match.sh
+__hook_dir="${BASH_SOURCE[0]%/*}"
+# `%/*` leaves the string unchanged when the path has no slash (invoked as
+# `bash main-tree-edit-gate.sh` from inside the hooks dir).
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
+  || ! declare -F cmd_last_cd_target >/dev/null; then
+  # FAIL CLOSED, as every other blocking gate does: a hook that cannot parse
+  # the command cannot say the edit is safe, and `|| exit 0` on an unloadable
+  # library is the shape that made twelve sibling gates inert
+  # (go-to-k/cdkd#2027).
+  echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
+  echo "so main-tree-edit-gate cannot resolve the command's working directory." >&2
+  echo "Restore the file; do not work around the gate." >&2
+  exit 2
+fi
+
 input=$(cat 2>/dev/null || true)
 
 tool=$(printf '%s' "$input" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
@@ -57,13 +87,14 @@ case "$tool" in
   Bash)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
     [[ -z "$cmd" ]] && exit 0
-    # A leading `cd <dir> &&` changes the base dir for relative paths.
-    if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-      cdt="${BASH_REMATCH[1]}"
-      cdt="${cdt%\"}"; cdt="${cdt#\"}"; cdt="${cdt%\'}"; cdt="${cdt#\'}"
-      [[ "$cdt" != /* ]] && cdt="$base_dir/$cdt"
-      base_dir="$cdt"
-    fi
+    # A `cd <dir> &&` changes the base dir for relative paths. Resolved by the
+    # shared matcher, which sees a quoted or escaped `cd` (go-to-k/cdkd#2614)
+    # and composes chained relative ones. It prints NOTHING when no `cd` was
+    # resolved, which is why `base_dir` is only overwritten on a non-empty
+    # answer -- an unresolvable `cd "$WT"` must leave the payload cwd in place
+    # rather than becoming an empty base.
+    cdt=$(cmd_last_cd_target "$cmd" "$base_dir" 2>/dev/null || true)
+    [[ -n "$cdt" ]] && base_dir="$cdt"
     # Extract LITERAL redirection / write targets. We deliberately
     # skip tokens containing `$` (unexpandable variables) and `*?[`
     # (globs) — we cannot resolve those statically.
