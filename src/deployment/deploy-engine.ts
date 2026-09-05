@@ -5146,6 +5146,8 @@ export class DeployEngine {
                 replDecision.provisionedBy === 'cc-api'
                   ? this.preparePropertiesForCcApi(resourceType, resolvedProps, logicalId)
                   : resolvedProps;
+              // Set only on the retain arm; drives the `partial` outcome below.
+              let retainedSurvivorReason: string | undefined;
               let createResult: ResourceCreateResult;
               try {
                 createResult = await this.withRetry(
@@ -5243,12 +5245,51 @@ export class DeployEngine {
                     )
                   );
                 }
-                // Same line the property-driven cleanup logs, deliberately —
-                // it is the one user-visible record that a physical resource
-                // is now outside cdkd's state.
-                this.logger.info(
-                  `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
+                // WARN, not info, and louder than the line the property-driven
+                // cleanup prints. The two arms leak identically, but they are
+                // reached on completely different terms: the property-driven
+                // one requires the user to have changed an immutable property,
+                // which `cdkd diff` shows them beforehand, while THIS arm
+                // fires on `ccUnsupported` ALONE — no flag, no diff signal,
+                // nothing the user did on purpose. A plain `cdkd deploy` that
+                // changes an ordinary property on a `Retain`-declaring cluster
+                // now creates a SECOND cluster and leaves the first running,
+                // where before this PR it hard-refused with
+                // STATEFUL_REPLACE_BLOCKED. Same `⚠` shape as the
+                // `--recreate-via-*` leak warning above, which announces the
+                // strictly LESS surprising version of this outcome.
+                this.logger.warn(
+                  `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — the old physical ` +
+                    `resource (${currentResource.physicalId}) is RETAINED and is no longer ` +
+                    `tracked by cdkd: it keeps running and incurring cost, and ` +
+                    `\`cdkd destroy\` will not remove it. Delete it yourself once you no ` +
+                    `longer need its data.`
                 );
+                // ...and declare it through the channel that survives the
+                // terminal (issue #1819). `updatePartial`'s contract is
+                // literally this shape — "updated, but something the update
+                // owned survives untracked" — so the row prints
+                // `partial (<reason>)` instead of `updated`, the run summary
+                // counts it under "of which left an orphaned predecessor", and
+                // a `RESOURCE_SKIPPED` event lands in the durable store
+                // carrying the SURVIVOR's physical id and routing layer, which
+                // is the one datum a cleanup pass needs.
+                //
+                // TWO consequences, stated because neither is cosmetic:
+                //   - the deploy EXITS 2 (`--allow-unaddressed` opts out), the
+                //     same code `cdkd destroy` returns for a skipped delete.
+                //     Correct here and arguably more so: a skipped delete
+                //     self-heals on the next run, while this survivor is
+                //     untracked, so nothing will ever retry it.
+                //   - it makes this arm LOUDER than the property-driven twin,
+                //     which retains with only an info line. Deliberate, on the
+                //     trigger asymmetry above, and recorded rather than
+                //     silently unified — bringing the twin along is a
+                //     behaviour change to a path this PR does not otherwise
+                //     touch.
+                retainedSurvivorReason =
+                  `UpdateReplacePolicy: Retain kept the old ${resourceType} ` +
+                  `(${currentResource.physicalId}), now untracked by cdkd`;
               }
               // Annotated rather than inferred: `result` is an evolving `let`,
               // and a conditional spread makes the literal's type a union that
@@ -5275,6 +5316,15 @@ export class DeployEngine {
                 ...(createResult.noEchoAttributeNames && {
                   noEchoAttributeNames: createResult.noEchoAttributeNames,
                 }),
+                // The `'partial'` arm of the outcome union, set only when the
+                // retain branch above ran. A ternary rather than a conditional
+                // spread: `ResourceUpdateResult` intersects a DISCRIMINATED
+                // union, and spreading `outcome`/`reason` conditionally makes
+                // the literal's type a union TS then checks against the wrong
+                // constituent — the same trap the annotation above exists for.
+                ...(retainedSurvivorReason !== undefined
+                  ? ({ outcome: 'partial', reason: retainedSurvivorReason } as const)
+                  : ({ outcome: 'updated' } as const)),
               };
               // Carried explicitly: this literal REPLACES the update result, so
               // a narrowing the replacement create announced would be dropped

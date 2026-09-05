@@ -633,11 +633,26 @@ export function classifyRollbackOp(
     // The two sides still ask the question of DIFFERENT sources, and that is a
     // known gap rather than an alignment: every one of those engine paths
     // decides from the TEMPLATE being applied, while this reads the PREVIOUS
-    // STATE record. A deploy that ADDS `Retain` therefore orphans the old
-    // resource while `previousState.updateReplacePolicy` is still absent, and
-    // this classifier picks the plain `reverse-replacement` arm below — which
-    // re-creates a resource that is still alive. Issue
-    // [#2603](https://github.com/go-to-k/cdkd/issues/2603).
+    // STATE record. BOTH directions of the disagreement are live, and the
+    // second is the worse one — issue
+    // [#2603](https://github.com/go-to-k/cdkd/issues/2603) covers both:
+    //
+    //   - ADDING `Retain`: the deploy orphans the old resource while
+    //     `previousState.updateReplacePolicy` is still absent, so this picks
+    //     the plain `reverse-replacement` arm below and RE-CREATES a resource
+    //     that is still alive — a duplicate, or an `AlreadyExists` failure for
+    //     a user-named type.
+    //   - DROPPING `Retain`: the previous deploy persisted `Retain` into
+    //     state, the current template omits it, so the engine correctly
+    //     DELETES the old resource — and this then reads the stale `Retain`
+    //     off `previousState`, classifies `reverse-replacement-readopt`, and
+    //     points state at the deleted old physicalId with NO re-create. State
+    //     ends up naming a resource that does not exist, which no later deploy
+    //     detects as absent. Strictly worse than the ADD direction, where at
+    //     least both resources are real.
+    //
+    // Deliberately NOT fixed here: realigning the two sides changes what a
+    // rollback deletes, on a path this change does not otherwise touch.
     // `Snapshot` is NOT retained on replacement (the engine plain-deletes) —
     // it re-creates like the default policy.
     const retained = op.previousState!.updateReplacePolicy === 'Retain';

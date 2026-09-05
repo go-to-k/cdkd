@@ -28,6 +28,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { withStackName } from '../../../src/provisioning/resource-name.js';
 import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
@@ -187,7 +188,13 @@ describe('DeployEngine — --replace wire-through', () => {
     // is the discriminator — stateful iff the bag it reads carries
     // `RetentionInDays > 0` — so these two knobs let a test put the retention
     // in exactly one bag and pin which one the guard consulted.
-    bags?: { recorded?: Record<string, unknown>; desired?: Record<string, unknown> }
+    bags?: { recorded?: Record<string, unknown>; desired?: Record<string, unknown> },
+    // The recorded physical id. Overridable because `replacementNameOrigin`
+    // classifies it against `${stackName}-${logicalId}` — the default is a
+    // name no derivation produces, so it takes the user-supplied branch, and a
+    // test wanting the GENERATED branch passes the derived form inside a
+    // `withStackName` scope.
+    physicalId = 'old-pid'
     // Returns the state record map the engine wrote into, so a test can assert
     // what the deploy PERSISTED (which physical id survived, which template
     // attributes were carried) rather than only which provider calls ran.
@@ -218,7 +225,7 @@ describe('DeployEngine — --replace wire-through', () => {
     };
     const stateResources: Record<string, StateRecord> = {
       MyResource: {
-        physicalId: 'old-pid',
+        physicalId,
         resourceType,
         properties: recordedProps,
         attributes: {},
@@ -691,35 +698,214 @@ describe('DeployEngine — --replace wire-through', () => {
       expect(callOrder).toEqual(['update', 'delete', 'create']);
     });
 
-    it('announces the retained old resource — the only user-visible record that it is now untracked', async () => {
-      // The source calls this line "the one user-visible record that a physical
-      // resource is now outside cdkd's state", and the state assertion below
-      // pins the RECORD, not the announcement. Both halves: the retain arm
-      // names the old physical id, and the non-retain arm does not claim to
-      // have retained anything.
-      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+    it('WARNS that the retained resource is untracked and still costing money', async () => {
+      // The LEVEL is the assertion, not just the text. This arm fires on
+      // `ccUnsupported` alone — no flag, no diff signal — so a plain
+      // `cdkd deploy` can leave a second live cluster behind; an `info` line
+      // scrolls away on a green deploy, which is how a leak this surprising
+      // goes unnoticed. The `--recreate-via-*` sibling already warns with the
+      // same `⚠` shape for the strictly LESS surprising version of the same
+      // leak, so a `logger.info` here would have been the quieter half of the
+      // pair. Both polarities, so a warn that fired unconditionally reds too.
+      //
       // The logger mock is a module-level singleton and nothing clears it
       // between cases, so an unclear'd read sees every earlier case's lines.
-      // Harmless for a `some(...)` today, but it makes the assertion's subject
-      // the whole FILE rather than this deploy.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       vi.mocked(getLogger().info).mockClear();
+      vi.mocked(getLogger().warn).mockClear();
       await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain');
       const info = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
+      const warn = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
       expect(info.some((l) => l.includes('CREATE only — UpdateReplacePolicy: Retain'))).toBe(true);
-      expect(
-        info.some((l) => l.includes('Retaining old MyResource (old-pid) - UpdateReplacePolicy: Retain'))
-      ).toBe(true);
+      // On WARN, carrying the survivor's id and both consequences a user has
+      // to act on: it costs money, and `cdkd destroy` will not clean it up.
+      const leak = warn.find((l) => l.includes('UpdateReplacePolicy: Retain'));
+      expect(leak).toBeDefined();
+      expect(leak).toContain('⚠');
+      expect(leak).toContain('old-pid');
+      expect(leak).toContain('no longer');
+      expect(leak).toContain('incurring cost');
+      expect(leak).toContain('cdkd destroy');
+      // ...and NOT on info, which is the half that would silently pass if the
+      // level were downgraded back.
+      expect(info.some((l) => l.includes('incurring cost'))).toBe(false);
 
       vi.mocked(getLogger().info).mockClear();
+      vi.mocked(getLogger().warn).mockClear();
       callOrder = [];
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       await invokeProvision(makeEngine({ forceStatefulRecreation: true }), 'AWS::DynamoDB::Table');
-      const plain = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
-      // The arm is bounded before its negative: without this, "no Retaining
-      // line" would also pass for a deploy that never reached the fallback.
+      const plainInfo = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
+      const plainWarn = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      // The arm is bounded before its negative: without this, "no leak
+      // warning" would also pass for a deploy that never reached the fallback.
       expect(callOrder).toEqual(['update', 'delete', 'create']);
-      expect(plain.some((l) => l.includes('Retaining old'))).toBe(false);
-      expect(plain.some((l) => l.includes('replacing (DELETE → CREATE)'))).toBe(true);
+      expect(plainWarn.some((l) => l.includes('UpdateReplacePolicy: Retain'))).toBe(false);
+      expect(plainInfo.some((l) => l.includes('replacing (DELETE → CREATE)'))).toBe(true);
+    });
+
+    it('reports the retain arm as a PARTIAL update, so the run summary is not byte-identical to a clean one', async () => {
+      // `updatePartial`'s own contract is this exact shape — "updated, but
+      // something the update owned survives untracked" (issue #1819) — and
+      // without it `updatePartialReason(result)` is `undefined`, the row prints
+      // `updated`, the summary counts it under `updated`, and a run that left a
+      // live cluster behind is indistinguishable from one that did not.
+      //
+      // Asserted through the rendered STATUS LINE — `updatePartialMessage`'s
+      // `partial (<reason>)`, emitted at warn — because that is the artifact
+      // `updatePartialReason` actually drives, and it carries the survivor's
+      // id, which is the datum a user needs to clean up. Reading the result
+      // object instead would assert the field rather than its consumption.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(getLogger().warn).mockClear();
+      vi.mocked(getLogger().info).mockClear();
+      await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain');
+      const warn = vi.mocked(getLogger().warn).mock.calls.map((c) => String(c[0]));
+      const row = warn.find((l) => l.includes('partial ('));
+      expect(row).toBeDefined();
+      expect(row).toContain('old-pid');
+      expect(row).toContain('UpdateReplacePolicy: Retain');
+      // The row still names the resource as UPDATED — `partial` qualifies the
+      // update, it does not replace it, and calling it `skipped` would put the
+      // line at odds with the event store's own invariant.
+      expect(row).toContain('MyResource');
+      // ...and the clean `updated` status row must NOT also have been printed,
+      // or the run prints both readings of the same resource. Scoped to the
+      // row shape (`formatResourceLine('updated', ...)`) rather than to the
+      // logical id, which the fallback's own progress lines also carry.
+      expect(
+        vi
+          .mocked(getLogger().info)
+          .mock.calls.map((c) => String(c[0]))
+          .filter((l) => /\bupdated\b/.test(l) && l.includes('MyResource'))
+      ).toEqual([]);
+
+      // The other polarity, and the one that kills an unconditional `partial`:
+      // a replacement that DELETED the old resource left nothing untracked, so
+      // it must still read as a clean update.
+      callOrder = [];
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(getLogger().warn).mockClear();
+      await invokeProvision(makeEngine({ forceStatefulRecreation: true }), 'AWS::DynamoDB::Table');
+      expect(callOrder).toEqual(['update', 'delete', 'create']);
+      expect(
+        vi
+          .mocked(getLogger().warn)
+          .mock.calls.map((c) => String(c[0]))
+          .some((l) => l.includes('partial ('))
+      ).toBe(false);
+    });
+
+    describe('both Retain refusals name the ORIGIN of the physical name (issue #1636 class)', () => {
+      // Measured unpinned before this block: deleting
+      // `${nameOrigin.descriptor}. ${nameOrigin.remedy} ` from EITHER refusal
+      // left all of this file's cases green. The existing coverage
+      // (`deploy-engine-collision-name-origin.test.ts`) reaches only the
+      // property-driven create-first sites, so the two Retain refusals
+      // inherited the interpolation with nothing watching it.
+      //
+      // The negative is the load-bearing half, and it is the #1636 bug
+      // exactly: telling a user their template supplies a name it does not,
+      // for a name cdkd itself derived, leaves them nothing to search for.
+      const STACK = 'MyStack';
+      // `looksLikeCdkdGeneratedName` skeletonises `${stackName}-${logicalId}`,
+      // so this is the derivation for logical id `MyResource` in `MyStack`.
+      const GENERATED_PID = 'MyStack-MyResource';
+
+      function collideOnCreate(): void {
+        vi.mocked(provider.create).mockImplementation(async () => {
+          callOrder.push('create');
+          throw new Error('Table already exists');
+        });
+      }
+
+      it('the COLLISION refusal quotes a user-supplied name as user-supplied', async () => {
+        rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+        collideOnCreate();
+        const err = await invokeProvision(
+          makeEngine({}),
+          'AWS::DynamoDB::Table',
+          'Retain'
+        ).then(
+          () => null,
+          (e) => e as Error & { cause?: { message?: string; code?: string } }
+        );
+        expect(err!.cause?.code).toBe('NAMED_REPLACEMENT_COLLISION');
+        expect(err!.cause?.message).toMatch(/user-supplied physical name \(old-pid\)/);
+        expect(err!.cause?.message).toMatch(/rename the resource in your CDK code/);
+        expect(err!.cause?.message).not.toMatch(/GENERATED by cdkd/);
+      });
+
+      it('the COLLISION refusal says GENERATED for a name cdkd derived, and never claims the user supplied it', async () => {
+        // Inside a `withStackName` scope, which is what the classifier reads —
+        // without it every case takes the unresolvable branch and this one
+        // would pass for the wrong reason.
+        rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+        collideOnCreate();
+        const err = await withStackName(STACK, () =>
+          invokeProvision(
+            makeEngine({}),
+            'AWS::DynamoDB::Table',
+            'Retain',
+            undefined,
+            undefined,
+            GENERATED_PID
+          ).then(
+            () => null,
+            (e) => e as Error & { cause?: { message?: string; code?: string } }
+          )
+        );
+        expect(err!.cause?.code).toBe('NAMED_REPLACEMENT_COLLISION');
+        expect(err!.cause?.message).toMatch(/GENERATED by cdkd/);
+        expect(err!.cause?.message).toMatch(/rename the CONSTRUCT/);
+        expect(err!.cause?.message).not.toMatch(/user-supplied physical name/);
+      });
+
+      it('the IDEMPOTENT-CREATE refusal quotes a user-supplied name as user-supplied', async () => {
+        rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+        vi.mocked(provider.create).mockImplementation(async () => {
+          callOrder.push('create');
+          return { physicalId: 'old-pid', attributes: {} };
+        });
+        const err = await invokeProvision(
+          makeEngine({}),
+          'AWS::DynamoDB::Table',
+          'Retain'
+        ).then(
+          () => null,
+          (e) => e as Error & { cause?: { message?: string; code?: string } }
+        );
+        expect(err!.cause?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+        expect(err!.cause?.message).toMatch(/user-supplied physical name \(old-pid\)/);
+        expect(err!.cause?.message).not.toMatch(/GENERATED by cdkd/);
+      });
+
+      it('the IDEMPOTENT-CREATE refusal says GENERATED for a derived name', async () => {
+        rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+        vi.mocked(provider.create).mockImplementation(async () => {
+          callOrder.push('create');
+          // The name-idempotent Create API answers with the EXISTING id, which
+          // here is the derived one.
+          return { physicalId: GENERATED_PID, attributes: {} };
+        });
+        const err = await withStackName(STACK, () =>
+          invokeProvision(
+            makeEngine({}),
+            'AWS::DynamoDB::Table',
+            'Retain',
+            undefined,
+            undefined,
+            GENERATED_PID
+          ).then(
+            () => null,
+            (e) => e as Error & { cause?: { message?: string; code?: string } }
+          )
+        );
+        expect(err!.cause?.code).toBe('NAMED_REPLACEMENT_IDEMPOTENT_CREATE');
+        expect(err!.cause?.message).toMatch(/GENERATED by cdkd/);
+        expect(err!.cause?.message).toMatch(/rename the CONSTRUCT/);
+        expect(err!.cause?.message).not.toMatch(/user-supplied physical name/);
+      });
     });
 
     it('lets a NON-collision create failure through untranslated', async () => {

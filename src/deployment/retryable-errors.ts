@@ -1389,7 +1389,38 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
     // AWS text (`Failed to update resource <id>`), a property of another file
     // that no fence here watches. Anchored first, a rejection that names
     // another resource cannot classify this one by ANY route.
+    //
+    // RESIDUAL, stated rather than left to be rediscovered: the anchor
+    // compares logical IDS, so a CHILD resource whose logical id EQUALS the
+    // parent `AWS::CloudFormation::Stack`'s passes it at every link, and that
+    // child's Cloud Control rejection classifies the PARENT — replacing the
+    // whole child stack. Reachable, via CDK's `overrideLogicalId`, but not a
+    // trust boundary: the same operator authors both templates, so it is a
+    // self-inflicted collision rather than an attack, and the ordinary case
+    // (child ids differing from the nested stack's) is correctly fenced.
+    // Closing it would need an identity the ids alone do not carry — the stack
+    // name, or the resource ARN — which is a wider change than the classifier.
     if (typeof link.logicalId === 'string' && link.logicalId !== logicalId) return false;
+    // NO operation anchor on this arm, unlike the `ccErrorCode` one below, and
+    // that asymmetry is deliberate rather than an oversight. AUDITED
+    // 2026-09-05 for what a non-UPDATE Cloud Control call could put here:
+    // inside `CloudControlProvider.update()`'s try the only Cloud Control
+    // calls are `UpdateResource` (the update itself) and
+    // `GetResourceRequestStatus` (request-status polling, whose documented
+    // failure is `RequestTokenNotFoundException` — it invokes no resource
+    // handler); `getTopLevelWriteOnlyProperties` and `readCcResourceModel`
+    // both swallow their own failures; `enrichResourceAttributes`' six awaits
+    // are RDS / DynamoDB / API Gateway / CloudFront / STS calls, each in its
+    // own catch and none of them Cloud Control; and no SDK provider makes a
+    // Cloud Control call at all (the one `GetResourceCommand` in
+    // `apigateway-provider.ts` is API Gateway's, not Cloud Control's). So a
+    // non-UPDATE `UnsupportedActionException` cannot reach this walk today.
+    //
+    // Anchoring it anyway would be the WRONG trade: `handleError` does not
+    // record which operation it wrapped, so the only available anchor is a
+    // field the sync path never sets — the arm would stop firing on the shape
+    // it exists for. The async arm can be anchored precisely because
+    // `CloudControlOperationFailedError` carries `ccOperation`.
     if (link.name === CC_UNSUPPORTED_ACTION_ERROR_NAME) return true;
     // `ccOperation` too, even though no async occurrence has been measured: the
     // field distinguishes which Cloud Control operation failed, and a CREATE or
