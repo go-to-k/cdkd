@@ -46,3 +46,12 @@ jobs:
           echo "/bin/bash:    $(/bin/bash -c 'echo $BASH_VERSION')"
 
       - run: bash .claude/hooks/run-tests.sh
+
+      # The shared matcher's mutation harness. NOT picked up by run-tests.sh,
+      # which globs `lib/*.test.sh`, so without this step nothing would run it
+      # and it would be a fence exercised only by hand -- the shape
+      # .claude/rules/hooks-class-fences.md records as "is anything RUNNING
+      # it?". It exits non-zero when a mutant fails to reduce the pass count,
+      # i.e. when a deliberate break goes unnoticed by every case.
+      - name: Mutation harness for lib/command-match.sh
+        run: bash .claude/hooks/lib/command-match-mutants.sh

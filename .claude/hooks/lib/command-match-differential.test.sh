@@ -316,6 +316,24 @@ ZWNobyAicjogYGdpdCAtQyAvYWJzL3JlcG8gY2hlY2tvdXQgLS0gZi50eHRgIg==
 ZWNobyAncjogYGdpdCAtQyAvYWJzL3JlcG8gY2hlY2tvdXQgLS0gZi50eHRgJw==
 Z2l0IGNvbW1pdCAtbSAiYnVpbHQgYXQgYGRhdGVgOyBzZWUgbG9nIg==
 Z2ggaXNzdWUgY29tbWVudCAxIC0tYm9keSAnUnVuIGBnaXQgcHVzaGAgZmlyc3Qn
+Z2l0ICJjb21taXQiIC1tIHg=
+Z2l0ICdjb21taXQnIC1tIHg=
+Z2l0IGMibyJtbWl0IC1tIHg=
+Z2l0IFxjb21taXQgLW0geA==
+Z2l0ICItQyIgL2Ficy9yZXBvIGNvbW1pdCAtbSB4
+Z2l0IFwtQyAvYWJzL3JlcG8gY29tbWl0IC1tIHg=
+Z2ggInByIiBtZXJnZSAxIC0tc3F1YXNo
+Z2ggcHIgIm1lcmdlIiAxIC0tc3F1YXNo
+Z2l0ICJjaGVja291dCIgLS0gZi50eHQ=
+Z2l0IC1DIC9hYnMvcmVwbyAicmVzdG9yZSIgZi50eHQ=
+ImNkIiAvYWJzL3JlcG8gJiYgZ2l0IGNvbW1pdCAtbSB4
+Z2l0IC1jIHVzZXIubmFtZT14eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4IC1DIC9hYnMvcmVwbyAiY29tbWl0IiAtbSB4
+Z2l0IC1DIC9hYnMvcmVwbyBsb2cgLS1ncmVwICJjb21taXQi
+Z2l0IC1DIC9hYnMvcmVwbyBzaG93ICJjb21taXQi
+Z2l0IC1DIC9hYnMvcmVwbyBncmVwIC1uICJjb21taXQiIC0tIHNyYw==
+Z3JlcCAtbiAnPT4nIHgudHMgJiYgZ2l0IGNvbW1pdCAtbSB4
+Z2ggaXNzdWUgY29tbWVudCA0MiAtLWJvZHkgIm5leHQ6IHByIG1lcmdlIDUi
+Z2l0IC1jIGFsaWFzLng9InJ1biBjb21taXQgbGF0ZXIiIHN0YXR1cw==
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -450,6 +468,39 @@ ALLOWED="$TMPDIR/allowed.tsv"
 #                     inside a quoted span was never scanned as a command and
 #                     reached the shell ungated. Cells are a segcount rise plus
 #                     the verb that body carries.
+# --- go-to-k/cdkd#2333: a QUOTED or ESCAPED structural token (ids 206-223) ---
+#   DEQUOTE  the trigger matched the verb and the leading `-` as LITERAL text,
+#            so QUOTING or ESCAPING either one walked past every gate while the
+#            command still ran the gated verb. `gate_dequote_structural` now
+#            dequotes the command word, the leading global-flag NAMES and the
+#            SUBCOMMAND position -- and nothing else -- so every one of these is
+#            0 -> 1, or a target that used to fall back to /BASE and now
+#            resolves. Ids 210 / 211 / 216 / 217 carry `t:` cells because
+#            dequoting the FLAG (or the `cd`) is what lets the resolver see the
+#            worktree at all; id 216 changes every constant's target at once
+#            because the quoted `"cd"` clause is read for all of them.
+#
+# THE CONTROLS ARE THE OTHER HALF, and they declare NO cell on purpose -- ids
+# 218-222 (`git -C /abs/repo log --grep "commit"`, `show "commit"`,
+# `grep -n "commit" -- src`, `grep -n '=>' x.ts && git commit`, and a `--body`
+# carrying `pr merge`). They are the shapes the WITHDRAWN whole-segment
+# implementation broke: it took 16 measured read-only commands from rc=0 to
+# rc=2, and it rewrote a quoted argument that `split_paths` and
+# `gated-command-preamble-gate` parse themselves. A row appearing for any of
+# them means the rewrite has stopped being positional and has reached ARGUMENTS
+# again, which is the exact regression that got the last attempt withdrawn.
+#
+# Id 217 is the CAP control. The withdrawn round bounded its character walk at
+# 512 BYTES, and padding defeats that: 400 bytes of `-c user.name=xxx…` before
+# a quoted verb was rc=0 while its literal-verb twin was rc=2. It is here so a
+# future re-introduction of a byte cap fails as a lost DEQUOTE cell.
+#
+# Id 223 is NOT this change: `git -c alias.x="run commit later" status` lost its
+# match back in go-to-k/cdkd#2156 (`_GATE_WORD_BLIND` excluding `"` so the blind
+# reading can no longer parse half a quoted value), and it is enumerated under
+# NOW_MISS -- the class that already carries "verb inside a spaced flag value is
+# no longer the verb". It is in the corpus as a control for THIS change: a
+# rewrite that reached into flag VALUES would turn it back into a match.
 # Id 203 (SINGLE-quoted) and id 205 (a markdown code span in a single-quoted
 # body) are the CONTROLS and declare NO cells: a backtick does not run inside
 # single quotes, so the arm is scoped to double quotes and must leave both
@@ -680,6 +731,52 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 202	m:GATE_RE_GIT_CHECKOUT_RESTORE	1	INQUOTE_BACKTICK	backtick in a DOUBLE-quoted span
 202	t:GATE_RE_GIT_CHECKOUT_RESTORE	/abs/repo	INQUOTE_BACKTICK	backtick in a DOUBLE-quoted span
 204	segcount	2	INQUOTE_BACKTICK	enclosing command survives; its own match unchanged
+206	m:GATE_RE_GIT_COMMIT	1	DEQUOTE	git "commit" -- a DOUBLE-quoted verb
+206	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	DEQUOTE	git "commit" -- a DOUBLE-quoted verb
+207	m:GATE_RE_GIT_COMMIT	1	DEQUOTE	git 'commit' -- a SINGLE-quoted verb
+207	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	DEQUOTE	git 'commit' -- a SINGLE-quoted verb
+208	m:GATE_RE_GIT_COMMIT	1	DEQUOTE	git c"o"mmit -- a verb split by an interior quoted span
+208	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	DEQUOTE	git c"o"mmit -- a verb split by an interior quoted span
+209	m:GATE_RE_GIT_COMMIT	1	DEQUOTE	git \commit -- an ESCAPED verb
+209	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	DEQUOTE	git \commit -- an ESCAPED verb
+210	m:GATE_RE_GIT_COMMIT	1	DEQUOTE	git "-C" /abs/repo commit -- a quoted leading FLAG
+210	t:GATE_RE_GIT_COMMIT	/abs/repo	DEQUOTE	git "-C" /abs/repo commit -- a quoted leading FLAG
+210	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	DEQUOTE	git "-C" /abs/repo commit -- a quoted leading FLAG
+210	t:GATE_RE_GIT_COMMIT_OR_PUSH	/abs/repo	DEQUOTE	git "-C" /abs/repo commit -- a quoted leading FLAG
+211	m:GATE_RE_GIT_COMMIT	1	DEQUOTE	git \-C /abs/repo commit -- an escaped leading FLAG
+211	t:GATE_RE_GIT_COMMIT	/abs/repo	DEQUOTE	git \-C /abs/repo commit -- an escaped leading FLAG
+211	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	DEQUOTE	git \-C /abs/repo commit -- an escaped leading FLAG
+211	t:GATE_RE_GIT_COMMIT_OR_PUSH	/abs/repo	DEQUOTE	git \-C /abs/repo commit -- an escaped leading FLAG
+212	m:GATE_RE_GH_PR_MERGE	1	DEQUOTE	gh "pr" merge -- a quoted FIRST verb token
+212	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	DEQUOTE	gh "pr" merge -- a quoted FIRST verb token
+212	m:GATE_RE_GH_PR_WRITE	1	DEQUOTE	gh "pr" merge -- a quoted FIRST verb token
+213	m:GATE_RE_GH_PR_MERGE	1	DEQUOTE	gh pr "merge" -- a quoted SECOND verb token
+213	m:GATE_RE_GH_PR_CREATE_OR_MERGE	1	DEQUOTE	gh pr "merge" -- a quoted SECOND verb token
+213	m:GATE_RE_GH_PR_WRITE	1	DEQUOTE	gh pr "merge" -- a quoted SECOND verb token
+214	m:GATE_RE_GIT_SWITCH	1	DEQUOTE	git "checkout" -- the go-to-k/cdkd#1700 data-loss gate's verb
+214	m:GATE_RE_GIT_CHECKOUT_RESTORE	1	DEQUOTE	git "checkout" -- the go-to-k/cdkd#1700 data-loss gate's verb
+215	m:GATE_RE_GIT_CHECKOUT_RESTORE	1	DEQUOTE	git -C /abs/repo "restore" -- same, behind a global flag
+215	t:GATE_RE_GIT_CHECKOUT_RESTORE	/abs/repo	DEQUOTE	git -C /abs/repo "restore" -- same, behind a global flag
+216	t:GATE_RE_GIT_COMMIT	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GIT_PUSH	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GIT_COMMIT_OR_PUSH	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GIT_MERGE	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GIT_SWITCH	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GIT_CHECKOUT_RESTORE	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GH_PR_CREATE	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GH_PR_EDIT	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GH_PR_MERGE	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GH_PR_CREATE_OR_MERGE	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GH_PR_WRITE	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GH_LABEL_CARRIER	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GH_API	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+216	t:GATE_RE_GH_BODY_CARRIER	/abs/repo	DEQUOTE	"cd" /abs/repo && git commit -- the quoted cd RESOLVER clause
+217	m:GATE_RE_GIT_COMMIT	1	DEQUOTE	400-byte padded -c value then a quoted verb -- a BYTE cap cannot see this
+217	t:GATE_RE_GIT_COMMIT	/abs/repo	DEQUOTE	400-byte padded -c value then a quoted verb -- a BYTE cap cannot see this
+217	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	DEQUOTE	400-byte padded -c value then a quoted verb -- a BYTE cap cannot see this
+217	t:GATE_RE_GIT_COMMIT_OR_PUSH	/abs/repo	DEQUOTE	400-byte padded -c value then a quoted verb -- a BYTE cap cannot see this
+223	m:GATE_RE_GIT_COMMIT	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
+223	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -718,7 +815,7 @@ fi
 # so the "undeclared" arm is blind to it and these floors are the only thing
 # that sees it. Raise them with the measurement whenever the corpus grows; do
 # not leave slack "for headroom", which is precisely what defeated them.
-for spec in "NOW_MATCH:93" "NOW_MISS:12" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6"; do
+for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"
