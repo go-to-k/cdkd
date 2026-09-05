@@ -559,10 +559,11 @@ describe('DeployEngine — --replace wire-through', () => {
       // `Snapshot`, so the hoist produces no observable. (2) Swapping
       // `retainOldOnReplace`'s template-only read for a state read does not
       // make this case DELETE — with `retainOldOnReplace` false the stateful
-      // guard refuses first and `callOrder` is `['update']` — and it reds two
-      // sibling cases that state the template-only rule directly. So no
-      // single-edit mutation reds this case ALONE; it is coverage of an input,
-      // not of a branch.
+      // guard refuses first and `callOrder` is `['update']`. Measured on that
+      // mutation: 14 of this file's 40 cases fail, i.e. 13 siblings besides
+      // this one — the whole Retain arm, of which only two state the
+      // template-only rule by name. So no single-edit mutation reds this case
+      // ALONE; it is coverage of an INPUT, not of a branch.
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain', 'Snapshot');
       expect(callOrder).toEqual(['update', 'create']);
