@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { marked } from 'marked';
 
 /**
  * `.claude/rules/*.md` files are LAZILY loaded by a native Claude Code feature:
@@ -482,151 +483,52 @@ const SPLIT_ADVICE =
   'Move the detail into a NEW .claude/rules/<area>.md satellite whose `paths:` glob is as narrow as the content, and leave a one-line pointer behind. Do not summarise or delete the text.';
 
 /**
- * The `.md` link targets a human can actually SEE and follow in a Markdown
- * file, returned RAW (path and all). Deciding which denote a rule file is
- * `ruleTarget()`'s job.
+ * The `.md` link targets a reader can actually SEE and follow, taken from the
+ * RENDERED page rather than inferred from the source.
  *
- * Every exclusion here exists because a pointer can be present in the bytes
- * and absent from the rendered page, which is the only thing a reader has.
- * This is a HEURISTIC approximation of what CommonMark renders, not a parser.
- * Three review rounds each found a construction it got wrong, so the honest
- * framing is: it models the shapes an author plausibly writes -- a pointer
- * moved and forgotten, a row demoted into a code block, a rename leaving a
- * dangling link -- and it is not a security boundary against someone trying to
- * smuggle a pointer past it. A real CommonMark parser would settle the class,
- * and the repo declares none; adding a dependency to the whole project for one
- * fence is the wrong trade, so the residual is documented instead of hidden.
- * Every gap found so far and left open fails CLOSED.
+ * This RENDERS the Markdown and reads the anchors out, because the hand-rolled
+ * scanner it replaces could not be made correct. Four review rounds found four
+ * silent passes in it, three of them inside the previous round's fix: a
+ * 3-backtick marker closing a 4-backtick fence; a list-context exemption that
+ * disabled the indent rule where the fence regex was already blind; a comment
+ * ending inside a code block, forging a close out of code content; and a
+ * blockquote strip doing the same thing one commit after that bug was fixed.
  *
- * Each item below carries its own provenance rather than a summary count: an
- * earlier revision of this paragraph said "shapes 1-5 ... 6-8" over a list of
- * six, and claimed none occurred in the corpus while two items named live
- * occurrences. A tally in a justification is worth exactly as much as the
- * grep behind it, and there was none.
+ * The pattern was structural, not bad luck. CommonMark block structure is a
+ * CONTAINER STACK -- quote depth by fence state by indent width -- and a flat
+ * per-line state machine models one dimension at a time, so each fix added a
+ * dimension and created a fresh cross-term for the next round to find. A
+ * parser has the stack already.
  *
- * 1. Fenced code, both markers, and closing on RUN LENGTH. A fence closes only
- *    on a marker of its own character and at least its own length --
- *    `docs-page-template.md` opens a ````markdown block containing a ```bash
- *    one, and treating those as a matched pair reopened the file's second half
- *    as live text. That was a working bypass, not a theoretical one: a
- *    satellite's only pointer could sit inside rendered code and pass.
- * 2. Indented lines, bluntly -- four spaces or more and it does not count.
- *    This IS wrong about Markdown: inside a list, four spaces is a bullet's
- *    continuation rather than code, and this corpus indents those five spaces
- *    routinely. It stays blunt anyway, and the reason is measured rather than
- *    argued. A revision that exempted list context was reviewed and reverted:
- *    the target set it produced across all 46 files plus CLAUDE.md was
- *    IDENTICAL, because the indented continuations here carry issue URLs and
- *    no `.md` pointer -- so the exemption repaired nothing -- while it
- *    disabled this rule inside a list, where the fence regex also cannot see a
- *    marker indented past three. Code in a list item was then kept as live
- *    text and BOTH assertions could be satisfied from inside a rendered code
- *    block. Relaxing a condition to fix a theoretical narrowing bought a real
- *    bypass. If a `.md` pointer ever does live in an indented continuation it
- *    will surface as a FALSE ORPHAN, which is loud and the safe direction.
- * 3. HTML comments, stripped from the joined text so a multi-line one is
- *    handled. A pointer inside one renders as nothing.
- * 4. Inline code spans, bounded to ONE line. A link in backticks is a quoted
- *    EXAMPLE -- `docs-page-template.md` teaches the link shape that way, and a
- *    scanner that cannot tell the two apart fails on exactly the files most
- *    worth scanning. Bounded because letting a span cross newlines let one
- *    unbalanced run swallow three real pointers in `hooks.md`.
- * 5. Anchors, titles and angle brackets on the destination. `](f.md#sec)`,
- *    `](f.md "Title")` and `](<f.md>)` are ordinary links; missing them made a
- *    valid pointer read as a FALSE orphan.
- * 6. Reference-style links, counted at the definition -- but only when the
- *    label is actually USED. An unreferenced definition renders as nothing, so
- *    counting it let a deleted pointer be replaced by a dead one.
+ * `marked` does not produce an anchor for a link inside a code block, so
+ * "extract every `<a href>`" IS the visibility question, and the residuals the
+ * old implementation had to document -- tabs, blockquotes, nested fences,
+ * comments, reference and collapsed and shortcut link forms, titles, angle
+ * brackets, link text containing brackets -- are simply gone.
  *
- * Three shapes are still NOT seen, listed because an unlisted limitation is
- * the one someone later mistakes for coverage: the COLLAPSED `[l][]` and
- * SHORTCUT `[l]` reference forms, and link TEXT containing a `]`
- * (`[foo [bar]](a.md)`). The shortcut form is deliberate -- it is
- * indistinguishable from ordinary bracketed prose without resolving every
- * definition, and this corpus brackets prose constantly. All three fail
- * CLOSED: the link is not credited, so the effect is a FALSE ORPHAN, which is
- * loud and fixable, never a silent pass.
- *
- * One further gap is known and NOT closed: a reference definition sitting on a
- * paragraph-continuation line renders as literal text rather than as a
- * definition, and is still credited. Distinguishing it needs blank-line state
- * this scan does not keep, and the cost of being wrong is small -- the
- * filename is visible text on the page either way, so a reader following the
- * index still finds the file.
- *
- * An earlier revision of this paragraph also claimed that comment-stripping
- * running BEFORE fence handling was harmless and in the false-orphan
- * direction. It was neither: a comment ENDING inside a code block left a bare
- * fence marker behind, forging a close out of code content and silently
- * crediting whatever followed. Comments are now resolved per line and only
- * outside a fence. That claim is recorded here because it was written in the
- * same commit that fixed a different silent pass -- a limitation noted as safe
- * without being probed is worth less than no note at all.
+ * It is a devDependency used by this one test and never bundled: `vp pack`
+ * does not see it. It was already in the tree transitively through mermaid at
+ * this exact version, so declaring it added nothing to install (`pnpm add`
+ * reported `downloaded 0, added 0`) and no new supply-chain surface.
  */
 function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
-  const kept: string[] = [];
-  let fence: string | undefined;
-  let inComment = false;
-  for (const raw of lines) {
-    // Blockquote markers come off FIRST, so a fence or an indent inside a
-    // quote is seen. A quoted link is still visible to a reader, so the
-    // content is kept -- it is only a quoted FENCE that must hide what
-    // follows, and `^ {0,3}` could not see one.
-    let line = raw.replace(/^ {0,3}(?:> ?)+/, '');
-
-    // Comments are resolved INSIDE the line loop and only while outside a
-    // fence, which is the whole point. Stripping them from the joined text
-    // first -- the shape this replaces -- let a comment written inside a code
-    // block end mid-line and leave a bare ``` behind, forging a CLOSING fence
-    // out of code content and crediting whatever followed. That is a silent
-    // pass, not the false-orphan direction an earlier revision of this comment
-    // claimed. A `<!--` inside a fence is likewise not a comment.
-    if (fence === undefined) {
-      if (inComment) {
-        const close = line.indexOf('-->');
-        if (close === -1) continue;
-        line = line.slice(close + 3);
-        inComment = false;
-      }
-      line = line.replace(/<!--.*?-->/g, '');
-      const open = line.indexOf('<!--');
-      if (open !== -1) {
-        line = line.slice(0, open);
-        inComment = true;
-      }
-    }
-
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-    if (marker !== undefined) {
-      if (fence === undefined) fence = marker;
-      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
-      continue;
-    }
-    if (fence !== undefined) continue;
-    // A TAB is a four-column tab stop, so a tab-indented line renders as code
-    // exactly like four spaces. The corpus has none, which is why the
-    // spaces-only test looked complete and why widening it costs nothing.
-    if (/^(?: {4,}|\t)\S/.test(line)) continue;
-    if (rowsOnly && !line.trimStart().startsWith('|')) continue;
-    kept.push(line);
-  }
-  const text = kept.join('\n').replace(/(`+)(?:(?!\1)[^\n])*?\1/g, '');
-  const targets: string[] = [];
-  // Link TEXT is unconstrained: a row reading `[utils](layout-utils.md)` is a
-  // perfectly good index row, and an earlier form required the text to repeat
-  // the filename and reported every other shape as missing.
-  const DEST = String.raw`<?\s*([^)\s<>#"']+\.md)(?:#[^)\s<>"']*)?\s*>?\s*(?:["'(][^)]*)?`;
-  for (const m of text.matchAll(new RegExp(String.raw`\[[^\]]*\]\(\s*${DEST}\)`, 'g'))) {
-    targets.push(m[1]!);
-  }
-  const usedLabels = new Set<string>();
-  for (const m of text.matchAll(/\]\[([^\]]+)\]/g)) usedLabels.add(m[1]!.toLowerCase());
-  for (const m of text.matchAll(
-    /^ {0,3}\[([^\]]+)\]:\s*<?([^\s#<>]+\.md)>?(?:#\S*)?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*$/gm,
-  )) {
-    if (usedLabels.has(m[1]!.toLowerCase())) targets.push(m[2]!);
-  }
-  return targets;
+  const html = marked.parse(lines.join('\n'), { async: false }).replace(/<!--[\s\S]*?-->/g, '');
+  // `rowsOnly` is the table-index contract, and against rendered HTML it can
+  // be asked literally: is the anchor inside a TABLE? The old form tested
+  // whether the source line began with a pipe, which a blockquoted pipe-line
+  // satisfied while rendering as an ordinary paragraph.
+  const scope = rowsOnly
+    ? [...html.matchAll(/<table[\s\S]*?<\/table>/g)].map((m) => m[0]).join('\n')
+    : html;
+  return [...scope.matchAll(/<a\s[^>]*href="([^"]*)"/g)].map((m) =>
+    m[1]!
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .split('#')[0]!,
+  );
 }
 
 /**
@@ -643,6 +545,12 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
  * resulting noise is what trains someone to stop reading the failure.
  */
 function ruleTarget(raw: string): string | undefined {
+  // The renderer hands back EVERY href, including ones the old regex filtered
+  // by construction: `https://` pointers, and GFM autolinks -- `marked` turns
+  // the bare text `cdk-local@0.10.0` in layout-local.md into a `mailto:`. The
+  // `.md` test therefore belongs here, at the one place that decides what a
+  // target denotes, rather than back in the extraction.
+  if (!raw.endsWith('.md')) return undefined;
   if (!raw.includes('/')) return raw;
   const m = /(?:^|\/)\.claude\/rules\/([^/]+\.md)$/.exec(raw);
   return m?.[1];

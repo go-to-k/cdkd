@@ -181,6 +181,7 @@ the entry. Contract and the forward-only cutoff in that file's header, enforced 
 - `@ox-content/vite-plugin` - Ox Content SSG for the cdkd.dev documentation site (config in `vite.docs.config.ts`, brand assets in `docs-site/`, deployed by `.github/workflows/docs-deploy.yml`)
 - `typescript` - TypeScript 7 native compiler (`tsc`) for typecheck
 - `typescript-v6` - npm alias of typescript@6; provides the stable JS compiler API for the codegen scripts (TS7 ships it only under `typescript/unstable/*`)
+- `marked` - CommonMark renderer, used by `tests/unit/scripts/rule-file-payload.test.ts` alone to answer "is this pointer VISIBLE to a reader" by rendering and reading the anchors, rather than by pattern-matching the source. It replaced a hand-rolled scanner in which four review rounds found four silent passes (go-to-k/cdkd#2672); it is never bundled by `vp pack`, and it was already in the tree transitively via mermaid at this version, so declaring it installed nothing new
 
 ## Release Flow
 
