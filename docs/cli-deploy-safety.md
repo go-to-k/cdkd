@@ -515,9 +515,18 @@ The details that matter here:
   Retaining leaves a resource cdkd no longer tracks, so the replacement reports
   itself as a **partial** update rather than a clean one: the row prints
   `partial (…)`, the run summary counts it under "of which left an orphaned
-  predecessor", `cdkd events` records the survivor's physical id, and the
-  deploy exits 2 unless you pass `--allow-unaddressed`. Nothing will retry it —
-  state points at the replacement — so deleting the survivor is yours to do.
+  predecessor", `cdkd events` records the survivor's physical id, and — **for a
+  top-level stack** — the deploy exits 2 unless you pass `--allow-unaddressed`.
+  Nothing will retry it — state points at the replacement — so deleting the
+  survivor is yours to do.
+
+  **Known limitation — nested stacks.** The exit code covers top-level stacks
+  only. A resource retained inside a nested stack still prints its warning and
+  its `partial (…)` row, but a child stack's counters do not reach the parent
+  run, so the deploy exits `0` with the survivor alive. This is not specific to
+  `Retain` — it applies to every unaddressed resource inside a nested stack.
+  Until it is fixed, read the per-resource warnings rather than the exit code
+  when your app uses nested stacks.
 
   This path previously deleted the old resource whatever the policy said, and
   its refusal appended a note stating so. Both are gone: a resource explicitly
@@ -881,7 +890,7 @@ and they differ in whether they heal themselves:
 | Summary row | Cause | Next `cdkd deploy` retries it? |
 | --- | --- | --- |
 | `Skipped (not deleted): N` | A resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
-| `of which left an orphaned predecessor: N` | A replacement whose new resource was created and whose OLD one was not deleted — either because the provider could not delete it, or because `UpdateReplacePolicy: Retain` said not to | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
+| `of which left an orphaned predecessor: N` | A replacement the provider performed INSIDE its own `update()` whose old resource it could not retire, or an update-failure replacement where `UpdateReplacePolicy: Retain` said not to delete it | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
 
 ```bash
 cdkd deploy MyStack                       # exit 2 if either row is non-zero

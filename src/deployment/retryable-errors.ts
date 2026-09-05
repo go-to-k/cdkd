@@ -1403,18 +1403,40 @@ export function isUpdateUnsupportedError(error: unknown, logicalId: string): boo
     if (typeof link.logicalId === 'string' && link.logicalId !== logicalId) return false;
     // NO operation anchor on this arm, unlike the `ccErrorCode` one below, and
     // that asymmetry is deliberate rather than an oversight. AUDITED
-    // 2026-09-05 for what a non-UPDATE Cloud Control call could put here:
-    // inside `CloudControlProvider.update()`'s try the only Cloud Control
-    // calls are `UpdateResource` (the update itself) and
-    // `GetResourceRequestStatus` (request-status polling, whose documented
-    // failure is `RequestTokenNotFoundException` — it invokes no resource
-    // handler); `getTopLevelWriteOnlyProperties` and `readCcResourceModel`
-    // both swallow their own failures; `enrichResourceAttributes`' six awaits
-    // are RDS / DynamoDB / API Gateway / CloudFront / STS calls, each in its
-    // own catch and none of them Cloud Control; and no SDK provider makes a
-    // Cloud Control call at all (the one `GetResourceCommand` in
-    // `apigateway-provider.ts` is API Gateway's, not Cloud Control's). So a
-    // non-UPDATE `UnsupportedActionException` cannot reach this walk today.
+    // 2026-09-05 for what a non-UPDATE Cloud Control call could put here.
+    // THREE Cloud Control calls are reachable from
+    // `CloudControlProvider.update()`, derived by grepping every
+    // `new *ResourceCommand(` in that file and resolving each to its enclosing
+    // method rather than from memory (an earlier revision of this comment
+    // listed two, omitted `GetResource`, and then contradicted itself by
+    // naming `readCcResourceModel` — the caller that issues it — one clause
+    // later):
+    //
+    //   - `UpdateResource` — the update itself.
+    //   - `GetResourceRequestStatus` — `waitForOperation`'s polling. It
+    //     invokes no resource handler; its documented failure is
+    //     `RequestTokenNotFoundException`.
+    //   - `GetResource` — via `readCcResourceModel`, reached from
+    //     `mergeSparseModelReadback` and from six sites inside
+    //     `enrichResourceAttributes`. It NEVER throws: its own body is one
+    //     try/catch that logs at debug and returns `undefined`.
+    //
+    // The remaining `GetResource` sites in that file (`getResourceState`,
+    // `readCurrentState`, `import`) are entry points for drift / import and
+    // are not called from `update()` — grep for `this.getResourceState(` /
+    // `this.readCurrentState(` returns nothing.
+    //
+    // Everything else awaited inside `update()`'s try is non-Cloud-Control and
+    // cannot raise this exception at all: `getTopLevelWriteOnlyProperties` is
+    // a CloudFormation `DescribeType` that swallows its own failures, and
+    // `enrichResourceAttributes` has 21 awaits under 15 try/catch pairs — 15
+    // of them RDS x2 / DynamoDB / API Gateway / CloudFront / Lambda /
+    // EventBridge x2 / ElastiCache / Redshift / OpenSearch and four
+    // account-info lookups, the other six the `readCcResourceModel` calls
+    // above. No SDK provider makes a Cloud Control call either (the one
+    // `GetResourceCommand` in `apigateway-provider.ts` is API Gateway's, not
+    // Cloud Control's). So a non-UPDATE `UnsupportedActionException` cannot
+    // reach this walk today.
     //
     // Anchoring it anyway would be the WRONG trade: `handleError` does not
     // record which operation it wrapped, so the only available anchor is a

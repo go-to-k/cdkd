@@ -356,8 +356,13 @@ Index of every area: [code-layout.md](code-layout.md).
     engine's update-failure REPLACEMENT trigger — "this type has no UPDATE
     handler at all", not "this update was rejected". Another bounded `.cause`
     walk on the shared `MAX_CAUSE_CHAIN_DEPTH`, matching the exception NAME
-    `UnsupportedActionException` and the async `ccErrorCode` of the same name;
-    the walk is needed because `CloudControlProvider.handleError` interpolates
+    `UnsupportedActionException`, and the async `ccErrorCode` of the same name
+    ONLY when `ccOperation === 'UPDATE'` — that arm is unmeasured, so it is
+    kept narrow: a CREATE or DELETE sub-operation reporting the same code says
+    nothing about whether the type has an UPDATE handler. The sync NAME arm
+    carries no such anchor, and the reason is audited in the function's own doc
+    comment rather than restated here.
+    The walk is needed because `CloudControlProvider.handleError` interpolates
     `err.message` only and AWS's own text never repeats the name — which is why
     the pre-#2520 predicate's `message.includes('UnsupportedActionException')`
     half matched nothing cdkd produces. AWS's prose (`does not support UPDATE`)
