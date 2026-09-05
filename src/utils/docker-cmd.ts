@@ -822,13 +822,14 @@ const ARGV_PARAM_LIST_LOCATOR_PARAMS: ReadonlySet<string> = new Set([
  * material by design.
  *
  * Scheme and host survive, which is what "which endpoint" needs — on the
- * ordinary path. Three things mask the value WHOLE instead, and each also
- * masks every param after it: a value with no recognisable `//` authority, a
- * host that is really `user:password` with its `@` cut away, and a later
- * param carrying this URL's severed `@` (the caller's rule, since only it
- * still holds the parts). A `@` in the PATH is a fourth case and the mildest —
- * it costs the host but keeps scheme and tail (`https://h/x@y` ->
- * `https://***@y`). Over-masking is the deliberate direction: see
+ * ordinary path. FOUR things mask more than that, and every one of them also
+ * masks each param after it in the same value, because they all set `masked`.
+ * Three take the value WHOLE: no recognisable `//` authority; a host that is
+ * really `user:password` with its `@` cut away; and a later param carrying
+ * this URL's severed `@` (the caller's rule, since only it still holds the
+ * parts). The fourth is milder in what it keeps, not in what it cascades — a
+ * `@` in the PATH costs the host but keeps scheme and tail (`https://h/x@y`
+ * -> `https://***@y`). Over-masking is the deliberate direction: see
  * {@link redactUrlLocator} for what each boundary rule leaked before this one.
  */
 const ARGV_PARAM_LIST_URL_PARAMS: ReadonlySet<string> = new Set([
@@ -904,7 +905,17 @@ function redactUrlLocator(value: string): string {
     // `endpoint_url=http://[::1]:9000` mask -- AND, because a mask cascades,
     // take every later param with it. A legitimate local-MinIO spelling,
     // measured as a regression this rule introduced (round-6 review).
-    const bare = host.startsWith('[') ? host.slice(host.indexOf(']') + 1) : host;
+    //
+    // Gated on the bracket actually holding an IPv6 LITERAL, not merely on a
+    // leading `[`. Exempting all bracket content re-opened exactly the case
+    // this rule is kept for: `https://[AKIA:wJalrSecret]` has no `@` anywhere,
+    // so the caller's severed-`@` scan cannot see it either, and it printed
+    // verbatim (both round-7 reviewers measured it). The hex-and-colon charset
+    // refuses it because `K`, `w` and `J` are not hex digits. An UNTERMINATED
+    // bracket does not match, so the whole host is tested -- fails closed, the
+    // right direction.
+    const ipv6 = /^\[[0-9A-Fa-f:.]+\]/.exec(host);
+    const bare = ipv6 ? host.slice(ipv6[0].length) : host;
     // `\d{1,5}` rather than `\d*`: a port is at most 65535, so a longer digit
     // run is not one. Narrower by exactly the shapes it should refuse.
     if (/:(?!\d{1,5}$)/.test(bare)) return REDACTED_ARGV_VALUE;
@@ -923,8 +934,10 @@ function redactUrlLocator(value: string): string {
  * The masked rendering of `value` for `flag`, or `undefined` when this flag
  * carries nothing to mask.
  *
- * The single place both argv spellings agree — `--flag VALUE` (two tokens) and
- * `--flag=VALUE` (one). The joined form is valid docker syntax for every long
+ * The single place every argv spelling converges — `--flag VALUE` (two
+ * tokens), `--flag=VALUE` (one), and pflag's shorthand cluster in both forms,
+ * which reach it through {@link maskAttachedShortFlag} and through
+ * {@link trailingShortFlagOfCluster} in {@link redactDockerArgvValues}. The joined form is valid docker syntax for every long
  * flag here, and it was UNMASKED until the [#2623](https://github.com/go-to-k/cdkd/issues/2623)
  * review: harmless while every argv this repo builds emits two tokens, but
  * `src/assets/docker-build.ts`'s `executable` source mode renders a

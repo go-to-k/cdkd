@@ -983,6 +983,17 @@ describe('redactDockerArgvValues', () => {
         'type=s3,endpoint_url=https://tok2623/x,TAIL@h',
       ])
     ).toEqual(['--cache-to', 'type=s3,endpoint_url=***,***']);
+    // MULTIPLE later parts, so `some` and `every` are distinguishable. Every
+    // other case here has exactly ONE part after the URL param, which makes
+    // that mutation unkillable -- and `every` LEAKS: it only fires when the
+    // last part happens to hold the `@`, so `…,TAIL@github.com,region=…` would
+    // print the token head.
+    expect(
+      redactDockerArgvValues([
+        '--cache-to',
+        'type=s3,endpoint_url=https://ghp_2623MultiTail,TAIL@github.com,region=us-east-1,bucket=b',
+      ])
+    ).toEqual(['--cache-to', 'type=s3,endpoint_url=***,***,***,***']);
     // And the other direction: no later `@` means no severance, so a real
     // endpoint beside a real param is untouched.
     const intact = ['--cache-to', 'type=s3,endpoint_url=https://h:9000,region=us-east-1'];
@@ -1019,6 +1030,13 @@ describe('redactDockerArgvValues', () => {
     expect(redactDockerArgvValues(args)).toEqual(args);
     const linkLocal = ['--cache-to', 'type=s3,endpoint_url=http://[fd00::1]:5000'];
     expect(redactDockerArgvValues(linkLocal)).toEqual(linkLocal);
+    // But a bracket is not a blanket exemption: bracketed CREDENTIAL material
+    // has no `@` anywhere, so the caller's severed-`@` scan cannot see it
+    // either, and exempting all bracket content re-opened the one case the
+    // head-shape rule is kept for. `K`/`w`/`J` are not hex digits.
+    expect(
+      redactDockerArgvValues(['--cache-to', 'type=s3,endpoint_url=https://[AKIA:wJalr2623]'])
+    ).toEqual(['--cache-to', 'type=s3,endpoint_url=***']);
   });
 
   it('leaves an EMPTY URL locator value alone (issue #2623 round 5)', () => {
