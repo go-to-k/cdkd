@@ -334,6 +334,22 @@ Z2l0IC1DIC9hYnMvcmVwbyBncmVwIC1uICJjb21taXQiIC0tIHNyYw==
 Z3JlcCAtbiAnPT4nIHgudHMgJiYgZ2l0IGNvbW1pdCAtbSB4
 Z2ggaXNzdWUgY29tbWVudCA0MiAtLWJvZHkgIm5leHQ6IHByIG1lcmdlIDUi
 Z2l0IC1jIGFsaWFzLng9InJ1biBjb21taXQgbGF0ZXIiIHN0YXR1cw==
+eD0kKGVjaG8gImEpYiI7IGdpdCBjb21taXQgLW0geSkgOyBlY2hvIGhpID4gZg==
+eD0kKGVjaG8gJ2EpYic7IGdpdCBjb21taXQgLW0geSkgOyBlY2hvIGhpID4gZg==
+Z2l0IC1DICQoZWNobyAiL2Ficy9yZXBvKXgiKSBjb21taXQgLW0geA==
+KCBnaXQgY29tbWl0IC1tIHggKSA7IGVjaG8gaGkgPiBm
+KCAodHJ1ZSkgOyBnaXQgY29tbWl0IC1tIHggKSA7IGVjaG8gaGkgPiBm
+ZWNobyAiYSAoYiIgJiYgZ2l0IGNvbW1pdCAtbSB4
+eD0kKGVjaG8gImEpYiIpICYmIGdpdCAtQyAvYWJzL3JlcG8gY29tbWl0IC1tIHg=
+ZGlmZiA8KGdpdCBjb21taXQgLW0geCkgZiA7IGVjaG8gaGkgPiBn
+ZGlmZiA8KGVjaG8gaGkpIGYgOyBnaXQgY29tbWl0IC1tIHg=
+KCBlY2hvICJhKWIiIDsgZ2l0IGNvbW1pdCAtbSB4ICkgOyBlY2hvIGhpID4gZw==
+aWYgKGdpdCBjb21taXQgLW0geCk7IHRoZW4gdHJ1ZTsgZmk=
+YmFzaCAtYyAiZ2l0IGNvbW1pdCAtbSB4IiA7IGVjaG8gaGkgPiBn
+Z2l0IC1DICQoZWNobyAkJ2FcJ2InKSBjb21taXQgLW0geA==
+Y2RcIC90bXAgOyBnaXQgY29tbWl0IC1tIHg=
+Y2RcXCAvdG1wIDsgZ2l0IGNvbW1pdCAtbSB4
+Z2l0IGNvbW1pdFwgLW0geA==
 CORPUS_EOF
 
 # --------------------------------------------------------------- observables
@@ -506,6 +522,65 @@ ALLOWED="$TMPDIR/allowed.tsv"
 # single quotes, so the arm is scoped to double quotes and must leave both
 # alone. Id 204 is the third control -- the ENCLOSING command survives a
 # substitution in its body, so its segcount rises while its own match does not.
+# --- go-to-k/cdkd#2650: a QUOTED `)` inside `$( )` (ids 224-230) -------------
+#   QUOTED_PAREN  `close_paren` counted every `)` as a closer, so a `)` inside a
+#                 quoted span ended the substitution early and the rest of the
+#                 line was re-split around it. Measured before the fix,
+#                 `x=$(echo 'a)b'; cd /tmp) ; echo hi > <tracked>` segmented to
+#                 `"b"`, `cd /tmp`, `echo hi > <tracked>`, `echo 'a` -- four
+#                 fragments in scrambled order, with the `cd` promoted to a
+#                 top-level segment it never occupied. A consumer walking those
+#                 in order then honours a `cd` the real shell runs in a
+#                 subshell: `main-tree-edit-gate` went rc=0 where origin/main
+#                 was 2, with the write landing on a tracked file in the main
+#                 tree. The cells are segment-count corrections plus one verb
+#                 that becomes reachable again (id 226, a quoted `)` in a `-C`
+#                 value).
+# Ids 227-229 are the CONTROLS and declare NO cell: two plain subshells and a
+# `(` inside a quoted argument, all of which the fix must leave exactly as they
+# were. A row appearing for one of them means the quote tracking has started
+# eating structure it should not.
+# --- go-to-k/cdkd#2650: ANSI-C quoting inside `$( )` (ids 231-236) -----------
+#   ANSI_C        `close_paren` treated a `$'...'` span as a plain single-quoted
+#                 one, which does not take escapes. An escaped quote inside such
+#                 a span therefore closed it early, the scan resumed in the
+#                 wrong state, and the substitution appeared to end before it
+#                 did -- so the verb AFTER it was never reached. The single cell
+#                 is id 236, `git -C $(echo $'a\'b') commit -m x`.
+#                 READ THE DIRECTION CAREFULLY: origin/main gets this input
+#                 RIGHT, because it tracks no quoting in `close_paren` at all
+#                 and its blind scan happens to land on the correct `)`. The
+#                 quote tracking is what breaks it, so this state guards a
+#                 regression the quote-awareness introduces rather than closing
+#                 a pre-existing bug. The cell appears at all only because the
+#                 baseline pre-dates the whole line of work.
+#
+#                 OWNERSHIP MOVED, and the sentence above used to claim it.
+#                 `close_paren` is now byte-identical to `origin/main` -- the
+#                 quote and ANSI-C tracking landed there in go-to-k/cdkd#2639,
+#                 derived from a 20,312-body differential fuzz against real
+#                 bash, and this branch's own version was discarded in the
+#                 rebase because main's is stricter where this branch's was
+#                 wrong (a backslash is LITERAL inside single quotes). So the
+#                 class fences upstream code, not this change's; it still goes
+#                 red when the ANSI-C arm is removed, which is what keeps it a
+#                 fence rather than a decoration.
+#                 Without the state the segment splits at the wrong place and
+#                 the `commit` is unreachable -- verified by mutation, and the
+#                 shape came from the superset arm rather than from a
+#                 hand-picked case.
+# Ids 231-235 declare NO cell, and THAT IS NOT THE SAME AS "unchanged". An
+# earlier revision of this legend said their `gate_segments` behaviour must be
+# unchanged; a reviewer measured it false. For
+# `diff <(git commit -m x) f ; echo hi > g` the baseline emits `diff` /
+# `git commit -m x) f` / `echo hi > g` and this branch emits
+# `diff "<(git commit -m x)" f` / `echo hi > g` / `git commit -m x` -- the
+# segmentation changed materially. No cell appears because `segcount` and every
+# `m:` and `t:` observable happen to come out the same, which is exactly the
+# blind spot to name rather than to read as proof. These rows are here as the
+# marking corpus (process substitution, a quoted `)` in a subshell, an
+# `if (...)` compound, a `bash -c` body); what actually fences their behaviour
+# is `main-tree-edit-gate.test.sh`, where reverting each one turns cases red.
 cat > "$ALLOWED" <<'ALLOWED_EOF'
 26	segcount	2	SEGCOUNT	git -C subst-quoted commit
 27	segcount	2	SEGCOUNT	gh -C subst-quoted pr merge
@@ -777,6 +852,13 @@ cat > "$ALLOWED" <<'ALLOWED_EOF'
 217	t:GATE_RE_GIT_COMMIT_OR_PUSH	/abs/repo	DEQUOTE	400-byte padded -c value then a quoted verb -- a BYTE cap cannot see this
 223	m:GATE_RE_GIT_COMMIT	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
 223	m:GATE_RE_GIT_COMMIT_OR_PUSH	0	NOW_MISS	verb inside a spaced flag value is no longer the verb
+224	segcount	3	QUOTED_PAREN	a double-quoted ) inside $( ) no longer splits the substitution
+225	segcount	3	QUOTED_PAREN	the same with a single-quoted )
+226	m:GATE_RE_GIT_COMMIT	1	QUOTED_PAREN	a quoted ) in a -C value: the verb is reachable again
+226	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	QUOTED_PAREN	a quoted ) in a -C value: the verb is reachable again
+230	segcount	2	QUOTED_PAREN	a quoted ) in a substitution before the verb
+236	m:GATE_RE_GIT_COMMIT	1	ANSI_C	an escaped quote in a $' ' span no longer ends the substitution early
+236	m:GATE_RE_GIT_COMMIT_OR_PUSH	1	ANSI_C	an escaped quote in a $' ' span no longer ends the substitution early
 ALLOWED_EOF
 
 paste "$TMPDIR/old.tsv" "$TMPDIR/new.tsv" \
@@ -815,7 +897,7 @@ fi
 # so the "undeclared" arm is blind to it and these floors are the only thing
 # that sees it. Raise them with the measurement whenever the corpus grows; do
 # not leave slack "for headroom", which is precisely what defeated them.
-for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44"; do
+for spec in "NOW_MATCH:93" "NOW_MISS:14" "TARGET:17" "SEGCOUNT:16" "WIDE_TRIGGER:23" "MLSUBST:15" "MLBACKTICK:7" "LATERQ:18" "ACCEPTED_FR:13" "INQUOTE_BACKTICK:6" "DEQUOTE:44" "QUOTED_PAREN:5" "ANSI_C:2"; do
   cls="${spec%%:*}"; floor="${spec##*:}"
   seen=$(awk -F'\t' -v c="$cls" '$4==c' "$ALLOWED" | while IFS=$'\t' read -r id obs val rest; do
     awk -F'\t' -v i="$id" -v o="$obs" -v v="$val" '$1==i && $2==o && $3==v {print}' "$TMPDIR/diffs.tsv"
