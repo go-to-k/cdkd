@@ -454,6 +454,14 @@ function printRunList(stackName: string, region: string, runs: DeploymentRunSumm
     logger.info(
       `  ${cyan(safeId(run.runId) || UNRENDERABLE)}  ${safeId(run.command) || UNRENDERABLE}  ` +
         `${resultColored}  ` +
+        // These two keep `'?'` for BOTH the absent and the sanitised-away
+        // case, deliberately. `summarizeRunFromJsonl` writes `''` here when
+        // it rebuilds the run list from the JSONL keys, so absent is the
+        // COMMON case, and `'?'` already meant "not shown" on this line. An
+        // earlier revision gave them the present-versus-consumed split the
+        // error line has; generalising that distinction is what review found
+        // re-making a false claim on a new input class every round, so it now
+        // lives at exactly one site. Recorded in docs/deployment-events.md.
         `${gray(safeId(run.startedAt) || '?')} -> ${gray(safeId(run.finishedAt) || '?')}  ` +
         `${gray(`cdkd ${safeId(run.cdkdVersion) || UNRENDERABLE}`)}  ` +
         `${gray(`${safeCount(run.eventCount)} events`)}`
@@ -510,9 +518,20 @@ export function printRunEvents(
     if (e.cdkdVersion) parts.push(gray(`cdkd ${safeId(e.cdkdVersion) || UNRENDERABLE}`));
     if (e.result) {
       // Sanitise BEFORE the colour decision, so the colour describes the text
-      // that is actually printed.
+      // that is actually printed — and give `UNRENDERABLE` the neutral arm for
+      // the same reason `printRunList` does (see the comment there): a result
+      // cdkd could not RENDER is not a result it knows, and red asserts a
+      // failure. The two views show the SAME field, so a value reading gray in
+      // the run listing and red one screen later would be the renderer
+      // disagreeing with itself.
       const result = safeId(e.result) || UNRENDERABLE;
-      parts.push(result === 'SUCCEEDED' ? green(result) : red(result));
+      parts.push(
+        result === 'SUCCEEDED'
+          ? green(result)
+          : result === UNRENDERABLE
+            ? gray(result)
+            : red(result)
+      );
     }
     if (typeof e.durationMs === 'number') parts.push(gray(`${e.durationMs}ms`));
     if (e.counts) {

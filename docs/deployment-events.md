@@ -161,17 +161,28 @@ logical id, a resource type, a `reason` that interpolates a user-chosen
 physical name, an AWS error message). The human `cdkd events` output therefore
 routes every stored value through cdkd's shared `displaySafe` helper, so a
 terminal escape sequence embedded in one of them cannot clear the screen or
-repaint a line of the post-mortem. A value that sanitises to nothing renders as
-`<unrenderable>` rather than as an empty column, a counter that is not a number
-renders as `?`, and a run result cdkd cannot render is coloured as unknown
-rather than as a failure. cdkd's own colouring is unaffected — the sanitising
-wraps the value, not the coloured token.
+repaint a line of the post-mortem. A stored value that sanitises to nothing
+renders as `<unrenderable>` rather than as an empty column — with the two
+exceptions named below — a counter that is not a number renders as `?`, and a
+run result cdkd cannot render is coloured as unknown rather than as a failure.
+cdkd's own colouring is unaffected: the sanitising wraps the value, not the
+coloured token.
 
 `<unrenderable>` is a statement about the INPUT — "something was recorded here
-and sanitising consumed it" — so the one field that can be legitimately empty
-with nothing forged is exempt: an error's `message` is copied verbatim from the
-thrown error, so a bare `new Error()` stores `''`, and that row renders as
-`Error` with no trailing separator rather than claiming a suppressed value.
+and sanitising consumed it" — so on the error line, the one field there that
+can be legitimately empty with nothing forged is exempt: an error's `message`
+is copied verbatim from the thrown error, so a bare `new Error()` stores `''`,
+and that row renders as `Error` with no trailing separator rather than claiming
+a suppressed value.
+
+Two fields deliberately do NOT make that distinction. The run listing's
+`startedAt` / `finishedAt` render `?` both when no timestamp was recorded — cdkd
+itself writes `''` for them when it rebuilds the run list from the JSONL keys —
+and when a stored one sanitised away, so `?` there means "not shown", not "never
+recorded". They keep the spelling the listing already used rather than gaining a
+second one: an earlier revision generalised the present-versus-consumed
+distinction across the whole renderer and each review round found it making the
+same false claim on a different input class.
 Every other field on that line requires write access to the event store to be
 blank.
 

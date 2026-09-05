@@ -204,9 +204,14 @@ describe('cdkd events neutralises control bytes in stored text (issue #2438)', (
         eventType: 'RUN_FINISHED',
         stackName: 'TestStack',
         counts: {
+          // Every counter, not just `created`: the first four were driven with
+          // real numbers, so removing `safeCount` from `updated` / `deleted` /
+          // `failed` / `skipped` rendered identically and no case failed.
           created: `1${CSI_ERASE_LINE}` as unknown as number,
-          updated: 0,
-          deleted: 2,
+          updated: `2${CSI_ERASE_LINE}` as unknown as number,
+          deleted: `3${CSI_ERASE_LINE}` as unknown as number,
+          failed: `4${CSI_ERASE_LINE}` as unknown as number,
+          skipped: `5${CSI_ERASE_LINE}` as unknown as number,
         },
       },
     ]);
@@ -215,8 +220,12 @@ describe('cdkd events neutralises control bytes in stored text (issue #2438)', (
     expect(out).not.toContain(CSI_ERASE_LINE);
     // Not merely stripped — a counter that is not a number is not renderable
     // as one, so its digits must not survive either.
-    expect(out).toContain('+?/~0/-2');
+    expect(out).toContain('+?/~?/-? !? ⚠?');
     expect(out).not.toContain('+1');
+    expect(out).not.toContain('~2');
+    expect(out).not.toContain('-3');
+    expect(out).not.toContain('!4');
+    expect(out).not.toContain('⚠5');
   });
 
   it('classifies AND colours the sanitised event type, so the two agree', () => {
@@ -510,8 +519,12 @@ describe('a value that sanitises to nothing renders <unrenderable> (issue #2438)
     expect(lines[1]).toBe(
       `  ${gray('2026-01-01T00:00:00.000Z')}  ${green('RUN_FINISHED')}  ` +
         `${gray('<unrenderable>')}  ${gray('<unrenderable>')}  ` +
-        `${gray('cdkd <unrenderable>')}  ${red('<unrenderable>')}`
+        `${gray('cdkd <unrenderable>')}  ${gray('<unrenderable>')}`
     );
+    // The result column is NEUTRAL, matching the run listing's arm for the
+    // same field. Red would assert a failure about a result cdkd could not
+    // read, and the two views would disagree about one value.
+    expect(lines[1]).not.toContain(red('<unrenderable>'));
     // A missing message used to render a dangling `Name (Code): ` — reachable
     // with no forgery at all, since `extractDeploymentEventError` defaults
     // `name` but not `message`.
@@ -936,6 +949,29 @@ describe('the header, error and event-type fallbacks all execute (issue #2438)',
     const message = String((err as Error).message);
     expect(message).toContain("run '<unrenderable>'");
     expect(message).toContain("region '<unrenderable>'");
+  });
+
+  /**
+   * The `--keep` AND `--older-than` scope clause. Grep proved no test in the
+   * repo reached this branch, so its `safeId(options.olderThan)` was held by
+   * nothing — the sibling arm one line down was the only one covered.
+   */
+  it('sanitises --older-than in the combined keep+older-than scope clause', async () => {
+    mockListRawKeys.mockImplementation(async () => [
+      `cdkd/TestStack/us-east-1/deployments/index.json`,
+    ]);
+    mockGetRawObject.mockImplementation(async () => JSON.stringify({ runs: [] }));
+
+    await eventsPruneCommand('TestStack', {
+      ...stateOpts,
+      keep: 5,
+      olderThan: `${CR}24h`,
+    });
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    const prompt = String(confirmSpy.mock.calls[0]?.[0]);
+    expect(prompt).not.toContain(CR);
+    expect(prompt).toContain('runs beyond the newest 5 AND older than 24h');
   });
 
   it('falls back on BOTH prune-header interpolations', async () => {
