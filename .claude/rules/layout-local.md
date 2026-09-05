@@ -344,8 +344,13 @@ Index of every area: [code-layout.md](code-layout.md).
     `runEcsServiceEmulator` / `addCommonEcsServiceOptions` + engine types
     from `cdk-local/internal`, and `local-start-alb.ts` wires
     `runEcsServiceEmulator(targets, options,
-    warnUnresolvedLambdaTargetEnv(albStrategy(options), options),
-    cdkdExtraStateProviders)`. That decorator is cdkd's remedy for
+    buildAlbEmulatorStrategy(options), cdkdExtraStateProviders)`, where the
+    seam is `warnUnresolvedLambdaTargetEnv(albStrategy(options), options)`.
+    It is a NAMED export rather than an inline expression because the inline
+    form left the whole feature deletable at its only call site with the unit
+    suite green; `local-start-alb-wiring.test.ts` now runs the real command and
+    drives whatever object the action hands the engine. That decorator is
+    cdkd's remedy for
     go-to-k/cdkd#2602: `--from-state` reaches the ECS service targets
     (`bootOneTarget` hands the dispatcher the full options bag) but NOT a
     `TargetType: lambda` target group, whose env cdk-local resolves through a
