@@ -68,9 +68,9 @@ const walk = (dir: string): string[] =>
  * TWIN: `cellCount` in `tests/unit/scripts/build-scenario-coverage-matrix.test.ts`
  * measures the generator's output before it is written, with the same rule
  * re-spelled so that one blinded counter cannot blind both measurements. The
- * two expressions are held byte-identical by a case in THAT file — widening
- * only one left the other scoring a `\\|` row as clean, and a comment asking
- * for them to be changed together is exactly what failed.
+ * two expressions are held in step (whitespace-normalised) by a case in THAT
+ * file — widening only one left the other scoring a `\\|` row as clean, and a
+ * comment asking for them to be changed together is exactly what failed.
  */
 const cellCount = (line: string): number =>
   line.trim().replace(/^\||\|$/g, '').replace(/\\[\s\S]/g, ' ').split('|').length;
@@ -152,7 +152,13 @@ describe('published docs tables', () => {
     // 60 / 2066 for the top level alone, so the previous 2000-row floor no
     // longer caught the collapse and the file floor caught it by one file).
     const subdirs = readdirSync(DOCS).filter((e) => statSync(join(DOCS, e)).isDirectory());
-    expect(subdirs.length, 'docs/ has no subdirectory — this fence is vacuous').toBeGreaterThan(1);
+    // `> 1`, not `> 0`: with a single subdirectory "recursed into the first one
+    // only" is indistinguishable from a full walk, so the check below would
+    // pass on the very collapse it exists to refuse.
+    expect(
+      subdirs.length,
+      `docs/ has ${subdirs.length} subdirectory(ies) — this fence needs at least 2 to discriminate`
+    ).toBeGreaterThan(1);
     const reached = new Set(files.map((f) => relative(DOCS, f).split(sep)[0]));
     for (const d of subdirs) {
       expect(reached, `the walk never reached docs/${d}/`).toContain(d);

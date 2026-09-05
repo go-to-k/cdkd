@@ -389,28 +389,41 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
     expect(shapeOf(escapes, '# H')).toEqual({ header: 2, rows: [2, 3] });
   });
 
-  it('keeps its cell-count rule byte-identical to the docs-fence twin', () => {
+  it('keeps its cell-count rule in step with the docs-fence twin', () => {
     // The pair drifted once already, in this PR, and the mitigation shipped for
     // it was a comment — the same mechanism that had just failed. This is the
     // mechanical one. It compares the EXPRESSION, so a widening applied to one
     // copy and not the other fails here rather than in whichever assertion the
     // narrower copy happens to make vacuous.
+    //
+    // The compare is whitespace-NORMALISED, not byte-exact: the two live at
+    // different indents. That is lax enough to matter in exactly one place and
+    // it is safe there — a replacement of `' '` versus `''` survives the
+    // collapse, so the two cannot differ in what they substitute and still pass.
     const bodyOf = (file: string): string => {
       const found = readFileSync(file, 'utf8').match(
         /\.trim\(\)\s*\.replace\([\s\S]*?\.split\('\|'\)\.length;/g
       );
-      // Exactly one, or the extraction is guessing: a second `cellCount`-shaped
-      // expression in either file would make this compare an arbitrary pair.
       expect(found, `no cellCount body in ${file}`).not.toBeNull();
+      // Two bounds, because they catch different extraction failures and the
+      // count alone catches neither well. A duplicate TERMINATOR splits the
+      // match in two, which the count sees. A `.trim().replace(` earlier in the
+      // file does NOT: the lazy `[\s\S]*?` simply spans from the intruder to the
+      // real terminator, still matching exactly ONCE — measured at 12,003
+      // characters against the true body's 76. The length bound is what sees
+      // that one.
       expect(found!.length, `${found!.length} cellCount-shaped bodies in ${file}`).toBe(1);
-      // A needle that must survive: an extraction that silently matched
-      // something else would compare two equal-but-irrelevant strings.
-      expect(found![0]).toContain("split('|')");
+      expect(found![0]!.length, `over-spanning cellCount match in ${file}`).toBeLessThan(200);
       return found![0]!.replace(/\s+/g, ' ');
     };
     const here = join(import.meta.dirname, 'build-scenario-coverage-matrix.test.ts');
     const twin = join(import.meta.dirname, 'docs-table-shape.test.ts');
     expect(bodyOf(twin)).toBe(bodyOf(here));
+    // Accepted cost, stated so the next reader is not surprised: the two chains
+    // sit near the formatter's print width, so a reformat that wraps ONE of them
+    // reds this case. That failure is loud and prints both strings, and the
+    // remedy is to let the formatter wrap both — not a silent pass, which is the
+    // direction that would matter.
   });
 
   it('refuses a section with no table instead of measuring the next one', () => {
