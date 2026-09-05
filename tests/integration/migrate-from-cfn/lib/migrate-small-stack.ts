@@ -195,6 +195,50 @@ export class MigrateSmallStack extends cdk.Stack {
     // destroy fed the CFn-generated name to `SetTopicAttributes` which
     // rejected it as an invalid topic ARN. Post-#358 the resolver detects
     // the non-ARN shape and falls back to `properties.Topics.join(',')`.
+    // A CloudFormation PARAMETER WITH NO DEFAULT, and the shape is the point.
+    //
+    // `retireCloudFormationStack` injects `DeletionPolicy: Retain` via
+    // UpdateStack, and forwards the source stack's existing Parameters as
+    // `UsePreviousValue: true`. Without that forwarding CloudFormation falls
+    // back to defaults -- and a parameter with NO default has none, so the
+    // update is REJECTED and the whole retire fails. That is why the value is
+    // omitted here rather than given a default: a defaulted parameter would
+    // still update (silently, with the default substituted), so it would not
+    // discriminate the missing-forwarding case.
+    //
+    // The behaviour was found by a real-AWS run of the `migrate-from-bare-cfn`
+    // fixture, whose hand-authored template carried a `ResourceSuffix`
+    // parameter. That fixture was retired with `cdkd migrate` (issue #2572),
+    // leaving the forwarding covered by unit tests only -- against a MOCK of
+    // CloudFormation, which cannot falsify a claim about what CloudFormation
+    // does with `UsePreviousValue`. Issue #2587 is that gap; this restores the
+    // real-AWS half inside a fixture that already runs the retire path.
+    //
+    // Referenced from an OUTPUT, never from a resource property, and that is
+    // the load-bearing half. CloudFormation requires a value for every
+    // DECLARED parameter on UpdateStack regardless of where it is used, so an
+    // output reference discriminates exactly as well — while a reference from
+    // a resource property does NOT survive `cdkd import`: the import binds
+    // properties from the template, cannot resolve a no-default `Ref`, and
+    // records the raw intrinsic with a warning ("Failed to resolve intrinsics
+    // in Properties for imported resource ... Ref TopicDisplayName not
+    // found"). Measured: wiring it to the topic's `displayName` made the
+    // CLEAN run emit that warning twice while still passing, i.e. it added
+    // noise to a previously quiet fixture and put an unresolved intrinsic into
+    // state, for no extra discrimination.
+    const retireParameterProbe = new cdk.CfnParameter(this, 'TopicDisplayName', {
+      type: 'String',
+      description:
+        'No default, on purpose: it is what makes a missing UsePreviousValue ' +
+        'forwarding fail the retire UpdateStack instead of passing silently.',
+    });
+    new cdk.CfnOutput(this, 'RetireParameterProbe', {
+      value: retireParameterProbe.valueAsString,
+      description:
+        'Consumes the parameter so it is not merely declared; the retire path ' +
+        'is what this exists to exercise, not the output.',
+    });
+
     const exampleTopic = new sns.Topic(this, 'ExampleTopic', {});
     exampleTopic.addToResourcePolicy(
       new iam.PolicyStatement({

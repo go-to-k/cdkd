@@ -1597,6 +1597,7 @@
     "--parameter",
     "--parameter-filters",
     "--parameter-overrides",
+    "--parameters",
     "--password",
     "--password-stdin",
     "--payload",

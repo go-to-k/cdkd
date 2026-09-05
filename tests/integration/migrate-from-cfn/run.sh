@@ -328,7 +328,18 @@ run_one() {
   preflight_clean "${stack}"
 
   log "[${stack}] cdk deploy (real CloudFormation)"
-  AWS_REGION="${REGION}" npx cdk deploy "${stack}" --require-approval never
+  # CdkdMigrateSmall declares a CfnParameter with NO DEFAULT (issue #2587), so
+  # a value must be supplied here. That is the whole point of the fixture arm:
+  # the retire flow's UpdateStack has no default to fall back on, so it fails
+  # unless `retireCloudFormationStack` forwards the parameter as
+  # `UsePreviousValue: true`. See the comment on the parameter in
+  # lib/migrate-small-stack.ts.
+  local -a deploy_params=()
+  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
+    deploy_params=(--parameters "TopicDisplayName=cdkd-integ-${stack}")
+  fi
+  AWS_REGION="${REGION}" npx cdk deploy "${stack}" --require-approval never \
+    "${deploy_params[@]+"${deploy_params[@]}"}"
 
   # AWS::SQS::QueuePolicy used to need a `--resource` override here (issue
   # #361): CFn's DescribeStackResources returns the QueuePolicy's resource
