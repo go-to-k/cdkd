@@ -41,14 +41,22 @@ import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emu
  * object that reaches the engine has to emit the warning. Measured against ten
  * such spellings in review round 4; every one reddens.
  *
- * The bound, stated because an over-claim here is the same defect as a fence
- * that cannot see: this is ARGV-DRIVEN. Every option the command DECLARES is
- * now varied, derived from `cmd.options` rather than hand-listed, and a
- * coverage case fails if one is added without being varied or excused. What
- * still escapes is a conditional keyed on something that is not an option at
- * all — an env var, `isTTY`, the clock, the number of targets. Three earlier
- * revisions of this comment each claimed more than they delivered, and each
- * was falsified by the next round finding one more flag.
+ * The bound, and it is stated narrowly because FOUR earlier revisions of this
+ * comment each claimed more than they delivered and each was falsified by the
+ * next round. What is actually held:
+ *
+ * - every option the command DECLARES is PASSED, derived from `cmd.options`,
+ *   with a coverage case that fails if one is added and not varied;
+ * - each is passed with a VALUE its commander default cannot produce, and an
+ *   optional-argument option gets a string rather than the bare boolean form;
+ * - the variadic positional is driven at zero, one and many.
+ *
+ * What still escapes, measured rather than guessed: a conditional keyed on a
+ * COMBINATION of flags (the matrix is one option at a time), on a SPECIFIC
+ * value out of several an option accepts, or on something that is not argv at
+ * all (an env var, `isTTY`, the clock). Closing the first two means a
+ * combinatorial matrix, which buys less than it costs — the plausible refactor
+ * is "the user passed X", and that is what is fenced.
  *
  * `parseAsync` rather than `parse`: the action is async, and
  * `cmd-parse-stub-gate` deliberately exempts the async spelling because the
@@ -132,11 +140,27 @@ async function strategyHandedToEngine(argv: string[]): Promise<EmulatorStrategy>
   }
 }
 
-/** Every `--long` the command declares, in declaration order. */
+/**
+ * Every `--long` the command declares, in declaration order.
+ *
+ * REFUSES a short-only option rather than filtering it away. Round 7 added an
+ * `-Z <v>` option plus a conditional keyed on it: the old `.filter()` dropped
+ * it, the coverage case never mentioned it, and the mutant was green. A
+ * narrowing that silently discards its awkward input is a hole wearing a type
+ * guard's clothes — every option this command has today is long-form, so the
+ * refusal costs nothing until someone adds one, which is exactly when it
+ * should speak up.
+ */
 function declaredLongs(command: Command): string[] {
-  return command.options
-    .map((option) => option.long)
-    .filter((long): long is string => typeof long === 'string');
+  return command.options.map((option) => {
+    if (typeof option.long !== 'string') {
+      throw new Error(
+        `start-alb declares a short-only option (${option.flags}); the wiring matrix keys on ` +
+          '`--long`, so give it a long form or teach declaredLongs how to drive it.'
+      );
+    }
+    return option.long;
+  });
 }
 
 const warningsFor = (strategy: EmulatorStrategy): string[] =>
@@ -184,7 +208,15 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
    */
   const SAMPLE_VALUES: Record<string, string> = {
     '--state-bucket': 'cdkd-state-111122223333',
-    '--state-prefix': 'cdkd',
+    // NOT the commander default `cdkd` — see the sample-vs-default case below.
+    '--state-prefix': 'custom-prefix',
+    // Optional-argument options (`[arg]`). Passed BARE, commander sets them to
+    // boolean `true`, and every `typeof options.x === 'string'` conditional
+    // survives — which is the shape a real refactor keyed on one of these
+    // takes, since it wants the NAME, not the flag's presence.
+    '--from-cfn-stack': 'DeployedStack',
+    '--assume-role': 'arn:aws:iam::111122223333:role/Task',
+    '--assume-task-role': 'arn:aws:iam::111122223333:role/LegacyTask',
     '--image-override': 'Svc=Dockerfile',
     '--image-build-arg': 'KEY=VAL',
     '--image-build-secret': 'id=src',
@@ -195,17 +227,17 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
     '--bearer-token': 'jwt',
     '--cluster': 'cdkd-local',
     '--env-vars': 'overrides.json',
-    '--container-host': '127.0.0.1',
+    '--container-host': '127.0.0.2',
     '--ecr-role-arn': 'arn:aws:iam::111122223333:role/EcrPull',
     '--platform': 'linux/amd64',
-    '--max-tasks': '2',
-    '--restart-policy': 'always',
+    '--max-tasks': '5',
+    '--restart-policy': 'none',
     '--stack-region': 'us-west-2',
     '--shadow-ready-timeout': '1000',
     '--profile': 'dev',
     '--role-arn': 'arn:aws:iam::111122223333:role/Deploy',
     '--app': 'cdk.out',
-    '--output': 'cdk.out',
+    '--output': 'other-cdk-out',
     '--context': 'key=value',
     '--region': 'us-west-2',
   };
@@ -254,6 +286,25 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
         .sort(),
       'These SAMPLE_VALUES / NOT_VARIED entries name options `start-alb` no longer declares.'
     ).toEqual([]);
+    // A sample equal to the option's own default varies PRESENCE but not
+    // VALUE, so every `options.x !== <default>` conditional survives. Round 7
+    // measured three of them shipping that way (`--state-prefix` `cdkd`,
+    // `--output` `cdk.out`, `--container-host` `127.0.0.1`) and showed the
+    // class was systematic by planting a fourth: nothing compared a sample
+    // against `option.defaultValue`. Now something does.
+    const defaultsByLong = new Map(
+      cmd.options.map((option) => [option.long, option.defaultValue] as const)
+    );
+    expect(
+      Object.entries(SAMPLE_VALUES)
+        .filter(([long, value]) => String(defaultsByLong.get(long) ?? '\u0000') === value)
+        .map(([long]) => long)
+        .sort(),
+      'These SAMPLE_VALUES equal their option\'s commander default, so the case varies whether ' +
+        'the flag was PASSED but not what it was set to — a conditional keyed on the value ' +
+        'differing from the default would survive. Pick a value the default cannot produce.'
+    ).toEqual([]);
+
     // NOT_VARIED is the one way to opt an option OUT of the check above, so it
     // is pinned rather than trusted. Measured: without this, excusing a real
     // flag (`--watch`) passed silently.
@@ -273,6 +324,14 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
     // survived the option-derived matrix — every case passed a target. Omitting
     // it is a real invocation: in a TTY the engine multi-selects interactively.
     const strategy = await strategyHandedToEngine(['--from-state']);
+    expect(warningsFor(strategy).join('\n')).toContain('ApiFnE0725F78');
+  });
+
+  it('warns with MULTIPLE <targets>', async () => {
+    // The positional is variadic, and closing `targets.length === 0` left
+    // `targets.length > 1` one line away — measured surviving in round 7. Both
+    // ends of the count are now driven.
+    const strategy = await strategyHandedToEngine(['My/Alb', 'My/OtherAlb', '--from-state']);
     expect(warningsFor(strategy).join('\n')).toContain('ApiFnE0725F78');
   });
 
