@@ -477,6 +477,24 @@ export function buildReport(integDir: string = INTEG_DIR): ScenarioCoverageRepor
   };
 }
 
+/**
+ * Escape a value so it occupies exactly ONE Markdown table cell (issue #2545).
+ *
+ * In GitHub-flavoured Markdown a `|` inside a table row is a cell delimiter
+ * even when it sits inside an inline code span — backticks do NOT protect it,
+ * because the row is split into cells before inline parsing runs. Six
+ * `KNOWN_SCENARIOS` descriptions contain one (`invoke|start-api|run-task`,
+ * `-c phase=a|b`, `<databaseName>|<tableName>`, …), and interpolating them
+ * unescaped rendered those rows with up to six columns against a three-column
+ * header, putting every fixture link under a heading that did not name it.
+ *
+ * Applied to EVERY interpolated cell rather than only the description fields:
+ * the descriptions are the only ones that carry a pipe today, but a scenario
+ * tag or a fixture name is no more escaped by construction than they were, and
+ * the cost of covering them is nil.
+ */
+const escapeCell = (value: string): string => value.replace(/\|/g, '\\|');
+
 export function renderMarkdown(report: ScenarioCoverageReport): string {
   const lines: string[] = [];
   lines.push('---');
@@ -530,8 +548,12 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
     lines.push('| Scenario | Description |');
     lines.push('|---|---|');
     for (const tag of report.orphanScenarios) {
-      const desc = KNOWN_SCENARIOS[tag];
-      lines.push(`| \`${tag}\` | ${desc} |`);
+      // `?? ''` because this branch resolves the description from the module
+      // GLOBAL rather than from `report`, so a tag outside the taxonomy — which
+      // `buildReport` never produces but a direct caller can pass — used to
+      // interpolate the literal string `undefined` into the cell.
+      const desc = KNOWN_SCENARIOS[tag] ?? '';
+      lines.push(`| \`${escapeCell(tag)}\` | ${escapeCell(desc)} |`);
     }
     lines.push('');
   } else {
@@ -550,7 +572,9 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
     const fixtures = entry.fixtures.length === 0
       ? '_(orphan)_'
       : entry.fixtures.map((f) => `[\`${f}\`](${githubTree(`tests/integration/${f}/`)})`).join('<br>');
-    lines.push(`| \`${entry.scenario}\` | ${entry.description} | ${fixtures} |`);
+    lines.push(
+      `| \`${escapeCell(entry.scenario)}\` | ${escapeCell(entry.description)} | ${escapeCell(fixtures)} |`
+    );
   }
   lines.push('');
 

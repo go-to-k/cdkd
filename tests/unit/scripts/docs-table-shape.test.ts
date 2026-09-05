@@ -32,22 +32,15 @@ const ROOT = resolve(import.meta.dirname, '../../..');
 const DOCS = join(ROOT, 'docs');
 
 /**
- * The ONE generator-written page that currently emits ragged rows: its
- * generator interpolates descriptions containing `|` without escaping, open as
- * go-to-k/cdkd#2545. Excluded as a SOURCE only.
- *
- * Exactly one entry, deliberately. The first cut listed all three top-level
- * coverage matrices; measured, the other two carry ZERO violations, so their
- * entries removed 172 rows from the fence's reach while excusing nothing. And
- * `docs/_generated/**` is NOT excluded at all — being machine-written is not
- * the boundary, having a known open defect is.
- *
- * The entry cannot go stale silently: a test below asserts this file still HAS
- * violations, so when go-to-k/cdkd#2545 lands the fence fails and tells you to
- * delete the entry.
+ * There is NO exclusion list. There was exactly one entry —
+ * `scenario-coverage.md`, whose generator interpolated descriptions containing
+ * `|` unescaped — and go-to-k/cdkd#2545 fixed the generator
+ * (`scripts/build-scenario-coverage-matrix.ts`'s `escapeCell`), which is what
+ * the companion test asserting the exclusion still excused something was there
+ * to force. Machine-written pages are NOT excluded as a class: being generated
+ * was never the boundary, having a known open defect was, and a generator
+ * emitting a ragged row is a defect in the generator.
  */
-const GENERATOR_OWNED = new Set(['scenario-coverage.md']);
-
 const walk = (dir: string): string[] =>
   readdirSync(dir).flatMap((entry) => {
     const full = join(dir, entry);
@@ -124,7 +117,7 @@ const scan = (markdown: string, file: string): ScanResult => {
 };
 
 describe('published docs tables', () => {
-  const files = walk(DOCS).filter((f) => !GENERATOR_OWNED.has(relative(DOCS, f)));
+  const files = walk(DOCS);
   const scanned = files.map((f) => scan(readFileSync(f, 'utf8'), relative(DOCS, f)));
 
   it('still SEES its input — floors on what the scan itself examined', () => {
@@ -175,16 +168,11 @@ describe('published docs tables', () => {
     ).toEqual([]);
   });
 
-  it('still needs every file it excludes', () => {
-    // An exclusion that stopped excusing anything would sit there forever,
-    // quietly shrinking the fence's reach. When go-to-k/cdkd#2545 escapes the
-    // generator's pipes this fails, naming the entry to delete.
-    for (const name of GENERATOR_OWNED) {
-      const found = scan(readFileSync(join(DOCS, name), 'utf8'), name).ragged;
-      expect(
-        found.length,
-        `docs/${name} no longer has ragged rows — remove it from GENERATOR_OWNED`
-      ).toBeGreaterThan(0);
-    }
+  it('reaches the page that used to be excluded', () => {
+    // go-to-k/cdkd#2545's page was the fence's only exclusion. Naming it here
+    // keeps the widening from being undone by a `walk` change: an empty
+    // `ragged` list is the same green whether the file was scanned and clean or
+    // never scanned at all.
+    expect(files.map((f) => relative(DOCS, f))).toContain('scenario-coverage.md');
   });
 });
