@@ -39,11 +39,27 @@ import { dirname, join } from 'node:path';
  *     the earlier overlap case confounded `sort -u` with the `have` filter
  *   - each deny-list entry individually, including the per-channel
  *     `released on @<channel>` form semantic-release actually emitted
+ *   - the QUALIFIED `owner/repo#N` form (issue go-to-k/cdkd#2661), which this
+ *     repo's own convention asks for and which the regex could not read: three
+ *     of the four PRs merged 2026-09-05 inherited no labels at all
+ *   - and, for each branch that interpolates the repo name, BOTH directions
+ *     under a metachar repo name -- the literal form still harvested AND the
+ *     wildcard near-miss rejected. The negative alone cannot tell "escaped
+ *     correctly" from "escaped into oblivion": go-to-k/cdkd#2661's first fix
+ *     emitted a doubled backslash, matched nothing, regressed the URL branch,
+ *     and left every assertion green
  *
  * Mutation-probed 2026-08-26: removing the deny list fails 7 of 17; dropping
  * `sort -u`, re-pointing the POST, accepting the `Closes (#N)` paren form, and
  * narrowing the deny list back to a fixed `released on @experimental` each fail
  * exactly 1.
+ *
+ * Re-probed 2026-09-06 over 24 cases (go-to-k/cdkd#2661): dropping the
+ * qualified alternative, raw-interpolating `$REPO` into the URL branch, and
+ * the doubled-backslash escape each fail exactly the branch they break --
+ * 1, 1 and 2 respectively. Deleting the URL branch outright fails 2; deleting
+ * the qualified branch fails 2, so neither is rescued by the bare-`#`
+ * fallback.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const WORKFLOW = join(repoRoot, '.github', 'workflows', 'pr-inherit-issue-labels.yml');
@@ -181,6 +197,108 @@ describe('pr-inherit-issue-labels workflow', () => {
       ISSUE_12: 'bug',
     });
     expect(theirs.posted).toEqual([]);
+  });
+
+  it('matches the `owner/repo#N` form for THIS repo (issue go-to-k/cdkd#2661)', () => {
+    // The repo's own convention asks for the qualified `owner/repo#N` spelling
+    // in published artifacts, so this is the form most PR bodies actually
+    // carry. Measured on 2026-09-05: three of four merged PRs inherited NO
+    // labels because the regex accepted only a bare `#N` or a full URL.
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cdkd#41',
+      ISSUE_41: 'severity:medium|effort:small',
+    });
+    expect(posted).toEqual(['effort:small', 'severity:medium']);
+  });
+
+  it('does NOT harvest an `owner/repo#N` reference to ANOTHER repo', () => {
+    // The failure a naive widening introduces: cdkd PR bodies routinely close
+    // a cdkd issue while CITING an upstream one, so labelling this PR from
+    // `go-to-k/cdk-local#699` would be labelling from a different tracker.
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cdk-local#699',
+      ISSUE_699: 'bug',
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it('still matches the LITERAL form of a repo name containing a metachar', () => {
+    // The positive twin of the case below, and the one that discriminates.
+    // The negative alone is one-sided: an OVER-escape that breaks matching
+    // outright also passes it. Shipped review round 1 emitted `\\.` (a literal
+    // backslash then a wildcard), so a dotted repo matched nothing at all --
+    // and the pre-existing URL branch regressed with it -- while every
+    // assertion stayed green.
+    const { posted } = run({
+      REPO: 'go-to-k/cd.d',
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cd.d#5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual(['bug']);
+  });
+
+  it('still matches a full issue URL when the repo name contains a metachar', () => {
+    const { posted } = run({
+      REPO: 'go-to-k/cd.d',
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes https://github.com/go-to-k/cd.d/issues/5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual(['bug']);
+  });
+
+  it('treats the hardcoded `github.com` dot as a literal', () => {
+    // The last unpinned escape in the pattern, found by the round-3 probe:
+    // unescaping this dot left all 24 cases green, so nothing said the host
+    // was matched literally rather than as a wildcard. Correct as written --
+    // this case is what keeps it that way.
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes https://githubXcom/go-to-k/cdkd/issues/5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it('treats a metachar as a literal in the URL branch too', () => {
+    // The negative twin for the URL branch specifically. Round 2 measured that
+    // escaping the qualified branch while interpolating the RAW `$REPO` into
+    // the URL branch left all 23 other cases green -- the same one-sided gap
+    // round 1 found, one branch over. The case at 'matches a full issue URL in
+    // THIS repo but not in another' cannot catch it, because it uses
+    // `go-to-k/cdkd`, where the escaped and raw spellings are identical.
+    const { posted } = run({
+      REPO: 'go-to-k/cd.d',
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes https://github.com/go-to-k/cdXd/issues/5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it('treats a regex metachar in the repo name as a literal', () => {
+    // `$REPO` is interpolated into an ERE. Unescaped, the `.` here is a
+    // wildcard and `go-to-k/cdXd#5` passes as this repo -- a near-miss repo
+    // harvesting labels into ours. Nothing covered this before go-to-k/cdkd#2661.
+    const { posted } = run({
+      REPO: 'go-to-k/cd.d',
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cdXd#5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it('does NOT treat a repo whose name PREFIXES this one as this repo', () => {
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cdkd-extra#77',
+      ISSUE_77: 'bug',
+    });
+    expect(posted).toEqual([]);
   });
 
   it('posts to THIS PR\'s labels endpoint, not somewhere else', () => {

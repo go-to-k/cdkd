@@ -17,7 +17,8 @@ name: PR inherit issue labels
 # definition from the BASE branch with a write token, which is safe here only
 # because the sole PR-controlled input is the body TEXT: it is fetched
 # server-side with `gh pr view` rather than interpolated from the event payload,
-# and it is scanned for `#<digits>` and never handed to a shell.
+# and it is scanned for `#<digits>`, `<owner>/<repo>#<digits>` and the issue
+# URL form, never handed to a shell.
 #
 # ADD-ONLY. Labels already on the PR are never removed: a human may have
 # curated them, and this workflow re-runs on every `edited`.
@@ -61,16 +62,30 @@ jobs:
             -q '"\(.title)\n\(.body // "")"')
 
           # GitHub's auto-close grammar: a closing keyword, then a parens-FREE
-          # `#N` or a full issue URL in THIS repo. The `Closes (#N)` paren form
+          # `#N`, the qualified `owner/repo#N`, or a full issue URL -- the last
+          # two for THIS repo only. The `Closes (#N)` paren form
           # is deliberately NOT matched -- it does not auto-close either, and
           # `.claude/hooks/closes-paren-form-gate.sh` refuses a merge that uses
           # it, so matching it here would paper over that gate.
+          #
+          # The qualified form is load-bearing, not a nicety: this repo's own
+          # convention asks for `owner/repo#N` in published artifacts, so it is
+          # the spelling most PR bodies carry -- and it was the one form the
+          # regex could not read (issue go-to-k/cdkd#2661; measured 2026-09-05,
+          # three of four merged PRs inherited no labels). Restricting it to
+          # THIS repo is what stops a cdkd PR being labelled from an upstream
+          # `go-to-k/cdk-local#699` it merely cites.
+          #
+          # `$REPO` is interpolated into an ERE, so a `.` in either half of
+          # `owner/name` would act as a wildcard and let a near-miss repo pass
+          # as this one. Escape it rather than trusting today's name.
+          repo_re=$(printf %s "$REPO" | sed 's/[.[\\*^$()+?{|]/\\&/g')
           #
           # `|| true` on both greps: `set -o pipefail` plus a no-match grep
           # makes the whole substitution fail, and "this PR closes no issue" is
           # the ordinary case, not an error.
           numbers=$( { printf '%s\n' "$body" \
-            | grep -oiE "\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\b[[:space:]]*:?[[:space:]]+(https://github\\.com/$REPO/issues/|#)[0-9]+" \
+            | grep -oiE "\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\b[[:space:]]*:?[[:space:]]+(https://github\\.com/$repo_re/issues/|$repo_re#|#)[0-9]+" \
             | grep -oE '[0-9]+$' \
             | sort -u; } || true)
 
