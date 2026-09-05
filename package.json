@@ -103,7 +103,7 @@
     "archiver": "^7.0.0",
     "cdk-local": "^0.147.7",
     "chokidar": "^5.0.0",
-    "commander": "^12.0.0",
+    "commander": "^15.0.0",
     "graphlib": "^2.1.8",
     "graphql": "^16.14.0",
     "http-proxy-agent": "^9.1.0",
