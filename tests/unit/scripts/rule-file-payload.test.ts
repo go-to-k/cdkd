@@ -563,6 +563,16 @@ const NAMED_BLANK: Record<string, string> = {
   zerowidthspace: '\u200b',
   nobreak: '\u2060',
   af: '\u2061',
+  applyfunction: '\u2061',
+  it: '\u2062',
+  invisibletimes: '\u2062',
+  ic: '\u2063',
+  invisiblecomma: '\u2063',
+  negativethinspace: '\u200b',
+  negativeverythinspace: '\u200b',
+  negativemediumspace: '\u200b',
+  negativethickspace: '\u200b',
+  thickspace: '\u205f',
   ensp: '\u2002',
   emsp: '\u2003',
   emsp13: '\u2004',
@@ -656,9 +666,20 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
       // file containing `[&#x110000;](x.md)` would abort this case with a
       // RangeError instead of failing with its own message. Out of range is
       // left as written, which is what a browser shows.
-      .replace(/&#x([0-9a-f]+);/gi, (whole: string, h: string) => codePoint(parseInt(h, 16), whole))
-      .replace(/&#(\d+);/g, (whole: string, d: string) => codePoint(Number(d), whole))
-      .replace(/&([a-z][a-z0-9]*);/gi, (whole, n: string) => NAMED_BLANK[n.toLowerCase()] ?? whole)
+      // ONE pass over all three spellings. Three sequential passes let the
+      // output of one be re-read by the next: `&#x26;#8203;` decoded to `&`,
+      // which the decimal pass then read as `&#8203;` and blanked, dropping a
+      // pointer a browser renders as the literal text `&#8203;`. Same class as
+      // the `&amp;`-LAST ordering on the href decoder, and one pass is a fix
+      // that cannot recur rather than an ordering that must be argued again.
+      .replace(
+        /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));/gi,
+        (whole: string, hex?: string, dec?: string, name?: string) => {
+          if (hex !== undefined) return codePoint(parseInt(hex, 16), whole);
+          if (dec !== undefined) return codePoint(Number(dec), whole);
+          return NAMED_BLANK[name!.toLowerCase()] ?? whole;
+        },
+      )
       // Everything here is zero-width or a separator: nothing a reader sees.
       // `trim()` alone would not do it -- it removes White_Space only, and a
       // zero-width space is not White_Space.
@@ -1634,7 +1655,25 @@ describe('.claude/rules payload fence', () => {
     // stops being a pointer -- passed all 23 blanks, all 4 media cases and
     // every other control. A decoder needs a case in BOTH directions or only
     // its over-stripping half is fenced.
-    for (const seen of ['x', '&amp;', '&#65;', '&#x41;', '&lt;', '0']) {
+    // `&#x110000;` / `&#1114112;` pin the codePoint GUARD, which review found
+    // shipping unpinned: reverting it to a bare `String.fromCodePoint` threw a
+    // RangeError on this input while leaving all 60 other assertions green.
+    // Out of range stays literal text, which is what a browser shows.
+    //
+    // `&#x26;#8203;` pins the SINGLE-PASS decode: three sequential passes read
+    // it as `&` then `&#8203;` and blanked it, dropping a pointer whose text a
+    // browser renders literally.
+    for (const seen of [
+      'x',
+      '&amp;',
+      '&#65;',
+      '&#x41;',
+      '&#x110000;',
+      '&#1114112;',
+      '&#x26;#8203;',
+      '&lt;',
+      '0',
+    ]) {
       expect(t(`[${seen}](real.md)`), `[${seen}](...) renders something`).toEqual(['real.md']);
     }
     // EVERY key in the map must actually blank a link, asserted by round-trip
@@ -1661,6 +1700,12 @@ describe('.claude/rules payload fence', () => {
       deadKeys,
       `these NAMED_BLANK keys do not blank a link, so they are inert: ${deadKeys.join(', ')}. The lookup lowercases the entity name, and the scan only matches /&[a-z][a-z0-9]*;/i.`,
     ).toEqual([]);
+
+    // The generic tag strip, also found unpinned: without it an anchor whose
+    // only content is an empty inline element is credited as a pointer.
+    for (const empty of ['<b></b>', '<span></span>', '<kbd></kbd>']) {
+      expect(t(`[${empty}](ghost.md)`), `${empty} renders nothing`).toEqual([]);
+    }
 
     // Media that renders on its own is content; a container that renders
     // nothing without children is not.
