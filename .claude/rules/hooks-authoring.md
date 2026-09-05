@@ -2,6 +2,7 @@
 description: Authoring a cdkd hook - why every Bash gate stays unconditional, and the unquoted-heredoc trap that executes a refusal message's worked example instead of printing it
 paths:
   - '.claude/hooks/*.sh'
+  - '.claude/settings.json'
 ---
 
 # Why every Bash gate stays unconditional
