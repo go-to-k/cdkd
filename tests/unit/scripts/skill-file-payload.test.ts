@@ -136,11 +136,11 @@ const MIN_REFERENCE_FILES = 6;
 // here.
 // RE-DERIVED DOWNWARD 208_000 -> 145_000 by the 2026-09-04 corpus compression
 // pass, exactly the move the assertion's failure message prescribes for a
-// genuine compression ("re-derive it DOWNWARD in the same commit"). Inputs are
-// in MEASURED and asserted: corpus 171,399 B, largest verify.md 27,036 B,
-// runner-up implement.md 26,541 B. The floor must clear `corpus - largest`
-// (144,363) and `corpus - runnerUp` (144,858, the binding direction);
-// 145,000 clears them by 637 and 142 B. Growth in a NON-leader file erodes
+// genuine compression ("re-derive it DOWNWARD in the same commit"). Its inputs
+// AT THAT DATE -- not now; MEASURED holds the live ones and the assertion
+// recomputes the property -- were corpus 171,399 B, largest verify.md 27,036 B,
+// runner-up implement.md 26,541 B, clearing `corpus - largest` (144,363) and
+// `corpus - runnerUp` (144,858, the binding direction) by 637 and 142 B. Growth in a NON-leader file erodes
 // the either-largest margin first -- MEASURED's failure message reports both
 // margins, so the next lapse reds this file at the commit that causes it.
 // The 2026-09-04 retro (go-to-k/cdkd#2514's run) spent most of the 3,366 B the
@@ -376,17 +376,18 @@ const MIN_REFERENCE_FILES = 6;
 // `.claude/rules/testing.md` (a guard's uses are its CALL SITES, not the first
 // one) and a fence in work-issues-launch-mode.test.ts pinning the ranged
 // probe. Read that fence's own history before writing the next one, because it
-// is the sharpest thing this round produced. It took FIVE drafts, and every
-// failure was the class the fence exists to catch: an inert FLOOR; then a
-// recogniser seeing only column-0 ```bash fences; then a line scan that closed
-// those, regressed the floor, and went blind to any command whose line does
-// not start with `git`; then a union still anchored on a line-leading git, so
-// a bullet or blockquote escaped. Each draft passed its own battery because
-// each battery varied only what the PREVIOUS round had found -- fence style,
-// then command shape, then carrier. The current one varies all three, and the
-// widening that closed the last of them immediately reported a FALSE POSITIVE
-// its own suite caught (a doc DISCUSSING the probe is not a second copy), so
-// the ban and the uniqueness check now take deliberately different extractions.
+// is the sharpest thing this round produced. Every draft of it failed in the
+// class the fence exists to catch: an inert FLOOR; then a recogniser seeing
+// only column-0 ```bash fences; then a line scan that closed those, regressed
+// the floor, and went blind to any command whose line does not start with
+// `git`; then a union still anchored on a line-leading git, so a bullet or
+// blockquote escaped; then a delimiter CLASS, which still let `**git …**`,
+// `"git …"` and `<code>git …</code>` through. Each passed its own battery,
+// because each battery varied only what the PREVIOUS round had found -- fence
+// style, then command shape, then carrier, then delimiter. It ends on the
+// weakest matcher that punctuation cannot evade, the token `git` itself, with
+// the peer predicate qualified by `<MAIN_CHECKOUT>` so one extraction serves
+// both questions.
 // If there is one transferable lesson here it is that a fence's battery
 // inherits the imagination of the round that wrote it.
 // The next addition here has to be paid for by compression FIRST -- retro.md
