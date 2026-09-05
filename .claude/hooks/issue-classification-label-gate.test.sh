@@ -27,13 +27,23 @@
 #           transient gh failure must not stop a body edit)
 #   - PASS  for verbs deliberately not gated (`gh issue comment`), for a command
 #           that merely QUOTES the trigger, and in a repo that never opted in
+#   - BLOCK for a QUOTED `--body-file` path CONTAINING A SPACE and for the
+#           GLUED `-F<path>` spelling. This gate is the FOURTH site of one root
+#           cause (the english / dup-check / deferral gates are the others):
+#           the old value class could not span the space, nothing was
+#           extracted, the precedence chain ended at the whole SEGMENT -- which
+#           carries the PATH, not the body -- and no label was demanded at all
 #
-# Measured rather than asserted (2026-08-26), and re-measured after each fix:
-# an always-`exit 0` stub fails 14 of these and an always-`exit 2` stub fails 39
-# of 40, so neither direction can pass vacuously. Targeted mutants: the scan's
-# `[[:space:]]+` relaxed to `*` fails exactly 1 (the no-body space-rule case);
-# reverting the body-file precedence fails exactly 2 (both `--title` cases);
-# dropping the bare `-F <path>` arm fails exactly 1.
+# Measured rather than asserted, EVERY number re-taken 2026-09-05 on the
+# 44-case suite: an always-`exit 0` stub fails 16 and an always-`exit 2` stub
+# fails 43, so neither direction can pass vacuously. Targeted mutants: the
+# scan's `[[:space:]]+` relaxed to `*` fails exactly 1 (the no-body space-rule
+# case); reverting the body-file precedence (segment concatenated in FRONT)
+# fails exactly 2 (both `--title` cases); dropping the bare `-F <path>` arm
+# fails exactly 2; the shared `$GW` value class reverted to the old
+# `(["\x27]?)([^"\x27\s]+)\1` fails exactly 2 (the spaced-path case plus the
+# inline `--title` precedence case, which the old class parsed differently);
+# short-flag `[=\s]*` back to `[=\s]+` fails exactly 1 (the glued case).
 
 set -u
 
@@ -316,6 +326,30 @@ ISSUE_42="" \
   run_msg "edit: an issue with no labels at all is refused" \
   "gh issue edit 42 --body-file $BODY_BOTH" \
   "$TMPROOT" 2 "severity:high"
+
+# --- the quoted-value holes (2026-09-05) ------------------------------------
+# This gate is the FOURTH site of one root cause (english / dup-check /
+# deferral are the others): the value class `(["\x27]?)([^"\x27\s]+)\1`
+# cannot span a QUOTED PATH CONTAINING A SPACE, so nothing is extracted, the
+# precedence chain ends at the whole SEGMENT -- which carries the PATH but not
+# the body -- and the gate demands no label at all. FAIL-OPEN, and measured:
+# both blocking cases below are rc=0 against the pre-fix hook while the
+# unquoted twin gives 2. `-F<path>` glued is the same family: gh accepts it.
+CLSSPACE="$TMPROOT/dir with space"
+mkdir -p "$CLSSPACE"
+cp "$BODY_BOTH" "$CLSSPACE/both.md"
+run_msg "create: spaced --body-file path is read as the body" \
+  "gh issue create -t x --body-file \"$CLSSPACE/both.md\"" \
+  "$TMPROOT" 2 "severity:high"
+run "create: spaced --body-file path with the labels" \
+  "gh issue create -t x --body-file \"$CLSSPACE/both.md\" --label severity:high --label effort:large" \
+  "$TMPROOT" 0
+run_msg "create: glued -F<path> is read as the body" \
+  "gh issue create -t x -F$BODY_BOTH" \
+  "$TMPROOT" 2 "severity:high"
+run "create: glued -F<path> with the labels" \
+  "gh issue create -t x -F$BODY_BOTH --label severity:high --label effort:large" \
+  "$TMPROOT" 0
 
 # --- not gated / not armed --------------------------------------------------
 run "gh issue comment is not gated" \

@@ -1201,6 +1201,81 @@ GATE_PATH_TOKEN='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)'
 # a pattern that silently never matched (go-to-k/cdkd#2027 review round 4).
 GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 
+# ── A shell WORD, for the gates that extract with PERL ─────────────────────
+#
+# `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
+# `[[ =~ ]]`. Three gates -- issue-deferral-criteria, gh-body-english,
+# issue-dup-check -- pull a `--body-file` path or an inline `--body` value out
+# of RAW command text with `perl -0777` instead, because they need a GLOBAL
+# scan over a multi-line slurp and `[[ =~ ]]` gives neither. All three spelled
+# the value class `(["']?)([^"'\s]+)\1`, and that shape had TWO MEASURED
+# holes, both fail-OPEN (go-to-k/cdkd, 2026-09-05):
+#
+#   gh issue create --body-file "<dir with space>/x.md"
+#     The bare class cannot span the space, and with the optional quote group
+#     unset it cannot start on the quote either, so NOTHING is extracted and
+#     the gate judges an empty body. Measured: issue-deferral-criteria-gate
+#     rc=0 on a PR-shaped deferral where the unquoted spelling gave 2, and
+#     gh-body-english-gate rc=0 on a JAPANESE body where the unquoted spelling
+#     gave 2 -- the English-only rule was bypassable by putting the body file
+#     in a directory whose name contains a space.
+#
+#   gh api repos/O/R/issues -f body='<text>'
+#     gh's OWN documented spelling puts the quote INSIDE the value, after the
+#     `body=`. An alternation tried AFTER the literal `body=` falls through to
+#     `\S+` and captures `body='a`. Measured on issue-deferral-criteria-gate:
+#     rc=0, where `-f 'body=<text>'` (quote OUTSIDE, the only shape its suite
+#     covered) gave 2.
+#
+# So the value class is defined ONCE, here, rather than a fourth time in the
+# next hook that needs it. `GATE_PERL_WORD` is a perl PRELUDE, not a regex: a
+# caller prefixes it to its own program --
+#
+#   perl -0777 -ne "$GATE_PERL_WORD"'
+#     while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }'
+#
+# -- and it defines two names:
+#
+#   $GW        ONE shell word that may EMBED quoted spans: the perl twin of
+#              `_GATE_WORD_CHAR`. `body='a b c'` is one word, `"/a b/x.md"` is
+#              one word, and a bare run still stops at whitespace.
+#   gate_unq   the shell's own unquoting of such a word, so a caller gets the
+#              string gh actually receives: spans unwrapped, and `\X` unescaped
+#              exactly where the shell would unescape it (inside a
+#              double-quoted span only for `\ " $` and a backtick; never inside
+#              a single-quoted one, which takes no escapes).
+#
+# UNBALANCED quotes are not a regression risk here: `$GW`'s bare alternative
+# excludes both quote characters, so a word like `/tmp/o'neill/x.md` stops at
+# the apostrophe -- which is exactly where the old class stopped too.
+#
+# A hook using this MUST also assert `GATE_PERL_WORD` is non-empty in its
+# library-load guard. Left undefined, `$GW` interpolates as the EMPTY string,
+# `($GW)` then matches empty at every position, and the extraction yields empty
+# values that every caller skips -- a silent fail-open, which is the exact
+# class this constant closes.
+#
+# The apostrophes below are spelled `\x27` -- a PERL escape, valid in a regex
+# and in a substitution alike -- because this is a bash SINGLE-QUOTED string
+# and a literal apostrophe would end it. The `'"'"'` idiom used elsewhere in
+# this file would work too, and is unreadable at this density.
+GATE_PERL_WORD='
+  my $GW = qr/(?:"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\\.|[^\s"\x27])+/;
+  sub gate_unq {
+    my ($t) = @_;
+    my $o = "";
+    while (length $t) {
+      if ($t =~ s/^"((?:[^"\\]|\\.)*)"//s) {
+        my $s = $1; $s =~ s/\\([\\"\$`])/$1/gs; $o .= $s;
+      } elsif ($t =~ s/^\x27([^\x27]*)\x27//s) { $o .= $1;
+      } elsif ($t =~ s/^\\(.)//s)              { $o .= $1;
+      } elsif ($t =~ s/^([^"\x27\\]+)//s)      { $o .= $1;
+      } else { $t =~ s/^(.)//s; $o .= $1; }
+    }
+    return $o;
+  }
+'
+
 # The regexes, kept here so every gate spells its verb the same way. Each is
 # anchored at the START of a segment; `git -C <path>` / `git -c k=v` and
 # `gh -C <path>` are absorbed — including a QUOTED path containing spaces, which

@@ -58,53 +58,55 @@ Twenty additional one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/commit-msg-heredoc-gate.sh`** blocks
   `git commit -m "$(cat <<'EOF' ... EOF)"`-style invocations — outer-shell
-  quote tracking miscounts on apostrophes / backticks; use
-  `git commit -F <file>` instead.
+  quote tracking miscounts on apostrophes / backticks; use `git commit -F
+  <file>`.
 
 - **`.claude/hooks/closes-paren-form-gate.sh`** blocks `gh pr merge <N>` when
   the PR body uses `Closes (#N)` / `Fixes (#N)` / `Resolves (#N)` — GitHub's
   auto-close grammar needs parens-free `#N`, so the parens form leaves the
-  issue OPEN after merge (the PR #509-#514 trap, 2026-05-22). **Fail-open on
-  `gh pr view` non-zero exit, but with a LOUD stderr warning** — the old
-  `|| true` swallow let PR #671 (#668, 2026-05-27) merge with `Closes (#668).`
-  undetected. Empty body passes silently. Smoke test:
-  `closes-paren-form-gate.test.sh` (13 cases).
+  issue OPEN after merge (the PR #509-#514 trap). **Fail-open on `gh pr view`
+  non-zero exit, but with a LOUD stderr warning** — the old `|| true` swallow
+  let PR #671 merge with `Closes (#668).` undetected. Empty body passes
+  silently. Smoke test: `closes-paren-form-gate.test.sh` (13 cases).
 
 - **`.claude/hooks/gh-pr-edit-deprecation-gate.sh`** blocks
   `gh pr edit --title` / `--body` — they fail SILENTLY on a GraphQL
   Projects-classic deprecation; use
-  `gh api -X PATCH repos/<owner>/<repo>/pulls/<N> -f title=... -F body=@<file>`.
+  `gh api -X PATCH repos/<o>/<r>/pulls/<N> -f title=... -F body=@<file>`.
 
 - **`.claude/hooks/provider-docs-gate.sh`** blocks `git commit` when staged
   `src/provisioning/register-providers.ts` adds a new
   `registry.register('AWS::Service::Type', ...)` call whose type is not in
   **both** `docs/supported-resources.md` and `docs/import.md` (PRs #210-#216
-  shipped 7 undocumented types; post-merge audit #219 caught it).
+  shipped 7 undocumented types).
 
 - **`.claude/hooks/pr-body-item-number-gate.sh`** blocks `gh pr create` /
   `gh pr edit` / `gh issue create` / `gh issue comment` /
   `gh api -X PATCH .../pulls|issues/...` whose body file (`--body-file <FILE>`
   or `-F`/`--field body=@<FILE>`) contains bare `#N` that GitHub auto-links
   (the "review-fix #4 → linked to unrelated PR #4" trap, PR #237).
-  Allow-listed: `closes #N`, `(#N)`, fenced code blocks, GitHub URLs,
-  backtick spans, and the cross-repo `owner/repo#N` form (go-to-k/cdkd#1992 —
-  `/work-issues` §10-c mandates it; both slug segments must contain a letter
-  so `step 1/2#3` stays blocked).
+  Allow-listed: `closes #N`, `(#N)`, fenced code blocks, GitHub URLs, backtick
+  spans, and the cross-repo `owner/repo#N` form (both slug segments must
+  contain a letter so `step 1/2#3` stays blocked).
   **A body file the command has not written yet no longer passes silently**
-  (#2397): in the one-call `heredoc -> file -> --body-file` shape the path
-  is absent at PreToolUse time and `[[ ! -f ]] && continue` was a silent
-  PASS. The siblings' whole-command fallback was tried and REJECTED (this
-  gate objects to content it FINDS — measured, an item number in a `--title`
-  or an earlier `git commit -m` took an ordinary command from 0 to 2); it
-  extracts the HEREDOC BODIES that write the named path instead (same
-  extraction and known limit as `gh-body-english-gate.sh`: a `printf > f`
-  body at an absent path passes). Evidence pair:
-  go-to-k/cdk-real-drift#1841 (one-call, bare `#1319` / `#1066`, not fired)
-  vs #1844 (separate call, same file, blocked). A file that EXISTS is also
-  scanned from the command when the command REWRITES it — otherwise the gate
-  judges the PREVIOUS body. Smoke test: `pr-body-item-number-gate.test.sh`
-  (41 cases; blocking cases fail against the pre-#2397 hook, controls pass
-  there).
+  (#2397): in the one-call `heredoc -> file -> --body-file` shape the path is
+  absent at PreToolUse time and `[[ ! -f ]] && continue` was a silent PASS. The
+  siblings' whole-command fallback was tried and REJECTED (this gate objects to
+  content it FINDS — measured, an item number in a `--title` took an ordinary
+  command from 0 to 2); it extracts the HEREDOC BODIES that write the named
+  path instead (same extraction and known limit as `gh-body-english-gate.sh`).
+  A file that EXISTS is also scanned from the command when the command REWRITES
+  it — otherwise the gate judges the PREVIOUS body. **The FIFTH site of the `GATE_PERL_WORD` root cause** (see
+  below): a quoted `--body-file` path with a SPACE, a quoted `-F body=@<p>`,
+  and the glued `-Fbody=@<p>` all extracted NOTHING, so no body was scanned —
+  measured rc=0 where the plain spelling gave 2. Still a KNOWN LIMIT here: a
+  bare `-F <path>` is not read at all (the four siblings do read it, but they
+  scope to the gh SEGMENT; this gate scans the whole command, so a bare `-F`
+  arm would also read `git commit -F <msg>` and turn a `#4` in a commit
+  message into a false refusal). Smoke test:
+  `pr-body-item-number-gate.test.sh` (49 cases; blocking cases fail against
+  the pre-#2397 hook, controls pass there. Probed 2026-09-05: `exit 0` stub
+  26, `exit 2` 23, `$GW` reverted 4, short-flag `[=\s]*` → `+` 1).
 
 - **`.claude/hooks/internal-pr-labels-gate.sh`** blocks `git commit` when
   staged `README.md` / `docs/*.md` add `(PR 8b)` / `(PR 6 of #224)` style
@@ -117,9 +119,9 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   `tests/**/*.test.ts` calls Commander's `cmd.parse([...])` without a nearby
   `.action(() => {})` stub (60-line lookback) — Node 24 escalates the real
   action handler's `process.exit(...)` unhandled rejection to a process exit
-  AFTER the assertion passed (PR #266, `tests/unit/cli/local-run-task.test.ts`).
-  `cmd.parseAsync(...)`, test files without `cmd.parse(...)`, and `src/**`
-  pass. Smoke test: `cmd-parse-stub-gate.test.sh`.
+  AFTER the assertion passed (PR #266). `cmd.parseAsync(...)`, test files
+  without `cmd.parse(...)`, and `src/**` pass. Smoke test:
+  `cmd-parse-stub-gate.test.sh`.
 
 - **`.claude/hooks/commit-prefix-scope-gate.sh`** blocks `git commit` with a
   `feat:` / `fix:` prefix when NO `src/**` file is staged — a
@@ -148,12 +150,12 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   staged files touch the integ-coverage matrix's source scope
   (`tests/integration/<name>/{lib,bin}/*.ts` or
   `src/provisioning/register-providers.ts`) AND `vp run integ-coverage` would
-  produce different `docs/integ-coverage.md` / `docs/_generated/integ-coverage.json`
-  than the working tree — pre-hook the only enforcement fired after commit +
-  push (CI hard-fail, `/verify-pr` step 5). Runs the real regenerator (~0.1s)
-  and **restores the originals before blocking** so the tree is not silently
-  modified; the user runs `vp run integ-coverage` + `git add` themselves.
-  Comment-only refactors pass. Smoke test:
+  produce a different `docs/integ-coverage.md` /
+  `docs/_generated/integ-coverage.json` than the working tree — pre-hook the
+  only enforcement fired after push (CI hard-fail). Runs the real regenerator
+  (~0.1s) and **restores the originals before blocking** so the tree is not
+  silently modified; the user runs `vp run integ-coverage` + `git add`
+  themselves. Comment-only refactors pass. Smoke test:
   `integ-coverage-matrix-gate.test.sh` (12 cases).
 
 - **`.claude/hooks/non-english-text-gate.sh`** blocks `gh pr create` /
@@ -162,10 +164,10 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   (or local `origin/main..HEAD` when no PR exists) contains non-English
   writing-system characters — hiragana (U+3040-U+309F), katakana
   (U+30A0-U+30FF), CJK ideographs (U+4E00-U+9FFF), Hangul (U+AC00-U+D7AF),
-  CJK punctuation (U+3000-U+303F). Closes the PR #521 gap (fixed up in
-  #523). Per-PR, not per-commit, by design (~100-250ms once vs ~30-150ms per
-  commit; `gh pr merge` is the one funnel every commit lands through).
-  Detection via `perl -CSD -ne` — BSD `grep` on macOS lacks PCRE.
+  CJK punctuation (U+3000-U+303F). Closes the PR #521 gap. Per-PR, not
+  per-commit, by design (~100-250ms once vs ~30-150ms per commit;
+  `gh pr merge` is the one funnel every commit lands through).
+  Detection via `perl -CSD -ne` (BSD `grep` lacks PCRE).
   **INERT until 2026-08-25, and its own suite certified it as working**: `gh`
   has NO `-C` flag (measured, gh 2.89.0: exit 1, `unknown shorthand flag`),
   so the "gh missing, fail open" guard fired unconditionally and the hook
@@ -174,20 +176,18 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   CERTIFIES a defect as fixed, strictly worse than no test. The stub now
   REJECTS `-C` as real gh does (fails 9 of 17 against the shipped hook); the
   hook's gh calls run in a subshell that `cd`s to the target (`git -C` is
-  untouched — git has the flag). Found while porting an unrelated gate to
-  cdk-real-drift, where the same shape had made the same hook inert.
+  untouched — git has the flag).
   **Sidecar allow-list `.claude/hooks/non-english-allowlist.txt`**: the gate
   reads each changed file's WHOLE content at the PR head, so a file that
   legitimately CONTAINS the characters blocks every PR touching it (measured
   2026-08-31: exactly three tracked files; two listed because the characters
-  ARE the subject under test — `gh-body-english-gate.test.sh`, a
-  `docker-cmd` fixture — the third was prose, translated instead). Three
+  ARE the subject under test, the third was prose, translated instead). Three
   load-bearing properties: paths match EXACTLY (never prefix/glob); the file
   resolves absolute from the HOOK's own directory (a target repo cannot ship
   exemptions); the list is NOT on itself, so its comments must DESCRIBE
-  content, never reproduce it (the first draft quoted the word and blocked
-  its own PR). An absent/unreadable list scans everything — the safe
-  direction. Skips binary / lockfile / asset extensions; fails open when
+  content, never reproduce it (the first draft quoted the word and blocked its
+  own PR). An absent/unreadable list scans everything — the safe direction.
+  Skips binary / lockfile / asset extensions; fails open when
   `gh` is missing or unauthenticated; em-dashes / curly quotes / box-drawing
   / arrows pass (writing systems only). **No bypass marker — translate the
   text.** Smoke test: `non-english-text-gate.test.sh` (30 cases, stub strict
@@ -206,7 +206,7 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   hook prevents the regression. Scope: `tests/integration/**/*.sh` only;
   top-level `destroy --force` / `state orphan --force` and comments pass.
   Smoke test: `state-destroy-force-gate.test.sh` (10 cases). No bypass — the
-  fix is a 1-character swap.
+  fix is a one-character swap.
 
 - **`.claude/hooks/ref-segment-audit-gate.sh`** blocks `git commit` when
   staged `src/deployment/intrinsic-function-resolver.ts` adds a NEW bare
@@ -217,9 +217,8 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   `/hunt-bugs`). The hook enforces the unit-test half mechanically; its block
   message restates the judgmental family-audit half (`describe-type
   primaryIdentifier` + AWS-docs `Ref` classification). Detection is on the
-  bare-array-element line shape; refactor-only diffs pass (`comm -23`);
-  git-cwd resolution mirrors `provider-integ-gate.sh`. Smoke test:
-  `ref-segment-audit-gate.test.sh` (8 cases). No bypass — add the unit test.
+  bare-array-element line shape; refactor-only diffs pass (`comm -23`). Smoke
+  test: `ref-segment-audit-gate.test.sh` (8 cases). No bypass.
 
 - **`.claude/hooks/gh-body-english-gate.sh`** blocks `gh pr create` /
   `pr edit` / `pr comment` / `pr review` / `gh issue create` / `comment` /
@@ -238,14 +237,14 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   to the gh invocation. **Short flags `-b` / `-t` / `-n` are deliberately
   NOT scanned** (collide with `echo -n` / `grep -n` / `sed -n` / `sort -t`;
   attributing them is shell parsing). Six review rounds are the evidence: a
-  hand-rolled quote/separator scanner shipped a defect per round
-  (`\`-continued line truncation; a quoted MENTION inverting quote polarity;
-  a heredoc/comment apostrophe leaving quote state open, silently defeating
-  `heredoc -> file -> --body-file`, apostrophe-PARITY dependent) — deleting
-  the scanner deleted the class. The trade runs in the FALSE-POSITIVE
-  direction (documented): a later non-gh command with a literal `--body` and
-  non-English text blocks; `-F` is not gh-unique (`git commit -F`,
-  `awk -F`) — the file-existence check + character-class test keep it safe.
+  hand-rolled quote/separator scanner shipped a defect per round (a
+  `\`-continued line truncated; a quoted MENTION inverting quote polarity; a
+  heredoc/comment apostrophe leaving quote state open, silently defeating
+  `heredoc -> file -> --body-file`) — deleting the scanner deleted the class.
+  The trade runs in the FALSE-POSITIVE direction (documented): a later non-gh
+  command with a literal `--body` and non-English text blocks; `-F` is not
+  gh-unique (`git commit -F`, `awk -F`) — the file-existence check plus the
+  character-class test keep it safe.
   Reads pass (verb must be publishing AND a body flag present: `gh api ...
   --jq .body`, `gh issue list --search` pass). Relative paths resolve
   against payload `cwd` + leading `cd`; gh global flags before the verb are
@@ -262,52 +261,54 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   Two pinned traps, each of which made the hook silently pass everything:
   **`perl -CSD`** (not `grep -P`; without it perl decodes latin-1 and the
   `\x{3000}` ranges never match) and **`perl -0777`** whole-text extraction
-  (a multi-line quoted body is the NORMAL inline shape; `-ne` cannot span the
-  newline). The class test runs INSIDE the extraction perl — one spawn per
-  value cost 3.8s for 500 values, which passes the hook's own 15s timeout,
-  and a timeout is, for a gate, a silent pass (0.09s after the fix).
+  (a multi-line quoted body is the NORMAL inline shape). The class test runs
+  INSIDE the extraction perl — one spawn per value cost 3.8s for 500 values,
+  past the hook's own 15s timeout, and a timeout is, for a gate, a silent pass
+  (0.09s after the fix).
   **The body file the command is about to WRITE is now scanned** (#2397) —
   NOT via the siblings' whole-command fallback (a body file under a
   Japanese-named directory is a documented PASS case, which that fallback
   turns into a block). It extracts the HEREDOC BODIES that write the named
-  path — both orders (`cat > f <<EOF` and `cat <<EOF > f`), quoted/unquoted
-  delimiters, `<<-`'s TAB-only terminator, every chunk, the tight
-  `>f<<EOF` / `>f;` / `>f&&` spellings — and scans exactly the text being
-  published. It arms when the path is unreadable OR the command WRITES it;
+  path — both orders, quoted/unquoted delimiters, `<<-`'s TAB-only
+  terminator, every chunk, the tight `>f<<EOF` / `>f;` / `>f&&` spellings —
+  and scans exactly the text published. It arms when the path is
+  unreadable OR the command WRITES it;
   the FILE is still read unless the command TRUNCATES it (an APPEND leaves
   existing content as the first half of the body). Heredoc-found is reported
   by STATUS — an empty body prints nothing, and inferring "no heredoc" from
   that FALSE-BLOCKED an empty rewrite. The same precision keeps `-F` safe
   (`awk -F ,` names a path never written — stays a skip).
+  **Two header-declared "known limits" were live BYPASSES and are fixed**
+  (2026-09-05, shared `GATE_PERL_WORD` — see "One value class for the three
+  body gates" below): a quoted `--body-file` path containing a SPACE, and the
+  glued `-F<path>` / `-fbody=<text>` shorthands. Measured rc=0 on a Japanese
+  body where the plain spelling gave 2. A limit line is not a licence.
   No bypass marker — translate the text. Smoke test:
-  `gh-body-english-gate.test.sh` (98 cases, bash 5.x AND macOS 3.2;
+  `gh-body-english-gate.test.sh` (111 cases, bash 5.x AND macOS 3.2;
   `HOOK_BASH=<path>` runs the HOOK under that bash too). The
   japanese-in-the-PATH pass case is LOAD-BEARING (fails if the extraction is
   replaced by a whole-command scan), paired with a
-  japanese-path-plus-english-heredoc-body case. 44 cases are review-round
-  regressions, each verified red against the corresponding PRE-FIX hook
-  (10 + 12 + 7 + 9 + 5 across rounds 2-5, plus round-6's
-  heredoc-apostrophe case); each Unicode range covered in ISOLATION;
-  known-limit cases, quoted-body false-positive cases, and a registration
-  check (the suite invokes the hook directly and would otherwise not notice
-  it unregistered from `.claude/settings.json`).
+  japanese-path-plus-english-heredoc-body case and an English body at a
+  SPACED path. 50 cases are review-round regressions, each verified red
+  against the corresponding PRE-FIX hook (10 + 12 + 7 + 9 + 5 across rounds
+  2-5, round-6's heredoc-apostrophe case, plus the 6 spaced/glued cases);
+  each Unicode range covered in ISOLATION; known-limit cases, quoted-body
+  false-positive cases, and a registration check.
 
 - **`.claude/hooks/gated-command-preamble-gate.sh`** blocks a Bash call that
   runs a SIDE-EFFECTING preamble in an earlier segment than a GATED command
-  (`git commit`, `gh pr create`, `gh pr merge`) — a PreToolUse denial aborts
-  the WHOLE call, so a refusal silently discards the preamble. Violated
-  TWICE in one run on 2026-08-25 by an agent that had read the prose rule
-  (`markgate set` discarded → retry read as "the marker will not stick";
-  heredoc file never written → `could not read log file`) — a written rule
+  (`git commit`, `gh pr create`, `gh pr merge`) — a PreToolUse denial aborts the
+  WHOLE call, so a refusal silently discards the preamble. Violated TWICE in one
+  run on 2026-08-25 by an agent that had read the prose rule (`markgate set`
+  discarded → retry read as "the marker will not stick") — a written rule
   violated anyway is escalated, not restated (§10-b).
   **Side-effecting means losing it is SILENT**: `markgate set`, a write
   redirect (a `>>` retry appends to nothing — go-to-k/cdk-local#525 lost its
-  `Closes` line), `cp` / `mv` / `tee` / `touch` / `sed -i`, and — since
-  #2369 — interpreter one-liners (`python3 -c` / `node -e` / `perl -e` /
-  `ruby -e`, clusters like `perl -pi -e`, the stdin-script `python3 - <<EOF`
-  form): the code argument is a quoted span the stripper removes, so the
-  gate cannot see whether it writes (measured 2026-08-28, twice in one run:
-  a `python3 -c` rewriting the gated command's own body file). Treated as an
+  `Closes` line), `cp` / `mv` / `tee` / `touch` / `sed -i`, and — since #2369
+  — interpreter one-liners (`python3 -c` / `node -e` / `perl -e` / `ruby -e`,
+  clusters like `perl -pi -e`, the stdin-script `python3 - <<EOF` form): the
+  code argument is a quoted span the stripper removes, so the gate cannot see
+  whether it writes (measured 2026-08-28, twice in one run). Treated as an
   OPAQUE write; measured before widening, ZERO prescribed shapes combine an
   interpreter one-liner with a gated verb. Known limit: `python3 script.py`
   (a writing script FILE) is not matched. Deliberately ALLOWED:
@@ -346,11 +347,11 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   conflict. The LIBRARY load still fails closed. Bypass
   `CDKD_SKIP_FLATTEN_GATE=1`, honored from the environment or the command
   text, for a deliberate history-preserving rebase. The file list is
-  duplicated by necessity (hook decides FIRING, ship.md §9 carries the
-  recipe) — `tests/unit/scripts/flatten-gate-file-list-sync.test.ts` fences
-  both directions. Smoke test: `flatten-before-rebase-gate.test.sh` (62
-  cases against real git fixtures under `mktemp -d` resolved with `pwd -P`;
-  each case pins its own payload `cwd`). One case pins a KNOWN limitation:
+  duplicated by necessity (hook decides FIRING, ship.md §9 carries the recipe)
+  — `tests/unit/scripts/flatten-gate-file-list-sync.test.ts` fences both
+  directions. Smoke test: `flatten-before-rebase-gate.test.sh` (62 cases
+  against real git fixtures; each pins its own payload `cwd`). One case pins a
+  KNOWN limitation:
   `gate_leading_c_value` reads `-C <path>` but not git's equally valid
   `-C<path>`, inherited by every gate on the shared matcher
   (go-to-k/cdkd#2455).
@@ -358,16 +359,16 @@ Twenty additional one-shot hooks block known foot-guns at the source.
 - **`.claude/hooks/vp-run-test-path-gate.sh`** blocks `vp run test <path>`
   and steers to `vp test run <path>`. The task runner USED TO cache `test`,
   so a repeat REPLAYED the previous result — for a MUTATION PROBE the worst
-  hazard: the replayed verdict predates the mutation (measured 2026-08-20:
-  byte-identical counts and duration, `◉ cache hit, replaying`; one reviewer
-  had FOUR probes report PASS without executing). **Closed at the root as of
-  2026-08-30** — every task in `vite.config.ts` carries `cache: false`,
-  fenced by `tests/unit/scripts/vite-task-cache.test.ts` — so this is now a
-  CONVENTION gate and the cache must not be cited as a live hazard. The
-  steer stands on the one cache-independent reason: `vp test run <path>` is
-  the delegated command invoked directly, nothing between caller and verdict
-  (the TTY/reporter rationale did not survive: re-measured 2026-08-31, 651 B
-  vs 617 B). Scope: only the form carrying a PATH argument — bare
+  hazard: the replayed verdict predates the mutation (measured 2026-08-20;
+  one reviewer had FOUR probes report PASS without executing). **Closed at
+  the root as of 2026-08-30** — every task in `vite.config.ts` carries
+  `cache: false`, fenced by `tests/unit/scripts/vite-task-cache.test.ts` — so
+  this is now a CONVENTION gate and the cache must not be cited as a live
+  hazard. The steer stands on the one cache-independent reason:
+  `vp test run <path>` is the delegated command invoked directly, nothing
+  between caller and verdict (the TTY/reporter rationale did not survive:
+  re-measured 2026-08-31, 651 B vs 617 B). Scope: only the form carrying a
+  PATH argument — bare
   `vp run test`, other tasks, flags, and value-taking flags' values pass;
   the ERE requires `test` to END the task name (a `\b` fired on
   `vp run test:once-leak`). Shared command-position matcher; fails CLOSED
@@ -385,14 +386,11 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   `gh api repos/<o>/<r>/issues`, the REST mint — when the body carries no
   `Dup-check:` line recording that the OPEN issue list was searched for this
   root cause. Born from measurement (2026-08-25): 115 open, median
-  time-to-close **0.17 d**, p90 0.96 d — the COUNT is what fails to
-  converge; 13 of 115 are umbrella-shaped and all four of the oldest are
-  (go-to-k/cdkd#609 90 d, #1160 33 d, #1225 30 d, #1393 16 d); 94 of 115
-  carry `Session-fit: next`, `now` appears 3 times in the last 400. The unit
-  of an issue drifted from one ROOT CAUSE to one affected SITE; §5-f's "N
-  sites of one root cause is ONE issue" had no duplicate check on the
-  mid-lane filing path — registration is not execution; this is the
-  execution half.
+  time-to-close **0.17 d**, p90 0.96 d — the COUNT is what fails to converge;
+  13 of 115 are umbrella-shaped, as are all four of the oldest. The unit of an
+  issue had drifted from one ROOT CAUSE to one affected SITE; §5-f's "N sites
+  of one root cause is ONE issue" had no duplicate check on the mid-lane
+  filing path — registration is not execution; this is the execution half.
   **`gh issue edit` / `gh issue comment` are deliberately NOT gated** —
   folding into an existing issue is the outcome the gate steers toward.
   **And it is not a filing threshold** (§10-0: an unfiled finding is
@@ -403,45 +401,43 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   and deliberately loose (an inline `--body` is one line). The threat model
   is FORGETTING the search, not defeating the gate. **An unreadable
   `--body-file` BLOCKS** — that fail-open shape made twelve sibling gates
-  inert (#2027), and the body file is written moments earlier, so "cannot
-  read" means a wrong path. Shared command-position matcher; fails CLOSED
-  when the library is unloadable or predates `GATE_RE_GH_ISSUE_CREATE`. No
-  bypass — the search plus one line is the entire ask.
-  **Repo opt-in** (issue #1259's scoping): fires only when the resolved
-  CWD's repo root carries `.markgate.yml`. The CWD decides, not `-R` — `-R`
-  names where the issue LANDS, the cwd whose policy applies; §10-c's mirror
-  flow (`gh -R go-to-k/<sibling> issue create` from a cdkd worktree) is
+  inert (#2027). Shared command-position matcher; fails CLOSED when the
+  library is unloadable or predates `GATE_RE_GH_ISSUE_CREATE`. No bypass —
+  the search plus one line is the entire ask.
+  **Repo opt-in** (issue #1259's scoping): fires only when the resolved CWD's
+  repo root carries `.markgate.yml`. The CWD decides, not `-R` — `-R` names
+  where the issue LANDS, the cwd whose policy applies; §10-c's mirror flow is
   itself a documented duplicate GENERATOR, exactly the filings to check.
   **Both scans are scoped to the SEGMENT that is the `gh issue create`** —
-  unscoped, `-F` (also `git commit`'s flag) read the COMMIT MESSAGE and
-  found the marker there (`git commit -F <msg> && gh issue create
-  --body-file <no-marker>` passed in either order; commit messages quote the
-  lines they describe — the commit introducing this gate carries
-  `Dup-check:`). A second fail-open sat in the opt-in check's `cd`
-  resolution (a bare `gh` verb ERE broke at the FIRST gh segment, so the
-  prescribed search-then-`cd`-then-file chain never saw the `cd`); the verb
-  ERE is now DERIVED from `GATE_RE_GH_ISSUE_CREATE`, which also keeps
-  `GATE_FLAGS`' quoted alternative (`gh -C "/a b" issue create`, the
-  cdk-local#542 class). **One cross-segment read survives, deliberately**:
+  unscoped, `-F` (also `git commit`'s flag) read the COMMIT MESSAGE and found
+  the marker there, in either order (commit messages quote the lines they
+  describe — the commit introducing this gate carries `Dup-check:`). A second
+  fail-open sat in the opt-in check's `cd` resolution (a bare `gh` verb ERE
+  broke at the FIRST gh segment, so the prescribed
+  search-then-`cd`-then-file chain never saw the `cd`); the verb ERE is now
+  DERIVED from `GATE_RE_GH_ISSUE_CREATE`, which also keeps `GATE_FLAGS`'
+  quoted alternative (`gh -C "/a b" issue create`, the cdk-local#542 class).
+  **One cross-segment read survives, deliberately**:
   `heredoc -> file -> --body-file` is the mandated publishing shape FOR
   `gh issue create` (the preamble gate does not cover that verb), and at
   PreToolUse time the body file does not exist yet — so an UNREADABLE body
   file (and only then) falls back to scanning the whole command with the
   ANCHORED marker (heredoc bodies have real line structure). Smoke test:
-  `issue-dup-check-gate.test.sh` (54 cases, bash 5.x + 3.2 — every
+  `issue-dup-check-gate.test.sh` (59 cases, bash 5.x + 3.2 — every
   `--body-file` spelling both directions, the mid-sentence marker,
   unreadable-path and unexpanded-`$VAR` blocks, the `cd` chain, ungated
   verbs, the `gh api` mint, subshell / `-R` / substitution spellings,
-  fail-closed library, the heredoc window (measured 2026-08-26: the
-  `gh pr create` spelling exits 2, the `gh issue create` spelling exits 0),
-  registration, cdkd#563
-  quoted-body cases). **Every fence was mutation-probed**: always-`exit 0`
-  stub fails 26, always-`exit 2` 31; opt-in guard removal exactly 2;
-  anchored → loose swap exactly the mid-sentence case; `gh api` arm removal
-  1; segment-scoping revert 3; heredoc-fallback removal 1; `|| exit 0`
-  library guard 29. The commit-message fixture carries the marker at LINE
-  START on purpose — mid-sentence it passed for the WRONG reason (the anchor
-  rejected it regardless of scoping) and fenced nothing.
+  fail-closed library, the heredoc window, registration, cdkd#563
+  quoted-body cases, spaced/glued body-file paths). **Every fence was
+  mutation-probed, all re-taken 2026-09-05 on the 59-case suite** (the old
+  numbers were from a ~29-case run): always-`exit 0` stub fails 28,
+  always-`exit 2` 34; opt-in guard removal exactly 2 (BOTH lines — the
+  `.markgate.yml` test alone leaves the not-a-repo case passing); anchored →
+  loose swap exactly the 2 mid-sentence cases; `gh api` arm removal 1;
+  segment-scoping revert 4; heredoc-fallback removal 1; `$GW` value class
+  reverted 3; short-flag `[=\s]*` → `+` 1. The commit-message fixture carries
+  the marker at LINE START on purpose — mid-sentence it passed for the WRONG
+  reason (the anchor rejected it regardless of scoping) and fenced nothing.
 
 - **`.claude/hooks/issue-classification-label-gate.sh`** blocks
   `gh issue create` / `gh issue edit` when the body states a `Severity:` or
@@ -451,42 +447,45 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   token set are mirrored: `severity:high|medium|low`,
   `effort:small|medium|large`. Only those two (`Session-fit` is re-decided at
   claim time — a label silently disagreeing with the body is worse than none;
-  `Estimate` is free-form and its informative half fits no label). The
-  prefixed full words are the "no bare tokens" rule as a label: the scales
+  `Estimate` is free-form). The prefixed full words are the "no bare tokens" rule as a label: the scales
   share `medium`, and `L` collides dangerously (severity *low* vs effort
   *large*). The `gh api repos/<o>/<r>/issues` REST mint is gated too.
   **`edit` is gated and `comment` is not — the opposite split from
   `issue-dup-check-gate.sh`, deliberately**: `edit` is the CLAIM site where
-  `Severity` first exists for the bulk of the backlog (old packed bodies are
-  upgraded on claim). On `edit` the gate asks gh what labels the issue
-  already carries (a re-edit of a labelled issue is untaxed); an
-  unresolvable issue number or gh failure FAILS OPEN — a transient gh error
-  must not stop a body edit.
+  `Severity` first exists for the bulk of the backlog. On `edit` the gate asks
+  gh what labels the issue already carries (a re-edit of a labelled issue is
+  untaxed); an unresolvable issue number or gh failure FAILS OPEN — a transient
+  gh error must not stop a body edit.
   **Precedence, then the space rule.** Body text is read in descending
-  specificity: a readable `--body-file` / `-F <path>`; else the WHOLE
-  command when such a path was named but does not exist yet (the mandated
-  heredoc shape); else an inline `--body` value; else the whole segment —
-  load-bearing ordering: with the segment concatenated in front, a
+  specificity: a readable `--body-file` / `-F <path>`; else the WHOLE command
+  when such a path was named but does not exist yet (the mandated heredoc
+  shape); else an inline `--body` value; else the whole segment —
+  load-bearing: with the segment concatenated in front, a
   `--title 'Severity: high pages fail'` outranked a body stating
-  `Severity: low`. On the last-resort segment path the scan requires at
-  least one SPACE after the key: the label spelling is `severity:high`, the
-  body form `Severity: high` — without the space rule a
-  `--label severity:high` would satisfy its own requirement (a no-op gate)
-  and a label-name mention in a TITLE would demand a label. An old packed
-  `Effort: ~1-3 h` matches no token, so no label is demanded. Smoke test:
-  `issue-classification-label-gate.test.sh` (40 cases, bash 5.x + 3.2).
-  Mutation-probed (2026-08-26): always-`exit 0` stub fails 14,
-  always-`exit 2` 39 of 40; relaxing `[[:space:]]+` to `*` exactly 1;
+  `Severity: low`. On the last-resort segment path the scan requires at least
+  one SPACE after the key: the label spelling is `severity:high`, the body form
+  `Severity: high` — without it a `--label severity:high` would satisfy its own
+  requirement (a no-op gate). An old packed `Effort: ~1-3 h` matches no token,
+  so no label is demanded.
+  **The FOURTH site of the `GATE_PERL_WORD` root cause** (see below), found by
+  the sibling note the other three carry: a quoted `--body-file` path with a
+  SPACE, and the glued `-F<path>`, extracted nothing, the precedence chain
+  ended at the whole SEGMENT — which carries the PATH, not the body — and NO
+  label was demanded. Measured rc=0 where the plain spelling gave 2. Smoke
+  test: `issue-classification-label-gate.test.sh` (44 cases, bash 5.x + 3.2).
+  Mutation-probed, every number re-taken 2026-09-05: always-`exit 0` stub
+  fails 16, always-`exit 2` 43; relaxing `[[:space:]]+` to `*` exactly 1;
   reverting body-file precedence exactly 2 (both `--title` cases); dropping
-  the bare `-F <path>` arm exactly 1. Three fences exist because a reviewer
-  found the pinned behaviour BROKEN first: a bare `-F <path>` body was never
-  scanned, the `edit` arm read its issue number from any `/issues/N` URL in
-  the command, and a spaced `Severity:` in a `--title` outranked the body.
+  the bare `-F <path>` arm exactly 2; `$GW` reverted 2; short-flag
+  `[=\s]*` → `+` 1. Three fences exist because a reviewer found the pinned
+  behaviour BROKEN first: a bare `-F <path>` body was never scanned, the
+  `edit` arm read its issue number from any `/issues/N` URL, and a spaced
+  `Severity:` in a `--title` outranked the body.
 
 - **`.claude/hooks/issue-deferral-criteria-gate.sh`** blocks `gh issue create`
   (and the `gh api repos/<o>/<r>/issues` mint) when the body's
   `Session-fit: next` line defers the work for a PR-SHAPED reason — `own PR`,
-  `separate PR`, `shar(e|ing) a PR`, `independent review surface`,
+  `separate PR`, `shar(e|ing) a PR`, `(independent|separate) review surface`,
   `unreviewable`, `own review`, case-insensitively. **An ESCALATION, not a new
   rule**: `Session-fit` decides whether the work is finished in THIS session
   and none of its criteria is about the pull request — splitting across
@@ -500,57 +499,85 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   which boilerplate satisfies; this refuses the specific defect and leaves
   every legitimate `next` (a NEW fixture, external input, an independent
   subsystem) untouched. **Only `next` is gated**: a `now` line is never
-  refused whatever its reason says, and a body with no `Session-fit` line
-  passes — filing hygiene belongs to the two sibling issue gates. `gh issue
-  edit` / `comment` are NOT gated: re-classification is the outcome this gate
-  steers toward. The reason is read across WRAPPED lines (a 76-column body
-  puts "needs its own PR" on the next line), bounded by a blank line, the next
-  `Key:` field or a heading — mutation-probed, that boundary is what keeps a
-  sibling `Notes:` line out of the reason. A FENCED CODE BLOCK is stripped
-  first (``` and `~~~`), so a body quoting the refused line to argue ABOUT the
-  rule is not blocked by its own quotation — the first `Session-fit:` match
-  wins, and without the strip a quoted line beat the body's real `now`. A
-  bolded key (`**Session-fit:**`) is accepted, and a list item is a
-  continuation boundary like a blank line: a legitimate reason followed by a
-  bullet mentioning a PR used to fold the bullet in and block. Repo opt-in
-  (`.markgate.yml`), shared command-position matcher, fails CLOSED when the
-  library is unloadable.
+  refused, and a body with no `Session-fit` line passes — filing hygiene
+  belongs to the sibling issue gates. `gh issue edit` / `comment` are NOT
+  gated: re-classification is the outcome this gate steers toward. The reason is read across WRAPPED lines (a 76-column body
+  puts "needs its own PR" on the next line), bounded by a blank line, a
+  heading, a list item, or the next NAMED field (`Session-fit` / `Severity` /
+  `Effort` / `Estimate` / `Notes` / `Dup-check`) — mutation-probed, that
+  boundary is what keeps a sibling `Notes:` line out of the reason, and the
+  bullet case is what stopped a legitimate reason followed by a PR-mentioning
+  bullet from folding it in. A FENCED CODE BLOCK is stripped first (``` and
+  `~~~`), so a body quoting the refused line to argue ABOUT the rule is not
+  blocked by its own quotation — the first `Session-fit:` match wins, and
+  without the strip a quoted line beat the body's real `now`. Bold is accepted
+  on the KEY and on the VALUE alike. Repo opt-in (`.markgate.yml`), shared
+  command-position matcher, fails CLOSED when the library is unloadable.
   **It reads the body the command is about to WRITE**, porting
   `gh-body-english-gate`'s #2397 heredoc extraction: precedence is the heredoc
   body this command writes, then the file on disk (unless a TRUNCATING write
   superseded it — an APPEND still reads it), then the whole command, then an
-  inline `--body`. Without that the one-call `heredoc -> file -> --body-file`
-  shape was a FAIL-OPEN whenever the target path already existed: the gate
-  judged the PREVIOUS body and passed (measured — stale file present rc=0,
-  same command with the file absent rc=2). Unlike `issue-dup-check-gate`, an
-  UNREADABLE `--body-file` still does not block: this gate objects to content
-  it FINDS, so a refusal would be unclearable.
-  **What it catches, measured 2026-09-05** — of 300 bodies, 255 carry a
-  `Session-fit: next` FIELD LINE (the anchored predicate this gate reads; a
-  bare `grep -l` says 256 and counting prose mentions says 257 — state the
-  predicate or the number is unreproducible) and it fires on **66** (26%),
-  every hit on a literal
-  term (`own review` 30, `own PR` 25, `unreviewable` 14, `share a PR` 3,
-  `separate PR` 3). It does NOT catch reasoning that never names a PR: of its
-  own three motivating deferrals it fires on go-to-k/cdkd#2590 but not #2587
-  ("its own real-AWS run and review round") or #2588 ("its own blast radius
-  across future PRs"). The needle was deliberately NOT widened to chase those
-  (implement.md: three spellings in three rounds means change instrument) —
-  the companion fix covers them, since
+  inline `--body`. Without that the one-call shape was a FAIL-OPEN whenever
+  the target path already existed: the gate judged the PREVIOUS body and
+  passed (measured — stale file present rc=0, file absent rc=2). Unlike
+  `issue-dup-check-gate`, an UNREADABLE `--body-file` still does not block:
+  this gate objects to content it FINDS, so a refusal would be unclearable.
+  **What it catches, measured 2026-09-05** — of 300 bodies, 259 carry a
+  `Session-fit: next` FIELD LINE (the anchored predicate this gate reads —
+  state the predicate or the number is unreproducible, and the `--limit 300`
+  window moves: the same day's earlier reading was 255) and it fires on **66**
+  (25%), every hit on a literal vocabulary term. It does NOT catch reasoning
+  that never names a PR: of its own three motivating deferrals it fires on
+  go-to-k/cdkd#2590 but not #2587 ("its own real-AWS run and review round") or
+  #2588 ("its own blast radius across future PRs"). The needle was
+  deliberately NOT widened to chase those (implement.md: three spellings in
+  three rounds means change instrument) — the companion fix covers them, since
   [session-report.md](session-report.md) no longer OFFERS a PR-shaped `next`
   criterion to cite. Bypass `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, honored from
   the env and from a leading assignment in the command text (#2368), for an
   INLINE quote of PR-shaped reasoning. Smoke test:
-  `issue-deferral-criteria-gate.test.sh` (80 cases, bash 5.x + 3.2 via
-  `HOOK_BASH`). Mutation-probed: `exit 0` 43, `exit 2` 40, `next` polarity
-  exactly the two `now` cases, boundary 4, segment scoping 4, fence strip 2,
-  bolded key 2, list item 2, heredoc arm 3, APPEND arm 1. Pre-fix and post-fix
-  fire on the IDENTICAL 66 of the 255 — those repairs are pure
-  false-positive/negative correction, no drift. The fence STRIP needed a
+  `issue-deferral-criteria-gate.test.sh` (97 cases, bash 5.x + 3.2 via
+  `HOOK_BASH`). Mutation-probed, every number re-taken 2026-09-05: `exit 0`
+  58, `exit 2` 44, `next` polarity exactly the two `now` cases, boundary 4,
+  segment scoping 4, fence strip 2, bolded key 2, bolded VALUE 1, list item 2,
+  heredoc arm 3, APPEND arm 1, `key_re` back to any `word:` 1,
+  `(independent|separate)` → `independent` 1, `$GW` value class reverted 13,
+  short-flag `[=\s]*` → `+` 3. **Three more silent passes closed 2026-09-05**:
+  a BOLDED `next` VALUE (the key accepted `[*_]*`, the value did not);
+  `separate review surface`, which cdk-local's port already refused while cdkd
+  passed it; and a reason WRAPPING onto a line that merely contains a colon
+  (`entirely:` ended the continuation) — the boundary now pins the NAMED
+  fields, not any `word:`. All three are LATENT: pre-fix and post-fix fire on
+  the IDENTICAL 66 of the 259, with 0 corpus instances of any of the three
+  shapes. Pure false-positive/negative correction, no drift. The fence STRIP needed a
   second round: latching on any opener with no look-ahead made an UNCLOSED
   fence blank the rest of the body (rc=0 where the pre-strip hook said 2) —
   the heredoc latch class, one construct over. It now opens only when the SAME
   marker recurs later.
+
+**One value class for the FIVE body gates (`GATE_PERL_WORD`, 2026-09-05).**
+The english / dup-check / deferral / classification / pr-body-item-number gates
+pull a `--body-file` path and an inline `--body` value out of RAW command text
+with `perl` (a global scan over a slurp, which `[[ =~ ]]` cannot do). All five
+spelled the value class `(["\x27]?)([^"\x27\s]+)\1`, which ENUMERATES where a quote may
+sit, and that lost three families at once — each measured, each fail-OPEN
+wherever polarity allowed: a quoted path containing a SPACE extracted NOTHING
+(english-gate rc=0 on a JAPANESE body where the plain spelling gave 2 — the
+English-only rule bypassable by a directory name with a space); gh's own
+`-f body='<text>'` (quote INSIDE the value) fell through to `\S+` and captured
+`body='a`; and the GLUED `-F<path>` / `-fbody=<text>` spellings gh accepts
+needed a separator. Sites four and five were found only by the note the others
+carry telling the reader to check the siblings. The class now lives ONCE in
+`lib/command-match.sh` as a
+perl PRELUDE defining `$GW` (one shell WORD that may EMBED quoted spans — the
+perl twin of `_GATE_WORD_CHAR`) and `gate_unq`, so the next gate does not write
+a fourth regex. `issue-dup-check-gate` was ACCIDENTALLY safe — no path
+extracted means `seg_has_marker` returns 1 and it BLOCKS — so its miss was a
+FALSE BLOCK on a compliant body; fixed anyway, since that safety comes from an
+unrelated polarity a later edit could reverse. **Every gate on the prelude must
+assert `GATE_PERL_WORD` non-empty in its load guard**: undefined, `$GW`
+interpolates EMPTY, `($GW)` matches everywhere, every value comes back empty —
+a silent fail-open rather than a loud 127.
 
 All twenty produce actionable error messages with the exact replacement
 command.
@@ -566,10 +593,10 @@ command.
   orphan-zero verification (`bughunt-track.sh verify`).
   **Parallel-safe per-owner sentinel (the SPOF fix)**: a directory
   `.markgate-bughunt-pending.d/` with ONE file per owner (owner key =
-  `$CDKD_BUGHUNT_OWNER` if set, else the per-worktree
-  `git rev-parse --show-toplevel`). `add` / `verify` / `clear` touch ONLY
-  the caller's own file, so one agent's `clear` can NEVER release another
-  agent's pending resources (the old single-file `rm -f` could).
+  `$CDKD_BUGHUNT_OWNER` if set, else the per-worktree toplevel). `add` /
+  `verify` / `clear` touch ONLY the caller's own file, so one agent's `clear`
+  can NEVER release another agent's pending resources (the old single-file
+  `rm -f` could).
   **The block decision is verb-scoped (issue #1615)**: `gh pr create` /
   `gh pr merge` AGGREGATE across all owner files (plus the legacy flat
   `.markgate-bughunt-pending`) — merging publishes a shared artifact, so
@@ -577,32 +604,31 @@ command.
   `git commit` blocks ONLY on the CALLER's own file (a commit creates no AWS
   resources, and blocking a third party hands them a remediation they must
   not follow — destroying stacks they do not own is cross-session trespass);
-  other owners' pending stacks get a NON-blocking
-  `[bughunt-clean-gate notice]` on stderr. The legacy flat sentinel has no
-  owner attribution, so it conservatively blocks `git commit` for every
-  caller; a chained `git commit && gh pr create` takes the stricter
-  repo-wide path. No file locking (each owner writes only its own file;
-  append is atomic — also dodges macOS's missing `flock`). The directory
-  lives at the **shared main-tree root**
+  other owners' pending stacks get a NON-blocking notice on stderr. The
+  legacy flat sentinel has no owner attribution, so it conservatively blocks
+  `git commit` for every caller; a chained `git commit && gh pr create` takes
+  the stricter repo-wide path. No file locking (each owner writes only its
+  own file; append is atomic — also dodges macOS's missing `flock`). The
+  directory lives at the **shared main-tree root**
   (`git rev-parse --path-format=absolute --git-common-dir`), so a
   feature-worktree commit still sees a main-tree-armed sentinel; keep one
   hunt's calls in the same worktree (or set `CDKD_BUGHUNT_OWNER`). Shared
   command-position matcher; a plain sentinel-file gate, not a markgate
   marker (pending-resource state is not content-digest-based). Smoke test:
   `bughunt-clean-gate.test.sh` (23 cases, incl. the per-owner isolation
-  scenario: two owners arm → pr merge blocks while a non-owner commit
-  passes → A clears → pr merge STILL blocks on B → both clear → releases).
+  scenario: two owners arm → pr merge blocks while a non-owner commit passes →
+  A clears → pr merge STILL blocks on B → both clear → releases).
 
 ## Branch / push safety
 
 **Repo opt-in scope (issue #1259).** The five main-tree / branch hooks here
 (`branch-gate.sh`, `main-tree-branch-gate.sh`, `main-tree-edit-gate.sh`,
 `main-tree-dirty-detector.sh`, `main-tree-git-cwd-detector.sh`) fire ONLY in
-repos carrying `.markgate.yml` at the repo root (cdkd, cdk-local,
-cdk-real-drift) — a cdkd session regularly touches unrelated personal repos
-where committing to main is the normal single-writer workflow (2026-07-27:
-`main-tree-edit-gate` blocked a user-requested append to a personal blog
-draft). `post-merge-orphan-push-gate.sh` is deliberately NOT scoped this way:
+repos carrying `.markgate.yml` at the repo root — a cdkd session regularly
+touches unrelated personal repos where committing to main is the normal
+single-writer workflow (2026-07-27: `main-tree-edit-gate` blocked a
+user-requested append to a personal blog draft).
+`post-merge-orphan-push-gate.sh` is deliberately NOT scoped this way:
 re-creating a deleted merged branch is a hazard in any repo with PRs, and it
 already fails open without `gh`.
 
@@ -641,10 +667,10 @@ already fails open without `gh`.
   the branch to `feat/x"` and a two-push chain was judged on the first. It
   now parses each push from the SEGMENT that matched and judges EVERY push.
   Smoke test: `post-merge-orphan-push-gate.test.sh` (26 cases via `$GH_BIN`
-  mock, six through a HEAD-AWARE mock recording which branch was asked
-  about — an exit code alone cannot say which push was judged; three fail
-  against the pre-fix hook). The block names the merged PR number and prints
-  the "replay on a fresh branch" recipe.
+  mock, six through a HEAD-AWARE mock recording which branch was asked about —
+  an exit code alone cannot say which push was judged; three fail against the
+  pre-fix hook). The block names the merged PR and prints the "replay on a
+  fresh branch" recipe.
 
 - **`.claude/hooks/main-tree-edit-gate.sh`** — blocks *mutating a
   git-tracked file* in a worktree currently on `main` / `master` (matcher
@@ -655,12 +681,12 @@ already fails open without `gh`.
   the user's `git pull --ff-only`. Fires only when the target's branch is
   `main`/`master` AND the file is tracked (or is a NEW file under `src/` /
   `tests/` / `docs/` / `scripts/` / `.claude/`, excluding
-  `.claude/worktrees/*`). Edit/Write read `tool_input.file_path` (reliable);
-  Bash best-effort-scans for LITERAL write targets (`> f`, `>> f`,
-  `tee [-a] f`, `sed -i ... f`). **Known gap**: variable-indirected Bash
-  targets (`mv "$tmp" "$LEDGER"`) cannot be resolved statically — the
-  worktree-first process is the real guard; this arm is defense-in-depth.
-  Feature worktrees always pass. macOS-safe (`cd && pwd -P`). Smoke test:
+  `.claude/worktrees/*`). Edit/Write read `tool_input.file_path`; Bash
+  best-effort-scans for LITERAL write targets (`> f`, `>> f`, `tee [-a] f`,
+  `sed -i ... f`). **Known gap**: variable-indirected Bash targets
+  (`mv "$tmp" "$LEDGER"`) cannot be resolved statically — the worktree-first
+  process is the real guard; this arm is defense-in-depth. Feature worktrees
+  always pass. macOS-safe (`cd && pwd -P`). Smoke test:
   `main-tree-edit-gate.test.sh` (10 cases, incl. 2 non-opted-in passes). The
   block names file + worktree + branch and prints the `git worktree add`
   recipe (incl. the /run-integ ledger note). See memory
@@ -687,17 +713,15 @@ already fails open without `gh`.
 ## CI-green merge gate (live-query, not markgate)
 
 **`ci-green-gate.sh` blocks `gh pr merge` unless EVERY GitHub Actions check on
-the target PR reports `pass` or `skipping`** — `fail`, `pending`, or "no
-checks reported" exits 2 with the failing check names. Born from PR #1231
+the target PR reports `pass` or `skipping`** — `fail`, `pending`, or "no checks
+reported" exits 2 with the failing check names. Born from PR #1231
 (2026-07-27): the merge was chained after a `gh pr checks` DISPLAY, the
-printed `check-build-test fail` scrolled past, main went red until
-fix-forward #1232. CI status is LIVE external state, so this is a stateless
-live-query hook like `pr-review-gate.sh` (a digest-bound marker cannot capture
-"the checks that exist right now all pass"). Same cwd-aware resolution +
-PR-number token walk as `pr-review-gate.sh`. `gh` transport errors fail OPEN
-(a GitHub outage must not block merges); a parsable checks answer is enforced
-strictly. `CDKD_SKIP_CI_GREEN_GATE=1` is the documented bypass for a repo with
-genuinely no CI — never for merging a red PR. Smoke test:
+printed `check-build-test fail` scrolled past, main went red until fix-forward
+#1232. CI status is LIVE external state, so this is a stateless live-query
+hook like `pr-review-gate.sh`. Same cwd-aware resolution + PR-number token
+walk as `pr-review-gate.sh`. `gh` transport errors fail OPEN (a GitHub outage
+must not block merges); a parsable checks answer is enforced strictly. `CDKD_SKIP_CI_GREEN_GATE=1` is the documented bypass for a repo with no CI —
+never for merging a red PR. Smoke test:
 `ci-green-gate.test.sh` (stubbed `gh` for all-pass / skipping / fail /
 pending / no-checks / infra-error + the cdkd#563 quoted-body cases).
 
@@ -711,14 +735,14 @@ base and can stale the very marker the run was spent to earn.
 An ESCALATION, not a new rule: verify.md §8-b already says "Rebase BEFORE the
 integ", and go-to-k/cdkd#2589 followed it and still paid twice — six review
 rounds ran over ~2 h, `main` advanced, and the rebase moved the merge base past
-go-to-k/cdkd#2565 (`src/provisioning/providers/**`), flipping `integ-destroy` to
-`mismatch` after two integs had run. The re-run was CORRECT; nothing said so
+go-to-k/cdkd#2565 (`src/provisioning/providers/**`), flipping `integ-destroy`
+to `mismatch` after two integs had run. The re-run was CORRECT; nothing said so
 when the run STARTED. The rule reads as a sequence; the shape is a loop.
 
 **Placement is the design**: beside `markgate set` the run is already spent, so
 this fires on the fixture INVOCATION — the last moment a rebase is free.
-**Non-blocking on purpose**, unlike `integ-destroy-gate.sh`: a deliberate run on
-an old base (a bisect, a repro) is legitimate and a wrong refusal costs more
+**Non-blocking on purpose**, unlike `integ-destroy-gate.sh`: a deliberate run
+on an old base (a bisect, a repro) is legitimate and a wrong refusal costs more
 than the waste. It guards a SPEND, not a merge.
 
 Two arms with opposite advice: when main's advance touches integ-gate scope it
@@ -726,25 +750,35 @@ names the FILE count and says rebase first, else it says the marker will
 probably survive. It counts FILES and SAYS files — an earlier revision printed
 "N of those COMMITS", so one commit touching five provider files read as "5 of
 those commits" under "1 commit(s) behind". It scopes with `HEAD...origin/main`
-(three dots — the question is what MAIN brought, and a lane running an integ
-normally carries its own in-scope commit), and does NOT `git fetch`, so it
-under-reports on a stale ref — the safe direction for a nudge.
+(three dots — the question is what MAIN brought), and does NOT `git fetch`, so
+it under-reports on a stale ref — the safe direction for a nudge.
 
 **It arms on BOTH invocation shapes** — `verify.sh` AND the standard
 `node dist/cli.js deploy` flow. Requiring a `verify.sh` left it silent for
 `bench-cdk-sample` / `microservices` / `multi-resource` / `multi-stack-deps`,
 the four broad-set fixtures that have none — exactly the runs that refresh
-`integ-broad`. Read verbs exit in command position anywhere, not only at the
-start; a path inside an arbitrary quoted string is a documented false positive
-costing a stray note, not a block. Repo opt-in; declared unexercisable in
-`unresolved-target-class.test.sh` (it refuses nothing).
+`integ-broad`. **BOTH halves of the decision are PER SEGMENT** (`gate_segments`,
+2026-09-05): arming and read-verb suppression used to scan the WHOLE command,
+so one read verb anywhere `exit 0`ed the lot and `git status && bash
+.../verify.sh`, `echo start && …`, `cat README.md && …` and `ls && node
+…/cli.js deploy` were all SILENT — every one a shape a real run writes, and a
+warn hook quiet on those is indistinguishable from a working one. A read verb
+now suppresses only its own segment. Two nits fixed with it: the `&&` branch of
+`(^|[|;&]|&&)` was DEAD (`[|;&]` matches the second `&` first), and `(bash|sh)`
+was unanchored so `finish verify.sh` armed. A path inside an arbitrary quoted
+string is a documented false positive costing a stray note, not a block. Repo
+opt-in; an unloadable library exits 0 here rather than 2, since this hook
+refuses nothing; declared unexercisable in `unresolved-target-class.test.sh`.
 
-Smoke test: `integ-stale-base-detector.test.sh` (12 cases, real git fixtures,
+Smoke test: `integ-stale-base-detector.test.sh` (19 cases, real git fixtures,
 honouring `HOOK_BASH` so the HOOK runs under 3.2 — it ignored it at first, and
-`HOOK_BASH=/nonexistent` still reported 11/11). Probed: silent stub 6,
-alarming-arm-only 8, both-arms 6; 3-dot-to-2-dot fails exactly the
+`HOOK_BASH=/nonexistent` still reported 11/11). Probed, all re-taken
+2026-09-05 with BOTH halves of each tally: silent stub 9 pass / 10 fail,
+alarming-arm-only 8 / 11, both-arms 10 / 9; 3-dot-to-2-dot fails exactly the
 lane-carries-its-own-commit case, which the suite could not see until that
-fixture existed (it survived at 11/11 before).
+fixture existed (it survived at 11/11 before); read-verb test deleted fails
+exactly the 4 silence cases; read-verb test back to PER-COMMAND fails exactly
+the 4 earlier-segment cases; `(bash|sh)` unanchored fails exactly 1.
 
 ## Markgate gate hooks (cwd-aware)
 
@@ -775,26 +809,17 @@ leading theory was wrong: `mise exec` on an untrusted `.mise.toml` exits
 **1**, not 0 — the untrusted worktree was never the fail-open.)
 
 **One root cause, 24 sites, three flavours** (measured across all 38 hooks,
-each a literal-path control that blocks paired with the respelled twin):
+each a literal-path control that blocks paired with the respelled twin; the
+per-gate roll-call is in the #2027 issue thread, all fixed):
 
 - **Silent bail — 12 blocking gates**: a hand-rolled `-C <path>` scan with no
   `$`/backtick guard turned `"$W"` into a literal path, the gate's own
-  `rev-parse` probe failed, exit 0 over a tree it never looked at:
-  `branch-gate` (commit and push), `main-tree-branch-gate`,
-  `post-merge-orphan-push-gate` (branch-omitted shape), `check-gate`,
-  `verify-pr-gate` (merge and create), `pr-review-gate`, `ci-green-gate`,
-  `integ-broad-gate`, `integ-destroy-gate`, `integ-local-gate` (both
-  `gh pr merge` and `git merge`), `integ-schema-migration-gate`,
-  `pr-title-prefix-scope-gate`.
+  `rev-parse` probe failed, exit 0 over a tree it never looked at.
 - **Silent wrong-tree judgement — 11 gates** via the library's
   `gate_target_dir`, which DROPS an unreadable token and falls back to the
   payload cwd (its comment claimed "fails CLOSED"; measured not:
-  `provider-docs-gate` / `provider-integ-gate` exit 2 for
-  `git -C <abs> commit`, **0** for `git -C "$W" commit` with the violation
-  staged in the target): also `ref-segment-audit-gate`, `roundtrip-test-gate`,
-  `state-destroy-force-gate`, `commit-prefix-scope-gate`,
-  `cmd-parse-stub-gate`, `non-english-text-gate`, `internal-pr-labels-gate`,
-  `integ-coverage-matrix-gate`, `dirty-path-restore-gate`.
+  `provider-docs-gate` exits 2 for `git -C <abs> commit`, **0** for
+  `git -C "$W" commit` with the violation staged in the target).
 - **No target reading at all — `bughunt-clean-gate`** (resolved only a `cd`,
   never `-C`).
 - **Non-blocking, deliberately left falling back — `restore-backup`**: it
@@ -809,16 +834,14 @@ each a literal-path control that blocks paired with the respelled twin):
 **A WIDER hole sat on top: the verb regexes were hand-copied too**, with no
 quoted flag-value alternative — `git -C "/path/my worktree" commit`,
 `git -C "$(git rev-parse --show-toplevel)" commit` and ``git -C `pwd` commit``
-matched NO VERB in any gate, exit 0: a fully determinate commit on `main`
-with zero markers. `lib/command-match.sh` had recorded that shape as fixed
-once before (go-to-k/cdk-local#542); the per-gate copies reintroduced it.
-Every gate now takes its verb from the library constants
-(`GATE_RE_GIT_COMMIT_OR_PUSH`, `GATE_RE_GH_PR_CREATE_OR_MERGE`,
-`GATE_RE_GIT_MERGE`, …), and the loader guards refuse when `gate_matches` is
-undefined — a missing library returns 127, which `if !` reads as "no match".
-Three more space-path instances only the class fence found:
-`git worktree list --porcelain | awk '{print $2}'` truncates such a path
-(3 hooks), `main-tree-branch-gate`'s token walker read `dir` as the
+matched NO VERB in any gate, exit 0: a fully determinate commit on `main` with
+zero markers. `lib/command-match.sh` had recorded that shape as fixed once
+before (go-to-k/cdk-local#542); the per-gate copies reintroduced it. Every
+gate now takes its verb from the library constants, and the loader guards
+refuse when `gate_matches` is undefined — a missing library returns 127, which
+`if !` reads as "no match". Three more space-path instances only the class
+fence found: `git worktree list --porcelain | awk '{print $2}'` truncates such
+a path (3 hooks), `main-tree-branch-gate`'s token walker read `dir` as the
 subcommand, and `dirty-path-restore-gate` / `non-english-text-gate` carried
 their own quoted-alternative-less `-C` patterns.
 
@@ -847,24 +870,21 @@ still resolved from the payload cwd, and each worktree carries its own
 **`check-gate.sh` fails closed on three MORE conditions**: a target that
 resolves but is not a git repo or cannot be entered; a markgate failing a
 `--version` probe; and `markgate verify` exiting **>= 2** — its "could not
-read the config" code, distinct from 1 = stale (verified on markgate 0.2.0
-and 0.4.1: stale marker, absent gate and empty config are all 1; only
-malformed YAML is 2). The `--version` probe makes #2027's environment
-legible: in a fresh untrusted worktree `mise exec` exits 1 and the old hook
-said `run /check first` — a remedy through the same untrusted mise. The
-message names a VERIFICATION command rather than `mise trust` alone, because
+read the config" code, distinct from 1 = stale (verified on markgate 0.2.0 and
+0.4.1: stale marker, absent gate and empty config are all 1; only malformed
+YAML is 2). The `--version` probe makes #2027's environment legible: in a
+fresh untrusted worktree `mise exec` exits 1 and the old hook said
+`run /check first` — a remedy through the same untrusted mise. The message
+names a VERIFICATION command rather than `mise trust` alone, because
 `mise trust` as an agent Bash call can abort inside this environment's
-shell-snapshot wrapper (prints `line 272: : command not found`, leaves the
-config untrusted — measured live). The permissions branch (`cd` failing
-where a `git -C` probe succeeded) has **no test case**: both need the same
-`+x` bit, the state is not constructible without root, and a fabricated case
-would fence nothing.
+shell-snapshot wrapper. The permissions branch has **no test case**: the state
+is not constructible without root, and a fabricated case would fence nothing.
 
 `main-tree-git-cwd-detector` carried the same hand-rolled scan and it was
 **unreachable** (its `GIT_VERB` requires every token between `git` and the
-verb to start with `-`; the `-C` VALUE broke the match — measured). The dead
-branch was removed, no behaviour change; the real, SEPARATE gap (no warning
-on `git -C <main-tree> commit`) remains a different change.
+verb to start with `-`; the `-C` VALUE broke the match). The dead branch was
+removed, no behaviour change; the SEPARATE gap (no warning on
+`git -C <main-tree> commit`) remains a different change.
 
 **Fenced at the CLASS level, not per hook** — see
 [hooks-class-fences.md](hooks-class-fences.md) for the three fences, their
@@ -891,25 +911,23 @@ against `CROSS_CUTTING_REGEX`, `integ-local-gate` against
 `^src/local/|^src/cli/commands/local-*\.ts$|^tests/integration/local-`. A PR
 touching none of a gate's scope passes even with a stale marker — the integ
 markers carry a 14d TTL, so without the guard an expired marker would block
-EVERY merge. The three are scoped by different mechanisms: `integ-destroy`
-by this branch's delta against `origin/main` (markgate 0.4 `hash: diff`);
+EVERY merge. The three are scoped by different mechanisms: `integ-destroy` by
+this branch's delta against `origin/main` (markgate 0.4 `hash: diff`);
 `integ-local` by its file-scope content; `integ-broad` by a sentinel file a
 pull cannot touch. `integ-local-gate` — the only gate also firing on
 `git merge` — additionally scope-checks `git merge [flags] <ref>` (issue
 #1204) via `git diff --name-only HEAD...<ref>`, so the routine post-squash
 `git merge --ff-only origin/main` passes even with a stale marker; the
-merge-ref parse is a token walk (paths containing "merge" don't confuse it)
-and bails to the unconditional verify on `--abort` / `--continue` /
-`--quit`, octopus (2+ refs), or an unresolvable ref. Number-less
-`gh pr merge` falls through to the unconditional verify.
+merge-ref parse is a token walk and bails to the unconditional verify on
+`--abort` / `--continue` / `--quit`, octopus (2+ refs), or an unresolvable
+ref. Number-less `gh pr merge` falls through to the unconditional verify.
 
 **Convention shift (post-#559)**: run `markgate set <gate>` from the same
-worktree (cwd) where the gated command will be invoked — each worktree has
-its own markgate state dir (`<worktree>/.git/worktrees/<name>/markgate/`;
-main tree `<main>/.git/markgate/`), so parallel agents no longer collide;
-the `.markgate-pr-review-sha` sentinel is per-worktree by construction.
-Main-tree-only workflows behave as before; the old "set marker from main
-tree, merge from anywhere" pattern no longer works (`/review-pr` updated).
+worktree (cwd) where the gated command will be invoked — each worktree has its
+own markgate state dir (`<worktree>/.git/worktrees/<name>/markgate/`; main tree
+`<main>/.git/markgate/`), so parallel agents no longer collide. Main-tree-only
+workflows behave as before; the old "set marker from main tree, merge from
+anywhere" pattern no longer works.
 
 Smoke tests at `.claude/hooks/<gate>.test.sh` cover cwd-aware resolution
 against fixture worktrees (markgate mocked via a PATH shim with a
@@ -921,37 +939,28 @@ the matcher does not fire on a trigger inside an argument body.
 **The `if:` layer is GONE (issue #1455, reopened): project-settings hooks
 carrying `if:` never fired at all.** The #1476 verification measured that
 EVERY Bash-entry hook with an `if:` was never invoked — `git commit` /
-`gh pr merge` ran with no gate consulted — while no-`if:` entries in the
-SAME file fired normally, and the same `if:` strings DID work via the
-`settings.local.json` hot-reload path (where #1455's original measurement
-was made; the poisoning variable was never pinned — see #1476's close-out).
-`if:` was removed from all 29 hooks in the Bash entry; the in-script matcher
-is the SOLE filter (~29 quick spawns per call, all verified to exit 0 fast
-on non-matches). **Do NOT reintroduce `if:` without the restart-verified
-protocol**: change the setting → FRESH session → run the #1476 probe
-shapes → only then trust it. A hot-reload measurement does NOT transfer to
-project settings.
+`gh pr merge` ran with no gate consulted — while no-`if:` entries in the SAME
+file fired normally, and the same `if:` strings DID work via the
+`settings.local.json` hot-reload path (the poisoning variable was never
+pinned). `if:` was removed from all 29 hooks in the Bash entry; the in-script
+matcher is the SOLE filter. **Do NOT reintroduce `if:` without the
+restart-verified protocol**: change the setting → FRESH session → run the
+#1476 probe shapes → only then trust it. A hot-reload measurement does NOT
+transfer to project settings.
 
-Historical probe measurement (hot-reload path, gitignored
-`settings.local.json`; the removed `if:` patterns were prefix globs, widened
-by #1455's first pass to CONTAINS patterns):
-
-| probe `if:` | fired on `true && echo "... gh pr merge 999 ..."` |
-| --- | --- |
-| `Bash(*gh pr merge*)` | **yes** |
-| `Bash(gh pr merge*)` | no |
-
-`if:` matching was purely TEXTUAL and quote-blind — a contains pattern fired
-inside a quoted `echo` string; that is why the in-script matcher became the
-precision filter it now is alone.
+Historical probe (hot-reload path, gitignored `settings.local.json`): on
+`true && echo "... gh pr merge 999 ..."`, `Bash(*gh pr merge*)` FIRED and
+`Bash(gh pr merge*)` did not. `if:` matching was purely TEXTUAL and
+quote-blind — a contains pattern fired inside a quoted `echo` string; that is
+why the in-script matcher became the precision filter it now is alone.
 
 **Command-position matching (issue #1455 — supersedes the line-start
 anchoring).** The old line-start anchor (tolerating one leading
 `cd <path> &&`) dodged the quoted false positive by POSITION at the cost of a
-false NEGATIVE of the same shape: any command in front (`git push && gh pr
-create`, `echo done; gh pr merge`) and the gate never fired — PR #1451's own
-`gh pr create` slipped past `verify-pr-gate` exactly that way, and the same
-hole sat in all six merge-time gates. The fix:
+false NEGATIVE of the same shape: any command in front (`echo done; gh pr
+merge`) and the gate never fired — PR #1451's own `gh pr create` slipped past
+`verify-pr-gate` exactly that way, and the same hole sat in all six
+merge-time gates. The fix:
 `cmd_matches_verb <command> <verb-ere>` in `.claude/hooks/lib/command-match.sh`
 (1) NEUTRALISES the spans that are DATA — heredoc bodies, then quoted spans —
 then (2) matches the verb in COMMAND POSITION (line start or immediately
@@ -966,43 +975,37 @@ substitution is a segment opener too, so a verb inside one arms the gates.
   SILENTLY NOT FIRE; dropping too little is a loud, fixable false positive.
   Review rounds caught the dangerous direction repeatedly: `<<<` here-strings
   and a quoted `<<EOF` mention treated as real openers with no terminator
-  check (state latched, every remaining line dropped, all six merge-time
-  gates off); per-line quote stripping turning a multi-line quoted argument
-  into a NEW hard block; deleted-not-placeheld spans; an escaped `\"`
-  desyncing the quote state machine. The implementation therefore rejects
-  `<<<`, ignores `<<X` inside a quoted span, strips a heredoc only when its
-  terminator is actually found, honours backslash escapes, and runs a
-  whole-text quote state machine (an apostrophe inside a double-quoted span
-  is literal). Heredocs are removed BEFORE quotes — a heredoc body is prose
-  and routinely holds an unbalanced apostrophe.
+  check (state latched, every remaining line dropped, all six merge-time gates
+  off); per-line quote stripping turning a multi-line quoted argument into a
+  NEW hard block; deleted-not-placeheld spans; an escaped `\"` desyncing the
+  quote state machine. So the implementation rejects `<<<`, ignores `<<X`
+  inside a quoted span, strips a heredoc only when its terminator is actually
+  found, honours backslash escapes, and runs a whole-text quote state machine.
+  Heredocs are removed BEFORE quotes — a heredoc body is prose and routinely
+  holds an unbalanced apostrophe.
 - The quote pass emits kept stretches as runs (char-at-a-time was quadratic:
-  ~3s on a 200 KB command, twice per gate; now 28ms at 2 KB, 111ms at 40 KB,
-  ~2s at 200 KB, accepted). And it captures the stripped text before
-  grepping rather than piping into `grep -q` — under `set -o pipefail` a
-  large command surfaces `grep -q`'s early exit as SIGPIPE (141), read as
-  "no match", another silent miss.
-- **Heredoc bodies are stripped too — required, not a refinement**: the
-  commit introducing the helper was itself blocked by `integ-broad-gate`
-  because its `git commit -F -` body quoted a chained merge command (commit
-  messages and PR bodies routinely describe the commands they are about).
-  The stripper keeps the OPENING line (the real command) and drops through
-  the terminator, handling `<<-` and quoted / unquoted delimiters.
+  ~3s on a 200 KB command, twice per gate; now 28ms at 2 KB, ~2s at 200 KB).
+  And it captures the stripped text before grepping rather than piping into
+  `grep -q` — under `set -o pipefail` a large command surfaces `grep -q`'s
+  early exit as SIGPIPE (141), read as "no match", another silent miss.
+- **Heredoc bodies are stripped too — required, not a refinement**: the commit
+  introducing the helper was itself blocked by `integ-broad-gate` because its
+  `git commit -F -` body quoted a chained merge command. The stripper keeps
+  the OPENING line and drops through the terminator, handling `<<-` and
+  quoted / unquoted delimiters.
 - The `cd <path> &&` special case disappears — it is just a verb after `&&`.
 
 **Two gaps in the old anchor — issue
 [#2093](https://github.com/go-to-k/cdkd/issues/2093), CLOSED by the #2129
 convergence.** The anchor `(^|[|;&][[:space:]]*)` lacked `(`, so a verb in
-**subshell** or **command-substitution** position never armed any gate
-(measured via `main-tree-git-cwd-detector.sh` as an A/B probe — its old
-anchor DID include `(`); and an **unbalanced apostrophe**
-(`echo don't; git commit -m y`) swallowed the rest of the command. Severity
-was NOT uniform: a missed warning in the two detectors, a **gate bypass** in
-`check-gate` / `verify-pr-gate` / the four `integ-*` gates /
-`pr-review-gate` / `ci-green-gate` / `branch-gate` / `bughunt-clean-gate` —
-`(git commit -m x)` committed ungated. Deliberately not fixed in the
-measuring PR (adding `(` strictly widens every sourcing hook); #2129 paid
-the named price — every suite re-run under bash 5.x AND 3.2, plus a
-never-match mutant over all 32 suite-carrying gates (zero survivors).
+**subshell** or **command-substitution** position never armed any gate; and an
+**unbalanced apostrophe** (`echo don't; git commit -m y`) swallowed the rest
+of the command. Severity was NOT uniform: a missed warning in the two
+detectors, a **gate bypass** in the eleven blocking gates — `(git commit -m
+x)` committed ungated. Deliberately not fixed in the measuring PR (adding `(`
+strictly widens every sourcing hook); #2129 paid the named price — every suite
+re-run under bash 5.x AND 3.2, plus a never-match mutant over all 32
+suite-carrying gates (zero survivors).
 
 **The mechanism that replaced the anchor.** A Bash tool call is a COMMAND
 LIST, so it is SEGMENTED — on `&&`, `||`, `;`, `|`, a bare `&`, a newline, a
@@ -1017,18 +1020,11 @@ the span being blanked, so segments carry their ORIGINAL text and
 `cd "<worktree>" && git commit` / `git -C "/a b" commit` keep their paths
 (blanking was tried in the siblings and erased exactly those — target-dir
 resolution fell back to the payload cwd, fail-open). Measured on
-`branch-gate.sh` against a checkout on `main`:
-
-| command | before | after |
-| --- | --- | --- |
-| `(git commit -m x)` | 0 | 2 |
-| `true && (git commit -m x)` | 0 | 2 |
-| `out=$(git commit -m x)` | 0 | 2 |
-| ``out=`git commit -m x` `` | 0 | 2 |
-| `echo don't; git commit -m y` | 0 | 2 |
-| `bash -c "git commit -m x"` | 0 | 2 |
-| `GIT_EDITOR=true git commit -m x` | 0 | 2 |
-| `env` / `command` / `nohup` wrappers | 0 | 2 |
+`branch-gate.sh` against a checkout on `main`, every one of these went
+rc 0 -> 2: `(git commit -m x)`, `true && (git commit -m x)`,
+`out=$(git commit -m x)`, the backtick form, `echo don't; git commit -m y`,
+`bash -c "git commit -m x"`, `GIT_EDITOR=true git commit -m x`, and the
+`env` / `command` / `nohup` wrappers.
 
 Two load-bearing properties: a heredoc opener counts only when its delimiter
 actually appears later (look-ahead) — latching onto any `<<WORD` blanks every
@@ -1039,34 +1035,32 @@ re-run treating that character as literal (what turns `echo don't; git commit
 aborts the function and drops every remaining segment.
 
 The shared matcher has its own suite at
-`.claude/hooks/lib/command-match.test.sh` (its own `CASE_FLOOR` is the
-count; the number was carried here stale through three changes and is no
-longer restated), so a regression in it
-is reported once and precisely. **Every gate that sources the helper fails
+`.claude/hooks/lib/command-match.test.sh` (its own `CASE_FLOOR` is the count;
+the number was carried here stale through three changes and is no longer
+restated). **Every gate that sources the helper fails
 CLOSED when it cannot load** (`exit 2`, with a `declare -F gate_matches`
 check for a truncated file — the liveness check covers all three exported
 functions); the three non-blocking detectors skip instead (a missed backup /
 reminder / warning is a smaller harm than refusing an operation they only
 observe). The path is derived with pure-bash `${BASH_SOURCE[0]%/*}` rather
-than `dirname` (no PATH lookup), `.` fallback for the no-slash case.
-Thirty-six hooks share the helper — verify with
+than `dirname` (no PATH lookup), `.` fallback for the no-slash case. Count
+the sharing hooks with
 `grep -l 'lib/command-match.sh' .claude/hooks/*.sh | grep -v test | wc -l`
-rather than trusting a count in this sentence. Two smoke cases that
+rather than trusting a number here. Two smoke cases that
 previously asserted the chained shape was an "accepted false-negative"
 (`branch-gate.test.sh`, `pr-review-gate.test.sh`) now assert it is CAUGHT.
 
 **`cmd_last_cd_target` resolves the target worktree the same way.** It
 follows every `cd` in command position **that precedes the verb**, against a
 caller-passed base dir, so chained relative cds compose
-(`cd /abs/one && cd sub` → `/abs/one/sub`; taking only the last segment
-resolved `sub` against the wrong parent). Stopping at the verb is
+(`cd /abs/one && cd sub` → `/abs/one/sub`). Stopping at the verb is
 load-bearing: following trailing cds let one hijack the lookup —
 `gh pr merge <N> --squash --delete-branch && cd <repo> && git pull`, the
-standing post-merge step, silently redirected all seven markgate gates to
-the main tree's store. A `cd` whose path is entirely quoted resolves to
-NOTHING and the caller falls back to the payload cwd — recovering it from
-the raw command was tried and removed (pairing quoted mentions by order
-resolved the WRONG directory).
+standing post-merge step, silently redirected all seven markgate gates to the
+main tree's store. A `cd` whose path is entirely quoted resolves to NOTHING
+and the caller falls back to the payload cwd — recovering it from the raw
+command was tried and removed (pairing quoted mentions by order resolved the
+WRONG directory).
 
 One consequence of neutralising: a pattern needing a quoted VALUE must read
 the raw command after the verb is confirmed in command position —
@@ -1075,9 +1069,9 @@ endpoint (matching `pulls/[0-9]+` against neutralised text found only a
 placeholder, letting a mislabelled `fix:` title edit through — the PR #562
 incident).
 
-See `feedback_cross_agent_main_tree_contention.md` for the motivating
-session history; cdkd#562 for the original line-start anchoring fix;
-cdkd#1455 for its replacement.
+See `feedback_cross_agent_main_tree_contention.md` for the motivating session
+history; cdkd#562 for the original anchoring fix; cdkd#1455 for its
+replacement.
 
 ## Working on a sibling repo from a cdkd session (issue 1961)
 
@@ -1085,41 +1079,39 @@ The hooks a session runs come from ONE repo's `.claude/settings.json` —
 whichever repo the session started in — and fire on **every** Bash call,
 including commands targeting another repository. Post-#559 the marker lookup
 is target-correct while the POLICY stays session-correct; the two disagree
-exactly where the gate scripts have diverged (cdkd 41 hook scripts,
-cdk-local 19, cdk-real-drift 11).
+exactly where the gate scripts have diverged (cdkd 41 hook scripts, cdk-local
+19, cdk-real-drift 11).
 
 **A cdkd session working in cdk-local or cdk-real-drift gets cdkd's policy
 applied to it — expected, not a bug in the target** (cdk-real-drift's
-`verify-pr-gate` exempts a no-`src/**` PR; cdkd's blocks unconditionally —
-seen twice on 2026-08-18). **When it happens: complete the TARGET repo's own
-checklist and set its markers legitimately, then retry. Never route around
-the block, and do not "fix" the target repo to match cdkd.**
+`verify-pr-gate` exempts a no-`src/**` PR; cdkd's blocks unconditionally).
+**When it happens: complete the TARGET repo's own checklist and set its
+markers legitimately, then retry. Never route around the block, and do not
+"fix" the target repo to match cdkd.**
 
 **Do not port cdkd's stricter gates down to a sibling, or a sibling's
 exemptions up into cdkd.** The obvious convergence — give cdkd the
 docs/tooling exemption — is demonstrably wrong: a `.claude/hooks/**`-only PR
-touches no `src/**`, so that exemption would have waived `/verify-pr` for
-the change that introduced a remote-code-execution path, and the 3-axis
-review that caught it would never have been required. cdkd's
-agent-instruction files are load-bearing in a way a sibling's are not —
-which is why `CLAUDE.md`, `.claude/rules/**`, `.claude/skills/**` (all
-skills since issue #2364), `.claude/hooks/**` and `docs/**` (both since
-issue #2381) sit inside cdkd's gate scopes at all.
+touches no `src/**`, so that exemption would have waived `/verify-pr` for the
+change that introduced a remote-code-execution path. cdkd's agent-instruction
+files are load-bearing in a way a sibling's are not — which is why
+`CLAUDE.md`, `.claude/rules/**`, `.claude/skills/**` (all skills since issue
+#2364), `.claude/hooks/**` and `docs/**` (both since issue #2381) sit inside
+cdkd's gate scopes at all.
 
 **Delegation was tried and abandoned (PR 1970).** Each gate handing its
 decision to `<target-repo>/.claude/hooks/<same-name>` works — and introduces
-arbitrary code execution: the target directory is named by the command
-itself (a `cd`, a `git -C` / `gh -C` flag, the payload `cwd`), so any
-directory the agent can be induced to touch that carries an executable at
-that path gets it run with the session's environment. Reproduced with a
-planted hook and a plain `git checkout`, which read `AWS_*` / `GH_TOKEN`-
-shaped variables and captured the payload. Not patchable from inside the
-design — every trust signal from the target repo is forgeable (the attacker
-controls that repo); trust would need a maintainer-maintained allow-list.
-Read the closed PR before proposing delegation again; it records two more
-defects (an exit status of 128+N from a signal-killed hook propagates as a
-non-blocking error and turns a block into a pass; `git -C ""` silently
-resolves the hook process's own cwd).
+arbitrary code execution: the target directory is named by the command itself
+(a `cd`, a `-C` flag, the payload `cwd`), so any directory the agent can be
+induced to touch that carries an executable at that path gets it run with the
+session's environment. Reproduced with a planted hook and a plain
+`git checkout`, which read `AWS_*` / `GH_TOKEN`-shaped variables. Not
+patchable from inside the design — every trust signal from the target repo is
+forgeable; trust would need a maintainer-maintained allow-list. Read the
+closed PR before proposing delegation again; it records two more defects (an
+exit status of 128+N from a signal-killed hook propagates as a non-blocking
+error and turns a block into a pass; `git -C ""` silently resolves the hook
+process's own cwd).
 
 The cross-repo gate-aliasing design — why a sibling took a refusal it could
 never clear, why the mapping is a declared per-repo table rather than
@@ -1147,12 +1139,10 @@ suite.
 
 Two hooks added after the 2026-08-09 two-sessions-one-worktree incident: the
 second session found ~228 lines of uncommitted changes it had not written and
-ran `git checkout --` on the two files — the first session's finished, tested
-provider fix plus its regression tests. `git checkout --` writes no reflog
-entry and creates no stash, so nothing in git held a copy; the work survived
-only because the reverting session happened to save a diff by hand first. The
-two hooks address the two INDEPENDENT layers; either alone would have
-prevented the loss.
+ran `git checkout --` on them — the first session's finished, tested provider
+fix plus its regression tests. `git checkout --` writes no reflog entry and
+creates no stash, so nothing in git held a copy. The two hooks address two
+INDEPENDENT layers; either alone would have prevented the loss.
 
 - **`.claude/hooks/dirty-path-restore-gate.sh`** — PreToolUse (`Bash`),
   **blocking**, wired immediately BEFORE `restore-backup.sh`. Refuses
@@ -1160,30 +1150,27 @@ prevented the loss.
   currently has uncommitted changes — `restore-backup.sh` makes the
   operation RECOVERABLE, this one makes it DELIBERATE. Born from PR #1700
   (2026-08-12): undoing a mutation probe with `git checkout -- <file>` also
-  discarded ~200 lines of finished, unrelated, uncommitted review fixes in
+  discarded ~200 lines of finished, unrelated review fixes in
   the same file — intent and effect are indistinguishable in the command,
   and the effect is silent. Scope deliberately narrow: ONLY path-scoped
   restores (a branch switch / `-b` never matches — no `--`), ONLY when a
-  named path is actually dirty (a clean path passes), and
-  `git restore --staged` passes (index only). `git reset --hard` /
-  `git clean -f` / `git stash` are NOT gated here — their blast radius is
-  evident and `restore-backup.sh` snapshots them; this gate targets the one
-  spelling whose blast radius is wider than it looks. The refusal names the
-  offending paths, the scratch-copy alternative (`cp <file> /tmp/x.bak`
-  before, `cp` back after), and the `wipe-backups` recovery command.
+  named path is actually dirty, and `git restore --staged` passes (index
+  only). `git reset --hard` / `git clean -f` / `git stash` are NOT gated here
+  — their blast radius is evident and `restore-backup.sh` snapshots them; this
+  gate targets the one spelling whose blast radius is wider than it looks. The
+  refusal names the offending paths, the scratch-copy alternative, and the
+  `wipe-backups` recovery command.
   **Bypass `CDKD_ALLOW_DIRTY_RESTORE=1`, honored from BOTH channels since
   issue #2368**: the hook's process env AND a leading assignment in the
-  command text (`CDKD_ALLOW_DIRTY_RESTORE=1 git restore <p>` — the exact
-  spelling the refusal advertises; an agent's Bash call can only deliver it
-  as TEXT, since a PreToolUse hook is spawned with the session env and a
-  `VAR=1` prefix never reaches its process; pre-#2368 the advertised
-  remediation silently failed and the suite CERTIFIED the failure). The text
-  channel goes through `strip_noncommand_spans` + command position (a quoted
-  mention does not bypass), the value must be exactly `1`, and
-  `restore-backup.sh` still snapshots under either channel. Cwd-aware —
-  the first draft's pre-filter matched the literal `git checkout`, silently
-  skipping every `git -C <path> checkout` (the shape this repo uses most);
-  caught only because the smoke test covers the `-C` case. Smoke test:
+  command text — an agent's Bash call can only deliver it as TEXT, since a
+  PreToolUse hook is spawned with the session env and a `VAR=1` prefix never
+  reaches its process; pre-#2368 the advertised remediation silently failed
+  and the suite CERTIFIED the failure. The text channel goes through
+  `strip_noncommand_spans` + command position (a quoted mention does not
+  bypass), the value must be exactly `1`, and `restore-backup.sh` still
+  snapshots under either channel. Cwd-aware — the first draft's pre-filter
+  matched the literal `git checkout`, silently skipping every
+  `git -C <path> checkout`. Smoke test:
   `dirty-path-restore-gate.test.sh` (64 cases against real throwaway
   repos — no git mocking; the two text-channel cases fail against the
   pre-#2368 hook).
@@ -1194,13 +1181,12 @@ prevented the loss.
   snapshots the working tree into
   `<resolved git dir>/wipe-backups/<UTC ts>-<verb>/` (`tracked.patch` from
   `git diff HEAD --binary`, `COMMAND`, plus `untracked.tar` for `clean`,
-  whose targets a diff cannot capture). Always exits 0 and never prompts (the
-  operator does not know the changes are precious at the moment they run it);
+  whose targets a diff cannot capture). Always exits 0 and never prompts;
   skips entirely when `git status --porcelain` is empty. Cwd-aware; snapshots
   land in the **per-worktree** git dir (`.git/worktrees/<name>/`), matching
-  markgate's marker store. Deliberately does NOT match
-  `git checkout <branch>` / `-b` (a branch switch is not a restore —
-  `main-tree-branch-gate.sh`'s territory). **Recovery**:
+  markgate's marker store. Deliberately does NOT match `git checkout <branch>`
+  / `-b` (a branch switch is not a restore — `main-tree-branch-gate.sh`'s
+  territory). **Recovery**:
   `git apply --include=<path> <snap>/tracked.patch` for one file, or
   `git apply --3way <snap>/tracked.patch` for the tree — the plain
   `git apply` form fails with "patch does not apply" once any other change in
@@ -1216,33 +1202,28 @@ prevented the loss.
   from a different `session_id` exits 2 naming the owner, the worktree, and
   the release command. Scope: only linked worktrees (the main tree is
   `main-tree-edit-gate.sh`'s); only file-writing tools (Bash write targets
-  cannot be resolved statically, and read-only Bash must never block —
-  `main-tree-dirty-detector.sh` is the reactive analogue); repo opt-in via
-  `.markgate.yml` at the TARGET's own toplevel. Fails OPEN on anything
-  unresolvable (no `session_id`, path outside a repo, unreadable sentinel) —
+  cannot be resolved statically, and read-only Bash must never block); repo
+  opt-in via `.markgate.yml` at the TARGET's own toplevel. Fails OPEN on
+  anything unresolvable (no `session_id`, path outside a repo, unreadable) —
   it catches an honest mistake, not a security boundary. An owner idle
   longer than `CDKD_WORKTREE_OWNER_TTL_HOURS` (default 12) is taken over
   silently. `CDKD_SKIP_WORKTREE_OWNER_GATE=1` is the deliberate hand-off
-  bypass. Smoke test: `worktree-owner-gate.test.sh` (24 cases against a real
-  `git worktree add`).
+  bypass. Smoke test: `worktree-owner-gate.test.sh` (24 cases).
 
-  **The sentinel is itself gated (2026-08-10).** `session-owner` lives
-  INSIDE the git dir, which has no work tree, so
-  `git rev-parse --show-toplevel` failed on it, the opt-in check fell
-  through, and a Write targeting the sentinel passed unguarded — taking
-  another session's worktree was a single `Write`. That is exactly how it
-  went wrong: a session judged from a recent claim plus a stale-looking diff
-  that the owner had been `/clear`-ed, overwrote the file, and drove a lane
-  a LIVE agent was working (the victim's uncommitted work survived by luck).
-  The fix recovers the worktree root from `<git dir>/gitdir` so the opt-in
-  consults the WORKTREE's own `.markgate.yml`; the ordinary ownership branch
-  then applies to the sentinel like any other file — claiming an absent or
-  TTL-stale sentinel still works, an owner may refresh its own. The refusal
-  states that writing the file IS taking the worktree, that a claim younger
-  than the TTL means the owner is **presumed LIVE**, that a live session and
-  a dead one produce identical evidence (a recent claim, an unfamiliar diff,
-  a `/clear` you did not observe), and that the operator must ASK THE
-  MAINTAINER before handing off — especially when
-  `git -C <worktree> status --short` is non-empty. **Never infer that an
-  owning session is dead** (memory rule
+  **The sentinel is itself gated (2026-08-10).** `session-owner` lives INSIDE
+  the git dir, which has no work tree, so `git rev-parse --show-toplevel`
+  failed on it, the opt-in check fell through, and a Write targeting the
+  sentinel passed unguarded — taking another session's worktree was a single
+  `Write`. That is exactly how it went wrong: a session judged from a recent
+  claim plus a stale-looking diff that the owner had been `/clear`-ed,
+  overwrote the file, and drove a lane a LIVE agent was working. The fix
+  recovers the worktree root from `<git dir>/gitdir` so the opt-in consults
+  the WORKTREE's own `.markgate.yml`; the ordinary ownership branch then
+  applies to the sentinel like any other file. The refusal states that
+  writing the file IS taking the worktree, that a claim younger than the TTL
+  means the owner is **presumed LIVE**, that a live session and a dead one
+  produce identical evidence (a recent claim, an unfamiliar diff, a `/clear`
+  you did not observe), and that the operator must ASK THE MAINTAINER before
+  handing off — especially when `git -C <worktree> status --short` is
+  non-empty. **Never infer that an owning session is dead** (memory rule
   `feedback_never_infer_dead_worktree_owner.md`).

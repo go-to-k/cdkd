@@ -14,10 +14,38 @@
 #           cdkd#563 false-positive cases)
 #   - PASS  in a repo that never opted in (no `.markgate.yml`), which is
 #           issue #1259's scoping applied to the issue surface
+#   - PASS  for a QUOTED `--body-file` path CONTAINING A SPACE whose body
+#           carries the marker, and for the GLUED `-F<path>` spelling. This
+#           gate was ACCIDENTALLY SAFE against the extraction bug that
+#           fail-opens its two siblings: with no path extracted the loop body
+#           never runs, `seg_has_marker` returns 1, and the gate BLOCKS -- so
+#           the miss surfaced as a FALSE BLOCK on a compliant body. The
+#           positive cases are the ones that go red against the pre-fix hook.
 #
-# Measured rather than asserted: an always-`exit 0` stub fails 11 of these and
-# an always-`exit 2` stub fails 18, so neither direction can pass vacuously, and
-# removing the opt-in guard alone fails exactly the two opt-in cases.
+# MUTATION-PROBED rather than asserted, EVERY number re-taken on the 2026-09-05
+# run (59 cases) rather than only the ones that round moved -- the previous
+# header quoted 11 / 18 from a ~29-case suite and both were long stale:
+#
+#   always-`exit 0` stub                  fails 28   (nothing passes vacuously)
+#   always-`exit 2` stub                  fails 34   (nor blocks vacuously)
+#   opt-in guard removed                  fails  2   -- exactly the two opt-in
+#                                                      cases (BOTH lines: the
+#                                                      `.markgate.yml` test
+#                                                      alone leaves the
+#                                                      not-a-repo case passing)
+#   marker anchor -> loose                fails  2   -- exactly the two
+#                                                      mid-sentence cases, the
+#                                                      file-borne and the
+#                                                      heredoc one
+#   `gh api` mint arm removed             fails  1
+#   segment scoping reverted (scan $cmd)  fails  4
+#   heredoc whole-command fallback removed fails 1
+#   `$GW` value class -> the old          fails  3   -- the two spaced-path
+#     `(["\x27]?)([^"\x27\s]+)\1`                      cases plus the
+#                                                      unexpanded-`$VAR`
+#                                                      message arm
+#   short-flag `[=\s]*` -> `[=\s]+`       fails  1   -- exactly the glued
+#                                                      `-F<path>` case
 
 set -u
 
@@ -256,6 +284,31 @@ We ran a dup-check: nothing turned up.
 EOF
 gh issue create --body-file $TMPROOT/hd3.md"
 run "heredoc body mentions it mid-line" "$HD_MID" "$TMPROOT" 2
+
+# --- the quoted-value holes (2026-09-05) ------------------------------------
+# This gate was ACCIDENTALLY SAFE against the extraction bug its two siblings
+# fail-open on, and the cases below pin the direction the accident actually
+# produced. The old value class `(["\x27]?)([^"\x27\s]+)\1` could not span a
+# QUOTED PATH CONTAINING A SPACE, so it extracted no path at all -- and here,
+# uniquely, "no path" reaches `return 1`, which this gate reads as "no marker"
+# and BLOCKS. So the miss surfaced as a FALSE BLOCK on a fully compliant body
+# (measured against the pre-fix hook: rc=2 here, rc=0 for the unquoted twin),
+# never as a pass. The safety came from an UNRELATED design choice one function
+# up, so the two positive cases are the ones that fail pre-fix; the negative
+# twins are controls that were already right and must stay right.
+DUPSPACEDIR="$TMPROOT/dir with space"
+mkdir -p "$DUPSPACEDIR"
+cp "$WITH" "$DUPSPACEDIR/with.md"
+cp "$WITHOUT" "$DUPSPACEDIR/without.md"
+run "spaced --body-file path carries Dup-check" \
+  "gh issue create --title t --body-file \"$DUPSPACEDIR/with.md\"" "$TMPROOT" 0
+run "spaced --body-file path lacks Dup-check" \
+  "gh issue create --title t --body-file \"$DUPSPACEDIR/without.md\"" "$TMPROOT" 2
+run "spaced bare -F <path> carries Dup-check" \
+  "gh issue create --title t -F \"$DUPSPACEDIR/with.md\"" "$TMPROOT" 0
+# The GLUED short-flag spelling gh accepts as readily as the spaced one.
+run "glued -F<path> carries Dup-check"   "gh issue create --title t -F$WITH"    "$TMPROOT" 0
+run "glued -F<path> lacks Dup-check"     "gh issue create --title t -F$WITHOUT" "$TMPROOT" 2
 
 run "empty command passes" "" "$TMPROOT" 0
 

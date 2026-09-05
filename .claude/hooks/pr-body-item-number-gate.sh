@@ -70,6 +70,14 @@ if ! declare -F gate_matches >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/lib/command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
   exit 2
 fi
+# `GATE_PERL_WORD` is the shared value class `extract_files` interpolates.
+# Undefined, `$GW` becomes the EMPTY string, `($GW)` matches empty at every
+# position, every extracted path is empty and the gate scans nothing -- a
+# silent fail-open, so it fails CLOSED like the two checks above.
+if [ -z "${GATE_PERL_WORD:-}" ]; then
+  echo "Blocked: .claude/hooks/lib/command-match.sh predates GATE_PERL_WORD, so this gate cannot extract a body path." >&2
+  exit 2
+fi
 gate_matches "$cmd" "$GATE_RE_GH_BODY_CARRIER" || exit 0
 if ! printf '%s' "$cmd" | grep -qE '(--body-file|body=@)'; then
   exit 0
@@ -87,12 +95,35 @@ fi
 
 extract_files() {
   local cmd="$1"
-  # Use perl to handle quoted args robustly. Output is one path per
-  # line. perl's regex is more permissive than bash's, and we
-  # collapse single/double quotes around the value.
-  printf '%s' "$cmd" | perl -ne '
-    while (/--body-file[=[:space:]]+(["\x27]?)([^"\x27[:space:]]+)\1/g) { print "$2\n"; }
-    while (/(?:--field|-F)[[:space:]]+(["\x27]?)body=@([^"\x27[:space:]]+)\1/g) { print "$2\n"; }
+  # One path per line, through the SHARED `GATE_PERL_WORD` value class
+  # (`$GW` = one shell WORD that may EMBED quoted spans; `gate_unq` = the
+  # shell's own unquoting). The local `(["\x27]?)([^"\x27\s]+)\1` this
+  # replaces ENUMERATED where a quote may sit and lost two families, both
+  # measured 2026-09-05 against this hook, both FAIL-OPEN (an unextracted path
+  # is a body nobody scans):
+  #
+  #   --body-file "<dir with space>/bad.md"   rc=0, plain spelling rc=2
+  #   -F body=@<path>  glued as `-Fbody=@…`   rc=0
+  #
+  # This is the FIFTH site of one root cause; the other four are
+  # gh-body-english / issue-dup-check / issue-deferral-criteria /
+  # issue-classification-label. If you fix a path-extraction bug in any of
+  # them, check the rest.
+  #
+  # KNOWN LIMIT, deliberately NOT closed here: a bare `-F <path>` (gh's short
+  # `--body-file`) is still not extracted, and the arming grep above does not
+  # even let it reach this function. The four siblings do read it, but they
+  # scope their scan to the `gh` SEGMENT; this gate scans the WHOLE command, so
+  # a bare `-F` arm would also read `git commit -F <msg>` and `awk -F ,` — and
+  # this gate BLOCKS on what it FINDS, so a commit message mentioning `#4`
+  # would become a false refusal. Closing it means segment-scoping first.
+  printf '%s' "$cmd" | perl -ne "$GATE_PERL_WORD"'
+    while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    while (/(?:--field|--raw-field|-F)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
+      next unless $v =~ s/^body=\@//;
+      print "$v\n";
+    }
   '
 }
 

@@ -11,6 +11,12 @@
 #   - PASSES a READ-shaped `gh api ... --jq .body` (names the field, sends nothing)
 #   - PASSES commands outside the gated verb set (issue list / pr view)
 #   - PASSES when the body file does not exist (offline / typo tolerance)
+#   - BLOCKS a QUOTED `--body-file` path CONTAINING A SPACE, and the GLUED
+#     short-flag spellings `-F<path>` / `-fbody=<text>`. Both were listed in
+#     the HOOK's header as known limits and both were live bypasses of the
+#     English-only rule -- measured rc=0 on a Japanese body where the plain
+#     spelling gave 2 -- so each has a case here now, paired with an
+#     English-body control at the same spelling.
 #
 # NOTE: run this from BESIDE the hook, not from a /tmp copy -- HOOK is
 # resolved from ${BASH_SOURCE[0]}, so a copied harness points at a
@@ -645,6 +651,40 @@ run "a SPACE-indented terminator does NOT end a <<- body" \
 これは日本語
 	EOF
 gh issue create --title x --body-file $SPACED" 2
+
+# --- the quoted-value holes (2026-09-05) -------------------------------
+# Both were listed in this file's header as KNOWN LIMITS and both were live
+# bypasses of the English-only rule, so the limit line was a licence rather
+# than a boundary. Each blocking case below is rc=0 against the pre-fix hook
+# checked out of `origin/main`, with its plain-spelling twin at 2.
+#
+# (A) A quoted `--body-file` path CONTAINING A SPACE. The old value class
+# `(["\x27]?)([^"\x27\s]+)\1` could not span the space, so NOTHING was
+# extracted, no file was scanned, and a Japanese body reached GitHub.
+SPACEDIR="$TMP/dir with space"
+mkdir -p "$SPACEDIR"
+SP_JP="$SPACEDIR/jp-body.md"
+SP_EN="$SPACEDIR/en-body.md"
+printf '## Summary\n\nThis is fine.\nSession-fit: next (今回はやらない)\n' > "$SP_JP"
+printf '## Summary\n\nAll English content here.\n' > "$SP_EN"
+run "spaced --body-file path, double-quoted, blocks" \
+  "gh issue create --title x --body-file \"$SP_JP\"" 2
+run "spaced --body-file path, single-quoted, blocks" \
+  "gh issue create --title x --body-file '$SP_JP'" 2
+run "spaced bare -F <path> blocks" \
+  "gh issue create --title x -F \"$SP_JP\"" 2
+run "spaced -F body=@<path> blocks" \
+  "gh api repos/o/r/issues -F \"body=@$SP_JP\"" 2
+# The polarity control, and it is the load-bearing one for this gate: an
+# ENGLISH body at a spaced path must still pass, or the four blocks above
+# would be satisfied by "any spaced path blocks".
+run "spaced --body-file path, English body, passes" \
+  "gh issue create --title x --body-file \"$SP_EN\"" 0
+
+# (F) The GLUED short-flag spellings gh accepts as readily as the spaced ones.
+run "glued -F<path> blocks"                "gh issue create --title x -F$JP_BODY" 2
+run "glued -F<path>, English body, passes" "gh issue create --title x -F$SP_EN"   0
+run "glued -fbody='...' blocks"            "gh api repos/o/r/issues -fbody='これはテスト'" 2
 
 # --- summary ----------------------------------------------------------
 echo

@@ -5,6 +5,14 @@
 # code is the contract under test. Run from the repo root:
 #
 #   bash .claude/hooks/pr-body-item-number-gate.test.sh
+#
+# MUTATION-PROBED 2026-09-05 (49 cases): an always-`exit 0` stub fails 26 and
+# an always-`exit 2` stub fails 23, so neither direction passes vacuously.
+# Targeted mutants: the shared `$GW` value class reverted to the old
+# `(["\x27]?)([^"\x27\s]+)\1` fails 4 (the three spaced-path cases plus the
+# `--field body=@FILE` case, which the old class parsed differently); the
+# short-flag separator `[=\s]*` back to `[=\s]+` fails exactly 1 (the glued
+# `-Fbody=@<path>` case).
 
 set -u
 
@@ -545,6 +553,32 @@ gh issue create --title t --body-file $SPACED"
 run_case "a SPACE-indented terminator does NOT end a <<- body" 2 \
   "$(jq -cn --arg c "$SPACED_BAD" '{tool_input:{command:$c}}')"
 
+
+# --- the quoted-value holes (2026-09-05) --------------------------------
+# The FIFTH site of one root cause (gh-body-english / issue-dup-check /
+# issue-deferral-criteria / issue-classification-label are the others). The old
+# value class `(["\x27]?)([^"\x27\s]+)\1` cannot span a QUOTED PATH
+# CONTAINING A SPACE and requires a separator before a short flag's value, so
+# nothing was extracted and NO BODY WAS SCANNED — the fail-open direction for
+# this gate. Every blocking case below is rc=0 against the pre-fix hook while
+# its plain-spelling twin gives 2.
+PBIN_SPACEDIR="$TMPDIR_FIX/dir with space"
+mkdir -p "$PBIN_SPACEDIR"
+printf 'Review fixes:\n\n- item #4 was addressed\n' > "$PBIN_SPACEDIR/bad.md"
+printf 'Review fixes:\n\nAll clean, closes #12\n' > "$PBIN_SPACEDIR/ok.md"
+run_case "spaced --body-file path, double-quoted, blocks" 2 \
+  "$(jq -cn --arg c "gh pr create --title t --body-file \"$PBIN_SPACEDIR/bad.md\"" '{tool_input:{command:$c}}')"
+run_case "spaced --body-file path, single-quoted, blocks" 2 \
+  "$(jq -cn --arg c "gh pr create --title t --body-file '$PBIN_SPACEDIR/bad.md'" '{tool_input:{command:$c}}')"
+run_case "spaced -F body=@<path> blocks" 2 \
+  "$(jq -cn --arg c "gh api -X PATCH repos/o/r/pulls/1 -F \"body=@$PBIN_SPACEDIR/bad.md\"" '{tool_input:{command:$c}}')"
+printf 'Review fixes:\n\n- item #4 was addressed\n' > "$TMPDIR_FIX/pbin-bad.md"
+run_case "glued -Fbody=@<path> blocks" 2 \
+  "$(jq -cn --arg c "gh api -X PATCH repos/o/r/pulls/1 -Fbody=@$TMPDIR_FIX/pbin-bad.md" '{tool_input:{command:$c}}')"
+# The polarity control: the same spelling with an allow-listed body must pass,
+# so the blocks above are not satisfied by "any spaced path blocks".
+run_case "spaced --body-file path, allow-listed body, passes" 0 \
+  "$(jq -cn --arg c "gh pr create --title t --body-file \"$PBIN_SPACEDIR/ok.md\"" '{tool_input:{command:$c}}')"
 
 echo
 echo "Pass: $pass  Fail: $fail"

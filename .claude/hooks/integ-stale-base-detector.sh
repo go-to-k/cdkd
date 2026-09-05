@@ -43,17 +43,45 @@
 #
 # NOISE CONTROL
 #
-#   Only fires for a command that actually runs an integ fixture. Read verbs
-#   (`grep` / `cat` / `ls` / `git diff|log|show|add|status` / `echo`) exit
-#   immediately, in command position anywhere in the command rather than only
-#   at its start -- the first revision anchored at `^` only and claimed here
-#   that an `echo`ed or heredoc'd path exited, which was FALSE for
-#   `git diff .../verify.sh`, `cd x && cat .../verify.sh` and a heredoc body.
-#   A path inside an arbitrary quoted string is still a KNOWN false positive:
-#   this hook does not parse quoting, and since it only prints to stderr the
-#   cost is a stray note, not a block.
+#   Only fires for a command that actually runs an integ fixture, and BOTH
+#   halves of that decision are made PER SEGMENT, through the shared
+#   `gate_segments`. A whole-command version of this shipped first and had a
+#   measured hole in the disarming direction: the read-verb test matched a read
+#   ANYWHERE in the command and then `exit 0`ed the WHOLE command, so an
+#   ordinary chained invocation went silent (measured 2026-09-05, all four
+#   against a fixture behind by one in-scope commit):
+#
+#     bash tests/integration/demo/verify.sh                 WARN   (correct)
+#     git status && bash tests/integration/demo/verify.sh   SILENT (wrong)
+#     echo start && bash tests/integration/demo/verify.sh   SILENT (wrong)
+#     cat README.md && bash .../verify.sh                   SILENT (wrong)
+#     ls && node ../../../dist/cli.js deploy --all          SILENT (wrong)
+#
+#   Every one of those is a shape a real run writes, and a warn hook that goes
+#   quiet on the commands people actually type is indistinguishable from one
+#   that is working. So: WARN when ANY segment runs a fixture, and let a read
+#   verb suppress only the SEGMENT it leads. `git diff .../verify.sh` and
+#   `cat .../verify.sh` still stay silent, alone or chained, because there the
+#   reading segment is the only one that arms.
+#
+#   The segmenter is the shared one rather than a local splitter -- it already
+#   handles quoted spans, heredoc bodies, `$(...)` and `bash -c`, and it strips
+#   leading `env` / `time` / `sudo` wrappers, so the read-verb test can anchor
+#   at the segment start instead of hunting for command position. A path inside
+#   an arbitrary quoted string remains a KNOWN false positive costing a stray
+#   note, not a block.
 
 set -u
+
+# The library is loaded for `gate_segments`. NON-BLOCKING even here: unlike the
+# gates, this hook refuses nothing, so `exit 2` on an unloadable library would
+# stop a run it only observes. Exiting 0 loses a nudge, which is the same cost
+# as the hook not existing.
+__hook_dir="${BASH_SOURCE[0]%/*}"
+[ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
+# shellcheck source=lib/command-match.sh
+. "$__hook_dir/lib/command-match.sh" 2>/dev/null || exit 0
+declare -F gate_segments >/dev/null || exit 0
 
 input=$(cat 2>/dev/null || true)
 
@@ -75,17 +103,45 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || ec
 # Those four are exactly the runs that refresh `integ-broad`, the marker this
 # hook exists to protect, so arming only on `verify.sh` missed the cases with
 # the most to lose.
-printf '%s' "$cmd" | grep -qE '(bash|sh)[[:space:]]+[^|;&]*verify\.sh|tests/integration/[^[:space:]]*/verify\.sh|(node|cdkd)[[:space:]]+[^|;&]*(dist/)?cli\.js[[:space:]]+(deploy|destroy)|(^|[|;&]|&&)[[:space:]]*cdkd[[:space:]]+(deploy|destroy)([[:space:]]|$)' || exit 0
-# Reading a fixture is not running one. Anchored at the start of the COMMAND,
-# and (since the review) also matched anywhere for the read verbs that take a
-# path argument -- `git diff .../verify.sh`, `git log -- .../verify.sh` and a
-# `cd x && cat .../verify.sh` all reached the warning before, which is how a
-# warn hook trains people to ignore it.
-# ONE read-verb test, in command position anywhere. Two lines were left after
-# the review widened this: the `^`-anchored one only still reached `sed -n`,
-# which the widened line did not list -- so `cd x && sed -n 1,5p .../verify.sh`
-# WARNED while the bare form was silent. Merged, with `sed -n` in the list.
-printf '%s' "$cmd" | grep -qE '(^|[|;&]|&&)[[:space:]]*(grep|rg|cat|less|head|tail|ls|wc|echo|sed[[:space:]]+-n|git[[:space:]]+(diff|log|show|add|status))[[:space:]]' && exit 0
+# `(^|[[:space:]])` before `(bash|sh)`, not a bare `(bash|sh)`: unanchored, the
+# `sh` alternative matched the TAIL of an unrelated word, so
+# `./scripts/finish verify.sh` armed the hook. `(^|[[:space:]])` on `(node|cdkd)`
+# for the same reason.
+#
+# The last alternative was `(^|[|;&]|&&)[[:space:]]*cdkd ...` and is now a plain
+# `^`. Two things changed: a segment has no separators left in it, and the `&&`
+# branch was DEAD anyway -- ERE alternation tries `[|;&]` first, which matches a
+# single `&`, and the second `&` of a `&&` is itself a valid start, so `&&` was
+# never reached.
+ARM_RE='(^|[[:space:]])(bash|sh)[[:space:]]+[^|;&]*verify\.sh'
+ARM_RE="$ARM_RE"'|tests/integration/[^[:space:]]*/verify\.sh'
+ARM_RE="$ARM_RE"'|(^|[[:space:]])(node|cdkd)[[:space:]]+[^|;&]*(dist/)?cli\.js[[:space:]]+(deploy|destroy)'
+ARM_RE="$ARM_RE"'|^cdkd[[:space:]]+(deploy|destroy)([[:space:]]|$)'
+
+# Reading a fixture is not running one -- but only in the SEGMENT that reads it.
+# `sed -n` is in the list because an earlier revision kept two read-verb lines
+# and only the `^`-anchored one reached it, so `cd x && sed -n 1,5p .../verify.sh`
+# WARNED while the bare form was silent. Anchored at the segment start, which
+# `gate_strip_prefix` has already cleared of `env` / `time` / `sudo` wrappers
+# and leading whitespace.
+READ_RE='^(grep|rg|cat|less|head|tail|ls|wc|echo|sed[[:space:]]+-n|git[[:space:]]+(diff|log|show|add|status))([[:space:]]|$)'
+
+# Both tests are written as `if`, never `<cmd> && continue`: a trailing false
+# test as the last statement of a loop body is the shape that aborts the whole
+# construct under a caller's `set -e`, and this file documents that class for
+# `gate_segments` itself.
+armed=0
+while IFS= read -r seg; do
+  if ! printf '%s' "$seg" | grep -qE "$ARM_RE"; then
+    continue
+  fi
+  if printf '%s' "$seg" | grep -qE "$READ_RE"; then
+    continue
+  fi
+  armed=1
+  break
+done < <(gate_segments "$cmd")
+[ "$armed" = "1" ] || exit 0
 
 cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 [ -n "$cwd" ] || cwd=$PWD

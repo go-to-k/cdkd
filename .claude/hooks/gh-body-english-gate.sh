@@ -70,7 +70,12 @@
 #   - adjacent quoted chunks (`--body "a"$'\''b'\''`) yield only the first;
 #   - `gh api --input <file>` and `--body-file -` (stdin) are not scanned;
 #   - a quoted path CONTAINING A SPACE (`--body-file "/a/b c/x.md"`) and the
-#     glued `gh api -fbody=<text>` shorthand are not extracted;
+#     glued `-F<path>` / `-fbody=<text>` shorthands USED to be listed here as
+#     not extracted. Both are FIXED (2026-09-05): the first was a live
+#     bypass of the English-only rule -- measured rc=0 on a Japanese body at
+#     a spaced path where the unquoted spelling gave 2 -- and a known-limit
+#     line is not a licence to leave a bypass standing. See
+#     `GATE_PERL_WORD` in lib/command-match.sh;
 #   - a gh call nested in a command substitution, a subshell, an `if`, a
 #     loop body, or behind `xargs` (`URL=$(gh issue create ...)`) never
 #     arms the gate at all -- that is the shared `cmd_matches_verb`
@@ -91,11 +96,16 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F cmd_matches_verb >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
-  || [ -z "${GATE_RE_GH_PROSE_CARRIER:-}" ]; then
+  || [ -z "${GATE_RE_GH_PROSE_CARRIER:-}" ] \
+  || [ -z "${GATE_PERL_WORD:-}" ]; then
   # FAIL CLOSED: without the helper the verb guard below would see exit
   # 127, take the `!` branch and exit 0 -- silently disabling the gate.
   # The constant is checked for the same reason: a library that predates
   # it leaves VERB_ERE empty, and an empty ERE matches EVERY segment.
+  # `GATE_PERL_WORD` is checked because an empty one leaves the `$GW` the
+  # extractions interpolate as the EMPTY string, `($GW)` then matches empty
+  # everywhere, and every body path and inline value comes back empty --
+  # a silent pass rather than a loud 127.
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
   echo "so gh-body-english-gate cannot evaluate the command. Restore the file;" >&2
   echo "do not work around the gate." >&2
@@ -349,14 +359,37 @@ while IFS= read -r f_raw; do
     [ -n "$hit" ] || continue
     OFFENDERS+=("$f:$hit")
   done < <(perl -CSD -ne "print \"\$.: \$_\" if /$NON_ENGLISH_RE/" "$f" 2>/dev/null | head -"$MAX_REPORT")
-done < <(printf '%s' "$cmd" | perl -0777 -ne '
-    while (/--(?:body|notes)-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
-    while (/(?:--field|--raw-field|-F)[=\s]+(["\x27]?)(?:body|title|notes)=\@([^"\x27\s]+)\1/g) { print "$2\n"; }
+# The value class is `$GW` from the SHARED `GATE_PERL_WORD` prelude in
+# lib/command-match.sh, not a local `(["\x27]?)([^"\x27\s]+)\1`. That local
+# shape could not span a QUOTED PATH CONTAINING A SPACE -- it extracted
+# NOTHING, so this gate scanned no body at all. Measured 2026-09-05:
+# `--body-file "<dir with space>/jp.md"` with a JAPANESE body gave rc=0 where
+# the unquoted spelling gave 2, i.e. the English-only rule was bypassable by
+# putting the body file in a directory whose name has a space. The header's
+# known-limit list said "not extracted" and that line is now wrong, so it is
+# gone from there too.
+#
+# `[=\s]*` rather than `[=\s]+` on the SHORT flag: gh accepts the GLUED
+# spelling `-F/abs/p` as readily as `-F /abs/p`, and requiring a separator
+# silently dropped the glued half of the family (measured on
+# issue-deferral-criteria-gate, whose polarity makes the same miss a
+# fail-open: `-F /abs/bad.md` rc=2, `-F/abs/bad.md` rc=0).
+done < <(printf '%s' "$cmd" | perl -0777 -ne "$GATE_PERL_WORD"'
+    while (/--(?:body|notes)-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    while (/(?:--field|--raw-field|-F)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
+      next unless $v =~ s/^(?:body|title|notes)=\@//;
+      print "$v\n";
+    }
     # `-F <path>` is gh subcommand shorthand for --body-file / --notes-file
     # (and is this repo`s preferred shape). A bare -F whose value carries no
     # `key=` is a FILE, which distinguishes it from the gh api `-F body=@p`
     # form handled above.
-    while (/(?:^|\s)-F[=\s]+(["\x27]?)([^"\x27\s=]+)\1(?=\s|$)/g) { print "$2\n"; }
+    while (/(?:^|\s)-F[=\s]*($GW)(?=\s|$)/g) {
+      my $v = gate_unq($1);
+      next if $v =~ /=/;
+      print "$v\n";
+    }
   ' 2>/dev/null)
 
 # --- 2. inline bodies, titles and notes --------------------------------
@@ -375,7 +408,7 @@ while IFS= read -r -d '' val; do
   [ -n "$val" ] || continue
   first=$(printf '%s' "$val" | tr '\n' ' ' | cut -c1-60)
   OFFENDERS+=("inline: $first")
-done < <(printf '%s' "$cmd" | NER="$NON_ENGLISH_RE" perl -CSD -0777 -ne '
+done < <(printf '%s' "$cmd" | NER="$NON_ENGLISH_RE" perl -CSD -0777 -ne "$GATE_PERL_WORD"'
     my $re = qr/$ENV{NER}/;
     sub emit { my $v = shift; print "$v\0" if $v =~ $re; }
     # NO shell parsing. Every flag matched here is one that only gh
@@ -399,19 +432,27 @@ done < <(printf '%s' "$cmd" | NER="$NON_ENGLISH_RE" perl -CSD -0777 -ne '
     #
     # Dropping the short flags deletes that entire class. What it costs
     # is stated in the header as a known limit rather than hidden.
-    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]*"((?:[^"\\]|\\.)*)"/gs) { emit($1); }
-    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]*\x27([^\x27]*)\x27/gs)  { emit($1); }
-    # Unquoted value: stops at whitespace, which is all the shell would
-    # have passed as one argument anyway.
-    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]+([^\s"\x27-][^\s]*)/g)  { emit($1); }
-    # gh api field forms carrying a literal (not @file) value. Three arms:
-    # the quote may wrap the WHOLE `body=...` or follow the `=`, and the
-    # unquoted branch must stop at whitespace -- a single `[^"\x27]*` arm
-    # ran away to the next quote or end of command and swallowed later
-    # arguments.
-    while (/(?:--field|--raw-field|-F|-f)[=\s]+["\x27](?:body|title|notes)=([^"\x27]*)["\x27]/gs) { emit($1); }
-    while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=(["\x27])([^"\x27]*)\1/gs)    { emit($2); }
-    while (/(?:--field|--raw-field|-F|-f)[=\s]+(?:body|title|notes)=([^\s"\x27@][^\s]*)/g)        { emit($1); }
+    # ONE arm per flag family, over the shared `$GW` shell WORD, rather than
+    # one arm per QUOTE PLACEMENT. The three-arm shape it replaces enumerated
+    # "quoted", "single-quoted" and "unquoted", which is the same enumeration
+    # that lost the quoted `--body-file` path a few lines up.
+    #
+    # `[=\s]+` here and `[=\s]*` on the field flags below is not an
+    # inconsistency: `--body` is a PREFIX of `--body-file`, so allowing an
+    # empty separator would make `--body-file "<jp path>/x.md"` parse as an
+    # inline `--body` value of `-file/<jp path>/x.md` and block the
+    # japanese-in-the-PATH case this gate deliberately passes. The short
+    # flags have no such prefix twin and DO have a glued spelling gh accepts.
+    while (/(?:^|\s)(?:--body|--title|--notes)[=\s]+($GW)/g) { emit(gate_unq($1)); }
+    # gh api field forms carrying a literal (not @file) value. The quote may
+    # wrap the WHOLE `body=...` or sit after the `=`; `gate_unq` removes it
+    # from either position, so both are one case now.
+    while (/(?:--field|--raw-field|-F|-f)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
+      next unless $v =~ s/^(?:body|title|notes)=//;
+      next if $v =~ /^\@/;
+      emit($v);
+    }
   ' 2>/dev/null)
 
 if [ ${#OFFENDERS[@]} -eq 0 ]; then

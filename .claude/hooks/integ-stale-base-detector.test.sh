@@ -5,18 +5,31 @@
 # no signal at all and every assertion here is about the MESSAGE. That is the
 # opposite of the blocking gates' suites, and it is the whole risk of a warn
 # hook: an always-`exit 0` stub passes any suite that only checks exit codes.
-# RE-MEASURED 2026-09-04 after the review, against three stubs, all restored
-# afterwards (the first revision of this header quoted 6/5 and 5/6 and BOTH were
-# wrong -- a stale measured number is this repo's recurring defect, and putting
-# one in the header of a suite whose job is to measure is the worst place for it):
-#   `exit 0`, printing nothing        -> passed 6, FAILED 6  (every warn case)
-#   the ALARMING arm only             -> passed 4, FAILED 8  (silence cases AND
+# RE-MEASURED 2026-09-05 on the 19-case suite, against three stubs, all
+# restored afterwards. EVERY number here is from that one run -- the pass and
+# the fail halves alike. The first revision of this header quoted 6/5 and 5/6
+# and both were wrong; the second quoted 6/6, 4/8, 6/6, taken when the suite
+# was 12 cases, and carrying those forward would have left three PASS tallies
+# describing a suite that no longer exists. A stale measured number is this
+# repo's recurring defect, and the header of a suite whose job is to measure is
+# the worst place for one:
+#   `exit 0`, printing nothing        -> passed  9, FAILED 10  (every warn case)
+#   the ALARMING arm only             -> passed  8, FAILED 11  (silence cases AND
 #                                        the soft-arm warn case, which is why
 #                                        the two arms are asserted separately)
-#   BOTH arms at once                 -> passed 6, FAILED 6  (the silence cases)
-# Plus the mutation the fixtures exist for: 3-dot `HEAD...origin/main` -> 2-dot
-# fails exactly the lane-has-its-own-commit case. Before that fixture existed
-# the whole suite survived that mutation at 11/11.
+#   BOTH arms at once                 -> passed 10, FAILED  9  (the silence cases)
+# Plus four fence-specific mutations:
+#   3-dot `HEAD...origin/main` -> 2-dot    fails 1 -- exactly the
+#     lane-has-its-own-commit case. Before that fixture existed the whole suite
+#     survived this mutation at 11/11.
+#   read-verb test removed                 fails 4 -- exactly the four silence
+#     cases, so "a read is not a run" is fenced apart from the change below.
+#   read-verb test back to PER-COMMAND     fails 4 -- exactly the four
+#     read-verb-in-an-earlier-segment cases, and NOTHING else. That is the
+#     2026-09-05 defect reproduced: a read verb anywhere disarmed the whole
+#     command, so `git status && bash .../verify.sh` went silent.
+#   `(bash|sh)` unanchored                 fails 1 -- exactly the
+#     word-ending-in-sh case.
 # No direction passes vacuously.
 #
 # Asserted, in both directions:
@@ -24,8 +37,11 @@
 #   - names the IN-SCOPE count when main's advance touches integ-gate paths,
 #     and says the marker will probably survive when it does not -- the two
 #     arms give opposite advice, so conflating them would make the hook lie
-#   - SILENT when up to date, when the command only READS a verify.sh, when
-#     the repo never opted in, and for a non-Bash tool
+#   - WARNS  when the fixture run sits in a LATER segment than a read verb
+#     (`git status && bash .../verify.sh`), which is how a real run is written
+#   - SILENT when up to date, when the command only READS a verify.sh (alone or
+#     chained with another read), when the repo never opted in, and for a
+#     non-Bash tool
 
 set -u
 
@@ -166,6 +182,32 @@ silent 'not opted in (no .markgate.yml): silent'    "$RUN_CMD" "$NOOPTIN"
 silent 'grep of a verify.sh: silent'                'grep -n cdkd tests/integration/demo/verify.sh' "$BEHIND_SCOPE"
 silent 'cat of a verify.sh: silent'                 'cat tests/integration/demo/verify.sh' "$BEHIND_SCOPE"
 silent 'unrelated command: silent'                  'git status --porcelain' "$BEHIND_SCOPE"
+
+# --- the read verb must disarm its SEGMENT, not the COMMAND (2026-09-05) ----
+# Measured against the pre-fix hook: all four of these were SILENT while the
+# bare `bash .../verify.sh` warned. The arming grep and the read-verb grep both
+# scanned the WHOLE command, so one read verb anywhere `exit 0`ed the lot --
+# and every shape below is one a real run writes. A warn hook that goes quiet
+# on the commands people actually type is indistinguishable from a working one,
+# which is the failure mode this whole file exists to catch.
+warns 'read verb in an EARLIER segment still warns (git status)' \
+  "git status && $RUN_CMD" "$BEHIND_SCOPE" 'behind origin/main'
+warns 'read verb in an EARLIER segment still warns (echo)' \
+  "echo start && $RUN_CMD" "$BEHIND_SCOPE" 'behind origin/main'
+warns 'read verb in an EARLIER segment still warns (cat)' \
+  "cat README.md && $RUN_CMD" "$BEHIND_SCOPE" 'behind origin/main'
+# The STANDARD flow, which has no verify.sh at all -- and the four broad-set
+# fixtures that use it are exactly the runs that refresh `integ-broad`.
+warns 'read verb before the standard cli.js flow still warns' \
+  'ls && node ../../../dist/cli.js deploy --all' "$BEHIND_SCOPE" 'behind origin/main'
+# Controls, so the four above are not satisfied by "the read-verb test was
+# deleted". A read is still a read when it is the only thing that arms, alone
+# or chained.
+silent 'git diff of a verify.sh: silent'  'git diff tests/integration/demo/verify.sh' "$BEHIND_SCOPE"
+silent 'chained reads only: silent'       'git status && cat tests/integration/demo/verify.sh' "$BEHIND_SCOPE"
+# `(bash|sh)` was UNANCHORED, so the `sh` alternative matched the tail of an
+# unrelated word and `finish verify.sh` armed the hook.
+silent 'a word ENDING in sh does not arm' './scripts/finish verify.sh' "$BEHIND_SCOPE"
 
 # Non-Bash tool: the hook must not read tool_input.command from a Write.
 payload=$(jq -n '{tool_name:"Write", tool_input:{file_path:"/x/verify.sh"}, cwd:"/tmp"}')
