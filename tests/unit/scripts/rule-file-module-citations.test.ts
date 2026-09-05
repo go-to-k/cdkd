@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 
 /**
- * Every `<name>.ts` a `.claude/rules/**` file cites must exist in the tree.
+ * Every `.ts` file a `.claude/rules/**` file cites must exist in the tree.
  *
  * ## Why this fence exists
  *
@@ -19,10 +19,49 @@ import { join } from 'node:path';
  * (`rule-file-payload.test.ts`); none of them reads what the text SAYS.
  *
  * This is the cheapest derived assertion available over that corpus: a module
- * citation is a claim about the tree, and the tree can answer it. It cannot
- * catch a citation that resolves but describes the wrong behavior (the
- * `ecr-puller.ts` half of #2599 was exactly that shape — a live module with a
- * false parenthetical), so it is a floor, not a guarantee.
+ * citation is a claim about the tree, and the tree can answer it.
+ *
+ * ## The three citation spellings, and why all three are read
+ *
+ * The corpus writes a module three ways, and a fence that reads only one is
+ * green over the other two. The first cut read BARE BASENAMES only and shipped
+ * green over a LIVE instance of its own target defect (found in review):
+ * `analyzer.md` told future sessions to extend
+ * `src/analyzer/intrinsic-resolver.ts` and to write
+ * `tests/unit/analyzer/intrinsic-resolver.test.ts` — neither has ever existed
+ * under those names; the module is `src/deployment/intrinsic-function-resolver.ts`,
+ * named correctly seven lines above. Measured populations (2026-09-06):
+ *
+ * - **Bare basename** in a code span — `` `docker-runner.ts` ``. 363 of them.
+ *   Resolved against a SET OF BASENAMES collected from a repo walk.
+ * - **Path form** in a code span — `` `src/analyzer/dag-builder.ts` ``. 247 of
+ *   them, invisible to the first cut. Resolved as a path from the repo root,
+ *   falling back to `src/<cited>`: the corpus writes both spellings and three
+ *   citations are `src`-relative (`utils/aws-region-resolver.ts`,
+ *   `cli/commands/gc.ts`, `assets/asset-redirect.ts`). Calibrated against the
+ *   pre-fix tree — without that fallback all three are false positives.
+ * - **Markdown link** — `` [confirm-prompt.ts](../../src/cli/commands/confirm-prompt.ts) ``.
+ *   6 of them. Resolved RELATIVE TO THE RULES DIRECTORY, which is what those
+ *   links are relative to.
+ *
+ * ## Bounds — stated, because an over-claimed fence is the defect it guards
+ *
+ * - A BARE citation resolves against a basename set, so it only asks "does a
+ *   file with this NAME exist anywhere". A module that MOVED still passes; a
+ *   path-form citation of the same module would not. This is why the path form
+ *   is the better spelling to use in the corpus.
+ * - It cannot catch a citation that RESOLVES but describes the wrong
+ *   behaviour. The `ecr-puller.ts` half of #2599 was exactly that shape — a
+ *   live module with a false parenthetical. Nothing cheap can check those.
+ * - A citation naming a path OUTSIDE this repo is not checked at all, and
+ *   deliberately so: `gate-sibling-repos.md` cites an absolute
+ *   `/Users/.../cdk-local/src/types/state.ts`, which resolves on the
+ *   maintainer's machine and does not exist in CI. Verifying it would make
+ *   this fence pass or fail on whether a sibling checkout happens to be
+ *   present — the hermeticity failure a fence is least able to notice, since
+ *   it goes green on the machine you develop on. Such citations are counted
+ *   and CAPPED instead ({@link MAX_EXTERNAL_CITATIONS}), so the corpus cannot
+ *   quietly drift toward unverifiable references.
  *
  * ## Deliberately-dead citations
  *
@@ -69,13 +108,26 @@ const DELETED_MODULE_CITATIONS: Record<string, string> = {
 
 /**
  * Floors, so a regex that silently stopped matching cannot pass vacuously.
- * Both are literals taken from a measurement the fence does not itself
- * perform (`grep -o` over the corpus, 2026-09-05: 366 citations across 12 of
- * the rule files) — a floor computed from the pool it guards is satisfied by
- * that pool going empty.
+ * Every figure is a LITERAL from a measurement this fence does not itself
+ * perform (2026-09-06: 610 code-span citations, of which 247 are path form,
+ * plus 6 markdown links, across 38 of the 45 rule files) — a floor computed
+ * from the pool it guards is satisfied by that pool going empty.
+ *
+ * There is a floor PER SPELLING, not just a grand total: the first cut read
+ * one spelling of three and its aggregate floor was comfortably satisfied
+ * while 40% of the corpus went unread.
  */
-const MIN_CITATIONS = 250;
-const MIN_FILES_WITH_CITATIONS = 8;
+const MIN_CODE_SPAN_CITATIONS = 520;
+const MIN_PATH_FORM_CITATIONS = 200;
+const MIN_MARKDOWN_LINK_CITATIONS = 5;
+const MIN_FILES_WITH_CITATIONS = 30;
+
+/**
+ * Citations resolving OUTSIDE the repo. Not a floor but a CEILING: each one is
+ * a claim this fence cannot check hermetically (see the bounds above). One
+ * exists today, in `gate-sibling-repos.md`. Raising this needs a reason.
+ */
+const MAX_EXTERNAL_CITATIONS = 1;
 
 function walkFileNames(dir: string, out: Set<string>): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -88,9 +140,18 @@ function walkFileNames(dir: string, out: Set<string>): void {
   }
 }
 
+type CitationKind = 'bare' | 'path' | 'link';
+
+/** True when an absolute path lies inside the repo (so the fence may check it). */
+function insideRepo(absolutePath: string): boolean {
+  const rel = relative(REPO_ROOT, absolutePath);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
 interface Citation {
   ruleFile: string;
-  module: string;
+  cited: string;
+  kind: CitationKind;
 }
 
 function collectCitations(): Citation[] {
@@ -98,56 +159,129 @@ function collectCitations(): Citation[] {
   for (const name of readdirSync(RULES_DIR).sort()) {
     if (!name.endsWith('.md')) continue;
     const text = readFileSync(join(RULES_DIR, name), 'utf8');
-    // Backticked code spans only. Bare prose mentions are excluded on
-    // purpose: `.claude/rules/**` writes real module names in code spans by
-    // convention, and matching unquoted text would pull in sentence
-    // fragments that merely END in `.ts`.
-    for (const match of text.matchAll(/`([A-Za-z0-9._-]+\.ts)`/g)) {
-      const module = match[1] as string;
+    // Code spans. The character class now admits `/` so the path form is
+    // visible; without it the fence read basenames only.
+    for (const match of text.matchAll(/`([A-Za-z0-9._/-]+\.ts)`/g)) {
+      const cited = match[1] as string;
       // `.d.ts` / `.generated.ts` are SUFFIX fragments, not filenames — the
       // text writes them to name a file KIND. A leading dot is the tell.
-      if (module.startsWith('.')) continue;
-      citations.push({ ruleFile: name, module });
+      if (cited.startsWith('.')) continue;
+      citations.push({ ruleFile: name, cited, kind: cited.includes('/') ? 'path' : 'bare' });
+    }
+    // Markdown links, which the corpus uses for cross-file pointers.
+    for (const match of text.matchAll(/\]\(([A-Za-z0-9._/-]+\.ts)\)/g)) {
+      citations.push({ ruleFile: name, cited: match[1] as string, kind: 'link' });
     }
   }
   return citations;
+}
+
+/**
+ * Where a citation points, as an absolute path — or `undefined` for a bare
+ * basename, which names no location at all.
+ */
+function targetOf(citation: Citation): string | undefined {
+  if (citation.kind === 'bare') return undefined;
+  // A markdown link in a rules file is relative to the rules directory; a
+  // path-form code span is relative to the repo root.
+  return citation.kind === 'link'
+    ? resolve(RULES_DIR, citation.cited)
+    : resolve(REPO_ROOT, citation.cited);
+}
+
+/** A citation this fence cannot check without depending on the host machine. */
+function isExternal(citation: Citation): boolean {
+  const target = targetOf(citation);
+  return target !== undefined && !insideRepo(target);
+}
+
+function resolvesInTree(citation: Citation, repoFileNames: Set<string>): boolean {
+  switch (citation.kind) {
+    case 'bare':
+      return repoFileNames.has(citation.cited);
+    case 'path':
+      // Repo-root first, then `src/`-relative: the corpus writes both, and
+      // three live citations use the shorter form.
+      return (
+        existsSync(join(REPO_ROOT, citation.cited)) ||
+        existsSync(join(REPO_ROOT, 'src', citation.cited))
+      );
+    case 'link':
+      return existsSync(resolve(RULES_DIR, citation.cited));
+  }
+}
+
+/** The allow-list is keyed by BASENAME, whatever spelling the citation used. */
+function basenameOf(cited: string): string {
+  return cited.slice(cited.lastIndexOf('/') + 1);
 }
 
 describe('.claude/rules module citations resolve against the tree', () => {
   const repoFileNames = new Set<string>();
   walkFileNames(REPO_ROOT, repoFileNames);
   const citations = collectCitations();
+  const countOf = (kind: CitationKind) => citations.filter((c) => c.kind === kind).length;
 
-  it('sees the corpus it claims to check', () => {
+  it('sees every spelling of the corpus it claims to check', () => {
     // The vacuous-pass guard: "no dead citations" and "parsed nothing" are
-    // the same green without this.
+    // the same green without this, and a per-spelling floor is what the
+    // aggregate could not say — the first cut read one spelling of three.
+    const codeSpans = countOf('bare') + countOf('path');
     expect(
-      citations.length,
-      `Only ${citations.length} module citations found under .claude/rules — the ` +
-        'code-span regex has probably stopped matching. Re-measure with ' +
-        `grep -oE '\`[A-Za-z0-9._-]+\\.ts\`' .claude/rules/*.md | wc -l before lowering this floor.`
-    ).toBeGreaterThanOrEqual(MIN_CITATIONS);
+      codeSpans,
+      `Only ${codeSpans} code-span citations found under .claude/rules — the ` +
+        'code-span regex has probably stopped matching.'
+    ).toBeGreaterThanOrEqual(MIN_CODE_SPAN_CITATIONS);
+    expect(
+      countOf('path'),
+      `Only ${countOf('path')} PATH-form citations found — the character class has ` +
+        'probably lost `/`, which is the exact regression that let a stale ' +
+        '`src/analyzer/intrinsic-resolver.ts` ship green.'
+    ).toBeGreaterThanOrEqual(MIN_PATH_FORM_CITATIONS);
+    expect(
+      countOf('link'),
+      `Only ${countOf('link')} markdown-link citations found — the link regex has ` +
+        'probably stopped matching.'
+    ).toBeGreaterThanOrEqual(MIN_MARKDOWN_LINK_CITATIONS);
     const files = new Set(citations.map((c) => c.ruleFile));
     expect(
       files.size,
-      `Citations came from only ${files.size} rule file(s): ${[...files].join(', ')}.`
+      `Citations came from only ${files.size} rule file(s): ${[...files].sort().join(', ')}.`
     ).toBeGreaterThanOrEqual(MIN_FILES_WITH_CITATIONS);
     // The walk is the other half of the input; an empty or truncated one
-    // makes every citation look dead rather than making them look alive, but
-    // pin it anyway so the failure names the WALK instead of the text.
+    // makes every citation look dead rather than alive, but pin it anyway so
+    // the failure names the WALK instead of the text.
     expect(repoFileNames.has('local-start-alb.ts')).toBe(true);
     expect(repoFileNames.has('rule-file-payload.test.ts')).toBe(true);
+  });
+
+  it('carries no more unverifiable out-of-repo citations than it admits to', () => {
+    const external = citations
+      .filter(isExternal)
+      .map((c) => `${c.ruleFile} cites ${c.cited}`)
+      .sort();
+    expect(
+      [...new Set(external)].length,
+      'A .claude/rules file cites a .ts path outside this repository: ' +
+        `${[...new Set(external)].join('; ')}. Such a citation resolves on whichever machine ` +
+        'happens to have the sibling checkout and never in CI, so this fence cannot verify it. ' +
+        'Prefer naming the sibling repo and the path in prose over writing a machine-specific ' +
+        'absolute path.'
+    ).toBeLessThanOrEqual(MAX_EXTERNAL_CITATIONS);
   });
 
   it('cites no module that is missing from the tree', () => {
     const dead = citations
       .filter(
-        (c) => !repoFileNames.has(c.module) && DELETED_MODULE_CITATIONS[c.module] === undefined
+        (c) =>
+          !isExternal(c) &&
+          !resolvesInTree(c, repoFileNames) &&
+          DELETED_MODULE_CITATIONS[basenameOf(c.cited)] === undefined
       )
-      .map((c) => `${c.ruleFile} cites \`${c.module}\``);
+      .map((c) => `${c.ruleFile} cites ${c.cited} (${c.kind})`);
     expect(
       [...new Set(dead)].sort(),
-      'A .claude/rules file names a module that does not exist. Rules text is loaded into ' +
+      'A .claude/rules file names a .ts file that does not exist. Rules text is loaded into ' +
         'every session working in that area, so a stale name propagates. Fix the sentence to ' +
         'describe what actually ships; if the citation is deliberately HISTORICAL (recording ' +
         'a removal), add the basename to DELETED_MODULE_CITATIONS with the reason.'
@@ -168,7 +302,7 @@ describe('.claude/rules module citations resolve against the tree', () => {
 
     // ...and an entry nothing cites is dead weight that outlives the text it
     // was written for.
-    const cited = new Set(citations.map((c) => c.module));
+    const cited = new Set(citations.map((c) => basenameOf(c.cited)));
     const unused = Object.keys(DELETED_MODULE_CITATIONS)
       .filter((module) => !cited.has(module))
       .sort();

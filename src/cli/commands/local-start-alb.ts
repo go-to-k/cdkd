@@ -118,9 +118,12 @@ function collectLambdaTargetLogicalIds(frontDoor: FrontDoorPlan | undefined): st
  *
  * The warning REPEATS on every `--watch` reload, because `resolveBoots` is
  * re-run per reload (`:26264`) and its warnings re-logged. That matches how
- * cdk-local's own ALB resolution warnings behave on the same path; a
- * warn-once flag would also go silent on the reload that first INTRODUCES a
- * Lambda target.
+ * cdk-local's own ALB resolution warnings behave on the same path, which is
+ * the whole reason: repeating is what the surrounding output already does.
+ * It is NOT because a reload could introduce a new Lambda target — the reload
+ * discards `frontDoor` and `buildFrontDoor` runs only at boot (`:26110`), so
+ * a Lambda added mid-`--watch` is never stood up at all. An earlier revision
+ * of this comment argued the second, false thing.
  */
 export function warnUnresolvedLambdaTargetEnv(
   strategy: EmulatorStrategy,
@@ -133,6 +136,20 @@ export function warnUnresolvedLambdaTargetEnv(
       const resolved = strategy.resolveBoots(stacks, chosenTargets);
       const lambdaIds = collectLambdaTargetLogicalIds(resolved.frontDoor);
       if (lambdaIds.length === 0) return resolved;
+      // An ALB whose every target is a Lambda resolves to ZERO boots and is a
+      // legitimate topology (the engine only refuses when there are neither
+      // boots NOR listeners). Claiming "the ECS targets DO honor it" there
+      // would be vacuously true of an empty set and read as a contradiction,
+      // so the sentence is carried only when there is an ECS half to speak
+      // about. The remedy line likewise STATES which source this path reads
+      // rather than telling the user to add a flag they may already have set:
+      // with a Lambda-only ALB nothing calls the dispatcher, so cdk-local's
+      // mutual-exclusion error (`:4896`) never fires and `--from-cfn-stack`
+      // can be present while this warning prints.
+      const ecsNote =
+        resolved.boots.length > 0
+          ? 'The ECS service targets behind this ALB DO honor --from-state. '
+          : '';
       return {
         ...resolved,
         warnings: [
@@ -140,15 +157,34 @@ export function warnUnresolvedLambdaTargetEnv(
           `--from-state does not reach the container environment of this ALB's Lambda ` +
             `target group(s): ${lambdaIds.join(', ')}. Their Environment.Variables keep any ` +
             'Ref / Fn::GetAtt / Fn::Sub / Fn::ImportValue intrinsics unresolved, and each is ' +
-            'then dropped with its own warning. The ECS service targets behind this ALB DO ' +
-            'honor --from-state. To resolve BOTH kinds, use --from-cfn-stack <name> instead ' +
-            '(it survives the upstream option allow-list) for a CloudFormation-deployed ' +
-            'stack, or override the affected variables with --env-vars. Tracked as ' +
-            'go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).',
+            'then dropped with its own warning. ' +
+            ecsNote +
+            'The only state source this path reads is --from-cfn-stack <name>, which reaches ' +
+            'both target kinds on a CloudFormation-deployed stack; otherwise override the ' +
+            'affected variables with --env-vars. Tracked as go-to-k/cdkd#2602 (upstream ' +
+            'go-to-k/cdk-local#707).',
         ],
       };
     },
   };
+}
+
+/**
+ * The `EmulatorStrategy` `cdkd local start-alb` runs with: cdk-local's ALB
+ * strategy, decorated by {@link warnUnresolvedLambdaTargetEnv}.
+ *
+ * Extracted from the command's action for ONE reason, and it is the finding
+ * that produced it: with the composition written inline in the `.action(...)`
+ * closure, deleting the decorator at its only wiring point left the entire
+ * unit suite green (measured in review — 29/29). The decorator's own cases
+ * exercise it directly, so they cannot see a call site that stopped calling
+ * it. A named export gives that seam a subject a test can hold, and
+ * `local-start-alb.test.ts` asserts BOTH halves: that this function returns a
+ * warning-emitting strategy, and that the action passes THIS function's
+ * result to `runEcsServiceEmulator` rather than a bare `albStrategy(...)`.
+ */
+export function buildAlbEmulatorStrategy(options: LocalStartAlbOptions): EmulatorStrategy {
+  return warnUnresolvedLambdaTargetEnv(albStrategy(options), options);
 }
 
 /**
@@ -215,7 +251,7 @@ export function createLocalStartAlbCommand(): Command {
         await runEcsServiceEmulator(
           targets,
           options,
-          warnUnresolvedLambdaTargetEnv(albStrategy(options), options),
+          buildAlbEmulatorStrategy(options),
           cdkdExtraStateProviders
         );
       })

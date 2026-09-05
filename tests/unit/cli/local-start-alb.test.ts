@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  buildAlbEmulatorStrategy,
   createLocalStartAlbCommand,
   warnUnresolvedLambdaTargetEnv,
 } from '../../../src/cli/commands/local-start-alb.js';
@@ -12,6 +13,7 @@ import {
   type FrontDoorPlan,
   type PlannedForwardTarget,
   type PlannedFrontDoorListener,
+  type PlannedLambdaForwardTarget,
 } from '../../../src/cli/commands/ecs-service-emulator.js';
 
 // Unit coverage for the cdkd-specific wiring around `cdkd local start-alb`:
@@ -169,17 +171,18 @@ describe('warnUnresolvedLambdaTargetEnv (issue #2602)', () => {
   });
 
   // Only `lambda.logicalId` is read by the collector; the rest of
-  // `ResolvedLambda` is irrelevant to it, hence the narrow cast at this one
-  // fixture boundary rather than a 20-field stub whose extra fields would
-  // suggest the collector reads them.
-  const lambdaTarget = (logicalId: string): PlannedForwardTarget =>
-    ({
-      kind: 'lambda',
-      lambda: { logicalId },
-      targetGroupArn: `Stack:${logicalId}Tg`,
-      multiValueHeaders: false,
-      weight: 1,
-    }) as unknown as PlannedForwardTarget;
+  // `ResolvedLambda` (image plan, runtime, memory, the owning StackInfo) is
+  // irrelevant to it. The cast is confined to that ONE field so the rest of
+  // the shape is still type-checked against `PlannedLambdaForwardTarget` —
+  // a `PlannedForwardTarget` cast would have thrown away the discriminant
+  // and the sibling fields too.
+  const lambdaTarget = (logicalId: string): PlannedLambdaForwardTarget => ({
+    kind: 'lambda',
+    lambda: { logicalId } as unknown as PlannedLambdaForwardTarget['lambda'],
+    targetGroupArn: `Stack:${logicalId}Tg`,
+    multiValueHeaders: false,
+    weight: 1,
+  });
 
   const listener = (opts: {
     defaultTargets?: PlannedForwardTarget[];
@@ -447,5 +450,139 @@ describe('warnUnresolvedLambdaTargetEnv against the REAL albStrategy (issue #260
 
   it('emits nothing on the same real plan without --from-state', () => {
     expect(lambdaWarning(resolveWith(false).warnings)).toBeUndefined();
+  });
+});
+
+describe('non-forward listener actions (issue #2602)', () => {
+  // `collectLambdaTargetLogicalIds` guards with `action?.kind !== 'forward'`.
+  // Review measured that weakening it to `action === undefined` leaves the
+  // whole suite green, because no fixture above carries a redirect, a
+  // fixed-response, or a listener with no default action — and the weakened
+  // guard CRASHES on each (`for (const target of undefined)`). An HTTP:80
+  // listener whose default action redirects to 443 is the single most common
+  // real ALB shape, so that mutant is a production crash on the first ALB a
+  // user points this at.
+
+  const lambdaRuleListener = (
+    defaultAction: PlannedFrontDoorListener['defaultAction']
+  ): PlannedFrontDoorListener => ({
+    listenerPort: 80,
+    hostPort: 8080,
+    protocol: 'HTTP',
+    ...(defaultAction !== undefined && { defaultAction }),
+    rules: [
+      {
+        priority: 10,
+        pathPatterns: ['/api/*'],
+        hostPatterns: [],
+        httpHeaderConditions: [],
+        httpRequestMethods: [],
+        queryStringConditions: [],
+        sourceIpCidrs: [],
+        action: {
+          kind: 'forward',
+          targets: [
+            {
+              kind: 'lambda',
+              lambda: { logicalId: 'ApiFn' } as unknown as PlannedLambdaForwardTarget['lambda'],
+              targetGroupArn: 'Stack:ApiTg',
+              multiValueHeaders: false,
+              weight: 1,
+            },
+          ],
+        },
+      },
+    ],
+  });
+
+  const warnFor = (defaultAction: PlannedFrontDoorListener['defaultAction']): string[] => {
+    const plan: FrontDoorPlan = { listeners: [lambdaRuleListener(defaultAction)] };
+    const strategy = {
+      pickEntries: () => [],
+      pickerMessage: 'pick',
+      pickerNoun: 'noun',
+      onMissing: () => new Error('missing') as never,
+      lbPortOverrides: {},
+      resolveBoots: () => ({ boots: [], frontDoor: plan, warnings: [] }),
+    } as unknown as EmulatorStrategy;
+    return warnUnresolvedLambdaTargetEnv(strategy, { fromState: true })
+      .resolveBoots([] as never, ['Stack/Alb'])
+      .warnings.filter((w) => w.includes('does not reach the container environment'));
+  };
+
+  it('skips a redirect default action and still finds the rule Lambda', () => {
+    expect(warnFor({ kind: 'redirect', statusCode: 301, protocol: 'HTTPS', port: '443' })[0]).toContain(
+      'ApiFn'
+    );
+  });
+
+  it('skips a fixed-response default action and still finds the rule Lambda', () => {
+    expect(
+      warnFor({ kind: 'fixed-response', statusCode: 404, contentType: 'text/plain' })[0]
+    ).toContain('ApiFn');
+  });
+
+  it('tolerates a listener with no default action at all', () => {
+    expect(warnFor(undefined)[0]).toContain('ApiFn');
+  });
+
+  it('omits the ECS sentence when the ALB has no ECS boots', () => {
+    // A Lambda-only ALB resolves to zero boots (the engine refuses only when
+    // boots AND listeners are both empty), so "the ECS service targets behind
+    // this ALB DO honor --from-state" would be vacuous there.
+    const message = warnFor(undefined)[0] as string;
+    expect(message).not.toContain('The ECS service targets behind this ALB DO honor');
+    expect(message).toContain('--from-cfn-stack');
+  });
+});
+
+describe('buildAlbEmulatorStrategy wiring (issue #2602)', () => {
+  // The seam review found unfenced: with the composition inline in the
+  // command's action, deleting the decorator there left 29/29 green. Two
+  // halves, because either alone is defeatable — the behavioural case cannot
+  // see the action dropping the call, and the source case cannot see the
+  // composition being emptied.
+
+  it('returns a strategy that warns on a real Lambda-bearing plan', () => {
+    const template = JSON.parse(
+      readFileSync(
+        join(import.meta.dirname, '../../fixtures/alb-lambda-target/template.json'),
+        'utf8'
+      )
+    ) as Record<string, unknown>;
+    const stacks = [
+      {
+        stackName: 'LiveAlbProbeStack',
+        displayName: 'LiveAlbProbeStack',
+        artifactId: 'LiveAlbProbeStack',
+        template,
+        dependencyNames: [],
+        region: 'us-east-1',
+        account: '111122223333',
+      },
+    ];
+    const { warnings } = buildAlbEmulatorStrategy({ fromState: true } as never).resolveBoots(
+      stacks as never,
+      ['Alb16C2F182']
+    );
+    expect(warnings.join('\n')).toContain('ApiFnE0725F78');
+  });
+
+  it('is what the command action hands the engine', () => {
+    // A source-shape assertion, because the action is a closure the test
+    // cannot reach: what must hold is that `runEcsServiceEmulator` receives
+    // THIS function's result. The negative half is the load-bearing one — a
+    // regression re-inlines `albStrategy(options)` as the third argument.
+    const source = readFileSync(
+      join(import.meta.dirname, '../../../src/cli/commands/local-start-alb.ts'),
+      'utf8'
+    );
+    expect(source).toContain('buildAlbEmulatorStrategy(options),');
+    expect(source).not.toMatch(/runEcsServiceEmulator\([^)]*\balbStrategy\(/s);
+    // ...and the seam must still COMPOSE the decorator, or it is a rename of
+    // `albStrategy` and the source check above passes over nothing.
+    expect(source).toMatch(
+      /buildAlbEmulatorStrategy\([^)]*\)[^{]*\{\s*return warnUnresolvedLambdaTargetEnv\(albStrategy\(options\), options\);/
+    );
   });
 });
