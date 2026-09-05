@@ -36,7 +36,12 @@
  * Fail fast and let the user pick one strategy per resource.
  */
 
-import { ListObjectVersionsCommand, type S3Client } from '@aws-sdk/client-s3';
+import {
+  ListObjectVersionsCommand,
+  NoSuchBucket,
+  NotFound,
+  type S3Client,
+} from '@aws-sdk/client-s3';
 import {
   DescribeLogStreamsCommand,
   ResourceNotFoundException as LogsResourceNotFoundException,
@@ -780,6 +785,30 @@ export async function probeStatefulRecreateTargetsAsync(
           promoted.push({ ...target });
         }
       } catch (e) {
+        // A not-found is an ANSWER, not a failure to get one: AWS says the
+        // bucket does not exist, so it provably holds nothing and the
+        // recreate's delete can lose nothing. Passing it through silently
+        // matches what the log-group arm already does with its own typed
+        // `ResourceNotFoundException` — without this, issue [#2595]'s new row
+        // would tell a user cdkd "does not know" about a bucket AWS just said
+        // is gone, which is the over-warning that trains people to ignore the
+        // line the issue added.
+        //
+        // Typed, never a message heuristic: a substring match on "not found"
+        // would also swallow a permission error worded that way. Both classes
+        // because the two verbs differ — `ListObjectVersions` raises
+        // `NoSuchBucket`, while the SDK surfaces a bare 404 as `NotFound`.
+        //
+        // Deliberately NOT region-guarded, unlike the log-group twin: that arm
+        // clears a stateful verdict on a not-found, so a wrong-region client
+        // could turn a refusal into a pass. Here the verdict is already `null`
+        // and stays `null` — the only thing this decides is whether the plan
+        // prints an UNKNOWN row, so a wrong-region not-found costs a missing
+        // warning, not a lost refusal.
+        if (e instanceof NoSuchBucket || e instanceof NotFound) {
+          promoted.push({ ...target });
+          continue;
+        }
         logger.warn(
           `--recreate-via-cc-api / --recreate-via-sdk-provider: live S3 probe failed for ${target.logicalId} ` +
             `(bucket ${target.physicalId}); leaving stateful guard at the sync ` +

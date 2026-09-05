@@ -8,6 +8,8 @@
  *   - generic downstream caveat appended once per call
  *   - empty target list → no-op (returns true)
  *   - non-TTY without --yes → throws actionable error
+ *   - the third display state: a probe that RAN and FAILED, which is neither
+ *     DATA LOSS nor silence (issue #2595)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
@@ -398,6 +400,32 @@ describe('promptRecreateConfirm (#649)', () => {
 // whole suite green. A behavioural pin is out of reach: the call sits inside
 // `deployCommand`, past synth and past the AWS clients. So it is pinned at the
 // source, the same shape `recreate-targets.test.ts` uses for the probe's
+// clients, and for the same reason — the wrong value is invisible to every
+// mock in this file and would surface only against real AWS.
+describe('deploy.ts tells the prompt whether the probe ran (source-level pin)', () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy.ts'), 'utf8');
+  // Live lines only: a commented-out spelling must fail this pin, not satisfy
+  // it — the failure mode a whole-file `toContain` walks straight into.
+  const liveLines = src
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//') && !line.trimStart().startsWith('*'))
+    .join('\n');
+
+  it('forwards the CLI flag, not a literal', () => {
+    const callIdx = liveLines.indexOf('promptRecreateConfirm({');
+    expect(callIdx, 'live promptRecreateConfirm call not found').toBeGreaterThan(-1);
+    // Bound the window to the call itself, so a matching spelling elsewhere in
+    // this 1000-line command cannot satisfy the pin.
+    const call = liveLines.slice(callIdx, callIdx + 500);
+    expect(call).toContain('forceStatefulRecreation: options.forceStatefulRecreation');
+    // The discriminating half: a literal would still satisfy a bare
+    // "the key is present" check, and `false` is the value that hides a
+    // never-expiring log group's **DATA LOSS** line.
+    expect(call).not.toMatch(/forceStatefulRecreation:\s*(?:true|false)\b/);
+  });
+});
+
 describe('a bucket whose probe FAILED is a third display state (#2595)', () => {
   const origIsTTY = process.stdin.isTTY;
 
@@ -462,41 +490,20 @@ describe('a bucket whose probe FAILED is a third display state (#2595)', () => {
     // (which the probe never does today) the stateful reason must still drive
     // the row, or the flag would silently soften a genuine refusal.
     //
-    // What this pins is the ORDERING of the two consumers, measured: swapping
-    // either to test `unresolved` first reds four cases here. It does NOT pin
-    // the `!stateful` conjunct in the source, which is redundant precisely
-    // because that ordering holds — deleting it leaves the suite green, and
-    // the source says so rather than letting a reader infer a guard that is
-    // doing work.
+    // The source's `!stateful` conjunct and the consumers' ordering are
+    // MUTUALLY redundant, measured one mutation at a time: dropping the
+    // conjunct alone leaves this green, reordering both consumers alone leaves
+    // it green, and doing BOTH reds exactly this case. So this pins the joint
+    // invariant, which is the one that matters — a measured verdict wins over
+    // the display-only flag — not either mechanism.
     const plan = await planFor(bucket({ statefulReason: 'has-objects', probeUnresolved: true }));
     expect(plan).toContain('**DATA LOSS**');
     expect(plan).toContain('DATA: all data in MyBucket will be lost');
     expect(plan).not.toContain('emptiness NOT established');
-  });
-});
-
-// clients, and for the same reason — the wrong value is invisible to every
-// mock in this file and would surface only against real AWS.
-describe('deploy.ts tells the prompt whether the probe ran (source-level pin)', () => {
-  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-  const src = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'deploy.ts'), 'utf8');
-  // Live lines only: a commented-out spelling must fail this pin, not satisfy
-  // it — the failure mode a whole-file `toContain` walks straight into.
-  const liveLines = src
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('//') && !line.trimStart().startsWith('*'))
-    .join('\n');
-
-  it('forwards the CLI flag, not a literal', () => {
-    const callIdx = liveLines.indexOf('promptRecreateConfirm({');
-    expect(callIdx, 'live promptRecreateConfirm call not found').toBeGreaterThan(-1);
-    // Bound the window to the call itself, so a matching spelling elsewhere in
-    // this 1000-line command cannot satisfy the pin.
-    const call = liveLines.slice(callIdx, callIdx + 500);
-    expect(call).toContain('forceStatefulRecreation: options.forceStatefulRecreation');
-    // The discriminating half: a literal would still satisfy a bare
-    // "the key is present" check, and `false` is the value that hides a
-    // never-expiring log group's **DATA LOSS** line.
-    expect(call).not.toMatch(/forceStatefulRecreation:\s*(?:true|false)\b/);
+    // The line the row must NOT also carry. Without this the both-mutations
+    // shape renders `DATA:` and `UNKNOWN:` together — two contradictory
+    // sentences on the consent screen — while every other assertion here
+    // still passes.
+    expect(plan).not.toContain('UNKNOWN:');
   });
 });

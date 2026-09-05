@@ -136,11 +136,14 @@ export async function promptRecreateConfirm(input: {
     // assert contents cdkd did not observe, the overstatement the two
     // sentences above already refuse to make. So: no prefix, no DATA line,
     // and an explicit note that the question is open.
-    // The `!stateful` term is REDUNDANT today and kept for readability, not
-    // for behaviour: both consumers below test `stateful` first, so a measured
-    // verdict already wins whatever this says. Measured — deleting the term
-    // leaves the whole suite green, while REORDERING either consumer reds four
-    // cases. What is load-bearing is that ordering, not this conjunct.
+    // The `!stateful` term and the consumer ORDERING below are MUTUALLY
+    // redundant: both consumers test `stateful` first, and this term repeats
+    // that. Measured, each mutation in isolation — dropping the term alone:
+    // suite green; reordering both consumers alone: suite green; doing BOTH:
+    // one case reds. So neither is load-bearing by itself, and the invariant
+    // worth stating is the one they jointly enforce — a MEASURED verdict wins
+    // over this display-only flag. Kept because a reader arriving at the
+    // consumers should not have to re-derive that from their order.
     const unresolved = !stateful && t.probeUnresolved === true;
     const stateNote = stateful
       ? ` — stateful (${
