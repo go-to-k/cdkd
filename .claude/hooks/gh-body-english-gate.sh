@@ -65,6 +65,13 @@
 #     the absolute twin, measured). That one is CLOSED -- both spellings
 #     are now offered to the matchers -- and it is named here because
 #     the list claiming to be complete is what let it sit;
+#   - a QUOTED DECOY can supersede the real body file: the heredoc extraction
+#     scans RAW command text, so `--title 'x > /p/jp.md <<EOF ... EOF'` makes
+#     the gate read a heredoc the command never runs and skip the file on disk
+#     (measured rc=0, and the same on the pre-`GATE_PERL_WORD` hook -- the word
+#     class changed WHICH spellings reach it, not that quoting is ignored).
+#     Closing it means running the write-detection over quote-aware SEGMENTS,
+#     the same change `pr-body-item-number-gate`'s bare-`-F` limit waits on;
 #   - an unquoted inline value STOPS at an unquoted shell metacharacter
 #     (`; | & ( ) < >` and a backtick), which is what a shell does with it --
 #     the word ends there. A metacharacter meant as DATA has to be quoted, and
@@ -144,9 +151,13 @@ fi
 # keeps `gh api repos/{owner}/{repo}/issues/5 --jq .body` (a READ whose
 # flag merely names the field) out of scope.
 # `-F` / `-f` accept a GLUED value (`-F/abs/p`, `-F"/a b/x.md"`), so the
-# terminator has to admit a non-separator character too. Spelled as an
-# alternation rather than dropping the terminator entirely: a bare `-F` would
-# also match inside a longer word. Over-arming is cheap and safe here anyway --
+# terminator has to admit a non-separator character too -- i.e. ANY character,
+# which is what the alternation below spells. Written out rather than as `-F.`
+# only because the two halves say what each is for; it is NOT narrower. (An
+# earlier version of this comment claimed it excluded matches inside a longer
+# word. That is false -- `-F.` matches there too; the only thing a terminator
+# buys over a bare `-F` is refusing end-of-string.)
+# Over-arming is cheap and safe here anyway --
 # `cmd_matches_verb` above has already established this is a gh PUBLISHING
 # invocation, so `grep -F pattern file` never reaches this line (verified: rc=0
 # with and without the widening), and an armed command with no extractable body
@@ -224,11 +235,20 @@ cmd_replaces() {
     # the backslash-escaped paths this PR taught the flag side to read
     # (measured: a heredoc writing Japanese to a backslash-escaped path over a
     # stale English file on disk gave rc=0; the quoted spelling gave 2).
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
     my $want = $ENV{TARGET};
-    while ($c =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/g) {
-      exit 0 if gate_unq($1) eq $want;
-    }
+    # Through the shared `line_writes`, like its two siblings. It is
+    # behaviourally identical spelled inline, and that is exactly why it must
+    # not be: an eighth private copy of a matcher is the shape this whole
+    # change exists to retire, and it is the copy that will drift.
+    exit 0 if line_writes($c, $want, 0);
     exit 1;
   ' 2>/dev/null
 }

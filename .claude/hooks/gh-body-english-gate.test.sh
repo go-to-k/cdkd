@@ -830,6 +830,46 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# (L) ENCODING. `$'...'` mixes representations -- bash's `\x` and octal emit
+# BYTES while `\u` emits a CHARACTER -- and the body scan runs under `-CSD`,
+# where the input is already decoded. A literal non-ASCII character next to an
+# escape therefore produced a half-character half-byte string, the closing
+# decode refused it, and the whole value stayed Latin-1, which the CJK class
+# never matches. The carrier is an ordinary accent that is NOT itself blocked,
+# so nothing looked wrong. Its own control is the last case.
+ACC=$'\xc3\xa9'   # one Latin-1 accent, U+00E9, as UTF-8 bytes
+run "ANSI-C literal accent + \\u escapes blocks"  "gh issue create --title x --body \$'$ACC\\u65e5\\u672c\\u8a9e'" 2
+run "ANSI-C literal accent + \\x bytes blocks"    "gh issue create --title x --body \$'$ACC\\xe6\\x97\\xa5'" 2
+run "ANSI-C literal accent alone passes"          "gh issue create --title x --body \$'$ACC'" 0
+# A stray byte must not switch the class test off for the rest of the value.
+# All-or-nothing decoding gave rc=0 here; so did decoding per malformed RUN,
+# which swallowed the three bytes AFTER the bad one.
+run "invalid byte BEFORE japanese still blocks"   "gh issue create --title x --body \$'\\xff\\xe6\\x97\\xa5'" 2
+run "invalid byte AFTER japanese still blocks"    "gh issue create --title x --body \$'\\xe6\\x97\\xa5\\xff'" 2
+run "invalid byte alone passes"                   "gh issue create --title x --body \$'\\xff'" 0
+# bash truncates an octal escape to a byte and takes `\\` as one backslash.
+run "ANSI-C \$'a\\\\b' is not blocked"              "gh issue create --title x --body \$'a\\\\b'" 0
+
+# (M) The load guard must not be disable-able from the ENVIRONMENT. The memo is
+# an ordinary shell variable, so without a reset at library load
+# `__GATE_PW_OK=1` made the probe report a working prelude it never ran.
+if grep -q 'unclosed' "$BROKEN_LIB_DIR/lib/command-match.sh" 2>/dev/null; then
+  env_rc=0
+  jq -nc --arg c "gh issue create --title x --body-file $JP_BODY" \
+    '{tool_name:"Bash",tool_input:{command:$c}}' \
+    | __GATE_PW_OK=1 "$BROKEN_LIB_DIR/gh-body-english-gate.sh" >/dev/null 2>&1 || env_rc=$?
+  if [ "$env_rc" = "2" ]; then
+    echo "PASS: __GATE_PW_OK=1 cannot disable the prelude guard (exit 2)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: __GATE_PW_OK=1 disabled the prelude guard (exit $env_rc, expected 2)"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  echo "FAIL: broken-library fixture missing for the __GATE_PW_OK case"
+  FAIL=$((FAIL + 1))
+fi
+
 # --- summary ----------------------------------------------------------
 echo
 echo "pass: $PASS  fail: $FAIL"

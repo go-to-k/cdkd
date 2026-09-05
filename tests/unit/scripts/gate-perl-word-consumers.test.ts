@@ -48,7 +48,11 @@ function consumers(): string[] {
  * bash single-quoted string.
  */
 function perlPrograms(source: string): string[] {
-  const re = /perl\s+(?:-\S+\s+)*-e\s+(?:"\$GATE_PERL_WORD")?'([\s\S]*?)'\s*2>\/dev\/null/g;
+  // `-\S*e\s` and not `-e\s`: the flag is routinely FUSED (`perl -0777 -ne`,
+  // `perl -ne`), and requiring a standalone `-e` token silently matched 0 of
+  // issue-dup-check's and issue-classification-label's programs -- the
+  // no-prelude assertion below was vacuous for two of the five consumers.
+  const re = /perl\s+(?:-\S+\s+)*-\S*e\s+(?:"\$GATE_PERL_WORD")?'([\s\S]*?)'\s*2>\/dev\/null/g;
   return [...source.matchAll(re)].map((m) => m[1]);
 }
 
