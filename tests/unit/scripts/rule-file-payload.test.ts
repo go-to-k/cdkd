@@ -334,7 +334,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // does NOT match it, which is the whole reason it was split out.
   ['src/state/s3-noncurrent-version-purge.ts', 53_000, 64_000], // measured 61,168
   ['src/types/state.ts', 43_000, 57_000],                    // measured  55,319 (was 55,030 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
-  ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
+  ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  37,848 (was 34,889 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
   // failed this row for a reason unrelated to itself -- the same argument that
@@ -406,14 +406,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // is 52,459 B lighter.
   ['src/provisioning/masked-retry-logger.ts', 94_500, 162_000], // measured 126,979
   ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
-  ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  37,183
-  ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
+  ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  40,238 (was 37,183 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
+  ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  46,764 (asset-bucket-region.md, issue #2240; was 43,787 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
   // proxy-support.md's glob names three literal files (issue #2388); without a
   // row here the satellite would sit under no budget, which is the state the
   // 2026-08-25 review probe showed a rule file can reach unnoticed.
   ['src/utils/aws-client-defaults.ts', 46_000, 58_000],  // measured  52,845
   ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
-  ['vite.config.ts', 14_000, 21_000],                            // measured  16,712
+  ['vite.config.ts', 14_000, 21_000],                            // measured  19,581 (was 16,712 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
   // The representative path for `test-stream-fence.md`: the only paths its
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
@@ -663,12 +663,18 @@ const CORPUS_FILE_COUNT = 45; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  than against main, and a pointer always costs the index file
                               //  something. Measured on the tree that ships this line. That
                               //  makes 45.
-const CORPUS_BYTES_MIN = 856_000;   // RE-DERIVED UPWARD 817_000 -> 856_000 (issue
-                                    // go-to-k/cdkd#2447): re-measured on the MERGED tree with the
-                                    // same ~34 KB of slack every previous setting used. Re-derived
-                                    // rather than left alone because the old figure had drifted to
-                                    // 73 KB of slack and would no longer have noticed a whole
-                                    // satellite being deleted -- the one thing this bound is for.
+const CORPUS_BYTES_MIN = 862_000;   // RE-DERIVED UPWARD 817_000 -> 862_000 (issue
+                                    // go-to-k/cdkd#2447): measured 895,893 B on the REBASED tree
+                                    // -- 33,893 B of slack, the same ~34 KB every previous setting
+                                    // used. Re-derived rather than left alone because the old
+                                    // figure had drifted to 79 KB of slack and would no longer
+                                    // have noticed a whole satellite being deleted, which is the
+                                    // one thing this bound is for. An earlier revision of this
+                                    // line set 856_000 and claimed the same ~34 KB while actually
+                                    // holding ~40 KB, because the bound was not moved when the
+                                    // measurement went 890,757 -> 895,893 on the rebase: exactly
+                                    // the drift the last paragraph below warns about, committed
+                                    // inside the change that quotes it.
                                     // 817_000 was: // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04
                                     // compression: measured 851,451 B -- 34,451 B of slack, the
                                     // same ~34 KB every previous setting used.
@@ -687,8 +693,10 @@ const CORPUS_BYTES_MIN = 856_000;   // RE-DERIVED UPWARD 817_000 -> 856_000 (iss
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
 const CORPUS_BYTES_MAX = 929_000; // RE-DERIVED UPWARD 890_000 -> 929_000 (issue go-to-k/cdkd#2447):
-                                  // measured 895,893 on the REBASED tree + the ~33 KB of
-                                  // headroom every previous setting has held. The corpus crossed
+                                  // measured 895,893 on the REBASED tree + 33,107 B of headroom
+                                  // -- NARROWER than the ~39 KB the previous ceiling held, which
+                                  // is deliberate and is why it is not described as "the same".
+                                  // The corpus crossed
                                   // the old 890,000 ceiling on a lane that added ONE satellite,
                                   // already trimmed once; past that the remaining text is the
                                   // load-bearing decisions themselves, and this file's own

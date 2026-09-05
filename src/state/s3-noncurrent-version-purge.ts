@@ -326,7 +326,15 @@ export async function purgeNoncurrentKeyVersions(
     // repeats is still a failure; silence is the defect class this file exists
     // to remove.
     logger.warn(
-      `Could not purge noncurrent versions of ${failed.size} key(s) in s3://${bucket}. ` +
+      // `bucket` sanitized like the keys beside it. It is cdkd-authored in
+      // every shipped path, so this is defence rather than a fix -- but the
+      // line already renders attacker-influenced key names through
+      // `displaySafe`, and one raw interpolation in a string whose other half
+      // is sanitized is the mixed-rendering shape that lets an escape fire
+      // from the unsanitized occurrence. `asciiOnly` because an S3 bucket name
+      // has a known ASCII charset.
+      `Could not purge noncurrent versions of ${failed.size} key(s) in ` +
+        `s3://${displaySafe(bucket, { asciiOnly: true })}. ` +
         `Their previous versions survive and remain readable via GetObject with a VersionId ` +
         `(${options.objectDescription ?? DEFAULT_PURGED_OBJECT_DESCRIPTION}). ` +
         `Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the ` +

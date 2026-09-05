@@ -959,6 +959,26 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
     expect(message).not.toContain('\u0000');
   });
 
+  it('sanitizes the BUCKET in the failure warning, like the keys beside it', async () => {
+    // The line already renders attacker-influenced KEY names through
+    // `displaySafe`. One raw interpolation in a string whose other half is
+    // sanitized is the mixed-rendering shape that lets an escape fire from the
+    // unsanitized occurrence -- the same defect the replication warning one
+    // module over was corrected for.
+    const nastyBucket = 'cdkd-state\u001b[31m-000000000000';
+    const s3 = stub(
+      { [KEY_A]: [{ Versions: [{ Key: KEY_A, VersionId: 'v1', IsLatest: false }] }] },
+      undefined,
+      () => ({ Errors: [{ Key: KEY_A, VersionId: 'v1', Code: 'AccessDenied' }] })
+    );
+
+    await purgeNoncurrentKeyVersions(s3, nastyBucket, [KEY_A], { logger: logger() });
+
+    const message = String(warn.mock.calls[0]![0]);
+    expect(message).toContain(`s3://${displaySafe(nastyBucket, { asciiOnly: true })}`);
+    expect(message).not.toContain(nastyBucket);
+  });
+
   it('accumulates MULTIPLE reasons for one key', async () => {
     // Nothing gave a key two reasons, so `existing.push` and the `join('; ')`
     // were both dead code.

@@ -489,14 +489,20 @@ export async function warnIfPurgeIsReplicated(
     if (sink?.debug) sink.debug(message);
     else getLogger().child('s3-replication-check').debug(message);
   };
-  // Sanitized ONCE, at the top: `bucket` appears in the debug line, the repeat
-  // line, the warning and a pasteable command, and sanitizing only the command
-  // left the same value rendered two ways in one string -- where an escape the
-  // sanitization exists to stop fires from the raw occurrence and can hide the
-  // sanitized one. `asciiOnly` is the positive allowlist: an S3 bucket name has
-  // a known ASCII charset, so it has no residual.
-  const safeBucket = displaySafe(bucket, { asciiOnly: true });
   try {
+    // Sanitized ONCE: `bucket` appears in the debug line, the repeat line, the
+    // warning and a pasteable command, and sanitizing only the command left the
+    // same value rendered two ways in one string -- where an escape the
+    // sanitization exists to stop fires from the raw occurrence and can hide
+    // the sanitized one. `asciiOnly` is the positive allowlist: an S3 bucket
+    // name has a known ASCII charset, so it has no residual.
+    //
+    // INSIDE the `try`, deliberately. `displaySafe` is total for a string
+    // today, so this cannot throw -- but this function's contract is NEVER
+    // THROWS, and `custom-resource-provider.ts` awaits the purge with no
+    // `try` of its own citing exactly that. A line of the guarantee sitting
+    // outside the block that enforces it is how the guarantee stops being one.
+    const safeBucket = displaySafe(bucket, { asciiOnly: true });
     const result = await probe(s3Client, bucket, options.requestFields ?? {});
     if (result.kind === 'none') return;
     if (result.kind === 'unknown') {

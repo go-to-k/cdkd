@@ -541,6 +541,23 @@ describe('S3 replication purge gap (issue #2447)', () => {
       expect(String(debug.mock.calls[0]![0])).toContain('alpha, zulu');
     });
 
+    it('uses the SHARED default on the demoted repeat line too', async () => {
+      // The third `?? DEFAULT_PURGED_OBJECT_DESCRIPTION` site. Every other
+      // dedupe case passes an explicit description, so rewording this one was
+      // a fully green mutation -- the repeat line could have drifted to its own
+      // sentence while the two warn lines stayed shared.
+      const debug = vi.fn();
+      const sink = { warn: warn as unknown as (m: string) => void, debug };
+      const s3 = stub({ ReplicationConfiguration: { Rules: [enabledRule()] } });
+
+      await warnIfPurgeIsReplicated(s3, BUCKET, [KEY], { logger: sink });
+      await warnIfPurgeIsReplicated(s3, BUCKET, [KEY], { logger: sink });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(debug).toHaveBeenCalledTimes(1);
+      expect(String(debug.mock.calls[0]![0])).toContain(DEFAULT_PURGED_OBJECT_DESCRIPTION);
+    });
+
     it('gives each object description its OWN slot, so a demoted caller cannot eat another\'s', async () => {
       // `lock-manager.ts` routes this module's `warn` to `debug` on the release
       // path. Keyed on the bucket alone, the lock's demoted line would consume
@@ -805,7 +822,12 @@ describe('S3 replication purge gap (issue #2447)', () => {
 
       const message = String(warn.mock.calls[0]![0]);
       expect(message).toContain('Destination(s): r1, r2, r3');
-      expect(message).not.toContain('more)');
+      // `(and 0 more`, not `more)`: this module's tail reads `... more; aws
+      // s3api ...`, so a `more)` needle can never match it and the case was
+      // VACUOUS -- measured green under the very mutation it names. The purge
+      // module's twin tail does end `more)`, which is where the wrong spelling
+      // came from.
+      expect(message).not.toContain('(and 0 more');
     });
 
     it('sanitizes the BUCKET in the pasteable recovery command', async () => {
