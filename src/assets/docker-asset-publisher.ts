@@ -4,7 +4,11 @@ import {
   DescribeImagesCommand,
 } from '@aws-sdk/client-ecr';
 import type { DockerImageAsset } from '../types/assets.js';
-import { formatDockerLoginError, runDockerStreaming } from '../utils/docker-cmd.js';
+import {
+  describeDockerFailure,
+  formatDockerLoginError,
+  runDockerStreaming,
+} from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { AssetError } from '../utils/error-handler.js';
 import { buildDockerImage } from './docker-build.js';
@@ -191,8 +195,9 @@ export class DockerAssetPublisher {
 
   /**
    * Build Docker image — delegates to the shared `buildDockerImage`
-   * helper so this code path stays in sync with `cdkd local invoke`'s
-   * container-Lambda build path. `--platform` is read from the asset
+   * helper so this code path stays in sync with `cdkd local run-task`'s
+   * `ContainerImage.fromAsset` build path (the other caller; `cdkd local
+   * invoke` moved to `cdk-local`'s own builder). `--platform` is read from the asset
    * manifest's `source.platform` (when set); cdkd does not currently
    * inject a publish-side override.
    *
@@ -319,17 +324,15 @@ export class DockerAssetPublisher {
     const endpoint =
       authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
 
+    const loginArgs = ['login', '--username', username, '--password-stdin', endpoint];
     try {
-      await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {
-        input: password,
-      });
+      await runDockerStreaming(loginArgs, { input: password });
       // Only cache after a successful login so a failed attempt is retried on
       // the next publish rather than silently skipped.
       loggedInRegistries.add(registryKey);
     } catch (err) {
-      const e = err as { stderr?: string; message?: string };
       throw new AssetError(
-        `ECR login failed: ${formatDockerLoginError(e.stderr || e.message || String(err), endpoint)}`
+        `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`
       );
     }
   }
@@ -338,11 +341,11 @@ export class DockerAssetPublisher {
    * Tag Docker image
    */
   private async tagImage(source: string, target: string): Promise<void> {
+    const tagArgs = ['tag', source, target];
     try {
-      await runDockerStreaming(['tag', source, target]);
+      await runDockerStreaming(tagArgs);
     } catch (err) {
-      const e = err as { stderr?: string; message?: string };
-      throw new AssetError(`Docker tag failed: ${e.stderr?.trim() || e.message || String(err)}`);
+      throw new AssetError(`Docker tag failed: ${describeDockerFailure(err, tagArgs)}`);
     }
   }
 
@@ -353,11 +356,11 @@ export class DockerAssetPublisher {
    */
   private async pushImage(uri: string): Promise<void> {
     this.logger.debug(`Pushing: ${uri}`);
+    const pushArgs = ['push', uri];
     try {
-      await runDockerStreaming(['push', uri]);
+      await runDockerStreaming(pushArgs);
     } catch (err) {
-      const e = err as { stderr?: string; message?: string };
-      throw new AssetError(`Docker push failed: ${e.stderr?.trim() || e.message || String(err)}`);
+      throw new AssetError(`Docker push failed: ${describeDockerFailure(err, pushArgs)}`);
     }
   }
 

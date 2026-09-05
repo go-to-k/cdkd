@@ -58,33 +58,70 @@ const COMPOSERS = [
 const REDACTING_CALLS = [...COMPOSERS, 'redactDockerArgvInText(', 'redactDockerArgvValues('];
 
 /** Spawning a docker child. A `catch` guarding one of these is in scope. */
-const DOCKER_EXEC_CALLS = ['execFileAsync(', 'runDockerStreaming(', 'runDockerForeground('];
+const DOCKER_EXEC_CALLS = [
+  'execFileAsync(',
+  'runDockerStreaming(',
+  'runDockerForeground(',
+  'spawnStreaming(',
+];
 
 /**
- * The modules under test are DERIVED, not listed: every file under `src/local`
- * that promisifies `execFile` and resolves the docker binary. An early version
- * hand-listed paths while claiming there was no allowlist — a hand-list is how
- * a fifth module joins silently.
+ * Directories swept for docker-spawning modules.
+ *
+ * `src/assets` joined in issue
+ * [#2623](https://github.com/go-to-k/cdkd/issues/2623). The population was
+ * rooted at `src/local` alone, which is not a statement about where docker is
+ * spawned — it is where issue #2440 happened to look. `src/assets/docker-build.ts`
+ * builds the `docker build` argv for BOTH the deploy-time ECR publish and
+ * `cdkd local run-task`, and it was invisible here.
+ */
+const SWEPT_DIRS = ['src/local', 'src/assets'];
+
+/**
+ * The modules under test are DERIVED, not listed: every file under
+ * {@link SWEPT_DIRS} that spawns a docker-compatible child.
+ *
+ * The PREDICATE also widened in #2623. It used to require
+ * `promisify(execFile)` AND `getDockerCmd` — both incidental. cdkd's docker
+ * calls go through the shared streaming helpers in `src/utils/docker-cmd.ts`
+ * (which resolve the binary themselves, so a caller never names
+ * `getDockerCmd`), and requiring the promisified `execFile` selected on an
+ * implementation detail of four modules rather than on "does this spawn
+ * docker". Widening to the shared helpers is what pulled in
+ * `src/assets/docker-build.ts`, `src/assets/docker-asset-publisher.ts` and
+ * `src/local/ecr-puller.ts` — three modules whose docker catches were
+ * hand-composing their failure text, exactly the shape this fence exists for.
+ *
+ * An early version hand-listed paths while claiming there was no allowlist —
+ * a hand-list is how a further module joins silently.
  */
 function deriveDockerExecModules(): string[] {
-  const dir = join(REPO_ROOT, 'src', 'local');
-  return readdirSync(dir)
-    .filter((f) => f.endsWith('.ts'))
-    .map((f) => join('src/local', f))
-    .filter((rel) => {
-      const src = readFileSync(join(REPO_ROOT, rel), 'utf-8');
-      return /promisify\([\w$.]*execFile/.test(src) && src.includes('getDockerCmd');
-    })
-    .sort();
+  return SWEPT_DIRS.flatMap((relDir) =>
+    readdirSync(join(REPO_ROOT, relDir))
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => `${relDir}/${f}`)
+      .filter((rel) => {
+        const src = readFileSync(join(REPO_ROOT, rel), 'utf-8');
+        const promisifiedDockerExec =
+          /promisify\([\w$.]*execFile/.test(src) && src.includes('getDockerCmd');
+        const sharedSpawnHelper = /\b(runDockerStreaming|runDockerForeground|spawnStreaming)\(/.test(
+          src
+        );
+        return promisifiedDockerExec || sharedSpawnHelper;
+      })
+  ).sort();
 }
 
 const FENCED_MODULES = deriveDockerExecModules();
 
 /** Per-file FLOOR on redaction sites, as literals from a source the fence does not read. */
 const MIN_REDACTION_SITES: Record<string, number> = {
+  'src/assets/docker-asset-publisher.ts': 3,
+  'src/assets/docker-build.ts': 4,
   'src/local/docker-runner.ts': 7,
-  'src/local/ecs-task-runner.ts': 8,
+  'src/local/ecr-puller.ts': 2,
   'src/local/ecs-network.ts': 3,
+  'src/local/ecs-task-runner.ts': 9,
   'src/local/invoke-agentcore-watch-loop.ts': 3,
 };
 
@@ -346,22 +383,70 @@ function argvBearingRenderings(rawBody: string, binding: string): string[] {
  * whole history is "the scan quietly stopped matching".
  */
 const MIN_DOCKER_EXEC_CATCHES: Record<string, number> = {
+  'src/assets/docker-asset-publisher.ts': 3,
+  'src/assets/docker-build.ts': 2,
   'src/local/docker-runner.ts': 5,
-  'src/local/ecs-task-runner.ts': 6,
+  'src/local/ecr-puller.ts': 2,
   'src/local/ecs-network.ts': 3,
+  'src/local/ecs-task-runner.ts': 6,
   'src/local/invoke-agentcore-watch-loop.ts': 3,
 };
 
 describe('docker argv redaction fence (issue #2440)', () => {
+  it('no module spawns docker from OUTSIDE the swept directories', () => {
+    // The class issue #2623 was filed about, one level up: the population is
+    // derived WITHIN `SWEPT_DIRS`, so a docker-spawning module in a third
+    // directory is invisible exactly the way `src/assets/**` was. This walks
+    // ALL of `src/` and requires every caller of a shared spawn helper to live
+    // somewhere the derivation can reach.
+    //
+    // `src/utils/docker-cmd.ts` is the one exemption and it is structural, not
+    // a list entry: it DEFINES those helpers, so it names them by declaring
+    // them.
+    const offenders: string[] = [];
+    const walk = (relDir: string): void => {
+      for (const entry of readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })) {
+        const rel = `${relDir}/${entry.name}`;
+        if (entry.isDirectory()) {
+          walk(rel);
+          continue;
+        }
+        if (!entry.name.endsWith('.ts')) continue;
+        if (rel === 'src/utils/docker-cmd.ts') continue;
+        if (SWEPT_DIRS.some((dir) => rel.startsWith(`${dir}/`))) continue;
+        // Comments and string contents are blanked first, so a module merely
+        // MENTIONING a helper in prose is not an offender.
+        const src = neutralize(readFileSync(join(REPO_ROOT, rel), 'utf-8'));
+        if (/\b(runDockerStreaming|runDockerForeground|spawnStreaming)\(/.test(src)) {
+          offenders.push(rel);
+        }
+      }
+    };
+    walk('src');
+    expect(
+      offenders,
+      'This module spawns docker but sits outside SWEPT_DIRS, so the fence below cannot see it. Add its directory to SWEPT_DIRS (and the module to both floor tables).'
+    ).toEqual([]);
+  });
+
   it('derives its module set from the code, and the set is neither empty nor drifted', () => {
     // A derivation that silently stopped matching makes every case below
     // vacuous. The expected set is a LITERAL, read off the repo by hand.
     expect(FENCED_MODULES).toEqual([
+      'src/assets/docker-asset-publisher.ts',
+      'src/assets/docker-build.ts',
       'src/local/docker-runner.ts',
+      'src/local/ecr-puller.ts',
       'src/local/ecs-network.ts',
       'src/local/ecs-task-runner.ts',
       'src/local/invoke-agentcore-watch-loop.ts',
     ]);
+    // Both directories are actually represented. Asserting only the sorted
+    // list would stay green if `SWEPT_DIRS` lost `src/assets` and the literal
+    // were "fixed" to match — the regression #2623 was filed about.
+    for (const dir of SWEPT_DIRS) {
+      expect(FENCED_MODULES.some((m) => m.startsWith(`${dir}/`))).toBe(true);
+    }
     expect(FENCED_MODULES).toEqual(Object.keys(MIN_REDACTION_SITES).sort());
     expect(FENCED_MODULES).toEqual(Object.keys(MIN_DOCKER_EXEC_CATCHES).sort());
   });
@@ -396,6 +481,30 @@ describe('docker argv redaction fence (issue #2440)', () => {
     const source = neutralize(read(relPath));
     const calls = REDACTING_CALLS.reduce((n, call) => n + source.split(call).length - 1, 0);
     expect(calls).toBeGreaterThanOrEqual(MIN_REDACTION_SITES[relPath]!);
+  });
+
+  it('ARGV_VALUE_BEARING_FLAGS holds exactly one SHORT flag (issue #2623 round 4)', () => {
+    // `maskAttachedShortFlag` picks the LEFTMOST flag letter across all short
+    // flags, which is pflag's own rule for a shorthand cluster. With ONE short
+    // flag that choice is unobservable: first-hit-wins and leftmost-wins agree
+    // on every input, so no behavioural test can kill a mutation between them
+    // (measured -- the probe came back green, and the reviewer who found the
+    // latency said the same).
+    //
+    // This is the pointer that arrives with the second short flag rather than
+    // after it: adding one makes the rule observable AND makes this red, at
+    // which point the missing case is `['-lKEY=va=e=b']`, where first-hit-wins
+    // slices at the stray `e` and prints the head of the value.
+    const src = read('src/utils/docker-cmd.ts');
+    const decl = /const ARGV_VALUE_BEARING_FLAGS: ReadonlySet<string> = new Set\(\[([\s\S]*?)\]\)/.exec(
+      src
+    );
+    expect(decl, 'ARGV_VALUE_BEARING_FLAGS is not declared in the shape this reads').not.toBeNull();
+    const flags = [...decl![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+    // The parse itself must not silently stop matching -- a zero-length list
+    // would satisfy the count assertion below by collapsing, not by holding.
+    expect(flags).toContain('--build-arg');
+    expect(flags.filter((f) => f.length === 2 && f.startsWith('-'))).toEqual(['-e']);
   });
 
   it('every composer keeps its argv REQUIRED — that is the guarantee, not this file', () => {
