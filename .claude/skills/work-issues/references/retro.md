@@ -59,13 +59,14 @@ rm -f /tmp/run-touched.$$
   whenever no token is path-shaped or the diff is mostly dotfiles.
 - **A hit is a prompt for judgement, not a verdict** — it cannot tell a
   citation from a target, and the output does not help: go-to-k/cdkd#2621
-  cites a SIBLING fixture this run touched, by FULL path, and a retro shipped
-  that hit as a sourced incident. Open the body and read the SENTENCE around
-  the token before believing any hit (printing it automatically is
-  go-to-k/cdkd#2655, withdrawn from this recipe with two measured defects).
-  Do the item, or re-classify it in the issue with the reason the criterion no
-  longer applies. When the run's own
-  PRs ARE the follow-ups' subject — one lane, or several sharing a subsystem — expect
+  cites a SIBLING fixture this run touched, by FULL path, and a retro wrote
+  that hit into a rule as a sourced incident, unpicked over three review
+  rounds. Open the body and read the SENTENCE around the token before
+  believing any hit (printing it automatically is go-to-k/cdkd#2655,
+  withdrawn from this recipe with two measured defects). Do the item, or
+  re-classify it in the issue with the reason the criterion no longer
+  applies. When the run's own PRs ARE the follow-ups' subject — one lane, or
+  several sharing a subsystem — expect
   EVERY one to hit, and read the issue's REASON instead (go-to-k/cdkd#2514 10
   of 10; go-to-k/cdkd#2558's two lanes; all but three across
   go-to-k/cdkd#2554's five) — a run-wide hit rate is a property of the run's

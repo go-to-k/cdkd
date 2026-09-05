@@ -122,7 +122,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 172_917,
+    corpusBytes: 172_964,
     largest: { file: 'verify.md', bytes: 28_154 },
     runnerUp: { file: 'implement.md', bytes: 28_079 },
   },
@@ -269,11 +269,11 @@ const MIN_REFERENCE_FILES = 6;
 // re-run-the-generators clause, ship.md's `gh pr checks` parsing rule,
 // verify.md's what-COUNTS-as-a-bypass clause, and retro.md's
 // read-the-SENTENCE-before-believing-a-hit rider -- and came out
-// 172,746 -> 172,917, i.e. +171 for the round
+// 172,746 -> 172,964, i.e. +218 for the round
 // with verify.md 27,876 -> 28,154 taking the lead from implement.md 28,079
-// (untouched); margin 130 -> 162 B. Components, stated so they can be checked
-// rather than believed: filing.md +640, gates-and-pr.md +276, retro.md +341,
-// ship.md +325, verify.md +278, gotchas.md -1,689, = +171. All of the payment
+// (untouched); margin 130 -> 115 B. Components, stated so they can be checked
+// rather than believed: filing.md +640, gates-and-pr.md +276, retro.md +388,
+// ship.md +325, verify.md +278, gotchas.md -1,689, = +218. All of the payment
 // came from ONE file, and by DISPLACEMENT rather than compression: gotchas.md
 // is the appendix, so every rule in it that only restated CLAUDE.md or another
 // stage was either pointed at or moved to the step where it fires (the
@@ -292,9 +292,10 @@ const MIN_REFERENCE_FILES = 6;
 // the wrong sentence -- reproducing round one's error inside the mechanism
 // built to prevent it. So the recipe change was WITHDRAWN to
 // go-to-k/cdkd#2655 carrying both measured defects, and what ships is the
-// narrow certain part: read the sentence before believing a hit. Four
-// reviewers re-derived every byte figure in this file as correct throughout;
-// none of that touches whether the PROSE is true, which is the whole lesson.
+// narrow certain part: read the sentence before believing a hit. A reviewer
+// re-derived every byte figure in this file from the tree at EVERY round and
+// found each correct; none of that touches whether the PROSE is true, which
+// is the whole lesson.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this
