@@ -845,6 +845,7 @@
         "dsql",
         "dynamodb-globaltable",
         "ec2-instance",
+        "loggroup-class-guard",
         "rds-aurora",
         "rds-dbinstance-backfill",
         "remove-protection"
@@ -1546,6 +1547,7 @@
     "--load-balancer-arn",
     "--load-balancer-arns",
     "--log-events",
+    "--log-group-identifier",
     "--log-group-name",
     "--log-group-name-prefix",
     "--log-stream-name",
