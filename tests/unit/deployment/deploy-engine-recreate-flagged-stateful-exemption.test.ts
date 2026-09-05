@@ -37,18 +37,21 @@ import type { ResourceChange, ResourceState as StateRecord } from '../../../src/
  * very condition this suite exists to close, because its own sibling suite
  * also picks only `AWS::Lambda::Function`.
  *
- * One CAVEAT on the premise, so this file is not read as proving more than it
- * does: the exemption rests on the CLI pre-flight having validated the target,
- * and there is a known path where it has not. `deploy.ts` puts
- * `deployEngineOptions` on the nested-stack context and
- * `NestedStackProvider` spreads it into the CHILD engine unfiltered, so a
- * bare logical id matching a CHILD's resource clears this guard with no
- * pre-flight probe behind it — issue
- * [#2567](https://github.com/go-to-k/cdkd/issues/2567). These cases pin the
- * TOP-LEVEL contract; they do not bless that path.
+ * The premise carried a CAVEAT until issue
+ * [#2567](https://github.com/go-to-k/cdkd/issues/2567): the exemption rests on
+ * the CLI pre-flight having validated the target, and `NestedStackProvider`
+ * spread `deployEngineOptions` into the CHILD engine, where a bare logical id
+ * matching a child's resource cleared this guard with no pre-flight probe
+ * behind it. The target set now travels with the stack it was validated
+ * against and is matched only there, so the exemption below holds only where
+ * its premise does. These cases still pin the TOP-LEVEL contract; the scoping
+ * itself is pinned by
+ * `tests/unit/deployment/deploy-engine-recreate-targets-stack-scope.test.ts`.
  */
 
 const STATEFUL_TYPE = 'AWS::S3::Bucket';
+/** The stack the engine is driven with AND the stack the targets are scoped to. */
+const STACK_NAME = 'MyStack';
 
 describe('the property-driven stateful guard exempts a --recreate-via-* target (#2554)', () => {
   let provider: ResourceProvider;
@@ -97,11 +100,17 @@ describe('the property-driven stateful guard exempts a --recreate-via-* target (
       mockDiffCalculator as unknown as never,
       mockProviderRegistry as unknown as never,
       {
-        ...(opts.recreateViaCcApi === true && {
-          recreateViaCcApiTargets: new Set(['MyBucket']),
-        }),
-        ...(opts.recreateViaSdkProvider === true && {
-          recreateViaSdkProviderTargets: new Set(['MyBucket']),
+        ...((opts.recreateViaCcApi === true || opts.recreateViaSdkProvider === true) && {
+          recreateTargets: {
+            // The stack `invokeReplacement` drives the engine with. Since issue
+            // #2567 the two must agree or the target is not honoured at all —
+            // which is exactly what the sibling suite
+            // `deploy-engine-recreate-targets-stack-scope.test.ts` pins.
+            stackName: STACK_NAME,
+            viaCcApi: opts.recreateViaCcApi === true ? new Set(['MyBucket']) : new Set<string>(),
+            viaSdkProvider:
+              opts.recreateViaSdkProvider === true ? new Set(['MyBucket']) : new Set<string>(),
+          },
         }),
       },
       'us-east-1'
@@ -155,7 +164,7 @@ describe('the property-driven stateful guard exempts a --recreate-via-* target (
       'MyBucket',
       change,
       stateResources,
-      'MyStack',
+      STACK_NAME,
       { Resources: { MyBucket: { Type: STATEFUL_TYPE, Properties: { BucketName: 'new-name' } } } },
       undefined,
       undefined,

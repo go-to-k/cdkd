@@ -61,6 +61,36 @@ that grows by whoever merges next — an opt-out reachable by being late.
 
 ---
 
+**Recently Implemented** (2026-09-06):
+- **`--recreate-via-cc-api` / `--recreate-via-sdk-provider` targets are now
+  scoped to the stack the pre-flight validated them against (issue
+  [#2567](https://github.com/go-to-k/cdkd/issues/2567))** --
+  `src/deployment/deploy-engine.ts`, `src/cli/commands/deploy.ts`,
+  `src/deployment/recreate-targets.ts`,
+  `src/provisioning/providers/nested-stack-provider.ts`,
+  `docs/cli-deploy-safety.md`, plus two new unit suites and the
+  `recreate-nested-logical-id-collision` integ fixture. The two bare
+  `ReadonlySet<string>` options became one `recreateTargets: { stackName,
+  viaCcApi, viaSdkProvider }`, and the engine honours an id only while deploying
+  that stack. **Behavior change:** a resource in a NESTED child that merely
+  SHARES a logical id with a validated parent one is no longer destroyed and
+  recreated. `NestedStackProvider.runChildDeploy` spreads the parent's options
+  into the child engine, so the bare set matched the child's ids -- and
+  `recreateFlagged` is exactly what SKIPS the mid-deploy stateful guard, whose
+  justification is that the pre-flight already validated the target. A nested
+  `AWS::S3::Bucket` or `AWS::Logs::LogGroup` could therefore be DELETE + CREATEd
+  with neither the pre-flight probe nor the guard having examined it. No
+  capability is lost: an id declared only in a child was never in the parent's
+  template, so the pre-flight already refused it -- that refusal now also names
+  the template's nested stacks (`nestedStackLogicalIds`) instead of reading as a
+  typo. **Second behavior change:** naming a nested stack's OWN
+  `AWS::CloudFormation::Stack` row is refused outright
+  (`blockedNestedStackTargets`, no `--force-stateful-recreation` bypass) -- it
+  was accepted before, and honoring it tears down every resource the child owns
+  with no per-resource consent. Scoping was chosen over re-running the
+  pre-flight inside the child, which would have validated the accidental target
+  rather than declining it.
+
 **Recently Implemented** (2026-09-05):
 - **`cdkd events` now renders stored provider text through `displaySafe`, so a control byte in a name or a `reason` cannot forge a post-mortem line (issue [#2438](https://github.com/go-to-k/cdkd/issues/2438))** -- `src/cli/commands/events.ts`, `docs/{deployment-events,cli-events}.md`, plus the new `tests/unit/cli/events-display-safe.test.ts`. `JSON.stringify` escapes control bytes INTO the JSONL store, but the reader is a plain `JSON.parse` that restores them and the renderer printed them verbatim -- so an ESC-bracket sequence in a logical id, a resource type, a provider `reason` (which interpolates a user-chosen physical name) or an AWS error message could blank a line of the one command whose purpose is to be believed after a run. Live A/B on a real bucket: pre-fix 8 raw `ESC[2K` + 2 `ESC[1;31m` + a CR reached the terminal, the CR overwriting the reason line with a forged `RUN_FINISHED SUCCEEDED`; post-fix zero. 44 call sites now wrap every stored value on the HUMAN path -- 23 `printRunEvents`, 9 `printRunList`, 1 `colorizeEventType`, 6 in the `EVENTS_*` errors, 4 in `events prune` incl. its confirmation PROMPT, 1 in the `--keep` refusal. `colorizeEventType` and the `result` column classify the SANITISED token so the colour matches the text, and an unrenderable result is coloured UNKNOWN rather than failed. `<unrenderable>` is a claim about the INPUT, so the one field legitimately empty with nothing forged is exempt: a bare `new Error()` renders `Error`, not `Error: <unrenderable>`. **`--json` is deliberately untouched**: machine-consumed, and `JSON.stringify` escapes the whole C0 range, so sanitising would only corrupt what tooling reads back. 36 unit cases across four review rounds, every added branch mutation-probed; a general presence-tracking helper was tried and REVERTED, each round having found it re-making the same false claim on a new input class. Siblings: [#2645](https://github.com/go-to-k/cdkd/issues/2645).
 - **A replacement rollback now honours `UpdateReplacePolicy: Retain` on the resource the replacement CREATED (issue [#2598](https://github.com/go-to-k/cdkd/issues/2598))** -- `src/deployment/rollback-executor.ts`, `src/cli/commands/rollback.ts`, `docs/cli-rollback.md`, plus a new unit suite. All three arms that dispose of the new copy (`readoptDelete`, `deleteNewFirst`, `deleteNewAfterRecreate`) read only `rollbackFinalSnapshotId`, so a resource the template marked to survive was orphaned when a plain CREATE made it and DESTROYED when a replacement did -- decided by op shape rather than by the declared policy. **Which attribute governs it is measured, not reasoned.** The AWS documentation answers nothing here: every sentence on both attribute pages, in the API reference and in the release notes describes the OLD resource. A live four-variant A/B settled it -- `DeletionPolicy: Retain` alone leaves the new copy DELETED, `UpdateReplacePolicy: Retain` alone leaves it SURVIVING (`DELETE_SKIPPED`). The table is on `rollbackRetainsNewResource`'s doc comment. **Behavior change:** a retained new copy is left running, dropped from state (CloudFormation orphans it out too), announced with a `warn`, recorded durably in the deployment events with its physical id and the survivor's own layer, and counted, so the run exits 2. On `reverse-replacement-readopt` that is the ALWAYS-case: one template read sets both the verdict and the new record's attribute, so that arm no longer deletes the new copy for any journal cdkd wrote. `deleteNewFirst` is the one arm that cannot honour it -- that delete exists to free the name the re-create collided on -- and REFUSES with `NAMED_REPLACEMENT_COLLISION` instead of destroying the pinned resource, keeping the journal for a re-run. `RollbackPlanItem.retainsNewResource` keeps the plan preview from promising a delete the replay will skip (the [#1366](https://github.com/go-to-k/cdkd/issues/1366) class).

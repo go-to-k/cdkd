@@ -309,6 +309,28 @@ release. Use
 [`--recreate-via-sdk-provider`](#recreate-via-sdk-provider-deploy) to move it
 back deliberately.
 
+### Nested stacks
+
+Both flags take a logical id of the stack you are deploying, and cdkd honours a
+target only in that stack. Resources that live inside a nested stack
+(`AWS::CloudFormation::Stack`) are not addressable:
+
+- A logical id that exists only in a child is not in the parent's synth
+  template, so the pre-flight refuses the deploy before any resource is
+  touched. The error names the parent's nested stacks so the refusal is not
+  mistaken for a typo.
+- A logical id the parent and a child both declare — the same construct id in
+  both stacks, or an `overrideLogicalId` — recreates the **top-level** resource
+  only. The child's same-named resource is left alone. Earlier versions
+  recreated the child's copy too, in any deploy that also updated it, with
+  neither the pre-flight probe nor the mid-deploy stateful guard having
+  examined it.
+- The nested stack's own `AWS::CloudFormation::Stack` resource is refused as a
+  target. Recreating one would delete the whole child stack — every resource it
+  owns, with no per-resource confirmation — and re-create it through a layer
+  that does not implement cdkd's nested-stack handling. There is no
+  `--force-stateful-recreation` bypass for that refusal.
+
 ### What `--recreate-via-cc-api` is NOT
 
 - **NOT** a per-stack shortcut. There is no
@@ -324,6 +346,8 @@ back deliberately.
 - **NOT** compatible with multi-region types such as
   `AWS::DynamoDB::GlobalTable`. See
   [Multi-region types are refused outright](#multi-region-types-are-refused-outright).
+- **NOT** a way to recreate a resource inside a nested stack. See
+  [Nested stacks](#nested-stacks).
 
 ## `--recreate-via-sdk-provider` (deploy)
 
@@ -390,6 +414,9 @@ cdkd deploy MyStack \
   migration only.
 - **NOT** compatible with `--recreate-via-cc-api` on the same logical id — pick
   one direction per resource.
+- **NOT** a way to recreate a resource inside a nested stack — same scope rule
+  as its forward twin. See
+  [Nested stacks](#nested-stacks).
 
 ## `--replace` (deploy)
 

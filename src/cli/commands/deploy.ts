@@ -781,8 +781,12 @@ async function deployCommand(
         // --allow-unsupported-properties / stateful guard refusal) so
         // the user fixes them all in one cycle. Skipped when the flag
         // is absent (no list).
-        let recreateViaCcApiTargets: ReadonlySet<string> | undefined;
-        let recreateViaSdkProviderTargets: ReadonlySet<string> | undefined;
+        // Issue [#2567] — the ids below are validated against THIS stack's
+        // template + state + live probes, so they travel to the engine WITH
+        // the stack name they were validated against: the option object is
+        // spread into every nested child engine, and an id set with no stack
+        // on it matched a child's colliding logical id too.
+        let recreateTargets: DeployEngineOptions['recreateTargets'];
         if (options.recreateViaCcApi?.length || options.recreateViaSdkProvider?.length) {
           const stateForRecreateCheck = await stackStateBackend.getState(
             stackInfo.stackName,
@@ -841,13 +845,16 @@ async function deployCommand(
           if (errorBlock) {
             throw new CdkdError(errorBlock, 'RECREATE_TARGETS_INVALID');
           }
-          recreateViaCcApiTargets = new Set(
-            validation.targets.filter((t) => t.direction === 'to-cc-api').map((t) => t.logicalId)
-          );
-          recreateViaSdkProviderTargets = new Set(
-            validation.targets.filter((t) => t.direction === 'to-sdk').map((t) => t.logicalId)
-          );
-          if (recreateViaCcApiTargets.size > 0 || recreateViaSdkProviderTargets.size > 0) {
+          recreateTargets = {
+            stackName: stackInfo.stackName,
+            viaCcApi: new Set(
+              validation.targets.filter((t) => t.direction === 'to-cc-api').map((t) => t.logicalId)
+            ),
+            viaSdkProvider: new Set(
+              validation.targets.filter((t) => t.direction === 'to-sdk').map((t) => t.logicalId)
+            ),
+          };
+          if (recreateTargets.viaCcApi.size > 0 || recreateTargets.viaSdkProvider.size > 0) {
             // Issue [#650] — enumerate downstream `Fn::ImportValue`
             // consumers via the state bucket walk so the warn block
             // names them by stack. Soft-fail (returns []) on read
@@ -894,10 +901,10 @@ async function deployCommand(
           ...(assetRedirect && { assetRedirect }),
           ...(eventRecorder && { eventRecorder }),
           ...(migrationGate && { onCurrentStateLoaded: migrationGate }),
-          ...(recreateViaCcApiTargets &&
-            recreateViaCcApiTargets.size > 0 && { recreateViaCcApiTargets }),
-          ...(recreateViaSdkProviderTargets &&
-            recreateViaSdkProviderTargets.size > 0 && { recreateViaSdkProviderTargets }),
+          ...(recreateTargets &&
+            (recreateTargets.viaCcApi.size > 0 || recreateTargets.viaSdkProvider.size > 0) && {
+              recreateTargets,
+            }),
           ...(options.replace && { replace: true }),
           ...(options.forceStatefulRecreation && { forceStatefulRecreation: true }),
           ...(options.skipFinalSnapshot && { skipFinalSnapshot: true }),
