@@ -845,73 +845,105 @@ describe('work-issues section 2 worktree probe', () => {
   const TRIAGE = join('references', 'triage.md');
 
   /**
-   * LINE-BASED on purpose, NOT fence-based.
+   * ONE extraction feeds every case below, and it is the UNION of the two
+   * recognisers this fence went through -- because each caught what the other
+   * missed, and three review rounds were spent discovering that one at a time.
    *
-   * The first draft of this fence selected blocks with `bashBlocks`, which
-   * recognises only a column-0 ```bash fence. Measured 2026-09-06 (round 3): a
-   * stale peer-worktree `show --stat HEAD` planted in gotchas.md survived all
-   * three cases when written as ```sh, as a bare ```, or as an INDENTED
-   * ```bash inside a list item -- and the skill already carries three indented
-   * ```bash fences, so `bashBlocks` sees 39 of its 42. Widening the scan from
-   * one FILE to every file, as round 2 did, moved the same hole one notch over.
+   * Draft 2 selected `bashBlocks`, which sees only a column-0 ```bash fence:
+   * the withdrawn command survived as ```sh, bare ```, or indented (the skill
+   * carries 3 indented fences of 42). Draft 3 replaced it with a `^\s*git`
+   * line scan, which closed those and REGRESSED the rest -- `cd … && git show`,
+   * a `for` loop body, an `env`-prefixed call and a `\`-continuation are all
+   * commands whose line does not START with git, and retro.md really does hard
+   * wrap a git command across a newline (see the note at the top of this file).
    *
-   * The withdrawn form is a COMMAND, and a command is recognisable without
-   * parsing fences at all -- so this scans lines and cannot be re-opened by a
-   * fence style nobody anticipated. The optional `$` covers a shell-prompt
-   * prefix -- the skill uses none today (grepped), so this is the cheap half of
-   * a bound rather than a fix for a live hole. `bashBlocks` is left alone: its contract is
-   * used by the section 9 block fences above, and widening a shared recogniser
-   * to fix one caller is how those would have silently changed meaning.
+   * So: every line inside a fence AT ANY indent OR tag, plus a bare `git …`
+   * line outside one, with continuations joined. `bashBlocks` is deliberately
+   * left alone -- the section 9 block fences depend on its contract, and
+   * widening a shared recogniser to suit one caller is how those change
+   * meaning silently.
    */
-  const GIT_LINE = /^\s*\$?\s*git\b/;
-  const gitLines = (doc: string): string[] =>
-    read(doc)
-      .split('\n')
-      .filter((l) => GIT_LINE.test(l));
+  const insideFence = (text: string): boolean[] => {
+    let open = false;
+    return text.split('\n').map((line) => {
+      if (/^\s*```/.test(line)) {
+        open = !open;
+        return false;
+      }
+      return open;
+    });
+  };
 
-  const peerProbeLines = (doc: string): string[] =>
-    gitLines(doc).filter((l) => /worktrees\/<w>/.test(l));
+  const GIT_LINE = /^\s*\$?\s*git\b/;
+
+  const commandUnits = (doc: string): string[] => {
+    const text = read(doc);
+    const fenced = insideFence(text);
+    const picked = text.split('\n').filter((line, i) => fenced[i] || GIT_LINE.test(line));
+    const units: string[] = [];
+    for (const line of picked) {
+      const prev = units[units.length - 1];
+      if (prev !== undefined && /\\\s*$/.test(prev)) {
+        units[units.length - 1] = `${prev.replace(/\\\s*$/, ' ')}${line.trim()}`;
+      } else {
+        units.push(line);
+      }
+    }
+    return units;
+  };
+
+  /**
+   * `git … show … --stat`-family, in either flag order. The `(?<![-\w])` is
+   * load-bearing: a bare `\bshow\b` also matches INSIDE `--show-current`, which
+   * `launch-mode.md` uses beside a `--stat`, and that false positive is exactly
+   * the kind of thing a ban nobody probed would have shipped with.
+   */
+  const SINGLE_COMMIT = /\bgit\b.*(?<![-\w])show\s+.*--(?:stat|numstat|shortstat|name-only|name-status)\b/;
+
+  const peerProbes = (doc: string): string[] =>
+    commandUnits(doc).filter((u) => /worktrees\/<w>/.test(u));
 
   it('only section 2 probes a peer worktree', () => {
     expect(
-      skillDocs().filter((doc) => peerProbeLines(doc).length > 0),
+      skillDocs().filter((doc) => peerProbes(doc).length > 0),
       'the per-worktree probe belongs to section 2 and nowhere else; a second copy drifts',
     ).toEqual([TRIAGE]);
   });
 
   it('ranges over origin/main...HEAD, and no doc still reads a single commit', () => {
-    const lines = peerProbeLines(TRIAGE);
-    expect(lines.length, 'the per-worktree probe is gone from section 2').toBeGreaterThan(0);
+    const probes = peerProbes(TRIAGE);
+    expect(probes.length, 'the per-worktree probe is gone from section 2').toBeGreaterThan(0);
     expect(
-      lines.some((l) => l.includes('diff --name-only origin/main...HEAD')),
-      `the probe must range over the branch; its commands were:\n${lines.join('\n')}`,
+      probes.some((u) => u.includes('diff --name-only origin/main...HEAD')),
+      `the probe must range over the branch; its commands were:\n${probes.join('\n')}`,
     ).toBe(true);
 
-    // Swept over EVERY doc, not just the probe above: the withdrawn form must
-    // not survive as a command anywhere in the skill, including in a stage file
-    // that never held the probe.
     const singleCommit = skillDocs().flatMap((doc) =>
-      gitLines(doc)
-        .filter((l) => /\bshow\s+--stat/.test(l))
-        .map((l) => `${doc}: ${l.trim()}`),
+      commandUnits(doc)
+        .filter((u) => SINGLE_COMMIT.test(u))
+        .map((u) => `${doc}: ${u.trim()}`),
     );
     expect(
       singleCommit,
-      'a `show --stat` probe reads ONE commit and under-reports a multi-commit lane -- ' +
+      'a `git show --stat` reads ONE commit and under-reports a multi-commit lane -- ' +
         'that form was withdrawn on 2026-09-05 and must not return as a COMMAND',
     ).toEqual([]);
   });
 
   it('still explains WHY the range is load-bearing, in prose', () => {
-    // The FLOOR half. Command lines AND comment lines are excluded, because the
-    // first draft filtered only `git`-prefixed ones and a `# not show --stat
-    // HEAD` planted in the block then satisfied it while the rationale
-    // paragraph was deleted (measured green, round 2). Without this case,
-    // deleting the explanation would read as a pass -- a cap with no floor
-    // rewards the inverse regression.
-    const prose = read(TRIAGE)
+    // The FLOOR half, and the half that has broken twice. Draft 1 filtered only
+    // `git`-prefixed lines, so a `#` comment planted in the block satisfied it;
+    // draft 3 filtered `git` and `#` lines, so an `echo` inside a fence and a
+    // 4-space indented code line did. Prose here means: outside every fence,
+    // not a command, not a comment, not an indented code block.
+    const text = read(TRIAGE);
+    const fenced = insideFence(text);
+    const prose = text
       .split('\n')
-      .filter((l) => !GIT_LINE.test(l) && !/^\s*#/.test(l))
+      .filter(
+        (line, i) =>
+          !fenced[i] && !GIT_LINE.test(line) && !/^\s*#/.test(line) && !/^ {4,}\S/.test(line),
+      )
       .join('\n');
     expect(
       prose,

@@ -341,45 +341,48 @@ const MIN_REFERENCE_FILES = 6;
 // go-to-k/cdkd#2674) landed two rules here: triage.md section 2's worktree
 // probe now ranges over `origin/main...HEAD` (`show --stat HEAD` reads ONE
 // commit, and read 1 of the 5 files a ten-commit lane held), and implement.md
-// section 5-g's fan-out sentence now names the REPORT SHAPE. It also flipped
-// the leader -- implement.md overtakes verify.md -- so `largest` and `runnerUp`
+// section 5-g's fan-out sentence now names the REPORT SHAPE. Components:
+// triage.md 26,084 -> 26,219 (+135), implement.md 28,079 -> 28,240 (+161),
+// gotchas.md 8,045 -> 7,938 (-107), retro.md 17,625 -> 17,585 (-40),
+// claim.md 7,704 -> 7,645 (-59), = +90. Corpus 172,956 -> 173,046. The leader
+// FLIPPED -- implement.md overtakes verify.md -- so `largest` and `runnerUp`
 // SWAP above and the binding bound becomes `corpus - verify.md`.
-//
-// NO PER-FILE ARITHMETIC IS STATED HERE, DELIBERATELY, AND THAT IS THIS ROUND'S
-// MAIN LESSON. Every entry above states its components so a reader can check
-// them. This round tried, and produced SEVEN wrong figures across three review
-// rounds: a spent-band figure, a component split, a byte attribution measured
-// against a commit range that dies at the squash merge, a "most of" claim, a
-// ratio, a line distance, and a count. Not one was caught by reading; all seven
-// were caught by measuring. MEASURED's four numbers are asserted against the
-// tree and cannot go stale silently -- a delta written into a comment is
-// checked by nothing, which is what this file already said above ("every count
-// that was merely counted has been dropped") and what it stopped doing here.
-// So they are DROPPED rather than corrected an eighth time; `wc -c` against
-// origin/main re-derives any of them in one command. That is retro.md section
-// 10-b's escalate-rather-than-restate applied to a paragraph, and
-// .claude/rules/testing.md's disposition for a figure nothing rechecks: delete
-// it, fence it, or date it.
 //
 // The payment was DISPLACEMENT, not compression: gotchas.md was restating
 // section 2's two live-lane probes in full, and retro.md and claim.md each
 // carried a bare "English only" line for a rule CLAUDE.md owns and two hooks
-// enforce (`non-english-text-gate`, `gh-body-english-gate` -- both verified in
-// review to cover the exact removed contexts, including the `--body` form
+// enforce (`non-english-text-gate`, `gh-body-english-gate` -- both live-probed
+// in review against the exact removed contexts, including the `--body` form
 // claim.md prescribes). A prose copy of a hook-enforced rule is paid for in
 // every lane and stops nothing.
 //
+// WHAT THIS ROUND COST, AND THE ONE DISTINCTION WORTH KEEPING. Four review
+// rounds produced SEVEN wrong figures here, and a first attempt at this
+// paragraph answered by deleting ALL of its arithmetic. That over-corrected,
+// and review caught it: re-derived at the commit that wrote them, the per-file
+// COMPONENTS were right 5 for 5, every time. The seven wrong ones were a
+// different class -- an attribution against a commit range that dies at the
+// squash merge, a component SPLIT, a ratio, a "most of" claim, a line
+// distance, a count, and a cross-file band. So the rule is not "state no
+// numbers": it is that a component is a `wc -c` of a file at a sha and is
+// re-derivable forever, while a DERIVED figure is checked by nothing and has
+// never once survived a round here. State components; do not state deltas
+// about deltas. And state them HERE rather than trusting `wc -c` against
+// origin/main, because after this squashes, origin/main IS the after-side and
+// the before-side is only in this comment -- which is why every entry above
+// carries its components too.
+//
 // Two further lessons landed OUTSIDE this corpus and cost it nothing:
 // `.claude/rules/testing.md` (a guard's uses are its CALL SITES, not the first
-// one) and a fence in work-issues-launch-mode.test.ts pinning the ranged probe.
-// Read that fence's history before writing the next one -- it needed three
-// drafts, and each failure was the class it exists to catch. Draft 1's FLOOR
-// was inert: it filtered `git`-prefixed lines, so a `#` comment planted inside
-// the code block satisfied it while the rationale paragraph was deleted.
-// Draft 2 selected blocks with `bashBlocks`, which recognises only a column-0
-// ```bash fence, so the withdrawn command survived as ```sh, as a bare ```, or
-// indented in a list item. It is LINE-based now, and needs no fence parsing at
-// all.
+// one) and a fence in work-issues-launch-mode.test.ts pinning the ranged
+// probe. Read that fence's own history before writing the next one: it took
+// four drafts, and every failure was the class it exists to catch -- an inert
+// FLOOR, then a recogniser that saw only column-0 ```bash fences, then a line
+// scan that closed those and regressed the floor while going blind to any
+// command whose line does not start with `git`. It is the UNION of both
+// recognisers now, probed against every evasion the four rounds produced --
+// command SHAPE as well as fence style, which is what the earlier batteries
+// varied and missed.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller

@@ -365,9 +365,10 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // was 5,677 B stale).
   // RE-DERIVED DOWNWARD 68_000 -> 52_000 on 2026-09-06, and the sibling
   // `tests/setup.ts` cap with it: both bound a payload that IS `testing.md`
-  // (alone here, plus its satellite there), and both `measured` notes had gone
-  // stale at the 2026-09-04 compression, so both caps were left sized for a
-  // file 15 KB larger than the live one -- the slack condition the
+  // (alone here, plus its satellite there), and both CAPS were left sized for
+  // the pre-compression file. Only THIS row's `measured` note was stale; the
+  // `tests/setup.ts` note tracked its payload correctly, and saying "both
+  // notes" was itself the defect this round is about -- the slack condition the
   // s3-bucket-provider row above records as having "silently absorbed a whole
   // 59 KB satellite". ~12% over the live payload is this table's convention,
   // NOT a ratio recovered from this row's own history.
@@ -488,7 +489,8 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // MEASURED record, so these figures are the only thing that goes stale
   // silently; re-measure them in any commit that touches `testing.md` -- these,
   // plus the `measured` figure and the cap on the rule-file-payload.test.ts row
-  // above and this row's own cap, all of which bound a payload that IS
+  // above and this row's own cap, and the `testing.md (46,373 B)` figure in
+  // the gutting case below -- all of which bound, or are, a payload that IS
   // `testing.md`. Deliberately not stated as a COUNT: this sentence said
   // "three" while enumerating more, twice.
   // RE-MEASURED 2026-09-05 after the work-issues retro escalated its
