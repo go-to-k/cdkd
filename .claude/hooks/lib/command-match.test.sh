@@ -1857,6 +1857,60 @@ if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
 fi
 echo
+# --- gate_utf8_lenient: the RFC 3629 well-formedness table -------------------
+#
+# This decoder decides what text the English-only class test SEES, so an
+# over-permissive row is a bypass (a surrogate- or overlong-encoded sequence
+# decoded into a character the class then reads as ordinary text) and an
+# under-permissive one is a false block. It is asserted here rather than
+# through a gate because a gate can only show the VERDICT, and every row below
+# collapses to the same verdict.
+#
+# Two spellings were measured and rejected before this one, both LOSING the
+# evidence: `utf8::decode` refuses the whole string on a single malformed byte,
+# and `Encode::decode` swallows the bytes FOLLOWING a bad lead byte as one
+# malformed run -- `\xff\xe6\x97\xa5` came back as a single U+FFFD with the
+# Japanese character gone.
+cp_of() { # <perl byte-string expression> -> "U+XXXX U+XXXX ..."
+  perl -0777 -e "$GATE_PERL_WORD"'
+    my $b = eval $ARGV[0];
+    print join(" ", map { sprintf("U+%04X", ord($_)) } split //, gate_utf8_lenient($b));
+  ' "$1" 2>/dev/null
+}
+utf8_case() { # <name> <perl expr> <expected code points>
+  local name="$1" expr="$2" want="$3" got
+  got=$(cp_of "$expr")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   utf8: %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL utf8: %s (want "%s", got "%s")\n' "$name" "$want" "$got"
+    fail_log+="FAIL utf8: $name\n  want: $want\n  got : $got\n"
+  fi
+}
+F=U+FFFD
+utf8_case 'ascii'                   '"AB"'                 'U+0041 U+0042'
+utf8_case 'NUL survives'            '"\x00"'               'U+0000'
+utf8_case 'valid 2-byte'            '"\xc3\xa9"'           'U+00E9'
+utf8_case 'valid 3-byte CJK'        '"\xe6\x97\xa5"'       'U+65E5'
+utf8_case 'valid 4-byte'            '"\xf0\x9f\x98\x80"'   'U+1F600'
+utf8_case 'max valid code point'    '"\xf4\x8f\xbf\xbf"'   'U+10FFFF'
+utf8_case 'above U+10FFFF refused'  '"\xf4\x90\x80\x80"'   "$F $F $F $F"
+utf8_case 'F5 lead refused'         '"\xf5\x80\x80\x80"'   "$F $F $F $F"
+utf8_case 'FE/FF refused'           '"\xfe\xff"'           "$F $F"
+utf8_case 'overlong 2-byte refused' '"\xc0\x80"'           "$F $F"
+utf8_case 'C1 lead refused'         '"\xc1\xbf"'           "$F $F"
+utf8_case 'overlong 3-byte refused' '"\xe0\x80\x80"'       "$F $F $F"
+utf8_case 'overlong 4-byte refused' '"\xf0\x80\x80\x80"'   "$F $F $F $F"
+utf8_case 'surrogate refused'       '"\xed\xa0\x80"'       "$F $F $F"
+utf8_case 'lone continuation'       '"\x80"'               "$F"
+utf8_case 'truncated 3-byte'        '"\xe6\x97"'           "$F $F"
+utf8_case 'truncated at EOS'        '"\xe6"'               "$F"
+# The two orderings that motivated the decoder: a valid character must survive
+# a stray byte on EITHER side. One U+FFFD per un-decodable byte, so the count
+# discriminates the per-RUN spelling that swallowed three bytes after the bad one.
+utf8_case 'stray byte BEFORE a character' '"\xff\xe6\x97\xa5"' "$F U+65E5"
+utf8_case 'stray byte AFTER a character'  '"\xe6\x97\xa5\xff"' "U+65E5 $F"
+
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
   echo
