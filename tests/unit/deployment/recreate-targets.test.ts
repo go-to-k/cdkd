@@ -1639,7 +1639,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
     // Rendering proves the new error block surfaces the bucket name.
     const error = renderRecreateTargetsErrors(out);
     expect(error).toContain('MyBucket');
-    expect(error).toContain('S3 bucket is non-empty');
+    expect(error).toContain('S3 bucket is not provably empty');
   });
 
   it('composes the log-group promotion into blockedStatefulTargets and the rendered error', async () => {

@@ -528,19 +528,20 @@ export const MULTI_REGION_RECREATE_BLOCKED_TYPES: ReadonlySet<string> = new Set(
  *    ("log group is not provably empty") for exactly that reason —
  *    only the hedge is true across all three.
  *    `'has-objects'` carries the same duty across its own three cases
- *    and is NOT hedged: it still renders the assertive "S3 bucket is
- *    non-empty" on the two where nothing was proved. A known
- *    overstatement, kept because the sentence is also the shipped
- *    mid-deploy refusal text and hedging it would weaken the case that
- *    IS proved. Only ONE of the two unproved paths corrects it on
- *    screen: the continuation-marker case warns "without settling it"
- *    immediately before the refusal. The other — this module's
- *    {@link isStatefulRecreateTargetForReplace} `AWS::S3::Bucket` arm,
- *    reached from `deploy-engine.ts`'s two replacement guards — throws
- *    with no warning at all, so there the assertive sentence is the
- *    only thing the user sees. The one site that
- *    re-derives a reason (`recreate-confirm-prompt.ts`) works around
- *    it with its own wording rather than borrowing this one.
+ *    and is hedged the same way ("S3 bucket is not provably empty",
+ *    issue [#2615]). It was assertive until then, and the argument for
+ *    keeping it — that hedging weakens the case that IS proved — lost
+ *    to the one that broke it: of the two unproved paths, only the
+ *    continuation-marker case corrected the claim on screen (it warns
+ *    "without settling it" immediately before the refusal). The other,
+ *    this module's {@link isStatefulRecreateTargetForReplace}
+ *    `AWS::S3::Bucket` arm reached from `deploy-engine.ts`'s two
+ *    replacement guards, throws with no warning at all — so the
+ *    assertive sentence was the only thing that user saw, and it named
+ *    a measurement cdkd never took. The one site that re-derives a
+ *    reason (`recreate-confirm-prompt.ts`) still uses its own wording:
+ *    it knows something narrower, that the force flag SKIPPED the
+ *    probe.
  *  - `null` — not stateful for the purposes of this guard.
  */
 export type StatefulReason = 'always' | 'has-objects' | 'has-retention' | 'has-log-events' | null;
@@ -642,7 +643,15 @@ export function renderStatefulReason(reason: StatefulReason): string {
     case 'always':
       return 'destroy loses all data in the resource';
     case 'has-objects':
-      return 'S3 bucket is non-empty';
+      // Hedged for the same reason `has-log-events` is (issue [#2615]): this
+      // reason covers a probe that FOUND a version or delete-marker, a probe
+      // whose page carried a continuation marker and no entries, and a
+      // mid-deploy site with no probe at all. The old assertive "S3 bucket is
+      // non-empty" was true only of the first, and on the third — the
+      // `isStatefulRecreateTargetForReplace` arm reached from the deploy
+      // engine's two replacement guards — it was the ONLY thing the user saw,
+      // with no warning beside it to correct the claim.
+      return 'S3 bucket is not provably empty';
     case 'has-retention':
       return 'log group retains data (RetentionInDays > 0)';
     case 'has-log-events':

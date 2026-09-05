@@ -120,14 +120,13 @@ export async function promptRecreateConfirm(input: {
     // the sentence the refusal path already shows — never the raw
     // discriminator (`has-log-events` is internal).
     //
-    // A RE-DERIVED verdict may not borrow that sentence.
-    // `renderStatefulReason('has-objects')` is the assertive "S3 bucket is
-    // non-empty", and on this path nothing was measured: the force flag is
-    // exactly what skipped the probe. Printing it would tell a user with an
-    // empty bucket that it is non-empty — asserting an emptiness verdict cdkd
-    // does not hold, which is the same class of overstatement, pointed the
-    // other way, that issue [#2558] is about. (The log group's own reason IS
-    // hedged, but the bucket shares this line, so the hedge has to live here.)
+    // A RE-DERIVED verdict may not borrow that sentence either, and since
+    // issue [#2615] the reason is NOT that the borrowed one overstates — both
+    // conditional reasons are hedged now ("... is not provably empty"). It is
+    // that this path knows something NARROWER and more actionable: the force
+    // flag is exactly what skipped the probe. "Not provably empty" would be
+    // true here and would still leave the user guessing why nothing was
+    // measured.
     // The THIRD state (issue [#2595]): the probe ran and FAILED, so the
     // verdict is `null` — the S3 arm fails open by design — but nothing was
     // established. Rendered like neither of the other two: silence would be

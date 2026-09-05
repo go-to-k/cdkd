@@ -559,16 +559,18 @@ describe('isStatefulRecreateTargetSync (#615)', () => {
 describe('renderStatefulReason', () => {
   it('produces user-readable strings for each reason', () => {
     expect(renderStatefulReason('always')).toMatch(/destroy loses all data/);
-    expect(renderStatefulReason('has-objects')).toMatch(/non-empty/);
+    expect(renderStatefulReason('has-objects')).toMatch(/not provably empty/);
     expect(renderStatefulReason('has-retention')).toMatch(/retains data/);
     expect(renderStatefulReason('has-log-events')).toMatch(/not provably empty/);
     expect(renderStatefulReason(null)).toBe('(not stateful)');
-    // The log-group reason renders on TWO different paths — a pre-flight probe
-    // that FOUND a stream, and a mid-deploy site that probed nothing — so the
-    // assertive phrasing its S3 sibling uses would be false on the second.
-    // Pinned, because "log group is non-empty" is the wording a future reword
-    // would reach for.
+    // BOTH conditional reasons render on paths where nothing was measured — a
+    // pre-flight probe that answered, one that did not settle, and a
+    // mid-deploy site with no probe at all — so neither may assert contents.
+    // `has-objects` was assertive until issue #2615; pinned here because
+    // "is non-empty" is the wording a future reword reaches for, and on the
+    // mid-deploy arm it is the ONLY line the user sees.
     expect(renderStatefulReason('has-log-events')).not.toMatch(/is non-empty/);
+    expect(renderStatefulReason('has-objects')).not.toMatch(/is non-empty/);
   });
 });
 

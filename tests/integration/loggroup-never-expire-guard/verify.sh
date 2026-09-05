@@ -319,7 +319,7 @@ else:
 # drift rather than as a regression.
 assert_stateful_refusal() { # $1 = phase label, $2 = output
   local label="$1" out="$2"
-  if ! grep -q "not provably empty" <<<"${out}"; then
+  if ! grep -q "log group is not provably empty" <<<"${out}"; then
     if grep -q "AWS::Logs::LogGroup" <<<"${out}"; then
       echo "FAIL: ${label}: the refusal names AWS::Logs::LogGroup but not the reason — renderStatefulReason('has-log-events') wording drifted; update this fixture with the source" >&2
     else
@@ -465,7 +465,7 @@ fi
 # NEGATIVE: the refusal phrase phase 3 matched must be absent — the same needle,
 # so a reword upstream moves both together and cannot leave this one vacuous
 # while phase 3 still passes.
-if grep -q "not provably empty" <<<"${P4_OUT}"; then
+if grep -q "log group is not provably empty" <<<"${P4_OUT}"; then
   echo "FAIL: the pre-flight emitted the stateful refusal for the EMPTY log group" >&2
   printf '%s\n' "${P4_OUT}" | tail -20 >&2
   exit 1
