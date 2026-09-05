@@ -96,6 +96,18 @@ edits={
  'len-bound':        ('  [ "${#w}" -le "$GATE_STRUCT_MAXTOKLEN" ] || return 0\n', ''),
  'span-bound':       ('    [ "$spans" -gt "$GATE_STRUCT_MAXSPAN" ] && return 0\n', ''),
  'meta-reject':      ('    *[\\<\\>\;\\&\\|\\(\\)\\`\\$]*) return 0 ;;\n', ''),
+ # Deleting the ODD-TRAILING-BACKSLASH refusal in `_gate_struct_next`. That
+ # token splitter breaks on whitespace alone, so without this guard `cd\\ /tmp`
+ # -- ONE shell word, which bash reports as `cd /tmp: No such file or
+ # directory` and never acts on -- is split into `cd\\` + `/tmp`, the first is
+ # rewritten to `cd`, and the two are re-joined with a plain space. The result
+ # is a `cd` MANUFACTURED out of a command bash never runs, and it moves the
+ # target EVERY gate resolves: measured on the differential corpus, eleven
+ # `t:` observables for `cd\\ /tmp ; git commit -m x` flip to /tmp -- every gate
+ # that resolves a target, not one of them. The COUNT is deliberately absent:
+ # four attempts at it produced three different numbers, so read it off the
+ # differential's undeclared-cell list with this mutant applied.
+ 'odd-trailing-bs': ('  _gate_odd_trailing_bs "${r%%[[:space:]]*}" && return 1\n', ''),
  # Deleting the empty-pair COLLAPSE, which is what makes free padding
  # visible. Its predecessor probe -- flipping the span charge back on --
  # became inert the moment the collapse landed, and this harness REPORTED
@@ -117,7 +129,7 @@ PY
   esac
 }
 
-MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always}"
+MUTANTS="${*:-passthrough wholeseg wholeseg-raw empty-pair-collapse dq-backslash open-quote-guard len-bound span-bound meta-reject gh-extra-always odd-trailing-bs}"
 rc=0
 for m in $MUTANTS; do
   if ! mutate "$m" 2>"$WORK/err.txt"; then

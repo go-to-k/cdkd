@@ -587,9 +587,12 @@ already fails open without `gh`.
   `Edit|Write|Bash`), and **`main-tree-dirty-detector.sh`** is its
   non-blocking PostToolUse backstop for the write targets a static scan
   cannot resolve. Full entries — the detection model, the Bash arm's literal
-  targets, the go-to-k/cdkd#2614 move to the shared `cd` resolver, and both
-  suites — in [hooks-main-tree-edit.md](hooks-main-tree-edit.md), which loads
-  when you touch either hook or its suite.
+  targets, the go-to-k/cdkd#2614 move to the shared `cd` resolver, the
+  go-to-k/cdkd#2650 ordered walk over `gate_segments_marked` with its two input
+  bounds, and all three suites (including the differential ORACLE, which
+  executes its corpus and compares the gate against what bash actually did) —
+  in [hooks-main-tree-edit.md](hooks-main-tree-edit.md), which loads when you
+  touch either hook, either suite, the oracle, or the shared matcher.
 
 - **`.claude/hooks/main-tree-git-cwd-detector.sh`** — PostToolUse (`Bash`)
   REACTIVE backstop for the cwd-RACE class: a command whose verdict is taken

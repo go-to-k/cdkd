@@ -231,6 +231,24 @@ GATE_SEP_AMP=$'\021'
 GATE_SEP_SEMI=$'\022'
 GATE_SEP_PIPE=$'\023'
 GATE_SEP_SUBST=$'\024'
+# THE INPUT IS SANITISED OF THIS BYTE BEFORE THE AWK PROGRAM SEES IT, so only
+# the segmenter can ever produce one. Without that strip the mark is FORGEABLE
+# and the forgery flips a security decision: measured, prefixing a command with
+# the byte made `main-tree-edit-gate` read a REAL `cd` as subshell-derived and
+# ignore it, so from a feature worktree
+# `<byte>cd <main tree> && echo hi > <tracked>` went rc 2 -> 0. The older
+# separator placeholders below are forgeable in the same way; that only corrupts
+# segment TEXT rather than inverting a verdict, and predates this, but it is the
+# same class and is why the strip here is on the INPUT and not on the output.
+#
+# Marks a segment that came from a SUBSTITUTION BODY -- `$( )`, backticks or
+# process substitution. Such a body runs in a CHILD, so a `cd` in it can never
+# move the caller's cwd, exactly like a plain subshell. Emitted by
+# `gate_segments_raw`, consumed by `gate_segments_marked` (which turns it into
+# mark 1) and STRIPPED by `gate_segments` (whose output must not change). Both
+# strips are single-site on purpose: a sentinel that leaks into segment text is
+# a verb that stops matching, which is the fail-open direction.
+GATE_SUBST_MARK=$'\025'
 
 
 # Segment the command list. One awk program, run over the WHOLE input:
@@ -241,7 +259,7 @@ GATE_SEP_SUBST=$'\024'
 #   - turn every real separator into a newline, `$(...)` and backticks included
 #     (the text inside one RUNS, so `echo "$(git commit -m x)"` is a commit).
 gate_segments_raw() {
-  awk '
+  awk -v subm="$GATE_SUBST_MARK" '
     BEGIN {
       # See chars_of(): an empty FS is UNDEFINED in POSIX, so measure rather
       # than assume. Two characters in, two fields out, and each field the right
@@ -321,6 +339,39 @@ gate_segments_raw() {
                         continue }
         if (c == "\"") { iq = c; continue }
         if (c == "\047") { iq = "\047"; continue }
+        # A `#` AT A WORD BOUNDARY STARTS A COMMENT, and bash reads no structure
+        # inside one -- so a `)` there is not the closer. Counting it ended the
+        # substitution early, the caller fell to the splitting arm, and the
+        # body`s `cd` was emitted as a TOP-LEVEL segment though it runs in a
+        # child. Measured from the main tree, with the tracked file really
+        # written and the gate returning 0:
+        #
+        #   x=$(
+        #     # note )
+        #     cd /tmp
+        #   )
+        #   echo POISON > <tracked>
+        #
+        # `subst_open` carries the same arm; the two must agree about what opens
+        # and closes a span, and where they disagree the disagreement IS the
+        # SKIPPING TO THE NEXT `;` IS THE RIGHT UNIT HERE, and "skip to end of
+        # line" was wrong for a reason worth writing down: `run()` joins a
+        # continued substitution with `;` rather than a newline, so this scan
+        # never sees one. The end-of-line spelling therefore skipped to the end
+        # of the STRING and reported NO closer -- which is the opposite of what
+        # `subst_open` reports for the same input, and the two disagreeing about
+        # what closes a span IS the fail-open. Measured, `x=$( / # note ) /
+        # cd /tmp) / echo POISON > <tracked>` returned rc=0 with the tracked
+        # file written where origin/main returned 2.
+        #
+        # The `;` the joiner inserted stands exactly where the newline was, so
+        # stopping there restores the comment`s real extent. A `;` the user
+        # wrote INSIDE a comment is swallowed by this too -- over-reading the
+        # comment by one statement, which leaves the span open and refuses.
+        if (c == "#" && (j == from || substr(line, j - 1, 1) ~ /[ \t;&|(]/)) {
+          while (j <= length(line) && substr(line, j, 1) != ";" && substr(line, j, 1) != "\n") j++
+          continue
+        }
         if (c == "(") depth++
         else if (c == ")") { depth--; if (depth == 0) return j }
       }
@@ -406,12 +457,42 @@ gate_segments_raw() {
     # and the commit would stop matching. `;` is the same separator in a form
     # that survives being put on one line, and the enclosing command is
     # unaffected because neutralise() turns it into a placeholder there anyway.
-    function subst_open(line,   i, n, c, depth, bt, sc, SCH) {
-      depth = 0; bt = 0; n = length(line)
+    function subst_open(line,   i, n, c, depth, bt, sc, SCH, q) {
+      depth = 0; bt = 0; q = ""; n = length(line)
       sc = chars_of(line, SCH)
       for (i = 1; i <= n; i++) {
         c = (sc ? SCH[i] : substr(line, i, 1))
         if (c == "\\") { i++; continue }
+        # QUOTE-AWARE, for the same reason `close_paren` is. A `)` inside a
+        # quoted span is DATA, and counting it as a closer made this function
+        # report a substitution as CLOSED when it is still open, so the line was
+        # never joined with the next one. Measured on
+        # `x=$(echo \047a)b\047` + newline + `cd /tmp)` + newline + a write:
+        # the `cd` was emitted as a TOP-LEVEL segment although it runs in the
+        # substitution child, the base moved, and `main-tree-edit-gate` returned
+        # 0 while bash really overwrote the tracked file. The states are the
+        # same three `close_paren` tracks, including ANSI-C.
+        # ONLY THE SINGLE-QUOTE STATES SUPPRESS. Bash expands `$( )` and
+        # backticks INSIDE double quotes, so `echo "$(` opens a substitution
+        # exactly as the bare spelling does. Skipping the whole double-quoted
+        # span lost that: `echo "$(` + newline + ` git commit -m x` + newline +
+        # `)"` reported CLOSED, the lines were never joined, and the verb in the body
+        # disappeared from the stream -- caught by the differential fence as a
+        # LOST `m:GATE_RE_GIT_COMMIT` cell rather than by any hand-picked case.
+        if (q == "") {
+          if (c == "$" && substr(line, i + 1, 1) == "\047") { q = "d"; i++; continue }
+          if (c == "\047") { q = "\047"; continue }
+          if (c == "\"") { q = "\""; continue }
+        } else if (q == "d") {
+          if (c == "\047") q = ""
+          continue
+        } else if (q == "\047") {
+          if (c == "\047") q = ""
+          continue
+        } else if (q == "\"") {
+          if (c == "\"") { q = ""; continue }
+          # fall through: substitutions are live inside double quotes
+        }
         # BACKTICK PARITY, tracked SEPARATELY from the paren depth
         # (go-to-k/cdkd#2156 review round 1). The first version of this function
         # counted only `$(`, so the backtick spelling of the same multi-line
@@ -426,8 +507,36 @@ gate_segments_raw() {
         # to `depth` would make the second backtick of an ordinary
         # `git -C `pwd` commit` read as another opener and hold the line open
         # forever.
+        # A `#` AT A WORD BOUNDARY STARTS A COMMENT, and bash reads no
+        # structure inside one. Counting a `)` there closed a substitution the
+        # shell had left open, so the lines were never joined and the body`s
+        # `cd` was emitted as top-level: measured, `x=$(` + newline +
+        # `  # note )` + newline + `  cd /tmp` + newline + `)` + a write took
+        # `main-tree-edit-gate` from 2 to 0 with the tracked file really
+        # written. (`origin/main` answers 2 on that shape, but by its own
+        # limitation -- its anchored regex ignores every `cd` that is not
+        # first -- not by reading the comment.)
+        #
+        # The scan STOPS at the comment and reports the span still open, which
+        # is the deliberate direction. A caller that has already joined lines
+        # replaced their newlines with `;`, so the comment`s true extent is no
+        # longer recoverable here; over-reporting OPEN keeps the body inside the
+        # substitution, where the marking treats its `cd` as child-context and
+        # refuses. Under-reporting would hand the `cd` to the consumer as
+        # top-level, which is the direction this comment exists to close.
+        if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[ \t;&|(]/)) break
         if (c == "`") { bt = 1 - bt; continue }
         if (c == "$" && substr(line, i + 1, 1) == "(") { depth++; i++; continue }
+        # PROCESS SUBSTITUTION OPENS A SPAN TOO. `flush_line` was taught to
+        # dual-emit `<( )` and `>( )` in the same change that taught it `$( )`,
+        # but this line-JOINER was not -- so a process substitution spanning
+        # lines reported CLOSED, the lines were never joined, and its body`s
+        # `cd` was emitted at the top level although it runs in a child.
+        # Measured: `cat <(` + newline + `cd /tmp` + newline + `)` + a write
+        # took `main-tree-edit-gate` from 2 to 0 with the tracked file really
+        # written. `flush_line` and `subst_open` have to agree about what opens
+        # a span; when they disagree the disagreement IS the fail-open.
+        if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { depth++; i++; continue }
         if (c == "(" && depth > 0) { depth++; continue }
         if (c == ")" && depth > 0) { depth--; continue }
       }
@@ -509,7 +618,25 @@ gate_segments_raw() {
             res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 2; i++; continue
           }
           # Process substitution runs its body too: `diff <(git commit) …`.
-          if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 2; i++; continue }
+          # Process substitution runs its body in a CHILD, exactly as `$( )`
+          # does, so it takes the same DUAL-EMIT: the span stays inline and
+          # neutralised, and the body is queued for its own pass. Splitting it
+          # inline instead put the segments of the body BEFORE the enclosing
+          # command`s later segments, so a consumer walking them in order
+          # honoured a `cd` that can never move the caller:
+          # `diff <(cd /tmp && pwd) f ; echo hi > <tracked>` went rc=2 -> 0
+          # through `main-tree-edit-gate`, with the tracked file really written
+          # (go-to-k/cdkd#2650 review).
+          if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") {
+            cp = close_paren(line, i + 2)
+            if (cp > 0) {
+              extra = extra substr(line, i + 2, cp - i - 2) "\n"
+              res = res substr(line, runstart, i - runstart) neutralise(substr(line, i, cp - i + 1)); runstart = cp + 1
+              i = cp
+              continue
+            }
+            res = res substr(line, runstart, i - runstart) "\n"; runstart = i + 2; i++; continue
+          }
           if (c == "`") {
             bt = close_backtick(substr(line, i + 1))
             if (bt > 0) {
@@ -606,6 +733,7 @@ gate_segments_raw() {
     # One full pass. Runs twice at most: see the END rule.
     function run(   i, line, t, acc, rounds, batch, elines, nlines, ei, __seg, psub) {
       q = ""; tag = ""; pending = ""; acc = ""; extra = ""; psub = ""
+      __bodies = ""; __pend_seg = ""
       for (i = 1; i <= total; i++) {
         line = lines[i]
         if (tag != "") {                  # inside a heredoc body: data, not commands
@@ -632,9 +760,29 @@ gate_segments_raw() {
         # <newline> git -C $W commit -F f"` refused with a remedy naming a `-C`
         # the invocation does not carry (go-to-k/cdkd#2027 review round 4).
         # Newline inside a quoted span is DATA, so it joins as a space.
+        # BUFFER TO THE END OF THE LOGICAL LINE, then emit bodies and segment.
+        #
+        # A line ending inside a quoted span is not a boundary -- the span
+        # continues, and the join below is what keeps a multi-line
+        # `--body "..."` from becoming one segment per line. Concatenating the
+        # drained bodies at that point spliced them INTO the middle of the
+        # continuing text, carrying the substitution sentinel with them:
+        # measured, `gh pr comment 1 --body "l1<newline>l2" $( git commit -m y )`
+        # came out as `gh pr comment 1 --body "line1 <sentinel> git commit -m y`
+        # and the verb no longer matched, so `branch-gate` went quiet on a
+        # command that really commits.
+        #
+        # The logical line is the unit. Bodies accumulate until it completes and
+        # are emitted BEFORE it, which is the ordering their writes need (they
+        # ran before the enclosing command finished), and always as whole lines.
         __seg = flush_line(line)
-        if (q != "") acc = acc __seg " "
-        else acc = acc __seg "\n"
+        __bodies = __bodies drain_extra()
+        if (q != "") {
+          __pend_seg = __pend_seg __seg " "
+        } else {
+          acc = acc __bodies __pend_seg __seg "\n"
+          __bodies = ""; __pend_seg = ""
+        }
         if (pending_tag != "" && terminated(pending_tag, i + 1) > 0) tag = pending_tag
       }
       # An unterminated `$(` at end of INPUT: flush what was held rather than
@@ -642,8 +790,16 @@ gate_segments_raw() {
       # command.
       if (psub != "") {
         if (pending != "") { psub = psub ";" pending; pending = "" }
-        acc = acc flush_line(psub) "\n"
+        acc = acc __bodies __pend_seg flush_line(psub) "\n"
+        __bodies = ""; __pend_seg = ""
         psub = ""
+      }
+      # Input that ended INSIDE a quoted span leaves the logical line
+      # incomplete. Dropping the buffer there would discard the command, which
+      # is the fail-open direction, so it is flushed as it stands.
+      if (__pend_seg != "" || __bodies != "") {
+        acc = acc __bodies __pend_seg "\n"
+        __bodies = ""; __pend_seg = ""
       }
       if (pending != "") acc = acc flush_line(pending) "\n"
       # If the input ended INSIDE a quoted span, the join above left `acc`
@@ -658,20 +814,96 @@ gate_segments_raw() {
       # remaining bodies, i.e. stops scanning commands, so it is announced on
       # stderr rather than swallowed -- a silent drop here is the fail-open
       # direction this file exists to avoid (go-to-k/cdkd#2027 review round 4).
+      acc = acc drain_extra()
+      return acc
+    }
+    # drain_extra -> the queued substitution bodies, each flushed in turn.
+    #
+    # POSITION IS THE POINT. These bodies used to be drained once, in END, so
+    # every one of them landed AFTER every top-level segment. A consumer with a
+    # running cwd then resolved a body`s write against the base as it stood at
+    # the END of the command -- literally "a `cd` after the write moved the
+    # base", which is this gate`s founding incident. Measured against real bash
+    # (the tracked file was really overwritten): `x=$(echo POISON >
+    # <tracked>) ; cd /tmp` from the main tree went rc 2 -> 0, in six spellings
+    # (`$( )` and backticks, `>` and `>>`, single- and multi-line).
+    #
+    # Draining per LINE and emitting the bodies BEFORE that line`s own segments
+    # resolves them against the base as it stood when the enclosing command ran
+    # -- earlier than the truth when a `cd` precedes the substitution ON THE
+    # SAME LINE, which is the LOUD direction, and never later.
+    function drain_extra(   out, rounds, batch, nlines, elines, ei, flushed, nf, fl, fi, saved_q, saved_ignore) {
+      # `q` IS GLOBAL AND LIVE ACROSS LINES. It carries "this line ended inside
+      # a quoted span", which is what stops each line of a multi-line
+      # `--body "..."` being promoted to a segment start. Draining a body runs
+      # `flush_line` again, which rewrites `q` -- and the caller tests `q` AFTER
+      # the drain. Measured: `gh pr comment 1 --body "l1<newline>l2" $( git
+      # commit -m y )` matched GATE_RE_GIT_COMMIT on origin/main and NOT here,
+      # so `branch-gate` and every other `gate_matches` consumer went quiet; and
+      # a `cd` sitting in multi-line PROSE was promoted to a top-level segment,
+      # taking `main-tree-edit-gate` from 2 to 0 on a real write. Save and
+      # restore it: the bodies are a separate scan, not a continuation of the
+      # quoting on the enclosing line.
+      saved_q = q
+      out = ""
       rounds = 0
       while (extra != "" && rounds < 8) {
         batch = extra; extra = ""; q = ""
         nlines = split(batch, elines, "\n")
         for (ei = 1; ei <= nlines; ei++) {
           if (elines[ei] == "") continue
-          acc = acc flush_line(elines[ei]) "\n"
+          # EVERY line of the flushed body carries the mark, not just the
+          # first: one body can hold a whole command list, and an unmarked
+          # tail would be read as top-level and its `cd` honoured.
+          flushed = flush_line(elines[ei])
+          # A BODY THAT ENDS INSIDE AN UNTERMINATED SPAN GETS THE SAME RETRY THE
+          # END RULE GIVES A TOP-LEVEL LINE, and it has to happen HERE. The END
+          # rule reads the global `q` after `run()`, which this function
+          # restores to the enclosing line`s state, so a body`s finding never
+          # reached it. Measured through the real `branch-gate`: a backtick body
+          # whose `#` comment carries one apostrophe went rc 2 -> 0, because the
+          # verb inside it stopped starting a segment.
+          #
+          # Retrying HERE and not by signalling the END rule is deliberate. A
+          # flag ORed into that rule re-runs the WHOLE input with a quote
+          # character treated as literal, which changed segmentation for lines
+          # that were never in question -- the differential caught it as two
+          # classes losing cells (NOW_MISS 14 -> 8, SEGCOUNT 16 -> 11). The
+          # repair belongs to the body that needs it.
+          if (q != "") {
+            saved_ignore = ignore_q
+            ignore_q = "BOTH"
+            flushed = flush_line(elines[ei])
+            ignore_q = saved_ignore
+          }
+          nf = split(flushed, fl, "\n")
+          for (fi = 1; fi <= nf; fi++) {
+            if (fl[fi] == "") continue
+            out = out subm fl[fi] "\n"
+          }
         }
         rounds++
       }
+      # Bounded so a pathological input cannot spin. Hitting the cap DROPS the
+      # remaining bodies, i.e. stops scanning commands, so it is announced on
+      # stderr rather than swallowed -- a silent drop here is the fail-open
+      # direction this file exists to avoid (go-to-k/cdkd#2027 review round 4).
       if (extra != "") {
         printf "gate_segments: substitution nesting deeper than 8; %d byte(s) of command text were NOT scanned\n", length(extra) > "/dev/stderr"
       }
-      return acc
+      # RESTORING `q` MUST NOT DISCARD WHAT THE BODY FOUND. The END rule below
+      # reads `q` after `run()` to decide whether to retry with a quote treated
+      # as literal, and a body that ends inside an unterminated span needs that
+      # retry exactly as a top-level line does. Restoring unconditionally threw
+      # the signal away: measured through the real `branch-gate`, a backtick
+      # body whose `#` comment carries one apostrophe went rc 2 -> 0 -- the verb
+      # inside it stopped starting a segment, so every gate on `gate_matches`
+      # went quiet on a command that really commits. The enclosing line still
+      # gets ITS state back; the body`s finding rides a separate flag the END
+      # rule ORs in.
+      if (q != "") body_q_open = 1
+      q = saved_q
+      return out
     }
     { line = $0; sub(/\r$/, "", line); lines[NR] = line }
     END {
@@ -695,7 +927,7 @@ gate_segments_raw() {
       printf "%s", acc
     }
   ' SEP_AMP="$GATE_SEP_AMP" SEP_SEMI="$GATE_SEP_SEMI" SEP_PIPE="$GATE_SEP_PIPE" \
-    SEP_SUBST="$GATE_SEP_SUBST" <<< "$1"
+    SEP_SUBST="$GATE_SEP_SUBST" <<< "${1//"$GATE_SUBST_MARK"/}"
 }
 
 # Leading words that introduce a command without being one: env assignments,
@@ -983,12 +1215,50 @@ _GATE_DQ_CHANGED=0
 _GATE_STRUCT_TOK=""
 _GATE_STRUCT_REST=""
 
+# _gate_odd_trailing_bs <token> -> 0 when the token ends in an ODD number of
+# backslashes, i.e. when it ESCAPES whatever follows it.
+#
+# NO WINDOW, AND NO LOOP. The first spelling read a bounded 64-character tail
+# and answered "unknowable parity" when the whole window was backslashes -- and
+# it answered it as YES, which makes `_gate_struct_next` refuse the split, which
+# makes `gate_dequote_structural` ABANDON, which leaves a quoted verb unmatched.
+# That is the PERMISSIVE direction, not the safe one: measured against real git,
+# `git -c a.b=<64 backslashes> "commit" -m y` really did commit while the
+# trigger said no, so `branch-gate` went 2 -> 0. "No rewrite is always a safe
+# answer" was simply false, and it was written without being tested.
+#
+# The parity is now EXACT, from two parameter expansions and no iteration:
+# `${t##*[!\\]}` deletes the longest prefix ending at the last NON-backslash,
+# leaving exactly the trailing run. The all-backslash token is the one case that
+# pattern cannot match (there is no non-backslash to anchor on), and it is
+# answered directly rather than guessed at.
+_gate_odd_trailing_bs() {
+  local t="$1" run
+  [ -n "$t" ] || return 1
+  case "$t" in
+    *[!\\]*) run="${t##*[!\\]}" ;;
+    *) run="$t" ;;   # every character is a backslash
+  esac
+  [ $(( ${#run} % 2 )) = 1 ]
+}
+
 # One shell token off the front of <text>, quoted spans kept WHOLE. Same two
 # patterns, in the same order, as `gate_leading_c_value`: the embedding class
 # excludes bare quote characters, so an UNBALANCED apostrophe (`/tmp/o'neill`)
 # fails it and falls to the path token rather than losing the whole walk.
 _gate_struct_next() {
   local r="$1"
+  # A token ending in an ODD number of backslashes escapes the whitespace after
+  # it, so `cd\ /tmp` is ONE shell word and not two. The two patterns below
+  # split on whitespace alone, so they hand back `cd\` and `/tmp`; rewriting
+  # the first to `cd` and re-joining with a plain space then MANUFACTURES a
+  # `cd` that bash never runs. Measured (go-to-k/cdkd#2650): `cd\ /tmp ; echo
+  # hi > <tracked>` in the main checkout on `main` came out of
+  # `main-tree-edit-gate` at rc=0 where it owed a 2 -- the base moved to /tmp,
+  # the write resolved outside the repo, and the real shell had never left the
+  # main tree. Refusing to split ABANDONS the rewrite, which leaves the segment
+  # byte-exact and the verb reading as `cd\`, matching nothing.
+  _gate_odd_trailing_bs "${r%%[[:space:]]*}" && return 1
   if [[ "$r" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
     _GATE_STRUCT_TOK="${BASH_REMATCH[1]}"; _GATE_STRUCT_REST="${BASH_REMATCH[4]}"; return 0
   fi
@@ -1291,6 +1561,177 @@ gate_dequote_structural() {
   if [ -n "$rest" ]; then GATE_STRUCT_SEG="$out $rest"; else GATE_STRUCT_SEG="$out"; fi
   return 0
 }
+# gate_segments_marked <cmd>
+#
+# One segment per line, exactly as `gate_segments` emits them, each prefixed
+# with `0\t` or `1\t` -- 1 when the segment came from inside a plain SUBSHELL,
+# `( ... )`. ADDITIVE as an ENTRY POINT: this is a second function, so nothing
+# that reads `gate_segments` has to change. That is a weaker statement than the
+# one this comment used to make, and the weaker one is the true one --
+# `gate_segments` itself is NOT byte-identical to origin/main. It differs on a
+# QUARTER of the differential's inputs -- mostly from the per-line drain, which
+# changes segment ORDER, plus the escaped-space refusal in `_gate_struct_next`.
+# NO COUNT IS WRITTEN HERE: one stood as "9" until a reviewer re-ran it and got
+# 28, and the attribution beside it named `close_paren`, which this branch no
+# longer changes at all (it takes main's, from go-to-k/cdkd#2639). The fence
+# prints the number on every run. Each difference is an enumerated cell, which
+# is the property being relied on; "byte-identical" was never measured before it
+# was written down. A caller that needs the subshell distinction opts in.
+#
+# WHY (go-to-k/cdkd#2650). `gate_segments` FLATTENS a subshell: `( cd /tmp ) ;
+# echo x > f` and `cd /tmp && echo x > f` emit the same two segments, so a
+# consumer walking them in order cannot tell that the first `cd` never moved
+# the caller's cwd. `main-tree-edit-gate` hit exactly that -- an ordered walk
+# over `gate_segments` closed every other shape and still let
+# `( (true) ; cd /tmp ) ; echo hi > <tracked>` through, rc=0 against
+# origin/main's 2. `cmd_last_cd_target`'s own doc has the same blind spot.
+#
+# THE SIGNAL IS ALREADY THERE, one step earlier, which is why this needs no
+# change to the awk segmenter. `gate_strip_prefix` removes grouping punctuation
+# from each segment; before it runs, a subshell-derived segment still carries
+# the unbalanced paren that put it there. Measured:
+#
+#   ( cd /tmp ) ; echo x > f          ->  `( cd /tmp ) `   ` echo x > f`
+#   ( (true) ; cd /tmp ) ; echo x > f ->  `( (true) `   ` cd /tmp ) `   ` echo x > f`
+#   cd /tmp && echo x > f             ->  `cd /tmp `   ``   ` echo x > f`
+#
+# so a running paren depth over the RAW segments answers it exactly.
+#
+# COUNTED BLIND TO QUOTING, deliberately. A `(` inside a quoted argument
+# (`echo "a (b"`) inflates the depth and marks following segments as
+# subshell-derived when they are not. For the consumer this exists for that is
+# the REFUSING direction -- a `cd` ignored leaves the base at the payload cwd,
+# which blocks -- and the alternative is a quote-aware paren scan, which is the
+# hook-local shell parser go-to-k/cdkd#2614 spent five review rounds deleting.
+# A substitution body (`$( )`) is NOT marked: it is queued and emitted AFTER
+# the command containing it, so ordering already tells a consumer what it needs.
+# The per-segment quote strip forks TWO processes (`printf | awk`), so its cost
+# is linear in the SEGMENT COUNT while the precision it buys is worth nothing on
+# a command nobody writes by hand. Measured here, `( cd /tmpN ) ;` repeated N
+# times: `gate_segments` alone costs 5 s at N=2000 on origin/main AND on this
+# branch, and the marking took the total to 11 s -- PAST the 10 s PreToolUse
+# timeout. A KILLED hook cannot emit exit 2, which disarms every gate at once,
+# so the bound is not tidiness; it is the same DoS this file already pays bounds
+# for in `gate_dequote_structural`, and it makes the same trade.
+#
+# Past the cap the marking is CONSERVATIVE, never absent: every segment is
+# marked 1, so no `cd` is honoured and the consumer's base stays at the payload
+# cwd.
+#
+# WHICH DIRECTION THAT IS DEPENDS ON WHERE THE PAYLOAD CWD IS, and an earlier
+# revision of this comment claimed only the flattering half. From the MAIN tree
+# it blocks -- the loud direction. From a FEATURE worktree it is permissive:
+# a real `cd <main tree> && echo hi > <tracked>` is ignored and the write
+# resolves outside the protected tree, so 201 padding segments turn the refusal
+# off. That polarity is measured EQUAL on origin/main, so it is inherited and
+# not something the cap introduces -- but "the loud direction" full stop was a
+# one-sided claim of exactly the kind this file corrects elsewhere. At the cap the marking
+# costs ~1 s; beyond it the total falls back to the segmentation's own 5 s at
+# N=2000, which is pre-existing and not this change's to fix.
+GATE_MARK_MAXSEG=200
+
+gate_segments_marked() {
+  local segment raw depth=0 opens closes marked rest scan from_subst
+  local _all _nseg over=0
+  _all=$(gate_segments_raw "$1")
+  _nseg=$(printf '%s\n' "$_all" | grep -c '')
+  [ "$_nseg" -gt "$GATE_MARK_MAXSEG" ] && over=1
+  while IFS= read -r segment || [ -n "$segment" ]; do
+    # STRIP THE SUBSTITUTION MARK AND REMEMBER IT. A body runs in a child, so
+    # its `cd` can never move the caller -- the same fact the subshell marking
+    # already carries, arriving by a different route. Without this the ordering
+    # fix above HANDS the body's `cd` to the consumer as top-level: the suite
+    # caught it as `'> ledger.tsv' then a SUBSTITUTION cd in main tree` going
+    # 2 -> 0, plus a false block one polarity over.
+    from_subst=0
+    while [[ "$segment" == "$GATE_SUBST_MARK"* ]]; do
+      segment="${segment#"$GATE_SUBST_MARK"}"; from_subst=1
+    done
+    while [[ "$segment" == *"$GATE_SEP_AMP"* ]]; do
+      segment="${segment%%"$GATE_SEP_AMP"*}&${segment#*"$GATE_SEP_AMP"}"
+    done
+    segment="${segment//"$GATE_SEP_SEMI"/;}"
+    segment="${segment//"$GATE_SEP_PIPE"/|}"
+    segment="${segment//"$GATE_SEP_SUBST"/$}"
+    raw="$segment"
+    # COUNTED ON THE STRIPPED FORM, not the raw one. `strip_noncommand_spans`
+    # replaces every quoted span with a placeholder, so a `)` that is DATA no
+    # longer decrements the depth. Counting the raw text instead let
+    # `( echo "a)b" ; cd /tmp ) ; echo hi > <tracked>` mark the `cd` as
+    # top-level -- the quoted `)` balanced the opener -- and the consumer then
+    # followed a `cd` the real shell runs in a subshell: measured rc=2 -> 0
+    # through `main-tree-edit-gate`, with the tracked file really written. It is
+    # the exact twin of the `close_paren` bug this same change fixes, one level
+    # up, and it is why the count does not get to be hand-rolled either.
+    if [ "$over" = 1 ]; then
+      scan=""; opens=0; closes=0
+    else
+    scan=$(strip_noncommand_spans "$raw")
+    # ESCAPED PARENS ARE DATA, and `strip_noncommand_spans` does not remove
+    # them -- it removes QUOTED spans. A `\)` therefore closed a subshell the
+    # shell never closed: `( echo a\)b ; cd /tmp) ; echo hi > <tracked>` marked
+    # the `cd` top-level, the base moved, and the gate went 2 -> 0 with the file
+    # really written. This is the twin, one escape over, of the quoted-`)` bug
+    # this same marking was written to fix. Deleting each backslash-escaped pair
+    # before the count leaves the structural parens and nothing else; it runs on
+    # the STRIPPED copy, so the segment text every consumer reads is untouched.
+    # ONE global replace, not a strip loop: `while [[ $s == *\\?* ]]; do
+    # s="${s/\\?/}"; done` re-scans the remainder every iteration and is
+    # quadratic in the backslash count -- the exact shape removed from the paren
+    # count a few lines below. `//` walks left to right, non-overlapping, which
+    # is also the right reading for a run like `\\\)`.
+    scan="${scan//\\?/}"
+    # COUNTED BY LENGTH, not by a strip loop. `while [[ $rest == *"("* ]]; do
+    # rest="${rest#*(}"` re-scans the remainder on every iteration, so it is
+    # O(parens x length) IN ONE SEGMENT -- a bound on the segment COUNT cannot
+    # see it. Measured on the loop form: a single valid-bash segment of nested
+    # `(` cost 6.7 s at 48 KB, 13.8 s at 72 KB and 25.6 s at 96 KB, against
+    # 0.08 s flat on origin/main, so past the 10 s PreToolUse timeout the hook
+    # is KILLED and cannot emit exit 2 -- every gate disarmed at once, from any
+    # repo on any branch. Deleting every other character is one pass.
+    rest="${scan//[^(]}"; opens=${#rest}
+    rest="${scan//[^)]}"; closes=${#rest}
+    # THREE ways a segment is inside a subshell, and the third is the one a
+    # depth counter alone misses: `( cd /tmp )` is BALANCED, so it neither
+    # raises the depth nor arrives with one. Its raw form still opens with the
+    # paren, which is the whole signal.
+    # ANY `(` SURVIVING THE QUOTE STRIP IS STRUCTURAL, and that is the whole
+    # test. A `(` in an unquoted position opens a subshell or a group -- bash
+    # has no other reading -- so a segment carrying one is inside or entering
+    # one. Testing only the FIRST character missed a subshell opened after a
+    # compound keyword (`if (cd /tmp); then echo hi > <tracked>; fi` went
+    # rc=2 -> 0, and the same for `while`, `until`, `!` and `time`), and
+    # listing those keywords here would be a third copy of what
+    # `gate_strip_prefix` already knows.
+    case "$scan" in
+      *'('*) marked=1 ;;
+      *) if [ "$depth" -gt 0 ]; then marked=1; else marked=0; fi ;;
+    esac
+    [ "$from_subst" = 1 ] && marked=1
+    depth=$((depth + opens - closes))
+    [ "$depth" -lt 0 ] && depth=0
+    fi
+    [ "$over" = 1 ] && marked=1
+    segment=$(gate_strip_prefix "$segment")
+    gate_dequote_structural "$segment"
+    segment="$GATE_STRUCT_SEG"
+    # `bash -c "<list>"` runs a CHILD PROCESS, so NOTHING inside it can move the
+    # caller's cwd -- every segment it yields is marked 1 regardless of its own
+    # nesting. An earlier revision re-marked the recursion from depth 0, which
+    # reads as "these are top-level commands" and is exactly backwards for a
+    # consumer tracking a working directory: `bash -c "cd /tmp" ; echo hi >
+    # <tracked>` went rc=2 -> 0 with the tracked file really written.
+    if [[ "$segment" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+(.*)$ ]]; then
+      gate_segments_marked "$(gate_unquote_span "${BASH_REMATCH[2]}")" \
+        | while IFS=$'\t' read -r _m _s; do printf '1\t%s\n' "$_s"; done
+      continue
+    fi
+    if [ -n "$segment" ]; then
+      printf '%s\t%s\n' "$marked" "$segment"
+    fi
+  done <<< "$_all"
+}
+
 gate_segments() {
   local segment
   # `|| [ -n "$segment" ]`: `read` returns non-zero on a final line with no
@@ -1303,6 +1744,10 @@ gate_segments() {
     # replacement means the MATCHED TEXT, so the placeholder survived and a
     # quoted path containing `&` came back corrupted — the gate then failed to
     # resolve the tree and exited 0. macOS bash 3.2 masks it.
+    # The substitution mark is INTERNAL to the marked variant; `gate_segments`
+    # emits exactly what it always did, so its consumers and the differential
+    # fence see no new byte.
+    while [[ "$segment" == "$GATE_SUBST_MARK"* ]]; do segment="${segment#"$GATE_SUBST_MARK"}"; done
     while [[ "$segment" == *"$GATE_SEP_AMP"* ]]; do
       segment="${segment%%"$GATE_SEP_AMP"*}&${segment#*"$GATE_SEP_AMP"}"
     done

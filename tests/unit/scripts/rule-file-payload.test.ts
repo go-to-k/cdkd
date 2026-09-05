@@ -242,11 +242,18 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // is the gate's vocabulary, its body-CHANNEL precedence and its mutation
   // tallies, none of which a lane needs unless it has that gate open.
   ['hooks-deferral-criteria.md', 2], // literal list: EXACT, see below
-  ['hooks-class-fences.md', 5], // literal list: EXACT, see below
+  ['hooks-class-fences.md', 6], // literal list: EXACT, see below
+  // +1 (go-to-k/cdkd#2650): command-match-mutants.sh. The file already
+  // DESCRIBED that harness while nothing made it load on an edit to it.
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
-  ['hooks-main-tree-edit.md', 4], // literal list: EXACT, see below
+  ['hooks-main-tree-edit.md', 6], // literal list: EXACT, see below
+  // +1 (go-to-k/cdkd#2650): lib/command-match.sh. This satellite now
+  // asserts behaviour of the shared matcher (_gate_struct_next's
+  // escaped-whitespace refusal), so it has to load when that file changes.
+  // +1 again: main-tree-edit-oracle.test.sh, the differential oracle this file
+  // now explains -- its tolerances and its self-check are described here.
   ['hooks-stop.md', 4], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
   ['proxy-support.md', 3], // literal list: EXACT, see below
