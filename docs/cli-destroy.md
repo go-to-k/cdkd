@@ -363,6 +363,10 @@ AWS exposes a synchronous "flip protection off" API call.
   externally (console, AWS CLI) without `--remove-protection` surfaces AWS's
   `InvalidParameterCombination` / `InvalidParameterException` error rather than
   silently succeeding.
+- **`cdkd deploy` has no counterpart.** A deploy that has to REPLACE a
+  protected resource — a replacement is a delete plus a create — fails at the
+  delete whatever replace flags were passed. Clear the protection flag first:
+  [Deploy: safety & compatibility flags](cli-deploy-safety.md#deletion-protection-blocks-a-replacement-and-deploy-cannot-clear-it).
 
 ### Restoring a DynamoDB guard after a failed destroy
 

@@ -618,6 +618,67 @@ Every path that consults this guard:
 | Cloud Control `UnsupportedActionException` auto-fallback | Mid-deploy, when AWS rejects the in-place update — no flag needed to reach it |
 | Property-driven replacement on a plain `cdkd deploy` | Mid-deploy, from the diff |
 
+### Deletion protection blocks a replacement, and deploy cannot clear it
+
+`--force-stateful-recreation` clears cdkd's own data guard. It does not clear
+AWS's: a resource carrying a deletion-protection flag refuses every deletion
+operation until the flag is turned off, and a replacement is a delete plus a
+create.
+
+`cdkd destroy --remove-protection` exists for that on the destroy side.
+**`cdkd deploy` has no `--remove-protection`**, so a deploy-side replacement of a protected
+resource fails at the delete, whatever combination of replace flags was passed.
+Turn protection off first, then re-run the deploy:
+
+```bash
+# CloudWatch Logs — the log group whose LogGroupClass you are changing
+aws logs put-log-group-deletion-protection \
+  --log-group-identifier /my/log/group --no-deletion-protection-enabled
+
+cdkd deploy MyStack --replace --force-stateful-recreation
+```
+
+Clearing the flag from the template in the SAME deploy does not work where cdkd
+refuses the change before it applies any property — the `AWS::Logs::LogGroup`
+`LogGroupClass` guard is one such refusal. That route takes two deploys: one
+that turns protection off with the immutable-property change reverted, then one
+that re-applies it with the replace flags.
+
+`AWS::Logs::LogGroup` is the type whose refusal names this explicitly today,
+and it only knows what cdkd RECORDED: protection you enabled out of band is in
+no state record, so that log group gets the shorter message above and still
+fails at the delete. The same wall stands in front of every type in
+[`--remove-protection`'s table](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy)
+whenever a deploy has to replace one.
+
+You are disabling protection on the resource that is about to be **deleted**,
+not on the one you end up with: every replacement path re-creates from your
+template, so the new resource gets whatever protection flag the template
+declares — and none, if the template declares none. There is nothing to restore
+afterwards on that path, and correspondingly, if you turn protection back on by
+hand you create drift against a template that says otherwise.
+
+Two cases break that, and both are worth checking before you disable anything.
+
+**If the deploy does not complete, the flag stays off — and cdkd will not
+notice.** cdkd diffs your template against its state record; both still say
+protection is on, so no later `cdkd deploy` ever issues the flip. Only
+[`cdkd drift`](cli-drift.md) surfaces it, and `cdkd drift --revert` restores it.
+Disable immediately before the deploy, not as a separate earlier step.
+
+**Under `UpdateReplacePolicy: Retain`, do not disable it at all.** A retaining
+replacement does not delete the old resource ([above](#replace-deploy)), so
+protection was never going to block anything — the disable buys you nothing.
+Worse, when the replacement would land on the **same physical name** — the case
+for `AWS::Logs::LogGroup`, whose only replacement-triggering property is
+`LogGroupName` — the retaining replacement cannot complete either. cdkd refuses
+it, with `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` when the create is idempotent and
+returns the existing resource's id, or `NAMED_REPLACEMENT_COLLISION` when AWS
+rejects the duplicate name outright. You end up with the original resource, its
+protection stripped by hand, and the **immutable** change still unapplied — a
+mutable property in the same deploy may well have landed. Remove the `Retain`
+policy, or revert the immutable change.
+
 ### Always-stateful types
 
 Destroy loses all data for these, unconditionally.

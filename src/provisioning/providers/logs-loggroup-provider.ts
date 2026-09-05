@@ -33,6 +33,7 @@ import {
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { isTruthyCfnBoolean } from '../data-delete-intent.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -365,10 +366,87 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // string-valued retention defeating the guard's `typeof === 'number'`
       // test — is untouched and still open.)
       const replaceFlags = '--replace --force-stateful-recreation';
+
+      // Issue [#2579]: those two flags are not sufficient on a log group that
+      // carries DeletionProtectionEnabled. The replacement's DELETE runs from
+      // the deploy engine, which never sets `DeleteContext.removeProtection`
+      // (the flip-off in `delete()` below is gated on it, and only the destroy
+      // paths set it — `cdkd deploy` has no `--remove-protection` flag at
+      // all), so AWS refuses the DeleteLogGroup and the advised command dies
+      // on a SECOND wall with nothing named to do about it.
+      //
+      // Read the RECORDED bag, not the desired one. On the DEPLOY path
+      // `previousProperties` is `ResourceState.properties` for this resource
+      // (`deploy-engine.ts` hands over `currentProps`, which
+      // `diff-calculator.ts` sets from `currentResource.properties`) — what
+      // cdkd last deployed, and so its best account of what AWS holds on the
+      // log group that must be deleted. The DESIRED bag answers a different
+      // question and would be wrong in both directions there: a template newly
+      // ADDING protection alongside the class change leaves AWS unprotected,
+      // because this very refusal fires before the flip is applied, so the
+      // replacement's delete would have succeeded; and a template CLEARING it
+      // does not clear it in AWS for the same reason, so the dead-end is still
+      // ahead of the user.
+      //
+      // TWO of the four `update()` callers hand over something else, which is
+      // why the message SAYS "cdkd's recorded properties" rather than asserting
+      // AWS state. `drift.ts` passes `outcome.awsProperties`, a
+      // `readCurrentState` snapshot — strictly better here, and the one bag
+      // that ALWAYS carries this key (`readCurrentState` emits an explicit
+      // `false` placeholder). `rollback-executor.ts`'s `--revert-failed` arm
+      // passes `op.attemptedProperties ?? current.properties` — the DESIRED bag
+      // of the failed attempt, i.e. exactly the read argued against above. (Its
+      // `revert` arm passes `current.properties`, the state record, same as
+      // deploy.) The advice survives being wrong on the `--revert-failed` arm:
+      // the disable call is idempotent, and AWS accepts it on an
+      // already-unprotected log group.
+      //
+      // Two residuals are ACCEPTED rather than fixed here. Protection enabled
+      // OUT OF BAND is absent from every bag, so that log group still gets the
+      // short advice and still hits the wall — cdkd cannot see what it never
+      // recorded, and probing AWS from a refusal path would add a call to the
+      // failure route. And `isTruthyCfnBoolean` matches `true` / `'true'` only,
+      // so `'True'` or `1` falls through to the short advice: widening it is a
+      // repo-wide change to a helper `hasCdkAutoDeleteTag` also uses, and the
+      // fall-through direction is merely the pre-#2579 behaviour. It is the
+      // same defect class issue [#2521] still has open against the sibling
+      // retention guard's `typeof === 'number'` test.
+      // The message deliberately STOPS at what this function can know, and
+      // hands the rest to the doc. Three review rounds each proved a different
+      // sentence about the downstream mechanism FALSE, because `update()` sees
+      // neither `UpdateReplacePolicy` nor what the replacement then does:
+      //
+      //   1. "re-enable protection on the new log group afterwards" — wrong;
+      //      `create()` re-applies the flag from the DESIRED bag, so a manual
+      //      re-enable over a `false` template manufactures drift that never
+      //      self-corrects (`applyUpdate` flips only when the two bags DIFFER).
+      //   2. "the disable applies to the OLD log group, which the replacement
+      //      deletes" — wrong under `UpdateReplacePolicy: Retain`, where both
+      //      replacement paths skip the delete (`deploy-engine.ts`'s
+      //      `retainOldOnReplace`).
+      //   3. "under Retain it only strips a log group cdkd stops tracking" —
+      //      wrong again: `LogGroupName` is this type's ONLY replacement
+      //      property, so a same-name Retain replacement cannot complete at
+      //      all. `create()` swallows `ResourceAlreadyExistsException` and
+      //      returns the OLD physical id, and the engine refuses with
+      //      `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` before any state
+      //      bookkeeping — i.e. the sentence promised an outcome the code
+      //      makes unreachable, and hid a THIRD wall, which is the exact
+      //      defect class issue [#2579] exists to close.
+      //
+      // So: state the refusal, the flag that does not exist, the disable
+      // command, and the same-deploy trap — all knowable here — then point at
+      // `docs/cli-deploy-safety.md`, which has the policy in view and room to
+      // be precise. A shorter message that is TRUE beats a complete one that
+      // is not.
+      const deletionProtected = isTruthyCfnBoolean(previousProperties['DeletionProtectionEnabled']);
+      const remedy = deletionProtected
+        ? `cdkd's recorded properties for this log group carry DeletionProtectionEnabled, so ${replaceFlags} alone will NOT succeed while AWS still has it on: the replacement normally deletes the log group, AWS refuses that delete while protection is on, and cdkd deploy has no --remove-protection flag to clear it (only cdkd destroy and cdkd state destroy act on one). Read "Deletion protection blocks a replacement" in docs/cli-deploy-safety.md BEFORE you disable anything: whether disabling helps at all, and what the flag ends up as, depend on your UpdateReplacePolicy and on whether the deploy completes — neither of which this refusal can see. Then disable deletion protection — \`aws logs put-log-group-deletion-protection --log-group-identifier '${physicalId}' --no-deletion-protection-enabled\`, or via the console — and re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost). Setting DeletionProtectionEnabled: false in the template does NOT clear it in the same deploy: this refusal fires before that property is applied, so that route needs its own deploy with the LogGroupClass change reverted. Or revert the LogGroupClass change and keep the current class.`
+        : `Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change.`;
       throw new ResourceUpdateNotSupportedError(
         'AWS::Logs::LogGroup',
         logicalId,
-        `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. Re-deploy with ${replaceFlags} to delete + recreate the log group under the new class (its stored log events are lost), or revert the LogGroupClass change. Note --force-stateful-recreation has NO per-resource granularity: it clears the data guard for every replacement target in the run`
+        `the LogGroupClass ('${prevClass}' -> '${nextClass}') cannot be changed after creation. ${remedy} Note --force-stateful-recreation has NO per-resource granularity: it clears the data guard for every replacement target in the run`
       );
     }
 

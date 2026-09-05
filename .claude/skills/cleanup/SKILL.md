@@ -75,7 +75,14 @@ Detect and optionally delete AWS resources left behind by cdkd integration tests
    - ECR Repositories: `aws ecr describe-repositories --region us-east-1 --query 'repositories[?contains(repositoryName, \`{prefix}\`)].repositoryName'`
    - SQS Queues: `aws sqs list-queues --region us-east-1 --queue-name-prefix {Prefix}` (if supported)
    - SNS Topics: `aws sns list-topics --region us-east-1` then filter by prefix
-   - CloudWatch Log Groups: `aws logs describe-log-groups --region us-east-1 --log-group-name-prefix /aws/lambda/{Prefix}`
+   - CloudWatch Log Groups: `aws logs describe-log-groups --region us-east-1 --log-group-name-prefix /aws/lambda/{Prefix}`, **and also** `--log-group-name-prefix /cdkd-integ/` — fixtures that need a sweepable, fixture-owned name put their log groups there rather than under cdkd's generated `/cdkd/` (which is shared with every other fixture and so cannot be swept safely). A log group under `/cdkd-integ/` whose fixture is not currently running is a leftover.
+     **Check `deletionProtectionEnabled` before deleting one**: `aws logs delete-log-group` on a protected group fails with `InvalidParameterException ... LogGroup has delete protection enabled`, so clear it first —
+     ```bash
+     aws logs put-log-group-deletion-protection --region us-east-1 \
+       --log-group-identifier {name} --no-deletion-protection-enabled
+     aws logs delete-log-group --region us-east-1 --log-group-name {name}
+     ```
+     A run killed between a fixture's protect and destroy phases (e.g. `loggroup-class-guard`) leaves exactly that shape, and without the flip-off it is unreachable by every other step in this skill.
    - Security Groups: `aws ec2 describe-security-groups --region us-east-1 --filters "Name=group-name,Values=*{Prefix}*" --query 'SecurityGroups[].{Id:GroupId,Name:GroupName}'`
    - VPCs: `aws ec2 describe-vpcs --region us-east-1 --filters "Name=tag:Name,Values=*{Prefix}*" --query 'Vpcs[].{Id:VpcId,Name:Tags[?Key==\`Name\`].Value|[0]}'`
    - Kinesis Data Streams: `aws kinesis list-streams --region us-east-1 --query 'StreamNames[?contains(@, \`{Prefix}\`)]'`. **Provisioned streams bill continuously**, so surface these first. Delete with `aws kinesis delete-stream --stream-name {name} --region us-east-1`.
