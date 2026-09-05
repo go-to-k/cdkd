@@ -263,14 +263,7 @@ describe('isRetryableDescribeTypeError', () => {
         'both: read ECONNRESET with code',
         Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
       ],
-      // The undici shape: the top frame says nothing and the errno is one hop
-      // down in `cause`.
-      [
-        'cause: fetch failed wrapping ECONNRESET',
-        Object.assign(new Error('fetch failed'), {
-          cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
-        }),
-      ],
+
     ] as const) {
       expect(isRetryableDescribeTypeError(err), label).toBe(true);
     }
@@ -298,10 +291,18 @@ describe('isRetryableDescribeTypeError', () => {
         ),
       ],
       ['a property called timeout', named('ValidationException', 'Invalid property: timeout')],
-      // A cause chain whose bottom is still permanent must stay refused, or the
-      // hop becomes a way in for every wrapped AccessDenied.
+      // The classifier reads the TOP FRAME ONLY. A `cause` walk was drafted and
+      // withdrawn (see the note on `isTransientTransportError`), so a wrapped
+      // errno is NOT retried today — pinned so the next reader sees the bound
+      // rather than assuming a walk that is not there.
       [
-        'cause: a wrapped permission denial',
+        'a wrapped errno is NOT reached',
+        Object.assign(new Error('fetch failed'), {
+          cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+        }),
+      ],
+      [
+        'a wrapped permission denial is refused too',
         Object.assign(new Error('request failed'), {
           cause: Object.assign(new Error('User is not authorized'), {
             name: 'AccessDeniedException',
@@ -1032,6 +1033,7 @@ describe('runCheck', () => {
       runCheck(io, jsonPath, sourcePath, markdownPath);
       expect(io.exitCode).toBe(1);
       expect(io.errors.join('\n')).toContain('AWS::Foo::Bar');
+      expect(io.errors.join('\n')).toMatch(/lists 1 type\(s\) it could not classify/);
       // ...and it must NOT also report success.
       expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
     } finally {
@@ -1057,6 +1059,53 @@ describe('runCheck', () => {
       expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
     } finally {
       cleanup();
+    }
+  });
+
+  it('refuses when the markdown cannot be read at all', () => {
+    // Emptying the catch stayed green: its message and exit code were both
+    // redundant with the fall-through, so a silent regression was invisible.
+    const { jsonPath, sourcePath, cleanup } = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::IAM::Role', new R());`]
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, jsonPath, sourcePath, join(tmpdir(), 'cdkd-audit-absent-report.md'));
+      expect(io.exitCode).toBe(1);
+      expect(io.errors.join('\n')).toMatch(/cannot read .*cdkd-audit-absent-report\.md: /);
+      expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('names the regeneration remedy ONLY for a tier-1 drift', () => {
+    // A markdown mismatch is fixable offline and an undetermined type needs a
+    // re-run for a different reason; printing the tier-1 remedy under either
+    // sent the operator to spend 10-30 minutes and AWS credentials on neither.
+    const mismatch = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::IAM::Role', new R());`],
+      { markdown: '# stale\n' }
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, mismatch.jsonPath, mismatch.sourcePath, mismatch.markdownPath);
+      expect(io.errors.join('\n')).not.toMatch(/regenerate the audit to resolve/);
+    } finally {
+      mismatch.cleanup();
+    }
+    const drift = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::S3::Bucket', new B());`]
+    );
+    const io2 = makeFakeIO();
+    try {
+      runCheck(io2, drift.jsonPath, drift.sourcePath, drift.markdownPath);
+      expect(io2.errors.join('\n')).toMatch(/regenerate the audit to resolve/);
+    } finally {
+      drift.cleanup();
     }
   });
 

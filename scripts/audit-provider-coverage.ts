@@ -216,19 +216,17 @@ function isTransientTransportError(err: unknown): boolean {
   // audited types whose name contains `Network` before landing where they
   // started. The `errno`-shaped tokens stay because they appear verbatim in
   // Node's message when `code` is absent.
-  // Case-SENSITIVE deliberately: every token here is an errno spelling Node
-  // emits in upper case, and `/i` would re-admit prose ("... network ...").
-  if (
-    /socket hang up|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/.test(err.message)
-  ) {
-    return true;
-  }
-  // One hop down the cause chain: `fetch failed` hides the errno in `cause`,
-  // and this repo's other classifiers walk it rather than reading the top
-  // frame alone. Bounded to one hop — a deeper walk needs a `visited` set, and
-  // nothing here produces one.
-  const cause = (err as { cause?: unknown }).cause;
-  return cause !== undefined && cause !== err ? isTransientTransportError(cause) : false;
+  // The TOP frame only. A `cause` walk was drafted here and WITHDRAWN: it was
+  // added on a review nit rather than on a measured failure — the observed
+  // fault (issue [#2571]) is a bare `socket hang up` with no `cause` — and the
+  // draft recursed without a depth bound or a `visited` set, so it retried a
+  // permanent error wrapped two deep and threw `RangeError` on a two-element
+  // cycle, from inside `describeTypeWithRetry`'s catch, discarding a
+  // half-hour walk. If a wrapped shape ever shows up in a real audit log, add
+  // it with a depth argument and a case that pins the depth.
+  return /socket hang up|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/.test(
+    err.message
+  );
 }
 
 /** Retryable: the answer could differ on a later attempt. */
@@ -750,15 +748,16 @@ export function runCheck(
   let markdown: string | undefined;
   try {
     markdown = readFileSync(markdownPath, 'utf8');
-  } catch {
-    io.error(`[audit] cannot read ${markdownPath}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    io.error(`[audit] cannot read ${markdownPath}: ${msg}`);
     io.setExitCode(1);
   }
   if (markdown !== undefined && markdown !== renderMarkdown(report)) {
     io.error(
-      '[audit] docs/_generated/provider-coverage.md does not match what renderMarkdown ' +
-        'produces from the committed JSON — the generator was edited without re-rendering ' +
-        'its output, or the file was hand-edited.'
+      `[audit] ${markdownPath} does not match what renderMarkdown produces from the ` +
+        'committed JSON — the generator was edited without re-rendering its output, or ' +
+        'the file was hand-edited.'
     );
     io.error('[audit] re-run `vp run audit:coverage:regenerate`, or re-render offline');
     io.setExitCode(1);
@@ -780,8 +779,14 @@ export function runCheck(
     io.error('[audit] cached Tier 1 contains types NOT in register-providers.ts:');
     for (const t of result.extraInCache) io.error(`  - ${t}`);
   }
-  io.error('[audit] regenerate the audit to resolve:');
-  io.error('         node scripts/audit-provider-coverage.ts --regenerate');
+  // The regeneration remedy is for a tier-1 DRIFT only. A markdown mismatch is
+  // fixable offline and an undetermined type needs a re-run for a different
+  // reason; both arms above say so themselves, and printing this underneath
+  // told the operator to spend 10-30 minutes and AWS credentials on neither.
+  if (!result.ok) {
+    io.error('[audit] regenerate the audit to resolve:');
+    io.error('         node scripts/audit-provider-coverage.ts --regenerate');
+  }
   io.setExitCode(1);
 }
 
