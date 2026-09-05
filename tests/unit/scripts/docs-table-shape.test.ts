@@ -31,16 +31,19 @@ import { describe, expect, it } from 'vite-plus/test';
 const ROOT = resolve(import.meta.dirname, '../../..');
 const DOCS = join(ROOT, 'docs');
 
-/**
- * There is NO exclusion list. There was exactly one entry —
- * `scenario-coverage.md`, whose generator interpolated descriptions containing
- * `|` unescaped — and go-to-k/cdkd#2545 fixed the generator
- * (`scripts/build-scenario-coverage-matrix.ts`'s `escapeCell`), which is what
- * the companion test asserting the exclusion still excused something was there
- * to force. Machine-written pages are NOT excluded as a class: being generated
- * was never the boundary, having a known open defect was, and a generator
- * emitting a ragged row is a defect in the generator.
- */
+// There is NO exclusion list. There was exactly one entry —
+// `scenario-coverage.md`, whose generator interpolated descriptions containing
+// `|` unescaped — and go-to-k/cdkd#2545 fixed the generator
+// (`scripts/build-scenario-coverage-matrix.ts`'s `escapeCell`), which is what
+// the companion test asserting the exclusion still excused something was there
+// to force. Machine-written pages are NOT excluded as a class: being generated
+// was never the boundary, having a known open defect was, and a generator
+// emitting a ragged row is a defect in the generator.
+//
+// Deliberately a line comment, not a JSDoc block: with no declaration of its
+// own left to document, a `/** */` here binds to `walk` and every editor shows
+// "There is NO exclusion list" as that function's documentation.
+
 const walk = (dir: string): string[] =>
   readdirSync(dir).flatMap((entry) => {
     const full = join(dir, entry);
@@ -49,15 +52,21 @@ const walk = (dir: string): string[] =>
   });
 
 /**
- * Cell count of a table row, with escaped pipes neutralised first.
+ * Cell count of a table row, with backslash escapes neutralised first.
  *
- * The `\|` substitution uses a space rather than a sentinel byte: only the
- * COUNT of surviving `|` matters here, so anything pipe-free does the job, and
- * a NUL would make `grep` treat this file as binary and skip it
+ * The pass consumes ANY escape pair (`\\.`), not just `\|`. A row carrying
+ * `\\|` — an escaped BACKSLASH followed by a live delimiter — matched the
+ * narrower `\|` form on its last two characters, so the delimiter was eaten and
+ * a genuinely ragged row scored clean. Consuming the pair left to right takes
+ * the `\\` and leaves the `|` counted, which is what CommonMark does.
+ *
+ * The substitution uses a space rather than a sentinel byte: only the COUNT of
+ * surviving `|` matters here, so anything pipe-free does the job, and a NUL
+ * would make `grep` treat this file as binary and skip it
  * (`source-control-bytes.test.ts` fails on exactly that).
  */
 const cellCount = (line: string): number =>
-  line.trim().replace(/^\||\|$/g, '').replace(/\\\|/g, ' ').split('|').length;
+  line.trim().replace(/^\||\|$/g, '').replace(/\\[\s\S]/g, ' ').split('|').length;
 
 interface Ragged {
   file: string;
@@ -125,12 +134,18 @@ describe('published docs tables', () => {
     // duplicate counter stays truthful while the real one goes blind, which is
     // the shape this floor exists to refuse.
     //
-    // Measured 2026-09-04: 68 files, 2446 rows. The floors sit just under, not
-    // at 20% of, those numbers — at 30 / 500 a `walk` that stopped recursing
-    // (losing docs/design, docs/plans and docs/_generated: 17 files, 716 rows)
-    // still passed.
-    expect(files.length).toBeGreaterThan(60);
-    expect(scanned.reduce((n, r) => n + r.rowsExamined, 0)).toBeGreaterThan(2000);
+    // The floors are calibrated against ONE named collapse — a `walk` that
+    // stopped recursing, losing docs/design, docs/plans and docs/_generated —
+    // and each must be above what that collapse still yields, not merely below
+    // the corpus.
+    //
+    // Measured 2026-09-05: 78 files / 2901 rows total; top level alone is
+    // 60 files / 2066 rows. The ROW floor was 2000 and had stopped fencing that
+    // collapse as the corpus grew (2066 clears it); it is 2400 now. The file
+    // floor was catching it by exactly one file, which is not a margin — both
+    // sit above the collapse and below today's total.
+    expect(files.length).toBeGreaterThan(64);
+    expect(scanned.reduce((n, r) => n + r.rowsExamined, 0)).toBeGreaterThan(2400);
   });
 
   it.each([
@@ -140,6 +155,13 @@ describe('published docs tables', () => {
     ['| a | b |\n| --- | --- |\n| 1 | 2 | 3 |', 1],
     // an escaped pipe is content, not a delimiter
     ['| a | b |\n| --- | --- |\n| 1 | x \\| y |', 0],
+    // ...but an escaped BACKSLASH does not protect the pipe behind it. Under
+    // the narrower `\|`-only neutralisation this scored CLEAN: the substitution
+    // matched the pair's last two characters and ate the live delimiter.
+    ['| a | b |\n| --- | --- |\n| 1 | x \\\\| y |', 1],
+    // ...and the escape pass must not consume an unrelated pipe when the
+    // escaped character is something else — the inverse of the case above.
+    ['| a | b |\n| --- | --- |\n| 1 | x \\n y |', 0],
     // an UNESCAPED pipe inside inline code still splits the row
     ['| a | b |\n| --- | --- |\n| 1 | `x|y` |', 1],
     // A fenced block's pipe lines are not a table. TWO differing rows, because
@@ -168,11 +190,16 @@ describe('published docs tables', () => {
     ).toEqual([]);
   });
 
-  it('reaches the page that used to be excluded', () => {
-    // go-to-k/cdkd#2545's page was the fence's only exclusion. Naming it here
-    // keeps the widening from being undone by a `walk` change: an empty
-    // `ragged` list is the same green whether the file was scanned and clean or
-    // never scanned at all.
-    expect(files.map((f) => relative(DOCS, f))).toContain('scenario-coverage.md');
+  it('reaches the page that used to be excluded, and EXAMINES its rows', () => {
+    // go-to-k/cdkd#2545's page was the fence's only exclusion, so an empty
+    // `ragged` list is the same green whether it was scanned and clean or never
+    // scanned at all. Membership alone does not separate those: the page opens
+    // with a fenced ```json block ABOVE both its tables, so a desynced fence
+    // tracker would skip all ~93 of its rows while the file stayed in `files`
+    // and the aggregate floor below stayed clear. Assert the page's OWN
+    // examined-row count.
+    const i = files.findIndex((f) => relative(DOCS, f) === 'scenario-coverage.md');
+    expect(i, 'scenario-coverage.md is not in the scanned set').toBeGreaterThanOrEqual(0);
+    expect(scanned[i]!.rowsExamined).toBeGreaterThan(80);
   });
 });

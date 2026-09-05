@@ -492,10 +492,25 @@ export function buildReport(integDir: string = INTEG_DIR): ScenarioCoverageRepor
  * the descriptions are the only ones that carry a pipe today, but a scenario
  * tag or a fixture name is no more escaped by construction than they were, and
  * the cost of covering them is nil.
+ *
+ * A BACKSLASH is escaped too, and that is not decoration: escaping only the
+ * pipe turns an input `\|` into `\\|`, which CommonMark reads as an escaped
+ * BACKSLASH followed by a live delimiter — ragged again, and invisible to
+ * `tests/unit/scripts/docs-table-shape.test.ts`, whose neutralisation pass now
+ * consumes any escape pair for the same reason. No taxonomy entry carries a
+ * backslash today, so this is the latent half of the same defect.
+ *
+ * A NEWLINE ends the row outright, which no amount of escaping fixes, so it
+ * collapses to a space. Descriptions are already newline-free (the
+ * `KNOWN_SCENARIOS taxonomy` suite refuses one), which is exactly why the
+ * collapse belongs HERE — this helper also renders tags and fixture names,
+ * whose shape nothing else fences.
  */
-const escapeCell = (value: string): string => value.replace(/\|/g, '\\|');
+const escapeCell = (value: string): string =>
+  value.replace(/\r?\n/g, ' ').replace(/([\\|])/g, '\\$1');
 
 export function renderMarkdown(report: ScenarioCoverageReport): string {
+  const descriptionByTag = new Map(report.knownScenarios.map((k) => [k.tag, k.description]));
   const lines: string[] = [];
   lines.push('---');
   lines.push('title: "Scenario coverage matrix"');
@@ -548,11 +563,15 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
     lines.push('| Scenario | Description |');
     lines.push('|---|---|');
     for (const tag of report.orphanScenarios) {
-      // `?? ''` because this branch resolves the description from the module
-      // GLOBAL rather than from `report`, so a tag outside the taxonomy — which
-      // `buildReport` never produces but a direct caller can pass — used to
-      // interpolate the literal string `undefined` into the cell.
-      const desc = KNOWN_SCENARIOS[tag] ?? '';
+      // Resolved from the REPORT, not from the `KNOWN_SCENARIOS` module global
+      // this loop used to read. Both carry the same string for every tag
+      // `buildReport` produces (`orphanScenarios` is a subset of
+      // `knownScenarios`), so the rendered page is unchanged — what changes is
+      // that `renderMarkdown` is now a function of its argument alone, which is
+      // what made this a SEPARATE emit site easy to miss when the sibling table
+      // was fixed. `?? ''` for a tag carried in neither list: it used to
+      // interpolate the literal string `undefined`.
+      const desc = descriptionByTag.get(tag) ?? '';
       lines.push(`| \`${escapeCell(tag)}\` | ${escapeCell(desc)} |`);
     }
     lines.push('');
@@ -569,6 +588,15 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
   lines.push('| Scenario | Description | Integ Fixture(s) |');
   lines.push('|---|---|---|');
   for (const entry of report.perScenarioCoverage) {
+    // Escaped AFTER composition, deliberately. The fixture name reaches the row
+    // TWICE — as the link label and inside the URL — and escaping only the
+    // label leaves a raw `|` in the href, which splits the row exactly the same
+    // way. Row SHAPE is the invariant this function owes its reader, so the
+    // whole cell is escaped and a fixture directory named with a `|` would ship
+    // a broken link rather than a broken table. No such directory exists (these
+    // are real names read off `tests/integration/`), and percent-encoding the
+    // href is the fix if one ever does. The `<br>` join carries no `|`; a join
+    // string that DID would have its own separator escaped here.
     const fixtures = entry.fixtures.length === 0
       ? '_(orphan)_'
       : entry.fixtures.map((f) => `[\`${f}\`](${githubTree(`tests/integration/${f}/`)})`).join('<br>');

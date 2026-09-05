@@ -328,13 +328,23 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
   const cellCount = (row: string): number =>
     row.trim().replace(/^\||\|$/g, '').replace(/\\\|/g, ' ').split('|').length;
 
-  /** Every `|`-delimited line of the section introduced by `heading`. */
+  /**
+   * Every `|`-delimited line of the section introduced by `heading`.
+   *
+   * The walk stops at the NEXT heading, not only at the first prose line after
+   * the rows begin. Without that bound, asking for a section the generator
+   * rendered EMPTY (`## Orphan scenarios` + `_None._` when nothing is orphaned)
+   * silently returns the FOLLOWING section's table and measures it under this
+   * heading's name — a helper reporting confidently about a table other than the
+   * one it was asked for.
+   */
   const tableUnder = (md: string, heading: string): string[] => {
     const lines = md.split('\n');
     const start = lines.findIndex((l) => l.startsWith(heading));
     expect(start, `no section heading starting "${heading}"`).toBeGreaterThanOrEqual(0);
     const rows: string[] = [];
     for (const line of lines.slice(start + 1)) {
+      if (/^#{1,6} /.test(line)) break;
       if (/^\s*\|.*\|\s*$/.test(line)) rows.push(line);
       else if (rows.length > 0) break;
     }
@@ -356,6 +366,15 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
     // header's value would make every case below pass on the pre-fix generator.
     const ragged = '# H\n\n| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 | 4 |\n';
     expect(shapeOf(ragged, '# H')).toEqual({ header: 3, rows: [4] });
+  });
+
+  it('refuses a section with no table instead of measuring the next one', () => {
+    // The other half of the same guard: `## A` here is empty, and the walk must
+    // stop at `## B` rather than returning B's rows under A's name. Reached for
+    // real whenever a case renders no orphan table.
+    const md = '## A\n\n_None._\n\n## B\n\n| a | b |\n|---|---|\n| 1 | 2 |\n';
+    expect(() => shapeOf(md, '## A')).toThrow();
+    expect(shapeOf(md, '## B')).toEqual({ header: 2, rows: [2] });
   });
 
   it('keeps a piped description inside ONE cell of the per-scenario table', () => {
@@ -408,6 +427,102 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
     });
     expect(md).toContain('| `plain` | No pipes here at all. | _(orphan)_ |');
     expect(md).not.toContain('\\|');
+  });
+
+  it('escapes the TAG and FIXTURE cells too, not only the descriptions', () => {
+    // Measured: dropping `escapeCell` from either tag site or from the fixtures
+    // cell left every other case in this block GREEN, because a description is
+    // the only field they feed a pipe through. Three of the six call sites were
+    // unpinned; these are them.
+    const tag = 'piped|tag';
+    const md = renderMarkdown({
+      knownScenarios: [{ tag, description: 'plain' }],
+      fixtures: [{ name: 'fa|b', annotated: true, scenarios: [tag] }],
+      perScenarioCoverage: [{ scenario: tag, description: 'plain', fixtures: ['fa|b'] }],
+      orphanScenarios: [tag],
+      unannotatedFixtures: [],
+      invalidTagSites: [],
+    });
+    expect(shapeOf(md, '## Orphan scenarios')).toEqual({ header: 2, rows: [2] });
+    expect(shapeOf(md, '## Per-scenario coverage')).toEqual({ header: 3, rows: [3] });
+  });
+
+  it('renders an orphan tag the report carries no description for as an EMPTY cell', () => {
+    // Not a hypothetical branch: before the escape existed this rendered the
+    // literal string `undefined`, and with the escape and no `?? ''` it THROWS
+    // (`escapeCell(undefined)`). The arm is unreachable from `buildReport` —
+    // `orphanScenarios` is a subset of `knownScenarios` — and reachable from any
+    // direct caller, which is what this file is.
+    const md = renderMarkdown({
+      knownScenarios: [],
+      fixtures: [],
+      perScenarioCoverage: [],
+      orphanScenarios: ['not-in-the-report'],
+      unannotatedFixtures: [],
+      invalidTagSites: [],
+    });
+    expect(md).toContain('| `not-in-the-report` |  |');
+    expect(md).not.toContain('undefined');
+    expect(shapeOf(md, '## Orphan scenarios')).toEqual({ header: 2, rows: [2] });
+  });
+
+  it('takes the orphan description from the REPORT, not the KNOWN_SCENARIOS global', () => {
+    // The discriminator for that source change, which is otherwise invisible:
+    // for every tag `buildReport` produces, the two agree exactly. A real
+    // taxonomy tag carrying a DIFFERENT description in the report is the only
+    // input that tells them apart, and it is what makes `renderMarkdown` a
+    // function of its argument — the property whose absence made this a second,
+    // easily-missed emit site in the first place.
+    const tag = 'local-from-cfn-stack-substitution';
+    const description = 'a description the module global does not have';
+    // The global's own text must be present AND different, or the case proves
+    // nothing about which of the two was read.
+    expect(KNOWN_SCENARIOS[tag], `${tag} left the taxonomy — pick another`).toContain('start-api');
+    expect(KNOWN_SCENARIOS[tag]).not.toBe(description);
+    const md = renderMarkdown({
+      knownScenarios: [{ tag, description }],
+      fixtures: [],
+      perScenarioCoverage: [{ scenario: tag, description, fixtures: [] }],
+      orphanScenarios: [tag],
+      unannotatedFixtures: [],
+      invalidTagSites: [],
+    });
+    expect(md).toContain(`| \`${tag}\` | ${description} |`);
+    // A pipe-free needle from the global's text: comparing against the global
+    // STRING would pass vacuously, since a leak would arrive pipe-ESCAPED and
+    // so never equal the raw value.
+    expect(md).not.toContain('start-api');
+  });
+
+  it('escapes a BACKSLASH, so an input `\\|` cannot become a live delimiter', () => {
+    // Escaping only the pipe turns `\|` into `\\|`, which CommonMark reads as an
+    // escaped backslash followed by a delimiter — ragged again. Latent (no
+    // taxonomy entry carries a backslash), which is why it needs a case.
+    const description = 'a literal escape: \\| and a bare pipe: |';
+    const md = renderMarkdown({
+      knownScenarios: [{ tag: 'esc', description }],
+      fixtures: [],
+      perScenarioCoverage: [{ scenario: 'esc', description, fixtures: [] }],
+      orphanScenarios: [],
+      unannotatedFixtures: [],
+      invalidTagSites: [],
+    });
+    expect(shapeOf(md, '## Per-scenario coverage')).toEqual({ header: 3, rows: [3] });
+    expect(md).toContain('a literal escape: \\\\\\| and a bare pipe: \\|');
+  });
+
+  it('collapses a NEWLINE, which no escaping can keep inside a row', () => {
+    const description = 'first line\nsecond line';
+    const md = renderMarkdown({
+      knownScenarios: [{ tag: 'nl', description }],
+      fixtures: [],
+      perScenarioCoverage: [{ scenario: 'nl', description, fixtures: [] }],
+      orphanScenarios: [],
+      unannotatedFixtures: [],
+      invalidTagSites: [],
+    });
+    expect(md).toContain('| `nl` | first line second line | _(orphan)_ |');
+    expect(shapeOf(md, '## Per-scenario coverage')).toEqual({ header: 3, rows: [3] });
   });
 
   it('emits every checked-in taxonomy description as a well-shaped row', () => {
