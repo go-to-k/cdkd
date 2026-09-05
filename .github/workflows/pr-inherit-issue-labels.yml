@@ -17,7 +17,8 @@ name: PR inherit issue labels
 # definition from the BASE branch with a write token, which is safe here only
 # because the sole PR-controlled input is the body TEXT: it is fetched
 # server-side with `gh pr view` rather than interpolated from the event payload,
-# and it is scanned for `#<digits>` and never handed to a shell.
+# and it is scanned for `#<digits>`, `<owner>/<repo>#<digits>` and the issue
+# URL form, never handed to a shell.
 #
 # ADD-ONLY. Labels already on the PR are never removed: a human may have
 # curated them, and this workflow re-runs on every `edited`.
@@ -78,7 +79,7 @@ jobs:
           # `$REPO` is interpolated into an ERE, so a `.` in either half of
           # `owner/name` would act as a wildcard and let a near-miss repo pass
           # as this one. Escape it rather than trusting today's name.
-          repo_re=$(printf %s "$REPO" | sed 's/[.[\\*^$()+?{|]/\\\\&/g')
+          repo_re=$(printf %s "$REPO" | sed 's/[.[\\*^$()+?{|]/\\&/g')
           #
           # `|| true` on both greps: `set -o pipefail` plus a no-match grep
           # makes the whole substitution fail, and "this PR closes no issue" is

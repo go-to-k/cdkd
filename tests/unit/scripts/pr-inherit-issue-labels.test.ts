@@ -208,6 +208,32 @@ describe('pr-inherit-issue-labels workflow', () => {
     expect(posted).toEqual([]);
   });
 
+  it('still matches the LITERAL form of a repo name containing a metachar', () => {
+    // The positive twin of the case below, and the one that discriminates.
+    // The negative alone is one-sided: an OVER-escape that breaks matching
+    // outright also passes it. Shipped review round 1 emitted `\\.` (a literal
+    // backslash then a wildcard), so a dotted repo matched nothing at all --
+    // and the pre-existing URL branch regressed with it -- while every
+    // assertion stayed green.
+    const { posted } = run({
+      REPO: 'go-to-k/cd.d',
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cd.d#5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual(['bug']);
+  });
+
+  it('still matches a full issue URL when the repo name contains a metachar', () => {
+    const { posted } = run({
+      REPO: 'go-to-k/cd.d',
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes https://github.com/go-to-k/cd.d/issues/5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual(['bug']);
+  });
+
   it('treats a regex metachar in the repo name as a literal', () => {
     // `$REPO` is interpolated into an ERE. Unescaped, the `.` here is a
     // wildcard and `go-to-k/cdXd#5` passes as this repo -- a near-miss repo
