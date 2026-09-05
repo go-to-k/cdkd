@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Every integ `verify.sh` may install AT MOST ONE `trap ... EXIT`.
+ * A shell fixture that installs a teardown handler may install AT MOST ONE
+ * `trap ... EXIT` — every integ `verify.sh`, and every script and smoke test
+ * under `.claude/hooks/**`.
  *
  * WHY THIS IS A TEST AND NOT A SENTENCE. Bash REPLACES a signal's handler on
  * each `trap`; it does not chain them. So a second `trap ... EXIT` anywhere in
@@ -36,14 +38,54 @@ const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   encoding: 'utf-8',
 }).trim();
 
-/** Every committed integ `verify.sh`, from git rather than a directory walk. */
-function verifyScripts(): string[] {
-  return execFileSync('git', ['ls-files', 'tests/integration/*/verify.sh'], {
+/** Committed files matching one `git ls-files` pathspec, in git order. */
+function tracked(pathspec: string): string[] {
+  return execFileSync('git', ['ls-files', pathspec], {
     cwd: REPO_ROOT,
     encoding: 'utf-8',
   })
     .split('\n')
     .filter(Boolean);
+}
+
+/** Every committed integ `verify.sh`, from git rather than a directory walk. */
+function verifyScripts(): string[] {
+  return tracked('tests/integration/*/verify.sh');
+}
+
+/**
+ * Every committed hook script and hook smoke test.
+ *
+ * WHY THIS CLASS IS HERE. The rule below is about bash, not about AWS, so the
+ * population was never `tests/integration/**` on purpose — that is just where
+ * the near-miss happened to be found. `.claude/hooks/**` was outside it, and
+ * `pr-review-gate.test.sh` carried the exact defect for months
+ * (go-to-k/cdkd#2336): `trap cleanup EXIT` at the top, then a second
+ * `trap '...' EXIT` 400 lines later that re-implemented most of `cleanup`
+ * rather than calling it. It shipped a FALSE RED — a full `run-tests.sh` pass
+ * reported 16 failures that the same suite standalone did not — and the fence
+ * that would have caught it existed already, one root directory over. Deriving
+ * the population from the HAZARD (a bash script that installs a teardown
+ * handler) rather than from the directory the first instance lived in is the
+ * whole fix.
+ */
+function hookScripts(): string[] {
+  // ONE pathspec, not two. A git pathspec's `*` crosses `/`, so
+  // `.claude/hooks/*.sh` already returns everything under `lib/` — a second
+  // `.claude/hooks/lib/*.sh` call duplicated 7 entries AND made the floor below
+  // unable to notice it going dead (106 -> 99 is still over any floor worth
+  // writing). Measured: 99, 7, and 0 files outside the 99.
+  //
+  // `lib/testdata/` is excluded deliberately: those are FROZEN snapshots of a
+  // past `command-match.sh`, kept byte-stable as differential-test input. A live
+  // rule must not be able to demand an edit to a file whose whole purpose is not
+  // changing.
+  return tracked('.claude/hooks/*.sh').filter((f) => !f.startsWith('.claude/hooks/lib/testdata/'));
+}
+
+/** The full population the trap rule applies to. */
+function trapScripts(): string[] {
+  return [...verifyScripts(), ...hookScripts()];
 }
 
 /**
@@ -118,8 +160,8 @@ function invoked(action: string, body: string): Set<string> {
   return out;
 }
 
-describe('an integ verify.sh never drops its teardown handler', () => {
-  const scripts = verifyScripts();
+describe('a shell fixture never drops its teardown handler', () => {
+  const scripts = trapScripts();
 
   /**
    * PARSER FLOOR. Without it every assertion below passes vacuously the moment
@@ -130,6 +172,24 @@ describe('an integ verify.sh never drops its teardown handler', () => {
    */
   it('finds the EXIT traps that certainly exist, including the re-installing form', () => {
     expect(scripts.length).toBeGreaterThan(50);
+    // A FLOOR PER CLASS, and the classes must be DISJOINT. The walk reaches a
+    // class only if the pathspec producing it still matches something, and a
+    // glob that stops matching fails CLEAN — it drops a whole subsystem while
+    // every assertion below stays green. That is precisely how
+    // `.claude/hooks/**` sat outside this fence while carrying the defect.
+    //
+    // A single floor over the hooks total does NOT close that: narrowing the
+    // pathspec to `.claude/hooks/*-gate.sh` yields 38, which clears any floor
+    // set from the 99 total, while silently dropping all 48 `*.test.sh` —
+    // including `pr-review-gate.test.sh`, the file this class was added for. So
+    // the two sub-populations that can independently vanish are floored
+    // independently, from counts measured on 2026-09-06. The pathspec returns
+    // 99; `hookScripts()` drops the 2 frozen `lib/testdata/` snapshots, so the
+    // floored population is 97 = 48 `*.test.sh` + 38 `*-gate.sh` + 11 others.
+    const hooks = hookScripts();
+    expect(verifyScripts().length).toBeGreaterThan(50);
+    expect(hooks.filter((f) => f.endsWith('.test.sh')).length).toBeGreaterThan(40);
+    expect(hooks.filter((f) => f.endsWith('-gate.sh')).length).toBeGreaterThan(30);
     const counts = scripts.map((p) => trapActions(readFileSync(join(REPO_ROOT, p), 'utf-8'), 'EXIT'));
     expect(counts.filter((a) => a.length > 0).length).toBeGreaterThan(20);
     // ...and the legitimate re-installers are SEEN rather than parsed away. If
@@ -166,9 +226,10 @@ describe('an integ verify.sh never drops its teardown handler', () => {
         offenders,
         `bash REPLACES a signal handler rather than chaining it, so the LAST ` +
           `trap ... ${signal} wins and every earlier one is dead. In these fixtures ` +
-          `the first is the AWS teardown, so a replacement that does not call it ` +
-          `leaks live resources on every failure path — trading a scratch file for ` +
-          `billable orphans, on exactly the runs where cleanup matters most. ` +
+          `the first is the AWS teardown, and in a hook smoke test it is the ` +
+          `restore of state shared with the live worktree, so a replacement that ` +
+          `does not call it leaks billable orphans or leaves fixture state behind ` +
+          `on exactly the runs where cleanup matters most. ` +
           `Either call the original handler from the new one (the idiomatic ` +
           `'trap \'rm -f "\${TMP}"; cleanup\' ${signal}' form, which 16 fixtures ` +
           `already use) or put the extra work INSIDE the existing handler, ` +

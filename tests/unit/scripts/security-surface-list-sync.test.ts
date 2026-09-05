@@ -200,10 +200,15 @@ function skillEntries(): string[] {
   const start = md.indexOf('security / process-launch surface');
   expect(start, 'review-pr SKILL.md must have a security-surface bullet list').toBeGreaterThan(-1);
   const rest = md.slice(start);
-  const end = rest.indexOf('- Branch has > 1 fix-back commit');
+  // The terminator is the fix-back bullet. Its wording changed with
+  // go-to-k/cdkd#2638 (the count moved off erasable branch history), and this
+  // literal went red — correctly: an anchor into prose is only as stable as the
+  // prose. The stable half is `- **> 1 fix-back`, so match that rather than the
+  // whole sentence, and let a real removal of the bullet still fail here.
+  const end = rest.indexOf('- **> 1 fix-back');
   expect(
     end,
-    'the up-bias entry bullets must be followed by the fix-back-commit bullet, which is ' +
+    'the up-bias entry bullets must be followed by the fix-back bullet, which is ' +
       'what bounds them; the providers/** bullet is INSIDE the list, not its terminator',
   ).toBeGreaterThan(-1);
 

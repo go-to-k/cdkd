@@ -131,8 +131,43 @@ issues the `Agent` calls.
 
    - Any path under `src/provisioning/providers/**` (deletion-sensitive —
      `integ-destroy` scope; real-AWS regressions cost cleanup time)
-   - Branch has > 1 fix-back commit ("multiple sub-agents wrote the diff":
-     `git log main..<branch> --oneline | grep -cE '^[a-f0-9]+ fix(\(|:)'`)
+   - **> 1 fix-back ROUND on the PR** ("multiple sub-agents wrote the diff").
+     Count DISTINCT `fix:` SUBJECTS across the PR's commits AND every commit
+     its timeline recorded as a former HEAD. `git log main..<branch>` alone is
+     what a FLATTEN erases, so that spelling killed the trigger on exactly the
+     PRs rewritten most — and this repo flattens by policy
+     (`flatten-before-rebase-gate.sh`). go-to-k/cdkd#2638. Subjects rather than
+     shas because an amend re-shas one round. Replaying both hooks over the 60
+     most recently merged PRs, the resolved TIER differs on 4; exactly one of
+     those, go-to-k/cdkd#2557, needs the timeline, and a merged PR's branch is
+     deleted, which flatters the other three.
+
+     `pr-review-gate.sh` takes the MAX of this and the branch's own `fix:`
+     commit count, so it can resolve HIGHER than the number below; and it skips
+     the query entirely once the tier can no longer change, so it can also
+     report 0 where this prints more. Read this as the tier-relevant floor, not
+     as the hook's internal count:
+
+     ```bash
+     gh api graphql -F owner=go-to-k -F repo=cdkd -F number=<N> -f query='
+     query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){
+       pullRequest(number:$number){
+         commits(first:100){nodes{commit{messageHeadline}}}
+         timelineItems(first:100,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT]){nodes{
+           ... on HeadRefForcePushedEvent{beforeCommit{messageHeadline} afterCommit{messageHeadline}}}}}}}' \
+       | jq '[(.data.repository.pullRequest.commits.nodes[]?.commit.messageHeadline),
+              (.data.repository.pullRequest.timelineItems.nodes[]?
+                 | .beforeCommit.messageHeadline, .afterCommit.messageHeadline)]
+             | map(select(. != null and test("^fix(\\(|:)"))) | unique | length'
+     ```
+
+     Exact paths, not `.. | .messageHeadline?`. GraphQL returns `data` and
+     `errors` together with HTTP 200, and a recursive-descent read harvests
+     every `messageHeadline` in the document — including blocks this query did
+     not ask for — which up-biases a PR with one round. The HOOK's copy of this
+     read is fenced by the `graphql-malformed` case in
+     `.claude/hooks/pr-review-gate.test.sh`; this snippet is prose, so keep the
+     two spellings in step by hand.
    - **The code this PR edits shipped a defect in a RECENT PR.** A judgement
      trigger, not a path list: `pr-review-gate.sh` reads the diff's stats and
      paths plus the BRANCH's own commit subjects, and has no view of the
