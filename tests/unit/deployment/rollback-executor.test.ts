@@ -85,14 +85,24 @@ function makeCtx(
   region = 'us-east-1'
 ): {
   ctx: RollbackExecutorContext;
-  events: Array<{ eventType: string; logicalId?: string; provisionedBy?: 'sdk' | 'cc-api' }>;
+  events: Array<{
+    eventType: string;
+    logicalId?: string;
+    provisionedBy?: 'sdk' | 'cc-api';
+    physicalId?: string;
+    reason?: string;
+  }>;
 } {
   // `provisionedBy` is captured so the #1366 cases can assert the event
-  // reports the route the delete actually took.
+  // reports the route the delete actually took. `physicalId` / `reason` for
+  // the issue #2598 survivor record — the orphan arms drop the state record,
+  // so the event is the ONLY place their id survives.
   const events: Array<{
     eventType: string;
     logicalId?: string;
     provisionedBy?: 'sdk' | 'cc-api';
+    physicalId?: string;
+    reason?: string;
   }> = [];
   const ctx: RollbackExecutorContext = {
     region,
@@ -105,6 +115,8 @@ function makeCtx(
         eventType: e.eventType,
         logicalId: e.logicalId,
         provisionedBy: e.provisionedBy,
+        physicalId: e.physicalId,
+        reason: e.reason,
       }),
   };
   return { ctx, events };
@@ -250,7 +262,13 @@ describe('classifyRollbackOp', () => {
     expect(classifyRollbackOp(op, state, new Set())).toBe('reverse-replacement');
   });
 
-  it('replacement with UpdateReplacePolicy: Retain on previousState → readopt (#1199)', () => {
+  it('replacement with UpdateReplacePolicy: Retain on previousState → readopt (LEGACY journal, #1199)', () => {
+    // Renamed after review of issue #2603: since that change this shape is
+    // reachable ONLY from a journal an older binary wrote. A current binary
+    // stamps `oldResourceRetained` on every completed UPDATE, so the
+    // previous-state read below is the `??` fallback, never the primary path.
+    // The current-binary equivalents live in
+    // `rollback-executor-retain-verdict-source.test.ts`.
     const op: CompletedOperation = {
       logicalId: 'B',
       changeType: 'UPDATE',
@@ -462,7 +480,17 @@ describe('replayRollback', () => {
     expect(del).toHaveBeenCalledOnce();
     expect(state.B).toBeUndefined();
     expect(result.failures).toBe(0);
-    expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+    const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(ok).toBeDefined();
+    // The negative half of the issue #2598 survivor record, on the arm that
+    // DELETES. The two orphan arms publish `physicalId` / `reason` because a
+    // live resource is left behind; here the resource is gone, so naming it
+    // would point a cleanup pass at something deleted -- and for a
+    // name-reusable type, possibly at somebody else's resource by then.
+    // Without this the family had no negative at all: a later "publish the id
+    // consistently" edit would have gone green.
+    expect(ok!.physicalId).toBeUndefined();
+    expect(ok!.reason).toBeUndefined();
   });
 
   it('reverts an UPDATE by calling provider.update with previous props', async () => {
@@ -582,6 +610,122 @@ describe('replayRollback', () => {
     expect(state.B).toBeUndefined();
     // Parity with orphan-retain: the orphaned CREATE surfaces in events.
     expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('--orphan on an ALREADY-ORPHANED CREATE publishes no id (the record is gone)', async () => {
+    // `orphan-flag` short-circuits AHEAD of `skip-already-done`, and
+    // `orphanLogicalIds` is raw CLI input never validated against state. Run 1
+    // orphaned this resource and dropped the record; the user re-runs with the
+    // same `--orphan`. Publishing `op.physicalId` here would assert "live,
+    // still billing" about an id nothing is tracking any more.
+    const { ctx, events } = makeCtx({ delete: vi.fn() });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+      },
+    ];
+    const state: Record<string, ResourceState> = {};
+
+    await replayRollback(ops, state, 'S', ctx, { orphanLogicalIds: new Set(['B']) });
+
+    const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(ok).toBeDefined();
+    expect(ok!.physicalId).toBeUndefined();
+    expect(ok!.reason).toBeUndefined();
+  });
+
+  it('--orphan on a DRIFTED CREATE publishes the RECORD id, not the journal id', async () => {
+    // `orphan-flag` also short-circuits ahead of `skip-mismatch`, so a later
+    // attempt's id reaches this arm. The record is what state was tracking and
+    // therefore what is actually being orphaned; the journal's id is stale.
+    const { ctx, events } = makeCtx({ delete: vi.fn() });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B-stale',
+      },
+    ];
+    const state = { B: res({ physicalId: 'phys-B-live' }) };
+
+    await replayRollback(ops, state, 'S', ctx, { orphanLogicalIds: new Set(['B']) });
+
+    const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(ok!.physicalId).toBe('phys-B-live');
+    expect(ok!.reason).toContain('phys-B-live');
+    expect(ok!.reason).not.toContain('phys-B-stale');
+  });
+
+  it('orphan-retain publishes the RECORD id even when the op carries none', async () => {
+    // The opposite hole, on the arm that IS reachable-only-past-the-checks:
+    // `classifyRollbackOp` compares ids only when `op.physicalId` is DEFINED,
+    // so an op carrying none still lands here -- and reading `op` dropped the
+    // publish entirely, losing the id the record was holding.
+    const { ctx, events } = makeCtx({ delete: vi.fn() });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'CREATE', resourceType: 'AWS::S3::Bucket' },
+    ];
+    const state = { B: res({ physicalId: 'phys-B', deletionPolicy: 'Retain' as const }) };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(state.B).toBeUndefined();
+    const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(ok!.physicalId).toBe('phys-B');
+    expect(ok!.reason).toContain('phys-B');
+  });
+
+  it('orphan-retain publishes the survivor id — the state record is gone (issue #2598)', async () => {
+    // STRICTLY worse than the replacement-rollback case that issue fixed:
+    // there the OLD id at least stays in state. This arm deletes the record,
+    // so without the event NOTHING anywhere names the resource left running.
+    const { ctx, events } = makeCtx({ delete: vi.fn() });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+      },
+    ];
+    const state = { B: res({ physicalId: 'phys-B', deletionPolicy: 'Retain' as const }) };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(state.B).toBeUndefined();
+    const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(ok).toBeDefined();
+    expect(ok!.physicalId).toBe('phys-B');
+    expect(ok!.reason).toContain('DeletionPolicy: Retain');
+    expect(ok!.reason).toContain('phys-B');
+  });
+
+  it('--orphan on a CREATE publishes the survivor id too (issue #2598)', async () => {
+    // The twin trigger. The arm's own comment promises the two orphan paths
+    // emit the SAME event, so the survivor record has to be on both or that
+    // promise is false.
+    const { ctx, events } = makeCtx({ delete: vi.fn() });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'CREATE',
+        resourceType: 'AWS::S3::Bucket',
+        physicalId: 'phys-B',
+      },
+    ];
+    const state = { B: res({ physicalId: 'phys-B' }) };
+
+    await replayRollback(ops, state, 'S', ctx, { orphanLogicalIds: new Set(['B']) });
+
+    expect(state.B).toBeUndefined();
+    const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
+    expect(ok!.physicalId).toBe('phys-B');
+    expect(ok!.reason).toContain('--orphan');
+    expect(ok!.reason).toContain('phys-B');
   });
 
   it('--orphan on an UPDATE leaves state as-is (no provider.update, no event)', async () => {
@@ -756,6 +900,66 @@ describe('replayRollback', () => {
       | undefined;
     expect(retryOpts?.isInterrupted).toBeTypeOf('function');
     expect(retryOpts?.onInterrupted).toBeTypeOf('function');
+  });
+
+  it('reverse-replacement: the re-create-after-delete-new failure CHAINS the AWS rejection (issue #2616)', async () => {
+    // The third site issue #2616's sweep reached. Path: create-first collides,
+    // the new resource is deleted to free the name, the RETRY create then
+    // fails for real -- and the wrap around that failure is the LAST link in
+    // the chain, so without a `cause` `extractDeploymentEventError` walks it
+    // and finds no `$metadata`, persisting a ROLLBACK failure event that names
+    // no AWS code. Unfenced until the review of that PR: deleting the whole
+    // options object left 137 tests green.
+    //
+    // The DISCRIMINATOR is `awsErrorCode` on the recorded event, not the
+    // message: the wrap interpolates the rejection's TEXT either way, so only
+    // the walk to `$metadata` -- which requires the object to be chained --
+    // tells a chained wrap from an unchained one. Hence an AWS-SHAPED
+    // rejection; a plain Error would make this case pass both ways.
+    const raw = Object.assign(new Error('AccessDenied: not authorized'), {
+      name: 'AccessDeniedException',
+      $metadata: { requestId: 'req-2616' },
+      Code: 'AccessDeniedException',
+    });
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Queue already exists'))
+      .mockRejectedValueOnce(raw);
+    const del = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = makeCtx({ create, delete: del });
+    const failures: Array<{ awsErrorCode?: string; requestId?: string; message?: string }> = [];
+    ctx.recordEvent = (e) => {
+      if (e.error) failures.push(e.error);
+    };
+    const prev = res({ physicalId: 'phys-old', properties: { a: 1 } });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'B',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'phys-new',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({ physicalId: 'phys-new', properties: { a: 2 } }),
+    };
+
+    const result = await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
+
+    // The path really was taken: collide, delete-new, retry, fail.
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(result.failures).toBe(1);
+    // The record was dropped when the new resource was deleted and never
+    // re-pointed, which is what makes the wrap's "resource is now absent"
+    // sentence true.
+    expect(state.B).toBeUndefined();
+    // The chain survived: the event names the AWS rejection behind the wrap.
+    const text = failures.map((f) => f.message ?? '').join('\n');
+    expect(text).toContain('was already deleted');
+    expect(failures.some((f) => f.awsErrorCode === 'AccessDeniedException')).toBe(true);
+    expect(failures.some((f) => f.requestId === 'req-2616')).toBe(true);
   });
 
   it('reverse-replacement passes CreateContext.replayingState at BOTH create arms (#1463)', async () => {
@@ -1315,7 +1519,16 @@ describe('replayRollback', () => {
     expect(state.B!.physicalId).toBe('phys-new');
   });
 
-  it('reverse-replacement-readopt: deletes new, restores state to the retained old', async () => {
+  it('reverse-replacement-readopt: deletes new, restores state to the retained old (LEGACY journal)', async () => {
+    // Also legacy-shaped, and in a way that matters more than the classifier
+    // case above: it asserts the readopt arm DELETES the new resource, which
+    // since issue #2598 no current binary does. Reaching readopt implies the
+    // template declared `UpdateReplacePolicy: Retain`, and the same template
+    // read stamps that onto the new record, so `rollbackRetainsNewResource`
+    // is always true there. This op carries no `oldResourceRetained` and the
+    // current record no policy, so it exercises the pre-#2603 fallback into
+    // the pre-#2598 delete -- kept deliberately, because both fallbacks are
+    // live for an older journal and nothing else covers the pair.
     const create = vi.fn();
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, events } = makeCtx({ create, delete: del });

@@ -141,10 +141,28 @@ function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string
       return `  - orphan   ${op.logicalId} (${op.resourceType}) [--orphan]`;
     case 'revert':
       return `  - revert   ${op.logicalId} (${op.resourceType})${rep}`;
+    // Issue #2598: both labels used to promise "delete new" unconditionally,
+    // and `UpdateReplacePolicy: Retain` on the new copy means the replay will
+    // NOT delete it — a promise the run does not keep, in the one preview the
+    // user confirms. Same reason `snapshotNote` above exists.
     case 'reverse-replacement':
-      return `  - reverse-replace ${op.logicalId} (${op.resourceType}) [re-create old resource, delete new]`;
+      // The hedge is load-bearing, not padding: under Retain the replay
+      // REFUSES this op if the re-create collides with a name the pinned new
+      // resource still holds, and the plan cannot know whether it will --
+      // that depends on whether the type has a user-supplied physical name.
+      // Promising the unconditional happy path here would be the same #1366
+      // defect this flag exists to close, one step further along.
+      return item.retainsNewResource
+        ? `  - reverse-replace ${op.logicalId} (${op.resourceType}) ` +
+            `[re-create old resource; new one RETAINED (UpdateReplacePolicy: Retain) and left ` +
+            `untracked — REFUSED instead if the re-create collides with the name the retained ` +
+            `resource still holds]`
+        : `  - reverse-replace ${op.logicalId} (${op.resourceType}) [re-create old resource, delete new]`;
     case 'reverse-replacement-readopt':
-      return `  - reverse-replace ${op.logicalId} (${op.resourceType}) [delete new, re-adopt retained old resource]`;
+      return item.retainsNewResource
+        ? `  - reverse-replace ${op.logicalId} (${op.resourceType}) ` +
+            `[re-adopt retained old resource; new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]`
+        : `  - reverse-replace ${op.logicalId} (${op.resourceType}) [delete new, re-adopt retained old resource]`;
     case 'unrecoverable-delete':
       return `  - (cannot restore) ${op.logicalId} (${op.resourceType}) — was DELETED, unrecoverable`;
     case 'skip-mismatch':

@@ -104,12 +104,15 @@ Index of every area: [code-layout.md](code-layout.md).
     `CreateContext` (update's context carries no `replayingState`) — the
     constraint lands on providers: one with a create-side pre-flight refusal
     must not re-create inside `update()`.
-  - Under `UpdateReplacePolicy: Retain` (old resource orphaned): delete the
-    new one and re-adopt the old (`reverse-replacement-readopt`). The stateful
-    warn does NOT fire on this arm — it is on the plain `reverse-replacement`
-    arm — and its wording is scoped: the old data is NOT RECOVERED BY THIS
-    ROLLBACK, never "unrecoverable", which would be a claim about AWS this repo
-    has not measured.
+  - When the deploy RETAINED the old resource (verdict:
+    `CompletedOperation.oldResourceRetained`, #2603, NOT re-derived from
+    `previousState.updateReplacePolicy`): re-adopt it
+    (`reverse-replacement-readopt`), and do NOT delete the new copy — one
+    template read sets both, so `Retain` always holds
+    (`rollbackRetainsNewResource`, #2598, whose comment has the A/B). The
+    stateful warn fires on the plain `reverse-replacement` arm, not this one,
+    and its wording is scoped: the old data is NOT RECOVERED BY THIS ROLLBACK,
+    never "unrecoverable", a claim about AWS this repo has not measured.
   - The rolled-back CREATE's CURRENT record `DeletionPolicy` governs its
     delete (CFn semantics): `Retain` ORPHANS (dropped from state, left in
     AWS); `Snapshot` routes to `delete-with-final-snapshot` (snapshot THEN

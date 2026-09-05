@@ -635,6 +635,22 @@ bucket's reverse-replacement re-create has to re-acquire a just-deleted
 GLOBALLY unique name, which would make the fixture flaky for a reason
 unrelated to what it tests.
 
+For the rollback arm that must NOT delete the resource a replacement created,
+see `tests/integration/rollback-replacement-retain/` (scenario tag
+`rollback-replacement-updatereplacepolicy-retain`, issue #2598). Three
+`AWS::SSM::Parameter` subjects are replaced in one failing deploy, one per row
+of the behaviour the A/B measured: `UpdateReplacePolicy: Retain` (the new copy
+must SURVIVE), no policy (must be GONE), and `DeletionPolicy: Retain` alone
+(must also be GONE — the row that refutes "`DeletionPolicy` governs it"). The
+three polarities are what make the fixture a discrimination rather than a
+blanket refusal: it cannot be satisfied by a cdkd that simply stopped deleting
+on this path. It asserts survival by AWS name, that state names only the
+re-adopted old copies, and that the durable `ROLLBACK_RESOURCE_SUCCEEDED` event
+carries `physicalId` / `reason` / `provisionedBy` for the survivor and carries
+none of them for the controls. The subject is a parameter rather than a queue
+because a parameter name is released instantly, so the controls' re-create of
+the old name is deterministic.
+
 For the rollback arm whose replayed value is a SECRET the deploy resolved in
 another region, see `tests/integration/rollback-cross-region-secret/` (scenario
 tags `dynamic-reference-resolution` + `getstackoutput-cross-region`, issue

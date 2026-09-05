@@ -1001,6 +1001,40 @@ export class DeployEngine {
   private attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
+   * Logical ids whose replacement this deploy DELIBERATELY left the old
+   * physical resource alive for — `UpdateReplacePolicy: Retain` (issue
+   * [#2603](https://github.com/go-to-k/cdkd/issues/2603)).
+   *
+   * Written by every engine path that skips the post-replacement delete, read
+   * once at the `completedOperations.push` site to stamp
+   * {@link CompletedOperation.oldResourceRetained}. It exists because the
+   * rollback classifier used to re-derive the verdict from
+   * `previousState.updateReplacePolicy` — a DIFFERENT source than the
+   * template read the engine decides from — so the two disagreed on exactly
+   * the deploy that changes the attribute, in both directions:
+   *
+   *   - ADDING `Retain`: the deploy orphans the old resource while the
+   *     previous state record carries no policy, so the rollback re-CREATED a
+   *     resource that is still alive (a duplicate for an auto-named type, an
+   *     `AlreadyExists` failure for a user-named one).
+   *   - DROPPING `Retain`: state still carries the stale `Retain`, the
+   *     template omits it so the deploy correctly DELETES the old resource,
+   *     and the rollback then re-adopted a physical id that no longer exists,
+   *     leaving state naming a deleted resource.
+   *
+   * Records only the DELIBERATE retention. A best-effort cleanup delete that
+   * FAILED, was SKIPPED, or was blocked by a failed final snapshot also leaves
+   * the old resource alive, but the deploy does not KNOW it survived — those
+   * stay `false` and keep today's `reverse-replacement` behaviour rather than
+   * having the rollback re-adopt an id it cannot vouch for (issue
+   * [#2631](https://github.com/go-to-k/cdkd/issues/2631)).
+   *
+   * Cleared per `deploy()` alongside the other per-run maps: a `false` here
+   * must mean "this deploy deleted it", never "a previous run said so".
+   */
+  private retainedOldOnReplacement = new Set<string>();
+
+  /**
    * Target region for this stack. Required — load-bearing for the
    * region-prefixed S3 state key and recorded in state.json for
    * cross-region destroy.
@@ -1060,6 +1094,10 @@ export class DeployEngine {
     this.outputSecrets = new Map();
     this.outputsTemplateSource = {};
     this.outputsSourceUsable = true;
+    // Issue #2603: an engine can be reused across deploys, and a STALE `true`
+    // here would tell the next run's rollback to re-adopt an id this run
+    // deleted. Reset in the same block as the other per-run bags.
+    this.retainedOldOnReplacement = new Set();
     // Per-deploy-run counter: the resolver instance is engine-scoped and an
     // engine can be reused across deploys, so reset here (not in the
     // resolver constructor) to keep the deploy-summary count per run.
@@ -1768,12 +1806,43 @@ export class DeployEngine {
     }
 
     for (const { logicalId, resource } of candidates) {
-      // Skip-list / unsupported types: getProvider throws — silently skip
-      // (mirrors `cdkd state refresh-observed`'s policy: best-effort,
+      // Skip-list / unsupported types: the routing lookup throws — silently
+      // skip (mirrors `cdkd state refresh-observed`'s policy: best-effort,
       // no failure on a state record we cannot resolve).
+      //
+      // Routed on the RECORD's `provisionedBy`, not by type alone (issue
+      // #2608's sibling site, found by that fix's sweep). Unlike the UPDATE
+      // capture, this site has no routing DECISION to bind to — the record is
+      // all there is — so it re-derives, and that is not an identity for a
+      // `STICKY_CC_MIGRATION_EXEMPT` type: `AWS::Scheduler::Schedule` stamped
+      // `cc-api` deliberately lands on its SDK provider. Accepted here rather
+      // than papered over: for that ONE type the SDK provider is the correct
+      // reader (the exemption exists because its CC routing is broken and both
+      // layers store the same physicalId), so the re-derivation lands on the
+      // right provider for the right reason.
+      //
+      // One more consequence, audited rather than accidental: the sticky arm
+      // returns BEFORE `isSupportedResourceType`, so a `cc-api`-stamped record
+      // of a type Cloud Control no longer supports now resolves to the CC
+      // provider instead of falling into the `catch { continue }` below. It
+      // gets a fire-and-forget read that fails and is swallowed, which is the
+      // same no-baseline outcome skipping produced -- one wasted call on a
+      // record that has no observed bag either way. The legacy
+      // `getProvider` entry point passes no recorded layer, so a record
+      // stamped `provisionedBy: 'cc-api'` — because a silent-drop property
+      // auto-routed it (issue #614) — had its baseline read back through the
+      // SDK provider instead. The bag then describes a layer state does not
+      // name, and this bag IS the drift baseline, so the very next
+      // `cdkd drift` reports the shape difference as drift (the phantom-drift
+      // class of issue #1591). Absent on a pre-v7 record, which reads as
+      // "no recorded layer" and lands on the same type-only decision as
+      // before.
       let provider: ResourceProvider;
       try {
-        provider = this.providerRegistry.getProvider(resource.resourceType);
+        provider = this.providerRegistry.getProviderFor({
+          resourceType: resource.resourceType,
+          provisionedBy: resource.provisionedBy,
+        }).provider;
       } catch {
         continue;
       }
@@ -2667,6 +2736,18 @@ export class DeployEngine {
                 previousState,
                 physicalId: newResources[logicalId]?.physicalId,
                 properties: newResources[logicalId]?.properties,
+                // Issue #2603: the retain verdict this deploy ACTED ON, so the
+                // rollback classifier stops re-deriving it from
+                // `previousState.updateReplacePolicy` — a different source
+                // that disagrees on exactly the deploy which adds or drops the
+                // attribute. Stamped on every UPDATE, including a `false` for
+                // a replacement that deleted the old resource: an ABSENT field
+                // is what a pre-#2603 journal looks like, and the classifier
+                // falls back to the old (wrong) read for those, so recording
+                // only the `true` case would leave the DROP direction live.
+                ...(change.changeType === 'UPDATE' && {
+                  oldResourceRetained: this.retainedOldOnReplacement.has(logicalId),
+                }),
               });
 
               saveStateAfterResource(logicalId);
@@ -3912,6 +3993,22 @@ export class DeployEngine {
       // Issue #2038: masked at construction, same reason as the delete wrap
       // above — and more acutely, since THIS one wraps a create that was
       // handed the RESOLVED `replaceProps`.
+      //
+      // Issue #2616 swept this site alongside its twin in the
+      // UPDATE-not-supported fallback, and the mask-asymmetry note on that
+      // twin covers this site in substance: the `cause` is chained UNMASKED
+      // because `provisionResource`'s catch masks the whole chain further up
+      // the stack. NOT "one frame up" as the twin's note says — that wording
+      // is exact only there; this throw sits in
+      // `replaceDeleteFirstAndRecreate`, called from `provisionResourceBody`,
+      // which `provisionResource` invokes through `withResourceDeadline`. The
+      // `cause` is what keeps the AWS
+      // rejection behind the sentence readable — `extractDeploymentEventError`
+      // walks the chain for `$metadata` / `Code`, so an unchained wrap sends a
+      // `RESOURCE_FAILED` event with no `awsErrorCode` at all. Nothing between
+      // here and the DAG executor re-classifies the throw (the retry loop is
+      // the `withRetry` above, already exhausted), so chaining cannot revive a
+      // retry off the cause's text.
       throw new Error(
         maskSecretsInText(
           `Failed to re-create ${logicalId} after the --replace delete-first fallback ` +
@@ -3919,7 +4016,8 @@ export class DeployEngine {
             `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
             `Re-run the deploy to create it fresh.`,
           secrets
-        )
+        ),
+        { cause: recreateError instanceof Error ? recreateError : undefined }
       );
     }
   }
@@ -4379,6 +4477,11 @@ export class DeployEngine {
               ? '--recreate-via-cc-api'
               : '--recreate-via-sdk-provider';
             if (updateReplacePolicy === 'Retain') {
+              // Issue #2603: the delete below is SKIPPED, so record that this
+              // deploy left the old resource alive — the rollback classifier
+              // reads this rather than re-deriving the verdict from the
+              // previous state record's policy.
+              this.retainedOldOnReplacement.add(logicalId);
               this.logger.warn(
                 `  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} will ` +
                   `leak the old physical resource (${currentResource.physicalId}). The new ` +
@@ -4682,6 +4785,10 @@ export class DeployEngine {
             if (deletedOldFirst) {
               // Old resource is already gone (delete-first fallback above).
             } else if (updateReplacePolicy === 'Retain') {
+              // Issue #2603: same record as the `--recreate-via-*` arm above —
+              // the cleanup delete is skipped, so the rollback must re-adopt
+              // rather than re-create.
+              this.retainedOldOnReplacement.add(logicalId);
               this.logger.info(
                 `  Retaining old ${logicalId} (${currentResource.physicalId}) - UpdateReplacePolicy: Retain`
               );
@@ -4826,6 +4933,31 @@ export class DeployEngine {
 
           let result;
           let resultProvisionedBy = updateDecision.provisionedBy;
+          // The provider the observed-properties capture below reads the
+          // resource back through (issue #2616's neighbour, issue #2608). It
+          // moves in LOCKSTEP with `resultProvisionedBy`: both are reassigned
+          // together on the update-failure replacement fallback, from the SAME
+          // routing decision, so the layer the capture reads and the layer the
+          // state record is stamped with cannot disagree by construction.
+          //
+          // Before this it was hard-wired to `updateProvider` at the call site
+          // — the provider that just FAILED the update — so a replacement that
+          // re-routed read the NEW physical resource through the OLD layer
+          // while state named the new one. The capture then either returned
+          // nothing (a provider asked to read a type it does not handle) or a
+          // differently-shaped bag than the record's layer implies, and
+          // `observedProperties` is what `cdkd drift` and the next deploy's
+          // diff compare against — the phantom-drift class of issue #1591.
+          //
+          // Bound from the decision rather than re-derived with
+          // `getProviderFor({ resourceType, provisionedBy: resultProvisionedBy })`:
+          // that re-read is NOT an identity for every type. A
+          // `STICKY_CC_MIGRATION_EXEMPT` type (`AWS::Scheduler::Schedule`)
+          // asked for `provisionedBy: 'cc-api'` deliberately falls through to
+          // its SDK provider, so the re-read would reintroduce exactly the
+          // mismatch it was meant to close. The property-driven replacement
+          // twin above passes `replaceProvider` for the same reason.
+          let captureProvider = updateProvider;
           try {
             result = await this.withRetry(
               () =>
@@ -4916,11 +5048,13 @@ export class DeployEngine {
               //     delete here) for another (retain there, refuse here), and
               //     CloudFormation itself retains on replacement.
               //   - `rollback-executor.ts`'s replacement rollback ALREADY
-              //     assumes it: an op whose `previousState.updateReplacePolicy`
-              //     is `Retain` classifies as `reverse-replacement-readopt`,
-              //     which deletes the new resource and points state back at
-              //     the old physical id WITHOUT re-creating it. With the old
-              //     resource deleted, that rollback re-adopted a dead id.
+              //     assumes it: an op classified `reverse-replacement-readopt`
+              //     deletes the new resource and points state back at the old
+              //     physical id WITHOUT re-creating it. With the old resource
+              //     deleted, that rollback re-adopted a dead id. (That verdict
+              //     was read off `previousState.updateReplacePolicy` until
+              //     issue #2603 moved it onto the record this path now writes
+              //     — see `retainedOldOnReplacement`, set on the arm below.)
               //
               // So under `Retain` this path becomes create-ONLY: the old
               // resource is left in place (orphaned, exactly as the
@@ -5167,7 +5301,79 @@ export class DeployEngine {
                 // `Retain` owes the name-collision translation (issue #2518).
                 // Without it the user reads a raw `AlreadyExists` and has no
                 // way to connect it to the policy that caused it.
-                if (!retainOldOnReplace) throw createError;
+                if (!retainOldOnReplace) {
+                  // ...but the NON-Retain arm owes the other half (issue
+                  // #2616): it is the DELETE → CREATE order, so by the time
+                  // this runs the old resource is GONE. Two sub-paths reach
+                  // here and the wording covers both: the delete above
+                  // succeeded, OR it rejected with a not-found the block's
+                  // classifier read as "already gone" — where something ELSE
+                  // removed the resource. So the sentence names NO actor: it
+                  // states only that the resource is gone, which is true on
+                  // both sub-paths and is the fact the user needs. Two review
+                  // rounds landed here — "already deleted the old resource"
+                  // and then "replacement removed the old resource" both keep
+                  // the replacement as the subject of the removal, which the
+                  // second sub-path falsifies. Handing back the
+                  // provider's raw create error leaves the user unable to tell
+                  // "the replacement never started" from "the replacement
+                  // destroyed the old resource and then failed" — which is
+                  // exactly what decides whether a re-run is safe and whether
+                  // anything downstream is now dangling. `--replace`'s
+                  // delete-first fallback ({@link replaceDeleteFirstAndRecreate})
+                  // wraps the identical situation, so this is the same
+                  // contract, not a new one -- but NOT the same sentence, and
+                  // the difference is deliberate: that sibling still says
+                  // "already deleted the old resource", which is correct
+                  // THERE because its delete catch rethrows unconditionally,
+                  // so the only way past it is a delete that succeeded. This
+                  // arm has an "already gone" classifier, so it cannot name an
+                  // actor (see below).
+                  //
+                  // Issue #2038: masked at construction, for the same reason as
+                  // that sibling — the create was handed the RESOLVED
+                  // `replProps`, so the AWS message this echoes can carry a
+                  // substituted secret.
+                  //
+                  // CHAINED, unlike that sibling: the arm this replaces
+                  // rethrew `createError` itself, so its `$metadata` /
+                  // `Code` reached `extractDeploymentEventError` and the
+                  // persisted `RESOURCE_FAILED` event named the AWS rejection.
+                  // Wrapping without a `cause` would have silently traded that
+                  // for the sentence. Safe to chain here: nothing between this
+                  // throw and the DAG executor re-classifies it — the retry
+                  // lives INSIDE `this.withRetry` above, which has already
+                  // given up — so no substring classifier reads the cause's
+                  // text (contrast the `Retain` arm below, which needs
+                  // `markNonRetryable` because its refusal quotes name-cooldown
+                  // spellings the retry loop WOULD act on).
+                  //
+                  // Chained UNMASKED, unlike the rollback executor's twin which
+                  // wraps its cause in `maskSecretsInError` -- a deliberate
+                  // asymmetry, recorded because three separate review passes
+                  // raised it. This throw is inside `provisionResourceBody`;
+                  // one frame up, `provisionResource`'s catch re-wraps it with
+                  // `maskSecretsInError` over the cause CHAIN, so every link
+                  // the walk reaches is masked before anything leaves that
+                  // method (bounded — see `maskSecretsInError`'s own contract
+                  // for the depth cap and its non-`Error` carve-out; this
+                  // chain is 3 deep). The rollback executor has no such
+                  // boundary — `replaySingle`'s catch masks TEXT and swallows —
+                  // which is why its sites mask per site. The MESSAGE is still
+                  // masked at construction here, which is what issue #2616
+                  // requires.
+                  throw new Error(
+                    maskSecretsInText(
+                      `Failed to create ${logicalId} after the UPDATE-not-supported ` +
+                        `replacement: the old resource (${currentResource.physicalId}) ` +
+                        `is now gone. Cause: ` +
+                        `${createError instanceof Error ? createError.message : String(createError)}. ` +
+                        `Re-run the deploy to create it fresh.`,
+                      updateSecrets
+                    ),
+                    { cause: createError instanceof Error ? createError : undefined }
+                  );
+                }
                 const createMsg =
                   createError instanceof Error ? createError.message : String(createError);
                 // Same message HEURISTIC, and the same bounded blast radius, as
@@ -5245,6 +5451,12 @@ export class DeployEngine {
                     )
                   );
                 }
+                // Issue #2603: the third and last engine path that leaves the
+                // old physical resource alive on a replacement. Recorded AFTER
+                // the idempotent-create refusal above, which throws — a
+                // resource that fails never reaches `completedOperations`, so
+                // the placement is belt-and-braces rather than load-bearing.
+                this.retainedOldOnReplacement.add(logicalId);
                 // WARN, not info, and louder than the line the property-driven
                 // cleanup prints. The two arms leak identically, but they are
                 // reached on completely different terms: the property-driven
@@ -5350,6 +5562,9 @@ export class DeployEngine {
               }
               result = replacementResult;
               resultProvisionedBy = replDecision.provisionedBy;
+              // Issue #2608: same decision, same statement — the two must not
+              // be separable by a later edit.
+              captureProvider = replProvider;
             } else {
               throw updateError;
             }
@@ -5413,8 +5628,13 @@ export class DeployEngine {
             parameterValues,
             conditions
           );
+          // `captureProvider`, NOT `updateProvider`: on the plain in-place
+          // path they are the same binding, and on the replacement fallback
+          // this is the provider that actually created `result.physicalId`
+          // and the layer `provisionedBy` above was stamped with (issue
+          // #2608).
           this.kickOffObservedCapture(
-            updateProvider,
+            captureProvider,
             logicalId,
             result.physicalId,
             resourceType,

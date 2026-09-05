@@ -454,6 +454,16 @@ shapes hit this, and both name `--replace` in their error text:
 | `NAMED_REPLACEMENT_COLLISION` | The create-first attempt collided with the existing resource's name | Deploy fails, quoting the name's origin and a rename remedy | The old resource is deleted FIRST, then recreated under the same name |
 | `NAMED_REPLACEMENT_IDEMPOTENT_CREATE` | The Create API is name-idempotent, so the create returned the OLD resource's physical id instead of a new one — for example `CreateQueue` with an unchanged `QueueName` | Deploy fails rather than deleting the resource it just reported as created | Same delete-first path |
 
+`cdkd rollback` raises `NAMED_REPLACEMENT_COLLISION` too, and neither column
+above applies there — `--replace` is a deploy flag. A rollback reversing a
+replacement re-creates the old resource, and when the resource the replacement
+created declares `UpdateReplacePolicy: Retain`, cdkd will not delete that
+pinned copy to free the name. The op fails with the journal kept, so the revert
+resumes once you delete the new resource yourself or drop the policy; to leave
+that one resource alone and let the rest of the rollback finish, re-run with
+`cdkd rollback --orphan <logicalId>`. See
+[cli-rollback.md](cli-rollback.md#reversing-a-replacement).
+
 The resource is briefly unavailable while it is deleted and recreated. The
 alternative remedy in both messages is to rename the resource so the
 create-first order has a free name to take.

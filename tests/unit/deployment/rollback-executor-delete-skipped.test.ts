@@ -136,9 +136,24 @@ describe('rollback executor — a provider-reported delete skip (#1762)', () => 
         resourceType: 'AWS::S3::Bucket',
         physicalId: 'new-b',
         previousState: prev,
+        // The FIELD a current binary stamps (issue #2603) -- without it this
+        // case reached the readopt arm through the pre-#2603 previous-state
+        // FALLBACK, so it pinned the legacy path rather than the one every new
+        // journal takes. The COMBINATION is still hand-edited, deliberately:
+        // the current record below omits `updateReplacePolicy: 'Retain'`,
+        // which a current binary would always co-stamp from the same template
+        // read, and omitting it is what keeps the delete being ISSUED so this
+        // case can pin the provider-reported SKIP it exists for.
+        oldResourceRetained: true,
       },
     ];
-    const current = res({ physicalId: 'new-b', updateReplacePolicy: 'Retain' as const });
+    // NO `updateReplacePolicy` on the CURRENT record, deliberately since issue
+    // #2598: the two records now answer two DIFFERENT questions. `prev`'s
+    // policy is about the OLD resource (it is why this op re-adopts rather
+    // than re-creates); `current`'s is about the NEW copy, and a `Retain`
+    // there makes the executor SKIP this delete on purpose — which would take
+    // the case away from the provider-reported skip it exists to pin.
+    const current = res({ physicalId: 'new-b' });
     const state: Record<string, ResourceState> = { B: current };
 
     const result = await replayRollback(ops, state, 'S', ctx);

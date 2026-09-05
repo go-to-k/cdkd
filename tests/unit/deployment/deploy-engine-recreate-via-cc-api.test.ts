@@ -263,6 +263,47 @@ describe('DeployEngine — --recreate-via-cc-api wire-through (#615)', () => {
     expect(state.MyLambda?.physicalId).toBe('new-cc-pid');
   });
 
+  describe('the retain verdict this arm records for the rollback (issue #2603)', () => {
+    // Coverage gap found by the test reviewer on PR 2634: three engine sites
+    // call `retainedOldOnReplacement.add`, and this `--recreate-via-*` one
+    // could stop recording with the whole suite green. The Set is what the
+    // `completedOperations.push` site stamps `oldResourceRetained` from, and
+    // `classifyRollbackOp` then chooses re-adopt vs re-create off that stamp —
+    // so a missing entry here makes a rollback RE-CREATE a resource this arm
+    // deliberately left running.
+    const retainedSet = (engine: InstanceType<typeof DeployEngine>): Set<string> =>
+      (engine as unknown as { retainedOldOnReplacement: Set<string> }).retainedOldOnReplacement;
+
+    function templateWithRetain(): CloudFormationTemplate {
+      return {
+        Resources: {
+          MyLambda: {
+            Type: 'AWS::Lambda::Function',
+            Properties: { Runtime: 'nodejs20.x' },
+            UpdateReplacePolicy: 'Retain',
+          },
+        },
+      };
+    }
+
+    it('records the logical id when Retain makes this arm leak the old resource', async () => {
+      const engine = makeEngine();
+      const state = makeState();
+      await invokeProvision(engine, makeUpdateChange(), state, templateWithRetain());
+      expect([...retainedSet(engine)]).toEqual(['MyLambda']);
+      // The verdict has to match what the arm DID: under Retain this path
+      // warns and skips the destroy entirely.
+      expect(sdkProvider.delete).not.toHaveBeenCalled();
+    });
+
+    it('records NOTHING on the default arm, which destroys the old resource', async () => {
+      const engine = makeEngine();
+      await invokeProvision(engine, makeUpdateChange(), makeState(), makeTemplate());
+      expect([...retainedSet(engine)]).toEqual([]);
+      expect(sdkProvider.delete).toHaveBeenCalled();
+    });
+  });
+
   it('re-throws when the destroy fails — does NOT warn-and-continue (load-bearing for the destroy-then-create path)', async () => {
     // Override sdkProvider.delete to reject.
     sdkProvider.delete = vi.fn().mockImplementation(async () => {

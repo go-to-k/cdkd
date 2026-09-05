@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-example-rollback-replacement-retain",
+  "version": "1.0.0",
+  "private": true,
+  "description": "UpdateReplacePolicy: Retain keeps the replacement's NEW physical resource on a rollback (issue #2598)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

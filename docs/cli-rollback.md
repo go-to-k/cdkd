@@ -132,12 +132,42 @@ These are surfaced in the plan rather than applied silently.
 ### Reversing a replacement
 
 A replacement is undone by reversing it: the old resource is re-CREATEd from its
-journaled pre-deploy state, and the new resource is deleted. The default order is
+journaled pre-deploy state, and the new resource is deleted unless its own
+`UpdateReplacePolicy: Retain` says otherwise (see below). The default order is
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
-Under `UpdateReplacePolicy: Retain` the orphaned old resource still exists, so it
-is simply re-adopted after the new one is deleted — a true clean revert.
+When the replacing deploy left the old resource alive — it declared
+`UpdateReplacePolicy: Retain` at the time — the old resource is simply
+re-adopted instead of being re-created, a true clean revert. cdkd reads that
+verdict from what the deploy actually DID, recorded on the rollback journal,
+rather than re-deriving it from the previous state record: the two answers
+differ on the deploy that adds or removes the attribute, and either direction
+of the disagreement is destructive (adding it made the rollback re-create a
+resource that was still running; removing it made the rollback point state at a
+resource that had just been deleted).
+
+**`UpdateReplacePolicy: Retain` also protects the NEW resource from the
+rollback.** If the resource the replacement created declares it, the rollback
+does not delete that copy: it is left running and dropped from state, and the
+run reports it with a `⚠` warning and exits 2. The survivor's physical id is
+also recorded durably in the deployment events (`cdkd events`), which carry it
+as a field next to the layer that manages it — a rollback runs during an
+already-failing deploy, so the terminal is the least likely place the id still
+is, and state deliberately no longer names the resource. Note what that means for the
+re-adopt case above: the attribute that made the deploy retain the old resource
+is the same one recorded on the new resource, so a rollback that re-adopts the
+old copy never deletes the new one either — both survive, and state names the
+old one. This matches CloudFormation,
+which reports `DELETE_SKIPPED` for the new copy and orphans it out of the stack
+(`DeletionPolicy` has no effect here — only `UpdateReplacePolicy` does; both
+were measured against real CloudFormation, since the AWS documentation does not
+state it). One combination cannot be honoured and is refused instead: when the
+old resource's re-create collides with a physical name the retained new
+resource still holds, cdkd will not delete the pinned resource to free the
+name, so the operation fails with the conflict named and the journal is kept —
+delete the new resource yourself, or drop `UpdateReplacePolicy: Retain`, then
+re-run `cdkd rollback`.
 
 **Data caveat.** This applies to a stateful type (DynamoDB, RDS, S3 and so on)
 replaced **without** `UpdateReplacePolicy: Retain` — under `Retain` the old

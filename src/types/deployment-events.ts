@@ -178,6 +178,17 @@ export interface DeploymentEvent {
    * partial UPDATE (issue #1819) that is the SURVIVOR's id — the predecessor a
    * replacement failed to retire — NOT the row's current one, which the
    * accompanying `RESOURCE_SUCCEEDED` carries.
+   *
+   * `ROLLBACK_RESOURCE_SUCCEEDED`: the SURVIVOR's id, on the arms that leave a
+   * live resource cdkd no longer tracks (issue
+   * [#2598](https://github.com/go-to-k/cdkd/issues/2598)) — a replacement
+   * rollback that honoured `UpdateReplacePolicy: Retain` or could not delete
+   * the new copy, and the two rolled-back-CREATE orphan arms
+   * (`DeletionPolicy: Retain` and `--orphan`). ABSENT on a clean revert, and
+   * that absence is load-bearing: on those paths the resource was deleted, so
+   * an id here would point a cleanup pass at something gone. The orphan arms
+   * drop the state record entirely, which makes this the ONLY place their
+   * survivor's id exists.
    */
   physicalId?: string;
   /** Per-resource events: routing layer (#614), when known. */
@@ -236,6 +247,14 @@ export interface DeploymentEvent {
    * answer (issue [#2301](https://github.com/go-to-k/cdkd/issues/2301)) —
    * likewise the whole value of the row, since the outcome ("proceeded
    * anyway") is implied by the event type.
+   *
+   * `ROLLBACK_RESOURCE_SUCCEEDED`: why a resource survived a rollback that
+   * otherwise succeeded (issue
+   * [#2598](https://github.com/go-to-k/cdkd/issues/2598)) — the policy that
+   * retained it, the delete that failed, or the orphan flag. Paired with
+   * `physicalId` above and set on exactly the same arms; a rollback runs
+   * during an already-failing deploy, so the log line these sentences also go
+   * to is the least likely thing the user still has.
    */
   reason?: string;
   /** Failure events: extracted error metadata (never properties). */

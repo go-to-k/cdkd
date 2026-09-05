@@ -328,16 +328,31 @@ describe('DeployEngine — custom-named replacement collision', () => {
   }, 15_000);
 
   it('reports that the old resource is already gone when the re-create ultimately fails', async () => {
-    createFailures = [alreadyExists(), new Error('AccessDenied: not authorized')];
+    const raw = new Error('AccessDenied: not authorized');
+    createFailures = [alreadyExists(), raw];
 
     const err = await invokeProvision(makeEngine({ replace: true })).then(
       () => null,
-      (e) => e as Error & { cause?: { message?: string } }
+      (e) => e as Error & { cause?: { message?: string; cause?: unknown } }
     );
 
     expect(err).not.toBeNull();
     expect(err!.cause?.message).toMatch(/already deleted the old resource/);
     expect(err!.cause?.message).toMatch(/AccessDenied/);
+    // Issue #2616 chained the AWS rejection here so `extractDeploymentEventError`
+    // can still walk to its `$metadata` / `Code` and the persisted
+    // `RESOURCE_FAILED` event names the AWS failure. Unfenced until the review
+    // of that PR: deleting the `cause` left 64 tests green, while the sibling
+    // wrap in the UPDATE-not-supported fallback WAS pinned. Identity, not a
+    // message match — the message already appears in the wrap's own text, so
+    // only the object proves the chain survived.
+    //
+    // `toBe` holds because this fixture records NO secret:
+    // `provisionResource`'s boundary masker clones the whole chain when the
+    // bag is non-empty and a message changes, which would break identity. A
+    // secret-bearing variant added to this file must assert on the chained
+    // error's SHAPE (`$metadata` / `Code`) rather than its identity.
+    expect(err!.cause?.cause).toBe(raw);
   });
 
   it('passes a NON-collision create failure through unchanged', async () => {
