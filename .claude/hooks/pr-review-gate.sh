@@ -18,6 +18,10 @@
 # the sentinel (next /review-pr run) and `markgate verify` reports
 # stale automatically. No bespoke sha tracking inside the hook.
 #
+# The fix-back up-bias is computed from a source a history rewrite
+# cannot erase (issue #2638) — see the "Multi-subagent fix-back
+# heuristic" block below.
+#
 # This is the structural enforcement of the "sub-agent self-review
 # is not independent review" rule — see PR #267 / issue #270 and
 # memory rule feedback_subagent_review_not_self_review.md.
@@ -49,6 +53,29 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
 fi
 
 set -u
+
+# Hard-bound a network call.
+#
+# WHY A BOUND AT ALL. `.claude/settings.json` registers this hook with
+# `timeout: 15`, and a hook killed by that timeout emits no `exit 2` -- the gate
+# fails OPEN, which for a merge gate is the wrong direction. Before
+# go-to-k/cdkd#2638 there was one `gh` round-trip inside that budget; the
+# rewrite-proof fix-back count adds a second, serial one. Each is now bounded
+# well short of 15s so a slow GitHub degrades into this hook's OWN documented
+# fail-open (which prints a reason) instead of an opaque harness kill.
+#
+# `timeout(1)` is not present on macOS; `perl` already backs a dozen hooks in
+# this directory, so it is the portable choice here. If it is somehow missing we
+# run unbounded rather than refuse -- the pre-#2638 behaviour.
+gate_bounded() {
+  __gate_secs="$1"
+  shift
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV or exit 127' "$__gate_secs" "$@"
+  else
+    "$@"
+  fi
+}
 
 # Read the PreToolUse payload (command + cwd) once — separate jq
 # invocations would consume stdin twice.
@@ -146,14 +173,14 @@ pr_number="$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE")"
 # Pass-through on any gh error so an unrelated infra outage doesn't
 # block merges (mirrors integ-destroy-gate.sh's posture).
 if [ -n "$pr_number" ]; then
-  pr_json=$(gh pr view "$pr_number" \
-    --json additions,deletions,changedFiles,files,headRefOid 2>/dev/null) || {
+  pr_json=$(gate_bounded 8 gh pr view "$pr_number" \
+    --json additions,deletions,changedFiles,files,headRefOid,headRefName,commits,url 2>/dev/null) || {
     printf 'pr-review-gate: gh pr view %s failed; allowing merge (infra fail-open)\n' "$pr_number" >&2
     exit 0
   }
 else
-  pr_json=$(gh pr view \
-    --json additions,deletions,changedFiles,files,headRefOid,number 2>/dev/null) || {
+  pr_json=$(gate_bounded 8 gh pr view \
+    --json additions,deletions,changedFiles,files,headRefOid,headRefName,commits,url,number 2>/dev/null) || {
     echo "pr-review-gate: gh pr view failed; allowing merge (infra fail-open)" >&2
     exit 0
   }
@@ -262,16 +289,123 @@ if [ "$saw_path" -eq 1 ] && { [ "$all_docs" -eq 1 ] || [ "$all_tests" -eq 1 ]; }
   down_bias=1
 fi
 
-# Multi-subagent fix-back heuristic. Same data as the skill: count
-# commits on the PR branch whose message starts with `fix:` / `fix(`.
-# We don't have the branch name yet at hook time; derive it from gh.
+# --- Multi-subagent fix-back heuristic. --------------------------------
+#
+# Same signal as the skill: more than one `fix:` / `fix(` round on the PR means
+# the diff was rewritten repeatedly, so review it harder.
+#
+# READ IT FROM SOMETHING A HISTORY REWRITE CANNOT ERASE (issue #2638). The only
+# source used to be `git log origin/main..origin/<branch>`, i.e. the branch's
+# CURRENT commits — so flattening the branch to one commit set the count to at
+# most 1 and the bias could never fire, silently. Flattening is routine here:
+# `flatten-before-rebase-gate.sh` prescribes it whenever the branch touches an
+# append-shaped generated file. The gate was therefore strongest on the PRs
+# that needed the least churn and weakest on the ones rewritten most — the
+# inverse of the signal it encodes. Live on this repo's own history: PR #2634
+# was flattened to a single `fix(deploy):` commit, so the old arm computed 1
+# and no bias, while the PR had genuinely carried three distinct fix-back
+# rounds.
+#
+# Two sources are unioned, and the count is the number of DISTINCT SUBJECT
+# LINES matching `^fix(\(|:)` across them:
+#
+#   1. the PR's commits as GitHub reports them (`gh pr view --json commits`),
+#      which needs no local fetch — the old `git rev-parse origin/<branch>`
+#      guard silently skipped the whole check in a clone that had not fetched
+#      the branch, and read the WRONG branch when a fork PR's head name
+#      collided with a local remote-tracking ref. That local read is RETAINED
+#      below as a FLOOR rather than removed, so a collision can still inflate
+#      the count — the safe direction, and the price of never resolving lower
+#      than the pre-#2638 hook did;
+#   2. every commit the PR's TIMELINE recorded as a former HEAD — the
+#      `before`/`after` commit of each force-push. GitHub keeps those after the
+#      rewrite that abandoned them, so the round a flatten collapsed is still
+#      named there.
+#
+# DISTINCT SUBJECTS, not distinct shas, is what keeps this from over-firing: an
+# amend-and-force-push re-shas the same round, and every round of the same work
+# keeps its subject through a rebase. Measured over the 60 most recently merged
+# cdkd PRs, this changes the count on 7 and changes the TIER on exactly 2
+# (PR #2634 1 -> 3, PR #2557 1 -> 2) — both flattened branches, i.e. the
+# defect, not collateral.
+#
+# The timeline query is skipped whenever it cannot change the outcome (an
+# up-bias already fired, or the tier is 3-axis with nothing to cancel), so the
+# common merge pays no extra API call. Any failure leaves the history-derived
+# count in place: never weaker than the pre-#2638 behaviour.
 branch=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""' 2>/dev/null || echo "")
+hist_fix_count=0
 if [ -n "$branch" ] && git rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1; then
-  fix_count=$(git log "origin/main..origin/$branch" --oneline 2>/dev/null \
-    | grep -cE '^[a-f0-9]+ fix(\(|:)' || echo 0)
-  if [ "${fix_count:-0}" -gt 1 ]; then
-    up_bias=1
+  hist_fix_count=$(git log "origin/main..origin/$branch" --oneline 2>/dev/null \
+    | grep -E '^[a-f0-9]+ fix(\(|:)' | wc -l | tr -d '[:space:]')
+fi
+case "$hist_fix_count" in ''|*[!0-9]*) hist_fix_count=0 ;; esac
+
+fix_count="$hist_fix_count"
+rewrite_fix_count=0
+if [ "$up_bias" -eq 0 ] && ! { [ "$base_tier" = "3-axis" ] && [ "$down_bias" -eq 0 ]; }; then
+  # `owner`/`repo` from the PR's own URL — no extra round trip, and no
+  # dependence on the resolved worktree having a remote (it may be a fixture
+  # repo, or a clone with a differently-named remote).
+  pr_url=$(printf '%s' "$pr_json" | jq -r '.url // ""' 2>/dev/null || echo "")
+  pr_slug=$(printf '%s' "$pr_url" | sed -n 's#^https\{0,1\}://[^/]*/\([^/]*\)/\([^/]*\)/pull/[0-9][0-9]*$#\1 \2#p')
+  pr_owner="${pr_slug%% *}"
+  pr_repo="${pr_slug#* }"
+  # The URL is DATA -- it arrives from `gh pr view`, and a fork PR's repo name is
+  # written by whoever opened it. `gh api -F key=value` treats a leading `@` as
+  # "read this value from a file", so an unconstrained value is a file-read
+  # primitive rather than a string. The sed capture already excludes `/`, which
+  # bounds it to a relative name, but bound it properly instead of relying on
+  # that: anything outside GitHub's own owner/repo alphabet skips the query, and
+  # the count falls back to the PR's commits plus the history floor.
+  case "$pr_owner$pr_repo" in
+    ''|*[!A-Za-z0-9._-]*) pr_owner=""; pr_repo="" ;;
+  esac
+  if [ "$pr_slug" = "${pr_slug#* }" ]; then pr_owner=""; pr_repo=""; fi
+
+  subjects=$(printf '%s' "$pr_json" | jq -r '.commits[]?.messageHeadline // empty' 2>/dev/null || echo "")
+
+  if [ -n "$pr_owner" ] && [ -n "$pr_repo" ] && [ -n "$pr_number" ]; then
+    tl_json=$(gate_bounded 5 gh api graphql \
+      -F owner="$pr_owner" -F repo="$pr_repo" -F number="$pr_number" \
+      -f query='query($owner:String!,$repo:String!,$number:Int!){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$number){
+            timelineItems(first:100,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT]){
+              nodes{... on HeadRefForcePushedEvent{
+                beforeCommit{messageHeadline}
+                afterCommit{messageHeadline}
+              }}
+            }
+          }
+        }
+      }' 2>/dev/null) || tl_json=""
+    if [ -n "$tl_json" ]; then
+      tl_subjects=$(printf '%s' "$tl_json" | jq -r '
+        .data.repository.pullRequest.timelineItems.nodes[]?
+        | (.beforeCommit.messageHeadline // empty), (.afterCommit.messageHeadline // empty)
+      ' 2>/dev/null || echo "")
+      subjects="$subjects
+$tl_subjects"
+    fi
   fi
+
+  # `wc -l`, not `grep -c ... || echo 0`: grep exits 1 on no match, so the
+  # `||` arm appends a SECOND count and the variable stops being a number.
+  rewrite_fix_count=$(printf '%s\n' "$subjects" \
+    | grep -E '^fix(\(|:)' \
+    | sort -u \
+    | wc -l | tr -d '[:space:]')
+  case "$rewrite_fix_count" in ''|*[!0-9]*) rewrite_fix_count=0 ;; esac
+  if [ "$rewrite_fix_count" -gt "$fix_count" ]; then
+    fix_count="$rewrite_fix_count"
+  fi
+fi
+
+fix_back_bias=0
+if [ "$fix_count" -gt 1 ]; then
+  up_bias=1
+  fix_back_bias=1
 fi
 
 # Resolve precedence: if both fire, up wins (security beats convenience).
@@ -336,7 +470,7 @@ cat >&2 <<EOF_HEAD
 Blocked by pr-review-gate: PR #${pr_label} (${loc} LOC excl. auto-generated files, ${fc} files) requires \`${final_tier}\` review before merge.
 
 PR HEAD sha: ${sha_short:-<unknown>}
-Marker state: $(if [ -n "$recorded_sha" ]; then printf 'bound to %s (mismatch)' "$(printf '%s' "$recorded_sha" | cut -c1-7)"; else printf 'unset'; fi)
+Marker state: $(if [ -n "$recorded_sha" ]; then printf 'bound to %s (mismatch)' "$(printf '%s' "$recorded_sha" | cut -c1-7)"; else printf 'unset'; fi)$(if [ "$fix_back_bias" -eq 1 ]; then printf '\nUp-bias: %s distinct fix-back rounds on this PR (the branch itself shows %s; the rest come from commits its timeline recorded as former HEADs).' "$fix_count" "$hist_fix_count"; fi)
 
 EOF_HEAD
 
