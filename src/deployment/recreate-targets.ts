@@ -36,7 +36,12 @@
  * Fail fast and let the user pick one strategy per resource.
  */
 
-import { ListObjectVersionsCommand, type S3Client } from '@aws-sdk/client-s3';
+import {
+  ListObjectVersionsCommand,
+  NoSuchBucket,
+  NotFound,
+  type S3Client,
+} from '@aws-sdk/client-s3';
 import {
   DescribeLogStreamsCommand,
   ResourceNotFoundException as LogsResourceNotFoundException,
@@ -78,6 +83,29 @@ export interface RecreateTarget {
    * post-recreate state record.
    */
   direction: 'to-cc-api' | 'to-sdk';
+  /**
+   * The live emptiness probe RAN and FAILED, so nothing was established
+   * about this resource's contents (issue [#2595]).
+   *
+   * A sibling field rather than a `StatefulReason` value, and that is the
+   * whole design: a reason value would make the target `stateful` and REFUSE
+   * it, which is the fail-CLOSED flip this deliberately does not make. The
+   * S3 arm fails OPEN by design (issue [#648], published in
+   * `docs/cli-deploy-safety.md`) — a role without `s3:ListBucketVersions`
+   * must still be able to recreate an empty bucket without
+   * `--force-stateful-recreation`. What was wrong was not the routing but
+   * the SCREEN: with `statefulReason` left at `null`, a bucket nothing could
+   * be learned about was rendered exactly like one the probe measured and
+   * found empty, on the one screen a user reads before consenting to a
+   * DELETE + CREATE. This field carries the difference to the display
+   * without touching the verdict.
+   *
+   * Only the S3 arm ever sets it. The log-group arm promotes on BOTH of its
+   * failure paths, so a failed probe there is already non-`null` and can
+   * never reach this state — the fail-closed half of the deliberate
+   * asymmetry.
+   */
+  probeUnresolved?: boolean;
 }
 
 /**
@@ -757,6 +785,30 @@ export async function probeStatefulRecreateTargetsAsync(
           promoted.push({ ...target });
         }
       } catch (e) {
+        // A not-found is an ANSWER, not a failure to get one: AWS says the
+        // bucket does not exist, so it provably holds nothing and the
+        // recreate's delete can lose nothing. Passing it through silently
+        // matches what the log-group arm already does with its own typed
+        // `ResourceNotFoundException` — without this, issue [#2595]'s new row
+        // would tell a user cdkd "does not know" about a bucket AWS just said
+        // is gone, which is the over-warning that trains people to ignore the
+        // line the issue added.
+        //
+        // Typed, never a message heuristic: a substring match on "not found"
+        // would also swallow a permission error worded that way. Both classes
+        // because the two verbs differ — `ListObjectVersions` raises
+        // `NoSuchBucket`, while the SDK surfaces a bare 404 as `NotFound`.
+        //
+        // Deliberately NOT region-guarded, unlike the log-group twin: that arm
+        // clears a stateful verdict on a not-found, so a wrong-region client
+        // could turn a refusal into a pass. Here the verdict is already `null`
+        // and stays `null` — the only thing this decides is whether the plan
+        // prints an UNKNOWN row, so a wrong-region not-found costs a missing
+        // warning, not a lost refusal.
+        if (e instanceof NoSuchBucket || e instanceof NotFound) {
+          promoted.push({ ...target });
+          continue;
+        }
         logger.warn(
           `--recreate-via-cc-api / --recreate-via-sdk-provider: live S3 probe failed for ${target.logicalId} ` +
             `(bucket ${target.physicalId}); leaving stateful guard at the sync ` +
@@ -764,7 +816,11 @@ export async function probeStatefulRecreateTargetsAsync(
             `--force-stateful-recreation. Underlying error: ` +
             `${e instanceof Error ? e.message : String(e)}`
         );
-        promoted.push({ ...target });
+        // The verdict stays `null` — the fail-OPEN posture is unchanged — but
+        // the target now CARRIES the fact that nothing was established, so
+        // the confirm prompt can say so instead of rendering it identically
+        // to a bucket measured empty (issue [#2595]).
+        promoted.push({ ...target, probeUnresolved: true });
       }
       continue;
     }

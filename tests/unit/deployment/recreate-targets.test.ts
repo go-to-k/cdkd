@@ -22,7 +22,7 @@ import {
 } from '../../../src/deployment/recreate-targets.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
-import type { S3Client } from '@aws-sdk/client-s3';
+import { NoSuchBucket, NotFound, type S3Client } from '@aws-sdk/client-s3';
 import {
   ResourceNotFoundException,
   type CloudWatchLogsClient,
@@ -1019,6 +1019,71 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
     expect(sentCommands).toHaveLength(1);
     expect(out[0]!.statefulReason).toBe(null);
     expect(logger.warn).toHaveBeenCalledTimes(1);
+    // Issue #2595: the verdict stays null (fail OPEN, unchanged) but the
+    // target now CARRIES that nothing was established, which is what lets the
+    // confirm prompt distinguish it from a bucket measured empty.
+    expect(out[0]!.probeUnresolved).toBe(true);
+  });
+
+  for (const [label, err] of [
+    ['NoSuchBucket', Object.assign(new Error('The specified bucket does not exist'), { name: 'NoSuchBucket' })],
+    ['NotFound', Object.assign(new Error('Not Found'), { name: 'NotFound' })],
+  ] as const) {
+    it(`treats a typed ${label} as an ANSWER, not an unknown — a gone bucket provably holds nothing`, async () => {
+      // Shaped by prototype, not by name: the production check is
+      // `instanceof`, so a name-only fake would pass the test while the real
+      // error took the other branch (or vice versa).
+      const typed = Object.create(
+        label === 'NoSuchBucket' ? NoSuchBucket.prototype : NotFound.prototype
+      ) as Error;
+      Object.assign(typed, err);
+      const logger = silentLogger();
+      const { client } = mockS3({ throws: typed });
+      const out = await probeStatefulRecreateTargetsAsync(
+        [s3Target()],
+        { s3: client, cloudWatchLogs: forbiddenLogsClient(), sleep: noSleep },
+        logger
+      );
+      expect(out[0]!.statefulReason).toBe(null);
+      // The discriminating half: an ordinary probe failure sets the flag and
+      // warns. A not-found must do NEITHER, or the plan tells the user cdkd
+      // does not know about a bucket AWS just said is gone.
+      expect(out[0]!.probeUnresolved).toBeUndefined();
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+  }
+
+  it('does NOT mark probeUnresolved when the probe ANSWERED — the flag distinguishes unknown from measured', async () => {
+    // Both measured outcomes, in one case, because the flag's whole job is to
+    // separate them from the failure above: a flag set unconditionally, or
+    // never set, is invisible to a test that only ever probes one of them.
+    const empty = mockS3({ versions: 0, deleteMarkers: 0 });
+    const nonEmpty = mockS3({ versions: 1 });
+    const emptyOut = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: empty.client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
+    const nonEmptyOut = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: nonEmpty.client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
+    expect(emptyOut[0]!.statefulReason).toBe(null);
+    expect(emptyOut[0]!.probeUnresolved).toBeUndefined();
+    expect(nonEmptyOut[0]!.statefulReason).toBe('has-objects');
+    expect(nonEmptyOut[0]!.probeUnresolved).toBeUndefined();
+  });
+
+  it('does NOT mark probeUnresolved on a target whose sync reason was already non-null — it never reaches the probe', async () => {
+    const { client } = mockS3({ throws: new Error('AccessDenied') });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target({ statefulReason: 'always' })],
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
+    expect(out[0]!.statefulReason).toBe('always');
+    expect(out[0]!.probeUnresolved).toBeUndefined();
   });
 });
 

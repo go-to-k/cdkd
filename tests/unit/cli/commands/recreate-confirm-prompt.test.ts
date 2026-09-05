@@ -8,6 +8,8 @@
  *   - generic downstream caveat appended once per call
  *   - empty target list → no-op (returns true)
  *   - non-TTY without --yes → throws actionable error
+ *   - the third display state: a probe that RAN and FAILED, which is neither
+ *     DATA LOSS nor silence (issue #2595)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
@@ -421,5 +423,87 @@ describe('deploy.ts tells the prompt whether the probe ran (source-level pin)', 
     // "the key is present" check, and `false` is the value that hides a
     // never-expiring log group's **DATA LOSS** line.
     expect(call).not.toMatch(/forceStatefulRecreation:\s*(?:true|false)\b/);
+  });
+});
+
+describe('a bucket whose probe FAILED is a third display state (#2595)', () => {
+  const origIsTTY = process.stdin.isTTY;
+
+  beforeEach(() => {
+    warnSpy.mockReset();
+    infoSpy.mockReset();
+    readlineQuestion.mockReset();
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true });
+  });
+
+  const bucket = (overrides: Partial<RecreateTarget> = {}): RecreateTarget =>
+    target({
+      logicalId: 'MyBucket',
+      resourceType: 'AWS::S3::Bucket',
+      physicalId: 'my-bucket',
+      ...overrides,
+    });
+
+  async function planFor(t: RecreateTarget): Promise<string> {
+    await promptRecreateConfirm({
+      stackName: 'S',
+      targets: [t],
+      yes: true,
+      forceStatefulRecreation: false,
+    });
+    return warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+  }
+
+  it('says the emptiness was not established, and what that costs', async () => {
+    const plan = await planFor(bucket({ probeUnresolved: true }));
+    expect(plan).toContain('emptiness NOT established: the live probe failed');
+    expect(plan).toContain(
+      'UNKNOWN: if MyBucket holds data, the destroy + recreate loses it'
+    );
+    // NOT the data-loss shape: cdkd observed no contents and must not assert
+    // any. Asserted as the ABSENCE of both halves, because either alone would
+    // make this row read as measured-non-empty.
+    expect(plan).not.toContain('**DATA LOSS**');
+    expect(plan).not.toContain('DATA: all data in MyBucket will be lost');
+  });
+
+  it('is distinguishable from a bucket the probe MEASURED as empty', async () => {
+    // The defect this closes was that these two rendered identically. Compare
+    // them directly rather than asserting one in isolation — an assertion on
+    // the unresolved row alone passes even if the measured row grew the same
+    // sentence.
+    const unresolved = await planFor(bucket({ probeUnresolved: true }));
+    warnSpy.mockReset();
+    const measuredEmpty = await planFor(bucket());
+    expect(measuredEmpty).toContain('MyBucket (AWS::S3::Bucket)');
+    expect(measuredEmpty).not.toContain('emptiness NOT established');
+    expect(measuredEmpty).not.toContain('UNKNOWN:');
+    expect(unresolved).not.toBe(measuredEmpty);
+  });
+
+  it('lets a MEASURED verdict win — the flag never downgrades a real reason', async () => {
+    // `probeUnresolved` is a display sibling, not a verdict. If both are set
+    // (which the probe never does today) the stateful reason must still drive
+    // the row, or the flag would silently soften a genuine refusal.
+    //
+    // The source's `!stateful` conjunct and the consumers' ordering are
+    // MUTUALLY redundant, measured one mutation at a time: dropping the
+    // conjunct alone leaves this green, reordering both consumers alone leaves
+    // it green, and doing BOTH reds exactly this case. So this pins the joint
+    // invariant, which is the one that matters — a measured verdict wins over
+    // the display-only flag — not either mechanism.
+    const plan = await planFor(bucket({ statefulReason: 'has-objects', probeUnresolved: true }));
+    expect(plan).toContain('**DATA LOSS**');
+    expect(plan).toContain('DATA: all data in MyBucket will be lost');
+    expect(plan).not.toContain('emptiness NOT established');
+    // The line the row must NOT also carry. Without this the both-mutations
+    // shape renders `DATA:` and `UNKNOWN:` together — two contradictory
+    // sentences on the consent screen — while every other assertion here
+    // still passes.
+    expect(plan).not.toContain('UNKNOWN:');
   });
 });
