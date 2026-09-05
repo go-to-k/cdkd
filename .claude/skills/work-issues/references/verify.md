@@ -57,13 +57,12 @@ by a probe or a trace, never by re-reading the diff:
   measured in the wrong position is not weak evidence; it is none.
 - **Derive the reader population before patching readers** — one grep returns
   every consumer at once; patching one per round IS the cascade.
-- **A benchmark must exercise the path the change is on** (a lane published
-  "+20% latency" from a run whose input took an early return before the new
-  code; re-measured +0–3%). Confirm the probe reaches the added code, as §5
-  requires of a mutation probe.
-
-**A fix that CLOSES a member falsifies every sentence COUNTING the set**, in
-files the diff never touches — §8-g's COUNT bullet.
+- **A benchmark or COST FENCE must exercise the path the change is on** — a
+  lane published "+20% latency" from a run that early-returned before the new
+  code; go-to-k/cdkd#2333's latency case was vacuous twice, first bailing at a
+  bound, then plateauing because cost is per SEGMENT and the payload had two.
+  Build the payload that was actually EXPENSIVE, and measure the threshold
+  with the fix AND with it deleted.
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
@@ -71,12 +70,9 @@ files the diff never touches — §8-g's COUNT bullet.
 after the final edit you happened to think of. Review nits landing in gate
 scope stale the marker (two real-AWS re-runs on 2026-08-25 alone). Sequence:
 dispatch reviewers → apply EVERY finding including nits → rebase → integ →
-markers.
+markers. `git diff origin/main...HEAD --name-only` against the gate's include
+list says in one command whether anything is still outstanding.
 
-- **Before starting an integ, ask what is still outstanding** — a reviewer
-  still running, an unapplied nit, a coming rebase each stale the marker.
-  `git diff origin/main...HEAD --name-only` against the gate's include list
-  answers it in one command.
 - **A rebase can stale a `hash: diff` marker on its own** — the merge base
   moves, so an incoming change to a file this branch also touches invalidates
   it. Rebase BEFORE the integ; push first so CI runs alongside the integ
@@ -124,10 +120,9 @@ Unit tests passing is necessary but NOT sufficient:
 - **Deletion / DAG-order / state-cleanup change** → unmergeable until an
   integ's **destroy** step completes cleanly (`integ-destroy`, plus
   `integ-broad` for cross-cutting files). Run it via **`/run-integ <name>`**
-  — never raw `cdkd deploy` / `cdkd destroy` from a shell; the skill encodes
-  deploy + update + destroy + orphan verification and records the ledger row.
-  `/pick-integ` chooses the fixture(s) and marks which are maintainer-only —
-  never name one it flagged.
+  — never raw `cdkd` from a shell, CLAUDE.md's rule and why. `/pick-integ`
+  chooses the fixture(s) and marks which are maintainer-only — never name one
+  it flagged.
 - **Non-deletion source change** → still live-test the fixed path end-to-end
   (deploy → the redeploy that reproduced the bug → destroy), fresh fixture or
   `/run-integ` against an existing one.
@@ -261,8 +256,6 @@ a `Monitor` on phase lines AND on log-growth stalling.
   call and read the log's own terminal line. Two nearby traps: a `cd` inside
   the backgrounded compound leaves the parent's `$VAR` unset, and `grep -c`
   exits 1 on a count of zero.
-- **A run blocked before its assertions is not a failing fix** — `/run-integ`'s
-  "Important" section owns that rule and the ledger note it requires.
 
 ### 8-f. Fixture environment prechecks
 
@@ -280,7 +273,8 @@ the same code without it** (on the merits, not availability). When docker is
 required (`integ-local`), verify registry reach FIRST (`docker pull
 hello-world` under a 120s cap) — `docker version` says nothing about registry
 networking. `/run-integ`'s "Important" section owns the hang diagnosis, the
-do-NOT-restart-Docker rule, and what is never yours to spend.
+do-NOT-restart-Docker rule, what is never yours to spend, and the rule that a
+run blocked before its assertions is not a failing fix (with its ledger note).
 
 ### 8-g. Prose claims are verified to the same bar as code
 
@@ -336,6 +330,11 @@ code defects and FIVE false statements in prose. Habits that each caught one:
   rounds have each found a defect inside the last one's fix, the APPROACH
   changes — WITHDRAW the speculative addition rather than bounding it, and
   brief the next round to report only demonstrable defects.
+- **After several rounds, ask whether the change is worth merging AT ALL, and
+  say you are not looking for reassurance** — price the residue in what an
+  adversary pays (go-to-k/cdkd#2333 buys one byte: an 18-byte residue against
+  the 17-byte shape closed, so the incidental case is the purchase). The
+  question returns a merge CONDITION; "any blockers?" cannot.
 - **A reviewer's suggested FIX can be wrong even when its finding is right**
   — derive regexes, bounds and constants from the code that PRODUCES the value
   and probe both directions (go-to-k/cdkd#2052).
@@ -365,14 +364,8 @@ code defects and FIVE false statements in prose. Habits that each caught one:
 shared fixed name — the account may hold the maintainer's production stacks.
 Tear down with `cdkd destroy … --force`, then sweep for orphans it cannot
 reach (auto-created `/aws/lambda/*` log groups, RETAIN resources, Secrets in
-recovery, KMS keys pending deletion). Confirm state is gone:
-
-```bash
-aws s3 ls s3://cdkd-state-$(aws sts get-caller-identity --query Account --output text)/cdkd/
-```
-
-(the `deployments/` events store legitimately survives). If destroy failed or
-left orphans, delete them by direct AWS API call before doing anything else.
+recovery, KMS keys pending deletion), then run CLAUDE.md's post-integ
+leftover check — the `deployments/` events store legitimately survives it.
 
 `/verify-pr` sets `check` + `docs` + `verify-pr`; `/run-integ` sets the
 `integ-*` markers — together they unblock `gh pr merge`.
