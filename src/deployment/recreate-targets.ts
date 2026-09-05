@@ -216,9 +216,15 @@ const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
 /**
  * The CFn type of a nested stack's row in its PARENT's template. It decides
  * both the refusal (`blockedNestedStackTargets`) and the evidence the
- * unknown-id note renders (`nestedStackLogicalIds`), and those two must
- * describe the same set of resources or the note names ids the validator would
- * not refuse — so within this module it is spelled once. Other modules spell it
+ * unknown-id note renders (`nestedStackLogicalIds`) — so within this module it
+ * is spelled once, or the note could name ids the validator does not refuse.
+ *
+ * The two are NOT the same set, and deliberately so: the refusal keys on the
+ * STATE record's type, because what makes recreating one destructive is that
+ * `NestedStackProvider` owns the row and its delete tears down the child; the
+ * note keys on the TEMPLATE, because it is telling the user what their current
+ * template contains. They diverge only for a row whose type changed between
+ * deploys, and each side is right for its own question. Other modules spell it
  * for themselves rather than sharing one export: the only EXPORTED copy lives
  * in `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
  * from the deployment layer would invert the dependency direction. (No count of
