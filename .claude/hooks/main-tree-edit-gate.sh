@@ -49,10 +49,6 @@ set -u
 # the parser expected quoting on the VALUE and not on the verb: the same
 # asymmetry go-to-k/cdkd#2333 found in the shared matcher.
 #
-# `cmd_last_cd_target` is that resolution done once, for every gate. It also
-# does two things the local regex did not: it follows EVERY `cd` in command
-# position and composes relative ones, and it SKIPS an unexpanded `$VAR` rather
-# than resolving it to a path no `git -C` can read.
 # The library is loaded for `gate_unquote_span` / `gate_unquote` -- the verb and
 # path unquoting. It is NOT loaded for `cmd_last_cd_target`: three rounds tried
 # resolving the `cd` with that helper, or with scans built around it, and each
@@ -122,13 +118,22 @@ case "$tool" in
     #
     # Every one of those was a hook-local shell parser written inside the
     # change whose purpose was DELETING a hook-local shell parser, and each
-    # traded a LOUD failure for a SILENT one. The anchored form has no
-    # fail-open: a `cd` it cannot see simply leaves the base at the payload
-    # cwd, which BLOCKS. Its cost is two false refusals -- a command whose
-    # first segment is a substitution or a subshell, with a real `cd` after it,
-    # is not followed -- and those are pinned as cases in the suite rather than
-    # left to be rediscovered. Widening this is go-to-k/cdkd#2650, which
-    # carries all three measurement tables.
+    # traded a LOUD failure for a SILENT one.
+    #
+    # WHAT THE ANCHORED FORM COSTS, in BOTH polarities -- an earlier revision
+    # of this comment said "no fail-open ... its cost is two false refusals",
+    # and that was wrong on both counts. A `cd` this scan does not see leaves
+    # the base at the payload cwd, and what that means depends on which tree
+    # the cwd IS. From a main-tree cwd it refuses a write meant for a feature
+    # worktree (loud; cases 29-31). From a FEATURE-worktree cwd with the `cd`
+    # pointing at the main tree it is the same miss with the sign flipped: the
+    # gate exits 0 and the write lands on `main` (silent; cases 32-34). The
+    # same holds for a verb this scan under-recognises -- `c""d` and `"c"d` are
+    # `cd` to bash and not to this regex (case 43). All of it is INHERITED from
+    # origin/main rather than introduced here, and all of it is pinned rather
+    # than asserted, because asserting one polarity is how two rounds shipped.
+    # Widening the scan is go-to-k/cdkd#2650, which carries the measurement
+    # tables.
     if [[ "$cmd" =~ ^[[:space:]]*([^[:space:]]+)[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
       __raw="${BASH_REMATCH[1]}"
       __verb=$(gate_unquote_span "$__raw")
@@ -146,7 +151,15 @@ case "$tool" in
       # inside double quotes either for this purpose), and only an UNQUOTED
       # token is unescaped -- left to right, two characters at a time, which is
       # what makes `\cd` a `cd` while `\\cd` stays `\cd`.
-      if [[ "$__verb" == "$__raw" ]]; then
+      # BOUNDED: the longest token that can unescape to `cd` is `\c\d`, four
+      # characters, so anything longer cannot be a `cd` and does not need the
+      # walk. Unbounded it was super-quadratic -- measured on the full hook with
+      # a first token of N `a`s: 800 -> 0.24 s, 2000 -> 2.95 s, 5000 -> 41.5 s
+      # against 0.05 s flat before this delta, reachable through
+      # `VAR=<long value> cmd` on a hook that runs on EVERY Bash call. A hang,
+      # not a wrong verdict, which is the worse of the two for a PreToolUse
+      # hook: a killed hook cannot emit exit 2.
+      if [[ "$__verb" == "$__raw" && ${#__raw} -le 4 ]]; then
         __out=""; __rest="$__raw"
         while [[ -n "$__rest" ]]; do
           case "$__rest" in

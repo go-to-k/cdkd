@@ -238,21 +238,51 @@ run_case 0 "Bash a quoted '>' then 'cd <main>' and a write (INVERTED: a silent m
   "$(jq -nc --arg cmd "echo \"a > b\" && cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
-# 35-39. The VERB unquoting, against what bash actually does. A blanket
+# 35-42. The VERB unquoting, against what bash actually does. A blanket
 # backslash strip here manufactured a `cd` bash never runs and moved the base
 # AWAY from the protected tree -- measured, the tracked file really was
-# overwritten. Each spelling below is one bash does NOT treat as `cd`.
-for __v in "'\\cd'" '"\\cd"' '"c\\d"' '\\\\cd' 'c\\\\d'; do
-  run_case 2 "Bash a first token that only LOOKS like cd: $__v" \
-    "$(jq -nc --arg cmd "$__v /tmp ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+# overwritten in a sandbox copy.
+#
+# EACH CASE BUILDS ITS SPELLING EXPLICITLY rather than looping over quoted
+# literals. A `for` loop over single-quoted elements keeps the backslashes
+# literal, so an earlier revision fed `"\\cd"` where its comment said `"\cd"`
+# -- not vacuous, but not the spelling the regression was measured on either,
+# and this suite has already shipped one genuinely vacuous case that way.
+# The name of each case is the spelling, and the command is built from the same
+# string.
+verb_case() { # <want> <verb-as-bash-would-see-it>
+  run_case "$1" "Bash a first token bash reads as [$2]" \
+    "$(jq -nc --arg cmd "$2 /tmp ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
       '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
-done
-# ...and the ones bash DOES, so the unescape cannot be tightened into a refusal.
-for __v in '\cd' "'cd'" '"cd"'; do
-  run_case 0 "Bash a first token bash really reads as cd: $__v" \
-    "$(jq -nc --arg cmd "$__v /tmp ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
-      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
-done
+}
+# NOT `cd` to bash -- each must leave the base alone, so the write resolves in
+# the main tree and BLOCKS.
+verb_case 2 "'\cd'"
+verb_case 2 '"\cd"'
+verb_case 2 '"c\d"'
+verb_case 2 '\\cd'
+verb_case 2 'c\\d'
+# ...and the ones bash really does read as `cd`, so the unescape cannot be
+# tightened into a refusal. `\c\d` is the longest spelling that reaches `cd`,
+# which is what the length bound on the unescape loop is derived from.
+verb_case 0 'cd'
+verb_case 0 '\cd'
+verb_case 0 'c\d'
+verb_case 0 '\c\d'
+verb_case 0 "'cd'"
+verb_case 0 '"cd"'
+
+# 46. UNDER-RECOGNITION, pinned rather than fixed. `c""d`, `"c"d`, `'c'd` and
+# `$(echo cd)` are `cd` to bash and not to this anchored regex, so the base is
+# not moved. From a main-tree cwd that refuses (loud); from a feature-worktree
+# cwd with the `cd` pointing at the main tree it is a silent miss, the same
+# class as cases 32-34. INHERITED -- origin/main, 62922e18 and HEAD all answer
+# the same. Reviewed and deliberately NOT fixed: the two revisions that caught
+# this class are the two that opened main-tree-cwd bypasses, so a sixth attempt
+# is the pattern this lane already paid for five times. go-to-k/cdkd#2650.
+run_case 0 "Bash a partially-quoted cd verb from a feature cwd (known silent miss)" \
+  "$(jq -nc --arg cmd "c\"\"d $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
 echo "----"
 echo "passed=$pass failed=$fail"

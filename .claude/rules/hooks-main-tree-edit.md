@@ -64,12 +64,12 @@ toll only on a session actually touching these two hooks.
   Smoke test: `main-tree-edit-gate.test.sh` (42 cases). The three quoted-`cd`
   spellings carry a literal control from the SAME foreign cwd so the trio
   cannot pass vacuously — and the control PASSES against the pre-#2614 hook,
-  which is what makes it a control; origin/main's hook fails 4 of the 42. The eight
+  which is what makes it a control; origin/main's hook fails 7 of the 42. The eight
   trailing-/subshell-/substitution-`cd` cases and their three false-block twins
   come from the review of #2614's own first revision, which handed the WHOLE
   command to `cmd_last_cd_target`: it follows every `cd` in command position,
   so a `cd` AFTER the write moved the base and re-opened this gate's founding
-  incident. The first revision fails 15 of the 42. The
+  incident. The first revision fails 18 of the 42. The
   block names file + worktree + branch and prints the `git worktree add`
   recipe (incl. the /run-integ ledger note). See memory
   `feedback_main_tree_tracked_edit_gate.md`.
