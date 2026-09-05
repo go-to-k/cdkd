@@ -937,8 +937,10 @@ function redactUrlLocator(value: string): string {
  * The single place every argv spelling converges — `--flag VALUE` (two
  * tokens), `--flag=VALUE` (one), and pflag's shorthand cluster in both forms,
  * which reach it through {@link maskAttachedShortFlag} and through
- * {@link trailingShortFlagOfCluster} in {@link redactDockerArgvValues}. The joined form is valid docker syntax for every long
- * flag here, and it was UNMASKED until the [#2623](https://github.com/go-to-k/cdkd/issues/2623)
+ * {@link trailingShortFlagOfCluster} in {@link redactDockerArgvValues}.
+ *
+ * The joined form is valid docker syntax for every long flag here, and it was
+ * UNMASKED until the [#2623](https://github.com/go-to-k/cdkd/issues/2623)
  * review: harmless while every argv this repo builds emits two tokens, but
  * `src/assets/docker-build.ts`'s `executable` source mode renders a
  * USER-AUTHORED command line, and a wrapper script spelling
