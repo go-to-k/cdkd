@@ -105,31 +105,33 @@ the trigger is a TS entry point, or several spawns in a case.
   and the fixture's clean stack never entered the warn arm, so its
   `not.toContain(...)` assertion was unfalsifiable by construction.
 - **Enumerate the value's uses before probing** (`grep` the identifier in the
-  changed hunk). One probe per use.
+  changed hunk). One probe per use — for a GUARD the uses are its CALL SITES
+  and both directions of its message, each needing its OWN negative:
+  go-to-k/cdkd#2674 fenced a damage sentence in the out-of direction only, so
+  a change confined to the into text went unwatched (2026-09-05).
 - **A negative assertion needs a case where the wrong value would actually be
   EMITTED** — e.g. two DIRTY stacks with different counts (1 and 2), asserting
   the total 3 appears in neither banner.
-- The same shape hides behind mocks: tests that `vi.mock` a module pin what the
-  caller PASSES, never what the far side WRITES (hard-coding `'SUCCEEDED'`
+- The same shape hides behind mocks: a `vi.mock`ed module pins what the caller
+  PASSES, never what the far side WRITES (hard-coding `'SUCCEEDED'`
   inside `recordRunOutcome` passed all 2261 unit tests). When a value crosses a
   module boundary, one case must exercise the far side unmocked.
 - **Do not report a mutation result you did not run — and a probe that changed
   TWO things at once is one you did not run.** A false mutation-table entry
-  surfaces only when a reviewer re-executes every claim; nothing else looks. PR
-  #2612 is the harder half, where the probe WAS run: a comment claimed
-  reordering either consumer "reds four cases", but that probe had edited the
-  rendered line's TEXT in the same pass, so the reds attested to the text edit.
-  Re-measured one mutation at a time — each alone green, BOTH reds one case,
-  i.e. the two mechanisms are mutually redundant, the opposite of what the
-  comment said. One mutation per probe, tree restored byte-exact between them.
+  surfaces only when a reviewer re-executes every claim; nothing else looks.
+  PR #2612 is the harder half, where the probe WAS run: a "reds four cases"
+  claim rested on a probe that had also edited the rendered line's TEXT, and
+  re-measuring one mutation at a time inverted it (each alone green, BOTH reds
+  one case — the two mechanisms are mutually redundant). One mutation per
+  probe, tree restored byte-exact between them.
 - **Give a probe result written into a SOURCE COMMENT the same disposition as a
   count in published prose** — delete it, fence it, or attribute it as a dated
   measurement (`.claude/skills/work-issues/references/verify.md` §8-g). Nothing
-  downstream re-checks such a line: PR #2612's wrong claim was on a branch
-  comment beside a destructive confirm prompt, no test could see it, and only
-  the review round stopped it becoming a fence a later editor would trust.
-  What it should have stated is the invariant the two mechanisms jointly
-  enforce, which is re-derivable and cannot go stale.
+  downstream re-checks such a line: PR #2612's wrong claim sat on a branch
+  comment beside a destructive confirm prompt, invisible to every test, and
+  only review stopped it becoming a fence a later editor would trust. State
+  instead the invariant the two mechanisms jointly enforce, which is
+  re-derivable and cannot go stale.
 
 ## Integration Tests
 

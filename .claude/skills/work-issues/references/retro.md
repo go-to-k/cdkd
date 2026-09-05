@@ -265,7 +265,6 @@ git fetch origin && git switch -c "$B" origin/main
 
 - `chore:` prefix — `.claude/**` is not `src/**`; `commit-prefix-scope-gate`
   blocks `fix:` / `feat:` here.
-- English only in every committed line.
 - Scope does not exempt you from the markers (CLAUDE.md, "Before every
   commit") — a fresh worktree starts with none, and `/verify-pr` sets all
   three in one pass; run it before the commit. A

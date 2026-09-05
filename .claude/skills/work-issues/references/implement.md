@@ -385,9 +385,13 @@ normalization layer sits exactly where a fence goes green-but-inert).
 ### 5-g. Fan-out mechanics
 
 You may fan out **one subagent per lane** (disjoint files): give each its
-worktree path, allowed files, and "do NOT touch other lanes' files; STOP and
-report if the fix needs a forbidden one". A subagent's Bash **bypasses the
-PreToolUse gate hooks** (it can `gh pr create` past `verify-pr-gate`) —
+worktree path, allowed files, "do NOT touch other lanes' files; STOP and
+report if the fix needs a forbidden one", and **the REPORT SHAPE — the
+report IS the deliverable**: a lane's tool output never reaches you, so a
+one-line "done" loses the run (2 of 3 lanes, 2026-09-05). Resume a thin one
+with "REPORT ONLY, do not touch the tree"; a plain resume re-edits.
+
+A subagent's Bash **bypasses the PreToolUse gate hooks** (it can `gh pr create` past `verify-pr-gate`) —
 enforce quality yourself; the orchestrator still gates the MERGE.
 
 - **Forbid lane agents the FULL SUITE; run it yourself, serially.** Five
@@ -400,25 +404,24 @@ enforce quality yourself; the orchestrator still gates the MERGE.
   suite failure as a regression, read the rc AND the error section AND
   `uptime`, and check `ps` for a vitest whose path is not yours; re-run when
   the machine is quiet.
-- Budget two fan-out costs: a lane agent waiting inside a tool call is killed
-  at 600s of silence (background long runs with a log redirect, poll with
+- Budget two fan-out costs: a lane waiting inside a tool call is killed at
+  600s of silence (background long runs with a log redirect, poll with
   short `tail`s), and a fix round re-touching an `integ-*` scope invalidates
-  that gate's marker — that is the gate working; budget the run.
+  that gate's marker — the gate working; budget the run.
 
 **Guardrails every lane prompt must carry** (each learned the hard way):
 
 - **Never force-push over a commit you did not author** — re-`git fetch` and
   inspect the branch first; STOP if it carries work you did not write.
 - **A new fixture literal must not collide with an existing assertion needle,
-  nor a new fixture RESOURCE with an existing resource's VALUE** (a
-  hard-coded URL user equal to the swept needle produced a false LEAK report
-  — worse than a missing assertion; an arm reusing a plaintext an existing
-  assertion owned failed on an assertion the lane never wrote,
-  go-to-k/cdkd#2270). When an arm makes two things equal, ask what ELSE holds
-  that value; scope the sharing. **And check the arm's shape actually
-  exercises the fix before spending a run** (two separate resources was
-  vacuous there — only one resource holding both leaves let the mechanism
-  under test decide the answer).
+  nor a new fixture RESOURCE with an existing resource's VALUE** (a hard-coded
+  URL user equal to the swept needle produced a false LEAK report, worse than a
+  missing assertion; an arm reusing a plaintext an existing assertion owned
+  failed on an assertion the lane never wrote, go-to-k/cdkd#2270). When an arm
+  makes two things equal, ask what ELSE holds that value; scope the sharing. **And check
+  the arm's shape actually exercises the fix before spending a run** (two
+  separate resources was vacuous — only one holding both leaves let the
+  mechanism under test decide).
 - **Execute every read expression you write** — jq / JMESPath / `--query`
   are untested code; run each against real output shape, in both directions
   where the expression carries a guard.
@@ -451,9 +454,8 @@ enforce quality yourself; the orchestrator still gates the MERGE.
   cannot produce without having run (`bytes 41822 -> 41799; anchor now 0
   (was 1)`), and read the receipt, not the exit code.
 - **A probe's FIXTURE, not its mutation, decided the outcome** — a region
-  test set `AWS_REGION` to the value where correct code and mutation bind
-  identically. When a probe comes back green, suspect the fixture first — and
-  especially an expected value COINCIDING with the ambient default
-  (assertions pinned to `'us-east-1'`, at once the fixture region and the
-  repo's fallback, left 434 tests green under substitution). Choose a value
-  the default can never produce.
+  test set `AWS_REGION` where correct code and mutation bind identically.
+  Suspect the fixture first when a probe comes back green, especially an
+  expected value COINCIDING with the ambient default (`'us-east-1'` is at once
+  the fixture region and the repo's fallback; 434 tests stayed green under
+  substitution). Choose a value the default can never produce.

@@ -363,7 +363,22 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // failed this row for a reason unrelated to itself -- the same argument that
   // moved CORPUS_BYTES_MAX. Measured 61,358 B (the 55,681 B beside the old cap
   // was 5,677 B stale).
-  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 68_000], // measured 61,358
+  // RE-DERIVED DOWNWARD 68_000 -> 52_000 on 2026-09-06, and the sibling
+  // `tests/setup.ts` cap with it: both bound a payload that IS `testing.md`
+  // (alone here, plus its satellite there), and both CAPS were left sized for
+  // the pre-compression file. Only THIS row's `measured` note was stale; the
+  // `tests/setup.ts` note tracked its payload correctly, and saying "both
+  // notes" was itself the defect this round is about -- the slack condition the
+  // s3-bucket-provider row above records as having "silently absorbed a whole
+  // 59 KB satellite". ~12% over the live payload is this table's convention,
+  // NOT a ratio recovered from this row's own history.
+  //
+  // Read both as dead-slack removal, not as the live fence. What actually
+  // stops `testing.md` growing is the `tests/setup.ts` GUTTING case below,
+  // which binds first and by a wide margin; a first draft of this comment
+  // called this row "the binding fence on it" and review measured that false.
+  // Caps move DOWN with a shrinking payload, never up to fit a growing one.
+  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 52_000], // measured 46,373 on 2026-09-06
   // hooks.md WAS this path's only matcher, and while that held the cap was
   // dominated by MAX_RULE_FILE_BYTES no matter where it sat: at 135_000 (as
   // shipped) it was 15,000 B past the per-file cap and could not fire at all;
@@ -452,7 +467,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 48_000, 72_000],                            // measured  49,677 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
+  ['tests/setup.ts', 48_000, 56_000],                            // measured  49,793 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
   // 46_000 -> 48_000 on 2026-09-05: the go-to-k/cdkd#2595 retro added 1,126 B of
   // mutation-probe rules to `testing.md`, and the discriminate case below went
   // red exactly as its comment predicts ("testing.md growing spends it from the
@@ -471,12 +486,27 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // usable room is 242 B and an addition of 243 B reds the discriminate case
   // below. The fix is compression there,
   // not a bigger number here. Unlike the skill corpus, this file has no
-  // MEASURED record, so these three figures are the only thing that goes
-  // stale silently; re-measure them in any commit that touches `testing.md`.
+  // MEASURED record, so these figures are the only thing that goes stale
+  // silently; re-measure them in any commit that touches `testing.md` -- these,
+  // plus the `measured` figure and the cap on the rule-file-payload.test.ts row
+  // above and this row's own cap, and the `testing.md (46,373 B)` figure in
+  // the gutting case below -- all of which bound, or are, a payload that IS
+  // `testing.md`. Deliberately not stated as a COUNT: this sentence said
+  // "three" while enumerating more, twice.
+  // RE-MEASURED 2026-09-05 after the work-issues retro escalated its
+  // one-sided-fence rule into `testing.md` (+256 B of rule, 140 B of it paid
+  // back by compressing three neighbouring mutation bullets, 46,257 -> 46,373 B
+  // net): payload 49,677 -> 49,793, gutting bound 47,757 -> 47,873, usable
+  // room 242 -> 126 B. Compression there is the only way to buy that back.
+  // The two components are segmented at the BULLET boundary (the rule's own
+  // bullet 113 -> 369 B; the three compressed ones 1,595 -> 1,455 B) and sum
+  // to the net -- an earlier draft said 207/91, which summed to the right 116
+  // by luck and matched no definition of either part. Both review axes caught
+  // it independently, on the file that exists to stop exactly this.
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above
-  // `testing.md` (46,257 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
+  // `testing.md` (46,373 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
   // `test-stream-fence.md` down to the smallest size the `substantive content`
   // case still allows fails HERE. 51_000, 57_000 and 62_000 were each chosen by
   // hand and each failed to add signal: the first two sat below `testing.md`

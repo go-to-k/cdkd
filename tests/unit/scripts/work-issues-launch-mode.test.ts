@@ -819,3 +819,191 @@ describe('work-issues launch-mode probe', () => {
     });
   });
 });
+
+/**
+ * §2's per-worktree probe must range over the BRANCH, not one commit.
+ *
+ * WHY HERE. This file already owns "a withdrawn command cannot come back", and
+ * that is exactly the failure mode: `show --stat HEAD` reads ONE commit, so a
+ * lane several commits deep is under-reported and the collision scan calls a
+ * held file free. Measured 2026-09-05 on a worktree ten commits ahead of
+ * `origin/main` — `show --stat HEAD` reported 1 of the 5 files it held, hiding
+ * `CLAUDE.md`, and a triage sub-agent reported "no collision" on that basis.
+ * Nothing mechanical watched the probe, so a future edit could silently restore
+ * the single-commit form and every suite would stay green (the same argument
+ * this file's header makes for the launch-mode section).
+ *
+ * The fence is deliberately scoped to COMMAND LINES. The rationale prose beside
+ * the block has to keep naming `show --stat HEAD` to say what was wrong with it,
+ * and a blanket ban would forbid the explanation — so the two halves are pinned
+ * in OPPOSITE directions: absent from the commands, PRESENT in the prose. A cap
+ * with no floor rewards the inverse regression (deleting the rationale would
+ * otherwise read as a pass), which is the rule this same run added to
+ * `.claude/rules/testing.md`.
+ */
+describe('work-issues section 2 worktree probe', () => {
+  const TRIAGE = join('references', 'triage.md');
+
+  /**
+   * ONE extraction feeds every case below, and getting it right took five
+   * drafts -- each of which passed its own battery, because each battery varied
+   * only what the PREVIOUS round had found. That is the whole lesson: a fence's
+   * battery inherits the imagination of the round that wrote it.
+   *
+   * Draft 2 used `bashBlocks`, which sees only a column-0 ```bash fence, so the
+   * withdrawn command survived as ```sh, bare ```, or indented. Draft 3 went
+   * line-based and closed those while going blind to every command whose line
+   * does not START with git (`cd … && git show`, a `for` body, an `env` prefix,
+   * a `\`-continuation) -- and regressed the FLOOR with it. Draft 4 took the
+   * union but still anchored the outside-fence half on a line-leading git, so a
+   * list item, blockquote or table cell escaped. Draft 5 widened that to a
+   * character class, which still let `**git …**`, `"git …"`, `[git …](#x)` and
+   * `<code>git …</code>` through -- a class enumerating delimiters is the same
+   * mistake one level down.
+   *
+   * So the matcher is now the weakest thing that cannot be evaded by
+   * PUNCTUATION: the token itself. Measured across all 11 docs, that yields
+   * zero false positives for the ban.
+   *
+   * `bashBlocks` is deliberately untouched -- the section 9 block fences depend
+   * on its contract, and widening a shared recogniser to suit one caller is how
+   * those change meaning silently.
+   */
+  const scanFences = (text: string): { fenced: boolean[]; unterminated: boolean } => {
+    // Tracks the OPENING run's char and length. A plain toggle desyncs on a
+    // nested or four-backtick fence -- the inner marker flips it CLOSED and
+    // every later line reads inverted -- and ignores ~~~ entirely.
+    let open: string | null = null;
+    const fenced = text.split('\n').map((line) => {
+      const m = /^\s*(`{3,}|~{3,})/.exec(line);
+      if (m) {
+        const run = m[1]!;
+        if (open === null) {
+          open = run;
+          return false;
+        }
+        if (run[0] === open[0] && run.length >= open.length) {
+          open = null;
+          return false;
+        }
+      }
+      return open !== null;
+    });
+    return { fenced, unterminated: open !== null };
+  };
+
+  /** The git TOKEN, anywhere. Not a delimiter class -- see the note above. */
+  const CONTAINS_GIT = /\bgit\b/;
+  /** First token is a git call. Narrow, and used only to exclude prose from the floor. */
+  const GIT_LINE = /^\s*\$?\s*git\b/;
+
+  const commandUnits = (doc: string): string[] => {
+    const text = read(doc);
+    const { fenced } = scanFences(text);
+    const picked: Array<{ i: number; line: string }> = [];
+    text.split('\n').forEach((line, i) => {
+      if (fenced[i] || CONTAINS_GIT.test(line)) picked.push({ i, line });
+    });
+    // Join `\` continuations, but only across ADJACENT source lines: `picked`
+    // is filtered, so an index-blind join fuses a `\`-terminated line with the
+    // next PICKED line anywhere later and fabricates a command that never
+    // existed. (Outside a fence the continuation line usually carries no `git`
+    // and so is never picked -- the join is effective inside fences, which is
+    // where the skill's wrapped commands live.)
+    const units: string[] = [];
+    let previousIndex = -2;
+    for (const { i, line } of picked) {
+      const prev = units[units.length - 1];
+      if (prev !== undefined && i === previousIndex + 1 && /\\\s*$/.test(prev)) {
+        units[units.length - 1] = `${prev.replace(/\\\s*$/, ' ')}${line.trim()}`;
+      } else {
+        units.push(line);
+      }
+      previousIndex = i;
+    }
+    return units;
+  };
+
+  /**
+   * `git … show … --stat`-family, either flag order. `show\s+` is what excludes
+   * `--show-current`: a `-` follows the word, so `\s+` cannot match. Measured,
+   * because an earlier revision credited the `(?<![-\w])` lookbehind for that
+   * and the lookbehind is INERT here -- it only blocks a `show` glued to a
+   * preceding word or dash (`--show `, `reshow `). Kept as belt-and-braces, and
+   * described as that rather than as the thing doing the work.
+   */
+  const SINGLE_COMMIT =
+    /\bgit\b.*(?<![-\w])show\s+.*--(?:[a-z-]*stat\b|name-only\b|name-status\b)/;
+
+  /**
+   * A peer-worktree probe addresses `<MAIN_CHECKOUT>`. That qualifier is what
+   * lets ONE wide extraction serve both questions: `launch-mode.md` discusses
+   * this probe in prose, and its bullet naming the WRONG relative form
+   * (`.claude/worktrees/<w>`, no `<MAIN_CHECKOUT>`) was reported as a duplicate
+   * when the predicate was the bare token. A doc talking about the probe is not
+   * a second copy of it.
+   */
+  const peerProbes = (doc: string): string[] =>
+    commandUnits(doc).filter((u) => /<MAIN_CHECKOUT>[^\n]*worktrees\/<w>/.test(u));
+
+  it('every doc closes its fences, so the scan cannot read inverted', () => {
+    // Asserts the STATE MACHINE, not marker parity. A parity count fails on a
+    // legitimate nested fence (three markers, balanced) and passes on an
+    // unterminated four-backtick one (two markers) -- both measured, and both
+    // the wrong answer.
+    const unterminated = skillDocs().filter((doc) => scanFences(read(doc)).unterminated);
+    expect(unterminated, 'an unterminated fence makes every later line read as a command').toEqual(
+      [],
+    );
+  });
+
+  it('only section 2 probes a peer worktree', () => {
+    expect(
+      skillDocs().filter((doc) => peerProbes(doc).length > 0),
+      'the per-worktree probe belongs to section 2 and nowhere else; a second copy drifts',
+    ).toEqual([TRIAGE]);
+  });
+
+  it('ranges over origin/main...HEAD, and no doc still reads a single commit', () => {
+    const probes = peerProbes(TRIAGE);
+    expect(probes.length, 'the per-worktree probe is gone from section 2').toBeGreaterThan(0);
+    expect(
+      probes.some((u) => u.includes('diff --name-only origin/main...HEAD')),
+      `the probe must range over the branch; its commands were:\n${probes.join('\n')}`,
+    ).toBe(true);
+
+    const singleCommit = skillDocs().flatMap((doc) =>
+      commandUnits(doc)
+        .filter((u) => SINGLE_COMMIT.test(u))
+        .map((u) => `${doc}: ${u.trim()}`),
+    );
+    expect(
+      singleCommit,
+      'a `git show --stat` reads ONE commit and under-reports a multi-commit lane; that form ' +
+        'was withdrawn on 2026-09-05. PROSE IS SCANNED TOO, so naming it in an explanation ' +
+        'means writing the flags WITHOUT the literal `git` token, the way triage.md section 2 ' +
+        'does -- which is also why the floor below looks for `show --stat HEAD` and not for ' +
+        'the whole command',
+    ).toEqual([]);
+  });
+
+  it('still explains WHY the range is load-bearing, in prose', () => {
+    // The FLOOR, and the half that has broken twice. Prose means: outside every
+    // fence, not a command, not a comment, not an indented code block, and not
+    // inside an HTML comment -- a `<!-- … -->` carrier satisfied this while
+    // rendering invisible.
+    const text = read(TRIAGE).replace(/<!--[\s\S]*?-->/g, '');
+    const { fenced } = scanFences(text);
+    const prose = text
+      .split('\n')
+      .filter(
+        (line, i) =>
+          !fenced[i] && !GIT_LINE.test(line) && !/^\s*#/.test(line) && !/^ {4,}\S/.test(line),
+      )
+      .join('\n');
+    expect(
+      prose,
+      'the paragraph naming what `show --stat HEAD` got wrong is the reason the range exists',
+    ).toContain('show --stat HEAD');
+  });
+});

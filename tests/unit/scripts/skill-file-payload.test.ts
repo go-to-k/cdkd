@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 172_956,
-    largest: { file: 'verify.md', bytes: 28_154 },
-    runnerUp: { file: 'implement.md', bytes: 28_079 },
+    corpusBytes: 173_046,
+    largest: { file: 'implement.md', bytes: 28_240 },
+    runnerUp: { file: 'verify.md', bytes: 28_154 },
   },
 };
 
@@ -136,11 +136,11 @@ const MIN_REFERENCE_FILES = 6;
 // here.
 // RE-DERIVED DOWNWARD 208_000 -> 145_000 by the 2026-09-04 corpus compression
 // pass, exactly the move the assertion's failure message prescribes for a
-// genuine compression ("re-derive it DOWNWARD in the same commit"). Inputs are
-// in MEASURED and asserted: corpus 171,399 B, largest verify.md 27,036 B,
-// runner-up implement.md 26,541 B. The floor must clear `corpus - largest`
-// (144,363) and `corpus - runnerUp` (144,858, the binding direction);
-// 145,000 clears them by 637 and 142 B. Growth in a NON-leader file erodes
+// genuine compression ("re-derive it DOWNWARD in the same commit"). Its inputs
+// AT THAT DATE -- not now; MEASURED holds the live ones and the assertion
+// recomputes the property -- were corpus 171,399 B, largest verify.md 27,036 B,
+// runner-up implement.md 26,541 B, clearing `corpus - largest` (144,363) and
+// `corpus - runnerUp` (144,858, the binding direction) by 637 and 142 B. Growth in a NON-leader file erodes
 // the either-largest margin first -- MEASURED's failure message reports both
 // margins, so the next lapse reds this file at the commit that causes it.
 // The 2026-09-04 retro (go-to-k/cdkd#2514's run) spent most of the 3,366 B the
@@ -337,6 +337,59 @@ const MIN_REFERENCE_FILES = 6;
 // survives here is MEASURED's four fields and the per-file components, both
 // checkable with `wc -c` against origin/main; every count that was merely
 // counted has been dropped.
+// The 2026-09-05 deploy-batch retro (go-to-k/cdkd#2634 / go-to-k/cdkd#2649 /
+// go-to-k/cdkd#2674) landed two rules here: triage.md section 2's worktree
+// probe now ranges over `origin/main...HEAD` (`show --stat HEAD` reads ONE
+// commit, and read 1 of the 5 files a ten-commit lane held), and implement.md
+// section 5-g's fan-out sentence now names the REPORT SHAPE. Components:
+// triage.md 26,084 -> 26,219 (+135), implement.md 28,079 -> 28,240 (+161),
+// gotchas.md 8,045 -> 7,938 (-107), retro.md 17,625 -> 17,585 (-40),
+// claim.md 7,704 -> 7,645 (-59), = +90. Corpus 172,956 -> 173,046. The leader
+// FLIPPED -- implement.md overtakes verify.md -- so `largest` and `runnerUp`
+// SWAP above and the binding bound becomes `corpus - verify.md`.
+//
+// The payment was DISPLACEMENT, not compression: gotchas.md was restating
+// section 2's two live-lane probes in full, and retro.md and claim.md each
+// carried a bare "English only" line for a rule CLAUDE.md owns and two hooks
+// enforce (`non-english-text-gate`, `gh-body-english-gate` -- both live-probed
+// in review against the exact removed contexts, including the `--body` form
+// claim.md prescribes). A prose copy of a hook-enforced rule is paid for in
+// every lane and stops nothing.
+//
+// WHAT THIS ROUND COST, AND THE ONE DISTINCTION WORTH KEEPING. Four review
+// rounds produced SEVEN wrong figures here, and a first attempt at this
+// paragraph answered by deleting ALL of its arithmetic. That over-corrected,
+// and review caught it: re-derived at the commit that wrote them, the per-file
+// COMPONENTS were right 5 for 5, every time. The seven wrong ones were a
+// different class -- an attribution against a commit range that dies at the
+// squash merge, a component SPLIT, a ratio, a "most of" claim, a line
+// distance, a count, and a cross-file band. So the rule is not "state no
+// numbers": it is that a component is a `wc -c` of a file at a sha and is
+// re-derivable forever, while a DERIVED figure is checked by nothing and has
+// never once survived a round here. State components; do not state deltas
+// about deltas. And state them HERE rather than trusting `wc -c` against
+// origin/main, because after this squashes, origin/main IS the after-side and
+// the before-side is only in this comment -- which is why every entry above
+// carries its components too.
+//
+// Two further lessons landed OUTSIDE this corpus and cost it nothing:
+// `.claude/rules/testing.md` (a guard's uses are its CALL SITES, not the first
+// one) and a fence in work-issues-launch-mode.test.ts pinning the ranged
+// probe. Read that fence's own history before writing the next one, because it
+// is the sharpest thing this round produced. Every draft of it failed in the
+// class the fence exists to catch: an inert FLOOR; then a recogniser seeing
+// only column-0 ```bash fences; then a line scan that closed those, regressed
+// the floor, and went blind to any command whose line does not start with
+// `git`; then a union still anchored on a line-leading git, so a bullet or
+// blockquote escaped; then a delimiter CLASS, which still let `**git …**`,
+// `"git …"` and `<code>git …</code>` through. Each passed its own battery,
+// because each battery varied only what the PREVIOUS round had found -- fence
+// style, then command shape, then carrier, then delimiter. It ends on the
+// weakest matcher that punctuation cannot evade, the token `git` itself, with
+// the peer predicate qualified by `<MAIN_CHECKOUT>` so one extraction serves
+// both questions.
+// If there is one transferable lesson here it is that a fence's battery
+// inherits the imagination of the round that wrote it.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller

@@ -94,9 +94,9 @@ For each active worktree, find what it ACTUALLY edits:
 # nothing when run IN-PLACE, and the scan reports an empty board — the exact
 # failure this stage exists to prevent. Substitute the recorded path; never
 # `$MAIN_CHECKOUT`, which is empty in this shell.
-git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" log --oneline -1     # the issue it owns
-git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" show --stat HEAD     # files that commit touches
-git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" status --porcelain   # editing RIGHT NOW
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" log --oneline -1                     # the issue it owns -- or main's tip, on a lane yet to commit
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" diff --name-only origin/main...HEAD  # EVERY file it holds
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" status --porcelain                   # editing RIGHT NOW
 ```
 
 **A branch `origin/main..<branch>` reports as ahead is NOT necessarily
@@ -108,9 +108,10 @@ treated as a live peer and a lane wrongly narrowed its scope; the commit had
 merged nine hours earlier as go-to-k/cdk-real-drift#1853). This is the ONE
 probe here that can manufacture a false POSITIVE — argue it DOWN.
 
-The first two worktree probes read COMMITTED state, so on an uncommitted lane
-they describe its base commit rather than the file it holds: where they
-disagree with `status --porcelain`, **the dirty tree is the authority**. A
+The first two probes read COMMITTED state and say nothing about an uncommitted
+lane; the RANGE is load-bearing (`show --stat HEAD` read 1 of the 5 files a
+ten-commit lane held, 2026-09-05). Where they disagree with
+`status --porcelain`, **the dirty tree is the authority**. A
 worktree still on `main`'s tip looks like residue exactly when it is likeliest
 to be a lane writing right now, and its issue thread — a worktree is NAMED for
 the issue its lane took — is the only mark a lane seconds old has left (§9's

@@ -5,11 +5,9 @@
 - **Claim before editing, always** — an unclaimed lane races a parallel agent
   onto the same cross-cutting file. **Claiming is not winning**: read it back
   and yield to an earlier `createdAt` (§4).
-- **A pushed branch with no PR is a live lane.** `gh pr list` goes blind
-  between a lane's first push and its `gh pr create`;
-  `git for-each-ref --sort=-committerdate refs/remotes/origin` after a fetch
-  sees the push (§2). The window that is the claim's alone is the mirror — a
-  lane with a worktree and nothing pushed (§3, §9).
+- **A pushed branch with no PR is a live lane**, and its mirror — a worktree
+  holding commits it has not pushed — is the window only the claim covers. §2
+  owns both probes; this bullet does not restate them (§3, §9).
 - **A fresh issue is someone's deferral, not free backlog** (§3-0). The author
   field proves nothing about which session filed it; the 60-minute window is
   the whole defence — and §4 is its other half: claim what you FILE, not only
@@ -102,8 +100,8 @@
   fan-out run spends most wall-clock parked (lane subagents, `gh pr checks
   --watch`, `/run-integ`) — every one is **WAITING**, not STOPPED: one line
   per lane, naming the lane and its signal. STOPPED only when every lane is
-  merged. **ARM the signal BEFORE you write the line** (measured: a run wrote
-  `WAITING — Signal: gh pr checks`, armed nothing, and simply ended).
+  merged. CLAUDE.md owns the arm-it-first rule; the incident behind it is a run
+  that wrote `WAITING — Signal: gh pr checks`, armed nothing, and ended.
 - **A lane needing a user decision goes through `AskUserQuestion`, never
   prose** — a prose question ends the turn as STOPPED and loses the other
   lanes' momentum. That prompt is CHAT, not a published artifact, so it goes
