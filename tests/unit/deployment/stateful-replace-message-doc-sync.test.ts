@@ -35,6 +35,11 @@ const SOURCE_PATHS = {
   // interpolates is NOT in the engine source at all — a fence that looked only
   // at the engine could never see it drift.
   statefulTypes: join(repoRoot, 'src', 'provisioning', 'stateful-types.ts'),
+  // The confirm prompt owns two sentences no refusal contains: the
+  // probe-unresolved row and its UNKNOWN line (issue #2595). They are the only
+  // place the doc describes a target that PROCEEDS, so the engine and
+  // `renderStatefulReason` sources could never carry them.
+  prompt: join(repoRoot, 'src', 'cli', 'commands', 'recreate-confirm-prompt.ts'),
 } as const;
 const docPath = join(repoRoot, 'docs', 'cli-deploy-safety.md');
 
@@ -91,6 +96,21 @@ const SHARED_PHRASES: ReadonlyArray<{
     source: 'statefulTypes',
     docOccurrences: 2,
   },
+  // Issue #2595's third display state. Both halves are watched, because they
+  // fail independently: the ROW says what is not known, the UNKNOWN line says
+  // what that costs, and dropping either one alone re-creates a screen that
+  // under-informs. Neither carries a `**DATA LOSS**` prefix, so nothing else
+  // in the doc distinguishes this row from a bucket measured empty.
+  {
+    phrase: 'emptiness NOT established: the live probe failed',
+    source: 'prompt',
+    docOccurrences: 1,
+  },
+  {
+    phrase: 'holds data, the destroy + recreate loses it',
+    source: 'prompt',
+    docOccurrences: 1,
+  },
 ];
 
 function occurrences(haystack: string, needle: string): number {
@@ -138,10 +158,19 @@ function flattenWhitespace(text: string): string {
 }
 
 describe('the stateful-replace refusal and its documented example stay in sync', () => {
-  const sources = {
-    engine: flattenWhitespace(readFileSync(SOURCE_PATHS.engine, 'utf8')),
-    statefulTypes: flattenWhitespace(readFileSync(SOURCE_PATHS.statefulTypes, 'utf8')),
-  };
+  // DERIVED from SOURCE_PATHS, not a hand-written twin of it. The twin was
+  // the shape, and it failed the first time a third source was added (issue
+  // #2595): the new path was declared above and never read here, so the two
+  // phrases keyed to it died on `undefined.split` — loudly, by luck. A missing
+  // entry for a source whose phrases all happened to be absent would instead
+  // have thrown the same way with a worse story, and adding an entry that
+  // reads nothing is not the kind of mistake a reviewer sees.
+  const sources = Object.fromEntries(
+    Object.entries(SOURCE_PATHS).map(([key, path]) => [
+      key,
+      flattenWhitespace(readFileSync(path, 'utf8')),
+    ])
+  ) as Record<keyof typeof SOURCE_PATHS, string>;
   const doc = readFileSync(docPath, 'utf8');
   const docBlocks = fencedTextBlocks(doc).map(flattenWhitespace);
   /**
@@ -154,7 +183,7 @@ describe('the stateful-replace refusal and its documented example stay in sync',
     docBlocks.reduce((total, block) => total + occurrences(block, needle), 0);
 
   it('checks every phrase (floor, so a shrunken list cannot pass vacuously)', () => {
-    expect(SHARED_PHRASES).toHaveLength(5);
+    expect(SHARED_PHRASES).toHaveLength(7);
   });
 
   it('actually captured the blocks it claims to scan', () => {

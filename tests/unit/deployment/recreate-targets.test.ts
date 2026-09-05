@@ -1019,6 +1019,43 @@ describe('probeStatefulRecreateTargetsAsync (#648)', () => {
     expect(sentCommands).toHaveLength(1);
     expect(out[0]!.statefulReason).toBe(null);
     expect(logger.warn).toHaveBeenCalledTimes(1);
+    // Issue #2595: the verdict stays null (fail OPEN, unchanged) but the
+    // target now CARRIES that nothing was established, which is what lets the
+    // confirm prompt distinguish it from a bucket measured empty.
+    expect(out[0]!.probeUnresolved).toBe(true);
+  });
+
+  it('does NOT mark probeUnresolved when the probe ANSWERED — the flag distinguishes unknown from measured', async () => {
+    // Both measured outcomes, in one case, because the flag's whole job is to
+    // separate them from the failure above: a flag set unconditionally, or
+    // never set, is invisible to a test that only ever probes one of them.
+    const empty = mockS3({ versions: 0, deleteMarkers: 0 });
+    const nonEmpty = mockS3({ versions: 1 });
+    const emptyOut = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: empty.client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
+    const nonEmptyOut = await probeStatefulRecreateTargetsAsync(
+      [s3Target()],
+      { s3: nonEmpty.client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
+    expect(emptyOut[0]!.statefulReason).toBe(null);
+    expect(emptyOut[0]!.probeUnresolved).toBeUndefined();
+    expect(nonEmptyOut[0]!.statefulReason).toBe('has-objects');
+    expect(nonEmptyOut[0]!.probeUnresolved).toBeUndefined();
+  });
+
+  it('does NOT mark probeUnresolved on a target whose sync reason was already non-null — it never reaches the probe', async () => {
+    const { client } = mockS3({ throws: new Error('AccessDenied') });
+    const out = await probeStatefulRecreateTargetsAsync(
+      [s3Target({ statefulReason: 'always' })],
+      { s3: client, cloudWatchLogs: forbiddenLogsClient() },
+      silentLogger()
+    );
+    expect(out[0]!.statefulReason).toBe('always');
+    expect(out[0]!.probeUnresolved).toBeUndefined();
   });
 });
 

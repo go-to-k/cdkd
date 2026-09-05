@@ -78,6 +78,29 @@ export interface RecreateTarget {
    * post-recreate state record.
    */
   direction: 'to-cc-api' | 'to-sdk';
+  /**
+   * The live emptiness probe RAN and FAILED, so nothing was established
+   * about this resource's contents (issue [#2595]).
+   *
+   * A sibling field rather than a `StatefulReason` value, and that is the
+   * whole design: a reason value would make the target `stateful` and REFUSE
+   * it, which is the fail-CLOSED flip this deliberately does not make. The
+   * S3 arm fails OPEN by design (issue [#648], published in
+   * `docs/cli-deploy-safety.md`) — a role without `s3:ListBucketVersions`
+   * must still be able to recreate an empty bucket without
+   * `--force-stateful-recreation`. What was wrong was not the routing but
+   * the SCREEN: with `statefulReason` left at `null`, a bucket nothing could
+   * be learned about was rendered exactly like one the probe measured and
+   * found empty, on the one screen a user reads before consenting to a
+   * DELETE + CREATE. This field carries the difference to the display
+   * without touching the verdict.
+   *
+   * Only the S3 arm ever sets it. The log-group arm promotes on BOTH of its
+   * failure paths, so a failed probe there is already non-`null` and can
+   * never reach this state — the fail-closed half of the deliberate
+   * asymmetry.
+   */
+  probeUnresolved?: boolean;
 }
 
 /**
@@ -764,7 +787,11 @@ export async function probeStatefulRecreateTargetsAsync(
             `--force-stateful-recreation. Underlying error: ` +
             `${e instanceof Error ? e.message : String(e)}`
         );
-        promoted.push({ ...target });
+        // The verdict stays `null` — the fail-OPEN posture is unchanged — but
+        // the target now CARRIES the fact that nothing was established, so
+        // the confirm prompt can say so instead of rendering it identically
+        // to a bucket measured empty (issue [#2595]).
+        promoted.push({ ...target, probeUnresolved: true });
       }
       continue;
     }

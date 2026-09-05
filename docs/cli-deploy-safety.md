@@ -259,6 +259,20 @@ targets in both directions produces one plan carrying both direction tags.
   probe result to go on, every S3 bucket and every log group in the plan is
   shown as data-bearing. The plan errs toward warning, because an emptiness
   nothing measured is not an emptiness.
+- A bucket whose emptiness probe **ran and failed** — a role without
+  `s3:ListBucketVersions`, or a rate limit that outlived the retries — is
+  shown as a third case, neither of the two above. It still proceeds, because
+  the S3 probe fails open by design, but its row says so:
+
+  ```text
+    - MyBucket (AWS::S3::Bucket) [SDK → CC] — emptiness NOT established: the live probe failed, so cdkd does not know whether this resource holds data
+      UNKNOWN: if MyBucket holds data, the destroy + recreate loses it (no automatic data migration)
+  ```
+
+  No `**DATA LOSS**` prefix, because cdkd observed no contents and will not
+  assert any; no silence either, which would have made it indistinguishable
+  from a bucket the probe measured and found empty. A log group cannot reach
+  this case — its probe promotes on both failure paths.
 
 ### Cross-stack reference propagation
 

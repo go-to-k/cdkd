@@ -128,19 +128,39 @@ export async function promptRecreateConfirm(input: {
     // does not hold, which is the same class of overstatement, pointed the
     // other way, that issue [#2558] is about. (The log group's own reason IS
     // hedged, but the bucket shares this line, so the hedge has to live here.)
+    // The THIRD state (issue [#2595]): the probe ran and FAILED, so the
+    // verdict is `null` — the S3 arm fails open by design — but nothing was
+    // established. Rendered like neither of the other two: silence would be
+    // the bug (indistinguishable from a bucket measured EMPTY on the only
+    // screen the user reads before consenting), and `**DATA LOSS**` would
+    // assert contents cdkd did not observe, the overstatement the two
+    // sentences above already refuse to make. So: no prefix, no DATA line,
+    // and an explicit note that the question is open.
+    // The `!stateful` term is REDUNDANT today and kept for readability, not
+    // for behaviour: both consumers below test `stateful` first, so a measured
+    // verdict already wins whatever this says. Measured — deleting the term
+    // leaves the whole suite green, while REORDERING either consumer reds four
+    // cases. What is load-bearing is that ordering, not this conjunct.
+    const unresolved = !stateful && t.probeUnresolved === true;
     const stateNote = stateful
       ? ` — stateful (${
           rederived
             ? 'emptiness not established — --force-stateful-recreation skips the probe'
             : renderStatefulReason(reason)
         }); --force-stateful-recreation acknowledged`
-      : '';
+      : unresolved
+        ? ' — emptiness NOT established: the live probe failed, so cdkd does not know whether this resource holds data'
+        : '';
     logger.warn(
       `  - ${dataLossPrefix}${t.logicalId} (${t.resourceType})${directionTag}${stateNote}`
     );
     if (stateful) {
       logger.warn(
         `    DATA: all data in ${t.logicalId} will be lost (no automatic data migration)`
+      );
+    } else if (unresolved) {
+      logger.warn(
+        `    UNKNOWN: if ${t.logicalId} holds data, the destroy + recreate loses it (no automatic data migration)`
       );
     }
   }
