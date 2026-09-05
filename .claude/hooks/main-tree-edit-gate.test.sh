@@ -103,6 +103,187 @@ run_case 0 "Bash '>> article.md' on main in non-opted-in repo" \
   "$(jq -nc --arg cmd "echo more >> $OPTOUT/article.md" --arg cwd "$OPTOUT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
+# 11-13. A QUOTED or ESCAPED `cd` must steer the gate exactly as the literal
+# one does (go-to-k/cdkd#2614). The payload cwd is a DIFFERENT tree on purpose,
+# so the command's own `cd` is the only thing that can reach the main tree --
+# without it these read as "wrote a relative path somewhere else" and pass for
+# the wrong reason. Measured against the pre-fix hook: the literal spelling
+# exited 2 while all three of these exited 0, because the gate matched the verb
+# `cd` as literal text while already unquoting its VALUE one line later.
+for cd_spelling in '"cd"' "'cd'" '\cd'; do
+  run_case 2 "Bash ${cd_spelling} <main tree> && '> ledger.tsv'" \
+    "$(jq -nc --arg cmd "${cd_spelling} $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+
+# 14. The literal control for the three above, from the SAME foreign cwd -- so
+# a change that broke `cd` resolution entirely would redden this too rather
+# than leaving the trio passing vacuously.
+run_case 2 "Bash literal cd <main tree> && '> ledger.tsv'" \
+  "$(jq -nc --arg cmd "cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 15. And the other direction: a `cd` into the FEATURE worktree must still
+# pass, so the fix cannot be "resolve every cd to the main tree".
+run_case 0 "Bash \"cd\" <feature worktree> && '> ledger.tsv'" \
+  "$(jq -nc --arg cmd "\"cd\" $WT && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 16-23. A `cd` AFTER the write must not move the base, and neither must one
+# inside a subshell or a substitution (go-to-k/cdkd#2614 review). The first
+# revision of that fix handed the WHOLE command to `cmd_last_cd_target`, which
+# follows every `cd` in command position -- the library's own doc names a
+# trailing one hijacking the lookup as the hazard its VERB argument exists for,
+# and this gate has no verb. Measured against that revision, all eight of these
+# were rc=0: the gate's own founding incident, reachable with ten characters of
+# ordinary shell and no quoting trick at all.
+for after in 'cd /tmp' 'cd /tmp \&\& ls'; do
+  run_case 2 "Bash '> ledger.tsv' then '&& $after' in main tree" \
+    "$(jq -nc --arg cmd "echo hi > docs/_generated/ledger.tsv && $after" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+run_case 2 "Bash '> ledger.tsv' then '; cd /tmp' in main tree" \
+  "$(jq -nc --arg cmd "echo hi > docs/_generated/ledger.tsv; cd /tmp" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash 'tee ledger.tsv' then '&& cd /tmp' in main tree" \
+  "$(jq -nc --arg cmd "echo x | tee docs/_generated/ledger.tsv && cd /tmp" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash new src/ file then '&& cd /tmp' in main tree" \
+  "$(jq -nc --arg cmd "echo hi > src/brandnew.ts && cd /tmp" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# A SUBSHELL cd does not move the caller's cwd, and `$( )` is the ordinary
+# path-resolution idiom -- `.claude/hooks/**` carries it in ~20 files, so this
+# one fires by accident rather than by contrivance.
+run_case 2 "Bash '> ledger.tsv' then a SUBSHELL cd in main tree" \
+  "$(jq -nc --arg cmd "echo hi > docs/_generated/ledger.tsv && (cd /tmp && ls)" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash '> ledger.tsv' then a SUBSTITUTION cd in main tree" \
+  "$(jq -nc --arg cmd "echo hi > docs/_generated/ledger.tsv; x=\$(cd /tmp && pwd)" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash the 2026-06-21 ledger shape, with a trailing cd" \
+  "$(jq -nc --arg cmd "printf 'a\tb\n' >> docs/_generated/ledger.tsv && cd $WT && git status" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 24-26. The SAME root cause in the opposite direction: writing inside the
+# FEATURE worktree and then running the standing post-merge `cd <main> && git
+# pull` was rc=2 on that revision -- a block naming a file the command never
+# touches. Both directions are fixed by bounding the scan, so both are pinned.
+run_case 0 "Bash write in feature tree then '&& cd <main> && git pull'" \
+  "$(jq -nc --arg cmd "echo hi > docs/_generated/ledger.tsv && cd $MAIN && git pull" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# The scan is ANCHORED, so a `cd` that is not the first command is not
+# followed and the base stays the payload cwd -- here the feature worktree, so
+# the write is unprotected and this PASSES. Same answer as origin/main.
+run_case 0 "Bash a SUBSHELL cd <main> before a write in the feature tree" \
+  "$(jq -nc --arg cmd "(cd $MAIN && git fetch) && echo hi > docs/x" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash a SUBSTITUTION cd <main> before a write in the feature tree" \
+  "$(jq -nc --arg cmd "sha=\$(cd $MAIN && git rev-parse HEAD); echo \$sha > docs/x" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 27. And the control the eight above need: a `cd` BEFORE the write still
+# moves the base, or they would all pass for the wrong reason.
+run_case 0 "Bash 'cd /tmp && > ledger.tsv' still resolves to /tmp" \
+  "$(jq -nc --arg cmd "cd /tmp && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 28-30. Carry-forward from the go-to-k/cdkd#2614 review of the bounded scan.
+# `tee` is matched WITHOUT a trailing space -- requiring one let `tee\t<file>`
+# through, a write the gate is supposed to see.
+run_case 2 "Bash 'tee<TAB>ledger.tsv' then '&& cd /tmp' in main tree" \
+  "$(jq -nc --arg cmd "$(printf 'echo x | tee\tdocs/_generated/ledger.tsv && cd /tmp')" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# A command carrying BOTH a substitution and a backtick span: an earlier
+# revision picked the opening delimiter from one arm and the CLOSING one by
+# re-testing the original string, so it stripped to the wrong closer and lost
+# the real `cd` after it.
+# KNOWN FALSE REFUSALS, and the declared price of an anchored scan: a command
+# whose FIRST segment is a substitution or a subshell has its real `cd` ignored,
+# so the base stays the payload cwd -- the main tree here -- and the write is
+# refused although it lands in the feature worktree. Loud, one rephrase away,
+# and the direction this repo prefers: three attempts to widen the scan each
+# traded this for a SILENT miss (go-to-k/cdkd#2650 carries the tables).
+run_case 2 "Bash a backtick span, a \$( ) span, then 'cd <wt>' and a write (false refusal)" \
+  "$(jq -nc --arg cmd "x=\`date\`; y=\$(pwd); cd $WT && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 2 "Bash the same two spans in the other order (false refusal)" \
+  "$(jq -nc --arg cmd "y=\$(pwd); x=\`date\`; cd $WT && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 31. Same class as 29-30: the `cd` is not first, so it is not followed. Kept
+# separate because a quoted `>` is what the TRUNCATION revision tripped over --
+# it dropped the `cd` too, but silently BYPASSED instead of refusing whenever
+# the payload cwd was a feature worktree. Pinning the refusing answer here is
+# what makes that regression visible if the scan is ever widened again.
+run_case 2 "Bash a quoted '>' before a real cd (false refusal)" \
+  "$(jq -nc --arg cmd "echo \"a > b\" && cd $WT && echo x > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 32-34. THE OTHER POLARITY OF 29-31, and the reason it is pinned: those three
+# are described as false refusals, and from a main-tree cwd they are. Run from
+# a FEATURE-worktree cwd with the `cd` pointing at the MAIN tree they are the
+# same miss with the sign flipped -- the gate exits 0 and the write really does
+# land on the main tree's tracked ledger. Round 3 of go-to-k/cdkd#2614 shipped
+# exactly this shape while its comment claimed "loud direction", so the claim
+# is now pinned in both polarities rather than asserted in one. INHERITED from
+# origin/main, not introduced here; widening the scan to close it is
+# go-to-k/cdkd#2650.
+run_case 0 "Bash a backtick + \$( ) span then 'cd <main>' and a write (INVERTED: a silent miss)" \
+  "$(jq -nc --arg cmd "x=\`date\`; y=\$(pwd); cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash the same two spans in the other order (INVERTED: a silent miss)" \
+  "$(jq -nc --arg cmd "y=\$(pwd); x=\`date\`; cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash a quoted '>' then 'cd <main>' and a write (INVERTED: a silent miss)" \
+  "$(jq -nc --arg cmd "echo \"a > b\" && cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 35-42. The VERB unquoting, against what bash actually does. A blanket
+# backslash strip here manufactured a `cd` bash never runs and moved the base
+# AWAY from the protected tree -- measured, the tracked file really was
+# overwritten in a sandbox copy.
+#
+# EACH CASE BUILDS ITS SPELLING EXPLICITLY rather than looping over quoted
+# literals. A `for` loop over single-quoted elements keeps the backslashes
+# literal, so an earlier revision fed `"\\cd"` where its comment said `"\cd"`
+# -- not vacuous, but not the spelling the regression was measured on either,
+# and this suite has already shipped one genuinely vacuous case that way.
+# The name of each case is the spelling, and the command is built from the same
+# string.
+verb_case() { # <want> <verb-as-bash-would-see-it>
+  run_case "$1" "Bash a first token bash reads as [$2]" \
+    "$(jq -nc --arg cmd "$2 /tmp ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+}
+# NOT `cd` to bash -- each must leave the base alone, so the write resolves in
+# the main tree and BLOCKS.
+verb_case 2 "'\cd'"
+verb_case 2 '"\cd"'
+verb_case 2 '"c\d"'
+verb_case 2 '\\cd'
+verb_case 2 'c\\d'
+# ...and the ones bash really does read as `cd`, so the unescape cannot be
+# tightened into a refusal. `\c\d` is the longest spelling that reaches `cd`,
+# which is what the length bound on the unescape loop is derived from.
+verb_case 0 'cd'
+verb_case 0 '\cd'
+verb_case 0 'c\d'
+verb_case 0 '\c\d'
+verb_case 0 "'cd'"
+verb_case 0 '"cd"'
+
+# 46. UNDER-RECOGNITION, pinned rather than fixed. `c""d`, `"c"d`, `'c'd` and
+# `$(echo cd)` are `cd` to bash and not to this anchored regex, so the base is
+# not moved. From a main-tree cwd that refuses (loud); from a feature-worktree
+# cwd with the `cd` pointing at the main tree it is a silent miss, the same
+# class as cases 32-34. INHERITED -- origin/main, 62922e18 and HEAD all answer
+# the same. Reviewed and deliberately NOT fixed: the two revisions that caught
+# this class are the two that opened main-tree-cwd bypasses, so a sixth attempt
+# is the pattern this lane already paid for five times. go-to-k/cdkd#2650.
+run_case 0 "Bash a partially-quoted cd verb from a feature cwd (known silent miss)" \
+  "$(jq -nc --arg cmd "c\"\"d $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
 echo "----"
 echo "passed=$pass failed=$fail"
 [[ "$fail" -eq 0 ]]

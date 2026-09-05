@@ -730,22 +730,29 @@ gate_unquote_span() {
 #   for f in .claude/hooks/*.sh; do
 #     case "$f" in *.test.sh) continue ;; esac
 #     grep -q 'tool_input.command' "$f" || continue
-#     grep -qE 'gate_matches|gate_segments|cmd_matches_verb|gate_verb_rest|gate_pr_selector|gate_target_dir|gate_tokens|gate_argv|strip_noncommand_spans' "$f" \
+#     grep -qE 'gate_matches|gate_segments|cmd_matches_verb|cmd_last_cd_target|gate_verb_rest|gate_pr_selector|gate_target_dir|gate_tokens|gate_argv|strip_noncommand_spans' "$f" \
 #       || echo "NO SHARED MATCHER: $f"
 #   done
 #
-# It returns TWO. `main-tree-dirty-detector.sh` is a non-blocking PostToolUse
-# observer keyed on write-ish tokens, with no verb grammar -- out of scope.
-# `main-tree-edit-gate.sh` is NOT: it carries its own
-# `^[[:space:]]*cd[[:space:]]+` regex (line 61) that a quoted `"cd"` does not
-# match, so the base directory for a relative write target is not updated.
-# Filed rather than fixed here -- porting that hook to this library is its own
-# change with its own risk, and the criterion's named target
-# (`main-tree-branch-gate.sh`'s `QUOTEDSPAN` sed) no longer exists: that hook
-# reads the shared stream now, and a repo-wide grep for that marker returns
-# only this paragraph -- which is why the marker is not spelled here a second
-# time as a runnable command: a claim that a string is absent must not itself
-# supply the string.
+# THE REMEDY HALF OF THAT PATTERN IS AN ENUMERATION TOO, and leaving one entry
+# out is how this loop first lied: without `cmd_last_cd_target` it reported a
+# hook that HAD been ported as unported, and the paragraph under it was written
+# from that output. A remedy list goes stale exactly like the precondition it
+# subtracts.
+#
+# It returns TWO, both non-blocking and both genuinely out of scope:
+# `main-tree-dirty-detector.sh`, a PostToolUse observer keyed on write-ish
+# tokens with no verb grammar, and `integ-stale-base-detector.sh`, a
+# non-blocking PreToolUse hook that hand-rolls command-position EREs for read
+# verbs. `main-tree-edit-gate.sh` WAS a third and the only BLOCKING one -- its
+# own `^[[:space:]]*cd[[:space:]]+` regex did not match a quoted `"cd"`, so the
+# base directory for a relative write target went unupdated -- and
+# go-to-k/cdkd#2614 deleted that parser in favour of `cmd_last_cd_target`. The
+# criterion's named target (`main-tree-branch-gate.sh`'s `QUOTEDSPAN` sed) no
+# longer exists either: that hook reads the shared stream now, and a repo-wide
+# grep for that marker returns only this paragraph -- which is why the marker
+# is not spelled here a second time as a runnable command: a claim that a
+# string is absent must not itself supply the string.
 # The git / gh GLOBAL FLAGS that consume the FOLLOWING token as their value.
 # ONE copy, used by `gate_dequote_structural` and by `gate_leading_c_value`,
 # because the two halves of this file have already disagreed about exactly this

@@ -629,34 +629,12 @@ already fails open without `gh`.
 
 - **`.claude/hooks/main-tree-edit-gate.sh`** — blocks *mutating a
   git-tracked file* in a worktree currently on `main` / `master` (matcher
-  `Edit|Write|Bash`) — the gap `branch-gate.sh` (commit/push only) and
-  `main-tree-branch-gate.sh` (switch/checkout only) both leave open. The
-  2026-06-21 incident: a `/run-integ` campaign rewrote the committed ledger
-  `docs/_generated/integ-last-run.tsv` in the main tree on `main`, blocking
-  the user's `git pull --ff-only`. Fires only when the target's branch is
-  `main`/`master` AND the file is tracked (or is a NEW file under `src/` /
-  `tests/` / `docs/` / `scripts/` / `.claude/`, excluding
-  `.claude/worktrees/*`). Edit/Write read `tool_input.file_path` (reliable);
-  Bash best-effort-scans for LITERAL write targets (`> f`, `>> f`,
-  `tee [-a] f`, `sed -i ... f`). **Known gap**: variable-indirected Bash
-  targets (`mv "$tmp" "$LEDGER"`) cannot be resolved statically — the
-  worktree-first process is the real guard; this arm is defense-in-depth.
-  Feature worktrees always pass. macOS-safe (`cd && pwd -P`). Smoke test:
-  `main-tree-edit-gate.test.sh` (10 cases, incl. 2 non-opted-in passes). The
-  block names file + worktree + branch and prints the `git worktree add`
-  recipe (incl. the /run-integ ledger note). See memory
-  `feedback_main_tree_tracked_edit_gate.md`.
-
-- **`.claude/hooks/main-tree-dirty-detector.sh`** — PostToolUse (`Bash`),
-  REACTIVE, **non-blocking** backstop for exactly the variable-indirected gap
-  above: after a command, when the MAIN worktree is on `main`/`master` and
-  now has dirty TRACKED files (`git status --porcelain` minus `??`), it emits
-  a loud `additionalContext` warning naming the files + the worktree recipe.
-  Noise control: runs the git check only when the command contains a
-  write-ish token (`>` / `>>` / `tee` / `mv` / `cp` / `sed -i` / `dd` /
-  `truncate`); always exit 0 (PostToolUse cannot block). Smoke test:
-  `main-tree-dirty-detector.test.sh` (8 cases, incl. 1 non-opted-in quiet
-  case).
+  `Edit|Write|Bash`), and **`main-tree-dirty-detector.sh`** is its
+  non-blocking PostToolUse backstop for the write targets a static scan
+  cannot resolve. Full entries — the detection model, the Bash arm's literal
+  targets, the go-to-k/cdkd#2614 move to the shared `cd` resolver, and both
+  suites — in [hooks-main-tree-edit.md](hooks-main-tree-edit.md), which loads
+  when you touch either hook or its suite.
 
 - **`.claude/hooks/main-tree-git-cwd-detector.sh`** — PostToolUse (`Bash`)
   REACTIVE backstop for the cwd-RACE class: a command whose verdict is taken
