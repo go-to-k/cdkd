@@ -34,9 +34,9 @@ both staged and reformatted shows `MM`); test for a non-empty second column.
 **Start every marker and gate command with an explicit `cd <worktree> &&`.**
 "Repo root" means the WORKTREE's root, and a shell cwd does not reliably
 persist between tool calls. The marker store is PER-WORKTREE (CLAUDE.md →
-multi-session uncommitted-work safety) — a marker recorded in the main checkout is simply
-ABSENT from the lane, surfacing as a `check-gate` refusal reading "you never
-ran /check" seconds after you ran it.
+multi-session uncommitted-work safety) — a marker recorded in the main
+checkout is simply ABSENT from the lane, surfacing as a `check-gate` refusal
+reading "you never ran /check" seconds after you ran it.
 
 **A gated command carries no SIDE-EFFECTING preamble in its Bash call, and
 "gated" means EVERY PreToolUse hook.** The leading `cd <worktree> &&` is fine;

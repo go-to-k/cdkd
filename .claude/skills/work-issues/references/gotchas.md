@@ -86,16 +86,15 @@
   that one (SKILL.md "Launch mode"), with the orchestrator integrating — unit
   tests with every fix, `--squash --delete-branch` merges, English-only in
   every published artifact, and never running untrusted content (§0).
-- **`Severity` / `Effort` go on the issue as LABELS too** — set at filing
-  (§5-f) and at the claim that rewrites an old packed body (§4); the lane's PR
-  inherits them from the issue it closes, so never hand-add them to a PR.
+- **`Severity` / `Effort` go on the issue as LABELS too** — §5-f at filing, §4
+  at the claim that rewrites an old packed body; never on the PR (CLAUDE.md).
 - **Drive each lane to MERGED, not to "pushed".** §9 is the finish line for a
   LANE (merge, pull, confirm the release PR picked it up, rebuild, remove the
   worktree) and §10 for the RUN. An open PR is unfinished work, and
   CLAUDE.md's NOT-CLOSEABLE rule applies unchanged — low context is not one of
-  the blockers it excuses: commit, push, file, continue. The removal half is "every
-  worktree THIS RUN added is gone" — an IN-PLACE run added none and leaves its
-  tree standing.
+  the blockers it excuses: commit, push, file, continue. The removal half is
+  "every worktree THIS RUN added is gone" — an IN-PLACE run added none and
+  leaves its tree standing.
 - **Wrap with Remaining-work + State + Session-close** (`CLAUDE.md`), scoped to
   the issues this run actually WORKED — triaged-but-not-picked is not one.
 - **Classify every deferral `now` / `next` the moment you defer it** — the four

@@ -134,8 +134,8 @@ Unit tests passing is necessary but NOT sufficient:
   — never raw `cdkd deploy` / `cdkd destroy` from a shell (CLAUDE.md carries
   that rule and why), and **the bypass is not those two command NAMES: it is
   any real-AWS work outside a fixture** — `node dist/cli.js <anything>` and
-  hand-made test resources are the same act, EXIT traps and all (2026-09-05,
-  self-reported). `/pick-integ` chooses the fixture(s) and marks which are
+  hand-made test resources are the same act, EXIT traps and all
+  (go-to-k/cdkd#2653). `/pick-integ` chooses the fixture(s) and marks which are
   maintainer-only — never name one it flagged.
 - **Non-deletion source change** → still live-test the fixed path end-to-end
   (deploy → the redeploy that reproduced the bug → destroy), fresh fixture or
@@ -154,9 +154,9 @@ Unit tests passing is necessary but NOT sufficient:
     `vite.config.ts`, `vp run check` for lint/typecheck config — noting
     `vp run check` reads neither `ci.yml` nor any hook, and its lint is
     scoped to `src/**`). Run it BEFORE and AFTER; for the BEFORE tree use a
-    scratch copy or a re-applied sed-swap, never `git checkout` /
-    `git restore` (`dirty-path-restore-gate` blocks it — go-to-k/cdkd#1700 lost
-    ~200 lines of unrelated work that way). Flag-order
+    scratch copy or a re-applied sed-swap, never `git checkout -- <path>` /
+    `git restore <path>` (`dirty-path-restore-gate` blocks that form —
+    go-to-k/cdkd#1700 lost ~200 lines). Flag-order
     trap: a `vp run` flag after the task name is forwarded to the task and
     rejected — exit 1 from a command that never ran (go-to-k/cdkd#2017); read
     help through `mise exec`, not the bare binary. **Drive the FAILURE
@@ -376,11 +376,10 @@ code defects and FIVE false statements in prose. Habits that each caught one:
 ### 8-i. Fresh deploys, markers, and who sets what
 
 **A fresh deploy is a fresh FIXTURE**: `/new-integ` scaffolds one, `/run-integ`
-deploys and tears it down (§8-c). **UNIQUE
-stack names only** (e.g. `Cdkd<Issue>Verify`), never a shared fixed name — the
-account may hold the maintainer's production stacks. After teardown, sweep for
-orphans it cannot reach (auto-created `/aws/lambda/*` log groups, RETAIN
-resources, Secrets in
+deploys and tears it down (§8-c). **UNIQUE stack names only**
+(e.g. `Cdkd<Issue>Verify`), never a shared fixed name — the account may hold
+the maintainer's production stacks. After teardown, sweep for orphans it cannot
+reach (auto-created `/aws/lambda/*` log groups, RETAIN resources, Secrets in
 recovery, KMS keys pending deletion), then run CLAUDE.md's post-integ
 leftover check — the `deployments/` events store legitimately survives it.
 

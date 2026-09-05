@@ -51,12 +51,15 @@ done | sort -u
 rm -f /tmp/run-touched.$$
 ```
 
-- **An EMPTY result is not "nothing to promote" — check the extraction saw a
-  FILE at all.** A body names its subject by SYMBOL as often as by path
-  (go-to-k/cdkd#2442), and a DOTFILE needs the `\.?` prefix above
-  (go-to-k/cdkd#2455); both reported nothing while the criterion fired. Print
-  what the extraction found; resolve by hand (`git grep -l '<the symbol>'`)
-  whenever no token is path-shaped or the diff is mostly dotfiles.
+- **The extraction is wrong in BOTH directions — print what it found and
+  settle every token by hand.** EMPTY can still be a hit (a body names its
+  subject by SYMBOL as often as by path, go-to-k/cdkd#2442; a DOTFILE needs the
+  `\.?` prefix above, go-to-k/cdkd#2455). NON-empty can be none: the match is by
+  BASENAME and 249 files here are named `verify.sh` — go-to-k/cdkd#2621 names
+  `loggroup-never-expire-guard/verify.sh` and matched the run's
+  `loggroup-class-guard/` one, which a retro wrote into a rule as fact before
+  re-reading the issue caught it. Resolve every hit to a FULL PATH, and
+  `git grep -l '<the symbol>'` when no token is path-shaped.
 - **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
   citation from a target. Do the item, or re-classify it in the issue with the
   reason the criterion no longer applies. When the run's own PRs ARE the

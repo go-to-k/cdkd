@@ -122,8 +122,8 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 173_004,
-    largest: { file: 'verify.md', bytes: 28_149 },
+    corpusBytes: 173_022,
+    largest: { file: 'verify.md', bytes: 28_138 },
     runnerUp: { file: 'implement.md', bytes: 28_079 },
   },
 };
@@ -264,21 +264,30 @@ const MIN_REFERENCE_FILES = 6;
 // but not free: the second spent 678 B of the `tests/setup.ts` payload band
 // in rule-file-payload.test.ts, whose three governing figures are re-derived
 // there in the same commit.
-// The 2026-09-05 go-to-k/cdkd#2438 + go-to-k/cdkd#2447 retro added four rules
-// -- filing.md's worktree test for `next` vs `now`, gates-and-pr.md's
+// The 2026-09-05 go-to-k/cdkd#2438 + go-to-k/cdkd#2447 retro added five rules
+// -- filing.md's ask-the-worktree-question-HERE timing, gates-and-pr.md's
 // re-run-the-generators clause, ship.md's `gh pr checks` parsing rule,
-// verify.md's what-COUNTS-as-a-bypass clause -- and came out 172,746 ->
-// 173,004 (+258) with verify.md 27,876 -> 28,149 taking the lead from
-// implement.md 28,079 (untouched); margin 130 -> 75 B. Components, stated so
-// they can be checked rather than believed: filing.md +727, gates-and-pr.md
-// +276, ship.md +325, verify.md +273, gotchas.md -1,343, = +258. Nearly all of
-// the payment came from ONE file, and by DISPLACEMENT rather than compression:
-// gotchas.md is the appendix, so every rule in it that only restated CLAUDE.md
-// or another stage was either pointed at or moved to the step where it fires
-// (the deferral trap to filing.md, the unique-stack-name rule to 8-i, the
-// what-counts-as-a-bypass half to 8-c). Read that as the appendix's standing
-// hazard: an "existing rules this skill leans on" list is where duplication
-// accumulates without ever looking like growth.
+// verify.md's what-COUNTS-as-a-bypass clause, and retro.md's both-directions
+// rewrite of section 10-0's extraction bullet -- and came out 172,746 ->
+// 173,022 (+276) with verify.md 27,876 -> 28,138 taking the lead from
+// implement.md 28,079 (untouched); margin 130 -> 57 B. Components, stated so
+// they can be checked rather than believed: filing.md +598, gates-and-pr.md
+// +276, retro.md +228, ship.md +325, verify.md +262, gotchas.md -1,413,
+// = +276. Nearly all of the payment came from ONE file, and by DISPLACEMENT
+// rather than compression: gotchas.md is the appendix, so every rule in it
+// that only restated CLAUDE.md or another stage was either pointed at or moved
+// to the step where it fires (the deferral trap to filing.md, the
+// unique-stack-name rule to 8-i, the what-counts-as-a-bypass half to 8-c).
+// Read that as the appendix's standing hazard: an "existing rules this skill
+// leans on" list is where duplication accumulates without ever looking like
+// growth.
+// The retro.md rule is the one worth re-reading before the next fold-back,
+// because THIS round produced it the expensive way: section 10-0's promotion
+// check matches a body's file tokens by BASENAME, 249 files here are named
+// `verify.sh`, and the collision was written into filing.md as a sourced
+// incident and shipped to review before a re-read of the issue caught it. Two
+// reviewers had already re-derived every byte figure in this file as correct;
+// none of that touches whether the PROSE is true.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this
