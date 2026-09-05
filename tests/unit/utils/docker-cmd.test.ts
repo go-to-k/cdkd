@@ -956,6 +956,71 @@ describe('redactDockerArgvValues', () => {
     expect(redactDockerArgvValues(port)).toEqual(port);
   });
 
+  it('masks a URL param when a LATER part carries the severed `@` (issue #2623 round 6)', () => {
+    // The head-shape guard only recognised `user:password`. Two spellings
+    // walked past it, both measured: a BARE-TOKEN userinfo (no `:` at all, so
+    // the severed head is indistinguishable from a hostname -- and it is the
+    // dominant registry / GHA spelling), and an ALL-DIGIT password, which
+    // satisfies the port test. The caller still holds the parts the split
+    // produced, and an orphaned `@` downstream of a URL param can only be that
+    // URL's own userinfo terminator.
+    expect(
+      redactDockerArgvValues([
+        '--cache-to',
+        'type=s3,endpoint_url=https://ghp_2623BareToken,TAIL@github.com',
+      ])
+    ).toEqual(['--cache-to', 'type=s3,endpoint_url=***,***']);
+    expect(
+      redactDockerArgvValues([
+        '--cache-to',
+        'type=s3,endpoint_url=https://admin:12345,tail2623@minio.local',
+      ])
+    ).toEqual(['--cache-to', 'type=s3,endpoint_url=***,***']);
+    // Same root cause reached through a `/` rather than a `:`.
+    expect(
+      redactDockerArgvValues([
+        '--cache-to',
+        'type=s3,endpoint_url=https://tok2623/x,TAIL@h',
+      ])
+    ).toEqual(['--cache-to', 'type=s3,endpoint_url=***,***']);
+    // And the other direction: no later `@` means no severance, so a real
+    // endpoint beside a real param is untouched.
+    const intact = ['--cache-to', 'type=s3,endpoint_url=https://h:9000,region=us-east-1'];
+    expect(redactDockerArgvValues(intact)).toEqual(intact);
+  });
+
+  it('masks a `user:password` host even with NO `@` anywhere (issue #2623 round 6)', () => {
+    // The case the severed-`@` rule CANNOT see, and therefore the one that
+    // keeps the host-colon rule from being an unkillable line: a malformed
+    // URL that simply carries credentials and never had an `@` at all. No
+    // later part holds one, so only the head's own shape can refuse it.
+    expect(
+      redactDockerArgvValues(['--cache-to', 'type=s3,endpoint_url=https://AKIA:wJalr2623Secret'])
+    ).toEqual(['--cache-to', 'type=s3,endpoint_url=***']);
+    // And the `\d{1,5}` bound: a port is at most 65535, so a longer digit run
+    // is a password, not a port.
+    expect(
+      redactDockerArgvValues(['--cache-to', 'type=s3,endpoint_url=https://admin:1234567'])
+    ).toEqual(['--cache-to', 'type=s3,endpoint_url=***']);
+    // A real port still survives, which is what makes the bound a bound.
+    const port = ['--cache-to', 'type=s3,endpoint_url=https://minio.local:65535'];
+    expect(redactDockerArgvValues(port)).toEqual(port);
+  });
+
+  it('keeps a bracketed IPv6 endpoint intact (issue #2623 round 6)', () => {
+    // The port test matched the FIRST `:` of a bracketed literal, so a
+    // legitimate local-MinIO spelling masked -- and because a mask cascades,
+    // took `region` and `bucket` with it. Verified as a regression the
+    // implausible-authority rule introduced, not a pre-existing one.
+    const args = [
+      '--cache-to',
+      'type=s3,endpoint_url=http://[::1]:9000,region=us-east-1,bucket=b',
+    ];
+    expect(redactDockerArgvValues(args)).toEqual(args);
+    const linkLocal = ['--cache-to', 'type=s3,endpoint_url=http://[fd00::1]:5000'];
+    expect(redactDockerArgvValues(linkLocal)).toEqual(linkLocal);
+  });
+
   it('leaves an EMPTY URL locator value alone (issue #2623 round 5)', () => {
     // `***` would assert a secret that is not there -- and because a mask
     // cascades, it would take every later param's diagnostic with it.

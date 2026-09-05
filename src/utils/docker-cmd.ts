@@ -821,11 +821,15 @@ const ARGV_PARAM_LIST_LOCATOR_PARAMS: ReadonlySet<string> = new Set([
  * fail-closed, leaving the whole URL was the one entry carrying credential
  * material by design.
  *
- * Scheme and host survive, which is what "which endpoint" needs — except on
- * the two fail-closed paths (an unparseable value, and a `@` in the path),
- * where the whole value goes and so does every param after it. Over-masking
- * is the deliberate direction: see {@link redactUrlLocator} for what each
- * boundary rule leaked before this one.
+ * Scheme and host survive, which is what "which endpoint" needs — on the
+ * ordinary path. Three things mask the value WHOLE instead, and each also
+ * masks every param after it: a value with no recognisable `//` authority, a
+ * host that is really `user:password` with its `@` cut away, and a later
+ * param carrying this URL's severed `@` (the caller's rule, since only it
+ * still holds the parts). A `@` in the PATH is a fourth case and the mildest —
+ * it costs the host but keeps scheme and tail (`https://h/x@y` ->
+ * `https://***@y`). Over-masking is the deliberate direction: see
+ * {@link redactUrlLocator} for what each boundary rule leaked before this one.
  */
 const ARGV_PARAM_LIST_URL_PARAMS: ReadonlySet<string> = new Set([
   'account_url',
@@ -885,13 +889,25 @@ function redactUrlLocator(value: string): string {
     // No `@` at all — which is ALSO what a userinfo containing a COMMA looks
     // like, because `maskArgvFlagValue` splits the param list on `,` before
     // this function ever sees the URL: `endpoint_url=https://AKIAX:wJalr,XyZ@h`
-    // arrives here as `https://AKIAX:wJalr`, and passed through whole
-    // (measured, round-5 security review: 1008 enumerated shapes, one root
-    // cause). A host with a `:` whose right side is not a pure PORT is not a
-    // host — it is `user:password` with its `@` cut off — so it fails closed
-    // like every other unparseable shape. `h:9000` keeps working.
+    // arrives here as `https://AKIAX:wJalr`.
+    //
+    // DEFENCE IN DEPTH ONLY. This shape-based rule recognises just the
+    // `user:password` sub-case, and round-6 review measured two it cannot see
+    // (a bare-token userinfo with no `:`, and an all-digit password). The
+    // severed-comma class is closed by the CALLER, which still holds the
+    // parts the split produced and can see the orphaned `@`; this stays
+    // because a `:`-bearing head is not a host either way. `h:9000` and
+    // `[::1]:9000` keep working.
     const host = rest.split(/[/?#]/)[0]!;
-    if (/:(?!\d*$)/.test(host)) return REDACTED_ARGV_VALUE;
+    // Strip a bracketed IPv6 literal before the colon test: its own colons are
+    // not a `user:password` separator, and matching them made
+    // `endpoint_url=http://[::1]:9000` mask -- AND, because a mask cascades,
+    // take every later param with it. A legitimate local-MinIO spelling,
+    // measured as a regression this rule introduced (round-6 review).
+    const bare = host.startsWith('[') ? host.slice(host.indexOf(']') + 1) : host;
+    // `\d{1,5}` rather than `\d*`: a port is at most 65535, so a longer digit
+    // run is not one. Narrower by exactly the shapes it should refuse.
+    if (/:(?!\d{1,5}$)/.test(bare)) return REDACTED_ARGV_VALUE;
   }
 
   // Query AND fragment: azblob's SAS rides the query, and a fragment is just
@@ -933,7 +949,8 @@ function maskArgvFlagValue(flag: string, value: string): string | undefined {
   }
   if (ARGV_PARAM_LIST_FLAGS.has(flag)) {
     let masked = false;
-    const parts = value.split(',').map((part, index) => {
+    const rawParts = value.split(',');
+    const parts = rawParts.map((part, index) => {
       // Everything AFTER the first masked part is masked too. The join is
       // lossy: `token=aa,name=bb` is indistinguishable from a `token` whose
       // value literally contains `,name=bb`, so once a part is known to have
@@ -969,6 +986,29 @@ function maskArgvFlagValue(flag: string, value: string): string | undefined {
       const name = part.substring(0, eqIdx);
       const normalized = name.trim().toLowerCase();
       if (ARGV_PARAM_LIST_URL_PARAMS.has(normalized)) {
+        // A `@` in any LATER part can only be THIS url's severed userinfo
+        // terminator: the split destroyed a comma that was inside the value,
+        // and nothing downstream of a URL param legitimately carries one.
+        // The caller knows what the split destroyed, which is why this lives
+        // here and not in `redactUrlLocator` — the head handed to that
+        // function has already lost the evidence.
+        //
+        // The previous guard inferred the severance from the HEAD's shape (a
+        // `:` whose right side is not a port) and only recognised
+        // `user:password`. Round-6 security review measured two shapes still
+        // printing: a bare-token userinfo (`https://ghp_TOKEN,TAIL@github.com`
+        // — the dominant registry / GHA spelling, no `:` at all, so the head
+        // is indistinguishable from a hostname) and an all-DIGIT password
+        // (`admin:12345`, which satisfies the port test). Both are closed by
+        // asking the array instead of the string.
+        //
+        // Cost: a cache config carrying BOTH a URL param and a later digest
+        // ref (`ref=repo@sha256:…`) masks the URL it did not need to. Safe
+        // direction, and the two do not co-occur in any BuildKit backend.
+        if (rawParts.slice(index + 1).some((later) => later.includes('@'))) {
+          masked = true;
+          return `${name}=${REDACTED_ARGV_VALUE}`;
+        }
         const rawUrl = part.substring(eqIdx + 1);
         const safeUrl = redactUrlLocator(rawUrl);
         if (safeUrl === rawUrl) return part;

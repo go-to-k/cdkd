@@ -32,15 +32,22 @@ today, since an edit adding a `-e` pair later would otherwise reopen the hole
 with no edit to the error site.
 
 **What is masked**: the VALUE of `-e` / `--env` / `--opt` / `--label` /
-`--build-arg`, in ALL THREE argv spellings (`--flag VALUE`, `--flag=VALUE`,
-and pflag's attached `-eKEY=VALUE` — including its CLUSTERED forms
-`-itdeKEY=VALUE` and `-itde KEY=VALUE`, which `docker run -itd` makes the
-common ones); and every NON-LOCATOR param of
-`--cache-from` / `--cache-to`, whose value is a comma-separated param list
-rather than one pair. The KEY survives, and so does every locator cache param
-— `type=s3,region=…,bucket=…` is the diagnostic. Four structural (positional, never value-based) passes, each
-documented where it lives — `redactDockerArgvInText`, `nodeQuotedRendering`,
-`QUOTED_ELEMENT_RE`, `repairSpawnRefusal`.
+`--build-arg`, and every NON-LOCATOR param of `--cache-from` / `--cache-to`,
+whose value is a comma-separated param list rather than one pair. The KEY
+survives, and so does every locator cache param — `type=s3,region=…,bucket=…`
+is the diagnostic. Four structural (positional, never value-based) passes,
+each documented where it lives — `redactDockerArgvInText`,
+`nodeQuotedRendering`, `QUOTED_ELEMENT_RE`, `repairSpawnRefusal`.
+
+**ALL FOUR argv spellings** pflag accepts are covered: `--flag VALUE`,
+`--flag=VALUE`, and the shorthand CLUSTER in both its forms — attached
+(`-itdeKEY=VALUE`) and SEPARATED (`-itde KEY=VALUE`, where the cluster ends in
+the flag letter and pflag takes the next token). `docker run -itd` is what
+makes the cluster forms the common ones. The two are different code paths: the
+attached one is a leftmost-letter scan over the element, the separated one is
+resolved by the caller before it pairs. Only the first two matter for an argv
+cdkd BUILDS; the cluster forms exist because `docker-build.ts`'s `executable`
+source mode renders a USER-authored command line.
 
 **A cache backend takes real credentials inline** (`secret_access_key`,
 `access_key_id`, `session_token`, `token`), so `--cache-from` / `--cache-to`
@@ -72,10 +79,20 @@ backend's SUPPORTED auth path, not an incidental URL credential. Those four
 are the ONLY params exempt from mask-by-default, so their parse **fails
 closed**: a value with no recognisable `//` authority is masked whole, the
 userinfo strip anchors on the LAST `@` rather than a computed authority
-boundary, and a host whose `:` is not followed by a pure PORT is masked as
-`user:password` with its `@` cut away. All three were leaks first — a
-scheme-less `user:pw@host:9000`, a password containing `?`, and a userinfo
-containing a COMMA, which the param split cuts before the URL parse ever runs.
+boundary, and a host whose `:` is not followed by a pure PORT (1-5 digits, outside a
+bracketed IPv6 literal) is masked as `user:password` with its `@` cut away.
+All were leaks first — a scheme-less `user:pw@host:9000`, and a password
+containing `?`.
+
+**The severed-comma class is closed by the CALLER, not by the URL parse.** The
+param split cuts a comma inside userinfo before `redactUrlLocator` ever sees
+the value, and the head it hands over has lost the evidence: a bare-token
+userinfo (`https://ghp_TOKEN,TAIL@github.com`, the dominant registry spelling)
+is indistinguishable from a hostname. `maskArgvFlagValue` still holds the
+parts, so a `@` in any LATER part fails the URL param closed — an orphaned `@`
+downstream of one can only be its own severed terminator. The head-shape rule
+stays as defence in depth for the case no later part can show: a malformed URL
+that carries credentials and never had an `@` at all.
 
 **The set has ONE spelling.** `ARGV_VALUE_TOKEN_RE`, the string-scanning form,
 is now BUILT from `ARGV_VALUE_BEARING_FLAGS` rather than re-listed beside it
