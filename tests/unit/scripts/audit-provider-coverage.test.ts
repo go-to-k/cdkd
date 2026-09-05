@@ -1026,14 +1026,17 @@ describe('runCheck', () => {
     const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
       ['AWS::IAM::Role'],
       [`registry.register('AWS::IAM::Role', new R());`],
-      { undetermined: ['AWS::Foo::Bar'] }
+      { undetermined: ['AWS::Foo::Bar', 'AWS::Baz::Qux'] }
     );
     const io = makeFakeIO();
     try {
       runCheck(io, jsonPath, sourcePath, markdownPath);
       expect(io.exitCode).toBe(1);
       expect(io.errors.join('\n')).toContain('AWS::Foo::Bar');
-      expect(io.errors.join('\n')).toMatch(/lists 1 type\(s\) it could not classify/);
+      expect(io.errors.join('\n')).toContain('AWS::Baz::Qux');
+      // TWO, so the count is read from the list rather than being a literal
+      // that happens to match the only cardinality the fixtures supplied.
+      expect(io.errors.join('\n')).toMatch(/lists 2 type\(s\) it could not classify/);
       // ...and it must NOT also report success.
       expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
     } finally {
@@ -1084,17 +1087,33 @@ describe('runCheck', () => {
     // A markdown mismatch is fixable offline and an undetermined type needs a
     // re-run for a different reason; printing the tier-1 remedy under either
     // sent the operator to spend 10-30 minutes and AWS credentials on neither.
-    const mismatch = setupFixture(
-      ['AWS::IAM::Role'],
-      [`registry.register('AWS::IAM::Role', new R());`],
-      { markdown: '# stale\n' }
-    );
-    const io = makeFakeIO();
-    try {
-      runCheck(io, mismatch.jsonPath, mismatch.sourcePath, mismatch.markdownPath);
-      expect(io.errors.join('\n')).not.toMatch(/regenerate the audit to resolve/);
-    } finally {
-      mismatch.cleanup();
+    // BOTH non-drift shapes, because the claim is about both: a markdown
+    // mismatch AND an unclassified type. Pinning one polarity left re-widening
+    // the gate to the other invisible.
+    const shapes: Array<[string, { undetermined?: string[]; markdown?: string }]> = [
+      ['markdown mismatch', { markdown: '# stale\n' }],
+      ['unclassified type', { undetermined: ['AWS::Foo::Bar', 'AWS::Baz::Qux'] }],
+      // The unreadable-file shape reaches the same fall-through.
+      ['unreadable markdown', {}],
+    ];
+    for (const [label, extra] of shapes) {
+      const f = setupFixture(
+        ['AWS::IAM::Role'],
+        [`registry.register('AWS::IAM::Role', new R());`],
+        extra
+      );
+      const io = makeFakeIO();
+      try {
+        const mdPath =
+          label === 'unreadable markdown'
+            ? join(tmpdir(), 'cdkd-audit-absent-remedy.md')
+            : f.markdownPath;
+        runCheck(io, f.jsonPath, f.sourcePath, mdPath);
+        expect(io.exitCode, label).toBe(1);
+        expect(io.errors.join('\n'), label).not.toMatch(/regenerate the audit to resolve/);
+      } finally {
+        f.cleanup();
+      }
     }
     const drift = setupFixture(
       ['AWS::IAM::Role'],
