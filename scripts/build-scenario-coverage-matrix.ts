@@ -296,7 +296,7 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'local-from-state-substitution':
     '`cdkd local invoke|run-task --from-state` substitutes intrinsic-valued env/secret/role references against deployed cdkd state + AWS pseudo parameters.',
   'local-from-cfn-stack-substitution':
-    '`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via DescribeStackResources + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`).',
+    '`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via ListStackResources + DescribeStacks + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`).',
   'local-websocket-api':
     '`cdkd local start-api` WebSocket API support: ws upgrade + $connect/$disconnect/$default/custom route dispatch + @connections data plane.',
   'local-agentcore-runtime':

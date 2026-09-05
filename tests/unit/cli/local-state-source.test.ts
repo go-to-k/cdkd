@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join as joinPath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
 
 import {
@@ -11,6 +14,13 @@ import {
   type LocalStateSourceOptions,
 } from '../../../src/cli/commands/local-state-source.js';
 import { S3LocalStateProvider } from '../../../src/local/s3-local-state-provider.js';
+
+const REPO_ROOT_FOR_API_FENCE = joinPath(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..'
+);
 
 describe('resolveCfnStackName', () => {
   it('returns the explicit string value when --from-cfn-stack <name> was passed', () => {
@@ -355,3 +365,244 @@ describe('createLocalStateProvider — empty --from-cfn-stack rejection (Issue #
     ).toThrow(LocalStateSourceError);
   });
 });
+
+/**
+ * Issue [#2527](https://github.com/go-to-k/cdkd/issues/2527): cdkd carried an
+ * unreferenced FORK of `CfnLocalStateProvider` at
+ * `src/local/cfn-local-state-provider.ts`. It was reachable only from its own
+ * unit test, and it called `DescribeStackResources` while the provider that
+ * actually runs — cdk-local's, re-exported from this module — calls the
+ * paginated `ListStackResources`. So a green test suite was pinning the
+ * behaviour of code no `cdkd local * --from-cfn-stack` invocation ever entered.
+ *
+ * The fork is deleted. What is pinned here is the half of the change that could
+ * regress silently: the re-export must still resolve (a deleted file plus a
+ * mis-edited export line would fail at IMPORT, which is loud — but a re-export
+ * quietly re-pointed at a cdkd-local module would not be), and the symbol must
+ * come from the DEPENDENCY, which is the property the fork's existence made
+ * ambiguous in the first place.
+ */
+describe('CfnLocalStateProvider comes from cdk-local, not from a cdkd fork (#2527)', () => {
+  it('the re-exported class is the same object cdk-local exports', async () => {
+    const upstream = await import('cdk-local');
+    expect(CfnLocalStateProvider).toBe(upstream.CfnLocalStateProvider);
+  });
+
+  it('nothing under src/ imports a local cfn-local-state-provider module any more', async () => {
+    const { readFileSync, readdirSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const walk = (dir: string): string[] => {
+      const out: string[] = [];
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...walk(full));
+        else if (entry.name.endsWith('.ts')) out.push(full);
+      }
+      return out;
+    };
+    const sources = walk(join(repoRoot, 'src'));
+    // FLOOR first: a walk that returned nothing would satisfy the assertion
+    // below without reading a single file.
+    expect(sources.length).toBeGreaterThanOrEqual(200);
+    const offenders = sources.filter((file) =>
+      readFileSync(file, 'utf8').includes('cfn-local-state-provider')
+    );
+    expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * The API-NAME half of issue [#2527](https://github.com/go-to-k/cdkd/issues/2527),
+ * fenced — the half a mutation probe found unprotected after the first fix round.
+ *
+ * #2527's headline is that cdkd's deleted fork "names a different CloudFormation
+ * API than the provider that actually runs". Deleting the fork does not settle
+ * that: the WRONG name had also been copied into the user-facing
+ * `--from-cfn-stack` help and JSDoc of every `cdkd local` command that takes the
+ * flag — 13 sites, all corrected, none of them pinned. Reverting any one stayed
+ * green.
+ *
+ * The claim: the provider these commands actually route through is cdk-local's
+ * `CfnLocalStateProvider`, which calls the PAGINATED `ListStackResources`
+ * (`node_modules/cdk-local/dist/local-studio-BBtUAVNy.js`, its only
+ * CloudFormation import). `DescribeStackResources` returns at most one page and
+ * is a different API with a different failure mode, so naming it sends a user
+ * debugging a truncated read to the wrong AWS docs page and the wrong IAM
+ * action.
+ *
+ * The population is derived from the CODE — every `src/**` file that talks about
+ * `--from-cfn-stack` — rather than from a path list that would rot. cdkd's OWN
+ * `DescribeStackResources` caller (`retire-cfn-stack.ts`, the `cdkd import
+ * --migrate-from-cloudformation` path) is correct and falls outside the
+ * population on its own, because it never mentions the flag; that is asserted
+ * below so the exemption cannot silently widen to cover the local files too.
+ */
+describe('the local --from-cfn-stack surface names the API that actually runs (#2527)', () => {
+  const WRONG_API = 'DescribeStackResources';
+  const RIGHT_API = 'ListStackResources';
+
+  const srcFiles = (dir: string): string[] => {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = joinPath(dir, entry.name);
+      if (entry.isDirectory()) out.push(...srcFiles(full));
+      else if (entry.name.endsWith('.ts')) out.push(full);
+    }
+    return out;
+  };
+
+  const SRC = joinPath(REPO_ROOT_FOR_API_FENCE, 'src');
+
+  /**
+   * Does this file GENUINELY call `DescribeStackResources`, as opposed to
+   * naming it in prose?
+   *
+   * Exported from the closure so the population filter AND the case that
+   * fences it call the SAME function. An earlier cut re-implemented the
+   * predicate inline in the test, which made the test self-fulfilling:
+   * reverting the filter to the prose-blind `text.includes(...)` left it
+   * green, so the case named after the fix did not fence the fix.
+   *
+   * The construction is matched through an OPTIONAL ALIAS
+   * (`new DescribeStackResourcesCmd(`): renaming a symbol on import is a style
+   * change, and a fence that reddens on it is reporting a defect that is not
+   * there. The SDK import is still required, so prose alone cannot satisfy it.
+   */
+  const reallyCallsDescribeStackResources = (text: string): boolean =>
+    new RegExp(String.raw`new\s+\w*${WRONG_API}\w*\(`).test(text) &&
+    /from '@aws-sdk\/client-cloudformation'/.test(text);
+
+  const population = srcFiles(SRC).filter((file) => {
+    const text = readFileSync(file, 'utf8');
+    const talksAboutTheFlag =
+      text.includes('fromCfnStack') || text.includes('--from-cfn-stack');
+    // EXCLUDE a file that genuinely CALLS `DescribeStackResources`. Today the
+    // two sets are disjoint by luck — `retire-cfn-stack.ts` never mentions the
+    // flag — and this makes it disjoint by rule instead: the day `import.ts`
+    // or `retire-cfn-stack.ts` mentions `--from-cfn-stack` in prose, the fence
+    // would otherwise redden on ~15 correct usages.
+    //
+    // The predicate is a CONSTRUCTION plus the SDK import, not the bare
+    // identifier. Keying on the identifier made the opt-out reachable from
+    // prose: review measured that writing `reads the deployed stack with a
+    // single DescribeStackResourcesCommand call` into `local-start-alb.ts`'s
+    // JSDoc removed the file from the population and ran green, so the more
+    // specific spelling — the one an API reference actually uses — bought
+    // immunity from the fence.
+    return talksAboutTheFlag && !reallyCallsDescribeStackResources(text);
+  });
+
+  it('finds the --from-cfn-stack surface — floor, so an empty population cannot pass', () => {
+    expect(population.length).toBeGreaterThanOrEqual(10);
+  });
+
+  /**
+   * The files whose user-facing text must NAME the API, pinned as a SET.
+   *
+   * Purely-negative fences are satisfied by deleting the sentence — the same
+   * principle the `--stage` case asserts about its own help string. A `>=`
+   * floor is only half a fix: a seventh file naming the API would silently buy
+   * slack for a later deletion elsewhere. An exact set fails in both
+   * directions, which is the point.
+   */
+  const MUST_NAME_THE_API = [
+    'src/cli/commands/local-invoke-agentcore.ts',
+    'src/cli/commands/local-invoke.ts',
+    'src/cli/commands/local-run-task.ts',
+    'src/cli/commands/local-start-api.ts',
+    'src/cli/commands/local-state-source.ts',
+    'src/local/local-state-provider.ts',
+  ];
+
+  it('the surface POSITIVELY names the API that runs, not merely nothing', () => {
+    const naming = population
+      .filter((file) => readFileSync(file, 'utf8').includes(RIGHT_API))
+      .map((file) => file.slice(REPO_ROOT_FOR_API_FENCE.length + 1))
+      .sort();
+    expect(
+      naming,
+      'the set of files naming ListStackResources changed. A file DROPPED it: a fence that only ' +
+        'forbids the wrong name is satisfied by deleting the sentence, which leaves the reader no ' +
+        'better informed. A file GAINED it, or was renamed: update MUST_NAME_THE_API deliberately.'
+    ).toEqual([...MUST_NAME_THE_API].sort());
+  });
+
+  it.each(population.map((f) => [f.slice(REPO_ROOT_FOR_API_FENCE.length + 1), f] as const))(
+    '%s does not name DescribeStackResources',
+    (label, file) => {
+      const offending = readFileSync(file, 'utf8')
+        .split('\n')
+        .map((text, index) => [index + 1, text] as const)
+        .filter(([, text]) => text.includes(WRONG_API))
+        .map(([line, text]) => `${line}: ${text.trim()}`);
+      expect(
+        offending,
+        `${label} names ${WRONG_API}, but --from-cfn-stack routes through cdk-local's ` +
+          `CfnLocalStateProvider, which calls the paginated ${RIGHT_API} (issue #2527).`
+      ).toEqual([]);
+    }
+  );
+
+  it("cdkd's own DescribeStackResources caller is outside the population, on its own", () => {
+    // Guard-the-guard. `cdkd import --migrate-from-cloudformation` really does
+    // call `DescribeStackResources`, and the fence must not be excusing it by a
+    // rule broad enough to excuse the local files as well. It falls out because
+    // it never mentions the flag — asserted here, not assumed.
+    const retire = joinPath(SRC, 'cli', 'commands', 'retire-cfn-stack.ts');
+    expect(reallyCallsDescribeStackResources(readFileSync(retire, 'utf8'))).toBe(true);
+    expect(population).not.toContain(retire);
+  });
+
+  it('the exclusion cannot be bought by NAMING the API in prose', () => {
+    // The measured evasion: a file that merely mentions
+    // `DescribeStackResourcesCommand` in a sentence used to drop out of the
+    // population and take its wrong claim with it. The exclusion now needs a
+    // real construction AND the SDK import, neither of which appears in prose.
+    // Every case calls the SAME predicate the population filter uses, so
+    // loosening that filter reddens here.
+    const proseOnly = [
+      "import { CloudFormationClient } from '@aws-sdk/client-cloudformation';",
+      ' * reads the deployed stack with a single DescribeStackResourcesCommand call',
+    ].join('\n');
+    expect(reallyCallsDescribeStackResources(proseOnly)).toBe(false);
+
+    const realCaller = [
+      "import { DescribeStackResourcesCommand } from '@aws-sdk/client-cloudformation';",
+      'await client.send(new DescribeStackResourcesCommand({ StackName: name }));',
+    ].join('\n');
+    expect(reallyCallsDescribeStackResources(realCaller)).toBe(true);
+
+    // An ALIASED import is a style change, not a defect — the fence must not
+    // redden on it.
+    const aliased = [
+      "import { DescribeStackResourcesCommand as DescribeStackResourcesCmd } from '@aws-sdk/client-cloudformation';",
+      'await client.send(new DescribeStackResourcesCmd({ StackName: name }));',
+    ].join('\n');
+    expect(reallyCallsDescribeStackResources(aliased)).toBe(true);
+
+    // ...and a construction with NO SDK import is not a caller either, so a
+    // same-named local class cannot buy the opt-out.
+    const noImport = 'await run(new DescribeStackResourcesCommand({ StackName: name }));';
+    expect(reallyCallsDescribeStackResources(noImport)).toBe(false);
+  });
+
+  it('the shipped provider really does call ListStackResources', () => {
+    // The fence asserts a name; this asserts the name is the RIGHT one, read
+    // from the dependency rather than from memory. Without it the fence would
+    // happily pin a second wrong name.
+    //
+    // The chunk filename is CONTENT-HASHED, so it changes on every cdk-local
+    // bump. Globbing the dist directory keeps a bump reporting a real
+    // disagreement instead of an opaque ENOENT for a path nobody would think
+    // to look at.
+    const dist = joinPath(REPO_ROOT_FOR_API_FENCE, 'node_modules/cdk-local/dist');
+    const chunks = readdirSync(dist).filter((f) => f.endsWith('.js'));
+    expect(chunks.length, 'cdk-local/dist has no .js chunks — is it installed?').toBeGreaterThan(0);
+    const bundled = chunks.map((f) => readFileSync(joinPath(dist, f), 'utf8')).join('\n');
+    expect(bundled).toContain(`${RIGHT_API}Command`);
+    expect(bundled).not.toContain(`${WRONG_API}Command`);
+  });
+});
+

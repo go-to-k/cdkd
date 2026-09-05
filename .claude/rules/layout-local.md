@@ -187,9 +187,9 @@ Index of every area: [code-layout.md](code-layout.md).
       key (deleting the canonical one when the body came from the raw one
       orphans the marker).
   - **`LocalStateProvider`** (issue #606, `src/local/local-state-provider.ts`):
-    two implementations — `s3-local-state-provider.ts` (wraps
-    `local-state-loader.ts`; the `--from-state` path) and
-    `cfn-local-state-provider.ts` (reads a deployed CloudFormation stack for
+    two implementations — cdkd's own `s3-local-state-provider.ts` (wraps
+    `local-state-loader.ts`; the `--from-state` path) and cdk-local's CFn
+    provider (reads a deployed CloudFormation stack for
     `--from-cfn-stack [<cfn-stack-name>]`, letting users run the `cdkd
     local` family against `cdk deploy`-ed apps without migrating). The
     dispatcher `src/cli/commands/local-state-source.ts`
@@ -202,9 +202,13 @@ Index of every area: [code-layout.md](code-layout.md).
     commands that fold at handler entry, and the ONLY cdkd-owned stop for
     the ECS / CloudFront / AgentCore engine commands — and carries the
     UNFOLDED `--stack-region` through as `rawStackRegion`, the only thing
-    that makes the loader's exact-spelling match reachable. cdkd's own
-    `cfn-local-state-provider.ts` is now dead code (kept as a CAT-A shim
-    candidate). CFn-provider wire mapping: `Ref` → `DescribeStackResources`;
+    that makes the loader's exact-spelling match reachable. cdkd carried an
+    unreferenced FORK of the CFn provider until go-to-k/cdkd#2607 deleted
+    it (issue go-to-k/cdkd#2527); the shipped symbol is cdk-local's,
+    re-exported through `local-state-source.ts`. CFn-provider wire mapping:
+    `Ref` → paginated `ListStackResources`. The deleted fork called
+    `DescribeStackResources` instead, and correcting that name across the
+    remaining surfaces is go-to-k/cdkd#2527's other half;
     `Fn::ImportValue` → `ListExports`; `Fn::GetAtt` warn-and-drop for most
     sites, but a consumer Lambda's OWN env-var `Fn::GetAtt` values are
     recovered from the deployed function's already-resolved config
@@ -375,11 +379,12 @@ afterwards), and a "cdkd users are not affected" call that held only for
 bundled copy instead. The boundary is therefore MECHANICAL:
 `scripts/check-local-reachability.ts` (`vp run audit:local-reachability:check`)
 classifies every module and fails when classification and source disagree.
-Measured 2026-08-26 over all 57 files: 16 live (12 fully, 4 with dead
-exports), 2 loaded-only (`vtl-engine.ts`, `reload-orchestrator.ts`), 2
-unreferenced (`httpv2-service-integration.ts`,
-`cfn-local-state-provider.ts`), 36 re-export shims (28 consumed, 8 with no
-`src/` importer), 1 types-only.
+Measured 2026-09-05 over all 56 files: 16 live (12 fully, 4 with dead
+exports), 2 loaded-only (`vtl-engine.ts`, `reload-orchestrator.ts`), 1
+unreferenced (`httpv2-service-integration.ts`), 36 re-export shims (28
+consumed, 8 with no `src/` importer), 1 types-only. The second unreferenced
+file, cdkd's fork of the CFn state provider, was deleted by
+go-to-k/cdkd#2607 (issue go-to-k/cdkd#2527).
 
 Two annotations carry the verdict at the declaration, and BOTH directions are
 enforced — a missing one fails, and one on a symbol that IS reachable fails as
@@ -392,9 +397,11 @@ stale:
 - **`@test-only-export <reason>`** - exported solely so unit tests can reset
   module-scoped state, in an otherwise-live module.
 
-Annotating is the floor — deleting the orphaned fork (~4.4k lines of source +
-3.7k of tests, enumerated per file) is issue #2277, kept separate because
-removing a subsystem is a different review from adding a critic.
+Annotating is the floor — deleting the orphaned fork (~4.0k lines of source +
+~3.0k of tests, enumerated per file) is issue #2277, kept separate because
+removing a subsystem is a different review from adding a critic. The figures
+are net of go-to-k/cdkd#2607, which removed one of #2277's four whole-file
+orphans (`cfn-local-state-provider.ts`, 438 source + 694 test lines).
 
 `loaded-only` is the state that makes a module-level rule useless here:
 `vtl-engine.ts` IS imported (by `rest-v1-integrations.ts`, which

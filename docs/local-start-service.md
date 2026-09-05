@@ -58,15 +58,16 @@ Docker is required — see [Local Execution](local-emulation.md#requirements).
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly — see [Local Execution](local-emulation.md#common-flags). |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value...>` | — | Set CDK context values. Repeatable. |
-| `--region <region>` | `AWS_REGION`, the stack's region, then the profile's | AWS region for SDK calls. |
+| `--region <region>` | `AWS_REGION`, the stack's region, then the profile's | **Deprecated**, hidden from `--help`, and still honored: it overrides `AWS_REGION` and the profile, and prints a removal warning. Prefer `AWS_REGION` or your profile. |
 | `--profile <profile>` | — | AWS profile. Its credentials are forwarded to the sidecar and to the containers. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's own AWS API calls. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 
-**Spell the region lower-case.** This command does not fold an upper-cased
-`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
-form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+**Region case is folded for you.** An upper-cased `--region` / `AWS_REGION` /
+`AWS_DEFAULT_REGION` is canonicalized before any AWS call, so `US-EAST-1` no
+longer reaches signature validation as-is. `--stack-region` is folded the same
+way, with your exact spelling still preferred when it matches a state record.
 See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
 ## Target resolution

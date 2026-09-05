@@ -93,8 +93,9 @@ export interface RunEcsTaskOptions {
   /**
    * Optional role ARN to assume before authenticating against ECR for
    * cross-account / centralized registry pulls (#455). Forwarded to
-   * `pullEcrImage`'s `ecrRoleArn` option. Same-account / same-region
-   * pulls do not need this.
+   * `pullEcrImage`'s `ecrRoleArn` option. A same-account pull in ANY region
+   * does not need this — `pullEcrImage` builds its ECR client for the image
+   * URI's own region (issue #2536).
    */
   ecrRoleArn?: string;
   /** Don't `docker rm -f` containers on task exit; useful for `docker exec` post-mortems. */

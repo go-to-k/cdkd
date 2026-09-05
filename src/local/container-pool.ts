@@ -188,8 +188,9 @@ export interface ImageContainerSpec extends ContainerSpecBase {
   /**
    * Pre-built local docker image tag / reference. Resolved ONCE at
    * server boot via `buildContainerImage` (local-build path against
-   * `cdk.out` asset manifest) or `pullEcrImage` (ECR-pull fallback,
-   * same-acct/region only). The pool passes this verbatim to `docker
+   * `cdk.out` asset manifest) or `pullEcrImage` (ECR-pull fallback; the ECR
+   * client is built for the image URI's own region, so cross-region pulls
+   * work — see `src/local/ecr-puller.ts`). The pool passes this verbatim to `docker
    * run` — no further resolution happens on the per-cold-start path.
    *
    * On hot reload (`--watch`) the reload-orchestrator detects spec

@@ -485,3 +485,84 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
     }
   );
 });
+
+/**
+ * The `cdkd local *` half of the coverage fence — issue
+ * [#2522](https://github.com/go-to-k/cdkd/issues/2522).
+ *
+ * The fence above derives its population from files that NAME a `--region`
+ * declaration or `deprecatedRegionOption`, and checks that every read of
+ * `<bag>.region` is wrapped. Four commands were invisible to BOTH halves at
+ * once: `local start-{service,alb,cloudfront,agentcore}` inherit `--region`
+ * from cdk-local (no declaration here to find) and forward the whole options
+ * bag without ever naming `options.region` (no read to wrap). They shipped
+ * unfolded for four releases, which is the gap this closes: a delivery SHAPE a
+ * per-read scanner cannot see needs a per-COMMAND rule.
+ *
+ * The rule: a `local-*.ts` file that builds a command must fold its region one
+ * of the two supported ways — in its own handler (`foldRegionOption(options)`
+ * or the `options.region = canonicalizeRegion(...)` spelling the four
+ * handler-owning commands use) or, when cdk-local owns the handler, by adopting
+ * the shared `adoptDeprecatedRegionFlag` wrapper, which installs the
+ * `preAction` fold. The BEHAVIOUR of that wrapper is fenced live in
+ * `local-shim-region-fold.test.ts`; what this pins is that a NEW shim cannot be
+ * added without either.
+ */
+describe('every `cdkd local *` command folds the region it forwards (#2522)', () => {
+  const localFiles = readdirSync(COMMANDS_DIR).filter(
+    (f) => f.startsWith('local-') && f.endsWith('.ts')
+  );
+  // Derived from the FACTORY, not from a file-name list: `local-state-source.ts`
+  // and `local-state-loader.ts` are `local-*` files with no command in them, and
+  // a name-shaped population would either include them or need an allow-list
+  // that goes stale on the next rename.
+  const commandFiles = localFiles.filter((f) =>
+    /export function createLocal\w*Command\s*\(/.test(readFileSync(join(COMMANDS_DIR, f), 'utf8'))
+  );
+
+  it('finds every local command factory — floor, so an empty population cannot pass', () => {
+    // Eight today: invoke (which also builds the `local` parent), run-task,
+    // start-api, invoke-agentcore, and the four cdk-local-backed shims.
+    expect(commandFiles.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it.each(commandFiles)('%s folds --region somewhere', (file) => {
+    const code = stripComments(readFileSync(join(COMMANDS_DIR, file), 'utf8'));
+    const foldsInHandler =
+      /\bfoldRegionOption\(options\)/.test(code) ||
+      /\b(?:options|opts|args)\.region\s*=\s*canonicalizeRegion\(/.test(code);
+    const foldsViaShimWrapper = /\badoptDeprecatedRegionFlag\(/.test(code);
+    expect(
+      foldsInHandler || foldsViaShimWrapper,
+      `${file} builds a \`cdkd local\` command but folds --region neither in its own handler ` +
+        '(foldRegionOption(options) / options.region = canonicalizeRegion(...)) nor by wrapping ' +
+        'its command in adoptDeprecatedRegionFlag(...). An unfolded region reaches cdk-local\'s ' +
+        'SDK clients, the ECR host it synthesizes and the containers it starts (issue #2522).'
+    ).toBe(true);
+  });
+
+  it('both arms of that predicate are actually LOAD-BEARING in the tree', () => {
+    // A predicate whose second arm no file satisfies would go green while the
+    // wrapper was deleted from all four shims. Assert each arm has real users,
+    // with the counts derived from the tree rather than pinned to a literal.
+    const handlerFolders: string[] = [];
+    const wrapperFolders: string[] = [];
+    for (const file of commandFiles) {
+      const code = stripComments(readFileSync(join(COMMANDS_DIR, file), 'utf8'));
+      if (
+        /\bfoldRegionOption\(options\)/.test(code) ||
+        /\b(?:options|opts|args)\.region\s*=\s*canonicalizeRegion\(/.test(code)
+      ) {
+        handlerFolders.push(file);
+      }
+      if (/\badoptDeprecatedRegionFlag\(/.test(code)) wrapperFolders.push(file);
+    }
+    expect(handlerFolders.length).toBeGreaterThanOrEqual(4);
+    expect(wrapperFolders.sort()).toEqual([
+      'local-start-agentcore.ts',
+      'local-start-alb.ts',
+      'local-start-cloudfront.ts',
+      'local-start-service.ts',
+    ]);
+  });
+});

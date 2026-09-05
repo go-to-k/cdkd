@@ -122,7 +122,7 @@ URL — has no value to resolve to, because nothing has been deployed.
 
 | Flag | Reads | Use when |
 | --- | --- | --- |
-| `--from-state` | cdkd's S3 state for the stack | The stack was deployed with `cdkd deploy`. Not on `local start-cloudfront`. |
+| `--from-state` | cdkd's S3 state for the stack | The stack was deployed with `cdkd deploy`. `local start-cloudfront` REFUSES it — see [its page](local-start-cloudfront.md#state-sources). |
 | `--from-cfn-stack [name]` | A deployed CloudFormation stack's resources | The stack was deployed with the AWS CDK CLI, or the command is `local start-cloudfront`. |
 
 `--from-cfn-stack` resolves `Ref` and `Fn::ImportValue` from the deployed

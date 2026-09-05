@@ -157,10 +157,13 @@ without passing through cdkd's logger, so take the **last** line
 **Prefer `AWS_REGION` or your AWS profile.** `--region` is deprecated on cdkd's
 own commands: it is hidden from `--help`, it prints a deprecation warning, and it
 will be removed in a future release. It is not a no-op while it lasts — it still
-outranks both the environment variable and the profile. The `cdkd local`
-long-running servers (`start-service`, `start-alb`, `start-cloudfront`,
-`start-agentcore`) are the exception: they carry their own `--region`, which is
-neither hidden nor deprecated.
+outranks both the environment variable and the profile. That now holds on
+**every** command: the four `cdkd local` long-running servers
+(`start-service`, `start-alb`, `start-cloudfront`, `start-agentcore`) used to
+carry their own visible, undeprecated `--region` inherited from the emulation
+engine, and now carry the same hidden, warned flag as everywhere else. The flag
+keeps working; it stopped appearing in those four `--help` outputs and started
+printing the removal warning.
 
 **A region is folded to its canonical lower-case spelling before it reaches an
 AWS client.** `--region US-EAST-1`, `AWS_REGION=US-EAST-1` and
@@ -172,7 +175,7 @@ The `cdkd local` family is where that is not yet uniform:
 | --- | --- |
 | `local invoke`, `local run-task`, `local invoke-agentcore` | The flag and both environment variables. |
 | `local start-api` | The flag only, so an upper-cased `AWS_REGION` still reaches the Lambda containers it starts. |
-| `local start-service`, `local start-alb`, `local start-cloudfront`, `local start-agentcore` | Neither. On the three where `--from-state` is live it folds `--region` for the S3 client and `--stack-region` for the state-record match, but nothing folds the environment variables. Spell the region lower-case on these four. |
+| `local start-service`, `local start-alb`, `local start-cloudfront`, `local start-agentcore` | The flag, `--stack-region` and both environment variables. These four hand their whole option bag to the emulation engine, so the fold runs just before the handler rather than inside it; your exact `--stack-region` spelling is still kept for the state-record match. |
 
 The fold is not cosmetic. Everything downstream of the value is case-sensitive,
 and in different ways:

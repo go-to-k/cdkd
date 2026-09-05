@@ -179,7 +179,7 @@ interface LocalInvokeAgentCoreOptions {
   stateBucket?: string;
   /** S3 key prefix for `--from-state` (commander always supplies the default). */
   statePrefix: string;
-  /** `--from-cfn-stack` — read a deployed CFn stack via DescribeStackResources. */
+  /** `--from-cfn-stack` — read a deployed CFn stack via ListStackResources. */
   fromCfnStack?: string | boolean;
   /** `--stack-region` — region of the state record / CFn client (issue #606). */
   stackRegion?: string;
@@ -2155,11 +2155,23 @@ export function createLocalInvokeAgentCoreCommand(): Command {
           "Off by default — the developer's shell credentials are forwarded unchanged."
       )
     )
+    // See the twin registration in `local-invoke.ts`: commander does not
+    // synthesize `--no-assume-role` from `--assume-role [arn]`, so form (3)
+    // advertised above only exists once it is declared (issue #2523).
+    // Declared after the positive form, so absent still parses as `undefined`.
+    .addOption(
+      new Option(
+        '--no-assume-role',
+        "Explicitly opt out of assuming the runtime's execution role: forward your ambient AWS " +
+          'credentials (or the --profile overlay) unchanged even when --from-state / --from-cfn-stack is set.'
+      )
+    )
     .addOption(
       new Option(
         '--ecr-role-arn <arn>',
         'Role ARN to assume before authenticating against ECR for cross-account / centralized registries. ' +
-          'Same-account / same-region pulls do not need this flag.'
+          'A same-account pull in ANY region does not need this flag: the ECR client is built ' +
+          "for the image URI's own region, so crossing a region costs nothing extra (issue #2536)."
       )
     )
     .addOption(
@@ -2172,7 +2184,7 @@ export function createLocalInvokeAgentCoreCommand(): Command {
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',
-        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+        'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
           'in env vars with the deployed physical IDs / exports. For CDK apps deployed via the upstream CDK CLI. ' +
           'Bare form uses the resolved stack name; pass an explicit value when the CFn stack name differs. ' +
           'Mutually exclusive with --from-state.'

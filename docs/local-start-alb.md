@@ -97,15 +97,16 @@ cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed s
 | `-c`, `--context <key=value>` | — | Context value passed to synthesis. Repeatable. |
 | `--env-vars <file>` | — | SAM-shaped JSON env-var overrides for backing containers. |
 | `--container-host <ip>` | `127.0.0.1` | Host IP the published container and front-door ports bind to. Must be a numeric IP. |
-| `--region <region>` | `AWS_REGION` / stack / profile | AWS region for SDK calls. |
+| `--region <region>` | `AWS_REGION` / stack / profile | **Deprecated**, hidden from `--help`, and still honored: it overrides `AWS_REGION` and the profile, and prints a removal warning. Prefer `AWS_REGION` or your profile. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 
-**Spell the region lower-case.** This command does not fold an upper-cased
-`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
-form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+**Region case is folded for you.** An upper-cased `--region` / `AWS_REGION` /
+`AWS_DEFAULT_REGION` is canonicalized before any AWS call, so `US-EAST-1` no
+longer reaches signature validation as-is. `--stack-region` is folded the same
+way, with your exact spelling still preferred when it matches a state record.
 See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
 ## Target resolution

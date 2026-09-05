@@ -27,8 +27,8 @@ cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack --watch   # 
 `-a, --app`, `--no-pull` and `--stack-region` behave as they do on every
 `cdkd local` subcommand; see
 [Local Execution](local-emulation.md#common-flags). This command does **not**
-accept `--env-vars` or `--container-host`, and its `--from-state` is inert — see
-[State sources](#state-sources).
+accept `--env-vars` or `--container-host`, and it REFUSES cdkd's three
+state-source flags — see [State sources](#state-sources).
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -42,42 +42,50 @@ accept `--env-vars` or `--container-host`, and its `--from-state` is inert — s
 | `--tls-key <path>` | — | PEM private key. Implies `--tls`; must be paired with `--tls-cert`. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda origin's base image and use the cached one. No-op for a distribution with no Lambda. |
 | `--cache-origin` | off | Keep objects fetched from a deployed S3 origin in memory for the session instead of re-reading each request. |
-| `--from-state` | off | Accepted, but **does nothing on this command**, and still conflicts with `--from-cfn-stack` — see [State sources](#state-sources). |
-| `--state-bucket <bucket>` | — | Never read on this command, like `--from-state`. |
-| `--state-prefix <prefix>` | `cdkd` | Never read on this command, like `--from-state`. |
+| `--from-state` | off | **Refused on this command** — exits 1 with a message pointing at `--from-cfn-stack`. See [State sources](#state-sources). |
+| `--state-bucket <bucket>` | — | Refused, like `--from-state`. |
+| `--state-prefix <prefix>` | `cdkd` | Refused when you pass it. The default is not refused, so omitting the flag is fine. |
 | `--from-cfn-stack [name]` | off | Bind the same values to a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the resolved stack name. |
 | `--stack-region <region>` | — | The CloudFormation client region under `--from-cfn-stack`. The state-record half does not apply here. |
 | `--assume-role [arn]` | off | Assume a Lambda origin's deployed execution role and forward temporary credentials into its container. Omit the flag to keep your own shell credentials in the container. |
+| `--no-assume-role` | — | Explicitly decline the role assumption. |
 | `--watch` | off | Re-synth and re-resolve the distribution when the CDK source changes. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly. |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value>` | — | Context value passed to synthesis. Repeatable. |
-| `--region <region>` | `AWS_REGION` / stack / profile | AWS region for SDK calls. |
+| `--region <region>` | `AWS_REGION` / stack / profile | **Deprecated**, hidden from `--help`, and still honored: it overrides `AWS_REGION` and the profile, and prints a removal warning. Prefer `AWS_REGION` or your profile. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 
-**Spell the region lower-case.** This command does not fold an upper-cased
-`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
-form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+**Region case is folded for you.** An upper-cased `--region` / `AWS_REGION` /
+`AWS_DEFAULT_REGION` is canonicalized before any AWS call, so `US-EAST-1` no
+longer reaches signature validation as-is. `--stack-region` is folded the same
+way; on this command it only selects the CloudFormation client's region under
+`--from-cfn-stack`, since there is no cdkd state-record path here.
 See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
 ## State sources
 
-**`--from-state` is inert on this command.** The three cdkd-state flags
-(`--from-state`, `--state-bucket`, `--state-prefix`) parse and are then ignored:
-the deployed-S3 origin reader and the KeyValueStore binding both look for
-`--from-cfn-stack` specifically, and the Lambda origin and Lambda@Edge boot
-paths resolve their environment without consulting cdkd state at all.
+**`--from-state` is REFUSED on this command.** The three cdkd-state flags
+(`--from-state`, `--state-bucket`, `--state-prefix`) exit 1 with a message
+pointing at `--from-cfn-stack`. They used to parse and be silently ignored,
+which cost more than an error does: the failure looked like a state problem on
+exactly the command where you were already chasing a `502` from an unresolved
+origin.
+
+Nothing in the CloudFront path reads cdkd's S3 state today: the deployed-S3
+origin reader and the KeyValueStore binding both look for `--from-cfn-stack`
+specifically, and the Lambda origin and Lambda@Edge boot paths resolve their
+environment without consulting any host-registered state source at all. The fix
+is upstream in the emulation engine; the flags are re-enabled here once cdkd
+picks it up.
 
 `--from-cfn-stack [name]` is the state source that works here. It binds a
 deployed-S3 origin's bucket, backs `cf.kvs()` reads with the deployed
 KeyValueStore, and resolves the environment of both Function URL origin Lambdas
 and Lambda@Edge functions.
-
-Passing `--from-state` and `--from-cfn-stack` together is still an error, so
-drop `--from-state` rather than leaving it on as a no-op.
 
 ## Target resolution
 
