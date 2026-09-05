@@ -503,15 +503,30 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     return;
   }
 
-  // Gated: with only key findings this rewrote nothing, and asserting that "the
-  // plaintext is no longer stored" would be the same false claim the masking
-  // invariant forbids.
+  // Gated: with only key findings this rewrote nothing, and asserting that the
+  // plaintext was removed would be the same false claim the masking invariant
+  // forbids.
+  //
+  // What a successful run CAN claim is bounded by S3 versioning, which is why
+  // this line no longer says "the plaintext is no longer stored there" (issue
+  // [#2624](https://github.com/go-to-k/cdkd/issues/2624)). The rewrite is
+  // `saveState`, a plain `PutObjectCommand`, and `cdkd bootstrap` turns
+  // versioning on: the PUT makes the pre-scrub body NONCURRENT, not gone, and
+  // it stays readable to anyone who can `GetObject` the state key with a
+  // `VersionId`. Nothing here purges it — whether it SHOULD is the open half of
+  // that issue — so the message states the bound and names rotation as the
+  // remedy that actually applies to a copy cdkd cannot reach. See
+  // docs/cli-scrub.md, "Scrubbing supersedes the plaintext, it does not erase it".
   if (totalStacksScrubbed > 0) {
     logger.info(
       `\nDone: scrubbed ${totalStacksScrubbed} stack(s). ` +
-        `The plaintext is no longer stored there, but a value that was ever persisted should be ` +
-        `treated as compromised — ROTATE it in Secrets Manager (scrub matches the current ` +
-        `value, so scrub BEFORE rotating).${keyNote}${unverifiableNote}${failureNote}`
+        `The CURRENT state.json no longer holds the plaintext. Where the state bucket is ` +
+        `VERSIONED — which cdkd bootstrap enables — the pre-scrub body survives as a ` +
+        `noncurrent version, stays readable with GetObject and a VersionId, and scrub does ` +
+        `not purge it. So a value that was ever persisted must be treated as compromised — ` +
+        `ROTATE it in Secrets Manager (scrub matches the current value, so scrub BEFORE ` +
+        `rotating); rotation is what makes any surviving version ` +
+        `harmless.${keyNote}${unverifiableNote}${failureNote}`
     );
   } else {
     logger.info(

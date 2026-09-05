@@ -403,9 +403,9 @@ aws dynamodb update-table --table-name <table> --deletion-protection-enabled
 
 By default `cdkd destroy` removes `state.json` / `lock.json` but **keeps** the
 stack's deployment-event history (the `deployments/` store) as post-mortem
-context — so the state bucket does not return fully empty after a teardown.
-`cdkd destroy <stack> --purge-events` opts into purging that history too, so
-the bucket returns to empty:
+context — so an object listing of the state bucket is not empty after a
+teardown. `cdkd destroy <stack> --purge-events` opts into deleting that history
+too, so the listing comes back empty:
 
 ```bash
 cdkd destroy MyStack --purge-events -y
@@ -427,6 +427,10 @@ cdkd destroy MyStack --purge-events -y
 - `cdkd state destroy` does NOT take this flag. For an already-destroyed stack,
   or on the CDK-app-free path, use the equivalent
   [`cdkd events prune <stack> --all`](cli-events.md).
+- **The purge empties the LISTING, not the bucket.** The state bucket is
+  versioned and the delete carries no version id, so earlier versions of the
+  event keys survive and stay readable with a `VersionId` — see
+  [Deleting a run stream does not remove its earlier versions](deployment-events.md#deleting-a-run-stream-does-not-remove-its-earlier-versions).
 
 ## Skipped resources on destroy
 

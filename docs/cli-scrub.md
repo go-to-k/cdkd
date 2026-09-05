@@ -65,7 +65,11 @@ Two modes, both useful long after any one-time cleanup:
 ```
 
 A normal `cdkd deploy` scrubs state this way as a side effect, so a green gate
-is the expected steady state rather than something you have to maintain.
+is the expected steady state rather than something you have to maintain. What
+that first deploy under a fixed binary does is SUPERSEDE the legacy plaintext
+`state.json`, not erase it — the earlier version stays readable — so a green
+gate means the CURRENT object is clean and nothing more. See
+[Scrubbing supersedes the plaintext, it does not erase it](#scrubbing-supersedes-the-plaintext-it-does-not-erase-it).
 
 ## How secrets stay out of state
 
@@ -74,8 +78,13 @@ cdkd resolves CloudFormation dynamic references —
 **SecureString** parameter — to their concrete value so the secret can be
 handed to the AWS API on create or update. When it PERSISTS state, it stores
 the UNRESOLVED expression rather than the resolved plaintext, so the secret
-never lands in `state.json`, `cdkd state show`, `cdkd diff` or `cdkd drift`
-output.
+does not land in the `state.json` cdkd writes, nor in `cdkd state show`,
+`cdkd diff` or `cdkd drift` output.
+
+That is a statement about what cdkd WRITES from here on. It says nothing about
+a `state.json` version an older binary already wrote: on a versioned state
+bucket the next write supersedes such a version rather than removing it — see
+[Scrubbing supersedes the plaintext, it does not erase it](#scrubbing-supersedes-the-plaintext-it-does-not-erase-it).
 
 This matches CloudFormation, which keeps the reference in the template and
 resolves it service-side. Two consequences follow: a rotated secret behind an
@@ -125,6 +134,46 @@ state no longer matches and `scrub` reports nothing to scrub. The rotation
 invalidates the stale value; a redeploy then rewrites the record with the
 expression.
 
+### Scrubbing supersedes the plaintext, it does not erase it
+
+`scrub` rewrites `state.json` with a plain S3 `PutObject`, and `cdkd bootstrap`
+turns **versioning** on for the state bucket (it skips that step for a bucket
+that already existed, unless you pass `--force`, so confirm with
+`aws s3api get-bucket-versioning --bucket <state-bucket>` if you supplied your
+own). Where versioning is on, the rewrite makes the
+pre-scrub body a NONCURRENT VERSION of the same key rather than removing it,
+and that version stays readable — plaintext and all — to anyone who can
+`GetObject` the key with a `VersionId`. A normal `cdkd deploy` persists state
+the same way, so the implicit scrub above has exactly the same property.
+
+`cdkd scrub` does **not** purge those versions, and its summary line says so
+rather than claiming the plaintext is gone. This is why the rotation advice
+above is the load-bearing remedy and not a belt-and-braces extra: rotation is
+what makes a copy cdkd cannot reach harmless.
+
+To see whether any survive, and to remove them yourself:
+
+```bash
+# List the noncurrent versions of one stack's state key. `cdkd` is the default
+# --state-prefix; substitute yours if you set one.
+aws s3api list-object-versions --bucket <state-bucket> \
+  --prefix "<state-prefix>/<stack>/<region>/state.json" \
+  --query 'Versions[?IsLatest==`false`].{Key:Key,Id:VersionId,Modified:LastModified}' \
+  --output table
+
+# Delete one, after confirming it is not the version you want to recover from.
+aws s3api delete-object --bucket <state-bucket> \
+  --key "<state-prefix>/<stack>/<region>/state.json" --version-id <VersionId>
+```
+
+Think before running the second command: `state.json`'s noncurrent versions are
+also the **state-recovery capability** S3 versioning is enabled for, which is
+why cdkd leaves the state key's history alone everywhere (see
+[State Management](state-management.md#s3-storage-structure)). If the bucket is
+replicated, the destination keeps its own copies and no delete here reaches
+them — see
+[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+
 ## Example output
 
 A stack that held plaintext:
@@ -133,9 +182,12 @@ A stack that held plaintext:
 $ cdkd scrub MyStack
 Scrubbed 3 resource record(s) in MyStack
 
-Done: scrubbed 1 stack(s). The plaintext is no longer stored there, but a value that
-was ever persisted should be treated as compromised — ROTATE it in Secrets Manager
-(scrub matches the current value, so scrub BEFORE rotating).
+Done: scrubbed 1 stack(s). The CURRENT state.json no longer holds the plaintext, but
+the state bucket is VERSIONED: the pre-scrub body survives as a noncurrent version,
+readable with GetObject and a VersionId, and scrub does not purge it. So a value that
+was ever persisted must be treated as compromised — ROTATE it in Secrets Manager
+(scrub matches the current value, so scrub BEFORE rotating); rotation is what makes
+the surviving versions harmless.
 ```
 
 A CI gate that fails:
@@ -559,6 +611,16 @@ through a context that does not record secrets:
 
 Both apply to `{{resolve:secretsmanager:...}}` as well as to a `SecureString`
 parameter.
+
+A third path is out of `scrub`'s reach for a different reason — it is a
+SEPARATE object, not a redaction gap. The exports index at
+`{state-prefix}/_index/{region}/exports.json` holds each exported Output's
+resolved value, and `cdkd scrub` rewrites `state.json` only. So a
+secret-bearing Output published by an older binary keeps its plaintext there as
+the CURRENT object — not merely as a superseded version — until the producer
+stack is redeployed, and `--dry-run --fail` reports GREEN over it because the
+gate reads state records. **Redeploy the producer** to repair it, and rotate
+the secret.
 
 ## Related
 

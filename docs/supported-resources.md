@@ -324,7 +324,7 @@ no-op placeholder — outside CloudFormation the real pre-signed signal URL cann
 
 - `AWS::S3::Bucket`
 - `AWS::S3::BucketPolicy`
-- `AWS::EFS::FileSystem`
+- `AWS::EFS::FileSystem` — **Destroy caveat**: automatic backups taken while the file system existed outlive it, see [EFS automatic backups survive destroy](#efs-automatic-backups-survive-destroy) below
 - `AWS::EFS::MountTarget`
 - `AWS::EFS::AccessPoint`
 - `AWS::S3Express::DirectoryBucket`
@@ -349,6 +349,46 @@ their own SDK Provider, and every type absent from this page goes through the
 Cloud Control API fallback.
 
 ## Per-type behaviour notes
+
+### EFS automatic backups survive destroy
+
+Destroying an `AWS::EFS::FileSystem` calls `DeleteFileSystem`, which removes
+the file system and its data. It does **not** touch the AWS Backup recovery
+points taken while the file system existed, so a destroy that reports 0 errors
+can leave a **restorable copy of the file system's data** — and a chargeable
+one — behind.
+
+This applies when the file system had **automatic backups** turned on. A
+template asks for them with `BackupPolicy: { Status: ENABLED }` — what the AWS
+CDK emits for `enableAutomaticBackups: true` — and cdkd applies that policy on
+create and on update, so cdkd is what turned the preserving feature on. AWS
+also enables automatic backups by default for some file-system configurations,
+so check rather than assume:
+
+```bash
+aws efs describe-backup-policy --file-system-id fs-XXXXXXXX --region <region>
+```
+
+AWS Backup stores the recovery points in the service-managed vault
+`aws/efs/automatic-backup-vault` with a **35-day** default retention, and they
+remain fully restorable for that window after the file system is gone. To find
+and delete them, note the file system id (from deploy output or cdkd state) and
+run:
+
+```bash
+aws backup list-recovery-points-by-backup-vault \
+  --backup-vault-name aws/efs/automatic-backup-vault --region <region> \
+  --query "RecoveryPoints[?contains(ResourceArn, 'fs-XXXXXXXX')].{Arn:RecoveryPointArn,Created:CreationDate,Status:Status}" \
+  --output table
+
+aws backup delete-recovery-point --region <region> \
+  --backup-vault-name aws/efs/automatic-backup-vault \
+  --recovery-point-arn <RecoveryPointArn>
+```
+
+Deleting them is a decision, not cleanup: they are the only remaining copy of
+the file system's data. Leave them in place if the destroy was a mistake, and
+delete them when the data itself must not outlive the stack.
 
 ### FSx final backup on destroy
 

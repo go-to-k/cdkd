@@ -52,7 +52,11 @@ vi.mock('../../../../src/utils/colors.js', () => {
   return { bold: id, cyan: id, gray: id, green: id, red: id, yellow: id };
 });
 
-import { eventsCommand, eventsPruneCommand } from '../../../../src/cli/commands/events.js';
+import {
+  createEventsPruneCommand,
+  eventsCommand,
+  eventsPruneCommand,
+} from '../../../../src/cli/commands/events.js';
 
 interface RunOpts {
   json?: boolean;
@@ -219,7 +223,17 @@ describe('cdkd events prune command', () => {
     seedJsonlRuns('us-east-1', [id(0), id(1), id(2)]);
     await eventsPruneCommand('MyStack', { all: true, yes: true });
     expect([...objects.keys()].filter((k) => k.includes('/deployments/'))).toEqual([]);
-    expect(logLines.join('\n')).toContain('Pruned 3');
+    // Issue #2624: the keys are gone from a LISTING, not from the bucket —
+    // `deleteRawObjects` sends `DeleteObjects` with no `VersionId`, so on the
+    // versioned state bucket every earlier version stays readable. The line
+    // that reports the delete has to say so — bound to THAT line, not to the
+    // joined output, or moving the caveat to a separate hint line would leave
+    // the delete claim unqualified and still pass.
+    const pruned = logLines.find((l) => l.includes('Pruned 3'));
+    expect(pruned).toBeDefined();
+    expect(pruned).toContain('earlier versions of the deleted keys survive');
+    expect(pruned).toContain('VersionId');
+    expect(pruned).toContain('prune does not purge them');
   });
 
   it('--keep retains the newest N (with --yes)', async () => {
@@ -241,6 +255,11 @@ describe('cdkd events prune command', () => {
     seedJsonlRuns('us-east-1', [id(0), id(1)]);
     await eventsPruneCommand('MyStack', { keep: 5, yes: true });
     expect(logLines.join('\n')).toContain('No runs matched');
+    // THE OTHER POLARITY of the note asserted on the two delete arms (issue
+    // #2624): this arm deleted NOTHING, so there is no delete to qualify and
+    // the versioning caveat must not appear. Without this, appending the note
+    // unconditionally would still pass every positive case.
+    expect(logLines.join('\n')).not.toContain('earlier versions of the deleted keys survive');
   });
 
   it('refuses to prune without --yes on a non-interactive terminal (no hang)', async () => {
@@ -272,6 +291,47 @@ describe('cdkd events prune command', () => {
     );
     await eventsPruneCommand('MyStack', { all: true, yes: true });
     expect(objects.has('cdkd/MyStack/us-east-1/deployments/index.json')).toBe(false);
-    expect(logLines.join('\n')).toContain('Removed the empty deployment-event index');
+    // "Removed" is the same claim as "Pruned" for this purpose (issue #2624):
+    // the index key was delete-markered, and its earlier versions survive. The
+    // note has to be on THIS arm too, not only on the run-stream arm — and on
+    // the SAME line as the removal claim.
+    const removed = logLines.find((l) => l.includes('Removed the empty deployment-event index'));
+    expect(removed).toBeDefined();
+    expect(removed).toContain('earlier versions of the deleted keys survive');
+  });
+});
+
+/**
+ * `cdkd events prune`'s own HELP text carried the claim this command's output
+ * now retires — it promised to "reclaim S3 space", which is precisely what a
+ * version-blind delete does NOT do (issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)). Nothing pinned it, so
+ * a revert reddened nothing; the sibling `--purge-events` help is pinned in
+ * `tests/unit/cli/destroy-purge-events.test.ts`.
+ *
+ * Read the raw `description`, never `helpInformation()` — that re-wraps at a
+ * width derived from the option names and the terminal, so a long needle would
+ * match only by accident.
+ */
+describe('cdkd events prune help text', () => {
+  const cmd = () => createEventsPruneCommand();
+  const allDescription = (): string =>
+    cmd().options.find((o) => o.long === '--all')?.description ?? '';
+
+  it('the command description promises a cleared LISTING, not reclaimed space', () => {
+    const text = cmd().description();
+    // Bound the arm: an empty description would satisfy the negatives for free.
+    expect(text).not.toBe('');
+    expect(text).toContain('clears the object listing');
+    expect(text).toContain('earlier versions of the deleted keys survive');
+    // The exact phrase that shipped, and the one this issue retires.
+    expect(text).not.toContain('reclaim S3 space');
+  });
+
+  it('--all no longer calls itself a full purge', () => {
+    expect(allDescription()).not.toBe('');
+    expect(allDescription()).toContain('Delete every recorded run and the index');
+    // "purge" reads as removal; on a versioned bucket it is not one.
+    expect(allDescription()).not.toContain('full purge');
   });
 });

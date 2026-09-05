@@ -1541,6 +1541,19 @@ cdkd destroy MyStack --force
 cdkd deploy MyStack
 ```
 
+### Known Leftover: EFS Automatic Backups
+
+A successful `cdkd destroy` of an `AWS::EFS::FileSystem` deletes the file
+system but not the AWS Backup recovery points taken while it existed. If the
+file system had automatic backups on (`BackupPolicy: { Status: ENABLED }`,
+which cdkd applies from the template), those recovery points stay in the
+service-managed vault `aws/efs/automatic-backup-vault` for the 35-day default
+retention and remain fully restorable — a copy of the data, and a charge,
+outliving the stack. See
+["EFS automatic backups survive destroy" in Supported Resources](supported-resources.md#efs-automatic-backups-survive-destroy)
+for the `aws backup list-recovery-points-by-backup-vault` /
+`aws backup delete-recovery-point` commands.
+
 ### Known Leftover: FSx Final Backups
 
 A successful `cdkd destroy` of an `AWS::FSx::FileSystem` can leave a

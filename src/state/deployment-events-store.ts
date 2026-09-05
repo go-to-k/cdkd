@@ -134,7 +134,8 @@ export interface DeploymentEventsPruneOptions {
   keep?: number;
   /** Delete runs older than this many milliseconds. */
   olderThanMs?: number;
-  /** Delete EVERY run + the index (full purge). */
+  /** Delete EVERY run + the index. Clears the object LISTING; on a versioned
+   *  bucket the deleted keys' earlier versions survive (issue #2624). */
   all?: boolean;
   /** Clock injection for the age cutoff (tests); defaults to `new Date()`. */
   now?: Date;
@@ -581,7 +582,10 @@ export class DeploymentEventsReader {
    * window and rewrites (or removes) `index.json` to match.
    *
    * Retention semantics (see {@link DeploymentEventsPruneOptions}):
-   *   - `all`        — delete every run + the index (full purge).
+   *   - `all`        — delete every run + the index. Clears the LISTING only:
+   *                    this deletes by key with no `VersionId`, so on a
+   *                    versioned bucket every earlier version survives
+   *                    (issue #2624).
    *   - `keep N`     — retain the newest N runs, delete the rest.
    *   - `olderThanMs`— delete runs whose run-id timestamp is older than the
    *                    cutoff; a run id with no parseable timestamp is kept.

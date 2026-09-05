@@ -230,7 +230,7 @@ recreate-nested-logical-id-collision	2026-09-05T18:18:50Z	PASS	150	verify.sh	rc 
 recreate-via-cc-api	2026-09-05T09:12:25Z	PASS	130	verify.sh	#2615 review round: greps took -F and dropped the dead has-objects branch; both polarities still discriminate, 0 orphans
 recreate-via-sdk-provider	2026-08-08T16:40:35Z	PASS	78	verify.sh	P1 post-#1360 replacement-rules touch; CC->SDK mid-life recreate ok, 2 del/0 err, 0 orphans
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-05T03:27:04Z	PASS	1350	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
+remove-protection	2026-09-05T20:03:11Z	PASS	980	verify.sh	rc0, destroy clean, 0 orphans; PR 2671 gate run (one VPCGatewayAttachment DELETE timed out and was recovered by retry)
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacement-rules touch; SNS replacement fanout to 10 dependents, 12 del/0 err, 0 orphans
 replacement-immutable-name	2026-09-05T03:27:04Z	PASS	112	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run

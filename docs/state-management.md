@@ -1894,6 +1894,20 @@ feature, and it is swept by an ordinary `cdkd destroy`. `state.json` is
 deliberately NOT in this table — its previous versions are the state-recovery
 capability versioning is enabled for.
 
+**Two other key families are not in the table either, and for neither reason.**
+`state.json` is a deliberate exemption; these are simply not purged, so their
+previous versions accumulate and stay readable:
+
+- `deployments/**` — the deployment-event store. Its deletes carry no version
+  id on every path (the writer's self-bounding prune, `cdkd events prune`, and
+  `cdkd destroy --purge-events`), and each run's stream is re-written in full
+  per flush, so one run leaves one version per flush. The repo classes this
+  content as sensitive, so this matters: see
+  [Deleting a run stream does not remove its earlier versions](deployment-events.md#deleting-a-run-stream-does-not-remove-its-earlier-versions).
+- `_index/{region}/exports.json` — the exports index, which holds resolved
+  Output values and is never rewritten by `cdkd scrub`; see
+  [`cdkd scrub`](cli-scrub.md#limitations).
+
 **Without the two grants, nothing fails — and that is the point to
 understand.** The purge runs on a cleanup path and must never abort the
 operation it follows, so it logs a warning and the deploy, diff, rollback,
