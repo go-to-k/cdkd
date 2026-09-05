@@ -681,13 +681,52 @@ gate_unquote_span() {
 # token it is not classifying: a flag VALUE is copied whole, and the scan stops
 # at the verb.
 #
-# THE RESIDUE, measured and recorded rather than claimed closed. An
-# UNENUMERATED value-consuming global flag makes its VALUE look like the
-# subcommand, so the scan stops one token early and a QUOTED verb after it is
-# NOT dequoted: `git --unknown-opt someval "commit" -m x` still matches
-# nothing, while its literal-verb twin matches through `GATE_FLAGS`. That is
-# strictly narrower than the gap go-to-k/cdkd#2333 filed -- which needed no
-# flag at all -- and it fails in the same direction as today.
+# THE RESIDUES, measured and recorded rather than claimed closed. Every one
+# fails in the SAME direction as today -- a spelling that stays unmatched, not
+# a new refusal -- and every one is strictly narrower than the gap
+# go-to-k/cdkd#2333 filed, which needed no flag, no padding and no unusual
+# quoting at all.
+#
+#  1. An UNENUMERATED value-consuming global flag makes its VALUE look like the
+#     subcommand, so the scan stops one token early and a QUOTED verb after it
+#     is not dequoted: `git --unknown-opt someval "commit" -m x` matches
+#     nothing while its literal-verb twin matches through `GATE_FLAGS`.
+#  2. A `gh` GROUP absent from the second-verb-token list (`gh <group> <verb>`)
+#     leaves its verb undequoted. Deliberately the safe side: consuming a token
+#     that is an ARGUMENT is the failure the list exists to prevent.
+#  3. A structural token past `GATE_STRUCT_MAXTOKLEN` or `GATE_STRUCT_MAXSPAN`
+#     is left alone, so `git c<512 bytes of padding>ommit` is not dequoted. A
+#     bound is unavoidable: without one a 12 KB command took 154 s through
+#     `gate_segments` and killed the hook, which disarms every gate at once --
+#     strictly worse than one unmatched spelling.
+#  4. More than `GATE_STRUCT_MAXTOK` tokens before the verb, likewise.
+#  5. ANSI-C quoting: `git $'commit' -m x` really runs `git commit`, and the
+#     walk cannot read `$'...'` (it sees `$` plus a quoted span). It ABANDONS
+#     rather than emitting the mangled `$commit`. Pre-existing on origin/main,
+#     which matches it no better.
+#
+# HOOK-LOCAL PARSERS, audited rather than assumed (go-to-k/cdkd#2333 acceptance
+# criterion 3). The population is hooks that read `.tool_input.command` and do
+# NOT go through this library -- derived, not remembered:
+#
+#   for f in .claude/hooks/*.sh; do
+#     grep -q 'tool_input.command' "$f" || continue
+#     grep -qE 'gate_matches|gate_segments|cmd_matches_verb|gate_verb_rest|gate_pr_selector|gate_target_dir|gate_tokens|gate_argv|strip_noncommand_spans' "$f" \
+#       || echo "NO SHARED MATCHER: $f"
+#   done
+#
+# It returns TWO. `main-tree-dirty-detector.sh` is a non-blocking PostToolUse
+# observer keyed on write-ish tokens, with no verb grammar -- out of scope.
+# `main-tree-edit-gate.sh` is NOT: it carries its own
+# `^[[:space:]]*cd[[:space:]]+` regex (line 61) that a quoted `"cd"` does not
+# match, so the base directory for a relative write target is not updated.
+# Filed rather than fixed here -- porting that hook to this library is its own
+# change with its own risk, and the criterion's named target
+# (`main-tree-branch-gate.sh`'s `QUOTEDSPAN` sed) no longer exists: that hook
+# reads the shared stream now, and a repo-wide grep for that marker returns
+# only this paragraph -- which is why the marker is not spelled here a second
+# time as a runnable command: a claim that a string is absent must not itself
+# supply the string.
 # The git / gh GLOBAL FLAGS that consume the FOLLOWING token as their value.
 # ONE copy, used by `gate_dequote_structural` and by `gate_leading_c_value`,
 # because the two halves of this file have already disagreed about exactly this
@@ -718,7 +757,39 @@ _gate_is_value_flag() {
   return 1
 }
 
-GATE_STRUCT_MAXTOK=24
+# THE THREE BOUNDS, and each answers a different attack. A hook killed by the
+# 10 s PreToolUse timeout cannot emit exit 2, which disarms every gate AT ONCE,
+# so a cost bound here is a security property and not a nicety.
+#
+#   MAXTOKLEN / MAXSPAN bound ONE token's dequote. The span walk in
+#   `_gate_struct_rewrite` copies the remaining token on every stop character,
+#   so its cost is quadratic in token LENGTH and in QUOTE COUNT together.
+#   Measured before this bound, `gate_segments` on a single input, new vs
+#   `origin/main`: `--o="a"` x400 x24 tokens (28.9 KB) 6.31 s vs 0.11 s, and
+#   57.7 KB 45.3 s vs 0.29 s -- end to end `branch-gate` 12.96 s and
+#   `check-gate` 12.87 s, past the timeout. The attack needs no gated verb at
+#   all: `git --o="a"x400 ...x24 ; git commit -m x` burns the budget in segment
+#   ONE, the hook dies, and segment TWO commits with every gate disarmed. That
+#   is a WORSE outcome than the bypass this whole change closes.
+#
+#   MAXTOK bounds the token COUNT, and it is NOT what stops padding -- the
+#   previous revision of this comment claimed it was, and that claim was false
+#   in the plainest way: padding lives in the NUMBER of tokens as readily as
+#   inside one. Measured against a real `main` checkout with `branch-gate.sh`,
+#   at the old cap of 24:
+#
+#     rc=2  git --no-pager x23 "commit" -m x
+#     rc=0  git --no-pager x24 "commit" -m x     <- BYPASS
+#     rc=2  git --no-pager x24 commit -m x       (literal twin still blocked)
+#
+#   `--no-pager` is an ordinary git global, so the command runs. With per-token
+#   cost bounded the outer walk is O(tokens) and cheap, so the cap is raised to
+#   a number no real command line reaches. It is a backstop against an
+#   unbounded loop, not a security boundary; the residue it leaves is recorded
+#   with the others on `gate_dequote_structural`.
+GATE_STRUCT_MAXTOK=256
+GATE_STRUCT_MAXTOKLEN=512
+GATE_STRUCT_MAXSPAN=64
 GATE_STRUCT_SEG=""
 _GATE_DQ=""
 _GATE_DQ_CHANGED=0
@@ -756,13 +827,31 @@ _gate_struct_next() {
 # siblings) -- a bypass introduced by the change closing one. A surviving
 # BACKSLASH is refused for the same reason one direction over.
 _gate_struct_rewrite() {
-  local w="$1" rest="$1" out="" chunk q="" c
+  local w="$1" rest="$1" out="" chunk q="" c spans=0
   _GATE_DQ="$w"; _GATE_DQ_CHANGED=0
   case "$w" in *[\"\'\\]*) ;; *) return 0 ;; esac
+  # A command word, a global-flag NAME and a subcommand are all short by
+  # construction, so anything longer is not a structural token and is not worth
+  # the walk. Returning the token verbatim is an ABANDON -- exactly today's
+  # behaviour for it, never a refusal.
+  #
+  # THIS IS NOT THE WITHDRAWN ROUND'S BYTE CAP, and the difference is the whole
+  # point. That one bounded the WHOLE SEGMENT, so 400 bytes of `-c` value
+  # pushed a later verb past it (`git -c user.name=<400 x> -C <repo> "commit"`
+  # was rc=0 while its literal twin was rc=2). This bounds ONE TOKEN, so the
+  # padding would have to sit INSIDE the verb itself.
+  [ "${#w}" -le "$GATE_STRUCT_MAXTOKLEN" ] || return 0
   # The walk advances by SPANS, not characters, for the reason recorded on
   # GATE_NOT_INERT_GLOB: `${s:i:1}` in a UTF-8 locale walks to offset `i` every
-  # time, so a per-character loop here is quadratic.
+  # time, so a per-character loop here is quadratic. It removes only THAT
+  # quadratic -- the walk still copies the remaining token per stop character,
+  # which is why the two bounds below exist.
   while [ -n "$rest" ]; do
+    # The SECOND bound, and it is the one the length bound cannot supply: cost
+    # rises with the NUMBER of stop characters independently of length. A real
+    # structural token carries a handful -- `c"o"mmit` has two.
+    spans=$((spans + 1))
+    [ "$spans" -gt "$GATE_STRUCT_MAXSPAN" ] && return 0
     if [ -z "$q" ]; then
       chunk="${rest%%$GATE_CHUNK_STOP*}"
       out="$out$chunk"
@@ -791,7 +880,21 @@ _gate_struct_rewrite() {
       c="${rest%"${rest#?}"}"
       rest="${rest#?}"
       case "$c" in
-        '\') out="$out${rest%"${rest#?}"}"; rest="${rest#?}" ;;
+        '\')
+          # INSIDE a double-quoted span a backslash escapes only `$`, a
+          # backtick, `"`, `\` and a newline; before anything else it is a
+          # LITERAL backslash. Consuming it unconditionally made
+          # `git "com\mit"` dequote to `commit`, so the gates fired on a
+          # command that runs no gated verb at all -- a false refusal, the loud
+          # direction, but still a wrong rewrite. Emitting the backslash makes
+          # the safety rule below refuse the token, which abandons to today's
+          # behaviour.
+          c="${rest%"${rest#?}"}"
+          case "$c" in
+            '"'|'\'|'$'|'`') out="$out$c"; rest="${rest#?}" ;;
+            *) out="$out\\" ;;
+          esac
+          ;;
         '"') q="" ;;
       esac
     fi
@@ -802,6 +905,17 @@ _gate_struct_rewrite() {
     '') return 0 ;;
     *[[:space:]]*) return 0 ;;
     *[\"\'\\]*) return 0 ;;
+    # SHELL METACHARACTERS, and this arm is not defensive tidiness. Without it
+    # `git "a>b"` was rewritten to `git a>b`, putting a live REDIRECT into the
+    # stream every reader parses -- a probe of it actually created the file --
+    # and `git "com;mit"` grew a bare `;` the segmenter splits on. That is the
+    # argument-corruption class that withdrew the previous attempt, one
+    # character wide. `$` is listed for a second reason: it makes
+    # `git $'commit' -m x` ABANDON instead of emitting the mangled `$commit`
+    # (the walk reads `$'...'` as `$` plus a quoted span, which is not what
+    # bash does). ANSI-C quoting stays a recorded residue -- a wrong rewrite is
+    # worse than none.
+    *[\<\>\;\&\|\(\)\`\$]*) return 0 ;;
   esac
   [ "$out" = "$w" ] && return 0
   _GATE_DQ="$out"; _GATE_DQ_CHANGED=1
@@ -809,7 +923,7 @@ _gate_struct_rewrite() {
 }
 
 gate_dequote_structural() {
-  local seg="$1" rest tok d out="" changed=0 n=0 verbn=0
+  local seg="$1" rest tok d out="" changed=0 n=0 kind="" extra=0
   GATE_STRUCT_SEG="$seg"
   # Cheap stop 1: with no quote and no backslash anywhere there is nothing to
   # dequote. One glob, and it is the shape of nearly every command.
@@ -845,29 +959,44 @@ gate_dequote_structural() {
   fi
 
   case "$d" in
-    # How many tokens the VERB occupies. `gh pr merge` and `vp run test` are
-    # two; `git commit` and `cdk deploy` are one.
-    git|cdk) verbn=1 ;;
-    gh|vp)   verbn=2 ;;
+    # WHICH GRAMMAR the walk uses. `gh pr merge` and `vp run test` put the verb
+    # in TWO tokens; `git commit` and `cdk deploy` in one -- but for `gh` that
+    # is a property of the FIRST verb token, not of `gh`, so the decision is
+    # deferred to the subcommand arm rather than taken here. An earlier
+    # revision consumed a second token unconditionally, which rewrote an
+    # ARGUMENT for every one-token gh verb: `gh api "repos/o/r/pulls/1"` came
+    # back dequoted and `gh api "repos/o/r/x;y"` grew a bare `;`. That is the
+    # withdrawn design's failure class appearing inside the fix for it.
+    git|cdk) kind=git ;;
+    gh)      kind=gh ;;
+    vp)      kind=vp ;;
     # `bash -c "<list>"` is re-segmented by the caller, and the flag it keys on
     # can be quoted too. Its BODY is deliberately not a structural token: the
     # caller strips that span with `gate_unquote_span` and re-segments it, so
     # each inner segment reaches this function on its own.
     bash|sh|zsh|ksh)
+      # ONLY the `-c` FLAG, never the token after it and never a script PATH.
+      # `bash "scripts/foo.sh"` has to come back untouched: that second token
+      # is an ARGUMENT, and dequoting it is the same overreach as the gh `api`
+      # case above.
       if [ -n "$rest" ] && _gate_struct_next "$rest"; then
         _gate_struct_rewrite "$_GATE_STRUCT_TOK"
-        out="$out $_GATE_DQ"; rest="$_GATE_STRUCT_REST"
-        [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+        case "$_GATE_DQ" in
+          -*)
+            out="$out $_GATE_DQ"; rest="$_GATE_STRUCT_REST"
+            [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+            ;;
+        esac
       fi
-      verbn=0 ;;
+      kind=stop ;;
     # A bare command word with no verb: the PATH after `cd` stays quoted,
     # because `gate_target_dir` reads it with `gate_unquote` and a rewrite here
     # would be the whole-segment normalisation this function exists to avoid.
-    cd|delstack) verbn=0 ;;
+    cd|delstack) kind=stop ;;
     *) return 0 ;;
   esac
 
-  while [ "$verbn" -gt 0 ] && [ -n "$rest" ]; do
+  while [ "$kind" != stop ] && [ -n "$rest" ]; do
     n=$((n + 1))
     # Reaching the cap abandons the rewrite WHOLE. A half-rewritten segment
     # would be a stream nobody has measured; the original is today's behaviour.
@@ -896,15 +1025,31 @@ gate_dequote_structural() {
         # rewrites, and the scan stops at it.
         out="$out $_GATE_DQ"
         [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
-        verbn=$((verbn - 1))
-        while [ "$verbn" -gt 0 ] && [ -n "$rest" ]; do
-          _gate_struct_next "$rest" || break 2
+        # A SECOND verb token, only for the groups that actually have one.
+        # The list is an enumeration and it is allowed to be INCOMPLETE: a
+        # group missing from it is simply not dequoted at its second position,
+        # which is today's behaviour. Being wrong the other way -- consuming a
+        # token that is an ARGUMENT -- is the failure this list exists to
+        # prevent, so a name goes in only when `<group> <verb>` is the real
+        # grammar.
+        extra=0
+        case "$kind" in
+          gh)
+            case "$d" in
+              pr|issue|release|repo|run|workflow|cache|secret|variable|label|project|ruleset|org|search|gist|codespace|extension|alias|config|auth|attestation)
+                extra=1 ;;
+            esac
+            ;;
+          vp)
+            case "$d" in run) extra=1 ;; esac
+            ;;
+        esac
+        if [ "$extra" = 1 ] && [ -n "$rest" ] && _gate_struct_next "$rest"; then
           _gate_struct_rewrite "$_GATE_STRUCT_TOK"
           rest="$_GATE_STRUCT_REST"
           out="$out $_GATE_DQ"
           [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
-          verbn=$((verbn - 1))
-        done
+        fi
         break
         ;;
     esac
