@@ -50,10 +50,16 @@ set -u
 # asymmetry go-to-k/cdkd#2333 found in the shared matcher.
 #
 # The library is loaded for `gate_unquote_span` / `gate_unquote` -- the verb and
-# path unquoting. It is NOT loaded for `cmd_last_cd_target`: three rounds tried
-# resolving the `cd` with that helper, or with scans built around it, and each
-# shipped a silent failure (go-to-k/cdkd#2650 carries the tables). The `cd`
-# match below is deliberately a local, ANCHORED regex.
+# path unquoting -- AND for `gate_segments_marked`, which is what the walk below
+# is built on. It is still NOT loaded for `cmd_last_cd_target`: three rounds
+# tried resolving the `cd` with that helper, or with scans built around it, and
+# each shipped a silent failure (go-to-k/cdkd#2650 carries the tables).
+#
+# This comment said "the `cd` match below is deliberately a local, ANCHORED
+# regex" for one revision after that stopped being true, which is worse than
+# saying nothing: a future round following it would revert the ordered walk and
+# restore the bug the walk exists to close. It is an ORDERED WALK over
+# `gate_segments_marked` now, and the anchored regex is gone.
 # shellcheck source=lib/command-match.sh
 __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as
@@ -61,7 +67,8 @@ __hook_dir="${BASH_SOURCE[0]%/*}"
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_unquote_span >/dev/null \
-  || ! declare -F gate_unquote >/dev/null; then
+  || ! declare -F gate_unquote >/dev/null \
+  || ! declare -F gate_segments_marked >/dev/null; then
   # FAIL CLOSED, as every other blocking gate does: a hook that cannot parse
   # the command cannot say the edit is safe, and `|| exit 0` on an unloadable
   # library is the shape that made twelve sibling gates inert
@@ -69,6 +76,20 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing or unloadable," >&2
   echo "so main-tree-edit-gate cannot resolve the command's working directory." >&2
   echo "Restore the file; do not work around the gate." >&2
+  # THIS HOOK MATCHES Edit AND Write AS WELL AS Bash, so an unloadable library
+  # takes away the three tools an agent would repair it with. Fail-closed is
+  # still right -- a gate that cannot parse the command cannot bless the edit --
+  # but a refusal with no way out reads as a broken harness rather than a
+  # working gate, so it has to name the one route that does not weaken it: a
+  # human running the fix in their own shell. In Claude Code that is the `!`
+  # prefix in the prompt. Measured the hard way (go-to-k/cdkd#2650): an
+  # apostrophe inside a comment in the library's awk program closed the shell
+  # string, and the session that wrote it could not undo it.
+  echo "" >&2
+  echo "If you are an agent and Edit/Write/Bash are all refused, you cannot fix" >&2
+  echo "this yourself -- that is by design. Ask the operator to run the repair" >&2
+  echo "from their own shell (in Claude Code, prefix the command with '!')." >&2
+  echo "Check it first with: bash -n .claude/hooks/lib/command-match.sh" >&2
   exit 2
 fi
 
@@ -80,6 +101,7 @@ base_dir="${hook_cwd:-$PWD}"
 
 # --- Collect candidate target file paths -----------------------------------
 candidates=()
+cand_bases=()
 
 case "$tool" in
   Edit|Write|MultiEdit)
@@ -89,117 +111,253 @@ case "$tool" in
   Bash)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
     [[ -z "$cmd" ]] && exit 0
-    # A LEADING `cd <dir> &&` changes the base dir for relative paths, and the
-    # verb is UNQUOTED before it is matched (go-to-k/cdkd#2614). That issue was
-    # exactly this: the verb was compared as LITERAL text while the VALUE was
-    # already being unquoted one line down, so `"cd" <main-tree> && echo x >
-    # <tracked>` -- and its `'cd'` / `\cd` spellings -- left the base at the
-    # payload cwd and the gate exited 0, where the literal spelling exited 2.
+    # AN ORDERED WALK OVER `gate_segments_marked`. Each segment either updates
+    # the running base (a `cd` that is NOT subshell-derived) or has its write
+    # targets resolved against the base as it stands at that point.
     #
-    # WHY THE SCAN IS STILL ANCHORED AT THE START, after three rounds of trying
-    # to widen it. Each widening fixed its predecessor and shipped a new hole,
-    # every one measured against `origin/main`:
+    # This is the fifth resolution strategy this gate has carried, and the
+    # first that is neither anchored nor hand-rolled. The four before it, all
+    # measured against origin/main (go-to-k/cdkd#2650 keeps the tables):
     #
-    #   whole command through `cmd_last_cd_target`
-    #     -- follows EVERY `cd`, so one AFTER the write moved the base:
-    #        `echo hi > <tracked> && cd /tmp` went rc=2 -> 0, this gate's own
-    #        founding incident, reachable with ten characters and no quoting.
-    #   truncate at the earliest write, with a `$( )` / backtick / `( )` stripper
-    #     -- the stripper was depth-1 and took the FIRST `)`, so
-    #        `r=$(x=$(pwd); cd /tmp && pwd); echo hi > <tracked>` leaked the cd
-    #        (rc=0 vs main's 2); and truncating at a `>` inside a QUOTED
-    #        argument dropped a real `cd`, which is a SILENT BYPASS whenever the
-    #        payload cwd is a feature worktree
-    #        (`grep -n '=>' a && cd <main> && echo hi > <tracked>`, rc=0).
-    #   an ordered walk over `gate_segments`
-    #     -- closes both of those, and still leaks a `cd` inside a plain
-    #        SUBSHELL, which the segmenter emits in place:
-    #        `( (true) ; cd /tmp ) ; echo hi > <tracked>` rc=0 vs main's 2.
+    #   a local `^cd` regex        -- read the verb as LITERAL text, so
+    #     `"cd" <main> && echo x > <tracked>` was rc=0 (go-to-k/cdkd#2614).
+    #   `cmd_last_cd_target` over the whole command -- follows EVERY `cd`, so
+    #     one AFTER the write moved the base: `echo hi > <tracked> && cd /tmp`
+    #     rc=2 -> 0, this gate's founding incident in ten characters.
+    #   truncate at the earliest write + a hand-rolled span stripper -- leaked
+    #     a `cd` through a nested or quoted `)`, and dropped a real `cd` when a
+    #     `>` sat inside a quoted argument, which is a SILENT bypass from a
+    #     feature-worktree cwd rather than the refusal its comment claimed.
+    #   the anchored regex with the verb unquoted -- no fail-open of its own,
+    #     but it ignores every `cd` that is not first, which is a refusal from
+    #     a main-tree cwd and a silent miss from a feature one.
     #
-    # Every one of those was a hook-local shell parser written inside the
-    # change whose purpose was DELETING a hook-local shell parser, and each
-    # traded a LOUD failure for a SILENT one.
+    # The ordered walk was tried at round 3 and closed all of those except one:
+    # `gate_segments` FLATTENS a subshell, so `( cd /tmp ) ; echo hi >
+    # <tracked>` moved the base although the real shell would not.
+    # `gate_segments_marked` is that missing bit -- go-to-k/cdkd#2650. It is a
+    # SEPARATE entry point, so nothing that reads `gate_segments` had to change;
+    # that is a weaker claim than the "additive, `gate_segments` untouched" this
+    # comment used to make, and the weaker one is the measured one.
     #
-    # WHAT THE ANCHORED FORM COSTS, in BOTH polarities -- an earlier revision
-    # of this comment said "no fail-open ... its cost is two false refusals",
-    # and that was wrong on both counts. A `cd` this scan does not see leaves
-    # the base at the payload cwd, and what that means depends on which tree
-    # the cwd IS. From a main-tree cwd it refuses a write meant for a feature
-    # worktree (loud; cases 29-31). From a FEATURE-worktree cwd with the `cd`
-    # pointing at the main tree it is the same miss with the sign flipped: the
-    # gate exits 0 and the write lands on `main` (silent; cases 32-34). The
-    # same holds for a verb this scan under-recognises -- `c""d` and `"c"d` are
-    # `cd` to bash and not to this regex (case 43). All of it is INHERITED from
-    # origin/main rather than introduced here, and all of it is pinned rather
-    # than asserted, because asserting one polarity is how two rounds shipped.
-    # Widening the scan is go-to-k/cdkd#2650, which carries the measurement
-    # tables.
-    if [[ "$cmd" =~ ^[[:space:]]*([^[:space:]]+)[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-      __raw="${BASH_REMATCH[1]}"
-      __verb=$(gate_unquote_span "$__raw")
-      # A blanket `${v//\\/}` here was a REGRESSION, not a simplification, and
-      # it is the shape the comment below used to say could not exist. Bash
-      # removes a backslash only OUTSIDE quotes and only one per escape pair,
-      # so stripping every backslash MANUFACTURES a `cd` bash never runs and
-      # moves the base AWAY from the protected tree. Measured on a main-tree
-      # fixture, `<verb> /tmp ; echo POISON > <tracked>`, origin/main -> HEAD:
-      # `'\cd'`, `"\cd"`, `"c\d"`, `\\cd` and `c\\d` all went rc=2 -> 0 and
-      # the tracked file really was overwritten.
-      #
-      # So: a token that WAS quoted keeps its content verbatim (bash performs
-      # no escape removal inside single quotes, and `\c` is not an escape
-      # inside double quotes either for this purpose), and only an UNQUOTED
-      # token is unescaped -- left to right, two characters at a time, which is
-      # what makes `\cd` a `cd` while `\\cd` stays `\cd`.
-      # BOUNDED: the longest token that can unescape to `cd` is `\c\d`, four
-      # characters, so anything longer cannot be a `cd` and does not need the
-      # walk. Unbounded it was super-quadratic -- measured on the full hook with
-      # a first token of N `a`s: 800 -> 0.24 s, 2000 -> 2.95 s, 5000 -> 41.5 s
-      # against 0.05 s flat before this delta, reachable through
-      # `VAR=<long value> cmd` on a hook that runs on EVERY Bash call. A hang,
-      # not a wrong verdict, which is the worse of the two for a PreToolUse
-      # hook: a killed hook cannot emit exit 2.
-      if [[ "$__verb" == "$__raw" && ${#__raw} -le 4 ]]; then
-        __out=""; __rest="$__raw"
-        while [[ -n "$__rest" ]]; do
-          case "$__rest" in
-            '\'?*) __rest="${__rest#?}"; __out="$__out${__rest%"${__rest#?}"}"; __rest="${__rest#?}" ;;
-            *)      __out="$__out${__rest%"${__rest#?}"}"; __rest="${__rest#?}" ;;
-          esac
+    # The marking reads each segment through `strip_noncommand_spans` first, so
+    # a `(` inside a quoted argument is not counted:
+    # `echo "a (b" && cd <wt> && echo x > f` keeps its real `cd`. An earlier
+    # revision counted parens on the raw text and over-marked that `cd` into a
+    # block -- loud, but wrong -- and this comment described that as the shipped
+    # behaviour for one revision longer than it was true. Both it and its
+    # control (a REAL subshell `cd`, still ignored) are pinned as cases.
+    #
+    # PAST `GATE_MARK_MAXSEG` SEGMENTS the marking goes conservative -- every
+    # segment marked 1, so NO `cd` below is honoured and the base stays at the
+    # payload cwd. FROM THE MAIN TREE that blocks; from a FEATURE worktree it is
+    # permissive, because the `cd <main tree>` that would have brought the write
+    # into the protected tree is the one being ignored. That second polarity is
+    # measured EQUAL on origin/main, so it is inherited rather than introduced,
+    # but it is stated here because the previous wording claimed only the
+    # flattering half. The bound itself is deliberate: the per-segment strip
+    # forks two processes, and 2000 segments cost 11 s against a 10 s PreToolUse
+    # timeout. A killed hook cannot exit 2.
+    # A HARD INPUT BOUND, with a cheaper analysis past it rather than a refusal.
+    #
+    # The ordered walk costs one awk pass plus a shell loop over every segment,
+    # and the per-segment work is superlinear in SEGMENT COUNT, not in bytes --
+    # which is why the first cap was set from the wrong measurement. At 32768
+    # the worst shape under the cap (`a;` repeated, 16000 tiny segments) took
+    # 11.2 s; the PreToolUse timeout is 10 s, past which the hook is KILLED and
+    # cannot emit exit 2, so the gate disappears at exactly the size where it
+    # matters. Re-measured across candidate caps on the same shapes: 8192 ->
+    # 2.7 s, 4096 -> 0.58 s. It is set at 4096, which is roughly 17x of margin
+    # rather than the negative margin it shipped with. This runs BEFORE the on-`main` test, on every Bash, Edit and
+    # Write call in any repo on any branch, so the bound is not optional.
+    #
+    # Past the bound the base is NOT followed at all: it stays at the payload
+    # cwd, and write targets are extracted from the raw command text with the
+    # same three patterns. That is strictly conservative for the case this gate
+    # exists for -- no `cd` is honoured, so nothing can move a write out of the
+    # protected tree -- and it is O(n) with no subprocess. A REFUSAL was the
+    # other option and was rejected: this hook fires on every tool call, so
+    # refusing a large command would break unrelated work in unrelated repos.
+    if [[ ${#cmd} -gt ${GATE_EDIT_MAXBYTES:-4096} ]]; then
+      __rest="$cmd"
+      while [[ "$__rest" =~ (\>\>?)[[:space:]]*([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+        candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$base_dir")
+        __rest="${__rest#*"${BASH_REMATCH[0]}"}"
+      done
+      __rest="$cmd"
+      while [[ "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+        candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$base_dir")
+        __rest="${__rest#*"${BASH_REMATCH[0]}"}"
+      done
+      # THE THIRD VEHICLE, and leaving it out was a measured fail-open. The
+      # comment above once said "the same three patterns" while two were
+      # applied: `sed -i '' s/a/b/ <tracked>` behind 40 KB of padding went
+      # rc 2 -> 0 with the file really rewritten. The full walk takes the LAST
+      # word of the segment; with no segments here, every word that looks like
+      # a path after a `sed -i` is a candidate, which over-approximates in the
+      # refusing direction.
+      if [[ "$cmd" =~ sed[[:space:]]+-i ]]; then
+        __rest="${cmd#*sed}"
+        while [[ "$__rest" =~ ([^[:space:]\<\>\|\&\;\(\)\'\"]*/[^[:space:]\<\>\|\&\;\(\)\'\"]*) ]]; do
+          candidates+=("${BASH_REMATCH[1]}"); cand_bases+=("$base_dir")
+          __rest="${__rest#*"${BASH_REMATCH[0]}"}"
         done
-        __verb="$__out"
+        candidates+=("${cmd##*[[:space:]]}"); cand_bases+=("$base_dir")
       fi
-      if [[ "$__verb" == "cd" ]]; then
-        cdt="${BASH_REMATCH[2]}"
-        cdt=$(gate_unquote "$cdt")
-        # An UNEXPANDED path is not a path: `cd "$WT" && …` must leave the
-        # payload cwd in place rather than resolving to `<cwd>/$WT`, which no
-        # `git -C` can read.
-        case "$cdt" in
-          *'$'* | *'`'*) : ;;
-          *)
-            [[ "$cdt" != /* ]] && cdt="$base_dir/$cdt"
-            base_dir="$cdt"
-            ;;
-        esac
+      # EVERY `cd` TARGET IN THE RAW TEXT IS ALSO A BASE, not just the payload
+      # cwd. Pinning the base alone is conservative from the MAIN tree and
+      # PERMISSIVE from a feature worktree, where the `cd <main tree>` that
+      # brings a write INTO the protected tree is the one being discarded:
+      # measured, `cd <main> && echo POISON > <tracked>` behind padding went
+      # rc 2 -> 0. Adding each `cd` target as an extra base for every candidate
+      # keeps the cheap path refusing in both polarities; it over-approximates,
+      # which is the direction this hook is allowed to be wrong in.
+      __rest="$cmd"
+      __cdbases=()
+      while [[ "$__rest" =~ (^|[[:space:]\;\&\|])cd[[:space:]]+([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+        __cdbases+=("$(gate_unquote "${BASH_REMATCH[2]}")")
+        __rest="${__rest#*"${BASH_REMATCH[0]}"}"
+      done
+      if [[ ${#__cdbases[@]} -gt 0 ]]; then
+        __n=${#candidates[@]}
+        for ((__i = 0; __i < __n; __i++)); do
+          for __b in "${__cdbases[@]}"; do
+            case "$__b" in
+              *'$'* | *'`'*) continue ;;
+              /*) ;;
+              *) __b="$base_dir/$__b" ;;
+            esac
+            candidates+=("${candidates[$__i]}"); cand_bases+=("$__b")
+          done
+        done
       fi
+    else
+    # ONE segmentation pass, reused. It used to run twice -- once for the walk
+    # and once for the over-cap test -- doubling the cost of the hot path this
+    # file spends sixty lines bounding.
+    __marked=$(gate_segments_marked "$cmd")
+
+    # A BARE `)` SEGMENT IS THE SEGMENTER TELLING YOU IT MIS-SPLIT. It appears
+    # when a multi-line `$( )` was not joined -- the `)` that should have closed
+    # the span became a segment of its own -- and everything the body contained
+    # is then loose in the stream at top level, including a `cd` that really
+    # runs in a child.
+    #
+    # The known cause is a `)` inside a `#` comment: the line joiner replaces
+    # newlines with `;`, so a comment's true extent is no longer recoverable and
+    # `flush_line` splits the joined text again. Teaching both scanners about
+    # comments (done above) stops them ENDING the span early but cannot undo the
+    # `;` join, so the shape still reaches here. Measured from the main tree,
+    # with the tracked file really written and the gate returning 0:
+    #
+    #   x=$( <newline> # note ) <newline> cd /tmp <newline> ) <newline>
+    #   echo POISON > <tracked>
+    #
+    # So when the stream carries that signal, follow NO `cd` at all: the base
+    # stays at the payload cwd and a write into the protected tree is refused.
+    # That is the loud direction, it costs nothing on any well-formed command,
+    # and it is honest about what the segmenter just admitted it does not know.
+    # `origin/main` answers 2 on this shape too, but only because its anchored
+    # regex ignores every `cd` that is not first -- not because it read the
+    # comment.
+    __trust_cd=1
+    while IFS=$'\t' read -r __m __s; do
+      case "$__s" in ')'|')'[[:space:]]*) __trust_cd=0; break ;; esac
+    done <<< "$__marked"
+
+    cur_base="$base_dir"
+    while IFS=$'\t' read -r __mark __seg; do
+      [[ "$__trust_cd" == 1 ]] || __mark=1
+      [[ -n "$__seg" ]] || continue
+      if [[ "$__mark" == 0 ]]; then
+        # `cd` in command position, at THIS level. The verb is unquoted and
+        # unescaped the way bash does it (go-to-k/cdkd#2614): a token that was
+        # QUOTED keeps its content verbatim, and only an UNQUOTED one is
+        # unescaped, left to right. A blanket backslash strip here previously
+        # MANUFACTURED a `cd` bash never runs -- `'\cd'`, `"c\d"`, `\\cd` --
+        # and moved the base away from the protected tree.
+        if [[ "$__seg" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
+          __raw="${BASH_REMATCH[1]}"
+          __verb=$(gate_unquote_span "$__raw")
+          if [[ "$__verb" == "$__raw" && ${#__raw} -le 4 ]]; then
+            __out=""; __rest="$__raw"
+            while [[ -n "$__rest" ]]; do
+              case "$__rest" in
+                '\'?*) __rest="${__rest#?}"; __out="$__out${__rest%"${__rest#?}"}"; __rest="${__rest#?}" ;;
+                *)     __out="$__out${__rest%"${__rest#?}"}"; __rest="${__rest#?}" ;;
+              esac
+            done
+            __verb="$__out"
+          fi
+          if [[ "$__verb" == "cd" ]]; then
+            cdt=$(gate_unquote "${BASH_REMATCH[2]}")
+            case "$cdt" in
+              *'$'* | *'`'*) : ;;   # unexpanded: not a path, leave the base
+              *)
+                [[ "$cdt" != /* ]] && cdt="$cur_base/$cdt"
+                cur_base="$cdt"
+                ;;
+            esac
+            continue
+          fi
+        fi
+      fi
+      # Extract LITERAL redirection / write targets FROM THIS SEGMENT, against
+      # the base as it stands here. We deliberately skip tokens containing `$`
+      # (unexpandable variables) and `*?[` (globs).
+      # NO SUBPROCESS PER SEGMENT. The three extractions used to be
+      # `printf | grep -oE | sed -E` pipelines plus a `grep -q` and an `awk`,
+      # i.e. roughly seven forks for every segment of every command -- and this
+      # walk runs BEFORE the on-`main` test, so every Bash, Edit and Write call
+      # in any repo on any branch paid it. Measured: 500 segments 4.3 s, 1000
+      # segments 8.2 s, 2000 segments 16.0 s, against a flat 0.03 s on
+      # origin/main, crossing the 10 s PreToolUse timeout at roughly 1200. A
+      # killed hook cannot emit exit 2, so the whole gate goes away at exactly
+      # the size where someone would want it to.
+      #
+      # The three patterns below are the SAME three, transcribed to bash
+      # regexes; the transcription was checked by running both forms over 543
+      # segments (the differential corpus, the write/context grid, and 16
+      # adversarial redirect/tee shapes) and requiring byte-identical output.
+      __rest="$__seg"
+      while [[ "$__rest" =~ (\>\>?)[[:space:]]*([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+        candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$cur_base")
+        __rest="${__rest#*"${BASH_REMATCH[0]}"}"
+      done
+      __rest="$__seg"
+      while [[ "$__rest" =~ tee[[:space:]]+(-a[[:space:]]+)?([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+        candidates+=("${BASH_REMATCH[2]}"); cand_bases+=("$cur_base")
+        __rest="${__rest#*"${BASH_REMATCH[0]}"}"
+      done
+      if [[ "$__seg" =~ sed[[:space:]]+-i ]]; then
+        candidates+=("${__seg##*[[:space:]]}"); cand_bases+=("$cur_base")
+      fi
+    done <<< "$__marked"
+    # PAST `GATE_MARK_MAXSEG` EVERY SEGMENT IS MARKED SUBSHELL-DERIVED, so the
+    # walk above honours no `cd` at all. From the MAIN tree that refuses; from a
+    # FEATURE worktree it is the permissive direction, because the
+    # `cd <main tree>` that brings a write INTO the protected tree is exactly
+    # what gets discarded -- measured, 210 padding segments turned rc 2 into 0
+    # for five write vehicles. Union in the raw-text `cd` targets, as the
+    # over-bound path does, so the cap cannot be used as an off-switch.
+    if [[ $(printf '%s\n' "$__marked" | grep -c '^1') -gt ${GATE_MARK_MAXSEG:-200} ]]; then
+      # `__n` IS READ ONCE, OUTSIDE THE LOOP. Recomputing it per `cd` makes each
+      # iteration copy everything the previous ones appended, so the array is
+      # 2^(number of `cd`s) -- measured, an ordinary 1746-byte command with 101
+      # `cd`s took the hook past a 25 s timeout where origin/main answered in
+      # 0 s, and past the 10 s PreToolUse limit a killed hook cannot emit exit 2.
+      # The byte-bound twin above already reads it once; this copy lost that.
+      __n=${#candidates[@]}
+      __rest="$cmd"
+      while [[ "$__rest" =~ (^|[[:space:]\;\&\|])cd[[:space:]]+([^[:space:]\<\>\|\&\;\(\)]+) ]]; do
+        __b=$(gate_unquote "${BASH_REMATCH[2]}")
+        __rest="${__rest#*"${BASH_REMATCH[0]}"}"
+        case "$__b" in *'$'* | *'`'*) continue ;; /*) ;; *) __b="$base_dir/$__b" ;; esac
+        for ((__i = 0; __i < __n; __i++)); do
+          candidates+=("${candidates[$__i]}"); cand_bases+=("$__b")
+        done
+      done
     fi
-    # Extract LITERAL redirection / write targets. We deliberately
-    # skip tokens containing `$` (unexpandable variables) and `*?[`
-    # (globs) — we cannot resolve those statically.
-    # 1) > target  and  >> target
-    while read -r tok; do
-      [[ -n "$tok" ]] && candidates+=("$tok")
-    done < <(printf '%s\n' "$cmd" | grep -oE '>>?[[:space:]]*[^[:space:]<>|&;()]+' | sed -E 's/^>>?[[:space:]]*//')
-    # 2) tee [-a] target...
-    while read -r tok; do
-      [[ -n "$tok" ]] && candidates+=("$tok")
-    done < <(printf '%s\n' "$cmd" | grep -oE 'tee[[:space:]]+(-a[[:space:]]+)?[^[:space:]<>|&;()]+' | sed -E 's/^tee[[:space:]]+(-a[[:space:]]+)?//')
-    # 3) sed -i ... LASTTOKEN  (in-place edit; target is the file arg)
-    #    Heuristic: the final whitespace-delimited token of a `sed -i` command.
-    if printf '%s' "$cmd" | grep -qE 'sed[[:space:]]+-i'; then
-      last=$(printf '%s' "$cmd" | awk '{print $NF}')
-      candidates+=("$last")
     fi
     ;;
   *)
@@ -218,7 +376,7 @@ canonicalize_dir() {
 
 is_protected_path() {
   # echo "BLOCK <reason>" on stderr-worthy hit, else nothing.
-  local raw="$1"
+  local raw="$1" base="${2:-$base_dir}"
   # Strip surrounding quotes.
   raw="${raw%\"}"; raw="${raw#\"}"; raw="${raw%\'}"; raw="${raw#\'}"
   # Skip unresolvable tokens (variables / globs / process-subst).
@@ -227,7 +385,7 @@ is_protected_path() {
   esac
   # Absolutize relative to base_dir.
   local abs="$raw"
-  [[ "$abs" != /* ]] && abs="$base_dir/$abs"
+  [[ "$abs" != /* ]] && abs="$base/$abs"
   # Directory to query git from = the file's parent (must exist).
   local dir; dir=$(dirname "$abs")
   [[ -d "$dir" ]] || return 1
@@ -269,8 +427,12 @@ is_protected_path() {
   return 1
 }
 
+__i=0
 for c in "${candidates[@]}"; do
-  if is_protected_path "$c"; then
+  # `:-` is load-bearing: the Edit / Write arm pushes candidates with no
+  # per-candidate base, and `${arr[$i]}` on an empty array under `set -u`
+  # aborts with rc=1 -- neither allow nor block.
+  if is_protected_path "$c" "${cand_bases[$__i]:-$base_dir}"; then
     branch_slug="hardening"
     cat >&2 <<EOF
 Blocked by main-tree-edit-gate: attempt to modify a $PROTECT_KIND file in a worktree on \`$PROTECT_BRANCH\`.
@@ -300,6 +462,7 @@ confirm with the user first.
 EOF
     exit 2
   fi
+  __i=$((__i + 1))
 done
 
 exit 0

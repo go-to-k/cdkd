@@ -236,11 +236,21 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   // convention above: this satellite is the AUTHORING half of hooks.md and
   // must never be narrowed to the handful of hooks a lane happens to edit.
   ['hooks-authoring.md', 74],
-  ['hooks-class-fences.md', 5], // literal list: EXACT, see below
+  ['hooks-class-fences.md', 6], // literal list: EXACT, see below
+  // +1 (go-to-k/cdkd#2650): command-match-mutants.sh. The file already
+  // DESCRIBED that harness while nothing made it load on an edit to it.
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
-  ['hooks-main-tree-edit.md', 4], // literal list: EXACT, see below
+  // go-to-k/cdkd#2650: the two source-integrity hooks plus the shared matcher
+  // they exist to keep parseable. A wildcard-free list, so EXACT.
+  ['hooks-source-integrity.md', 4],
+  ['hooks-main-tree-edit.md', 6], // literal list: EXACT, see below
+  // +1 (go-to-k/cdkd#2650): lib/command-match.sh. This satellite now
+  // asserts behaviour of the shared matcher (_gate_struct_next's
+  // escaped-whitespace refusal), so it has to load when that file changes.
+  // +1 again: main-tree-edit-oracle.test.sh, the differential oracle this file
+  // now explains -- its tolerances and its self-check are described here.
   ['hooks-stop.md', 4], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
   ['proxy-support.md', 3], // literal list: EXACT, see below
@@ -938,7 +948,13 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 47; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
+const CORPUS_FILE_COUNT = 48; // + hooks-source-integrity.md (go-to-k/cdkd#2650): hooks.md was 122 B
+                              //  under the per-file cap with the entry for the two source-integrity
+                              //  hooks inline, so the entry moved out and hooks.md kept a pointer.
+                              //  Same decision the row below records for the split before it: the
+                              //  lane needing room splits rather than trimming someone else's entry
+                              //  or nudging the cap. hooks.md came back to 78,461 B.
+                              // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
                               //  per-file cap again -- at least the seventh split off this one
                               //  file, counting the six satellites it already points at, so do not
                               //  read the ordinals in the older entries below as a running total.

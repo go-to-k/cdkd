@@ -245,6 +245,12 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/awk-apostrophe-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking for an apostrophe inside an awk program"
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/main-tree-edit-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking main-tree tracked-file edit policy..."
@@ -295,6 +301,12 @@
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/main-tree-git-cwd-detector.sh",
             "timeout": 10,
             "statusMessage": "Checking for main-tree git cwd-race..."
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/hook-lib-parse-detector.sh",
+            "timeout": 10,
+            "statusMessage": "Checking the hook files still parse"
           }
         ]
       }

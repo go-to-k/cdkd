@@ -1784,6 +1784,35 @@ dq_case "a spaced -C value survives a rewritten verb" \
 dq_case "a spaced cd path survives a rewritten cd" \
   '"cd" "/a b" && git commit' 'cd "/a b" && git commit'
 
+# --- an ODD trailing BACKSLASH escapes the whitespace (go-to-k/cdkd#2650) ----
+# `cd\ /tmp` is ONE shell word, so it is not a `cd` at all -- bash answers
+# `cd /tmp: No such file or directory` and stays put. The token splitter here
+# breaks on whitespace alone, so it used to hand back `cd\`, rewrite that to
+# `cd`, and re-join with a plain space: a `cd` MANUFACTURED out of a command
+# bash never runs. Live: `cd\ /tmp ; echo hi > <tracked>` in the main checkout
+# on `main` came out of `main-tree-edit-gate` at rc=0 where it owed a 2.
+dq_same "an odd trailing backslash on the command word abandons" \
+  'cd\ /tmp && echo x > f'
+dq_same "the same in the subcommand slot" \
+  'git commit\ -m x'
+# EVEN is not odd: `\\` is a literal backslash, the space after it separates,
+# and the word really is `cd\` -- still not `cd`, and still left alone, but by
+# the existing backslash-in-result guard rather than by this one.
+dq_same "an even trailing backslash is a literal, not an escape" \
+  'cd\\ /tmp && echo x > f'
+# THE CONTROL THAT CAUGHT THE FIRST ATTEMPT. The parity walk reads a bounded
+# TAIL of the token, and the first spelling used `${t: -64}` unconditionally --
+# which bash evaluates to the EMPTY string when the token is shorter than the
+# window, unlike the analogous Python slice. Every short token then took the
+# unknowable-parity arm, so `gate_dequote_structural` abandoned on EVERY input
+# and the dequote silently stopped existing. A plain quoted verb is the
+# cheapest witness to that, and it is the one below.
+dq_case "a short verb still dequotes (bounded-tail regression)" \
+  'git "commit" -m x' 'git commit -m x'
+dq_case "a long token past the tail window still dequotes" \
+  'git "commit" -m aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  'git commit -m aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
 # --- the READER SITES, with a QUOTED structural token (go-to-k/cdkd#2333) ----
 # Closing this at `gate_matches` alone would not close it: every function that
 # decides a gate outcome from a segment reads the same stream, and each
@@ -1843,18 +1872,106 @@ lat_end=$(date +%s)
 lat_secs=$((lat_end - lat_start))
 if [ "$lat_secs" -le 4 ]; then
   pass=$((pass + 1))
-  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 4s)\n' "${#lat_cmd}" "$lat_secs"
+  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 8s)\n' "${#lat_cmd}" "$lat_secs"
 else
   fail=$((fail + 1))
-  printf 'FAIL latency: %s bytes took %ss, budget 4s\n' "${#lat_cmd}" "$lat_secs"
+  printf 'FAIL latency: %s bytes took %ss, budget 8s\n' "${#lat_cmd}" "$lat_secs"
   fail_log="${fail_log}FAIL latency: ${#lat_cmd} bytes took ${lat_secs}s -- the PreToolUse timeout is 10s and a KILLED hook cannot emit exit 2, which disarms every gate at once\n"
 fi
 
-CASE_FLOOR=546
-if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+# At the OBSERVED count, with no slack. It carried one case of slack until
+# go-to-k/cdkd#2650, which is the shape the differential's own header warns
+# about one directory over: slack is how a probe deletes cases and still
+# passes. Both builds agree on the number -- 556 under bash 3.2 and under 5.3
+# -- so no case is version-gated and a strict floor cannot fail on one runner
+# while passing on the other.
+
+# --- gate_segments_marked's SEGMENT-COUNT bound (go-to-k/cdkd#2650) ----------
+# The marking forks `printf | awk` PER SEGMENT, so its cost is linear in the
+# segment count. Measured before the bound: `( cd /tmpN ) ;` x 2000 took 11 s,
+# PAST the 10 s PreToolUse timeout -- and a killed hook cannot emit exit 2,
+# which disarms every gate at once. The bound makes the marking CONSERVATIVE
+# past the cap rather than absent: every segment marked 1, no `cd` honoured,
+# `main-tree-edit-gate` blocks. Both directions are asserted, because a bound
+# that only ever fires is a disabled feature and one that never fires is
+# decoration.
+mark_n() { # count -> the two tallies, space-separated
+  local n="$1" b="" i out
+  for i in $(seq 1 "$n"); do b="$b echo s$i ;"; done
+  out=$(gate_segments_marked "$b")
+  printf '%s %s' "$(printf '%s\n' "$out" | grep -c '^1	')" "$(printf '%s\n' "$out" | grep -c '^0	')"
+}
+# THE CAP VALUE IS PINNED FIRST. Every assertion below derives its expectation
+# from `$GATE_MARK_MAXSEG`, so with the cap set to 3 they all still passed --
+# the bound was fenced in shape and not in size, and a bound small enough to
+# fire on ordinary commands is a disabled feature wearing a passing test.
+if [ "$GATE_MARK_MAXSEG" = 200 ]; then
+  pass=$((pass + 1)); printf 'OK   marking bound: the cap is 200\n'
+else
+  fail=$((fail + 1)); printf 'FAIL marking bound: cap is %s, expected 200\n' "$GATE_MARK_MAXSEG"
+  fail_log="${fail_log}FAIL marking bound: GATE_MARK_MAXSEG is $GATE_MARK_MAXSEG; the cases below derive their expectations from it, so they cannot see the value change\n"
+fi
+if [ "$(mark_n "$GATE_MARK_MAXSEG")" = "0 $GATE_MARK_MAXSEG" ]; then
+  pass=$((pass + 1)); printf 'OK   marking bound: AT the cap every plain segment is still marked precisely\n'
+else
+  fail=$((fail + 1)); printf 'FAIL marking bound: at the cap, got [%s]\n' "$(mark_n "$GATE_MARK_MAXSEG")"
+  fail_log="${fail_log}FAIL marking bound: at the cap the precise path must still run; got [$(mark_n "$GATE_MARK_MAXSEG")]\n"
+fi
+_over=$((GATE_MARK_MAXSEG + 1))
+if [ "$(mark_n "$_over")" = "$_over 0" ]; then
+  pass=$((pass + 1)); printf 'OK   marking bound: ONE past the cap every segment is marked conservatively\n'
+else
+  fail=$((fail + 1)); printf 'FAIL marking bound: one past the cap, got [%s]\n' "$(mark_n "$_over")"
+  fail_log="${fail_log}FAIL marking bound: past the cap every segment must be marked 1 (no cd honoured); got [$(mark_n "$_over")]\n"
+fi
+mark_lat_cmd=""
+for _i in $(seq 1 2000); do mark_lat_cmd="$mark_lat_cmd ( cd /tmp$_i ) ;"; done
+mark_lat_start=$(date +%s)
+gate_segments_marked "$mark_lat_cmd" > /dev/null
+mark_lat_secs=$(( $(date +%s) - mark_lat_start ))
+# BUDGET 8s, NOT 4s, and the number is chosen from the thing that matters: the
+# PreToolUse timeout is 10s and a killed hook cannot emit exit 2. At 4s this
+# case went RED twice in five runs while other agents were busy on the same
+# machine -- a stable 2s standalone -- and a fence that fails on load is a
+# fence people learn to ignore. `date +%s` also has whole-second granularity,
+# so a 2s measurement carries +/-1s of quantisation before any contention.
+if [ "$mark_lat_secs" -le 8 ]; then
+  pass=$((pass + 1))
+  printf 'OK   latency: 2000 subshell segments through gate_segments_marked in %ss (budget 8s)\n' "$mark_lat_secs"
+else
   fail=$((fail + 1))
-  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least $CASE_FLOOR\n"
-  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+  printf 'FAIL latency: 2000 subshell segments took %ss, budget 8s\n' "$mark_lat_secs"
+  fail_log="${fail_log}FAIL latency: gate_segments_marked took ${mark_lat_secs}s on 2000 segments -- this measured 11s before the bound, past the 10s PreToolUse timeout\n"
+fi
+
+# THE FLOOR IS THE MINIMUM ACROSS BOTH INVOCATION CONTEXTS, which is why it is
+# not the number a standalone run prints. Run directly from this directory the
+# suite reports 605; run through `run-tests.sh` from the repo root it reports
+# 556, because a handful of cases resolve fixtures relative to this file's own
+# directory and skip when the cwd is elsewhere. CI evaluates it through
+# `run-tests.sh`, so a floor calibrated on the standalone count fails there for
+# a reason that has nothing to do with coverage -- measured, 605 reddened the
+# suite under both bash builds while every case still passed, and so did 557.
+#
+# 557 came from this file's own failure message, which prints one MORE than the
+# number it compared (it increments `fail` first, then interpolates
+# `pass + fail`). Trusting the message rather than the predicate cost a whole
+# suite run; the message is corrected below. Closing the 49-case gap means
+# making those cases cwd-independent -- until then the floor's job is to catch a
+# COLLAPSE, and it does.
+CASE_FLOOR=556
+__ran=$((pass + fail))
+if [ "$__ran" -lt "$CASE_FLOOR" ]; then
+  # THE COUNT IS CAPTURED BEFORE `fail` IS INCREMENTED. Interpolating
+  # `pass + fail` after the increment reported one MORE case than the predicate
+  # compared, so the message read `only 557 ... expected at least 557` -- a
+  # failure that looks like an equality bug in the check. Someone reading it
+  # raises the floor to the number shown, the suite reds again for the same
+  # reason, and the real count is never learned. Measured; it cost a full
+  # suite run.
+  fail=$((fail + 1))
+  fail_log+="FAIL case floor: only $__ran cases ran, expected at least $CASE_FLOOR\n"
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$__ran" "$CASE_FLOOR"
 fi
 echo
 # --- gate_utf8_lenient: the RFC 3629 well-formedness table -------------------

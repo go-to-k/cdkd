@@ -559,9 +559,11 @@ fi
 # already fighting a rebase. So moving it into EXPECTED_EXERCISED today would
 # red fence 3 permanently.
 DECLARED_UNEXERCISED='
+awk-apostrophe-gate               verdict is whether the WRITTEN CONTENT parses, target-independent
 broad-process-kill-gate           gates pkill / killall, not a git/gh verb
 closes-paren-form-gate            verdict is the PR BODY, not the target tree
 commit-msg-heredoc-gate           verdict is the command SHAPE, target-independent
+hook-lib-parse-detector           PostToolUse, non-blocking by design
 flatten-before-rebase-gate        no rebase template exists to block -- see the note above
 gated-command-preamble-gate       verdict is the command SHAPE, target-independent
 gh-body-english-gate              verdict is the published BODY, not the target tree

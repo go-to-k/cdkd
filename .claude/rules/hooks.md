@@ -678,9 +678,23 @@ already fails open without `gh`.
   `Edit|Write|Bash`), and **`main-tree-dirty-detector.sh`** is its
   non-blocking PostToolUse backstop for the write targets a static scan
   cannot resolve. Full entries — the detection model, the Bash arm's literal
-  targets, the go-to-k/cdkd#2614 move to the shared `cd` resolver, and both
-  suites — in [hooks-main-tree-edit.md](hooks-main-tree-edit.md), which loads
-  when you touch either hook or its suite.
+  targets, the go-to-k/cdkd#2614 move to the shared `cd` resolver, the
+  go-to-k/cdkd#2650 ordered walk over `gate_segments_marked` with its two input
+  bounds, and all three suites (including the differential ORACLE, which
+  executes its corpus and compares the gate against what bash actually did) —
+  in [hooks-main-tree-edit.md](hooks-main-tree-edit.md), which loads when you
+  touch either hook, either suite, the oracle, or the shared matcher.
+
+- **`.claude/hooks/awk-apostrophe-gate.sh`** (`Edit|Write|Bash`) + its
+  PostToolUse companion **`hook-lib-parse-detector.sh`** (`Bash`) — refuse a
+  write that would leave a shell file under `.claude/hooks/**` unparseable,
+  checked by running `bash -n` on the post-edit content rather than by any
+  pattern. An unparseable `command-match.sh` makes every gate fail CLOSED, and
+  `main-tree-edit-gate` matches `Edit|Write|Bash`, so the session loses all
+  three tools at once and only a human-typed command can recover it — measured
+  three times in go-to-k/cdkd#2650. Full entry (the three arms, why the first
+  heuristic revision was replaced, and how to write prose inside the awk
+  program) in [hooks-source-integrity.md](hooks-source-integrity.md).
 
 - **`.claude/hooks/main-tree-git-cwd-detector.sh`** — PostToolUse (`Bash`)
   REACTIVE backstop for the cwd-RACE class: a command whose verdict is taken
