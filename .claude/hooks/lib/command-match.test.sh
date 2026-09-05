@@ -1911,6 +1911,54 @@ utf8_case 'truncated at EOS'        '"\xe6"'               "$F"
 utf8_case 'stray byte BEFORE a character' '"\xff\xe6\x97\xa5"' "$F U+65E5"
 utf8_case 'stray byte AFTER a character'  '"\xe6\x97\xa5\xff"' "U+65E5 $F"
 
+# --- the SPLIT_CHARS fast path must equal the substr fallback ---------------
+#
+# `substr(s, k, 1)` is O(n) per call in the awk macOS ships, so every
+# per-character loop in the matcher was quadratic: measured through
+# `gh-body-english-gate`, a 200k-escape command took 208.74 s on the previous
+# code and 9.57 s now, against a 10 s PreToolUse timeout that a gate experiences
+# as a SILENT PASS. The loops now index a `split(s, arr, "")` array instead.
+#
+# POSIX leaves an EMPTY field separator UNDEFINED, so the array is used only
+# where a BEGIN probe measures that it splits into characters, and every loop
+# keeps the `substr` arm. That makes two code paths where there was one, and
+# this asserts they agree: for each input the two segmentations must be
+# BYTE-IDENTICAL. Without it a CI awk taking the fallback would be running an
+# untested matcher.
+split_parity() { # <name> <command>
+  local name="$1" cmd="$2" fast slow lib fallback
+  lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/command-match.sh"
+  fallback="$(mktemp)"
+  # Force the probe OFF. The anchor is asserted so a drifted probe fails here
+  # rather than silently comparing the fast path against itself.
+  if ! grep -q 'if (split("ab", __probe, "") == 2' "$lib"; then
+    fail=$((fail + 1)); printf 'FAIL split parity: probe anchor drifted\n'
+    fail_log+="FAIL split parity: probe anchor drifted\n"
+    rm -f "$fallback"; return
+  fi
+  sed 's|if (split("ab", __probe, "") == 2.*|SPLIT_CHARS = 0|' "$lib" > "$fallback"
+  fast=$(gate_segments "$cmd" | od -An -c | tr -s ' ')
+  slow=$(bash -c '. "$1"; gate_segments "$2"' _ "$fallback" "$cmd" | od -An -c | tr -s ' ')
+  rm -f "$fallback"
+  if [ "$fast" = "$slow" ]; then
+    pass=$((pass + 1)); printf 'OK   split parity: %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL split parity: %s\n' "$name"
+    fail_log+="FAIL split parity: $name\n  command: $cmd\n"
+  fi
+}
+split_parity 'plain command'          'git -C /a/b commit -m x'
+split_parity 'quoted span with a space' 'gh issue create --body "a b c"'
+split_parity 'apostrophe in a body'   "gh issue create --body \"don't merge\""
+split_parity 'command substitution'   'git -C $(git rev-parse --show-toplevel) commit -m x'
+split_parity 'backtick substitution'  'git -C `pwd` commit -m x'
+split_parity 'separators'             'ls && git commit -m a; echo done | cat'
+split_parity 'escaped separator'      'echo a\; git commit -m x'
+split_parity 'heredoc body'           "$(printf 'cat > f <<EOF\nbody ; text\nEOF\ngh issue create --body-file f')"
+split_parity 'unbalanced apostrophe'  "echo don't; git commit -m y"
+split_parity 'process substitution'   'diff <(git commit) /dev/null'
+split_parity 'ANSI-C span'            "gh issue create --body \$'a\\x20b'"
+
 echo "Pass: $pass  Fail: $fail"
 if [ "$fail" -gt 0 ]; then
   echo

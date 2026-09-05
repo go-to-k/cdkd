@@ -489,7 +489,13 @@ while IFS= read -r -d '' val; do
   OFFENDERS+=("inline: $first")
 done < <(printf '%s' "$cmd" | NER="$NON_ENGLISH_RE" perl -CSD -0777 -ne "$GATE_PERL_WORD"'
     my $re = qr/$ENV{NER}/;
-    sub emit { my $v = shift; print "$v\0" if $v =~ $re; }
+    # DECODE HERE. `gate_unq` hands back the BYTE string bash would pass (it is
+    # representation-uniform on purpose -- see its header), and this is the one
+    # caller that needs characters, because `$re` is a CHARACTER class and this
+    # perl runs under `-CSD`. `gate_utf8_lenient` decodes maximal valid
+    # sequences and emits one U+FFFD per un-decodable byte, so a stray byte
+    # cannot switch the class test off for the rest of the value.
+    sub emit { my $v = gate_utf8_lenient(shift); print "$v\0" if $v =~ $re; }
     # NO shell parsing. Every flag matched here is one that only gh
     # defines, so a match anywhere in the command belongs to the gh
     # invocation and needs no segment bounding.

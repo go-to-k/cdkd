@@ -870,6 +870,39 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# (N) MID-WORD `$'...'`. `gate_unq`'s bare-run arm used to eat the `$` sigil
+# greedily, so the ANSI-C arm only ever fired at word position 0 -- ONE ascii
+# character before it defeated the whole decode, and `gh api -f body=$'...'`
+# was bypassed unconditionally, since `body=` is always such a prefix. The two
+# controls are what stop the fix from swallowing an ordinary `$`.
+run "mid-word ANSI-C \$'\\u....' blocks" \
+  "gh issue create --title x --body a\$'\\u65e5\\u672c\\u8a9e'" 2
+run "mid-word ANSI-C \$'\\xNN' blocks" \
+  "gh issue create --title x --body a\$'\\xe6\\x97\\xa5'" 2
+run "gh api -f body=\$'...' blocks" \
+  "gh api repos/o/r/issues -f body=\$'\\u65e5\\u672c\\u8a9e'" 2
+run "an ordinary \$ in a value still passes (cost \$5)" \
+  "gh issue create --title x --body 'cost \$5 total'" 0
+run "an unexpanded \$VAR in a value still passes" \
+  "gh issue create --title x --body 'hello\$USER'" 0
+
+# (O) BYTE FIDELITY of the path extraction. `gate_unq` is representation-
+# uniform: every arm returns the byte string bash would pass, and only the
+# `-CSD` class test decodes. Decoding inside `gate_unq` instead turned each raw
+# `\xNN` byte into U+FFFD, so a `$'...'` path containing any byte >= 0x80 came
+# out wrong and the `[ -f ]` test silently skipped the file. The English twin is
+# the control: it must still PASS at the same spelling.
+HIDIR="$TMP/hi"
+mkdir -p "$HIDIR"
+HI_JP="$HIDIR/$(printf '\xc3\xa9').md"
+HI_EN="$HIDIR/$(printf '\xc3\xa9')-en.md"
+printf 'Session-fit: next (今回はやらない)\n' > "$HI_JP"
+printf 'All English here.\n' > "$HI_EN"
+run "ANSI-C path with a high byte, japanese body, blocks" \
+  "gh issue create --title x --body-file \$'$HIDIR/\\xc3\\xa9.md'" 2
+run "ANSI-C path with a high byte, english body, passes" \
+  "gh issue create --title x --body-file \$'$HIDIR/\\xc3\\xa9-en.md'" 0
+
 # --- summary ----------------------------------------------------------
 echo
 echo "pass: $PASS  fail: $FAIL"
