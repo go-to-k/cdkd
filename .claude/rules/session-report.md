@@ -91,6 +91,32 @@ not a rule; the reader takes the cheaper one. Splitting the work across
 several PRs is normal and needs no permission from this list — decide it on
 review surface, and decide `Session-fit` on the criteria above.
 
+**The neighbouring failure: a reason about the FILING SESSION's own STATE
+expires when that session does.** Not a re-opening of the rule above. That one
+refuses a claim about the PULL REQUEST — the work needs its own, or bundling
+would make this one unreviewable. This is a claim about the SESSION that filed
+it — "PR 2519's scope was frozen at its final review round"
+(go-to-k/cdkd#2554), "the file is held by another open PR's diff"
+(go-to-k/cdkd#2604), "the session that found it is a unit-and-review lane with
+no integ run budgeted" (go-to-k/cdkd#2539). A PR can be named on either side,
+so the mention is not the tell — ask which of the two the sentence is ABOUT.
+Session-state clauses are legal and merely go stale, and classify-once does not
+protect them because it freezes the DECISION, not the PREMISE.
+
+So: prefer a reason the WORK owns; if a session-state clause is written anyway,
+name the event that ends it on the same line, and never let it stand alone.
+go-to-k/cdkd#2604's "unblocked the moment that PR merges" is the model — it is
+what lets a later reader see, without asking anyone, that the reason has
+expired. That applies to the "no file overlap" criterion above too, which is a
+claim about a MOVING target: the lane keeps editing after the reason is written
+(go-to-k/cdkd#2440 was deferred on it, and the lane's merged PR then changed
+that very file `+9/-2`). `/work-issues` `references/retro.md` §10-0 re-checks
+every `next` at end of run and has promoted on this shape in two consecutive
+runs (go-to-k/cdkd#2544, go-to-k/cdkd#2595). No vocabulary gate closes it:
+`.claude/hooks/issue-deferral-criteria-gate.sh` passes go-to-k/cdkd#2595's body
+as filed (measured rc=0, versus rc=2 for the same body reworded to "its own PR"
+or "unreviewable"), and its own header rules out chasing one more spelling.
+
 **Before writing `next`, NAME the next session's verification** — the
 concrete command a FRESH session will run, and that it will be able to run
 it. Not "run the integ": the fixture name. If naming it is hard, that is the

@@ -101,8 +101,8 @@ the trigger is a TS entry point, or several spawns in a case.
 
 - A probe that flips one use of a value proves that ONE use is pinned. PR #2010:
   a banner read `stackUnaddressed` in a guard AND in the interpolated message;
-  the guard-flip probe failed the test, swapping the INTERPOLATION passed all 18
-  — and the fixture's clean stack never entered the warn arm, so its
+  the guard-flip probe failed the test, swapping the INTERPOLATION did not —
+  and the fixture's clean stack never entered the warn arm, so its
   `not.toContain(...)` assertion was unfalsifiable by construction.
 - **Enumerate the value's uses before probing** (`grep` the identifier in the
   changed hunk). One probe per use.
@@ -113,8 +113,23 @@ the trigger is a TS entry point, or several spawns in a case.
   caller PASSES, never what the far side WRITES (hard-coding `'SUCCEEDED'`
   inside `recordRunOutcome` passed all 2261 unit tests). When a value crosses a
   module boundary, one case must exercise the far side unmocked.
-- **Do not report a mutation result you did not run** — the false entry in that
-  PR's mutation table surfaced only because the reviewer re-executed every claim.
+- **Do not report a mutation result you did not run — and a probe that changed
+  TWO things at once is one you did not run.** A false mutation-table entry
+  surfaces only when a reviewer re-executes every claim; nothing else looks. PR
+  #2612 is the harder half, where the probe WAS run: a comment claimed
+  reordering either consumer "reds four cases", but that probe had edited the
+  rendered line's TEXT in the same pass, so the reds attested to the text edit.
+  Re-measured one mutation at a time — each alone green, BOTH reds one case,
+  i.e. the two mechanisms are mutually redundant, the opposite of what the
+  comment said. One mutation per probe, tree restored byte-exact between them.
+- **Give a probe result written into a SOURCE COMMENT the same disposition as a
+  count in published prose** — delete it, fence it, or attribute it as a dated
+  measurement (`.claude/skills/work-issues/references/verify.md` §8-g). Nothing
+  downstream re-checks such a line: PR #2612's wrong claim was on a branch
+  comment beside a destructive confirm prompt, no test could see it, and only
+  the review round stopped it becoming a fence a later editor would trust.
+  What it should have stated is the invariant the two mechanisms jointly
+  enforce, which is re-derivable and cannot go stale.
 
 ## Integration Tests
 

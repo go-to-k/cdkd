@@ -126,7 +126,7 @@ cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY' &&
 <one paragraph: the root cause, and where the evidence for it is>
 
 Dup-check: searched open issues for <terms> -- none covers this root cause
-Session-fit: next (not this session) -- <reason>
+Session-fit: next (not this session) -- <reason the WORK owns, not this session's circumstances -- .claude/rules/session-report.md>
 Severity: high -- <what stays broken while it is undone>
 Effort: large (L) -- <which verification cycle it drags>
 Estimate: ~3 h+ -- <what eats the time>

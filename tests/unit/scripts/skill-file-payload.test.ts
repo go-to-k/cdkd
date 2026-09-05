@@ -122,7 +122,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_641,
-    corpusBytes: 171_877,
+    corpusBytes: 171_765,
     largest: { file: 'verify.md', bytes: 27_149 },
     runnerUp: { file: 'implement.md', bytes: 26_908 },
   },
@@ -175,6 +175,18 @@ const MIN_REFERENCE_FILES = 6;
 // paragraph above from the other side: an addition to the largest file moves
 // the binding bound one-for-one, while the same bytes in the runner-up move it
 // not at all.
+// The 2026-09-05 go-to-k/cdkd#2595 retro is the first to end NET NEGATIVE here:
+// it added 83 B to filing.md (a hint at the point where a deferral reason is
+// written) and paid by MERGING retro.md's two adjacent stale-reason bullets
+// into one that POINTS at .claude/rules/session-report.md. Note what "points"
+// had to mean: the first attempt kept the incident and the classify-once
+// sentence beside the pointer, which a review round called out as copying
+// rather than moving -- neither phrase now appears in both files (grepped).
+// filing.md 12,870 -> 12,953, retro.md 17,190 -> 16,995; corpus
+// 171,877 -> 171,765; margin 31 -> 143 B. Its other three
+// lessons landed OUTSIDE this corpus on purpose
+// (.claude/rules/{session-report,testing}.md and
+// .claude/skills/review-pr/SKILL.md), which is why they cost it nothing.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this

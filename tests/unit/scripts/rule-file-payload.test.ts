@@ -257,7 +257,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // CLAUDE.md is the representative path for session-report.md (the wrap-report
   // field reference split out of CLAUDE.md by the 2026-09-04 token-diet pass);
   // the band is that one satellite's size.
-  ['CLAUDE.md', 10_000, 20_000], // measured 12,483 at registration (session-report.md alone; re-measure on edit)
+  ['CLAUDE.md', 10_000, 20_000], // 12,483 at registration; 15,550 on 2026-09-05 (session-report.md alone; re-measure on edit)
   // The representative path for docs-page-template.md, whose glob is `docs/**`.
   // A plain docs page matches that file and nothing else, so the band is one
   // satellite's size; `docs/_generated/**` additionally pulls layout-scripts.md
@@ -410,11 +410,20 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 46_000, 72_000],                            // measured  64,742
+  ['tests/setup.ts', 48_000, 72_000],                            // measured  48,999 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
+  // 46_000 -> 48_000 on 2026-09-05: the go-to-k/cdkd#2595 retro added 1,126 B of
+  // mutation-probe rules to `testing.md`, and the discriminate case below went
+  // red exactly as its comment predicts ("testing.md growing spends it from the
+  // other side"). Re-derived, not debugged away: the floor sits between
+  // `testing.md + SUBSTANTIVE_MIN_BYTES` (47,079, the gutting case it must
+  // reject) and the live payload (48,999, which it must accept), and 48_000
+  // splits that 1,920 B band nearly in half -- 921 B of growth room for
+  // `testing.md`, 999 B of shrink room -- rather than sitting 47 B off one
+  // edge as 46_000 had come to.
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above
-  // `testing.md` (61,358 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
+  // `testing.md` (45,579 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
   // `test-stream-fence.md` down to the smallest size the `substantive content`
   // case still allows fails HERE. 51_000, 57_000 and 62_000 were each chosen by
   // hand and each failed to add signal: the first two sat below `testing.md`
@@ -1072,10 +1081,11 @@ describe('.claude/rules payload fence', () => {
     // assertion in this file.
     //
     // The usable band is structurally narrow -- `satellite - SUBSTANTIVE_MIN_BYTES`,
-    // which is 1,884 B today -- and `testing.md` growing spends it from the
-    // other side, 641 B of it before this case fires. That is not slack to be
-    // debugged away when it runs out: re-derive the floor, or grow the
-    // satellite so the band widens with it.
+    // which is 1,920 B today -- and `testing.md` growing spends it from the
+    // other side. It ran out on 2026-09-05 exactly as written: a 1,126 B
+    // addition to `testing.md` reddened this case, and the floor was re-derived
+    // 46_000 -> 48_000 in the same commit. That is the prescribed move -- not
+    // slack to be debugged away, and not a reason to shrink the addition.
     const row = PAYLOAD_BUDGETS.find(([path]) => path === 'tests/setup.ts');
     expect(row, 'the tests/setup.ts budget row was removed').toBeDefined();
     const [, floor, cap] = row as readonly [string, number, number];
