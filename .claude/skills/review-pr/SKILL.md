@@ -44,6 +44,50 @@ issues the `Agent` calls.
    The same exclusion lives in `.claude/hooks/pr-review-gate.sh`; keep the two
    regexes in sync.)
 
+   **Then gather each touched `src/` file's recent HISTORY in the same pass**
+   — the recent-defect up-bias in step 3 is the one trigger that cannot be read off
+   `paths`, so a step that does not fetch it leaves the trigger to be
+   remembered rather than evaluated. Measured on go-to-k/cdkd#2612: the loop
+   below scores its two `src/` files 2 and 3, and the tier was still raised
+   from standing memory rather than from a query.
+
+   ```bash
+   BASE=$(gh pr view <N> --json baseRefOid -q .baseRefOid)   # NOT plain HEAD --
+   # run on the PR branch, an unanchored log counts the PR's OWN fix-back
+   # commits and a 2-fix-back PR self-trips the bias.
+   git fetch -q origin
+   # The `if` is the point, not the `echo`. baseRefOid can be missing locally
+   # (shallow clone; a base that exists only on the remote), and then `git log`
+   # dies, `|| true` swallows it, and every file prints 0 -- a VOID probe whose
+   # output is character-identical to a clean one. Warning BESIDE the loop does
+   # not fix that; the loop must not run at all.
+   if git rev-parse --verify -q "$BASE^{commit}" >/dev/null; then
+     for f in $(gh pr view <N> --json files -q '.files[].path' | grep -E '^src/'); do
+       # `|| true` because `grep -c` exits 1 when the count is zero.
+       n=$(git log --oneline -3 "$BASE" -- "$f" | grep -cE '^[a-f0-9]+ fix(\(|:)' || true)
+       printf '%s\t%s\n' "$f" "$n"
+     done   # n >= 2 of the last 3 on a file = evaluate the step-3 bias
+   else
+     echo "base $BASE is not local -- history probe VOID, not zero"
+   fi
+   ```
+
+   **That loop is `^src/`-filtered, and for `.claude/**` no prefix count works
+   at all — which is where the stakes are highest.** `commit-prefix-scope-gate`
+   refuses a `feat:` / `fix:` commit that stages no `src/**` file, so an
+   agent-instruction change lands as `chore:` (or `docs:` / `test:`) and scores
+   zero however many times the file has been corrected: measured on this file,
+   whose last five commits carry no `fix:` while the go-to-k/cdkd#2595 run's
+   retro was correcting a gap in text go-to-k/cdkd#2596 had added to it one run
+   earlier. A nonzero is no better, because a commit staging `src/**` AND a
+   `.claude/**` file may carry `fix:` and score the instruction file for a
+   defect that was never in it (`git log --oneline -5 origin/main --
+   .claude/rules/testing.md` returns go-to-k/cdkd#2450, a `fix(state):`).
+
+   So for a `.claude/**` path, read the SUBJECTS rather than a count
+   (`git log --oneline -5 "$BASE" -- "$f"`) and treat consecutive retro /
+   correction commits on the same file as the recency signal.
+
 2. **Base tier** from `(loc, fc)`:
 
    | Condition | Base tier |
@@ -93,9 +137,10 @@ issues the `Agent` calls.
      trigger, not a path list: `pr-review-gate.sh` reads the diff's stats and
      paths plus the BRANCH's own commit subjects, and has no view of the
      edited file's HISTORY — so it cannot see this and may not require the
-     marker. Raise the tier anyway and say why. The tell is
-     `git log --oneline -8 -- <the file>` coming back as consecutive `fix:`
-     commits. Measured on go-to-k/cdkd#2593: the heuristic said `inline`,
+     marker. Raise the tier anyway and say why. Read the tell off the history
+     step 1 gathered — 2 or more `fix:` commits among a touched file's last 3
+     — rather than from what you remember about the area. Measured on
+     go-to-k/cdkd#2593: the heuristic said `inline`,
      while that log on `src/deployment/recreate-targets.ts` showed the two
      preceding merges were both data-loss-guard fixes and the nearer one
      (go-to-k/cdkd#2565) had fixed a fail-open reading in the very function

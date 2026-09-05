@@ -67,16 +67,12 @@ rm -f /tmp/run-touched.$$
   of 10, and again across go-to-k/cdkd#2558's two-lane run, every one
   correctly held on scope containment) — a run-wide hit rate is a property of the run's shape, not of
   the deferrals.
-- **Re-read the REASON, not just the files** — classify-once freezes the
-  DECISION, not the PREMISE: "that PR is still open" goes false when it
-  merges, and a `next` kept alive on an expired reason is not protected by
-  classify-once.
-- **When a hit CONTRADICTS the body's own reason, the BODY is the stale side**
-  — a "no file overlap" reason is a claim about a moving target
-  (go-to-k/cdkd#2440 was deferred on "no overlap with this session's lanes";
-  the lane's merged PR changed that very file `+9/-2`). Prefer a reason the
-  lane cannot falsify by carrying on (what the work NEEDS); correct the issue
-  when this check catches one.
+- **Re-read the REASON, not just the files — and when a hit CONTRADICTS it,
+  the BODY is the stale side.** A reason anchored to the filing session's own
+  state goes false while the decision it justified still stands.
+  `.claude/rules/session-report.md` → Session-fit carries the shape, its
+  boundary against the PR-shaped reason that is refused outright rather than
+  merely expiring, and the incident. Correct the issue when this catches one.
 
 Then split the filed count by what the §5-f window did with each finding:
 
