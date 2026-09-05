@@ -204,6 +204,16 @@ inherits them via `pr-inherit-issue-labels.yml` (label the ISSUE, never the
 PR by hand). Only these two: `Session-fit` is re-decided at claim (a stale
 label is worse than none) and `Estimate` is free-form.
 
+A label can also be **DERIVED**: on 2026-09-06 a maintainer-directed sweep
+labelled every open cdkd issue, transcribing the body where it stated a closed
+token and judging the rest from content. A derived label is a ranking INPUT,
+never a measurement — where an issue's label and its own body line disagree the
+BODY wins, and the lane that learns better corrects both (`--remove-label` the
+superseded one, or the issue ends up carrying two). It still SATISFIES
+`/work-issues` §3-a rule 3's "when BOTH candidates carry it" precondition;
+where two candidates' labels read alike the tie falls through to rule 4. A lane
+labels what it touches; a BULK sweep is the maintainer's call, never a lane's.
+
 ## State — WAITING or STOPPED, stated every turn end
 
 - **WAITING (on: ...)** — you resume WITHOUT user input when the condition is

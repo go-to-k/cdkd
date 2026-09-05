@@ -191,11 +191,11 @@ literal.
 Prose is invisible to `gh issue list`; the label makes §3's ranking rule 3 a
 listing-time filter, which is what let it move ABOVE the title-prefix
 heuristic (a prefix is a proxy for what `Severity` measures). It stays gated
-on BOTH candidates carrying the value — a label-only query under-counts, so
-the body remains the authority. Only these two get labels: `Session-fit` is
-re-decided at claim (a stale label is worse than none), and `Estimate` is
-free-form. The same applies at §4's CLAIM, where an old packed body is
-rewritten into the four-line shape — carry `--add-label` on that
+on BOTH candidates carrying the value; a SWEPT label satisfies that gate, but
+once the body states the line THAT is the value. Only these two get labels:
+`Session-fit` is re-decided at claim (a stale label is worse than none), and
+`Estimate` is free-form. The same applies at §4's CLAIM, where an old packed
+body is rewritten into the four-line shape — carry `--add-label` on that
 `gh issue edit`. Enforced by
 `.claude/hooks/issue-classification-label-gate.sh`, which refuses a
 `gh issue create` / `gh issue edit` whose body states a value the labels do

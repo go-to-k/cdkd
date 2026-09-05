@@ -437,12 +437,12 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   share `medium`, and `L` collides dangerously (severity *low* vs effort
   *large*). The `gh api repos/<o>/<r>/issues` REST mint is gated too.
   **`edit` is gated and `comment` is not — the opposite split from
-  `issue-dup-check-gate.sh`, deliberately**: `edit` is the CLAIM site where
-  `Severity` first exists for the bulk of the backlog (old packed bodies are
-  upgraded on claim). On `edit` the gate asks gh what labels the issue
-  already carries (a re-edit of a labelled issue is untaxed); an
-  unresolvable issue number or gh failure FAILS OPEN — a transient gh error
-  must not stop a body edit.
+  `issue-dup-check-gate.sh`, deliberately**: `edit` is the CLAIM site where a
+  `Severity` LINE first exists for an old packed body (labels themselves are
+  no longer the gap — the 2026-09-06 sweep labelled the whole open backlog).
+  On `edit` the gate asks gh what labels the issue already carries (a re-edit
+  of a labelled issue is untaxed); an unresolvable issue number or gh failure
+  FAILS OPEN — a transient gh error must not stop a body edit.
   **Precedence, then the space rule.** Body text is read in descending
   specificity: a readable `--body-file` / `-F <path>`; else the WHOLE
   command when such a path was named but does not exist yet (the mandated

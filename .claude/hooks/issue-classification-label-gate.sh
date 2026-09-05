@@ -50,8 +50,12 @@
 # re-editing an issue that is already labelled is not taxed; only a body whose
 # stated value has no matching label is refused, and one `--add-label` clears
 # it. That is also how the pre-existing backlog gets labelled: on touch, by the
-# lane that is already holding the evidence, rather than by a bulk sweep that
-# would manufacture guesses (section 3 forbids that sweep for the same reason).
+# lane that is already holding the evidence. A BULK sweep is the maintainer's
+# call, never a lane's -- one was directed on 2026-09-06 and labelled the 77
+# open issues carrying neither label, transcribing the body wherever it stated
+# a closed token and judging the rest against .claude/rules/session-report.md's
+# scales. A lane inventing labels for issues it is NOT working is still the
+# guess-manufacturing this comment used to forbid outright.
 #
 # NO BYPASS MARKER, matching issue-dup-check-gate.sh: copying a value that is
 # already written one line above onto a flag is the entire ask.

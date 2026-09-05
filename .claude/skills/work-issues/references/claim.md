@@ -67,12 +67,15 @@ The evidence is in hand now and gone later. `Notes` never goes into an issue
 body.
 
 **Carry `--add-label` on that same `gh issue edit`**
-(`--add-label severity:<v> --add-label effort:<v>`) — a body stating a
-`Severity:` / `Effort:` value the labels do not carry is refused by
-`.claude/hooks/issue-classification-label-gate.sh`. The backlog gets labelled
-on touch, by the lane holding the evidence, never by the bulk sweep §3
-forbids — and BEFORE the lane's PR exists, which is what makes the PR inherit
-the labels (the workflow reads them at PR open).
+(`--add-label severity:<v> --add-label effort:<v>`, and `--remove-label` the
+one a correction supersedes — every open issue carries one since the sweep, and
+adding without removing leaves TWO, which §3's query picks between arbitrarily)
+— a body stating a `Severity:` / `Effort:` value the labels do not carry is
+refused by
+`.claude/hooks/issue-classification-label-gate.sh`. A lane labels on touch,
+holding the evidence, and never sweeps the backlog — a BULK sweep is the
+maintainer's call. Label BEFORE the lane's PR exists: that is what makes the
+PR inherit them (the workflow reads them at PR open).
 
 **Claim at SHORTLIST time, not after the analysis** — the moment an issue
 enters your candidate set, before the deep read. Retracting costs one comment;

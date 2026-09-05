@@ -122,7 +122,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 172_952,
+    corpusBytes: 172_956,
     largest: { file: 'verify.md', bytes: 28_154 },
     runnerUp: { file: 'implement.md', bytes: 28_079 },
   },
@@ -290,6 +290,53 @@ const MIN_REFERENCE_FILES = 6;
 // sentence, reproducing the original error inside the mechanism built to
 // prevent it. So the recipe went to go-to-k/cdkd#2655 with both measured
 // defects and only the narrow certain part shipped.
+// The 2026-09-06 ranking-criteria pass (maintainer-directed) rewrote three rows
+// of triage.md section 3-a -- rule 5 now sorts AGENT-TOOLING issues
+// (`.claude/**`, CLAUDE.md) below every other area, rule 7 flipped from
+// newest-first to OLDEST-first because the outcome the ranking exists to
+// prevent is an old deploy defect in a major AWS service that no run ever
+// reaches, and rule 4 stopped claiming a fallback population the same day's
+// label sweep had emptied. Corpus 172,952 -> 172,956, +4; margin 127 -> 123 B.
+// Components: triage.md -204, claim.md +191, filing.md +17, = +4; no other
+// stage file was touched, and neither the leader (verify.md 28,154) nor the
+// runner-up (implement.md 28,079) moved, so every byte is charged in full.
+//
+// HOW that came out near zero is the part worth carrying, because three review
+// rounds each cost a rewrite to get here. The rules the rows added were paid
+// for by DISPLACEMENT before compression: the derived-label semantics the
+// sweep created live in .claude/rules/session-report.md's Labels section, and
+// rule 3 carries a pointer, so the stage file holds the ranking and the rules
+// corpus holds the definition. Section 1's REST rationale went (section 0
+// carries it) and the batching paragraph's second copy of go-to-k/cdkd#2417's
+// stand-down shape went; section 3-0's copy of section 2's never-claim-absence
+// ban and the Session-fit bullet's copy of section 3-0's presumed-free rule
+// became POINTERS that still say a sentence of what they point at; section 2's
+// contested-file descriptions and several paragraphs across sections 1-3 were
+// compressed, losing description but no rule. Two clauses were DELETED as
+// stale: the security bullet's "never loses its place for being older" (true
+// only while rule 7 rewarded recency) and rule 5's "rule 1 decides those"
+// rider, derivable from the table's stated in-order application. One figure
+// was de-authorised in place -- the budget-disjointness paragraph's 247 B of
+// rules-corpus headroom now reads as a disclaimed anecdote, having been
+// obsolete within a day of CORPUS_BYTES_MAX being re-derived.
+//
+// Read the first deletion as the shape to look for whenever a ranking rule is
+// REVERSED: the rows are cross-referenced from prose that never names the rule
+// number, so `grep "rule 7"` does not find them -- grep the PROPERTY the rule
+// ranked on (age, recency, "loses its place"). Round 1 also caught a defect the
+// flip EXPOSED and nothing here would have: section 1's backlog listing had no
+// `--paginate`, so it returned the newest page only -- 79 of 180 open issues,
+// measured -- harmless while rule 7 preferred NEW issues and load-bearing the
+// moment it preferred OLD ones. A ranking change can invalidate the QUERY that
+// feeds it.
+//
+// Rounds 2 and 3 then found the same class of defect twice IN THIS COMMENT:
+// derived counts (a rows-cost figure, a paragraph tally) measured one commit
+// before the last edit and stale by the time they were pushed. The fix is not
+// a fourth re-derivation -- it is to quote only what something ASSERTS. What
+// survives here is MEASURED's four fields and the per-file components, both
+// checkable with `wc -c` against origin/main; every count that was merely
+// counted has been dropped.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller
