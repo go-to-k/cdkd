@@ -843,48 +843,57 @@ describe('work-issues launch-mode probe', () => {
  */
 describe('work-issues section 2 worktree probe', () => {
   const TRIAGE = join('references', 'triage.md');
-  /** The probe block addresses a PEER worktree by path -- that is what selects it. */
-  const isProbeBlock = (block: string): boolean =>
-    commandLines(block).some((c) => /worktrees\/<w>/.test(c));
 
   /**
-   * Scanned across the WHOLE skill, not just triage.md. Scoping the scan to one
-   * file let a stale copy of the withdrawn probe live in any OTHER stage:
-   * planted in gotchas.md -- the file that until this run restated section 2's
-   * probes in full -- the suite stayed green (measured 2026-09-06, round 2).
+   * LINE-BASED on purpose, NOT fence-based.
+   *
+   * The first draft of this fence selected blocks with `bashBlocks`, which
+   * recognises only a column-0 ```bash fence. Measured 2026-09-06 (round 3): a
+   * stale peer-worktree `show --stat HEAD` planted in gotchas.md survived all
+   * three cases when written as ```sh, as a bare ```, or as an INDENTED
+   * ```bash inside a list item -- and the skill already carries three indented
+   * ```bash fences, so `bashBlocks` sees 39 of its 42. Widening the scan from
+   * one FILE to every file, as round 2 did, moved the same hole one notch over.
+   *
+   * The withdrawn form is a COMMAND, and a command is recognisable without
+   * parsing fences at all -- so this scans lines and cannot be re-opened by a
+   * fence style nobody anticipated. The optional `$` covers a shell-prompt
+   * prefix -- the skill uses none today (grepped), so this is the cheap half of
+   * a bound rather than a fix for a live hole. `bashBlocks` is left alone: its contract is
+   * used by the section 9 block fences above, and widening a shared recogniser
+   * to fix one caller is how those would have silently changed meaning.
    */
-  const probeBlocks = (): Array<{ doc: string; block: string }> =>
-    skillDocs().flatMap((doc) =>
-      bashBlocks(read(doc))
-        .filter(isProbeBlock)
-        .map((block) => ({ doc, block })),
-    );
+  const GIT_LINE = /^\s*\$?\s*git\b/;
+  const gitLines = (doc: string): string[] =>
+    read(doc)
+      .split('\n')
+      .filter((l) => GIT_LINE.test(l));
 
-  it('exactly one block probes a peer worktree, across the whole skill', () => {
+  const peerProbeLines = (doc: string): string[] =>
+    gitLines(doc).filter((l) => /worktrees\/<w>/.test(l));
+
+  it('only section 2 probes a peer worktree', () => {
     expect(
-      probeBlocks().map((h) => h.doc),
+      skillDocs().filter((doc) => peerProbeLines(doc).length > 0),
       'the per-worktree probe belongs to section 2 and nowhere else; a second copy drifts',
     ).toEqual([TRIAGE]);
   });
 
-  it('ranges over origin/main...HEAD, and no skill doc still reads a single commit', () => {
-    const hit = probeBlocks()[0];
-    expect(hit, 'the per-worktree probe block is gone').toBeDefined();
-    const cmds = commandLines(hit!.block);
-
+  it('ranges over origin/main...HEAD, and no doc still reads a single commit', () => {
+    const lines = peerProbeLines(TRIAGE);
+    expect(lines.length, 'the per-worktree probe is gone from section 2').toBeGreaterThan(0);
     expect(
-      cmds.some((c) => c.includes('diff --name-only origin/main...HEAD')),
-      `the probe must range over the branch; commands were:\n${cmds.join('\n')}`,
+      lines.some((l) => l.includes('diff --name-only origin/main...HEAD')),
+      `the probe must range over the branch; its commands were:\n${lines.join('\n')}`,
     ).toBe(true);
 
-    // Swept over EVERY doc rather than the block above: the withdrawn form must
-    // not survive as a COMMAND anywhere in the skill, including in a stage file
+    // Swept over EVERY doc, not just the probe above: the withdrawn form must
+    // not survive as a command anywhere in the skill, including in a stage file
     // that never held the probe.
     const singleCommit = skillDocs().flatMap((doc) =>
-      bashBlocks(read(doc))
-        .flatMap(commandLines)
-        .filter((c) => /show\s+--stat/.test(c))
-        .map((c) => `${doc}: ${c}`),
+      gitLines(doc)
+        .filter((l) => /\bshow\s+--stat/.test(l))
+        .map((l) => `${doc}: ${l.trim()}`),
     );
     expect(
       singleCommit,
@@ -893,14 +902,17 @@ describe('work-issues section 2 worktree probe', () => {
     ).toEqual([]);
   });
 
-  it('still explains WHY the range is load-bearing, in prose OUTSIDE any block', () => {
-    // Subtracting the fenced blocks is the load-bearing part. Filtering
-    // `git`-prefixed lines instead left a whole-line `#` comment INSIDE a block
-    // able to satisfy this, so deleting the rationale paragraph and adding
-    // `# not show --stat HEAD` to the block passed -- the inert-floor failure
-    // this case exists to prevent, measured on itself 2026-09-06 in round 2.
-    const doc = read(TRIAGE);
-    const prose = bashBlocks(doc).reduce((acc, b) => acc.split(b).join(''), doc);
+  it('still explains WHY the range is load-bearing, in prose', () => {
+    // The FLOOR half. Command lines AND comment lines are excluded, because the
+    // first draft filtered only `git`-prefixed ones and a `# not show --stat
+    // HEAD` planted in the block then satisfied it while the rationale
+    // paragraph was deleted (measured green, round 2). Without this case,
+    // deleting the explanation would read as a pass -- a cap with no floor
+    // rewards the inverse regression.
+    const prose = read(TRIAGE)
+      .split('\n')
+      .filter((l) => !GIT_LINE.test(l) && !/^\s*#/.test(l))
+      .join('\n');
     expect(
       prose,
       'the paragraph naming what `show --stat HEAD` got wrong is the reason the range exists',

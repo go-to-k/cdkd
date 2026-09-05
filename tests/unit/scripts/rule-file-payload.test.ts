@@ -363,18 +363,20 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // failed this row for a reason unrelated to itself -- the same argument that
   // moved CORPUS_BYTES_MAX. Measured 61,358 B (the 55,681 B beside the old cap
   // was 5,677 B stale).
-  // RE-DERIVED DOWNWARD 68_000 -> 52_000 on 2026-09-06. The 61,358 above is the
-  // figure the cap was derived from and is kept as history; it stopped being the
-  // live payload at the 2026-09-04 compression, which took `testing.md` to
-  // 45,579 without anyone re-measuring HERE, so the row read 14,985 B stale.
-  // `testing.md` globs `tests/**`, so it is this row's WHOLE payload, and with
-  // `MAX_RULE_FILE_BYTES` at 80,000 this row -- not that cap -- is the binding
-  // fence on it: at 68_000 the file could have grown 21.6 KB unwatched, the
-  // 47%-slack condition the s3-bucket-provider row above records as having
-  // "silently absorbed a whole 59 KB satellite". 52_000 restores the ~12% the
-  // row itself was cut at (61,358 -> 68_000). Correcting the `measured` note
-  // without re-deriving its consequence is what review caught; the cap moves
-  // DOWN with a shrinking payload, never up to fit a growing one.
+  // RE-DERIVED DOWNWARD 68_000 -> 52_000 on 2026-09-06, and the sibling
+  // `tests/setup.ts` cap with it: both bound a payload that IS `testing.md`
+  // (alone here, plus its satellite there), and both `measured` notes had gone
+  // stale at the 2026-09-04 compression, so both caps were left sized for a
+  // file 15 KB larger than the live one -- the slack condition the
+  // s3-bucket-provider row above records as having "silently absorbed a whole
+  // 59 KB satellite". ~12% over the live payload is this table's convention,
+  // NOT a ratio recovered from this row's own history.
+  //
+  // Read both as dead-slack removal, not as the live fence. What actually
+  // stops `testing.md` growing is the `tests/setup.ts` GUTTING case below,
+  // which binds first and by a wide margin; a first draft of this comment
+  // called this row "the binding fence on it" and review measured that false.
+  // Caps move DOWN with a shrinking payload, never up to fit a growing one.
   ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 52_000], // measured 46,373 on 2026-09-06
   // hooks.md WAS this path's only matcher, and while that held the cap was
   // dominated by MAX_RULE_FILE_BYTES no matter where it sat: at 135_000 (as
@@ -464,7 +466,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 48_000, 72_000],                            // measured  49,793 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
+  ['tests/setup.ts', 48_000, 56_000],                            // measured  49,793 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
   // 46_000 -> 48_000 on 2026-09-05: the go-to-k/cdkd#2595 retro added 1,126 B of
   // mutation-probe rules to `testing.md`, and the discriminate case below went
   // red exactly as its comment predicts ("testing.md growing spends it from the
@@ -484,11 +486,11 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // below. The fix is compression there,
   // not a bigger number here. Unlike the skill corpus, this file has no
   // MEASURED record, so these figures are the only thing that goes stale
-  // silently; re-measure them in any commit that touches `testing.md` -- these
-  // three AND the `measured` figure and CAP on the rule-file-payload.test.ts
-  // row above, whose payload is `testing.md` alone for the same `tests/**`
-  // glob. That row is why the count is four, not the three this sentence
-  // claimed until 2026-09-06.
+  // silently; re-measure them in any commit that touches `testing.md` -- these,
+  // plus the `measured` figure and the cap on the rule-file-payload.test.ts row
+  // above and this row's own cap, all of which bound a payload that IS
+  // `testing.md`. Deliberately not stated as a COUNT: this sentence said
+  // "three" while enumerating more, twice.
   // RE-MEASURED 2026-09-05 after the work-issues retro escalated its
   // one-sided-fence rule into `testing.md` (+256 B of rule, 140 B of it paid
   // back by compressing three neighbouring mutation bullets, 46,257 -> 46,373 B

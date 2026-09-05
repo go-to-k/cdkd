@@ -338,46 +338,48 @@ const MIN_REFERENCE_FILES = 6;
 // checkable with `wc -c` against origin/main; every count that was merely
 // counted has been dropped.
 // The 2026-09-05 deploy-batch retro (go-to-k/cdkd#2634 / go-to-k/cdkd#2649 /
-// go-to-k/cdkd#2674) landed TWO rules here for +90 B: triage.md section 2's
-// worktree probe now ranges over `origin/main...HEAD` (`show --stat HEAD`
-// reads one commit, and read 1 of the 5 files a ten-commit lane held), and
-// implement.md section 5-g's fan-out sentence now names the REPORT SHAPE.
-// Components against origin/main, stated so they can be checked rather than
-// believed: triage.md 26,084 -> 26,219 (+135), implement.md 28,079 -> 28,240
-// (+161), gotchas.md 8,045 -> 7,938 (-107), retro.md 17,625 -> 17,585 (-40),
-// claim.md 7,704 -> 7,645 (-59), = +90. Corpus 172,956 -> 173,046; margin
-// 123 -> 108 B. NOTE THE LEADER FLIP: implement.md 28,240 overtakes verify.md
-// 28,154 (untouched), so `largest` and `runnerUp` SWAP above and the binding
-// bound becomes `corpus - verify.md`.
-// The payment is displacement, not compression: gotchas.md was restating
+// go-to-k/cdkd#2674) landed two rules here: triage.md section 2's worktree
+// probe now ranges over `origin/main...HEAD` (`show --stat HEAD` reads ONE
+// commit, and read 1 of the 5 files a ten-commit lane held), and implement.md
+// section 5-g's fan-out sentence now names the REPORT SHAPE. It also flipped
+// the leader -- implement.md overtakes verify.md -- so `largest` and `runnerUp`
+// SWAP above and the binding bound becomes `corpus - verify.md`.
+//
+// NO PER-FILE ARITHMETIC IS STATED HERE, DELIBERATELY, AND THAT IS THIS ROUND'S
+// MAIN LESSON. Every entry above states its components so a reader can check
+// them. This round tried, and produced SEVEN wrong figures across three review
+// rounds: a spent-band figure, a component split, a byte attribution measured
+// against a commit range that dies at the squash merge, a "most of" claim, a
+// ratio, a line distance, and a count. Not one was caught by reading; all seven
+// were caught by measuring. MEASURED's four numbers are asserted against the
+// tree and cannot go stale silently -- a delta written into a comment is
+// checked by nothing, which is what this file already said above ("every count
+// that was merely counted has been dropped") and what it stopped doing here.
+// So they are DROPPED rather than corrected an eighth time; `wc -c` against
+// origin/main re-derives any of them in one command. That is retro.md section
+// 10-b's escalate-rather-than-restate applied to a paragraph, and
+// .claude/rules/testing.md's disposition for a figure nothing rechecks: delete
+// it, fence it, or date it.
+//
+// The payment was DISPLACEMENT, not compression: gotchas.md was restating
 // section 2's two live-lane probes in full, and retro.md and claim.md each
 // carried a bare "English only" line for a rule CLAUDE.md owns and two hooks
-// enforce (`non-english-text-gate`, `gh-body-english-gate`) -- a prose copy of
-// a hook-enforced rule is paid for in every lane and stops nothing.
-// A THIRD lesson landed outside this corpus in `.claude/rules/testing.md` (a
-// guard's uses are its CALL SITES), and a FOURTH is the fence in
-// work-issues-launch-mode.test.ts that pins the ranged probe -- both free to
-// THIS corpus; the testing.md one spent 116 B of the `tests/setup.ts` band in
-// rule-file-payload.test.ts, re-derived there in the same commit.
-// Every figure here is POST-REVIEW and stated against origin/main, because an
-// intermediate commit's arithmetic disappears at the squash merge and cannot be
-// re-derived -- an earlier revision attributed "88 B" to a range that will not
-// exist, which is this file's own `wc -c against origin/main` rule broken 40
-// lines below where it is stated.
-// What review changed, across two rounds and four reviewers: the two fence
-// files disagreed about one quantity (159 vs 116 B); a component split of
-// "+207 / 91" reconciled with no definition (measured +256 / -140); a
-// compression had re-bound go-to-k/cdkd#2270 to the wrong one of its bullet's
-// two incidents, dropping the clause that was the only evidence for the
-// bullet's second headline half; and the first draft of the new fence's own
-// FLOOR was inert -- it filtered `git`-prefixed lines, so a `#` comment inside
+// enforce (`non-english-text-gate`, `gh-body-english-gate` -- both verified in
+// review to cover the exact removed contexts, including the `--body` form
+// claim.md prescribes). A prose copy of a hook-enforced rule is paid for in
+// every lane and stops nothing.
+//
+// Two further lessons landed OUTSIDE this corpus and cost it nothing:
+// `.claude/rules/testing.md` (a guard's uses are its CALL SITES, not the first
+// one) and a fence in work-issues-launch-mode.test.ts pinning the ranged probe.
+// Read that fence's history before writing the next one -- it needed three
+// drafts, and each failure was the class it exists to catch. Draft 1's FLOOR
+// was inert: it filtered `git`-prefixed lines, so a `#` comment planted inside
 // the code block satisfied it while the rationale paragraph was deleted.
-// Restoring the citation leaves that bullet at 661 B against main's 692, so
-// implement.md's +161 is the REPORT SHAPE clause net of three compressions and
-// NOT the restoration; a draft of this paragraph claimed otherwise and
-// measurement contradicted it. Three wrong byte attributions in one round, all
-// three caught by measuring rather than reading -- which is why a compression
-// payment is never free: the bytes it saves can be a citation's antecedent.
+// Draft 2 selected blocks with `bashBlocks`, which recognises only a column-0
+// ```bash fence, so the withdrawn command survived as ```sh, as a bare ```, or
+// indented in a list item. It is LINE-based now, and needs no fence parsing at
+// all.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller
