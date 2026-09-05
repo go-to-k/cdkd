@@ -53,13 +53,19 @@ set -u
 # does two things the local regex did not: it follows EVERY `cd` in command
 # position and composes relative ones, and it SKIPS an unexpanded `$VAR` rather
 # than resolving it to a path no `git -C` can read.
+# The library is loaded for `gate_unquote_span` / `gate_unquote` -- the verb and
+# path unquoting. It is NOT loaded for `cmd_last_cd_target`: three rounds tried
+# resolving the `cd` with that helper, or with scans built around it, and each
+# shipped a silent failure (go-to-k/cdkd#2650 carries the tables). The `cd`
+# match below is deliberately a local, ANCHORED regex.
 # shellcheck source=lib/command-match.sh
 __hook_dir="${BASH_SOURCE[0]%/*}"
 # `%/*` leaves the string unchanged when the path has no slash (invoked as
 # `bash main-tree-edit-gate.sh` from inside the hooks dir).
 [ "$__hook_dir" = "${BASH_SOURCE[0]}" ] && __hook_dir="."
 if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
-  || ! declare -F cmd_last_cd_target >/dev/null; then
+  || ! declare -F gate_unquote_span >/dev/null \
+  || ! declare -F gate_unquote >/dev/null; then
   # FAIL CLOSED, as every other blocking gate does: a hook that cannot parse
   # the command cannot say the edit is safe, and `|| exit 0` on an unloadable
   # library is the shape that made twelve sibling gates inert
@@ -124,8 +130,32 @@ case "$tool" in
     # left to be rediscovered. Widening this is go-to-k/cdkd#2650, which
     # carries all three measurement tables.
     if [[ "$cmd" =~ ^[[:space:]]*([^[:space:]]+)[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-      __verb=$(gate_unquote_span "${BASH_REMATCH[1]}")
-      __verb="${__verb//\\/}"
+      __raw="${BASH_REMATCH[1]}"
+      __verb=$(gate_unquote_span "$__raw")
+      # A blanket `${v//\\/}` here was a REGRESSION, not a simplification, and
+      # it is the shape the comment below used to say could not exist. Bash
+      # removes a backslash only OUTSIDE quotes and only one per escape pair,
+      # so stripping every backslash MANUFACTURES a `cd` bash never runs and
+      # moves the base AWAY from the protected tree. Measured on a main-tree
+      # fixture, `<verb> /tmp ; echo POISON > <tracked>`, origin/main -> HEAD:
+      # `'\cd'`, `"\cd"`, `"c\d"`, `\\cd` and `c\\d` all went rc=2 -> 0 and
+      # the tracked file really was overwritten.
+      #
+      # So: a token that WAS quoted keeps its content verbatim (bash performs
+      # no escape removal inside single quotes, and `\c` is not an escape
+      # inside double quotes either for this purpose), and only an UNQUOTED
+      # token is unescaped -- left to right, two characters at a time, which is
+      # what makes `\cd` a `cd` while `\\cd` stays `\cd`.
+      if [[ "$__verb" == "$__raw" ]]; then
+        __out=""; __rest="$__raw"
+        while [[ -n "$__rest" ]]; do
+          case "$__rest" in
+            '\'?*) __rest="${__rest#?}"; __out="$__out${__rest%"${__rest#?}"}"; __rest="${__rest#?}" ;;
+            *)      __out="$__out${__rest%"${__rest#?}"}"; __rest="${__rest#?}" ;;
+          esac
+        done
+        __verb="$__out"
+      fi
       if [[ "$__verb" == "cd" ]]; then
         cdt="${BASH_REMATCH[2]}"
         cdt=$(gate_unquote "$cdt")

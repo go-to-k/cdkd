@@ -219,6 +219,41 @@ run_case 2 "Bash a quoted '>' before a real cd (false refusal)" \
   "$(jq -nc --arg cmd "echo \"a > b\" && cd $WT && echo x > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
+# 32-34. THE OTHER POLARITY OF 29-31, and the reason it is pinned: those three
+# are described as false refusals, and from a main-tree cwd they are. Run from
+# a FEATURE-worktree cwd with the `cd` pointing at the MAIN tree they are the
+# same miss with the sign flipped -- the gate exits 0 and the write really does
+# land on the main tree's tracked ledger. Round 3 of go-to-k/cdkd#2614 shipped
+# exactly this shape while its comment claimed "loud direction", so the claim
+# is now pinned in both polarities rather than asserted in one. INHERITED from
+# origin/main, not introduced here; widening the scan to close it is
+# go-to-k/cdkd#2650.
+run_case 0 "Bash a backtick + \$( ) span then 'cd <main>' and a write (INVERTED: a silent miss)" \
+  "$(jq -nc --arg cmd "x=\`date\`; y=\$(pwd); cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash the same two spans in the other order (INVERTED: a silent miss)" \
+  "$(jq -nc --arg cmd "y=\$(pwd); x=\`date\`; cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+run_case 0 "Bash a quoted '>' then 'cd <main>' and a write (INVERTED: a silent miss)" \
+  "$(jq -nc --arg cmd "echo \"a > b\" && cd $MAIN && echo hi > docs/_generated/ledger.tsv" --arg cwd "$WT" \
+    '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+
+# 35-39. The VERB unquoting, against what bash actually does. A blanket
+# backslash strip here manufactured a `cd` bash never runs and moved the base
+# AWAY from the protected tree -- measured, the tracked file really was
+# overwritten. Each spelling below is one bash does NOT treat as `cd`.
+for __v in "'\\cd'" '"\\cd"' '"c\\d"' '\\\\cd' 'c\\\\d'; do
+  run_case 2 "Bash a first token that only LOOKS like cd: $__v" \
+    "$(jq -nc --arg cmd "$__v /tmp ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+# ...and the ones bash DOES, so the unescape cannot be tightened into a refusal.
+for __v in '\cd' "'cd'" '"cd"'; do
+  run_case 0 "Bash a first token bash really reads as cd: $__v" \
+    "$(jq -nc --arg cmd "$__v /tmp ; echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
+      '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+done
+
 echo "----"
 echo "passed=$pass failed=$fail"
 [[ "$fail" -eq 0 ]]

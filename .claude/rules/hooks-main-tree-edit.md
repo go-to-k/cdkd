@@ -32,7 +32,7 @@ toll only on a session actually touching these two hooks.
   (`mv "$tmp" "$LEDGER"`) cannot be resolved statically — the next bullet,
   `main-tree-dirty-detector`, is the backstop for it.
   Feature worktrees always pass. macOS-safe (`cd && pwd -P`).
-  **The `cd` BEFORE the write comes from the SHARED matcher since go-to-k/cdkd#2614**:
+  **The `cd` match is a local ANCHORED regex, with only the VERB and the PATH unquoted through the shared library (go-to-k/cdkd#2614)**:
   the local regex it replaced read the verb `cd` as literal text while
   unquoting its VALUE, so `"cd" <main-tree> && echo x > <tracked>` (and `'cd'`
   / `\cd`) exited 0 where the literal spelling exited 2. Load fails CLOSED.
@@ -49,22 +49,27 @@ toll only on a session actually touching these two hooks.
   leaked a `cd` inside a plain subshell, which the segmenter emits in place.
   Every one of them was a hook-local shell parser written inside the change
   whose purpose was deleting a hook-local shell parser.
-  **The anchored form's cost is FALSE REFUSALS**, pinned as cases 29-31: a
+  **The anchored form's cost has BOTH polarities, and both are pinned** — a
   command whose first segment is a substitution or a subshell has its real `cd`
-  ignored, so a write meant for a feature worktree is refused from a main-tree
-  cwd. Loud, one rephrase away, and the direction this repo prefers. The three
+  ignored, so the base stays the payload cwd. From a main-tree cwd that is a
+  false refusal (cases 29-31, loud, one rephrase away); from a FEATURE-worktree
+  cwd with the `cd` pointing at the main tree it is the same miss with the sign
+  flipped and the gate exits 0 while the write lands on `main` (cases 32-34).
+  An earlier round shipped that shape while claiming the cost was refusals
+  only, which is why the claim is now pinned in both directions instead of
+  asserted in one. Inherited from origin/main, not introduced here. The three
   measurement tables and the remaining option — teaching `gate_segments` to
   mark subshell-derived segments, which helps every consumer — are in
   go-to-k/cdkd#2650.
-  Smoke test: `main-tree-edit-gate.test.sh` (31 cases). The three quoted-`cd`
+  Smoke test: `main-tree-edit-gate.test.sh` (42 cases). The three quoted-`cd`
   spellings carry a literal control from the SAME foreign cwd so the trio
   cannot pass vacuously — and the control PASSES against the pre-#2614 hook,
-  which is what makes it a control; that hook fails 4 of the 31. The eight
+  which is what makes it a control; origin/main's hook fails 4 of the 42. The eight
   trailing-/subshell-/substitution-`cd` cases and their three false-block twins
   come from the review of #2614's own first revision, which handed the WHOLE
   command to `cmd_last_cd_target`: it follows every `cd` in command position,
   so a `cd` AFTER the write moved the base and re-opened this gate's founding
-  incident. That revision fails 11 of the 31. The
+  incident. The first revision fails 15 of the 42. The
   block names file + worktree + branch and prints the `git worktree add`
   recipe (incl. the /run-integ ledger note). See memory
   `feedback_main_tree_tracked_edit_gate.md`.
