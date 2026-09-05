@@ -1408,3 +1408,4 @@ Three more review findings hardened the failure paths. The create-side registrat
   reverting the ACM producer to warn-only fails 2, always-partial fails 1,
   disabling the in-use classifier fails 1, counting a partial as clean fails 1,
   dropping the survivor event fails 1, dropping the status line fails 1.
+
