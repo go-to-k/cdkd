@@ -500,10 +500,20 @@ const SPLIT_ADVICE =
  *    one, and treating those as a matched pair reopened the file's second half
  *    as live text. That was a working bypass, not a theoretical one: a
  *    satellite's only pointer could sit inside rendered code and pass.
- * 2. Indented code blocks -- but NOT list continuations. Four spaces is a code
- *    block only outside a list; inside one it is the continuation of a bullet,
- *    and this corpus indents them five spaces routinely. The blunt rule
- *    dropped those lines, which is a narrowing.
+ * 2. Indented lines, bluntly -- four spaces or more and it does not count.
+ *    This IS wrong about Markdown: inside a list, four spaces is a bullet's
+ *    continuation rather than code, and this corpus indents those five spaces
+ *    routinely. It stays blunt anyway, and the reason is measured rather than
+ *    argued. A revision that exempted list context was reviewed and reverted:
+ *    the target set it produced across all 46 files plus CLAUDE.md was
+ *    IDENTICAL, because the indented continuations here carry issue URLs and
+ *    no `.md` pointer -- so the exemption repaired nothing -- while it
+ *    disabled this rule inside a list, where the fence regex also cannot see a
+ *    marker indented past three. Code in a list item was then kept as live
+ *    text and BOTH assertions could be satisfied from inside a rendered code
+ *    block. Relaxing a condition to fix a theoretical narrowing bought a real
+ *    bypass. If a `.md` pointer ever does live in an indented continuation it
+ *    will surface as a FALSE ORPHAN, which is loud and the safe direction.
  * 3. HTML comments, stripped from the joined text so a multi-line one is
  *    handled. A pointer inside one renders as nothing.
  * 4. Inline code spans, bounded to ONE line. A link in backticks is a quoted
@@ -517,12 +527,23 @@ const SPLIT_ADVICE =
  * 6. Reference-style links, counted at the definition -- but only when the
  *    label is actually USED. An unreferenced definition renders as nothing, so
  *    counting it let a deleted pointer be replaced by a dead one.
+ *
+ * Three shapes are still NOT seen, listed because an unlisted limitation is
+ * the one someone later mistakes for coverage: the COLLAPSED `[l][]` and
+ * SHORTCUT `[l]` reference forms, and link TEXT containing a `]`
+ * (`[foo [bar]](a.md)`). The shortcut form is deliberate -- it is
+ * indistinguishable from ordinary bracketed prose without resolving every
+ * definition, and this corpus brackets prose constantly. All three fail
+ * CLOSED: the link is not credited, so the effect is a FALSE ORPHAN, which is
+ * loud and fixable, never a silent pass. Note also that comment-stripping runs
+ * BEFORE fence handling, so a `<!--` written inside a code fence eats text
+ * past it -- wrong in principle, absent in this corpus, and again in the
+ * false-orphan direction.
  */
 function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
   const withoutComments = lines.join('\n').replace(/<!--[\s\S]*?-->/g, '');
   const kept: string[] = [];
   let fence: string | undefined;
-  let inList = false;
   for (const line of withoutComments.split('\n')) {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (marker !== undefined) {
@@ -531,9 +552,7 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
       continue;
     }
     if (fence !== undefined) continue;
-    if (/^ {0,3}(?:[-*+]|\d+[.)])\s/.test(line)) inList = true;
-    else if (line.trim() !== '' && !/^\s/.test(line)) inList = false;
-    if (!inList && /^ {4,}\S/.test(line)) continue;
+    if (/^ {4,}\S/.test(line)) continue;
     if (rowsOnly && !line.trimStart().startsWith('|')) continue;
     kept.push(line);
   }
@@ -548,7 +567,9 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
   }
   const usedLabels = new Set<string>();
   for (const m of text.matchAll(/\]\[([^\]]+)\]/g)) usedLabels.add(m[1]!.toLowerCase());
-  for (const m of text.matchAll(/^ {0,3}\[([^\]]+)\]:\s*([^\s#]+\.md)(?:#\S*)?\s*$/gm)) {
+  for (const m of text.matchAll(
+    /^ {0,3}\[([^\]]+)\]:\s*<?([^\s#<>]+\.md)>?(?:#\S*)?(?:\s+["'(][^\n]*)?\s*$/gm,
+  )) {
     if (usedLabels.has(m[1]!.toLowerCase())) targets.push(m[2]!);
   }
   return targets;
@@ -1437,6 +1458,12 @@ describe('.claude/rules payload fence', () => {
       { file: 'hooks.md', prefix: /^hooks-/, rowsOnly: false },
     ];
     const missing: string[] = [];
+    for (const { file: idx, prefix } of indexes) {
+      expect(
+        prefix.test(idx),
+        `${idx} now matches its own family prefix ${String(prefix)}, so it would be required to point at itself. Give this loop back its self-exclusion.`,
+      ).toBe(false);
+    }
     for (const { file: idx, prefix, rowsOnly } of indexes) {
       // Credit a link only to the family this index OWNS: without it a prose
       // sentence in hooks.md naming a `layout-*` file would satisfy
@@ -1447,11 +1474,13 @@ describe('.claude/rules payload fence', () => {
           .map(ruleTarget)
           .filter((t): t is string => t !== undefined && prefix.test(t)),
       );
-      // No `name !== idx` guard: an index's own name never matches its
-      // family prefix (`hooks.md` is not `hooks-`, `providers.md` is not
-      // `provider-`, `code-layout.md` is not `layout-`), so the condition
-      // could not fire. A guard that cannot fire reads as protection that is
-      // not there -- the defect class this file is currently full of.
+      // No `name !== idx` guard: an index's own name does not match its own
+      // family prefix, so the condition could not fire, and a guard that
+      // cannot fire reads as protection that is not there. That is a property
+      // of the three current names rather than of the structure, so it is
+      // asserted here instead of claimed in a comment -- rename an index to
+      // `hooks-index.md` and this fires rather than silently making the file
+      // demand a pointer to itself.
       for (const { name } of ruleFiles) {
         if (prefix.test(name) && !own.has(name)) missing.push(`${name} (${idx})`);
       }
