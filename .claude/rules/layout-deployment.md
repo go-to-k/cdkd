@@ -352,6 +352,33 @@ Index of every area: [code-layout.md](code-layout.md).
     cooldown alone. The outer loops remain for the late name RELEASE the
     inner default classifier rejects (the inner loop now rides the 64s
     grid), the two compounding to ~640s inside the 30-minute deadline.
+  - `isUpdateUnsupportedError(error, logicalId)` (issue #2520): the deploy
+    engine's update-failure REPLACEMENT trigger — "this type has no UPDATE
+    handler at all", not "this update was rejected". Another bounded `.cause`
+    walk on the shared `MAX_CAUSE_CHAIN_DEPTH`, matching the exception NAME
+    `UnsupportedActionException`, and the async `ccErrorCode` of the same name
+    ONLY when `ccOperation === 'UPDATE'` — that arm is unmeasured, so it is
+    kept narrow: a CREATE or DELETE sub-operation reporting the same code says
+    nothing about whether the type has an UPDATE handler. The sync NAME arm
+    carries no such anchor, and the reason is audited in the function's own doc
+    comment rather than restated here.
+    The walk is needed because `CloudControlProvider.handleError` interpolates
+    `err.message` only and AWS's own text never repeats the name — which is why
+    the pre-#2520 predicate's `message.includes('UnsupportedActionException')`
+    half matched nothing cdkd produces. AWS's prose (`does not support UPDATE`)
+    stays a TOP-LEVEL-only fallback: the two directions are asymmetric, since
+    missing the signal fails the deploy while matching too broadly REPLACES a
+    resource nobody asked to replace. **The `logicalId` anchor is what keeps
+    the walk from being wider than the message read it replaced** —
+    `NestedStackProvider.update` runs a whole child deploy inside the PARENT's
+    `provider.update()`, so a child resource's Cloud Control rejection is
+    reachable down the parent's chain, and an unanchored walk would replace the
+    entire child stack; the walk stops at the first link naming another
+    resource (`ProvisioningError` and `ResourceUpdateNotSupportedError` both
+    carry `logicalId`). `NotUpdatable` is deliberately NOT matched — it reports
+    "this patch is not applicable", which cdkd already routes through
+    property-driven replacement — and neither is `TypeNotFoundException`,
+    which `handleError` wraps into the same sentence.
   - `markNonRetryable(error)` (issue #1778): stamps a non-enumerable
     `Symbol.for('cdkd.nonRetryable')`; `isMarkedNonRetryable` walks the
     bounded `.cause` chain, consulted BEFORE any message heuristic —

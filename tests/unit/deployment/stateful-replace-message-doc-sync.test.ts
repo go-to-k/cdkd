@@ -6,8 +6,9 @@ import { dirname, join } from 'node:path';
 /**
  * `docs/cli-deploy-safety.md` quotes the stateful-replace refusals' text
  * VERBATIM in fenced example blocks — the Cloud Control arm's message, the
- * `UpdateReplacePolicy: Retain` note appended to it, and the property-driven
- * twin's message. Nothing connected those copies to the source, and issue
+ * `UpdateReplacePolicy: Retain` same-name collision refusal that replaced the
+ * old "Retain does NOT protect this path" note (issue #2518), and the
+ * property-driven twin's message. Nothing connected those copies to the source, and issue
  * #2514's own review round had to hand-sync them once already: the message was
  * reworded in the fix round and the doc example went stale in the same commit
  * until it was noticed by reading both files.
@@ -66,7 +67,18 @@ const SHARED_PHRASES: ReadonlyArray<{
 }> = [
   { phrase: 'cannot be updated in place by the', source: 'engine', docOccurrences: 1 },
   { phrase: 'resource definition to avoid the update', source: 'engine', docOccurrences: 1 },
-  { phrase: 'Retain does NOT protect this path', source: 'engine', docOccurrences: 1 },
+  // Issue #2518 replaced the "Retain does NOT protect this path" note — which
+  // the fence used to watch here — with the opposite behaviour: the fallback
+  // now RETAINS under `Retain` and refuses only the same-name collision that
+  // follows from retaining. The phrase watched in its place is that refusal's
+  // remedy sentence, which is the new message's most consequential half (it is
+  // the one line telling the user the escape hatch destroys the resource) and
+  // is unique to it — the two property-driven twins share every other clause.
+  {
+    phrase: 'Removing UpdateReplacePolicy: Retain lets cdkd delete',
+    source: 'engine',
+    docOccurrences: 1,
+  },
   // The property-driven twin's opening. Its documented example sits in the
   // same doc block this PR edited, and nothing fenced it.
   { phrase: 'requires replacement (immutable property', source: 'engine', docOccurrences: 1 },

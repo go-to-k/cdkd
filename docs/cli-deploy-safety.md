@@ -443,7 +443,9 @@ create-first order has a free name to take.
 
 `UpdateReplacePolicy: Retain` hard-fails in both shapes **regardless of
 `--replace`**: with Retain the old resource keeps the name, so a same-name
-replacement can never proceed.
+replacement can never proceed. The same two shapes, and the same two error
+codes, are reachable from the update-failure fallback covered below — under
+`Retain` that path also creates first, so it inherits the same constraint.
 
 ### The stateful guard on this path
 
@@ -462,7 +464,8 @@ The details that matter here:
   to **both** triggers this section covers, not only the `--replace` opt-in:
   replacing either needs `--force-stateful-recreation` whether you passed
   `--replace` or the Cloud Control auto-fallback took you there on a plain
-  `cdkd deploy`.
+  `cdkd deploy` — unless the resource declares `UpdateReplacePolicy: Retain`,
+  which exempts both triggers because the old resource survives (see below).
 - **The Cloud Control `UnsupportedActionException` auto-fallback is guarded on
   the same terms.** That fallback still needs no flag to REACH the replacement
   — when AWS rejects the in-place update because the type has no Cloud Control
@@ -482,19 +485,53 @@ The details that matter here:
   resource definition to avoid the update.
   ```
 
-  `UpdateReplacePolicy: Retain` is **not** an exemption on either of the two
-  triggers this section covers — unlike the property-driven replacement
-  described below, which does exempt it. Both triggers here delete the old
-  resource before creating its replacement, so the data is destroyed whatever
-  the policy says. When the resource declares `Retain`, the refusal appends a
-  sentence saying exactly that, because the remedy it offers
-  (`--force-stateful-recreation`) would otherwise read as safe for a resource
-  the template asked to keep:
+  `UpdateReplacePolicy: Retain` **is** an exemption on both of the triggers
+  this section covers, exactly as it is for the property-driven replacement
+  described below. Under `Retain` the replacement becomes create-ONLY: cdkd
+  leaves the old physical resource in place — orphaned, with its data, and no
+  longer tracked in state, so it keeps incurring cost and `cdkd destroy` will
+  not remove it; delete it yourself once you no longer need the data — and only
+  creates the new one. Nothing is destroyed,
+  so there is no data loss for `--force-stateful-recreation` to confirm, and
+  the flag is not required. It is also not an override: passing it does **not**
+  make cdkd delete a resource the template asked to keep.
+
+  Retaining means the replacement create runs beside the live old resource, so
+  it cannot reuse a physical name that resource still holds. Both shapes of
+  that collision hard-fail, with the same error codes the property-driven path
+  uses (see [Same-name replacement](#same-name-replacement-delete-first-ordering)):
 
   ```text
-  Note: UpdateReplacePolicy: Retain does NOT protect this path — the
-  replacement deletes the old resource regardless.
+  MyTable (AWS::DynamoDB::Table) requires replacement because the provisioning
+  layer cannot update it in place — but its physical name is still held by the
+  existing resource AND UpdateReplacePolicy: Retain pins that resource in place.
+  The resource has a user-supplied physical name (my-table). Either rename the
+  resource in your CDK code (a fresh name lets the safe create-first order
+  proceed) — with Retain, the old resource keeps the name, so a same-name
+  replacement can never proceed. Removing UpdateReplacePolicy: Retain lets cdkd
+  delete the old resource first, which destroys it and any data it holds.
   ```
+
+  Retaining leaves a resource cdkd no longer tracks, so the replacement reports
+  itself as a **partial** update rather than a clean one: the row prints
+  `partial (…)`, the run summary counts it under "of which left an orphaned
+  predecessor", `cdkd events` records the survivor's physical id, and — **for a
+  top-level stack** — the deploy exits 2 unless you pass `--allow-unaddressed`.
+  Nothing will retry it — state points at the replacement — so deleting the
+  survivor is yours to do.
+
+  **Known limitation — nested stacks.** The exit code covers top-level stacks
+  only. A resource retained inside a nested stack still prints its warning and
+  its `partial (…)` row, but a child stack's counters do not reach the parent
+  run, so the deploy exits `0` with the survivor alive. This is not specific to
+  `Retain` — it applies to every unaddressed resource inside a nested stack.
+  Until it is fixed, read the per-resource warnings rather than the exit code
+  when your app uses nested stacks.
+
+  This path previously deleted the old resource whatever the policy said, and
+  its refusal appended a note stating so. Both are gone: a resource explicitly
+  marked to survive its replacement is no longer destroyed by the
+  update-failure fallback.
 
 Non-stateful immutable types — LayerVersion, Glue SecurityConfiguration, ECS
 TaskDefinition, ApiGatewayV2 sub-resources — replace with `--replace` alone.
@@ -744,7 +781,9 @@ reaches with no flag — there is no opportunity to run either probe, so cdkd
 assumes the resource has data. Every bucket and every log group needs
 `--force-stateful-recreation` on those paths — a recorded `RetentionInDays > 0`
 does not exempt a log group there, it is simply a second reason the same guard
-fires.
+fires. The one exemption on all three is `UpdateReplacePolicy: Retain`: the old
+resource survives the replacement, so there is no data loss to confirm and the
+flag is not required (and does not override the policy).
 
 ### `--force-stateful-recreation`
 
@@ -851,7 +890,7 @@ and they differ in whether they heal themselves:
 | Summary row | Cause | Next `cdkd deploy` retries it? |
 | --- | --- | --- |
 | `Skipped (not deleted): N` | A resource removed from the template whose provider could not issue the delete — typically a malformed `physicalId` in state | **Yes.** The state record is deliberately KEPT, so the resource is still diffed as a DELETE next run |
-| `of which left an orphaned predecessor: N` | A replacement whose new resource was created and whose OLD one could not be deleted | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
+| `of which left an orphaned predecessor: N` | A replacement the provider performed INSIDE its own `update()` whose old resource it could not retire, or an update-failure replacement where `UpdateReplacePolicy: Retain` said not to delete it | **No.** State now points at the replacement, so the survivor is untracked — delete it by hand |
 
 ```bash
 cdkd deploy MyStack                       # exit 2 if either row is non-zero
