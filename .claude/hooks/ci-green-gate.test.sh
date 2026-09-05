@@ -97,6 +97,97 @@ run_case "gh pr create passes" one-fail "gh pr create --title x" 0
 run_case "quoted body in issue create" one-fail "gh issue create --body \"remember to gh pr merge 123 later\"" 0
 run_case "quoted body in echo" one-fail "echo \"next step: gh pr merge 123\"" 0
 
+# --- The ADVICE the no-checks branch prints must itself discriminate (#2630) ---
+#
+# The retired text told the agent to poll `gh pr checks --json name,state`
+# until it returned something other than `[]`. `gh` never returns `[]`: with no
+# checks it exits 1 with an EMPTY stdout and a message on stderr. Measured
+# 2026-09-06 (gh 2.89) across all four states. The `no-checks`, `one-fail`,
+# `pending` and `all-pass` fixtures above match those measurements; nothing
+# here claims the shim is faithful in EVERY respect (`with-skipping`'s rc is
+# unverified, and a live PR's rc moves as its checks progress — two readings of
+# the same PR minutes apart disagreed). The four that the cases below depend on
+# are the ones that were measured:
+#
+#   no checks reported  rc=1  stdout 0 bytes   message on STDERR
+#   a check FAILED      rc=1  stdout non-empty
+#   still running       rc=8  stdout non-empty
+#   all pass            rc=0  stdout non-empty
+#
+# So rc=1 is AMBIGUOUS and the discriminator is the empty stdout. These cases
+# run the advised predicate itself against the shim, rather than asserting the
+# message's wording — a wording test would keep passing if `gh` changed.
+# The cases below drive a predicate this FILE defines, which pins the SHAPE of
+# the advice but reads nothing the hook prints — measured: reverting the hook's
+# advice to the retired `[]` form, or replacing it with nonsense, left this
+# suite 18/18 green. So the hook's own stderr is asserted first, and the
+# predicate cases are what explain WHY that text is the right text.
+check_message() {
+  local name="$1" needle="$2" want="$3"   # want = present | absent
+  local payload out got
+  payload=$(printf '{"tool_input":{"command":"gh pr merge 123 --squash"},"cwd":"%s"}' "$REPO_ROOT")
+  out=$(printf '%s' "$payload" | GH_FIXTURE=no-checks PATH="$SHIM_DIR:$PATH" bash "$HOOK" 2>&1)
+  case "$out" in (*"$needle"*) got=present ;; (*) got=absent ;; esac
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    fail_log="$fail_log
+  FAIL: $name (expected $want, got $got)"
+  fi
+}
+
+# The advice must be PRINTED, not executed. `cat >&2 <<EOF` is an UNQUOTED
+# heredoc, so an unescaped `$( )` in the body runs at refusal time: the block
+# then shows `until [ -n "" ]` — an unconditional infinite loop, i.e. exactly
+# the hot-spin #2630 removes — and fires a second live `gh` call from inside a
+# PreToolUse hook. Asserting the literal is what catches that.
+check_message "advice prints the stdout-keyed poll" 'out=$(gh pr checks 123 2>/dev/null); rc=$?' present
+check_message "advice keeps its rc-1 disambiguation" '[ "$rc" = 1 ] || {' present
+check_message "advice no longer names the retired []" '[] = not registered yet' absent
+# The shape the unescaped heredoc produces. Distinct from the assertions above:
+# those reds if the text is REMOVED, this one reds if it is EXECUTED.
+check_message "advice was not expanded by the heredoc" 'until [ -n "" ]' absent
+
+advice_says_registered() {
+  # The predicate the hook now prints, verbatim in shape.
+  [ -n "$(GH_FIXTURE="$1" PATH="$SHIM_DIR:$PATH" gh pr checks 123 2>/dev/null)" ]
+}
+
+check_advice() {
+  local name="$1" fixture="$2" expect="$3"
+  if advice_says_registered "$fixture"; then got=registered; else got=absent; fi
+  if [ "$got" = "$expect" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    fail_log="$fail_log
+  FAIL: $name (expected $expect, got $got)"
+  fi
+}
+
+check_advice "advice: no-checks reads as ABSENT" no-checks absent
+# The three that must all read as REGISTERED. `one-fail` is the load-bearing
+# one: it shares rc=1 with no-checks, so a predicate keyed on the exit code
+# would report it absent and the advised loop would spin forever on a PR whose
+# checks had already run and failed.
+check_advice "advice: a failing check reads as REGISTERED" one-fail registered
+check_advice "advice: a pending check reads as REGISTERED" pending registered
+check_advice "advice: all-pass reads as REGISTERED" all-pass registered
+
+# Guard-the-guard: the retired predicate must FAIL this suite, or the four
+# cases above would pass under the very advice #2630 retired.
+retired_says_registered() {
+  [ "$(GH_FIXTURE="$1" PATH="$SHIM_DIR:$PATH" gh pr checks 123 2>/dev/null)" != "[]" ]
+}
+if retired_says_registered no-checks; then
+  pass=$((pass + 1))   # retired form calls an EMPTY answer "registered" -> it never waits
+else
+  fail=$((fail + 1))
+  fail_log="$fail_log
+  FAIL: guard-the-guard expected the retired []-predicate to misread no-checks"
+fi
+
 echo "ci-green-gate.test: $pass passed, $fail failed"
 if [ "$fail" -gt 0 ]; then
   echo "$fail_log"
