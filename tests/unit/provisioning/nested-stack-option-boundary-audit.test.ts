@@ -67,17 +67,54 @@ const AUDITED_MEMBERS = [
   'finalSnapshotClients',
 ];
 
-/** Top-level member names of the `DeployEngineOptions` interface. */
-function declaredMembers(): string[] {
+/** The interface body, sliced once and shared by the parse and the fail-closed scan. */
+function interfaceBody(): string {
   const start = DEPLOY_ENGINE.indexOf('export interface DeployEngineOptions {');
   if (start === -1) throw new Error('DeployEngineOptions interface not found');
   const end = DEPLOY_ENGINE.indexOf('\n}', start);
   if (end === -1) throw new Error('DeployEngineOptions interface close not found');
-  const body = DEPLOY_ENGINE.slice(start, end);
+  return DEPLOY_ENGINE.slice(start, end);
+}
+
+/**
+ * A top-level member declaration, at exactly two spaces of indent.
+ *
+ * `readonly` is optional; `_` and `$` are legal in a member name. Both
+ * omissions made an earlier revision fail OPEN — a `readonly newOption?: T` and
+ * a `target_stack?: T` were simply invisible, and the count floor cannot notice
+ * a member it never parsed.
+ */
+const MEMBER_DECL = /^ {2}(?:readonly )?([A-Za-z_$][\w$]*)\??:/;
+
+/** Lines inside the body that are legitimately not member declarations. */
+const NON_MEMBER_LINE = /^ {2}(?:\/\*\*|\*|\*\/|\/\/|\}|\};|\)|$)/;
+
+/** Top-level member names of the `DeployEngineOptions` interface. */
+function declaredMembers(): string[] {
   // Top-level members only: exactly two leading spaces. A nested object's
-  // members are indented further, so `parentStackInfo`'s own fields do not
-  // leak in and inflate the list.
-  return [...body.matchAll(/^ {2}([a-zA-Z][a-zA-Z0-9]*)\??:/gm)].map((m) => m[1]!);
+  // members are indented further, so `parentStackInfo`'s own fields do not leak
+  // in and inflate the list.
+  return [...interfaceBody().matchAll(new RegExp(MEMBER_DECL.source + '', 'gm'))].map(
+    (m) => m[1]!
+  );
+}
+
+/**
+ * Every two-space-indented line the member regex did NOT match and that is not
+ * a recognised non-member line.
+ *
+ * This is the FAIL-CLOSED half, and it is the point. Three spellings escaped a
+ * patched-per-spelling regex in one review (`readonly`, `snake_case`, method
+ * shorthand), which is the signal to stop patching and refuse what is not
+ * modelled instead: an unrecognised declaration stops the fence rather than
+ * passing through it invisibly.
+ */
+function unparsedLines(): string[] {
+  return interfaceBody()
+    .split('\n')
+    .slice(1)
+    .filter((line) => /^ {2}\S/.test(line) || line === '  ')
+    .filter((line) => !MEMBER_DECL.test(line) && !NON_MEMBER_LINE.test(line));
 }
 
 describe('the parent→child option boundary audit stays complete (#2567)', () => {
@@ -85,6 +122,20 @@ describe('the parent→child option boundary audit stays complete (#2567)', () =
     // Without this, a parse that silently returned [] would make the set
     // comparison below trivially satisfiable in one direction.
     expect(declaredMembers().length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('parses every declaration in the interface body — fails CLOSED on an unmodelled one', () => {
+    // Without this, a spelling the regex does not model (a method shorthand, a
+    // quoted key, a decorator) is simply absent from `declaredMembers()`, so
+    // the membership comparison below is satisfied while the interface and the
+    // audit disagree. `vanished` cannot see it either: it only catches an
+    // AUDITED name going away.
+    expect(
+      unparsedLines(),
+      'a DeployEngineOptions line was not recognised as a member declaration. Model it in ' +
+        'MEMBER_DECL (and audit the member against the parent→child boundary), or add its ' +
+        'shape to NON_MEMBER_LINE if it declares nothing.'
+    ).toEqual([]);
   });
 
   it('every DeployEngineOptions member has been walked against the boundary', () => {
@@ -114,9 +165,31 @@ describe('the parent→child option boundary audit stays complete (#2567)', () =
     // The audit's verdict lives in prose; this pins that the prose still names
     // each member it claims to have walked, so deleting one from the comment
     // fails rather than quietly narrowing the claim.
-    for (const member of ['recreateTargets', 'onCurrentStateLoaded', 'parentStackInfo', 'eventRecorder']) {
+    //
+    // Scoped to the COMMENT, not the file. `parentStackInfo` also appears as
+    // real code a few lines below the spread, so a whole-file `toContain` could
+    // not tell "the comment names it" from "the code mentions it" — deleting it
+    // from the comment left this case green.
+    const commentStart = NESTED_STACK_PROVIDER.indexOf(
+      '// THIS SPREAD IS THE PARENT→CHILD OPTION BOUNDARY.'
+    );
+    expect(commentStart, 'the parent→child boundary comment was not found').toBeGreaterThan(-1);
+    const commentEnd = NESTED_STACK_PROVIDER.indexOf(
+      '...(parentCtx.options ?? {}),',
+      commentStart
+    );
+    expect(commentEnd, 'the boundary comment no longer precedes the options spread').toBeGreaterThan(
+      commentStart
+    );
+    const comment = NESTED_STACK_PROVIDER.slice(commentStart, commentEnd);
+    for (const member of [
+      'recreateTargets',
+      'onCurrentStateLoaded',
+      'parentStackInfo',
+      'eventRecorder',
+    ]) {
       expect(
-        NESTED_STACK_PROVIDER,
+        comment,
         `the parent→child boundary comment no longer names \`${member}\``
       ).toContain(member);
     }

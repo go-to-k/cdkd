@@ -94,10 +94,25 @@ describe('deploy.ts binds the recreate target set to the stack it deploys (#2567
       'the deployEngineOptions literal does not carry `recreateTargets` as a member — ' +
         'the engine receives no target set and both --recreate-via-* flags are inert'
     ).toMatch(/^\s*recreateTargets,\s*$/m);
-    // The guard's POLARITY, not merely its presence. `toContain('recreateTargets &&')`
-    // was satisfied by an inverted guard (`size === 0 && size === 0`), which
-    // makes both flags fully inert — measured green before this assertion
-    // existed. Require a non-empty test on at least one of the two sets.
+    // The guard's SHAPE, not merely its presence. Three mutations reached this
+    // fence, each leaving both flags inert, and each needs its own assertion:
+    //
+    //   1. inverted polarity   `(...size === 0 && ...size === 0)`
+    //   2. a third conjunct    `...(migrationGate && recreateTargets && ...)`
+    //      — inert whenever that other variable is falsy, and a copy/paste away
+    //      from the `...(migrationGate && { onCurrentStateLoaded })` line
+    //      directly above it in the same literal
+    //   3. the member dropped  (covered by the assertion above)
+    //
+    // Mutations 1 and 2 were both measured GREEN against earlier revisions of
+    // this file.
+    expect(
+      literal,
+      'the `recreateTargets` spread does not OPEN with `recreateTargets &&` — a guard ' +
+        'that leads with another variable makes both --recreate-via-* flags inert ' +
+        'whenever that variable is falsy. If you deliberately hoisted the guard into a ' +
+        'named const, update this fence to point at it rather than deleting the check.'
+    ).toMatch(/^\s*\.\.\.\(recreateTargets &&\s*$/m);
     expect(
       literal,
       'the `recreateTargets` spread guard does not test either set for being NON-empty — ' +
@@ -107,6 +122,14 @@ describe('deploy.ts binds the recreate target set to the stack it deploys (#2567
       literal,
       'the `recreateTargets` spread guard tests a set for being EMPTY — inverted polarity'
     ).not.toMatch(/recreateTargets\.via(CcApi|SdkProvider)\.size === 0/);
+    // The JOIN, which is a fourth inert spelling: `&&` between the two size
+    // tests threads the option only when BOTH directions were named, so a
+    // single-direction run — the ordinary case — silently does nothing.
+    expect(
+      literal,
+      'the two size tests are joined by `&&`, so naming targets in only ONE direction ' +
+        'leaves both --recreate-via-* flags inert'
+    ).toMatch(/viaCcApi\.size > 0 \|\| recreateTargets\.viaSdkProvider\.size > 0/);
   });
 
   it('binds an expression, not a literal', () => {

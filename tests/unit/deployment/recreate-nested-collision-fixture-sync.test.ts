@@ -65,11 +65,34 @@ describe('the recreate-nested-logical-id-collision fixture greps strings cdkd st
   });
 
   it('the nested-row refusal still says `refuses to operate on N nested-stack resource(s)`', () => {
+    // BOTH halves of the fixture's needle. Pinning only the tail
+    // (`nested-stack resource(s):`) left the `refuses to operate on ` prefix
+    // free to be reworded while this case stayed green and the fixture's grep
+    // died — the needle spans the interpolation, so neither half alone is it.
     expect(
       RECREATE_TARGETS,
-      'the nested-stack-row refusal reworded — update phase 4b of the fixture'
+      'the nested-stack-row refusal reworded its prefix — update phase 4b of the fixture'
+    ).toContain('${FLAG_UMBRELLA} refuses to operate on ');
+    expect(
+      RECREATE_TARGETS,
+      'the nested-stack-row refusal reworded its tail — update phase 4b of the fixture'
     ).toContain('nested-stack resource(s):');
     expect(VERIFY_SH).toContain("grep -qF 'refuses to operate on 1 nested-stack resource'");
+  });
+
+  it('renders BOTH `Note:` paragraphs for a nested template, in order', () => {
+    // The readability claim the multi-stack note's own comment makes. Nothing
+    // else fences it: the two paragraphs are built by separate `lines.push`
+    // calls, so their coexistence and order are invisible in either source.
+    const multiStack = RECREATE_TARGETS.indexOf('Note: if a named id belongs to a DIFFERENT');
+    const nesting = RECREATE_TARGETS.indexOf('Note: resources inside a nested stack');
+    expect(multiStack, 'the multi-stack note is gone').toBeGreaterThan(-1);
+    expect(nesting, 'the nesting note is gone').toBeGreaterThan(-1);
+    expect(
+      multiStack,
+      'the nesting note is now pushed BEFORE the multi-stack one — the rendered block ' +
+        'reads as two `Note:` paragraphs, so their order is a deliberate choice'
+    ).toBeLessThan(nesting);
   });
 
   it('the nested-row refusal still states `DELETE the whole child stack`', () => {
@@ -83,11 +106,23 @@ describe('the recreate-nested-logical-id-collision fixture greps strings cdkd st
     expect(VERIFY_SH).toContain("grep -qF 'DELETE the whole child stack'");
   });
 
-  it('the no-bypass sentence the fixture relies on is still there', () => {
-    // Phase 4b passes `--force-stateful-recreation` deliberately, so the
-    // refusal must survive the consent flag. The sentence is what documents
-    // that to the user; the arm is what proves it.
-    expect(RECREATE_TARGETS).toContain('no --force-stateful-recreation bypass');
-    expect(VERIFY_SH).toContain('--force-stateful-recreation');
+  it('phase 4b still PASSES --force-stateful-recreation, so the no-bypass property is measured', () => {
+    // Phase 4b's whole extra value over phase 4 is that the refusal survives
+    // the consent flag that clears the stateful guard. The sentence documents
+    // it; the INVOCATION is what measures it.
+    //
+    // A `toContain('--force-stateful-recreation')` over the whole file was the
+    // first spelling and it was decorative: the fixture's own header comment
+    // carries the flag, so deleting it from the invocation left this green and
+    // phase 4b silently stopped testing the property. Pin the invocation LINE.
+    expect(
+      RECREATE_TARGETS,
+      'the nested-stack refusal no longer states that no consent flag clears it'
+    ).toContain('no --force-stateful-recreation bypass');
+    expect(
+      VERIFY_SH,
+      "phase 4b no longer passes --force-stateful-recreation on its deploy line — it now " +
+        'measures only that the row is refused, not that the consent flag fails to clear it'
+    ).toMatch(/^ {2}--force-stateful-recreation \\$/m);
   });
 });

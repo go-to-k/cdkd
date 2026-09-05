@@ -571,8 +571,11 @@ export class NestedStackProvider implements ResourceProvider {
         // resource that merely SHARED a logical id, skipping the child's
         // stateful guard).
         //
-        // FOUR members of `DeployEngineOptions` name a stack or a resource in
-        // one. Two self-scope, so inheriting them is inert: `recreateTargets`
+        // These members of `DeployEngineOptions` name a stack, or a resource in
+        // one — the set is fenced by
+        // `tests/unit/provisioning/nested-stack-option-boundary-audit.test.ts`, so
+        // no count is written here for a later edit to falsify. Two self-scope,
+        // so inheriting them is inert: `recreateTargets`
         // matches only while deploying its own `stackName`, and
         // `onCurrentStateLoaded` (the prefix-migration gate) returns early on a
         // stack-name mismatch. The child deploys as `<parent>~<logicalId>`, and
@@ -584,9 +587,11 @@ export class NestedStackProvider implements ResourceProvider {
         // run by design.
         //
         // Two more things cross this boundary deliberately unscoped, and this
-        // comment is not a claim that they are scoped — neither names a
-        // resource, which is why neither is in the audit above. The consent
-        // booleans -- `forceStatefulRecreation` (documented in
+        // comment is not a claim that they are scoped. Neither names a
+        // particular resource — one is a run-level yes/no, the other a rule
+        // about resource TYPES — which is why neither is in the audit above,
+        // whose subject is an option naming a specific stack or one resource in
+        // it. The consent booleans -- `forceStatefulRecreation` (documented in
         // `docs/cli-deploy-safety.md` as clearing the guard for every target in
         // the RUN), `replace` (documented there as a STACK-WIDE opt-in that
         // fires wherever an update hard-rejects), and `skipFinalSnapshot`

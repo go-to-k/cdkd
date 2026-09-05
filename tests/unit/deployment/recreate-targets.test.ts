@@ -575,6 +575,9 @@ describe('nested-stack scope of the flags (#2567)', () => {
     });
     const error = renderRecreateTargetsErrors(v) ?? '';
     expect(error).toContain('where the recreate DOES run');
+    // Every sentence of the paragraph must stay inside the conditional: an
+    // assertive one tells a single-stack user that other stacks are deploying.
+    expect(error).toContain('In that case only the stacks that could not resolve it stop');
     expect(error).not.toMatch(/fails the entire run|refuses the whole run|nothing is deployed/);
   });
 

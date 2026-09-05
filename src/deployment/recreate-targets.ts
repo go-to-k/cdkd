@@ -452,12 +452,14 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     // app is exactly the audience, and gating this on nesting made it
     // unreachable for them.
     //
-    // Phrased as a CONDITIONAL ("if a named id belongs to...") on purpose. The
-    // validator runs per stack and cannot see how many stacks the run carries,
-    // so an assertive spelling reads as a claim about other stacks to someone
-    // deploying exactly one — where the commonest cause is simply a typo. Read
-    // the rendered block, not this source, when changing it: the sentence
-    // BELOW it also opens with `Note:`.
+    // Phrased as a CONDITIONAL, and the whole paragraph has to stay inside that
+    // conditional — not just its first sentence. The validator runs per stack
+    // and cannot see how many stacks the run carries, so any assertive sentence
+    // here ("stacks that do not depend on it still deploy") reads as a claim
+    // that other stacks EXIST, to someone running `cdkd deploy MyStack` whose
+    // actual mistake was a typo. That defect was caught twice, one sentence
+    // apart. Read the RENDERED block, not this source, when changing it: the
+    // paragraph below also opens with `Note:`, which is invisible here.
     //
     // The consequence sentence is deliberately precise, because the obvious
     // wording is FALSE. `runStack` throws `RECREATE_TARGETS_INVALID` inside its
@@ -468,10 +470,11 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     // refused" would assert the opposite of what happened.
     lines.push(
       `  Note: if a named id belongs to a DIFFERENT stack of this deploy, it ` +
-        `is reported here too — each stack validates the WHOLE flag list. ` +
-        `Only the refusing stack stops; stacks that do not depend on it still ` +
-        `deploy, including the one that owns the id, where the recreate DOES ` +
-        `run. The run exits non-zero once every stack has settled.`
+        `is reported here too — each stack validates the WHOLE flag list. In ` +
+        `that case only the stacks that could not resolve it stop: any stack ` +
+        `not depending on one of those still deploys, including the stack that ` +
+        `owns the id, where the recreate DOES run. The run then exits non-zero ` +
+        `once every stack has settled.`
     );
     // Issue [#2567] — the nesting shape, which IS gated on the template
     // actually declaring a nested stack so an ordinary typo keeps the plain
