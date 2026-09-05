@@ -21,7 +21,7 @@
  * unchanged. That case is deliberately source-only.
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 
@@ -150,18 +150,28 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
  * every phase stays green. Review caught it; go-to-k/cdkd#2627 re-anchored
  * both fixtures on the full sentence.
  *
- * The population is DERIVED on both sides, because a hand-written pair table
- * fences the two known instances and not the RULE: with one, appending a bare
- * `grep -q "not provably empty"` beside the good needle left the block green
- * (measured). So the SHARED phrases are computed from the reason literals
- * themselves — every word-n-gram two distinct reasons have in common — and the
- * fixture side is every `verify.sh` that quotes a reason at all. A third
- * hedged reason, or a new fixture, is covered without editing this file.
+ * WHAT THIS FENCE COVERS, stated narrowly on purpose. Three review rounds each
+ * found a hole in the previous round's wider version — a population derived by
+ * scanning every `verify.sh` looked general and was fail-OPEN (a fixture whose
+ * ONLY needle is the blunt phrase quotes no full reason, so it never entered
+ * the population and was never scanned: exactly the pre-go-to-k/cdkd#2627
+ * state of the fixture this exists for). Three rounds inside one mechanism is
+ * the signal to change instrument, not to widen again. So the fixture side is
+ * PINNED, and the honest scope is:
  *
- * Residual, stated rather than hidden: the fixture side reads whole files, so
- * it pins that a blunt phrase does not APPEAR, not that a `grep` is the thing
- * using it. Parsing shell for grep arguments is the fragile half; a bare
- * occurrence anywhere in a `verify.sh` is already the thing worth refusing.
+ *   covered — a pinned fixture re-anchored onto the wrong reason; a pinned
+ *     fixture that ADDS a blunt literal needle beside its good one; a reword
+ *     that makes two reasons share a phrase; a reason that stops being
+ *     rendered at all;
+ *   NOT covered — a NEW fixture nobody adds here, a regex or whitespace-variant
+ *     needle (`grep -qE "not provably.*empty"`), and a reason literal extended
+ *     so an existing one becomes a strict substring of it. All three measured
+ *     green against the wider version too, which is why widening was not the
+ *     answer. Tracked as issue go-to-k/cdkd#2643.
+ *
+ * The REASON side stays derived — the literals and the phrases two of them
+ * share are computed from the source, so a third hedged reason is caught
+ * without editing this file.
  */
 const REASON_LITERALS: readonly string[] = (() => {
   const start = STATEFUL_TYPES_SRC.indexOf('export function renderStatefulReason');
@@ -172,122 +182,126 @@ const REASON_LITERALS: readonly string[] = (() => {
   return [...STATEFUL_TYPES_SRC.slice(start, end).matchAll(/return '([^']*)';/g)].map((m) => m[1]!);
 })();
 
+const STOP_WORDS = new Set(['a', 'in', 'is', 'it', 'not', 'of', 'the', 'to']);
+
 /**
- * Every word-n-gram (n >= 3) that two DISTINCT reason literals share.
+ * The blunt-needle population: every fragment of a phrase that two DISTINCT
+ * reason literals share SUBSTANTIALLY.
  *
- * This is the blunt-sentinel population: a fixture keying on one of these
- * cannot tell the two reasons apart. Three words rather than two because the
- * reasons share ordinary connectives ("is not", "in the") that no fixture
- * would key on and that would drown the signal.
+ * Derived per PAIR, which is what makes it usable. Take each pair's longest
+ * common word-run; keep the pair only if that run is three words or more; then
+ * every sub-gram of it from two words up is a needle that cannot identify one
+ * reason. Today: `has-objects` / `has-log-events` share `is not provably
+ * empty`, so `provably empty` and `not provably empty` are both in — and
+ * `provably empty` is the sharpest of them, the two-word phrase a hand-written
+ * sentinel actually reaches for.
+ *
+ * The three-word gate on the PAIR is the part that had to be measured rather
+ * than guessed. `has-retention` / `has-log-events` share only `log group`,
+ * which is a noun every log-group fixture writes in prose — admitting it made
+ * `loggroup-never-expire-guard` fail on a sentence with no sentinel in it at
+ * all. A pair that shares nothing longer than a noun phrase cannot produce a
+ * blunt sentinel; a pair sharing a whole predicate can.
  */
 const SHARED_PHRASES: readonly string[] = (() => {
-  const grams = (lit: string): Set<string> => {
+  const runs = (lit: string, n: number): Set<string> => {
     const words = lit.split(' ');
     const out = new Set<string>();
-    for (let n = 3; n <= words.length; n += 1) {
-      for (let i = 0; i + n <= words.length; i += 1) out.add(words.slice(i, i + n).join(' '));
-    }
+    for (let i = 0; i + n <= words.length; i += 1) out.add(words.slice(i, i + n).join(' '));
     return out;
   };
-  const shared = new Set<string>();
+  const longestShared = (a: string, b: string): string => {
+    const max = Math.min(a.split(' ').length, b.split(' ').length);
+    for (let n = max; n >= 1; n -= 1) {
+      const inB = runs(b, n);
+      for (const g of runs(a, n)) if (inB.has(g)) return g;
+    }
+    return '';
+  };
+  const out = new Set<string>();
   for (let i = 0; i < REASON_LITERALS.length; i += 1) {
     for (let j = i + 1; j < REASON_LITERALS.length; j += 1) {
-      const b = grams(REASON_LITERALS[j]!);
-      for (const g of grams(REASON_LITERALS[i]!)) if (b.has(g)) shared.add(g);
+      const longest = longestShared(REASON_LITERALS[i]!, REASON_LITERALS[j]!);
+      const words = longest.split(' ');
+      if (words.length < 3) continue;
+      for (let n = 2; n <= words.length; n += 1) for (const g of runs(longest, n)) out.add(g);
     }
   }
-  // EVERY shared gram, not just the maximal ones. Filtering to the maximal
-  // reads tidier and silently reopens the hole: the maximal phrase here is
-  // `is not provably empty`, so a fixture keying on the three-word
-  // `not provably empty` — the exact needle go-to-k/cdkd#2615 blunted — would
-  // match no entry and pass. Short grams are the ones a hand-written sentinel
-  // actually uses.
-  return [...shared];
+  // Stop-word-only fragments (`is not`) are noise from inside an otherwise
+  // dangerous phrase; everything else stays, maximal and sub-gram alike.
+  return [...out].filter((g) => !g.split(' ').every((w) => STOP_WORDS.has(w)));
 })();
 
-const INTEG_DIR = join(REPO_ROOT, 'tests/integration');
+/**
+ * The fixtures whose sentinels quote a reason, and the reason each is ABOUT.
+ *
+ * PINNED rather than discovered, per the scope note above. The cost is that a
+ * new fixture must be added here; the benefit is that the scan below has a
+ * population it cannot silently fail to include, and that re-anchoring reds
+ * naming the pair to update.
+ */
+const PINNED_FIXTURES: ReadonlyArray<readonly [string, string]> = [
+  ['loggroup-never-expire-guard', 'log group is not provably empty'],
+  ['recreate-via-cc-api', 'S3 bucket is not provably empty'],
+];
 
-/** Every fixture `verify.sh` quoting a reason verbatim, with its text. */
-const FIXTURES_QUOTING_A_REASON: ReadonlyArray<{ name: string; text: string }> = readdirSync(
-  INTEG_DIR,
-  { withFileTypes: true }
-)
-  .filter((e) => e.isDirectory())
-  .map((e) => ({ name: e.name, path: join(INTEG_DIR, e.name, 'verify.sh') }))
-  .filter((f) => existsSync(f.path))
-  .map((f) => ({ name: f.name, text: readFileSync(f.path, 'utf8') }))
-  .filter((f) => REASON_LITERALS.some((lit) => f.text.includes(lit)));
+const fixtureText = (name: string): string =>
+  readFileSync(join(REPO_ROOT, 'tests/integration', name, 'verify.sh'), 'utf8');
 
 describe('a fixture sentinel still DISCRIMINATES one stateful reason (#2615)', () => {
   it('found every reason literal (floor, so every check below is non-vacuous)', () => {
     // Five arms: always / has-objects / has-retention / has-log-events / null.
-    // A slice that captured nothing would make each scan below hold trivially,
-    // and every rename / truncation probe dies here first.
+    // An empty or truncated slice reds here first, before it can make the
+    // scans below hold trivially.
     expect(REASON_LITERALS).toHaveLength(5);
   });
 
-  it('two reasons DO share a phrase, so the scan below has something to catch', () => {
-    // Guard-the-guard. `>= 1` and not an exact count: a third legitimately
-    // hedged reason grows this set, and that is the case the scan exists for,
-    // not a reason to red here.
-    expect(SHARED_PHRASES.length).toBeGreaterThanOrEqual(1);
-    // Both the maximal shared gram and the shorter one #2615's fixture
-    // actually keyed on — pinning both is what proves the set was not
-    // narrowed to the tidy-looking maximal form.
+  it('two reasons DO share phrases, so the scan below has something to catch', () => {
+    // Guard-the-guard. Both spellings are pinned deliberately: the maximal
+    // gram and the two-word one an n >= 3 floor used to drop. De-hedging
+    // either reason empties this set and reds here.
     expect(SHARED_PHRASES).toContain('is not provably empty');
     expect(SHARED_PHRASES).toContain('not provably empty');
+    expect(SHARED_PHRASES).toContain('provably empty');
   });
 
-  it('each fixture still quotes the reason it is ABOUT (floor + pairing)', () => {
-    // Two jobs in one assertion, and both matter.
-    //
-    // FLOOR: without it, a fixture tree that stopped quoting reasons at all —
-    // or a `readdirSync` that stopped seeing it — would make the scan below
-    // pass by scanning nothing.
-    //
-    // PAIRING: the blunt-phrase scan alone does NOT subsume the hand-written
-    // `toContain` this replaced. A fixture re-anchored onto a DIFFERENT full
-    // reason would carry no blunt phrase and pass, while asserting something
-    // cdkd never emits on that path. So the mapping is derived from the tree
-    // and pinned here: a fixture that re-anchors reds naming the pair to
-    // update, which is what the replaced assertion did.
+  it.each(PINNED_FIXTURES)('%s greps the reason it is about, and only that one', (name, needle) => {
+    const text = fixtureText(name);
     expect(
-      Object.fromEntries(
-        FIXTURES_QUOTING_A_REASON.map((f) => [
-          f.name,
-          REASON_LITERALS.filter((lit) => f.text.includes(lit)),
-        ])
-      )
-    ).toEqual({
-      'loggroup-never-expire-guard': ['log group is not provably empty'],
-      'recreate-via-cc-api': ['S3 bucket is not provably empty'],
-    });
+      text,
+      `tests/integration/${name}/verify.sh no longer greps "${needle}". Either it was ` +
+        're-anchored (update PINNED_FIXTURES) or its sentinel now asserts a sentence cdkd ' +
+        'never emits on that path.'
+    ).toContain(needle);
+    const carriers = REASON_LITERALS.filter((lit) => lit.includes(needle));
+    expect(
+      carriers.length,
+      `"${needle}" is contained in ${carriers.length} of renderStatefulReason's returned ` +
+        `strings (${carriers.join(' | ')}). At 0 the fixture greps a sentence cdkd no longer ` +
+        'emits; at 2+ its sentinel matches either reason and has stopped discriminating.'
+    ).toBe(1);
   });
 
-  it.each(FIXTURES_QUOTING_A_REASON.map((f) => [f.name, f.text] as const))(
-    '%s carries no BLUNT reason phrase outside a full reason sentence',
-    (name, text) => {
-      // Delete every full reason first, then look for a leftover shared
-      // phrase. What survives is a needle that matches either reason — the
-      // #2615 regression — rather than one that identifies its producer.
-      let residue = text;
-      for (const lit of REASON_LITERALS) residue = residue.split(lit).join('\u0000');
-      // Longest first, so the report names the whole blunt needle rather than
-      // whichever three-word fragment of it happens to be enumerated first.
-      const found = SHARED_PHRASES.filter((phrase) => residue.includes(phrase)).sort(
-        (a, b) => b.length - a.length
-      );
-      expect(
-        found,
-        found.length === 0
-          ? ''
-          : `tests/integration/${name}/verify.sh keys on "${found[0]}", which ${REASON_LITERALS.filter(
-              (l) => l.includes(found[0]!)
-            ).length} of renderStatefulReason's returned strings contain. The sentinel still ` +
-            'MATCHES and has stopped DISCRIMINATING, so every phase of the fixture stays green ' +
-            'while it proves nothing — exactly what #2615 did to the log-group arm by hedging ' +
-            'the bucket one. Re-anchor it on the full sentence for the reason it means.'
-      ).toEqual([]);
-    }
-  );
+  it.each(PINNED_FIXTURES)('%s carries no BLUNT phrase outside a full reason', (name) => {
+    // Delete every full reason first, then look for a leftover shared phrase.
+    // What survives matches two reasons at once — the #2615 regression — and
+    // would leave the fixture green while proving nothing.
+    let residue = fixtureText(name);
+    for (const lit of REASON_LITERALS) residue = residue.split(lit).join('\u0000');
+    // Longest first, so the report names the whole blunt needle rather than
+    // whichever fragment of it is enumerated first.
+    const found = SHARED_PHRASES.filter((phrase) => residue.includes(phrase)).sort(
+      (a, b) => b.length - a.length
+    );
+    expect(
+      found,
+      found.length === 0
+        ? ''
+        : `tests/integration/${name}/verify.sh keys on "${found[0]}", which ${REASON_LITERALS.filter(
+            (l) => l.includes(found[0]!)
+          ).length} of renderStatefulReason's returned strings contain. The sentinel still ` +
+          'MATCHES and has stopped DISCRIMINATING, so every phase stays green while it proves ' +
+          'nothing. Re-anchor it on the full sentence for the reason it means.'
+    ).toEqual([]);
+  });
 });

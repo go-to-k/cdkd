@@ -249,8 +249,8 @@ const MIN_REFERENCE_FILES = 6;
 // retro.md compressed six passages that carried an incident at paragraph
 // length where section 10-c asks for one line, the largest being 10-b's
 // restatement of 10-c's own byte-cap rationale. Contrast the
-// go-to-k/cdkd#2595 round at line 178, the only one so far to end NET
-// NEGATIVE.
+// go-to-k/cdkd#2595 round at line 178 and the batching pass below it, the two
+// that ended NET NEGATIVE.
 // implement.md's +366 B was NOT free, and this file predicted why: the
 // crossover the comment above forecast ("128 B of room at this writing") has
 // now happened twice, so implement.md is the leader and every byte added to
@@ -261,7 +261,7 @@ const MIN_REFERENCE_FILES = 6;
 // .claude/rules satellites whose `paths:` glob matches it) and
 // .claude/rules/testing.md (a reworded string that becomes LESS specific
 // blunts a sentinel in a fixture the diff never opens). Free to THIS corpus,
-// but not free: the second spent 710 B of the `tests/setup.ts` payload band
+// but not free: the second spent 678 B of the `tests/setup.ts` payload band
 // in rule-file-payload.test.ts, whose three governing figures are re-derived
 // there in the same commit.
 // The next addition here has to be
