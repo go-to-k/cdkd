@@ -87,13 +87,70 @@ case "$tool" in
   Bash)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
     [[ -z "$cmd" ]] && exit 0
-    # A `cd <dir> &&` changes the base dir for relative paths. Resolved by the
-    # shared matcher, which sees a quoted or escaped `cd` (go-to-k/cdkd#2614)
-    # and composes chained relative ones. It prints NOTHING when no `cd` was
-    # resolved, which is why `base_dir` is only overwritten on a non-empty
-    # answer -- an unresolvable `cd "$WT"` must leave the payload cwd in place
-    # rather than becoming an empty base.
-    cdt=$(cmd_last_cd_target "$cmd" "$base_dir" 2>/dev/null || true)
+    # A `cd <dir> &&` BEFORE the write changes the base dir for relative paths.
+    # Resolved by the shared matcher, which sees a quoted or escaped `cd`
+    # (go-to-k/cdkd#2614) and composes chained relative ones. It prints NOTHING
+    # when no `cd` was resolved, which is why `base_dir` is only overwritten on
+    # a non-empty answer -- an unresolvable `cd "$WT"` must leave the payload
+    # cwd in place rather than becoming an empty base.
+    #
+    # ONLY THE PREFIX BEFORE THE EARLIEST WRITE IS SCANNED, and only after
+    # subshell / substitution spans are removed. `cmd_last_cd_target` follows
+    # EVERY `cd` in command position -- the library's own doc names a trailing
+    # one hijacking the lookup as the hazard its optional VERB argument exists
+    # for, and this gate has no verb to stop the walk. Handing it the whole
+    # command re-opened this gate's own founding incident, measured against the
+    # pre-go-to-k/cdkd#2614 hook with the payload cwd in the main tree on
+    # `main`:
+    #
+    #   echo hi > <tracked> && cd /tmp            rc=2 -> 0
+    #   echo x | tee <tracked> && cd /tmp         rc=2 -> 0
+    #   echo hi > <tracked>; x=$(cd /tmp && pwd)  rc=2 -> 0
+    #
+    # -- cheaper than the quoted-`cd` spelling go-to-k/cdkd#2614 closed, and it
+    # fires by ACCIDENT: `$(cd <abs> && pwd)` is an ordinary path-resolution
+    # idiom. The same walk also produced the opposite error, a false block on
+    # the standing post-merge step from a FEATURE worktree
+    # (`echo hi > f && cd <main> && git pull`, rc=0 -> 2). Bounding the scan
+    # fixes both directions at once: a `cd` after the write never moved the
+    # write, and a `cd` inside `$( )` or `( )` never moved the caller.
+    #
+    # A KNOWN FALSE-REFUSAL CLASS, named rather than left implicit: a `>` or a
+    # `tee` inside a QUOTED argument truncates the prefix and drops a real `cd`
+    # after it, so `echo "a > b" && cd <feature-wt> && echo x > <tracked>` from
+    # a main-tree cwd BLOCKS. The stripper that would tell a quoted `>` from a
+    # real one is not length-preserving, so its offsets cannot be mapped back,
+    # and running the whole scan on the stripped text would delete the quoted
+    # `"cd"` that go-to-k/cdkd#2614 exists to see. This gate fires on
+    # `Edit|Write|Bash`, so the class is written up in
+    # .claude/rules/hooks-main-tree-edit.md rather than only here. It is the
+    # loud direction, and it is the answer the pre-go-to-k/cdkd#2614 regex also
+    # gave, since its `cd` was not leading.
+    # `tee` carries NO trailing space here: `tee\t<file>` and a line-ending
+    # `tee` are writes too, and requiring the space let them through.
+    # Over-truncating is the safe direction -- a shorter prefix resolves FEWER
+    # `cd`s, so the base stays the payload cwd and the gate blocks more.
+    cd_scan="$cmd"
+    for __w in '>' 'tee' 'sed -i'; do
+      case "$cd_scan" in *"$__w"*) cd_scan="${cd_scan%%"$__w"*}" ;; esac
+    done
+    # Each arm computes its OWN closer. An earlier revision picked `__pre` /
+    # `__rest` in the `$(` arm and then chose the closing delimiter by
+    # re-testing the ORIGINAL string for a backtick pair, so a command carrying
+    # both stripped to the wrong closer.
+    while :; do
+      case "$cd_scan" in
+        *'$('*')'*)
+          __pre="${cd_scan%%'$('*}"; __rest="${cd_scan#*'$('}"; __rest="${__rest#*')'}" ;;
+        *'`'*'`'*)
+          __pre="${cd_scan%%'`'*}";  __rest="${cd_scan#*'`'}";  __rest="${__rest#*'`'}" ;;
+        *'('*')'*)
+          __pre="${cd_scan%%'('*}";  __rest="${cd_scan#*'('}";  __rest="${__rest#*')'}" ;;
+        *) break ;;
+      esac
+      cd_scan="$__pre$__rest"
+    done
+    cdt=$(cmd_last_cd_target "$cd_scan" "$base_dir" 2>/dev/null || true)
     [[ -n "$cdt" ]] && base_dir="$cdt"
     # Extract LITERAL redirection / write targets. We deliberately
     # skip tokens containing `$` (unexpandable variables) and `*?[`

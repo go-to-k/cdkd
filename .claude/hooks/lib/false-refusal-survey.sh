@@ -53,19 +53,22 @@
 # sixteen ordinary read-only commands. Four review rounds passed before a human
 # found the class by hand.
 #
-# The `read_grep` / `read_show` / `read_pathspec` family closes that. Measured
-# when it was added, over a ten-text corpus of the sixteen shapes' own needles,
-# non-self matches by shape against the WITHDRAWN whole-segment implementation:
+# The `read_grep` / `read_show` / `read_pathspec` family closes that. The one
+# figure kept here is the one a run of THIS script cannot reproduce, because it
+# needs a library that no longer exists -- the WITHDRAWN whole-segment
+# implementation. Over a ten-text corpus of the sixteen shapes' own needles,
+# non-self matches by shape:
 #
 #   read_grep 19, read_show 19, read_pathspec 19  -- the new family
 #   pr_flagged 1, everything else 0               -- the five that existed
 #
-# So the old five were structurally near-blind to it, and that is what a zero
-# from them was worth. Against the library as shipped the family reports 4
-# cells, all `read_show`, and they are IDENTICAL on the pre-go-to-k/cdkd#2333
-# library: prose like `fix the commit message` inside a quoted argument reaching
-# the trigger is the accepted-false-refusal class this file already documents,
-# not something the family newly broke.
+# So the old five were structurally near-blind to the class, and that is what a
+# zero from them was worth. What the family reports against the library as
+# SHIPPED is not written down, for the reason the block above gives: run it.
+# The cells it finds there are the accepted-false-refusal class this file
+# already documents -- prose like `fix the commit message` inside a quoted
+# argument reaching the trigger -- and they are identical on the
+# pre-go-to-k/cdkd#2333 library, so the family did not introduce them.
 #
 # READ THE ZERO CORRECTLY, AND NOT THE WAY THIS COMMENT FIRST DID. The first
 # version explained it as "quoted spans are neutralised before the prefix is
