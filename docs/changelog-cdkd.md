@@ -68,7 +68,7 @@ that grows by whoever merges next — an opt-out reachable by being late.
   `src/deployment/deploy-engine.ts`, `src/cli/commands/deploy.ts`,
   `src/deployment/recreate-targets.ts`,
   `src/provisioning/providers/nested-stack-provider.ts`,
-  `docs/cli-deploy-safety.md`, plus a new unit suite and the
+  `docs/cli-deploy-safety.md`, plus two new unit suites and the
   `recreate-nested-logical-id-collision` integ fixture. The two bare
   `ReadonlySet<string>` options became one `recreateTargets: { stackName,
   viaCcApi, viaSdkProvider }`, and the engine honours an id only while deploying
@@ -83,13 +83,13 @@ that grows by whoever merges next — an opt-out reachable by being late.
   capability is lost: an id declared only in a child was never in the parent's
   template, so the pre-flight already refused it -- that refusal now also names
   the template's nested stacks (`nestedStackLogicalIds`) instead of reading as a
-  typo. Scoping was chosen over re-running the pre-flight inside the child,
-  which would have validated the accidental target rather than declining it.
-  Fences:
-  `tests/unit/deployment/deploy-engine-recreate-targets-stack-scope.test.ts`
-  (both polarities x both directions; the child arms go red under a scope-check
-  mutation) and the fixture's parent Lambda / child bucket sharing
-  `SharedTarget`.
+  typo. **Second behavior change:** naming a nested stack's OWN
+  `AWS::CloudFormation::Stack` row is refused outright
+  (`blockedNestedStackTargets`, no `--force-stateful-recreation` bypass) -- it
+  was accepted before, and honoring it tears down every resource the child owns
+  with no per-resource consent. Scoping was chosen over re-running the
+  pre-flight inside the child, which would have validated the accidental target
+  rather than declining it.
 
 **Recently Implemented** (2026-09-05):
 - **A replacement rollback now honours `UpdateReplacePolicy: Retain` on the resource the replacement CREATED (issue [#2598](https://github.com/go-to-k/cdkd/issues/2598))** -- `src/deployment/rollback-executor.ts`, `src/cli/commands/rollback.ts`, `docs/cli-rollback.md`, plus a new unit suite. All three arms that dispose of the new copy (`readoptDelete`, `deleteNewFirst`, `deleteNewAfterRecreate`) read only `rollbackFinalSnapshotId`, so a resource the template marked to survive was orphaned when a plain CREATE made it and DESTROYED when a replacement did -- decided by op shape rather than by the declared policy. **Which attribute governs it is measured, not reasoned.** The AWS documentation answers nothing here: every sentence on both attribute pages, in the API reference and in the release notes describes the OLD resource. A live four-variant A/B settled it -- `DeletionPolicy: Retain` alone leaves the new copy DELETED, `UpdateReplacePolicy: Retain` alone leaves it SURVIVING (`DELETE_SKIPPED`). The table is on `rollbackRetainsNewResource`'s doc comment. **Behavior change:** a retained new copy is left running, dropped from state (CloudFormation orphans it out too), announced with a `warn`, recorded durably in the deployment events with its physical id and the survivor's own layer, and counted, so the run exits 2. On `reverse-replacement-readopt` that is the ALWAYS-case: one template read sets both the verdict and the new record's attribute, so that arm no longer deletes the new copy for any journal cdkd wrote. `deleteNewFirst` is the one arm that cannot honour it -- that delete exists to free the name the re-create collided on -- and REFUSES with `NAMED_REPLACEMENT_COLLISION` instead of destroying the pinned resource, keeping the journal for a re-run. `RollbackPlanItem.retainsNewResource` keeps the plan preview from promising a delete the replay will skip (the [#1366](https://github.com/go-to-k/cdkd/issues/1366) class).

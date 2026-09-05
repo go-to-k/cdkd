@@ -348,8 +348,12 @@ export interface DeployEngineOptions {
    * the stack name the pre-flight validated them against.
    *
    * Behavior at each provisionResource site:
-   *   - CREATE → log a warning + treat as normal CREATE (recreate is
-   *     N/A for resources that don't yet exist).
+   *   - CREATE → the flag is not read at all. The pre-flight refuses an id
+   *     absent from cdkd state (`missingFromState`), so a CREATE here means a
+   *     state race between the pre-lock probe and the post-lock read; recreate
+   *     is N/A for a resource that does not yet exist, and the CREATE proceeds
+   *     normally. (An earlier revision of this comment promised a warning on
+   *     that path. There has never been one.)
    *   - UPDATE → force the replacement code path, route the new resource via
    *     the named direction's layer (`viaCcApi`: Cloud Control regardless of
    *     whether the template has a silent-drop property, stamping
@@ -4340,6 +4344,12 @@ export class DeployEngine {
         // was ever looked at. Unscoped, a child resource sharing a logical id
         // with a validated parent one was treated as recreate-flagged — and
         // `recreateFlagged` is what SKIPS the stateful guard below.
+        //
+        // Read INSIDE `case 'UPDATE'`, and only after the no-op short-circuit
+        // above: a named target whose diff is NO_CHANGE is silently ignored
+        // (issue [#2651](https://github.com/go-to-k/cdkd/issues/2651)) -- which is also why any test or fixture measuring
+        // this flag must give the target a real property change, or it
+        // measures nothing.
         const recreateTargets =
           this.options.recreateTargets?.stackName === stackName
             ? this.options.recreateTargets

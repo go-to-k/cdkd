@@ -322,8 +322,14 @@ target only in that stack. Resources that live inside a nested stack
 - A logical id the parent and a child both declare — the same construct id in
   both stacks, or an `overrideLogicalId` — recreates the **top-level** resource
   only. The child's same-named resource is left alone. Earlier versions
-  recreated it as well, with neither the pre-flight probe nor the mid-deploy
-  stateful guard having examined it.
+  recreated the child's copy too, in any deploy that also updated it, with
+  neither the pre-flight probe nor the mid-deploy stateful guard having
+  examined it.
+- The nested stack's own `AWS::CloudFormation::Stack` resource is refused as a
+  target. Recreating one would delete the whole child stack — every resource it
+  owns, with no per-resource confirmation — and re-create it through a layer
+  that does not implement cdkd's nested-stack handling. There is no
+  `--force-stateful-recreation` bypass for that refusal.
 
 ### What `--recreate-via-cc-api` is NOT
 

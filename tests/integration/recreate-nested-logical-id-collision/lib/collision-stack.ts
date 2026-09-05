@@ -25,10 +25,14 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *   - CHILD `SharedTarget` — `AWS::S3::Bucket`, STATEFUL, and `verify.sh`
  *     seeds an object into it before the flagged deploy. This is the resource
  *     nobody named. Pre-fix the inherited id set matched it in the child
- *     engine, `recreateFlagged` skipped the mid-deploy stateful guard (whose
- *     whole justification is "the pre-flight already validated this target"),
- *     and the bucket was DELETE + CREATEd with neither check having looked at
- *     it.
+ *     engine and `recreateFlagged` skipped the mid-deploy stateful guard —
+ *     whose whole justification is "the pre-flight already validated this
+ *     target" — so the bucket was routed into the replacement path with
+ *     neither check having looked at it. On an EMPTY bucket that completes:
+ *     DELETE + CREATE, silently. With the seeded object the delete is REFUSED
+ *     by cdkd's CloudFormation-parity data guard, so pre-fix the deploy fails
+ *     loudly instead. Both outcomes are wrong and both discriminate; the
+ *     seeded object is what makes the harm concrete.
  *   - CHILD `ChildOnlyParam` — an SSM parameter that exists ONLY in the child.
  *     It pins the other half of the contract: a genuinely nested target is
  *     refused at pre-flight, because the parent's template does not declare

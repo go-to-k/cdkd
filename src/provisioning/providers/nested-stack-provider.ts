@@ -569,12 +569,28 @@ export class NestedStackProvider implements ResourceProvider {
         // [#2567](https://github.com/go-to-k/cdkd/issues/2567), where
         // `--recreate-via-*` targets were a bare id set and matched a child
         // resource that merely SHARED a logical id, skipping the child's
-        // stateful guard). Two options already carry that scope and are safe to
-        // inherit as-is: `recreateTargets` (matched only when its `stackName`
-        // equals the deploying stack's) and `onCurrentStateLoaded` (the
-        // prefix-migration gate returns early on a stack-name mismatch). The
-        // child deploys as `<parent>~<logicalId>`, so neither can ever match
-        // here.
+        // stateful guard).
+        //
+        // `DeployEngineOptions` carries exactly two members that name
+        // per-stack identifiers, and both self-scope, so inheriting them is
+        // inert here: `recreateTargets` matches only while deploying its own
+        // `stackName`, and `onCurrentStateLoaded` (the prefix-migration gate)
+        // returns early on a stack-name mismatch. The child deploys as
+        // `<parent>~<logicalId>`, and a top-level stack name cannot contain
+        // `~`, so neither can match in any descendant.
+        //
+        // TWO identifier channels that cross this boundary are deliberately
+        // NOT scoped, and this comment is not a claim that they are. The
+        // run-level consent booleans -- `forceStatefulRecreation`, `replace`,
+        // `skipFinalSnapshot` -- name no resource and are documented as
+        // applying to the whole run (`docs/cli-deploy-safety.md`), so they
+        // apply in a child by design. And `parentCtx.providerRegistry`, one
+        // argument above this bag, carries the user's
+        // `--allow-unsupported-types` / `--allow-unsupported-properties`
+        // allow-lists, which are keyed by resource TYPE (and type:property) --
+        // a per-type opt-in whose meaning does not change between stacks. What
+        // #2567 was about is per-STACK identifiers, and those are the two
+        // named above.
         ...(parentCtx.options ?? {}),
         // Always overwrite (never spread-inherit) parameters: the parent's
         // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,

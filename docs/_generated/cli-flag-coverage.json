@@ -615,6 +615,7 @@
       "flag": "--recreate-via-sdk-provider",
       "integs": [
         "recreate-mixed-direction",
+        "recreate-nested-logical-id-collision",
         "recreate-via-sdk-provider"
       ]
     },
@@ -1638,7 +1639,6 @@
     "--quiet",
     "--receipt-handle",
     "--record-resource-mapping",
-    "--recreate-via-",
     "--recursive",
     "--replication-group-id",
     "--repository-description",

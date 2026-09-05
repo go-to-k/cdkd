@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd #2567: a --recreate-via-* target is scoped to the stack the
+# verify.sh — cdkd #2567: a recreate target (--recreate-via-cc-api /
+# --recreate-via-sdk-provider) is scoped to the stack the
 # pre-flight validated it against.
 #
 # The parent and its nested child both declare a `SharedTarget`:
@@ -29,6 +30,15 @@
 #      CreationDate, still `provisionedBy: 'sdk'`, object intact, and the tag
 #      applied (which is what proves the child resource really was visited as
 #      an UPDATE in this deploy).
+#
+#      WHAT PRE-FIX CODE DOES HERE, precisely: the child's delete is attempted
+#      and cdkd's CloudFormation-parity data guard REFUSES it, because the
+#      bucket holds the object phase 2 seeded and this fixture declares no
+#      auto-delete tag. So the phase FAILS at the deploy rather than at the
+#      assertions below — a loud failure, and still a discriminating one, but
+#      do not read the CreationDate / object assertions as the things that go
+#      red first. They are what covers the same bug on an EMPTY child bucket,
+#      where nothing refuses the delete and the recreate would be silent.
 #   4. A genuinely nested target (`ChildOnlyParam`, declared only in the child)
 #      is refused at pre-flight, and the refusal explains the nesting rather
 #      than reading as a typo.
@@ -40,6 +50,9 @@
 #   AWS_REGION   — defaults to us-east-1
 
 set -euo pipefail
+
+# A pager invoked non-interactively hangs the run (issue #1402).
+export AWS_PAGER=""
 
 # --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
 # A destroy/leak assertion must distinguish "not found" from any other probe
@@ -96,7 +109,9 @@ UPDATE_MODE="updated"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cleanup() {
-  rc=$?
+  # No `rc=$?` gate here: this cleanup runs unconditionally (pre-run, on the
+  # success path, and from the traps), so there is no arm to skip. The `(exit N)`
+  # seeds on the signal traps below stay correct either way.
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
@@ -233,8 +248,10 @@ fi
 echo "    OK: parent SharedTarget provisionedBy flipped 'sdk' -> 'cc-api' (the flag still works)"
 
 # The function name is user-supplied and stable across a recreate, so the
-# physical id is not a witness; LastModified is stamped afresh by the new
-# instance.
+# physical id is not a witness. LastModified is a NECESSARY condition, not a
+# sufficient one — an in-place update bumps it too — which is why the
+# provisionedBy flip above is the assertion that identifies the recreate and
+# this one only rules out "nothing happened at all".
 LAST_MOD_2=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'LastModified' --output text)
 if [ "${LAST_MOD_2}" = "${LAST_MOD_1}" ]; then
   echo "FAIL: parent Lambda LastModified unchanged (${LAST_MOD_1}) — expected a destroy + recreate" >&2
@@ -246,8 +263,24 @@ echo "    OK: parent Lambda was destroyed and recreated (LastModified ${LAST_MOD
 # Load-bearing: without a property change on the child's bucket the engine
 # never reaches the `case 'UPDATE'` where the recreate flag is read, and every
 # assertion below would pass on a resource cdkd never looked at.
-CHILD_TAG=$(aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" \
-  --query "TagSet[?Key=='Phase'].Value" --output text)
+# Strict status-consuming capture: S3 answers `NoSuchTagSet` when the bucket
+# carries no tags at all, which is a legitimate outcome here (it means the child
+# was never updated) and must produce THIS message rather than a raw CLI error;
+# anything else hard-fails.
+CHILD_TAG_OUT="$(aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --query "TagSet[?Key=='Phase'].Value" --output text 2>&1)" && TAG_RC=0 || TAG_RC=$?
+if [ "${TAG_RC}" -ne 0 ]; then
+  # The ONE canonical not-found signature (issue #1097) — S3's `NoSuchTagSet`
+  # matches its `no ?such` alternative, so no local spelling is needed.
+  if printf '%s' "${CHILD_TAG_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    CHILD_TAG=""
+  else
+    echo "FAIL: could not read the child bucket's tags: ${CHILD_TAG_OUT}" >&2
+    exit 1
+  fi
+else
+  CHILD_TAG="${CHILD_TAG_OUT}"
+fi
 if [ "${CHILD_TAG}" != "two" ]; then
   echo "FAIL: child bucket tag Phase='${CHILD_TAG}', expected 'two' — the child's SharedTarget was not updated in this deploy, so the scope assertions below would be vacuous" >&2
   exit 1
@@ -281,33 +314,37 @@ echo "    OK: the seeded object survived the deploy"
 
 # --- Phase 4: a genuinely nested target is refused at pre-flight ------------
 echo "==> Phase 4: --recreate-via-cc-api ChildOnlyParam (declared only in the child) must be refused"
+NESTED_LOG="$(mktemp)"
 set +e
 CDKD_TEST_UPDATE="${UPDATE_MODE}" node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --recreate-via-cc-api ChildOnlyParam \
   --dry-run \
-  --yes > /tmp/cdkd-2567-nested-target.log 2>&1
+  --yes > "${NESTED_LOG}" 2>&1
 RC=$?
 set -e
 if [ ${RC} -eq 0 ]; then
   echo "FAIL: naming a child-only logical id was accepted (expected a pre-flight refusal)" >&2
-  cat /tmp/cdkd-2567-nested-target.log >&2
+  cat "${NESTED_LOG}" >&2
   exit 1
 fi
-if ! grep -qF 'not present in the synth template' /tmp/cdkd-2567-nested-target.log; then
+if ! grep -qF 'not present in the synth template' "${NESTED_LOG}"; then
   echo "FAIL: the refusal did not report the id as absent from the template" >&2
-  cat /tmp/cdkd-2567-nested-target.log >&2
+  cat "${NESTED_LOG}" >&2
   exit 1
 fi
-if ! grep -qF 'resources inside a nested stack are NOT addressable' /tmp/cdkd-2567-nested-target.log; then
+if ! grep -qF 'resources inside a nested stack are NOT addressable' "${NESTED_LOG}"; then
   echo "FAIL: the refusal did not explain the nested-stack scope — a user reads it as a typo" >&2
-  cat /tmp/cdkd-2567-nested-target.log >&2
+  cat "${NESTED_LOG}" >&2
   exit 1
 fi
-if ! grep -qF 'Child' /tmp/cdkd-2567-nested-target.log; then
-  echo "FAIL: the refusal did not name the template's nested stack ('Child')" >&2
-  cat /tmp/cdkd-2567-nested-target.log >&2
+# The RENDERED list, not the bare word: the refusal already echoes the offending
+# id `ChildOnlyParam`, which contains "Child", so a substring grep would pass
+# with `nestedStackLogicalIds` empty or wrong.
+if ! grep -qF 'nested stack(s) (Child)' "${NESTED_LOG}"; then
+  echo "FAIL: the refusal did not name the template's nested stack as '(Child)'" >&2
+  cat "${NESTED_LOG}" >&2
   exit 1
 fi
 echo "    OK: a child-only target is refused, and the refusal names the nesting"

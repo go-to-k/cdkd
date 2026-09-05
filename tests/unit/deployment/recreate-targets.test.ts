@@ -470,6 +470,78 @@ describe('nested-stack scope of the flags (#2567)', () => {
     expect(error).toContain('ChildStack');
   });
 
+  it('names EVERY nested stack in the hint, not just the first', () => {
+    const v = validateRecreateTargets({
+      template: {
+        Resources: {
+          MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+          ChildStack: { Type: NESTED_TYPE, Properties: {} },
+          SecondChild: { Type: NESTED_TYPE, Properties: {} },
+        },
+      },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['Typo'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.nestedStackLogicalIds).toEqual(['ChildStack', 'SecondChild']);
+    // The rendered join is what the user reads; a per-id assertion would pass
+    // on a renderer that printed only one of them.
+    expect(renderRecreateTargetsErrors(v)).toContain('(ChildStack, SecondChild)');
+  });
+
+  it('REFUSES the nested stack row itself as a target, in both directions', () => {
+    // The hint above NAMES these ids to the user. Naming them while accepting
+    // them would be an invitation: honoring one routes the whole child stack
+    // through the replacement path, so `NestedStackProvider.delete` tears down
+    // every resource the child owns with no per-resource confirmation.
+    for (const direction of ['recreateViaCcApi', 'recreateViaSdkProvider'] as const) {
+      const v = validateRecreateTargets({
+        template: parentTemplate(),
+        state: st('S', {
+          ChildStack: res(NESTED_TYPE, { physicalId: 'arn:cdkd-local:stack/S~ChildStack' }),
+        }),
+        recreateViaCcApi: direction === 'recreateViaCcApi' ? ['ChildStack'] : [],
+        recreateViaSdkProvider: direction === 'recreateViaSdkProvider' ? ['ChildStack'] : [],
+        allowUnsupportedProperties: new Set(),
+        forceStatefulRecreation: false,
+      });
+      expect(v.blockedNestedStackTargets.map((t) => t.logicalId)).toEqual(['ChildStack']);
+      const error = renderRecreateTargetsErrors(v);
+      expect(error).toMatch(/refuses to operate on 1 nested-stack resource/);
+      expect(error).toContain('ChildStack');
+      expect(error).toMatch(/DELETE the whole child stack/);
+    }
+  });
+
+  it('the nested-stack refusal has NO --force-stateful-recreation bypass', () => {
+    // The multi-region category is the precedent: a structural refusal, not a
+    // data-loss confirmation, so the consent flag must not clear it.
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { ChildStack: res(NESTED_TYPE) }),
+      recreateViaCcApi: ['ChildStack'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: true,
+    });
+    expect(v.blockedNestedStackTargets.map((t) => t.logicalId)).toEqual(['ChildStack']);
+    expect(renderRecreateTargetsErrors(v)).toMatch(/no --force-stateful-recreation bypass/);
+  });
+
+  it('leaves an ORDINARY target unrefused — the guard is keyed on the type, not on nesting', () => {
+    // The other direction of the fence: a stack WITH nested children can still
+    // recreate its own top-level resources.
+    const v = validateRecreateTargets({
+      template: parentTemplate(),
+      state: st('S', { MyLambda: res('AWS::Lambda::Function', { physicalId: 'foo' }) }),
+      recreateViaCcApi: ['MyLambda'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedNestedStackTargets).toEqual([]);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
+  });
+
   it('a top-level id that a child SHARES is still a valid target — for the parent only', () => {
     // The collision case from the issue. The pre-flight validates it against
     // the parent, and the engine honours it only in the parent
@@ -797,6 +869,7 @@ function emptyValidation(
     blockedNoSdkProvider: [],
     conflictingDirections: [],
     nestedStackLogicalIds: [],
+    blockedNestedStackTargets: [],
   };
 }
 
@@ -1708,6 +1781,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedNoSdkProvider: [],
       conflictingDirections: [],
       nestedStackLogicalIds: [],
+      blockedNestedStackTargets: [],
     };
     const out = await probeAndRevalidateStateful({
       validation,
@@ -1782,6 +1856,7 @@ describe('probeAndRevalidateStateful (#648)', () => {
       blockedNoSdkProvider: [],
       conflictingDirections: [],
       nestedStackLogicalIds: [],
+      blockedNestedStackTargets: [],
     };
     const out = await probeAndRevalidateStateful({
       validation,

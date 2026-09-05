@@ -136,7 +136,15 @@ describe('recreate targets apply only to the stack they were validated against (
     ).provisionResource.bind(engine);
   }
 
-  function stateFor(): Record<string, StateRecord> {
+  /**
+   * The recorded state the deploy starts from. `provisionedBy` mirrors what
+   * the CLI pre-flight would have ACCEPTED for each direction, so the fixture
+   * is not a state the flag would have been refused on: `--recreate-via-cc-api`
+   * is refused on a record already `'cc-api'` (`blockedAlreadyCcApi`), and
+   * `--recreate-via-sdk-provider` is refused on one that is not `'cc-api'`
+   * (`blockedAlreadySdk`).
+   */
+  function stateFor(direction: 'to-cc-api' | 'to-sdk'): Record<string, StateRecord> {
     return {
       [SHARED_LOGICAL_ID]: {
         physicalId: 'old-name',
@@ -144,7 +152,7 @@ describe('recreate targets apply only to the stack they were validated against (
         properties: { BucketName: 'old-name', VersioningConfiguration: { Status: 'Suspended' } },
         attributes: {},
         dependencies: [],
-        provisionedBy: 'sdk',
+        provisionedBy: direction === 'to-cc-api' ? 'sdk' : 'cc-api',
       } as unknown as StateRecord,
     };
   }
@@ -158,7 +166,8 @@ describe('recreate targets apply only to the stack they were validated against (
    */
   async function invokeInPlaceUpdate(
     engine: InstanceType<typeof DeployEngine>,
-    stackName: string
+    stackName: string,
+    direction: 'to-cc-api' | 'to-sdk'
   ): Promise<unknown> {
     const change: ResourceChange = {
       logicalId: SHARED_LOGICAL_ID,
@@ -175,7 +184,7 @@ describe('recreate targets apply only to the stack they were validated against (
         },
       ],
     } as unknown as ResourceChange;
-    return provisionOf(engine)(SHARED_LOGICAL_ID, change, stateFor(), stackName, {
+    return provisionOf(engine)(SHARED_LOGICAL_ID, change, stateFor(direction), stackName, {
       Resources: {
         [SHARED_LOGICAL_ID]: {
           Type: STATEFUL_TYPE,
@@ -193,7 +202,8 @@ describe('recreate targets apply only to the stack they were validated against (
    */
   async function invokeStatefulReplacement(
     engine: InstanceType<typeof DeployEngine>,
-    stackName: string
+    stackName: string,
+    direction: 'to-cc-api' | 'to-sdk'
   ): Promise<unknown> {
     const change: ResourceChange = {
       logicalId: SHARED_LOGICAL_ID,
@@ -210,7 +220,7 @@ describe('recreate targets apply only to the stack they were validated against (
         },
       ],
     } as unknown as ResourceChange;
-    return provisionOf(engine)(SHARED_LOGICAL_ID, change, stateFor(), stackName, {
+    return provisionOf(engine)(SHARED_LOGICAL_ID, change, stateFor(direction), stackName, {
       Resources: {
         [SHARED_LOGICAL_ID]: { Type: STATEFUL_TYPE, Properties: { BucketName: 'new-name' } },
       },
@@ -234,7 +244,7 @@ describe('recreate targets apply only to the stack they were validated against (
 
     it(`${flag}: an in-place update in the VALIDATED stack is forced to a destroy + recreate`, async () => {
       const engine = makeEngine({ targetsStack: PARENT_STACK, direction });
-      await invokeInPlaceUpdate(engine, PARENT_STACK);
+      await invokeInPlaceUpdate(engine, PARENT_STACK, direction);
       // The whole point of the flag: an update that would have gone in place is
       // turned into a replacement. Without this arm, a scope check that never
       // matches would look correct.
@@ -248,7 +258,7 @@ describe('recreate targets apply only to the stack they were validated against (
       // parent's options spread in, so the target set still names PARENT_STACK
       // while the engine deploys the child.
       const engine = makeEngine({ targetsStack: PARENT_STACK, direction });
-      await invokeInPlaceUpdate(engine, CHILD_STACK);
+      await invokeInPlaceUpdate(engine, CHILD_STACK, direction);
       // Pre-fix this deleted a bucket in a stack the user never named.
       expect(provider.delete).not.toHaveBeenCalled();
       expect(provider.create).not.toHaveBeenCalled();
@@ -257,14 +267,14 @@ describe('recreate targets apply only to the stack they were validated against (
 
     it(`${flag}: the stateful guard is exempted in the VALIDATED stack`, async () => {
       const engine = makeEngine({ targetsStack: PARENT_STACK, direction });
-      await invokeStatefulReplacement(engine, PARENT_STACK);
+      await invokeStatefulReplacement(engine, PARENT_STACK, direction);
       expect(provider.delete).toHaveBeenCalled();
       expect(provider.create).toHaveBeenCalled();
     });
 
     it(`${flag}: the stateful guard is BACK IN FORCE for the same id in a nested CHILD stack`, async () => {
       const engine = makeEngine({ targetsStack: PARENT_STACK, direction });
-      const err = await invokeStatefulReplacement(engine, CHILD_STACK).then(
+      const err = await invokeStatefulReplacement(engine, CHILD_STACK, direction).then(
         () => undefined,
         (e: unknown) => e
       );
@@ -283,7 +293,7 @@ describe('recreate targets apply only to the stack they were validated against (
     // the `<parent>~<child>` shape, so a sibling stack in the same run cannot
     // pick up another stack's targets either.
     const engine = makeEngine({ targetsStack: PARENT_STACK, direction: 'to-cc-api' });
-    await invokeInPlaceUpdate(engine, 'SomeOtherStack');
+    await invokeInPlaceUpdate(engine, 'SomeOtherStack', 'to-cc-api');
     expect(provider.delete).not.toHaveBeenCalled();
     expect(provider.update).toHaveBeenCalled();
   });
