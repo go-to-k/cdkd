@@ -13,6 +13,10 @@ import {
 // the 3-arg form internally. See memory: mock_execfile_3and4arg.
 const captured = vi.hoisted<{
   calls: { cmd: string; args: string[]; opts?: { env?: NodeJS.ProcessEnv } }[];
+  // Issue #2440: per-test failure injection. Invoked with the REAL
+  // `(cmd, args)` so a fixture can build Node's actual execFile message
+  // from the argv the code under test really produced.
+  failFor?: (cmd: string, args: string[]) => (Error & { stderr?: string }) | undefined;
 }>(() => ({ calls: [] }));
 
 vi.mock('node:child_process', async () => {
@@ -31,6 +35,11 @@ vi.mock('node:child_process', async () => {
         opts: typeof a3 === 'function' ? undefined : (a3 as { env?: NodeJS.ProcessEnv }),
       });
       const cb = typeof a3 === 'function' ? (a3 as typeof a4)! : a4!;
+      const injected = captured.failFor?.(cmd, args);
+      if (injected) {
+        cb(injected, { stdout: '', stderr: injected.stderr ?? '' });
+        return { kill: (): void => {} } as unknown as ReturnType<typeof actual.execFile>;
+      }
       // docker network create / docker run / docker rm / docker network rm /
       // docker pull all succeed with a synthetic id when applicable.
       const isRun = args[0] === 'run';
@@ -55,6 +64,7 @@ vi.mock('node:child_process', async () => {
 
 beforeEach(() => {
   captured.calls = [];
+  captured.failFor = undefined;
 });
 
 describe('buildMetadataEnv', () => {
@@ -173,3 +183,55 @@ describe('createTaskNetwork / destroyTaskNetwork', () => {
   });
 });
 
+
+// =====================================================================
+// issue #2440 — the sidecar failure text must not echo the argv
+// =====================================================================
+// `sidecarArgs` carries `-e CLUSTER=<value>` (the AWS credentials travel as
+// value-less `-e KEY`, so they are already off the argv). `execFile` folds
+// the whole command line into `err.message` — shape measured on Node
+// 24.15.0 — and the sidecar's error path fell through to it whenever docker
+// died without writing stderr.
+describe('createTaskNetwork — sidecar failure redaction (issue #2440)', () => {
+  it('masks -e VALUES in the thrown message while keeping the diagnostic', async () => {
+    captured.failFor = (cmd, args) =>
+      args[0] === 'run'
+        ? Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\n`), { stderr: '' })
+        : undefined;
+
+    let message = '';
+    try {
+      await createTaskNetwork({
+        prefix: 'cdkd-local',
+        cluster: 'prod-cluster-acct-42',
+        skipPull: true,
+        credentials: {
+          accessKeyId: 'AKIAEXAMPLE',
+          secretAccessKey: 'do-not-leak-me',
+          sessionToken: 'session-token-secret',
+        },
+      });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+
+    expect(message).toContain('Failed to start metadata-endpoints sidecar: Command failed:');
+    expect(message).toContain('-e CLUSTER=***');
+    expect(message).not.toContain('prod-cluster-acct-42');
+    expect(message).not.toContain('do-not-leak-me');
+    expect(message).not.toContain('session-token-secret');
+    // The credential claim is asserted against the ARGV, not the message.
+    // `expect(message).toContain('-e AWS_SECRET_ACCESS_KEY')` cannot tell
+    // "never on the argv" from "was on the argv and got redacted" — the
+    // redacted form `-e AWS_SECRET_ACCESS_KEY=***` contains that substring
+    // too. Only the recorded call discriminates.
+    const runCall = captured.calls.find((c) => c.args[0] === 'run');
+    expect(runCall).toBeDefined();
+    expect(runCall!.args).toContain('AWS_SECRET_ACCESS_KEY');
+    expect(runCall!.args.some((a) => a.startsWith('AWS_SECRET_ACCESS_KEY='))).toBe(false);
+    expect(runCall!.args.some((a) => a.includes('do-not-leak-me'))).toBe(false);
+    // Non-value-bearing argv survives: it is the diagnostic.
+    expect(message).toContain(METADATA_ENDPOINT_IMAGE);
+    expect(message).toContain(`--ip ${METADATA_ENDPOINT_IP}`);
+  });
+});

@@ -29,7 +29,7 @@ import { basename, resolve as resolvePath } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile as execFileCb } from 'node:child_process';
 import { getLogger } from '../utils/logger.js';
-import { getDockerCmd } from '../utils/docker-cmd.js';
+import { describeDockerExecFailure, getDockerCmd } from '../utils/docker-cmd.js';
 import { CdkdError } from '../utils/error-handler.js';
 import {
   AssetManifestLoader,
@@ -325,18 +325,14 @@ export async function softReloadAgentContainer(
   const dockerCmd = getDockerCmd();
 
   let workdir: string;
+  const inspectArgs = ['inspect', '--format', '{{.Config.WorkingDir}}', containerId];
   try {
-    const { stdout } = await execFileAsync(dockerCmd, [
-      'inspect',
-      '--format',
-      '{{.Config.WorkingDir}}',
-      containerId,
-    ]);
+    const { stdout } = await execFileAsync(dockerCmd, inspectArgs);
     workdir = stdout.trim() || '/';
   } catch (err) {
     throw new CdkdError(
       `softReloadAgentContainer: docker inspect of container '${containerId}' failed: ` +
-        `${describeExecError(err)}.`,
+        `${describeDockerExecFailure(err, inspectArgs)}.`,
       'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_INSPECT_FAILED'
     );
   }
@@ -344,43 +340,26 @@ export async function softReloadAgentContainer(
   logger.info(
     `Soft-reload: docker cp ${newAssetSourceDir} -> ${containerId}:${workdirDest}; restart.`
   );
+  const cpArgs = ['cp', `${newAssetSourceDir}/.`, `${containerId}:${workdirDest}`];
   try {
-    await execFileAsync(
-      dockerCmd,
-      ['cp', `${newAssetSourceDir}/.`, `${containerId}:${workdirDest}`],
-      { maxBuffer: 64 * 1024 * 1024 }
-    );
+    await execFileAsync(dockerCmd, cpArgs, { maxBuffer: 64 * 1024 * 1024 });
   } catch (err) {
     throw new CdkdError(
       `softReloadAgentContainer: docker cp into '${containerId}:${workdir}' failed: ` +
-        `${describeExecError(err)}.`,
+        `${describeDockerExecFailure(err, cpArgs)}.`,
       'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_CP_FAILED'
     );
   }
+  const restartArgs = ['restart', containerId];
   try {
-    await execFileAsync(dockerCmd, ['restart', containerId]);
+    await execFileAsync(dockerCmd, restartArgs);
   } catch (err) {
     throw new CdkdError(
       `softReloadAgentContainer: docker restart of '${containerId}' failed: ` +
-        `${describeExecError(err)}.`,
+        `${describeDockerExecFailure(err, restartArgs)}.`,
       'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_RESTART_FAILED'
     );
   }
-}
-
-// Stringify a child_process / execFile rejection. `err.stderr` is where docker
-// writes its actionable diagnostics; without it the wrapped error only carries
-// the generic "Command failed with exit code N" message.
-function describeExecError(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  const stderr = (err as { stderr?: unknown }).stderr;
-  const stderrText =
-    typeof stderr === 'string'
-      ? stderr.trim()
-      : stderr instanceof Buffer
-        ? stderr.toString('utf8').trim()
-        : '';
-  return stderrText ? `${err.message}\n${stderrText}` : err.message;
 }
 
 /**

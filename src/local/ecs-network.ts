@@ -5,6 +5,7 @@ import {
   dockerSpawnEnvWithSensitive,
   getDockerCmd,
   partitionSensitiveEnv,
+  describeDockerFailure,
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import {
@@ -141,20 +142,12 @@ async function createNetworkAndSidecar(args: {
   await pullImage(METADATA_ENDPOINT_IMAGE, skipPull);
 
   logger.info(`Creating docker network ${networkName} (subnet ${cidr})...`);
+  const createArgs = ['network', 'create', '--driver', 'bridge', '--subnet', cidr, networkName];
   try {
-    await execFileAsync(getDockerCmd(), [
-      'network',
-      'create',
-      '--driver',
-      'bridge',
-      '--subnet',
-      cidr,
-      networkName,
-    ]);
+    await execFileAsync(getDockerCmd(), createArgs);
   } catch (err) {
-    const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
-      `docker network create failed: ${e.stderr?.trim() || e.message || String(err)}. ` +
+      `docker network create failed: ${describeDockerFailure(err, createArgs)}. ` +
         `Hint: another cdkd run may already own subnet ${cidr}; wait for it to ` +
         'finish, or remove the leftover network with `docker network ls` + ' +
         '`docker network rm`. `cdkd local start-service` shares one network ' +
@@ -217,9 +210,12 @@ async function createNetworkAndSidecar(args: {
     return stdout.trim();
   } catch (err) {
     await destroyNetworkOnly(networkName);
-    const e = err as { stderr?: string; message?: string };
+    // `sidecarArgs` carries `-e CLUSTER=<value>` (credentials travel as
+    // value-less `-e KEY`), and `execFile` folds the whole command line into
+    // `err.message` -- so the text is composed through the redacting
+    // composer (issue #2440).
     throw new DockerRunnerError(
-      `Failed to start metadata-endpoints sidecar: ${e.stderr?.trim() || e.message || String(err)}`
+      `Failed to start metadata-endpoints sidecar: ${describeDockerFailure(err, sidecarArgs)}`
     );
   }
 }
@@ -301,13 +297,11 @@ export async function destroyTaskNetwork(net: TaskNetwork | undefined): Promise<
 async function destroyNetworkOnly(networkName: string): Promise<void> {
   if (!networkName) return;
   const logger = getLogger().child('ecs-network');
+  const rmArgs = ['network', 'rm', networkName];
   try {
-    await execFileAsync(getDockerCmd(), ['network', 'rm', networkName]);
+    await execFileAsync(getDockerCmd(), rmArgs);
     logger.debug(`Removed docker network ${networkName}`);
   } catch (err) {
-    const e = err as { stderr?: string; message?: string };
-    logger.debug(
-      `docker network rm ${networkName} failed: ${e.stderr || e.message || String(err)}`
-    );
+    logger.debug(`docker network rm ${networkName} failed: ${describeDockerFailure(err, rmArgs)}`);
   }
 }

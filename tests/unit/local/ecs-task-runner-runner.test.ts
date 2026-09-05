@@ -491,6 +491,48 @@ describe('runEcsTask — docker volume realization (G1)', () => {
     // No `docker run` should have fired.
     expect(dockerRunCalls()).toHaveLength(0);
   });
+
+  // `--opt` carries `DockerVolumeConfiguration.DriverOpts`, which for the
+  // `local` driver holds mount options — `o=addr=…,username=…,password=…`
+  // for a CIFS/NFS mount. `execFile` folds that into `err.message` too.
+  it('redacts --opt / --label VALUES out of the docker volume create failure (issue #2440)', async () => {
+    captured.responder = (cmd: string, args: string[]) => {
+      if (args[0] === 'volume' && args[1] === 'create') {
+        return { err: new Error(`Command failed: ${cmd} ${args.join(' ')}\n`), stderr: '' };
+      }
+      return { stdout: '' };
+    };
+    const dockerVol: ResolvedEcsVolume = {
+      name: 'data',
+      kind: 'docker',
+      dockerVolumeConfig: {
+        scope: 'task',
+        driver: 'local',
+        driverOpts: { o: 'addr=fs.internal,username=svc,password=hunter2-secret' },
+        // Whitespace-bearing value: exercises the exact-argv pass.
+        labels: { owner: 'team alpha' },
+      },
+    };
+    const c = makeContainer({
+      mountPoints: [{ sourceVolume: 'data', containerPath: '/d', readOnly: false }],
+    });
+    const state = createEcsRunState();
+    let message = '';
+    try {
+      await runEcsTask(makeTask({ containers: [c], volumes: [dockerVol] }), baseOptions(), state);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).not.toContain('hunter2-secret');
+    expect(message).not.toContain('addr=fs.internal');
+    expect(message).not.toContain('team alpha');
+    expect(message).toContain('--opt o=***');
+    expect(message).toContain('--label owner=***');
+    expect(message).toContain("docker volume create failed for 'data': Command failed:");
+    // The cdkd-authored, non-sensitive parts of the argv are the diagnostic.
+    expect(message).toContain('--driver local');
+    expect(message).toMatch(/cdkd-local-data-[0-9a-f]+/);
+  });
 });
 
 describe('runEcsTask — awaitDependencies (G1)', () => {
@@ -770,6 +812,49 @@ describe('runEcsTask — empty task and pre-network failures (G1)', () => {
     await expect(runEcsTask(makeTask({ containers: [c] }), baseOptions(), state)).rejects.toThrow(
       DockerRunnerError
     );
+  });
+
+  // =================================================================
+  // issue #2440 — the `docker run` failure text must not echo the argv
+  // =================================================================
+  // With no stderr, `e.stderr?.trim() ||` falls through to `e.message`,
+  // which `execFile` builds as `Command failed: <file> <args.join(' ')>\n`
+  // (shape measured on Node 24.15.0) — i.e. every `-e KEY=value` the
+  // container's resolved `Environment` produced.
+  it('redacts -e VALUES out of the per-container docker run failure (issue #2440)', async () => {
+    captured.responder = (cmd: string, args: string[]) => {
+      if (args[0] === 'run') {
+        return {
+          err: new Error(`Command failed: ${cmd} ${args.join(' ')}\n`),
+          stderr: '',
+        };
+      }
+      return { stdout: '' };
+    };
+    const c = makeContainer({
+      environment: {
+        DB_URL: 'postgres://svc:p4ssw0rd@db.internal/app',
+        // Whitespace-bearing value: only the exact-argv substitution can
+        // delimit it inside a space-joined command line.
+        FEATURE_CFG: '{"flag": "s3cr3t-json"}',
+      },
+    });
+    const state = createEcsRunState();
+    let message = '';
+    try {
+      await runEcsTask(makeTask({ containers: [c] }), baseOptions(), state);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).not.toContain('p4ssw0rd');
+    expect(message).not.toContain('postgres://svc:p4ssw0rd@db.internal/app');
+    expect(message).not.toContain('s3cr3t-json');
+    // The keys and the surrounding diagnostic survive — otherwise an empty
+    // message would satisfy the absence assertions above.
+    expect(message).toContain('-e DB_URL=***');
+    expect(message).toContain('-e FEATURE_CFG=***');
+    expect(message).toContain("docker run failed for container 'app': Command failed:");
+    expect(message).toContain('nginx:alpine');
   });
 });
 

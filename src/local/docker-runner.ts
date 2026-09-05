@@ -5,6 +5,9 @@ import {
   dockerSpawnEnvWithSensitive,
   getDockerCmd,
   partitionSensitiveEnv,
+  describeDockerCapturedOutput,
+  describeDockerFailure,
+  redactDockerArgvValues,
   runDockerForeground,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
@@ -188,8 +191,9 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
     try {
       await runDockerForeground(['pull', image]);
     } catch (err) {
-      const e = err as Error;
-      throw new DockerRunnerError(`docker pull ${image} failed: ${e.message}`);
+      throw new DockerRunnerError(
+        `docker pull ${image} failed: ${describeDockerFailure(err, ['pull', image])}`
+      );
     }
     return;
   }
@@ -201,12 +205,7 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
   try {
     await runDockerStreaming(['pull', image], { streamLive: false });
   } catch (err) {
-    const e = err as {
-      exitCode?: number | null;
-      stderr?: string;
-      stdout?: string;
-      message?: string;
-    };
+    const e = err as { exitCode?: number | null };
     // Distinguish spawn-level failure (ENOENT — docker binary missing,
     // surfaces with the helpful Install-Docker / CDK_DOCKER hint from
     // `spawnStreaming`'s ENOENT branch) from non-zero exit (genuine
@@ -214,9 +213,16 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
     // a plain `Error` (no `exitCode` field); the non-zero-exit path
     // rejects with `SpawnError` (`exitCode` + `stderr` + `stdout`).
     if (e.exitCode === undefined || e.exitCode === null) {
-      throw new DockerRunnerError(`docker pull ${image} failed: ${e.message ?? String(err)}`);
+      throw new DockerRunnerError(
+        `docker pull ${image} failed: ${describeDockerFailure(err, ['pull', image])}`
+      );
     }
-    const detail = e.stderr?.trim() || e.stdout?.trim() || '(no output)';
+    // Redacted like every other docker failure text, even though this argv
+    // is `['pull', <image>]` and carries no user data: the rule is uniform so
+    // no future edit has to re-derive whether THIS site needs it (issue #2440
+    // review round 2 found this exact site unwrapped, hidden from the first
+    // fence by the intermediate variable).
+    const detail = describeDockerCapturedOutput(err, ['pull', image], '(no output)');
     throw new DockerRunnerError(`docker pull ${image} exited with code ${e.exitCode}: ${detail}`);
   }
 }
@@ -317,7 +323,15 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   args.push(opts.image, ...entryPointTail, ...opts.cmd);
 
   const logger = getLogger().child('docker');
-  logger.debug(`${getDockerCmd()} ${redactAwsCredentialsInArgs(args).join(' ')}`);
+  // ONE verdict about this argv, on both channels. This line used to run a
+  // narrower redactor (AWS credential keys only) than the error path below,
+  // which is the shape issue #2440 reported one level down — and the review
+  // showed the divergence pointed the WRONG way: `--verbose` renders the argv
+  // on EVERY run, while the error path reaches it only when docker writes no
+  // stderr. The rare channel was hardened and the certain one left open.
+  // Masking the VALUE keeps what `--verbose` is actually read for (which
+  // variables were passed, in what order, with which mounts and flags).
+  logger.debug(`${getDockerCmd()} ${redactDockerArgvValues(args).join(' ')}`);
 
   if (collisions.length > 0) {
     logger.warn(
@@ -339,10 +353,12 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     });
     return stdout.trim();
   } catch (error) {
-    const err = error as { stderr?: string; message?: string };
-    throw new DockerRunnerError(
-      `docker run failed: ${err.stderr?.trim() || err.message || String(error)}`
-    );
+    // `execFile` embeds the WHOLE `docker run` command line in `err.message`
+    // (and in `String(error)`), so an unredacted fallback echoes every
+    // `-e KEY=value` pair back to the user — the same argv the debug line
+    // above masks (issue #2440). Both channels now use the same redactor;
+    // they used to disagree, which is what the issue reported.
+    throw new DockerRunnerError(`docker run failed: ${describeDockerFailure(error, args)}`);
   }
 }
 
@@ -373,14 +389,12 @@ export function streamLogs(containerId: string): () => void {
 export async function removeContainer(containerId: string): Promise<void> {
   if (!containerId) return;
   const logger = getLogger().child('docker');
+  const args = ['rm', '-f', containerId];
   try {
-    await execFileAsync(getDockerCmd(), ['rm', '-f', containerId]);
+    await execFileAsync(getDockerCmd(), args);
     logger.debug(`Removed container ${containerId}`);
   } catch (error) {
-    const err = error as { stderr?: string; message?: string };
-    logger.debug(
-      `docker rm -f ${containerId} failed: ${err.stderr || err.message || String(error)}`
-    );
+    logger.debug(`docker rm -f ${containerId} failed: ${describeDockerFailure(error, args)}`);
   }
 }
 
@@ -391,8 +405,9 @@ export async function removeContainer(containerId: string): Promise<void> {
  */
 export async function ensureDockerAvailable(): Promise<void> {
   const cmd = getDockerCmd();
+  const args = ['version', '--format', '{{.Server.Version}}'];
   try {
-    await execFileAsync(cmd, ['version', '--format', '{{.Server.Version}}']);
+    await execFileAsync(cmd, args);
   } catch (error) {
     const err = error as { code?: string; stderr?: string; message?: string };
     if (err.code === 'ENOENT') {
@@ -401,7 +416,7 @@ export async function ensureDockerAvailable(): Promise<void> {
       );
     }
     throw new DockerRunnerError(
-      `${cmd} daemon is not reachable: ${err.stderr?.trim() || err.message || String(error)}. ` +
+      `${cmd} daemon is not reachable: ${describeDockerFailure(error, args)}. ` +
         'Start Docker Desktop / the docker daemon and retry.'
     );
   }
@@ -436,26 +451,12 @@ export function pickFreePort(): Promise<number> {
 }
 
 /**
- * AWS credential keys whose values must NOT be written to the debug log.
- * `forwardAwsEnv` / `assumeLambdaExecutionRole` (in `local-invoke.ts`)
- * push these via `-e <KEY>=<value>` flags into `runDetached`'s args
- * array, and `cdkd local invoke --verbose` would otherwise leak them
- * into stdout / log files. Only the matching `-e <KEY>=<value>` pair is
- * redacted; non-credential `-e KEY=val` entries pass through unchanged.
- */
-const REDACTED_ENV_KEYS = new Set([
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-]);
-
-/**
  * Built-in sensitive env keys whose VALUES are always routed through
  * docker's value-from-process-env form (`-e KEY` rather than
- * `-e KEY=value`) by {@link runDetached}. Mirrors the redaction-only
- * {@link REDACTED_ENV_KEYS} set above, but stronger: the value is kept
- * off the docker `run` argv (and therefore off `ps` / `/proc/<pid>/cmdline`
- * / verbose debug logs) instead of just being masked at log time. A caller
+ * `-e KEY=value`) by {@link runDetached}. Stronger than any log-time
+ * masking: the value is kept off the docker `run` argv entirely (and
+ * therefore off `ps` / `/proc/<pid>/cmdline` as well as every rendering of
+ * the argv) instead of only being hidden at display time. A caller
  * may extend this set via the `sensitiveEnvKeys` option (used by the
  * AgentCore local-invoke path to keep decrypted `--from-cfn-stack`
  * SecureString SSM values off the argv).
@@ -465,30 +466,3 @@ export const SENSITIVE_ENV_KEYS: ReadonlySet<string> = new Set([
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
 ]);
-
-/**
- * Returns a copy of `args` with any `-e <KEY>=<value>` pair whose KEY is
- * in {@link REDACTED_ENV_KEYS} replaced with `-e <KEY>=***`. The actual
- * `args` passed to `spawn` are never mutated — this is for log output
- * only.
- */
-export function redactAwsCredentialsInArgs(args: readonly string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const cur = args[i]!;
-    const next = args[i + 1];
-    if (cur === '-e' && typeof next === 'string') {
-      const eqIdx = next.indexOf('=');
-      if (eqIdx > 0) {
-        const key = next.substring(0, eqIdx);
-        if (REDACTED_ENV_KEYS.has(key)) {
-          out.push('-e', `${key}=***`);
-          i++;
-          continue;
-        }
-      }
-    }
-    out.push(cur);
-  }
-  return out;
-}
