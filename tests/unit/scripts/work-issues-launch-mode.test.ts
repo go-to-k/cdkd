@@ -843,29 +843,49 @@ describe('work-issues launch-mode probe', () => {
  */
 describe('work-issues section 2 worktree probe', () => {
   const TRIAGE = join('references', 'triage.md');
-  /** The probe block addresses a PEER worktree by path — that is what selects it. */
+  /** The probe block addresses a PEER worktree by path -- that is what selects it. */
   const isProbeBlock = (block: string): boolean =>
     commandLines(block).some((c) => /worktrees\/<w>/.test(c));
 
-  it('exactly one block probes a peer worktree -- no decoy copy', () => {
-    const hits = bashBlocks(read(TRIAGE)).filter(isProbeBlock);
+  /**
+   * Scanned across the WHOLE skill, not just triage.md. Scoping the scan to one
+   * file let a stale copy of the withdrawn probe live in any OTHER stage:
+   * planted in gotchas.md -- the file that until this run restated section 2's
+   * probes in full -- the suite stayed green (measured 2026-09-06, round 2).
+   */
+  const probeBlocks = (): Array<{ doc: string; block: string }> =>
+    skillDocs().flatMap((doc) =>
+      bashBlocks(read(doc))
+        .filter(isProbeBlock)
+        .map((block) => ({ doc, block })),
+    );
+
+  it('exactly one block probes a peer worktree, across the whole skill', () => {
     expect(
-      hits.length,
-      'section 2 should hold exactly one per-worktree probe block; a second copy drifts',
-    ).toBe(1);
+      probeBlocks().map((h) => h.doc),
+      'the per-worktree probe belongs to section 2 and nowhere else; a second copy drifts',
+    ).toEqual([TRIAGE]);
   });
 
-  it('ranges over origin/main...HEAD, and never reads a single commit', () => {
-    const block = bashBlocks(read(TRIAGE)).find(isProbeBlock);
-    expect(block, 'the per-worktree probe block is gone').toBeDefined();
-    const cmds = commandLines(block!);
+  it('ranges over origin/main...HEAD, and no skill doc still reads a single commit', () => {
+    const hit = probeBlocks()[0];
+    expect(hit, 'the per-worktree probe block is gone').toBeDefined();
+    const cmds = commandLines(hit!.block);
 
     expect(
       cmds.some((c) => c.includes('diff --name-only origin/main...HEAD')),
       `the probe must range over the branch; commands were:\n${cmds.join('\n')}`,
     ).toBe(true);
 
-    const singleCommit = cmds.filter((c) => /show\s+--stat/.test(c));
+    // Swept over EVERY doc rather than the block above: the withdrawn form must
+    // not survive as a COMMAND anywhere in the skill, including in a stage file
+    // that never held the probe.
+    const singleCommit = skillDocs().flatMap((doc) =>
+      bashBlocks(read(doc))
+        .flatMap(commandLines)
+        .filter((c) => /show\s+--stat/.test(c))
+        .map((c) => `${doc}: ${c}`),
+    );
     expect(
       singleCommit,
       'a `show --stat` probe reads ONE commit and under-reports a multi-commit lane -- ' +
@@ -873,13 +893,14 @@ describe('work-issues section 2 worktree probe', () => {
     ).toEqual([]);
   });
 
-  it('still explains WHY the range is load-bearing, in prose', () => {
-    // The floor half. Without it, deleting the rationale satisfies the case
-    // above and the next author cannot tell the range from an arbitrary choice.
-    const prose = read(TRIAGE)
-      .split('\n')
-      .filter((l) => !/^\s*git\s/.test(l))
-      .join('\n');
+  it('still explains WHY the range is load-bearing, in prose OUTSIDE any block', () => {
+    // Subtracting the fenced blocks is the load-bearing part. Filtering
+    // `git`-prefixed lines instead left a whole-line `#` comment INSIDE a block
+    // able to satisfy this, so deleting the rationale paragraph and adding
+    // `# not show --stat HEAD` to the block passed -- the inert-floor failure
+    // this case exists to prevent, measured on itself 2026-09-06 in round 2.
+    const doc = read(TRIAGE);
+    const prose = bashBlocks(doc).reduce((acc, b) => acc.split(b).join(''), doc);
     expect(
       prose,
       'the paragraph naming what `show --stat HEAD` got wrong is the reason the range exists',

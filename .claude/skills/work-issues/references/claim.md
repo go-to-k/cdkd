@@ -55,8 +55,7 @@ gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <fi
 Claiming to avoid collision with parallel agents."
 ```
 
-(English only — committed/public artifacts are English.) Mandatory, BEFORE the
-first edit — the issue-level twin of the worktree DISJOINT-FILE rule (see
+Mandatory, BEFORE the first edit — the issue-level twin of the worktree DISJOINT-FILE rule (see
 "Claim a filed issue before working it" in `CLAUDE.md`).
 
 **Correct the classification lines in the same turn as the claim.** Claiming is

@@ -122,7 +122,7 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 173_051,
+    corpusBytes: 173_046,
     largest: { file: 'implement.md', bytes: 28_240 },
     runnerUp: { file: 'verify.md', bytes: 28_154 },
   },
@@ -338,31 +338,46 @@ const MIN_REFERENCE_FILES = 6;
 // checkable with `wc -c` against origin/main; every count that was merely
 // counted has been dropped.
 // The 2026-09-05 deploy-batch retro (go-to-k/cdkd#2634 / go-to-k/cdkd#2649 /
-// go-to-k/cdkd#2674) landed TWO rules here for +95 B: triage.md section 2's
+// go-to-k/cdkd#2674) landed TWO rules here for +90 B: triage.md section 2's
 // worktree probe now ranges over `origin/main...HEAD` (`show --stat HEAD`
 // reads one commit, and read 1 of the 5 files a ten-commit lane held), and
 // implement.md section 5-g's fan-out sentence now names the REPORT SHAPE.
-// Components, stated so they can be checked rather than believed: triage.md
-// 26,084 -> 26,218 (+134), implement.md 28,079 -> 28,240 (+161), gotchas.md
-// 8,045 -> 7,845 (-200), = +95. Corpus 172,956 -> 173,051; margin 123 -> 103 B.
-// The payment is the appendix again, and for the reason the go-to-k/cdkd#2438
-// entry above records: gotchas.md was restating section 2's two live-lane
-// probes AND CLAUDE.md's arm-the-signal-first rule, and now points at both.
-// NOTE THE LEADER FLIP: implement.md 28,240 overtakes verify.md 28,154, so
-// `largest` and `runnerUp` SWAP in MEASURED above and the binding bound is now
-// `corpus - verify.md`. Both figures are POST-REVIEW. The round's first draft
-// was +7 B, and two reviewers reading the same diff independently found that
-// its compression had re-bound go-to-k/cdkd#2270 to the wrong one of that
-// bullet's two incidents; restoring the dropped clause with its citation is
-// most of the extra 88 B, and it is why a compression payment is never free --
-// the bytes it saves can be a citation's antecedent.
-// The retro's third lesson landed OUTSIDE this corpus, in
-// `.claude/rules/testing.md` -- a guard's uses are its CALL SITES, not the
-// first one -- which is free to THIS corpus but spent 116 B of the
-// `tests/setup.ts` band in rule-file-payload.test.ts, re-derived there in the
-// same commit (the band moved 242 -> 126 B; an earlier draft said 159, which
-// reconciled with nothing -- the go-to-k/cdkd#2554 entry's `+38` incident,
-// repeated in the file whose whole subject is a figure going stale).
+// Components against origin/main, stated so they can be checked rather than
+// believed: triage.md 26,084 -> 26,219 (+135), implement.md 28,079 -> 28,240
+// (+161), gotchas.md 8,045 -> 7,938 (-107), retro.md 17,625 -> 17,585 (-40),
+// claim.md 7,704 -> 7,645 (-59), = +90. Corpus 172,956 -> 173,046; margin
+// 123 -> 108 B. NOTE THE LEADER FLIP: implement.md 28,240 overtakes verify.md
+// 28,154 (untouched), so `largest` and `runnerUp` SWAP above and the binding
+// bound becomes `corpus - verify.md`.
+// The payment is displacement, not compression: gotchas.md was restating
+// section 2's two live-lane probes in full, and retro.md and claim.md each
+// carried a bare "English only" line for a rule CLAUDE.md owns and two hooks
+// enforce (`non-english-text-gate`, `gh-body-english-gate`) -- a prose copy of
+// a hook-enforced rule is paid for in every lane and stops nothing.
+// A THIRD lesson landed outside this corpus in `.claude/rules/testing.md` (a
+// guard's uses are its CALL SITES), and a FOURTH is the fence in
+// work-issues-launch-mode.test.ts that pins the ranged probe -- both free to
+// THIS corpus; the testing.md one spent 116 B of the `tests/setup.ts` band in
+// rule-file-payload.test.ts, re-derived there in the same commit.
+// Every figure here is POST-REVIEW and stated against origin/main, because an
+// intermediate commit's arithmetic disappears at the squash merge and cannot be
+// re-derived -- an earlier revision attributed "88 B" to a range that will not
+// exist, which is this file's own `wc -c against origin/main` rule broken 40
+// lines below where it is stated.
+// What review changed, across two rounds and four reviewers: the two fence
+// files disagreed about one quantity (159 vs 116 B); a component split of
+// "+207 / 91" reconciled with no definition (measured +256 / -140); a
+// compression had re-bound go-to-k/cdkd#2270 to the wrong one of its bullet's
+// two incidents, dropping the clause that was the only evidence for the
+// bullet's second headline half; and the first draft of the new fence's own
+// FLOOR was inert -- it filtered `git`-prefixed lines, so a `#` comment inside
+// the code block satisfied it while the rationale paragraph was deleted.
+// Restoring the citation leaves that bullet at 661 B against main's 692, so
+// implement.md's +161 is the REPORT SHAPE clause net of three compressions and
+// NOT the restoration; a draft of this paragraph claimed otherwise and
+// measurement contradicted it. Three wrong byte attributions in one round, all
+// three caught by measuring rather than reading -- which is why a compression
+// payment is never free: the bytes it saves can be a citation's antecedent.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller
