@@ -629,6 +629,38 @@ As with `--replace`, this mid-deploy check treats every `AWS::S3::Bucket` and
 every `AWS::Logs::LogGroup` as stateful — neither emptiness probe can run here.
 Non-stateful types still replace freely on a plain `cdkd deploy` with no flag.
 
+### Type changes into or out of a nested stack (`TYPE_CHANGE_NESTED_STACK`)
+
+Changing a resource's `Type` while keeping its logical id is also a
+replacement, and cdkd currently routes **both halves of a replacement — the
+delete of the existing resource and the create of the new one — on the type the
+TEMPLATE declares**. For most type pairs that mis-route ends in an API error or
+leaves the old resource behind; where the two types' physical-id namespaces
+overlap it can delete an unrelated live resource of the new type. For
+`AWS::CloudFormation::Stack` it is worse still:
+that type's provider deletes a nested stack by deriving `<stack>~<logicalId>`
+from the logical id, ignoring the physical id it was handed, so the delete would
+destroy a child stack and every resource it owns.
+
+So a plain `cdkd deploy` (and `cdkd deploy --dry-run`) **refuses**, before any
+resource is touched, when a logical id's recorded type and its template type
+differ with `AWS::CloudFormation::Stack` on either side:
+
+```text
+Refusing to deploy MyStack: a resource changes its Type into or out of AWS::CloudFormation::Stack, which cdkd cannot replace safely (issue #2668).
+  - Thing: Type changes from AWS::SNS::Topic to AWS::CloudFormation::Stack (the existing AWS::SNS::Topic is arn:aws:sns:us-east-1:111122223333:thing).
+    Both halves of the replacement would route on the TEMPLATE's type, so ...
+```
+
+There is no flag that overrides this refusal — the delete's TARGET would be
+wrong, not merely its consequences. Deploy the change as two changes instead:
+give the new resource a **different logical id** (in CDK, rename the construct)
+so the old row is deleted through its own type's provider, or remove the
+resource in one deploy and add its replacement in the next.
+
+`--recreate-via-cc-api` / `--recreate-via-sdk-provider` refuse a nested stack's
+own row for the same reason; see [Nested stacks](#nested-stacks).
+
 ## Stateful-resource guard
 
 Destroying and recreating most resource types loses nothing — an IAM role or a
