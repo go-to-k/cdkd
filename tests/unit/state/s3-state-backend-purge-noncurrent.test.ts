@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 
 /**
  * Issue [#2340](https://github.com/go-to-k/cdkd/issues/2340) —
@@ -98,6 +99,10 @@ describe('S3StateBackend.purgeNoncurrentVersions (issue #2340)', () => {
     ({ send: makeSend('corrected'), destroy: vi.fn() }) as unknown as S3Client;
 
   beforeEach(() => {
+    // Issue #2447: every purge ends with a replication probe cached per
+    // BUCKET for the process lifetime. Cleared here so this file's command
+    // streams do not depend on which test ran first.
+    clearReplicationProbeCache();
     recorded = [];
     mockRebuild.mockReset();
     mockExpectedOwner.mockReset();
@@ -127,6 +132,9 @@ describe('S3StateBackend.purgeNoncurrentVersions (issue #2340)', () => {
     expect(recorded.map((r) => r.name)).toEqual([
       'ListObjectVersionsCommand',
       'DeleteObjectsCommand',
+      // Issue #2447's replication probe — a bucket-level read, so it has to
+      // ride the corrected client with everything else.
+      'GetBucketReplicationCommand',
     ]);
   });
 
@@ -139,6 +147,7 @@ describe('S3StateBackend.purgeNoncurrentVersions (issue #2340)', () => {
     expect(recorded.map((r) => r.name)).toEqual([
       'ListObjectVersionsCommand',
       'DeleteObjectsCommand',
+      'GetBucketReplicationCommand',
     ]);
   });
 
@@ -149,7 +158,9 @@ describe('S3StateBackend.purgeNoncurrentVersions (issue #2340)', () => {
 
     await backend().purgeNoncurrentVersions([KEY]);
 
-    expect(recorded).toHaveLength(2);
+    // THREE since issue #2447 — the replication probe reads bucket-level
+    // configuration, so it needs the squatting defence as much as the other two.
+    expect(recorded).toHaveLength(3);
     expect(recorded.every((r) => r.owner === OWNER)).toBe(true);
   });
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 
 // Silence the info / warn logs the upload-routing helper emits when it
 // chooses the URL path.
@@ -70,6 +71,16 @@ const s3Commands = vi.hoisted(() => {
         super('DeleteObjects', input);
       }
     },
+    // Issue #2447: the purge closes with a `GetBucketReplication` probe.
+    // Omitting it is NOT neutral for the same reason the two above are not --
+    // the missing export throws inside the probe's own try, the probe issues
+    // no call, and every replication assertion in this file would read as
+    // "cdkd does not probe" whether or not it does.
+    GetBucketReplicationCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('GetBucketReplication', input);
+      }
+    },
   };
 });
 
@@ -79,6 +90,7 @@ vi.mock('@aws-sdk/client-s3', () => ({
   DeleteObjectCommand: s3Commands.DeleteObjectCommand,
   ListObjectVersionsCommand: s3Commands.ListObjectVersionsCommand,
   DeleteObjectsCommand: s3Commands.DeleteObjectsCommand,
+  GetBucketReplicationCommand: s3Commands.GetBucketReplicationCommand,
 }));
 
 vi.mock('../../../src/utils/aws-region-resolver.js', () => ({
@@ -111,6 +123,10 @@ function buildTemplate(approxBytes: number): {
 
 describe('selectChangeSetTemplateSource', () => {
   beforeEach(() => {
+    // Issue #2447: the purge closes with a replication probe cached per
+    // bucket for the process lifetime. Cleared so this file's command
+    // streams do not depend on which test ran first.
+    clearReplicationProbeCache();
     s3SendCalls.length = 0;
     s3SendMock.mockClear();
     s3DestroyMock.mockClear();
@@ -243,6 +259,11 @@ describe('selectChangeSetTemplateSource', () => {
         'DeleteObject',
         'ListObjectVersions',
         'DeleteObjects',
+        // Issue #2447: the purge closes by asking whether a replica kept what it
+        // just removed. It fires HERE and not in every sibling suite because
+        // this fixture's listing actually returns a noncurrent version -- the
+        // probe is scoped to keys a body was really removed for.
+        'GetBucketReplication',
       ]);
       const put = s3SendCalls[0]!;
       const del = s3SendCalls[1]!;
@@ -279,6 +300,11 @@ describe('selectChangeSetTemplateSource', () => {
         'DeleteObject',
         'ListObjectVersions',
         'DeleteObjects',
+        // Issue #2447: the purge closes by asking whether a replica kept what it
+        // just removed. It fires HERE and not in every sibling suite because
+        // this fixture's listing actually returns a noncurrent version -- the
+        // probe is scoped to keys a body was really removed for.
+        'GetBucketReplication',
       ]);
       expect(s3DestroyMock).toHaveBeenCalledTimes(1);
     });

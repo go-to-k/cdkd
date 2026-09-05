@@ -161,6 +161,11 @@ same for the keys it deletes on the happy path. The purge also runs when the
 collection PARTIALLY failed, so keys that were deleted before the failure do not
 keep their history.
 
+It removes them from the state bucket ONLY. If that bucket is replicated, the
+destination keeps its own copies and no cdkd purge can reach them — `cdkd gc`
+warns when it detects that; see
+[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+
 That purge needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion` on the
 state bucket — see the least-privilege policy in
 [State Management](state-management.md#security-and-best-practices). It fails

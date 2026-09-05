@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 
 /**
  * Issue [#2346](https://github.com/go-to-k/cdkd/issues/2346) site 4 —
@@ -129,6 +130,10 @@ describe('deleteRollbackJournal purges noncurrent versions (issue #2346 site 4)'
   const names = (): string[] => sent.map((s) => s.name);
 
   beforeEach(() => {
+    // Issue #2447: every purge ends with a replication probe cached per
+    // BUCKET for the process lifetime. Cleared here so this file's command
+    // streams do not depend on which test ran first.
+    clearReplicationProbeCache();
     sent = [];
     warnSpy.mockReset();
     deleteBehaviour = (): Promise<unknown> => Promise.resolve({});
@@ -143,6 +148,9 @@ describe('deleteRollbackJournal purges noncurrent versions (issue #2346 site 4)'
       'DeleteObjectCommand',
       'ListObjectVersionsCommand',
       'DeleteObjectsCommand',
+      // Issue #2447: the purge closes by asking whether a replica kept what
+      // it just removed.
+      'GetBucketReplicationCommand',
     ]);
   });
 
@@ -175,8 +183,9 @@ describe('deleteRollbackJournal purges noncurrent versions (issue #2346 site 4)'
 
     // The length pin is not decoration: a `for` over the recorded calls passes
     // VACUOUSLY on the pre-fix code, where the only call is the delete that
-    // already carried the header.
-    expect(sent).toHaveLength(3);
+    // already carried the header. FOUR since issue #2447: the replication
+    // probe is a state-bucket read too and carries the header like the rest.
+    expect(sent).toHaveLength(4);
     for (const call of sent) {
       expect(call.input.ExpectedBucketOwner).toBe(OWNER);
     }
@@ -212,6 +221,7 @@ describe('deleteRollbackJournal purges noncurrent versions (issue #2346 site 4)'
       'DeleteObjectCommand',
       'ListObjectVersionsCommand',
       'DeleteObjectsCommand',
+      'GetBucketReplicationCommand',
     ]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to delete rollback journal'));
   });

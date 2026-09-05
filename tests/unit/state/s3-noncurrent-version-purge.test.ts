@@ -4,6 +4,10 @@ import {
   purgeNoncurrentKeyVersions,
   type NoncurrentVersionPurgeOptions,
 } from '../../../src/state/s3-noncurrent-version-purge.js';
+import {
+  clearReplicationProbeCache,
+  DEFAULT_PURGED_OBJECT_DESCRIPTION,
+} from '../../../src/state/s3-replication-purge-gap.js';
 
 /**
  * Issue [#2340](https://github.com/go-to-k/cdkd/issues/2340) — the SHARED
@@ -54,6 +58,11 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
   let warn: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    // Every purge ends with the issue #2447 replication probe, which is cached
+    // per BUCKET for the process lifetime. Without this, the first test's
+    // answer would be reused by every later one and the wiring tests at the
+    // bottom of this file would assert against a stale verdict.
+    clearReplicationProbeCache();
     recorded = [];
     warn = vi.fn();
   });
@@ -327,7 +336,15 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
       logger: logger(),
     });
 
-    expect(recorded).toHaveLength(2);
+    // THREE: the listing, the delete, and the issue #2447 replication probe —
+    // which needs the owner assertion as much as the other two, since it is a
+    // read of bucket-level configuration.
+    expect(recorded).toHaveLength(3);
+    expect(recorded.map((c) => c.name)).toEqual([
+      'ListObjectVersionsCommand',
+      'DeleteObjectsCommand',
+      'GetBucketReplicationCommand',
+    ]);
     expect(recorded.every((c) => c.owner === '123456789012')).toBe(true);
   });
 
@@ -942,6 +959,26 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
     expect(message).not.toContain('\u0000');
   });
 
+  it('sanitizes the BUCKET in the failure warning, like the keys beside it', async () => {
+    // The line already renders attacker-influenced KEY names through
+    // `displaySafe`. One raw interpolation in a string whose other half is
+    // sanitized is the mixed-rendering shape that lets an escape fire from the
+    // unsanitized occurrence -- the same defect the replication warning one
+    // module over was corrected for.
+    const nastyBucket = 'cdkd-state\u001b[31m-000000000000';
+    const s3 = stub(
+      { [KEY_A]: [{ Versions: [{ Key: KEY_A, VersionId: 'v1', IsLatest: false }] }] },
+      undefined,
+      () => ({ Errors: [{ Key: KEY_A, VersionId: 'v1', Code: 'AccessDenied' }] })
+    );
+
+    await purgeNoncurrentKeyVersions(s3, nastyBucket, [KEY_A], { logger: logger() });
+
+    const message = String(warn.mock.calls[0]![0]);
+    expect(message).toContain(`s3://${displaySafe(nastyBucket, { asciiOnly: true })}`);
+    expect(message).not.toContain(nastyBucket);
+  });
+
   it('accumulates MULTIPLE reasons for one key', async () => {
     // Nothing gave a key two reasons, so `existing.push` and the `join('; ')`
     // were both dead code.
@@ -973,5 +1010,487 @@ describe('purgeNoncurrentKeyVersions (issue #2340)', () => {
     expect(message).toContain('AccessDenied');
     expect(message).toContain('SlowDown');
     expect(message).toMatch(/v1[^,]*AccessDenied.*;.*v2[^,]*SlowDown/);
+  });
+  /**
+   * Issue [#2447](https://github.com/go-to-k/cdkd/issues/2447) — the purge
+   * ends by asking whether the bucket is REPLICATED, because a clean purge on
+   * a replicated bucket leaves every body readable in the destination and is
+   * the case the user is actively misled by.
+   *
+   * The detector's own behaviour is pinned in
+   * `tests/unit/state/s3-replication-purge-gap.test.ts`; what is pinned HERE
+   * is that the purge asks at all, on the SUCCESS path, and warns through the
+   * CALLER's sink (which is what lets `lock-manager.ts` demote it).
+   */
+  describe('S3 replication caveat (issue #2447)', () => {
+    const replicated = (
+      pages: Record<string, ListPage[]>,
+      config: unknown,
+      onDelete?: (objects: { Key?: string; VersionId?: string }[]) => unknown
+    ): { send: (cmd: unknown) => Promise<unknown> } => {
+      const inner = stub(pages, undefined, onDelete);
+      return {
+        send: (cmd: unknown) => {
+          if ((cmd as { constructor: { name: string } }).constructor.name ===
+            'GetBucketReplicationCommand') {
+            // Recorded by the shared stub before we answer, so the command
+            // stream assertions below still see it.
+            void inner.send(cmd);
+            return Promise.resolve(config);
+          }
+          return inner.send(cmd);
+        },
+      };
+    };
+
+    const onePage: Record<string, ListPage[]> = {
+      [KEY_A]: [{ Versions: [{ Key: KEY_A, VersionId: 'a1', IsLatest: false }] }],
+    };
+
+    it('WARNS through the CALLER\'s sink after a fully successful purge', async () => {
+      const s3 = replicated(onePage, {
+        ReplicationConfiguration: {
+          Rules: [
+            {
+              Status: 'Enabled',
+              Filter: { Prefix: 'custom-resource-responses/' },
+              Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' },
+            },
+          ],
+        },
+      });
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], {
+        logger: logger(),
+        objectDescription: 'a custom-resource response object',
+      });
+
+      // The purge itself SUCCEEDED — nothing failed, so the only warning is
+      // the replication caveat. That is the point: it is the caveat on the
+      // clean run, not another failure report.
+      expect(deletes()).toEqual([[{ Key: KEY_A, VersionId: 'a1' }]]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]![0]);
+      expect(message).toContain('cdkd-state-replica');
+      expect(message).toContain('a custom-resource response object');
+      expect(message).toContain('NEVER replicates a version-id delete');
+    });
+
+    it('passes the SHARED default description through to the replication warning', async () => {
+      // `DEFAULT_PURGED_OBJECT_DESCRIPTION` lives in the gap module and is read
+      // by BOTH warnings; its own JSDoc says one definition is what stops the
+      // two drifting, and until now only the gap side was fenced.
+      const s3 = replicated(
+        { [KEY_A]: [{ Versions: [{ Key: KEY_A, VersionId: 'a1', IsLatest: false }] }] },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        },
+        () => ({ Errors: [{ Key: KEY_A, VersionId: 'a1', Code: 'SlowDown' }] })
+      );
+
+      // No `objectDescription` -- the fallback is what is under test, and it
+      // must be the SHARED constant on BOTH messages: the purge's own failure
+      // warning and the replication caveat.
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]![0])).toContain('Could not purge noncurrent versions');
+      expect(String(warn.mock.calls[0]![0])).toContain(DEFAULT_PURGED_OBJECT_DESCRIPTION);
+      expect(String(warn.mock.calls[1]![0])).toContain(DEFAULT_PURGED_OBJECT_DESCRIPTION);
+    });
+
+    it('does NOT probe at all when the walk found nothing to purge', async () => {
+      // The scoping that matters most. `deleteRollbackJournal` fires on EVERY
+      // successful deploy, journal or not: probing unconditionally made a
+      // routine green deploy of a stack that has never failed announce that
+      // the journal's copies "survive and remain readable" in the replica,
+      // about an object that had never existed in either bucket. A warning
+      // that is sometimes about nothing is how the one that matters stops
+      // being read — and the API call is saved on the common path too.
+      const s3 = replicated(
+        { [KEY_A]: [{ DeleteMarkers: [{ Key: KEY_A, VersionId: 'dm', IsLatest: true }] }] },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        }
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(deletes()).toEqual([]);
+      expect(recorded.map((c) => c.name)).toEqual(['ListObjectVersionsCommand']);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('does NOT probe when the only thing purged was a DELETE MARKER', async () => {
+      // The steady state of `deleteRollbackJournal`, which writes a marker on
+      // every successful deploy even when no journal exists: deploy 2 finds
+      // deploy 1's marker NONCURRENT and removes it. A marker has no body, so
+      // counting it as "purged" reinstated the very warning the scoping fix
+      // removed -- announcing a surviving rollback journal for a stack that
+      // has never had one -- from the second deploy onward.
+      const s3 = replicated(
+        {
+          [KEY_A]: [
+            {
+              DeleteMarkers: [
+                { Key: KEY_A, VersionId: 'dm-2', IsLatest: true },
+                { Key: KEY_A, VersionId: 'dm-1', IsLatest: false },
+              ],
+            },
+          ],
+        },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        }
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      // The marker IS removed -- that behaviour is unchanged...
+      expect(deletes()).toEqual([[{ Key: KEY_A, VersionId: 'dm-1' }]]);
+      // ...and no probe follows it, because no BODY was removed.
+      expect(recorded.map((c) => c.name)).toEqual([
+        'ListObjectVersionsCommand',
+        'DeleteObjectsCommand',
+      ]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('DOES probe when the walk stopped early on a TRUNCATED page', async () => {
+      // The one unknown-provenance arm REACHABLE against real S3: a page that
+      // reports `IsTruncated` with no `NextKeyMarker`. The walk cannot make
+      // progress, so what remains under the key is unknown and the replica
+      // question stands. Without this the arm is deletable green -- a truncated
+      // walk would skip the probe entirely, which is the silently-dead-detector
+      // direction.
+      const s3 = replicated(
+        { [KEY_A]: [{ Versions: [], IsTruncated: true }] },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        }
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]![0])).toContain('IsTruncated');
+      expect(String(warn.mock.calls[1]![0])).toContain('S3 replication is enabled');
+    });
+
+    it('DOES probe for a BODY the listing returned without IsLatest', async () => {
+      // The entry may be a body we were asked to remove and did not, so the
+      // replica question applies to it. Its `hasBody` gate has its own control
+      // in the sibling below.
+      const s3 = replicated(
+        { [KEY_A]: [{ Versions: [{ Key: KEY_A, VersionId: 'v1' }] }] },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        }
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]![0])).toContain('listing omitted IsLatest');
+      expect(String(warn.mock.calls[1]![0])).toContain('S3 replication is enabled');
+    });
+
+    it('does NOT probe for a MARKER the listing returned without IsLatest', async () => {
+      // The control for the case above, and the delete-marker twin of the
+      // no-VersionId pair below: same unreadable listing, but a marker carries
+      // no body, so there is nothing for the replica to be holding.
+      const s3 = replicated(
+        { [KEY_A]: [{ DeleteMarkers: [{ Key: KEY_A, VersionId: 'dm1' }] }] },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        }
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('listing omitted IsLatest');
+      expect(recorded.map((c) => c.name)).not.toContain('GetBucketReplicationCommand');
+    });
+
+    it('does NOT probe for a MARKER returned with no VersionId', async () => {
+      // The delete-marker twin of "REPORTS a noncurrent BODY ... with no
+      // VersionId". Both are reported; only the body reaches the replica
+      // question, which is the whole distinction this PR turns on.
+      const s3 = replicated(
+        { [KEY_A]: [{ DeleteMarkers: [{ Key: KEY_A, IsLatest: false }] }] },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        }
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('no VersionId');
+      expect(recorded.map((c) => c.name)).not.toContain('GetBucketReplicationCommand');
+    });
+
+    it('DOES probe when a BODY-bearing key fails to delete', async () => {
+      // The positive twin of the marker case below, and the fence for the
+      // invariant the delete loop's NOTE states: provenance is decided at
+      // LISTING time, so a body-bearing key is in `purged` before any delete
+      // runs and a failing delete cannot remove it from the replication check.
+      // Without this, moving `purged.add` into the delete SUCCESS path is a
+      // fully green mutation -- the body would survive in the replica and cdkd
+      // would say nothing about it.
+      const s3 = replicated(
+        { [KEY_A]: [{ Versions: [{ Key: KEY_A, VersionId: 'a1', IsLatest: false }] }] },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        },
+        () => ({ Errors: [{ Key: KEY_A, VersionId: 'a1', Code: 'SlowDown' }] })
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]![0])).toContain('Could not purge noncurrent versions');
+      expect(String(warn.mock.calls[1]![0])).toContain('S3 replication is enabled');
+    });
+
+    it('does NOT probe when a marker-only key FAILS to delete', async () => {
+      // A throttle deleting yesterday's rollback-journal delete marker must
+      // not put the key in front of the replication check. What makes that
+      // true is the `hasBody` gate at LISTING time -- a marker never enters
+      // `purged`, and a failing delete cannot add it -- not anything in the
+      // delete arms, which an earlier revision gated redundantly and which
+      // this case was briefly mis-credited to.
+      const s3 = replicated(
+        {
+          [KEY_A]: [
+            {
+              DeleteMarkers: [
+                { Key: KEY_A, VersionId: 'dm-2', IsLatest: true },
+                { Key: KEY_A, VersionId: 'dm-1', IsLatest: false },
+              ],
+            },
+          ],
+        },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        },
+        () => ({ Errors: [{ Key: KEY_A, VersionId: 'dm-1', Code: 'SlowDown' }] })
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      // The failure IS reported...
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('Could not purge noncurrent versions');
+      // ...and no replication probe follows, because no BODY was at stake.
+      expect(recorded.map((c) => c.name)).not.toContain('GetBucketReplicationCommand');
+    });
+
+    it('does NOT probe when the whole batch THROWS on a marker-only key', async () => {
+      // The other failure shape: `DeleteObjects` rejecting takes out the
+      // batch. Same reason as the sibling above -- provenance was decided at
+      // listing time, so the marker-only key is absent from `purged` whatever
+      // the delete does.
+      const s3 = replicated(
+        {
+          [KEY_A]: [
+            {
+              DeleteMarkers: [
+                { Key: KEY_A, VersionId: 'dm-2', IsLatest: true },
+                { Key: KEY_A, VersionId: 'dm-1', IsLatest: false },
+              ],
+            },
+          ],
+        },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        },
+        () => {
+          throw new Error('AccessDenied: s3:DeleteObjectVersion');
+        }
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(recorded.map((c) => c.name)).not.toContain('GetBucketReplicationCommand');
+    });
+
+    it('REPORTS a noncurrent BODY the listing returned with no VersionId, and probes for it', async () => {
+      // Unreachable against real S3, which always populates the field -- and
+      // that is exactly why it must record rather than be assumed away. Before
+      // this it was a bare `continue`: a body cdkd was asked to remove, did not
+      // remove, and said nothing about, while the run reported success.
+      const s3 = replicated(
+        { [KEY_A]: [{ Versions: [{ Key: KEY_A, IsLatest: false }] }] },
+        {
+          ReplicationConfiguration: {
+            Rules: [
+              { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+            ],
+          },
+        }
+      );
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      // Nothing could be deleted -- there was no id to name.
+      expect(deletes()).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]![0])).toContain('no VersionId');
+      // ...and it is a BODY, so the replica question applies to it.
+      expect(String(warn.mock.calls[1]![0])).toContain('S3 replication is enabled');
+    });
+
+    it('DOES probe for a key the LISTING could not settle', async () => {
+      // A key whose LISTING failed is one whose provenance we genuinely do not
+      // know -- the walk never returned, so we cannot say whether it had a body
+      // -- and over-warning is the safe direction there. Without this case the
+      // `unsettledBodies` union is deletable green, since the only other
+      // failing-purge case fails at DeleteObjects, i.e. AFTER the key was
+      // already marked purged. (The synthetic `<unknown key #N>` slots cannot
+      // reach the check at all: `unsettledBodies` is built from real keys, so
+      // that is a property of the construction rather than of a filter a test
+      // would have to fence.)
+      const inner = stub({}, () => {
+        throw new Error('AccessDenied: s3:ListBucketVersions');
+      });
+      const s3 = {
+        send: (cmd: unknown) => {
+          if (
+            (cmd as { constructor: { name: string } }).constructor.name ===
+            'GetBucketReplicationCommand'
+          ) {
+              const input = (cmd as { input: { Bucket?: string; ExpectedBucketOwner?: string } })
+              .input;
+            // Read off the COMMAND, not hard-coded: a probe sent for the wrong
+            // bucket would otherwise be invisible here.
+            recorded.push({
+              name: 'GetBucketReplicationCommand',
+              bucket: input.Bucket,
+              prefix: undefined,
+              keyMarker: undefined,
+              versionIdMarker: undefined,
+              owner: input.ExpectedBucketOwner,
+              objects: undefined,
+            });
+            return Promise.resolve({
+              ReplicationConfiguration: {
+                Rules: [
+                  { Status: 'Enabled', Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' } },
+                ],
+              },
+            });
+          }
+          return inner.send(cmd);
+        },
+      };
+
+      await purgeNoncurrentKeyVersions(s3, BUCKET, [KEY_A], { logger: logger() });
+
+      const probe = recorded.find((c) => c.name === 'GetBucketReplicationCommand');
+      expect(probe).toBeDefined();
+      expect(probe!.bucket).toBe(BUCKET);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]![0])).toContain('Could not purge noncurrent versions');
+      expect(String(warn.mock.calls[1]![0])).toContain('S3 replication is enabled');
+    });
+
+    it('stays SILENT when the bucket has no replication configuration', async () => {
+      // The inverted polarity. S3 answers "not configured" with an ERROR, so
+      // this arm is also the one that proves the detector does not read its
+      // own ordinary answer as a reason to warn.
+      const notFound = new Error('ReplicationConfigurationNotFoundError: none');
+      notFound.name = 'ReplicationConfigurationNotFoundError';
+      const s3 = replicated(onePage, undefined);
+      const wrapped = {
+        send: (cmd: unknown) => {
+          if ((cmd as { constructor: { name: string } }).constructor.name ===
+            'GetBucketReplicationCommand') {
+            return Promise.reject(notFound);
+          }
+          return s3.send(cmd);
+        },
+      };
+
+      await purgeNoncurrentKeyVersions(wrapped, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(deletes()).toEqual([[{ Key: KEY_A, VersionId: 'a1' }]]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('still asks even when the purge FAILED, and keeps both warnings', async () => {
+      // A failed purge does not make the replica question moot — the replica
+      // holds the bodies either way, and the two warnings answer different
+      // questions ("what could cdkd not do" vs "what can cdkd never do").
+      const s3 = replicated(onePage, {
+        ReplicationConfiguration: {
+          Rules: [
+            {
+              Status: 'Enabled',
+              Destination: { Bucket: 'arn:aws:s3:::cdkd-state-replica' },
+            },
+          ],
+        },
+      });
+      const failing = {
+        send: (cmd: unknown) => {
+          if ((cmd as { constructor: { name: string } }).constructor.name ===
+            'DeleteObjectsCommand') {
+            void s3.send(cmd);
+            return Promise.reject(new Error('AccessDenied: s3:DeleteObjectVersion'));
+          }
+          return s3.send(cmd);
+        },
+      };
+
+      await purgeNoncurrentKeyVersions(failing, BUCKET, [KEY_A], { logger: logger() });
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      // Failure report FIRST, caveat second.
+      expect(String(warn.mock.calls[0]![0])).toContain('Could not purge noncurrent versions');
+      expect(String(warn.mock.calls[1]![0])).toContain('S3 replication is enabled');
+    });
   });
 });

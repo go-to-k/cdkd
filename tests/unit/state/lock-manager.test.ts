@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
+import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 import { S3Client, S3ServiceException, NoSuchKey } from '@aws-sdk/client-s3';
 import { LockManager } from '../../../src/state/lock-manager.js';
 import type { LockInfo } from '../../../src/types/state.js';
@@ -103,6 +104,10 @@ describe('LockManager', () => {
   };
 
   beforeEach(async () => {
+    // Issue #2447: every purge ends with a replication probe cached per
+    // BUCKET for the process lifetime. Cleared here so this file's command
+    // streams do not depend on which test ran first.
+    clearReplicationProbeCache();
     vi.clearAllMocks();
     // Default: bucket is already in the same region as the client, so
     // ensureClientForBucket() does not rebuild the client.
@@ -255,6 +260,9 @@ describe('LockManager', () => {
       // site 5's reap-path purge, and its POSITION is the assertion that
       // matters: it must come AFTER the re-acquisition PUT, never between the
       // delete and the retry, or it widens the takeover contention window.
+      // Issue #2447's replication probe does NOT appear: the listing returns
+      // no noncurrent version here, so nothing was purged and there is no
+      // replica survival to report.
       expect(s3Client.send).toHaveBeenCalledTimes(5);
       expect(
         s3Client.send.mock.calls.map(
@@ -499,7 +507,8 @@ describe('LockManager', () => {
 
       await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
-      // GetObject + DeleteObject + the issue #2346 site 5 purge listing.
+      // GetObject + DeleteObject + the issue #2346 site 5 purge listing. No
+      // issue #2447 probe: the listing finds nothing to purge.
       expect(s3Client.send).toHaveBeenCalledTimes(3);
     });
 
@@ -540,7 +549,8 @@ describe('LockManager', () => {
 
       await lockManager.forceReleaseLock('test-stack', 'us-east-1');
 
-      // GetObject + DeleteObject + the issue #2346 site 5 purge listing.
+      // GetObject + DeleteObject + the issue #2346 site 5 purge listing. No
+      // issue #2447 probe: the listing finds nothing to purge.
       expect(s3Client.send).toHaveBeenCalledTimes(3);
     });
 
@@ -556,7 +566,8 @@ describe('LockManager', () => {
       // still failed every acquire. A DELETE against a key that is genuinely
       // absent is an idempotent no-op, which is the cheaper side to be wrong on
       // for a command the user ran explicitly. The third call is the issue
-      // #2346 site 5 purge listing, which follows every `deleteLock`.
+      // #2346 site 5 purge listing, which follows every `deleteLock`; issue
+      // #2447's probe does not fire because the listing finds nothing.
       expect(s3Client.send).toHaveBeenCalledTimes(3);
     });
   });

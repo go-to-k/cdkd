@@ -245,6 +245,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['providers.md', 92],
   ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
+  ['state-version-purge.md', 2], // literal list: EXACT, see below
   ['synthesis.md', 13],
   ['test-stream-fence.md', 3], // literal list: EXACT, see below
   ['testing.md', 2532],
@@ -325,9 +326,15 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `layout-deployment-secrets.md` and the new `code-layout.md` index row moved
   // several of them, and a `measured` comment that no longer matches the tree
   // reads as evidence while being none.
-  ['src/state/s3-state-backend.ts', 43_000, 57_000],         // measured  55,030
-  ['src/types/state.ts', 43_000, 57_000],                    // measured  55,030
-  ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
+  ['src/state/s3-state-backend.ts', 43_000, 57_000],         // measured  55,319 (was 55,030 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
+  // The representative path for state-version-purge.md, whose two-file glob
+  // (the purge and its replication-gap detector, issue
+  // go-to-k/cdkd#2447) matches nothing else. Without this row the satellite
+  // sits under no budget at all: the `src/state/s3-state-backend.ts` row above
+  // does NOT match it, which is the whole reason it was split out.
+  ['src/state/s3-noncurrent-version-purge.ts', 53_000, 64_000], // measured 61,168
+  ['src/types/state.ts', 43_000, 57_000],                    // measured  55,319 (was 55,030 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
+  ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  37,848 (was 34,889 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
   // failed this row for a reason unrelated to itself -- the same argument that
@@ -399,14 +406,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // is 52,459 B lighter.
   ['src/provisioning/masked-retry-logger.ts', 94_500, 162_000], // measured 126,979
   ['src/analyzer/drift-protocol-normalize.ts', 71_000, 92_000],  // measured  81,242
-  ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  37,183
-  ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  43,787 (asset-bucket-region.md, issue #2240)
+  ['src/assets/asset-publisher.ts', 32_000, 42_000],             // measured  40,238 (was 37,183 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
+  ['src/assets/asset-storage.ts', 34_000, 48_000],               // measured  46,764 (asset-bucket-region.md, issue #2240; was 43,787 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
   // proxy-support.md's glob names three literal files (issue #2388); without a
   // row here the satellite would sit under no budget, which is the state the
   // 2026-08-25 review probe showed a rule file can reach unnoticed.
   ['src/utils/aws-client-defaults.ts', 46_000, 58_000],  // measured  52,845
   ['src/utils/logger.ts', 38_000, 50_000],                       // measured  43,397
-  ['vite.config.ts', 14_000, 21_000],                            // measured  16,712
+  ['vite.config.ts', 14_000, 21_000],                            // measured  19,581 (was 16,712 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
   // The representative path for `test-stream-fence.md`: the only paths its
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
@@ -548,7 +555,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 44; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 45; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -641,7 +648,34 @@ const CORPUS_FILE_COUNT = 44; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  than `src/utils/**`: layout-utils.md fell to 30,4xx B and the
                               //  rule now travels with the code it governs instead of with every
                               //  utils edit. That makes 44.
-const CORPUS_BYTES_MIN = 817_000;   // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04
+                              //  + state-version-purge.md (issue go-to-k/cdkd#2447): a NEW file
+                              //  rather than a split in spirit, but a split in effect -- the
+                              //  purge's replication gap and the three decisions behind its
+                              //  detector went into layout-misc.md first and pushed the
+                              //  `src/state/s3-state-backend.ts` payload to 57,197 B against its
+                              //  57,000 B cap, taking `src/types/state.ts`, both `src/assets/`
+                              //  rows and `vite.config.ts` over with it. Moved out under a
+                              //  two-path glob (the purge and its detector) so that only a session
+                              //  touching those two files pays for it -- the #2236 / #2240 / #2363
+                              //  shape again -- leaving a one-line pointer in layout-misc.md.
+                              //  That file GREW, 19,290 -> 19,581 B: neither module had an entry
+                              //  before, so the split is against an intermediate draft rather
+                              //  than against main, and a pointer always costs the index file
+                              //  something. Measured on the tree that ships this line. That
+                              //  makes 45.
+const CORPUS_BYTES_MIN = 862_000;   // RE-DERIVED UPWARD 817_000 -> 862_000 (issue
+                                    // go-to-k/cdkd#2447): measured 895,893 B on the REBASED tree
+                                    // -- 33,893 B of slack, the same ~34 KB every previous setting
+                                    // used. Re-derived rather than left alone because the old
+                                    // figure had drifted to 79 KB of slack and would no longer
+                                    // have noticed a whole satellite being deleted, which is the
+                                    // one thing this bound is for. An earlier revision of this
+                                    // line set 856_000 and claimed the same ~34 KB while actually
+                                    // holding ~40 KB, because the bound was not moved when the
+                                    // measurement went 890,757 -> 895,893 on the rebase: exactly
+                                    // the drift the last paragraph below warns about, committed
+                                    // inside the change that quotes it.
+                                    // 817_000 was: // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04
                                     // compression: measured 851,451 B -- 34,451 B of slack, the
                                     // same ~34 KB every previous setting used.
                                     // 917_000 -> 966_000 (2026-09-03): re-measured with the same
@@ -658,7 +692,19 @@ const CORPUS_BYTES_MIN = 817_000;   // RE-DERIVED DOWNWARD 966_000 -> 817_000 by
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 890_000; // RE-DERIVED DOWNWARD 1_040_000 -> 890_000 (measured 851,451 + the ~39 KB of headroom the old ceiling held). // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 929_000; // RE-DERIVED UPWARD 890_000 -> 929_000 (issue go-to-k/cdkd#2447):
+                                  // measured 895,893 on the REBASED tree + 33,107 B of headroom
+                                  // -- NARROWER than the ~39 KB the previous ceiling held, which
+                                  // is deliberate and is why it is not described as "the same".
+                                  // The corpus crossed
+                                  // the old 890,000 ceiling on a lane that added ONE satellite,
+                                  // already trimmed once; past that the remaining text is the
+                                  // load-bearing decisions themselves, and this file's own
+                                  // instruction is not to summarise or delete it. Note the figure
+                                  // includes `docker-argv-redaction.md`, which landed on main
+                                  // while this branch was open -- FOUR earlier revisions of this
+                                  // comment quoted a draft or a pre-rebase tree and went stale.
+                                  // 890_000 was: // RE-DERIVED DOWNWARD 1_040_000 -> 890_000 (measured 851,451 + the ~39 KB of headroom the old ceiling held). // growth is the norm here; this catches bulk growth that stays under every per-file cap.
                                     // 1_000_000 -> 1_040_000 (2026-09-03, go-to-k/cdkd#2402's
                                     // third review round): measured 1,000,819 B. The previous
                                     // bound was set at 12,808 B of slack and TWO lanes spent it

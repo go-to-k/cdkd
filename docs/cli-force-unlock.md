@@ -97,7 +97,11 @@ touched — including the region-less one.
 The lock is a single object at
 `s3://{bucket}/{prefix}/{stackName}/{region}/lock.json`. The command deletes it
 and then purges that key's noncurrent versions, so a versioned state bucket does
-not accumulate the leavings of every crashed run. Nothing else in the state
+not accumulate the leavings of every crashed run. That purge reaches the state
+bucket only — on a replicated bucket the destination keeps its copies, which
+matters less here than elsewhere (a lock body carries no secret) but is the
+same mechanism; see
+[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you). Nothing else in the state
 record is touched: the stack's `state.json`, its resources, and its deployment
 events are all left as they were.
 
