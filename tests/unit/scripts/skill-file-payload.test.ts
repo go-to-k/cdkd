@@ -235,16 +235,22 @@ const MIN_REFERENCE_FILES = 6;
 // 248 B.
 // The 2026-09-05 go-to-k/cdkd#2554 + go-to-k/cdkd#2615 retro added two rules
 // (implement.md's aim-the-mutation receipt, retro.md's promotion-routing and
-// mirror-aims-back clauses) plus a +38 B consequence in gates-and-pr.md, and
-// came out at 172,004 -> 172,746 with implement.md 27,713 -> 28,079 taking
-// the lead back from verify.md 27,876 (unchanged); margin 709 -> 130 B. Note
-// what "paid for" does and does not mean here: BOTH edited stage files still
-// grew, so the payment was partial -- implement.md folded its
+// mirror-aims-back clauses) plus a consequential rewrite in gates-and-pr.md,
+// and came out at 172,004 -> 172,746 with implement.md 27,713 -> 28,079
+// taking the lead back from verify.md 27,876 (unchanged); margin 709 -> 130 B.
+// The three components sum to the total and are stated so that they can be
+// checked rather than believed: implement.md +366, retro.md +254,
+// gates-and-pr.md +122, = +742. (An earlier revision of this paragraph said
+// +38 for the last of those, which reconciled with nothing; two reviewers
+// caught it, on the file whose whole subject is a byte figure going stale.)
+// Note what "paid for" does and does not mean here: every edited stage file
+// still GREW, so the payment was partial -- implement.md folded its
 // multi-copy-anchor clause into the receipt rather than keeping both, and
-// retro.md shed seven passages that carried an incident at paragraph length
-// where section 10-c asks for one line, the largest being 10-b's restatement
-// of 10-c's own byte-cap rationale. Contrast the go-to-k/cdkd#2595 round at
-// line 178, which is the only one so far to end NET NEGATIVE.
+// retro.md compressed six passages that carried an incident at paragraph
+// length where section 10-c asks for one line, the largest being 10-b's
+// restatement of 10-c's own byte-cap rationale. Contrast the
+// go-to-k/cdkd#2595 round at line 178, the only one so far to end NET
+// NEGATIVE.
 // implement.md's +366 B was NOT free, and this file predicted why: the
 // crossover the comment above forecast ("128 B of room at this writing") has
 // now happened twice, so implement.md is the leader and every byte added to

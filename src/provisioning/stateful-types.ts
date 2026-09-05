@@ -625,10 +625,11 @@ export function isStatefulRecreateTargetSync(
  * a `null` verdict for the `--recreate-via-*` pre-flight, where
  * `--force-stateful-recreation` is what skipped the probe.
  * `stateful-replace-message-doc-sync` pins the whole guard's reader list by
- * file, but its own header names what that cannot see: an ALIASED import, a
- * `.mts` / `.cts` reader, and — the one that bit — a NEW PATH routed through
- * an existing call site, which adds no file and reds nothing (issue [#2514]'s
- * shape). So this enumeration is maintained by hand.
+ * file, but the residuals comment above its own walk enumerates what that
+ * cannot see — among them an ALIASED import, a `.mts` / `.cts` reader, and,
+ * the one that bit, a NEW PATH routed through an existing call site, which
+ * adds no file and reds nothing (issue [#2514]'s shape). So this enumeration
+ * is maintained by hand.
  *
  * The log group's arm is the one issue [#2558] added, and the reason it is
  * needed is that the old predicate treated "no retention recorded" as "holds
@@ -676,13 +677,16 @@ export function renderStatefulReason(reason: StatefulReason): string {
     case 'has-retention':
       return 'log group retains data (RetentionInDays > 0)';
     case 'has-log-events':
-      // Deliberately NOT "log group is non-empty": this reason renders on all
-      // three of the cases enumerated for its bucket sibling above — the
-      // probe FOUND a stream, the probe answered without settling it, and no
-      // probe could run — and only the hedged wording is true of all three.
-      // It was the FIRST of the two to hedge; the bucket followed for the
-      // same reason in issue [#2615], so the two are now the same shape
-      // rather than a contrast.
+      // Deliberately NOT "log group is non-empty": this reason renders on
+      // FIVE producers, and only the hedged wording is true of all of them —
+      // the probe found a stream, it answered without settling the question,
+      // it hit a not-found in an unverified region, it THREW, and the
+      // mid-deploy arm below where no probe runs at all. The last two are the
+      // divergence `recreate-targets.ts` documents: a probe failure fails
+      // CLOSED here and OPEN for the bucket, so this is a superset of its
+      // sibling's cases, not parity with them. It was also the FIRST of the
+      // two to hedge; the bucket followed in issue [#2615], so the two are
+      // now the same shape rather than a contrast.
       return 'log group is not provably empty';
     case null:
       return '(not stateful)';

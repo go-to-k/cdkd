@@ -418,7 +418,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 48_000, 72_000],                            // measured  49,709 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
+  ['tests/setup.ts', 48_000, 72_000],                            // measured  49,650 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
   // 46_000 -> 48_000 on 2026-09-05: the go-to-k/cdkd#2595 retro added 1,126 B of
   // mutation-probe rules to `testing.md`, and the discriminate case below went
   // red exactly as its comment predicts ("testing.md growing spends it from the
@@ -427,21 +427,22 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // the live payload (which it must accept), and 48_000 split that band nearly
   // in half rather than sitting 47 B off one edge as 46_000 had come to.
   // RE-MEASURED 2026-09-05 in the same day, after the go-to-k/cdkd#2554 retro
-  // added a sentinel-blunting rule to `testing.md` (45,579 -> 46,289 B):
-  // payload 48,999 -> 49,709, and the gutting bound 47,079 -> 47,789, so the
-  // growth room this floor leaves `testing.md` fell 921 -> 211 B while the
-  // shrink room rose 999 -> 1,709 B. The floor is NOT re-derived upward for
+  // added a sentinel-blunting rule to `testing.md` (45,579 -> 46,230 B):
+  // payload 48,999 -> 49,650, and the gutting bound 47,079 -> 47,730, so the
+  // growth room this floor leaves `testing.md` fell 921 -> 270 B while the
+  // shrink room rose 999 -> 1,650 B. The floor is NOT re-derived upward for
   // that -- moving a bound to fit the diff that spent it is the ratchet
   // `.claude/skills/work-issues/references/retro.md` 10-c forbids -- but the
-  // asymmetry is now the live constraint: the next `testing.md` addition over
-  // 211 B reds the discriminate case below, and the fix is compression there,
+  // asymmetry is now the live constraint: the bound is a strict `<`, so the
+  // usable room is 269 B and an addition of 270 B reds the discriminate case
+  // below. The fix is compression there,
   // not a bigger number here. Unlike the skill corpus, this file has no
   // MEASURED record, so these three figures are the only thing that goes
   // stale silently; re-measure them in any commit that touches `testing.md`.
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above
-  // `testing.md` (46,289 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
+  // `testing.md` (46,230 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
   // `test-stream-fence.md` down to the smallest size the `substantive content`
   // case still allows fails HERE. 51_000, 57_000 and 62_000 were each chosen by
   // hand and each failed to add signal: the first two sat below `testing.md`

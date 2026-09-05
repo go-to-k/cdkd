@@ -701,12 +701,11 @@ checker must prove it sees its input", one layer out. Two rules:
   your diff never opens, and re-running finds none of them** — the grep still
   MATCHES, it has just stopped discriminating, so every phase stays green.
   `loggroup-never-expire-guard` grepped `not provably empty` until issue #2615
-  gave the S3 reason the same hedge and the fix round re-anchored it to
-  `log group is not provably empty`; review caught it, no fence did. After
-  hedging any rendered message, grep the fixture tree for the phrases the NEW
-  wording now shares and re-anchor each sentinel on what is still unique to
-  its producer — or PIN the pair, as `stateful-guard-message-sync.test.ts`
-  does for both arms.
+  hedged the S3 reason the same way; review caught it, no fence did. Fence it
+  rather than re-grepping by hand: `stateful-guard-message-sync.test.ts`
+  derives the word-grams two rendered strings SHARE and refuses any
+  `verify.sh` carrying one outside a full sentence, so the next hedge reds
+  instead of blinding a fixture nobody edited.
 
 ### A checker must prove it sees its input
 
