@@ -530,9 +530,22 @@ describe('non-forward listener actions (issue #2602)', () => {
     // A Lambda-only ALB resolves to zero boots (the engine refuses only when
     // boots AND listeners are both empty), so "the ECS service targets behind
     // this ALB DO honor --from-state" would be vacuous there.
-    const message = warnFor(undefined)[0] as string;
-    expect(message).not.toContain('The ECS service targets behind this ALB DO honor');
-    expect(message).toContain('--from-cfn-stack');
+    //
+    // Asserted WHOLE rather than as a substring, for the reason round 5 found
+    // on this message's other branch: a `toContain` fences only the
+    // concatenation seams INSIDE it, and the first seam a span missed sat
+    // directly beside the covered one. This is the Lambda-only twin of
+    // `EXPECTED_WARNING_WITH_ECS_NOTE` in `local-start-alb-wiring.test.ts` —
+    // the same text minus the ECS sentence.
+    expect(warnFor(undefined)[0]).toBe(
+      "--from-state does not reach the container environment of this ALB's Lambda target " +
+        'group(s): ApiFn. Their Environment.Variables keep any Ref / Fn::GetAtt / Fn::Sub / ' +
+        'Fn::ImportValue intrinsics unresolved, and each is then dropped with its own warning. ' +
+        'The only state source the Lambda path reads is --from-cfn-stack <name>, which ' +
+        'REPLACES --from-state (the two are mutually exclusive) and reaches both target kinds ' +
+        'on a CloudFormation-deployed stack; otherwise override the affected variables with ' +
+        '--env-vars. Tracked as go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).'
+    );
   });
 });
 

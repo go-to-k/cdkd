@@ -42,9 +42,11 @@ import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emu
  *
  * The bound, stated because an over-claim here is the same defect as a fence
  * that cannot see: this is ARGV-DRIVEN, so it sees only the argv it drives. A
- * conditional keyed on a flag no case varies escapes it. The cases below vary
- * the flags a branch would plausibly key on; a conditional keyed on something
- * else (an env var, `isTTY`) still gets through.
+ * conditional keyed on a flag no case varies escapes it, and round 5 measured
+ * exactly that — `--env-vars` slipped past the first parameterisation. The
+ * cases below now vary every flag a branch would plausibly key on; a
+ * conditional keyed on something OUTSIDE the argv (an env var, `isTTY`, the
+ * clock) still gets through, and no argv-driven case can close that.
  *
  * `parseAsync` rather than `parse`: the action is async, and
  * `cmd-parse-stub-gate` deliberately exempts the async spelling because the
@@ -131,6 +133,23 @@ async function strategyHandedToEngine(argv: string[]): Promise<EmulatorStrategy>
 const warningsFor = (strategy: EmulatorStrategy): string[] =>
   strategy.resolveBoots(stacks as never, ['Alb16C2F182']).warnings;
 
+/**
+ * The exact text a user sees on this ALB, which has BOTH an ECS service target
+ * and a Lambda target group. Its Lambda-only sibling (the same string without
+ * the ECS sentence) is asserted in `local-start-alb.test.ts`; keeping the two
+ * literals apart is deliberate — a reword must be made in both places, which
+ * is the point for a message that is the entire remedy.
+ */
+const EXPECTED_WARNING_WITH_ECS_NOTE =
+  "--from-state does not reach the container environment of this ALB's Lambda target " +
+  'group(s): ApiFnE0725F78. Their Environment.Variables keep any Ref / Fn::GetAtt / ' +
+  'Fn::Sub / Fn::ImportValue intrinsics unresolved, and each is then dropped with its own ' +
+  'warning. The ECS service targets behind this ALB DO honor --from-state. The only state ' +
+  'source the Lambda path reads is --from-cfn-stack <name>, which REPLACES --from-state ' +
+  '(the two are mutually exclusive) and reaches both target kinds on a ' +
+  'CloudFormation-deployed stack; otherwise override the affected variables with ' +
+  '--env-vars. Tracked as go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).';
+
 describe('the strategy `cdkd local start-alb` hands the engine', () => {
   // An argv-driven fence only sees the argv it drives. Review round 4 measured
   // that a conditional keyed on a flag this file never varied —
@@ -143,12 +162,22 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
   // conditional keyed on something else entirely (a random value, an env var,
   // `isTTY`) still escapes. What this closes is the plausible-refactor class,
   // not every conceivable one.
+  //
+  // `--env-vars` is here because round 5 measured it surviving the first
+  // parameterisation, and it is the MOST plausible key of the lot: "don't nag
+  // if they already overrode the variables" is a refactor someone would write
+  // on purpose, keyed on the very flag this warning's remedy names.
   const FLAG_COMBINATIONS: string[][] = [
     [],
     ['--watch'],
     ['--tls'],
     ['--lb-port', '80=8080'],
     ['--no-pull'],
+    ['--env-vars', 'overrides.json'],
+    ['--profile', 'dev'],
+    ['--stack-region', 'us-west-2'],
+    ['--bearer-token', 'jwt'],
+    ['--no-verify-auth'],
   ];
 
   it.each(FLAG_COMBINATIONS)(
@@ -181,14 +210,13 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
     // tokens.
     const strategy = await strategyHandedToEngine(['My/Alb', '--from-state']);
     const warned = warningsFor(strategy).join('\n');
-    // Asserted as ONE span across the source's concatenation seams: review
-    // measured that dropping a trailing space produced `whichreaches` in the
-    // user-facing text while every shorter `toContain` stayed green.
-    expect(warned).toContain(
-      'The only state source the Lambda path reads is --from-cfn-stack <name>, which REPLACES ' +
-        '--from-state (the two are mutually exclusive) and reaches both target kinds on a ' +
-        'CloudFormation-deployed stack; otherwise override the affected variables with --env-vars.'
-    );
+    // Asserted WHOLE, not as a span. A span was tried and covered 3 of the
+    // source's 9 concatenation seams — and the first seam it missed sat
+    // directly beside the one it covered, so `(upstreamgo-to-k/cdk-local#707)`
+    // shipped green. A `toContain` can only ever fence the seams inside it;
+    // equality fences all of them, and this string IS the remedy, so coupling
+    // a reword to a test edit is the right trade.
+    expect(warned).toBe(EXPECTED_WARNING_WITH_ECS_NOTE);
     expect(warned).toContain('--env-vars');
     expect(warned).toContain('go-to-k/cdk-local#707');
   });

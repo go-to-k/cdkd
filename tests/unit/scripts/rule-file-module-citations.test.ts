@@ -229,15 +229,18 @@ function collectCitations(): Citation[] {
  */
 function candidateTargetsOf(citation: Citation): string[] {
   if (citation.kind === 'bare') return [];
-  // The corpus writes a path three ways and all three are legitimate, so all
-  // three are tried rather than guessed at from the citation's syntax:
-  // relative to the rules directory (every markdown link, and a `../`-relative
-  // code span), relative to the repo root (the common code-span form), and
-  // relative to `src/` (three citations use the shorter spelling).
+  // A markdown LINK has exactly one correct base — the rules directory — and
+  // is held to it. Folding links in with code spans (round 4) accepted a link
+  // written repo-root-relative, which resolves nothing when a reader clicks
+  // it; that is precisely the defect a link citation can have.
+  if (citation.kind === 'link') return [resolve(RULES_DIR, citation.cited)];
+  // A code span is prose, and the corpus writes it three ways, all legitimate:
+  // repo-root (the common form), `src/`-relative (three live citations use the
+  // shorter spelling), and rules-dir-relative (a `../`-prefixed span).
   return [
-    resolve(RULES_DIR, citation.cited),
     resolve(REPO_ROOT, citation.cited),
     resolve(REPO_ROOT, 'src', citation.cited),
+    resolve(RULES_DIR, citation.cited),
   ];
 }
 
@@ -252,7 +255,15 @@ function resolvesInTree(citation: Citation, repoFileNames: Set<string>): boolean
       return repoFileNames.has(citation.cited);
     case 'path':
     case 'link':
-      return candidateTargetsOf(citation).some(existsSync);
+      // `.filter(insideRepo)` is the whole hermeticity guarantee, and leaving
+      // it out is how round 5 found this fence reading the filesystem OUTSIDE
+      // the checkout. Measured both ways with a sibling `../src/x.ts` created
+      // next to the repo: the honesty arm went red and demanded an exemption
+      // that is still needed, and a dead `../outside/...` citation went green.
+      // A fence whose verdict depends on what sits beside the checkout is the
+      // exact failure this file exists to refuse — and the earlier "fix" for
+      // it only guarded the CLASSIFIER, not the existence check.
+      return candidateTargetsOf(citation).filter(insideRepo).some(existsSync);
   }
 }
 
@@ -326,8 +337,10 @@ describe('.claude/rules module citations resolve against the tree', () => {
       pinned.filter((key) => {
         const citation = cited.get(key);
         if (citation === undefined) return false;
+        // Skip a citation no candidate base keeps inside the repo: whether it
+        // resolves is a fact about the developer's disk, not about this repo.
         const targets = candidateTargetsOf(citation);
-        if (targets.length > 0 && !targets.some(insideRepo)) return false;
+        if (targets.length > 0 && targets.filter(insideRepo).length === 0) return false;
         return resolvesInTree(citation, repoFileNames);
       }),
       'These EXEMPT_CITATIONS entries now RESOLVE, so the exemption does nothing except hide ' +
