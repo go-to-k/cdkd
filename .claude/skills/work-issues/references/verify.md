@@ -132,7 +132,10 @@ Unit tests passing is necessary but NOT sufficient:
   integ's **destroy** step completes cleanly (`integ-destroy`, plus
   `integ-broad` for cross-cutting files). Run it via **`/run-integ <name>`**
   — never raw `cdkd deploy` / `cdkd destroy` from a shell (CLAUDE.md carries
-  that rule and why). `/pick-integ` chooses the fixture(s) and marks which are
+  that rule and why), and **the bypass is not those two command NAMES: it is
+  any real-AWS work outside a fixture** — `node dist/cli.js <anything>` and
+  hand-made test resources are the same act, EXIT traps and all
+  (go-to-k/cdkd#2653). `/pick-integ` chooses the fixture(s) and marks which are
   maintainer-only — never name one it flagged.
 - **Non-deletion source change** → still live-test the fixed path end-to-end
   (deploy → the redeploy that reproduced the bug → destroy), fresh fixture or
@@ -151,9 +154,9 @@ Unit tests passing is necessary but NOT sufficient:
     `vite.config.ts`, `vp run check` for lint/typecheck config — noting
     `vp run check` reads neither `ci.yml` nor any hook, and its lint is
     scoped to `src/**`). Run it BEFORE and AFTER; for the BEFORE tree use a
-    scratch copy or re-applied sed-swap, never `git checkout -- <path>` /
-    `git restore <path>` (`dirty-path-restore-gate` blocks it; one such undo
-    discarded ~200 lines of unrelated work, go-to-k/cdkd#1700). Flag-order
+    scratch copy or a re-applied sed-swap, never `git checkout -- <path>` /
+    `git restore <path>` (`dirty-path-restore-gate` blocks that form on a
+    DIRTY path — go-to-k/cdkd#1700 lost ~200 lines). Flag-order
     trap: a `vp run` flag after the task name is forwarded to the task and
     rejected — exit 1 from a command that never ran (go-to-k/cdkd#2017); read
     help through `mise exec`, not the bare binary. **Drive the FAILURE
@@ -372,9 +375,10 @@ code defects and FIVE false statements in prose. Habits that each caught one:
 
 ### 8-i. Fresh deploys, markers, and who sets what
 
-**Fresh deploys: UNIQUE stack names only** (e.g. `Cdkd<Issue>Verify`), never a
-shared fixed name — the account may hold the maintainer's production stacks.
-Tear down with `cdkd destroy … --force`, then sweep for orphans it cannot
+**A fresh deploy is a fresh FIXTURE**: `/new-integ` scaffolds one, `/run-integ`
+deploys and tears it down (§8-c). **UNIQUE stack names only**
+(e.g. `Cdkd<Issue>Verify`), never a shared fixed name — the account may hold
+the maintainer's production stacks. After teardown, sweep for orphans it cannot
 reach (auto-created `/aws/lambda/*` log groups, RETAIN resources, Secrets in
 recovery, KMS keys pending deletion), then run CLAUDE.md's post-integ
 leftover check — the `deployments/` events store legitimately survives it.

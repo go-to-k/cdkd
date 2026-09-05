@@ -104,6 +104,16 @@ record the search so the next lane can see the window was checked:
 Dup-check: searched open issues for <terms> -- none covers this root cause
 ```
 
+**Ask the WORKTREE question HERE, not at wrap.** Mid-lane the loud question is
+"can this ride THIS PR?" (usually no); the quiet one is "is the owning lane's
+worktree still open?" (usually yes) — and while it is, `next` is weak: another
+PR from that tree costs almost nothing, deps and markers already paid.
+`.claude/rules/session-report.md` owns the criteria and wins on conflict (a
+frozen-scope reason is a SESSION-STATE clause there: legal, expiring, and it
+must name its ending event). This step adds only the TIMING: twice a
+frozen-scope `next` was filed while the owning lane was still open
+(go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
+
 **File it with its `Severity` / `Effort` values ALSO as labels** — the body
 lines stay exactly as written, and the same two values ride the command:
 
