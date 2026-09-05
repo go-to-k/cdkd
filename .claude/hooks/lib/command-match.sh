@@ -653,12 +653,14 @@ gate_unquote_span() {
 # all reach their consumer byte-identical, and both failure classes above are
 # unreachable by construction rather than by care.
 #
-# THE SCAN IS CAPPED IN TOKENS, NOT BYTES. The withdrawn implementation capped
-# at 512 B to bound an O(n^2) character walk, and padding defeats a byte cap:
-# `git -c user.name=<400 x 'x'> -C <repo> "commit" -m x` was rc=0 while its
-# literal-verb twin was rc=2. A token cap cannot be padded past, because
-# padding lives INSIDE a token. Reaching the cap abandons the rewrite whole
-# rather than emitting a half-rewritten segment.
+# THE SCAN IS BOUNDED THREE WAYS, and NONE of them is padding-proof. An earlier
+# revision of this paragraph said a token cap "cannot be padded past, because
+# padding lives INSIDE a token" -- false, and it was the reasoning that let a
+# real bypass ship: padding lives in the NUMBER of tokens as readily as inside
+# one. Every bound here is chosen for COST, each leaves a recorded residue, and
+# the residues are enumerated below rather than argued away. Reaching any bound
+# abandons the rewrite WHOLE rather than emitting a half-rewritten segment. The
+# reasoning for each value is on the constants themselves.
 #
 # AND IT FAILS TO "UNCHANGED", NEVER TO "PARTLY REWRITTEN". Every abandon path
 # -- unknown command word, unparseable token, unsafe dequote, cap reached --
@@ -694,12 +696,17 @@ gate_unquote_span() {
 #  2. A `gh` GROUP absent from the second-verb-token list (`gh <group> <verb>`)
 #     leaves its verb undequoted. Deliberately the safe side: consuming a token
 #     that is an ARGUMENT is the failure the list exists to prevent.
-#  3. A structural token past `GATE_STRUCT_MAXTOKLEN` or `GATE_STRUCT_MAXSPAN`
-#     is left alone, so `git c<512 bytes of padding>ommit` is not dequoted. A
-#     bound is unavoidable: without one a 12 KB command took 154 s through
-#     `gate_segments` and killed the hook, which disarms every gate at once --
-#     strictly worse than one unmatched spelling.
-#  4. More than `GATE_STRUCT_MAXTOK` tokens before the verb, likewise.
+#  3. A structural token past `GATE_STRUCT_MAXTOKLEN` is left alone. State this
+#     as a WORKING bypass rather than as padding: EMPTY quoted pairs do not
+#     change the word, so `git c<300 x "">ommit -m x` really runs `git commit`
+#     and is not dequoted. It is 610 bytes, against 79 for the form the
+#     non-empty-span rule closed, and against 8 for `git "commit"` -- so it is
+#     the most expensive of the three, not the cheapest. A bound is
+#     unavoidable: without one a 12 KB command took 154 s through
+#     `gate_segments` and killed the hook, which disarms every gate at once.
+#  4. More than `GATE_STRUCT_MAXTOK` tokens before the verb, likewise, and also
+#     RUNNABLE: `git --no-pager x24 "commit" -m x` is an ordinary command line.
+#     Its price is the same one -- see the constant.
 #  5. ANSI-C quoting: `git $'commit' -m x` really runs `git commit`, and the
 #     walk cannot read `$'...'` (it sees `$` plus a quoted span). It ABANDONS
 #     rather than emitting the mangled `$commit`. Pre-existing on origin/main,
@@ -710,6 +717,7 @@ gate_unquote_span() {
 # NOT go through this library -- derived, not remembered:
 #
 #   for f in .claude/hooks/*.sh; do
+#     case "$f" in *.test.sh) continue ;; esac
 #     grep -q 'tool_input.command' "$f" || continue
 #     grep -qE 'gate_matches|gate_segments|cmd_matches_verb|gate_verb_rest|gate_pr_selector|gate_target_dir|gate_tokens|gate_argv|strip_noncommand_spans' "$f" \
 #       || echo "NO SHARED MATCHER: $f"
@@ -772,24 +780,29 @@ _gate_is_value_flag() {
 #   ONE, the hook dies, and segment TWO commits with every gate disarmed. That
 #   is a WORSE outcome than the bypass this whole change closes.
 #
-#   MAXTOK bounds the token COUNT, and it is NOT what stops padding -- the
-#   previous revision of this comment claimed it was, and that claim was false
-#   in the plainest way: padding lives in the NUMBER of tokens as readily as
-#   inside one. Measured against a real `main` checkout with `branch-gate.sh`,
-#   at the old cap of 24:
+#   MAXTOK bounds the token COUNT, and it is a COST bound, not a security one.
+#   The outer walk is quadratic too, and for the same reason: `_gate_struct_next`
+#   ERE-matches the ENTIRE remaining string on every token. Measured with
+#   quote-free 508-byte tokens, N = 32 / 64 / 128 / 256 -> 0.116 / 0.378 /
+#   0.816 / 2.756 s, and 256 dense tokens cost 16.4 s. Raising this from 24 to
+#   256 in an earlier revision multiplied the worst case ~114x and re-opened
+#   the timeout DoS BELOW origin/main's cost: at 164 KB, `branch-gate` took
+#   4.43 s on main and was KILLED at 10 s on that revision, so the following
+#   `git commit -m x` ran with every gate disarmed. It is back at 24, where the
+#   walk adds nothing measurable (262 KB: 5.20 s against main's 5.34 s).
 #
-#     rc=2  git --no-pager x23 "commit" -m x
-#     rc=0  git --no-pager x24 "commit" -m x     <- BYPASS
-#     rc=2  git --no-pager x24 commit -m x       (literal twin still blocked)
-#
-#   `--no-pager` is an ordinary git global, so the command runs. With per-token
-#   cost bounded the outer walk is O(tokens) and cheap, so the cap is raised to
-#   a number no real command line reaches. It is a backstop against an
-#   unbounded loop, not a security boundary; the residue it leaves is recorded
-#   with the others on `gate_dequote_structural`.
-GATE_STRUCT_MAXTOK=256
+#   SO THE CAP IS A RESIDUE, and this is what the previous revision of this
+#   comment got wrong twice -- first claiming a token cap "cannot be padded
+#   past, because padding lives INSIDE a token" (false: padding lives in the
+#   NUMBER of tokens too, measured `git --no-pager x24 "commit"` rc=0 while its
+#   literal twin was rc=2), then trying to fix that by raising the cap, which
+#   traded a bypass for a killed hook. There is no value that is neither: the
+#   cap is set for COST and the bypass it leaves is enumerated with the other
+#   residues below. A killed hook disarms EVERY gate at once, so a bounded
+#   walk with one recorded unmatched spelling is the cheaper failure.
+GATE_STRUCT_MAXTOK=24
 GATE_STRUCT_MAXTOKLEN=512
-GATE_STRUCT_MAXSPAN=64
+GATE_STRUCT_MAXSPAN=16
 GATE_STRUCT_SEG=""
 _GATE_DQ=""
 _GATE_DQ_CHANGED=0
@@ -849,11 +862,21 @@ _gate_struct_rewrite() {
   while [ -n "$rest" ]; do
     # The SECOND bound, and it is the one the length bound cannot supply: cost
     # rises with the NUMBER of stop characters independently of length. A real
-    # structural token carries a handful -- `c"o"mmit` has two.
-    spans=$((spans + 1))
+    # structural token carries a handful -- `c"o"mmit` has two, and a
+    # maximally split one (`"c""o""m""m""i""t"`) twelve.
+    #
+    # ONLY A SPAN THAT CONSUMED CHARACTERS IS CHARGED, and that is the whole
+    # correctness of this bound rather than a refinement. An EMPTY quoted pair
+    # is free padding that does not change the word: `c""""..""ommit` really
+    # runs `git commit`. Charging it let 32 pairs -- SEVENTY-NINE BYTES --
+    # exhaust the budget and abandon, which re-opened the exact bypass this
+    # change closes, cheaper and quieter than the original. Measured on the
+    # revision that charged them: 31 pairs MATCH, 32 pairs NOMATCH, argv
+    # `[commit] [-m] [x]` under `eval printf` either way.
     [ "$spans" -gt "$GATE_STRUCT_MAXSPAN" ] && return 0
     if [ -z "$q" ]; then
       chunk="${rest%%$GATE_CHUNK_STOP*}"
+      [ -n "$chunk" ] && spans=$((spans + 1))
       out="$out$chunk"
       [ "$chunk" = "$rest" ] && break
       rest="${rest#"$chunk"}"
@@ -869,11 +892,13 @@ _gate_struct_rewrite() {
       # Inside a SINGLE-quoted span every character is literal, including a
       # backslash -- only the closer has to be found.
       chunk="${rest%%$GATE_SQ*}"
+      [ -n "$chunk" ] && spans=$((spans + 1))
       out="$out$chunk"
       [ "$chunk" = "$rest" ] && break
       rest="${rest#"$chunk"}"; rest="${rest#?}"; q=""
     else
       chunk="${rest%%$GATE_CHUNK_STOP_DQ*}"
+      [ -n "$chunk" ] && spans=$((spans + 1))
       out="$out$chunk"
       [ "$chunk" = "$rest" ] && break
       rest="${rest#"$chunk"}"

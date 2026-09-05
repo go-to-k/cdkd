@@ -1536,39 +1536,20 @@ dq_case() { # name, input, expected segment text
   fi
 }
 dq_same() { dq_case "$1" "$2" "$2"; }
-# MUTATION MATRIX, RE-MEASURED on the tree this ships as. The previous
-# revision published numbers taken BEFORE eleven cases were added and left them
-# there: three of the four tallies were wrong and they summed to 505 against a
-# 506-case file, which a reviewer caught. A matrix is re-measured when the tree
-# changes, never carried forward.
+# MUTATION EVIDENCE LIVES IN A SCRIPT, NOT IN THIS COMMENT.
+# `bash .claude/hooks/lib/command-match-mutants.sh` applies ten deliberately
+# broken copies of `command-match.sh` -- among them the whole-segment dequote
+# with its safety guards removed, which is the implementation that was built,
+# reviewed four rounds and WITHDRAWN -- and prints the tally for each. It exits
+# non-zero if any mutant fails to reduce the pass count, so a mutation no case
+# notices is reported rather than assumed absent.
 #
-# Each mutant is specified exactly enough to reproduce, because "whole-segment
-# dequote" was ambiguous last round -- with the safety guards left in it scores
-# very differently from the design that was actually withdrawn.
-#
-#   unmutated                                                     543 / 0
-#   PASS-THROUGH        `GATE_STRUCT_SEG="$1"` -- today's         504 / 38
-#                       behaviour exactly
-#   WHOLE-SEGMENT       dequote every token, safety guards KEPT   520 / 22
-#   WHOLE-SEGMENT-RAW   ...and the whitespace / quote /           482 / 60
-#                       metacharacter rejects REMOVED. This is
-#                       the implementation that was built,
-#                       reviewed four rounds and WITHDRAWN, and
-#                       it is the mutation that matters most.
-#   DQ-BACKSLASH        consume the char after `\` inside a       540 / 2
-#                       double-quoted span unconditionally
-#   OPEN-QUOTE-GUARD    drop the unterminated-quote check         538 / 4
-#   LEN-BOUND           drop GATE_STRUCT_MAXTOKLEN                540 / 2
-#   SPAN-BOUND          drop GATE_STRUCT_MAXSPAN                  540 / 2
-#   META-REJECT         drop the shell-metacharacter arm          535 / 7
-#
-# 74 of the 77 `gate_dequote_structural` cases go red under at least one. The
-# THREE that survive all eight are named rather than left looking like
-# evidence, and kept as robustness controls: `a # inside a word is not a quote`
-# and `a bare command word alone` are cheap-stop shapes no plausible mutation
-# of this function changes, and `an unbalanced apostrophe in a -C path` pins a
-# go-to-k/cdkd#2199 property this function is not the owner of. They exist so a
-# future rewrite that crashes or corrupts a degenerate input fails here.
+# NO TALLIES ARE COPIED HERE ON PURPOSE. They were, twice, and were stale both
+# times: first measured before eleven cases were added, then measured on a
+# 541-case tree while the floor already said 543, so every published row summed
+# to one less than the file's own case count. A reviewer caught it each time.
+# Two occurrences of one shape is the signal to change instrument rather than
+# to recount, so the numbers now have exactly one home and it is executable.
 
 # The eight shapes go-to-k/cdkd#2333 measured, each an executable command that
 # really runs the gated verb.
@@ -1641,20 +1622,37 @@ dq_case "400 bytes of padding do not hide the verb" \
 # is paired with a case proving it does NOT fire on a real command line, so a
 # bound tightened by accident is loud.
 #
-# THE TOKEN-COUNT CAP IS NOT WHAT STOPS PADDING, and an earlier revision of
-# this file claimed it was. Measured against a real `main` checkout with
-# `branch-gate.sh` at the old cap of 24: `git --no-pager x23 "commit"` rc=2,
-# `git --no-pager x24 "commit"` rc=0 -- a bypass, with the literal-verb twin
-# still blocked. Padding lives in the NUMBER of tokens as readily as inside
-# one. The first case below is that exact shape.
-dq_pad24="git"
-for _i in $(seq 1 24); do dq_pad24="$dq_pad24 --no-pager"; done
-dq_case "24 padding flags no longer hide the verb" \
-  "$dq_pad24 \"commit\" -m x" "$dq_pad24 commit -m x"
+# THE TOKEN-COUNT CAP IS A COST BOUND AND A RESIDUE AT THE SAME TIME, and both
+# halves are pinned here because two successive revisions got it wrong in
+# opposite directions. First the file claimed a token cap "cannot be padded
+# past, because padding lives INSIDE a token" -- false, measured against a real
+# `main` checkout with `branch-gate.sh`: `git --no-pager x23 "commit"` rc=2,
+# `git --no-pager x24 "commit"` rc=0. Then the cap was raised to 256 to close
+# that, which re-opened a timeout DoS BELOW origin/main's cost -- the outer walk
+# is quadratic too, `branch-gate` went from 4.43 s on main to KILLED at 10 s on
+# a 164 KB payload, and a killed hook disarms every gate at once. There is no
+# value that is neither, so the cap is set for COST and the bypass is recorded.
 dq_over="git"
-for _i in $(seq 1 300); do dq_over="$dq_over -q"; done
+for _i in $(seq 1 30); do dq_over="$dq_over --no-pager"; done
 dq_same "past the token-count cap the segment is returned UNCHANGED" \
   "$dq_over \"commit\" -m x"
+dq_under="git"
+for _i in $(seq 1 20); do dq_under="$dq_under --no-pager"; done
+dq_case "under the token-count cap the verb is still dequoted" \
+  "$dq_under \"commit\" -m x" "$dq_under commit -m x"
+# EMPTY QUOTED PAIRS ARE FREE PADDING -- they do not change the word, so
+# `c""""..""ommit` really runs `git commit` (confirmed with `eval printf`:
+# argv is `[commit] [-m] [x]`). Charging them against the SPAN budget let 32
+# pairs -- 79 bytes -- exhaust it and abandon, re-opening this issue'"'"'s own
+# bypass more cheaply than the shape it was filed for. Only a span that
+# CONSUMED characters is charged now, and these cases are the fence.
+dq_free=""
+for _i in $(seq 1 40); do dq_free="$dq_free\"\""; done
+dq_case "40 EMPTY quoted pairs do not hide the verb" \
+  "git c${dq_free}ommit -m x" 'git commit -m x'
+dq_freesq=$(printf "''%.0s" $(seq 1 40))
+dq_case "40 empty APOSTROPHE pairs do not hide the verb either" \
+  "git c${dq_freesq}ommit -m x" 'git commit -m x'
 # LENGTH and SPAN bounds on ONE token. Without them the span walk is quadratic
 # in token length AND in quote count together: measured through `gate_segments`
 # on one input, 12 KB took 154.5 s and 67 KB took 45.1 s, against 0.05 s and
@@ -1664,7 +1662,9 @@ dq_same "past the token-count cap the segment is returned UNCHANGED" \
 dq_long=$(printf 'a%.0s' $(seq 1 600))
 dq_same "a structural token past the LENGTH bound is left alone" \
   "git \"c${dq_long}ommit\" -m x"
-dq_many=$(printf '""%.0s' $(seq 1 40))
+# The SPAN bound is charged only by spans that consumed characters, so the
+# case that exercises it must carry NON-empty ones.
+dq_many=$(printf '"x"%.0s' $(seq 1 40))
 dq_same "a structural token past the SPAN bound is left alone" \
   "git c${dq_many}ommit -m x"
 # ...and the bounds must not fire on an ordinary command: a real global-flag
@@ -1782,7 +1782,35 @@ want_rest_each "-- f.txt" "a quoted checkout verb still yields its path tail" \
 want_rest_each "f.txt" "a quoted -C flag still yields the restore tail" \
   'git "-C" /wt restore f.txt' "$GATE_RE_GIT_CHECKOUT_RESTORE"
 
-CASE_FLOOR=543
+# --- LATENCY IS A CORRECTNESS PROPERTY HERE, so it gets a case ---------------
+# A hook killed by the 10 s PreToolUse timeout cannot emit exit 2, and that
+# disarms EVERY gate at once -- strictly worse than any single unmatched
+# spelling. Two revisions of `gate_dequote_structural` shipped a walk that blew
+# that budget (a 12 KB command took 154 s; raising the token cap to 256 took
+# `branch-gate` from 4.43 s to KILLED on a 164 KB payload), and NOTHING in this
+# file noticed either time. This is the fence for that.
+#
+# The threshold is deliberately far below the real 10 s budget and the payload
+# far above any real command line, so ordinary machine-speed variation cannot
+# redden it -- only a return of the quadratic can.
+lat_tok=$(printf '%s' "--o=$(printf '"a"%.0s' $(seq 1 30))")
+lat_cmd="git"
+for _i in $(seq 1 400); do lat_cmd="$lat_cmd $lat_tok"; done
+lat_cmd="$lat_cmd \"commit\" -m x"
+lat_start=$(date +%s)
+gate_segments "$lat_cmd" >/dev/null 2>&1
+lat_end=$(date +%s)
+lat_secs=$((lat_end - lat_start))
+if [ "$lat_secs" -le 3 ]; then
+  pass=$((pass + 1))
+  printf 'OK   latency: %s bytes through gate_segments in %ss (budget 3s)\n' "${#lat_cmd}" "$lat_secs"
+else
+  fail=$((fail + 1))
+  printf 'FAIL latency: %s bytes took %ss, budget 3s\n' "${#lat_cmd}" "$lat_secs"
+  fail_log="${fail_log}FAIL latency: ${#lat_cmd} bytes took ${lat_secs}s -- the PreToolUse timeout is 10s and a KILLED hook cannot emit exit 2, which disarms every gate at once\n"
+fi
+
+CASE_FLOOR=546
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least $CASE_FLOOR\n"
