@@ -521,6 +521,19 @@ const SPLIT_ADVICE =
  * this exact version, so declaring it added nothing to install (`pnpm add`
  * reported `downloaded 0, added 0`) and no new supply-chain surface.
  */
+/**
+ * Does this Markdown render with a raw HTML comment still in it?
+ *
+ * `marked` passes a raw comment through verbatim, so a raw `<a href>` inside
+ * one would reach `visibleLinkTargets` while a reader sees nothing. That
+ * function deliberately does NOT strip comments -- three attempts at stripping
+ * were each wrong in a different direction -- so this predicate is what makes
+ * the absence safe, and the corpus case below asserts it holds everywhere.
+ */
+function rendersSurvivingComment(markdown: string): boolean {
+  return marked.parse(markdown, { async: false }).includes('<!--');
+}
+
 function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
   // YAML frontmatter is METADATA, not page content -- GitHub strips it and no
   // reader sees a link inside `description:`. Feeding it to the renderer let a
@@ -531,24 +544,22 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
     const close = body.findIndex((l, i) => i > 0 && l.trim() === '---');
     if (close !== -1) body.splice(0, close + 1);
   }
-  // The strip is for a RAW `<a>` written inside an HTML comment, which marked
-  // passes through verbatim. A markdown link inside a comment never becomes an
-  // anchor, so that is the only thing being removed here.
+  // NO comment-stripping. Three successive attempts at one were each wrong in
+  // a different direction -- the unbounded form let CommonMark's abbreviated
+  // `<!-->` reach past a later comment and drop the span between them, and
+  // bounding it with `(?!<!--)` then made a genuine comment containing an
+  // anchor followed by an inner `<!--` credit that anchor, which is the
+  // forbidden direction. Each attempt shipped a comment asserting the residual
+  // was safe, and each of those was false.
   //
-  // The residual, restated after review found the first version of this
-  // comment wrong in two of its three claims: an inline `<!--` is escaped only
-  // when UNPAIRED, and CommonMark's abbreviated `<!-->` emits a raw opener
-  // with no closer, so a later ordinary inline comment can supply the `-->`
-  // and the span between them is dropped. No raw HTML block is needed, which
-  // is what the previous comment asserted. `(?!<!--)` bounds the span to the
-  // nearest opener, so an abbreviated comment can no longer reach past a
-  // subsequent one. The remaining failure direction is a dropped span, which
-  // silences the dangling-pointer half rather than crediting anything -- worth
-  // stating precisely, since a limitation asserted without a probe is the
-  // defect this file keeps rediscovering.
-  const html = marked
-    .parse(body.join('\n'), { async: false })
-    .replace(/<!--(?:(?!<!--)[\s\S])*?-->/g, '');
+  // What the strip existed for was a RAW `<a href>` written inside an HTML
+  // comment, which marked passes through verbatim. That is now a checked
+  // PRECONDITION rather than a heuristic: the case below asserts no rule file
+  // renders a surviving `<!--` at all, so nothing can hide inside one. A
+  // markdown link inside a comment never becomes an anchor in the first place.
+  // Measured before removing it: the strip changed the anchor set in ZERO of
+  // the 47 files. It was inert, three times wrong about why, and is gone.
+  const html = marked.parse(body.join('\n'), { async: false });
   // `rowsOnly` is the table-index contract, asked literally: is the anchor
   // inside a TABLE? The old source-side form tested whether a line began with a
   // pipe, which a blockquoted pipe-line satisfied while rendering as a
@@ -574,9 +585,12 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
     // or an `&nbsp;` left a cell blank on the page while still crediting the
     // pointer.
     const visible = m[2]!
-      .replace(/<img\b[^>]*>/gi, 'x')
+      .replace(/<(?:img|svg|picture|video|canvas|object)\b[^>]*>/gi, 'x')
       .replace(/<[^>]*>/g, '')
-      .replace(/&nbsp;|&#(?:160|8203|x2028|xa0);/gi, ' ')
+      .replace(
+        /&nbsp;|&shy;|&z(?:wnj|wj);|&(?:en|em|thin)sp;|&#(?:32|160|173|8203|8204|8205|8194|8195|8201|65279);|&#x(?:20|a0|ad|200b|200c|200d|2002|2003|2009|feff);/gi,
+        ' ',
+      )
       .replace(/[\u200b-\u200d\ufeff\u00a0]/g, '');
     if (visible.trim() === '') continue;
     targets.push(
@@ -1375,6 +1389,34 @@ describe('.claude/rules payload fence', () => {
     expect(CORPUS_BYTES_MIN).toBeLessThan(CORPUS_BYTES_MAX);
   });
 
+  it('no rule file renders a surviving HTML comment, so nothing can hide in one', () => {
+    // This is the PRECONDITION that lets `visibleLinkTargets` carry no
+    // comment-stripping. `marked` passes a raw HTML comment through verbatim,
+    // so a raw `<a href>` written inside one would reach the extractor
+    // invisible to a reader. Three attempts at stripping comments were each
+    // wrong in a different direction (go-to-k/cdkd#2672 rounds 5-7), so the
+    // question is answered by ASSERTING the thing that makes stripping
+    // unnecessary rather than by a fourth regex.
+    //
+    // A markdown link inside a comment never becomes an anchor, so this only
+    // has to hold for comments that SURVIVE rendering -- and none does today,
+    // because every `<!--` in the corpus is inside a code span.
+    // BOTH POLARITIES, because the corpus case alone is vacuous: nothing trips
+    // it today, so replacing the predicate with `() => false` left the whole
+    // suite green when probed. These two are what make the corpus assertion
+    // mean something.
+    expect(rendersSurvivingComment('<!-- <a href="ghost.md">x</a> -->')).toBe(true);
+    expect(rendersSurvivingComment('text with a `<!-- coded -->` span')).toBe(false);
+
+    const surviving = ruleFiles
+      .filter((r) => rendersSurvivingComment(r.text))
+      .map((r) => r.name);
+    expect(
+      surviving,
+      `${surviving.join(', ')} render a raw HTML comment. That is allowed in itself, but it means a raw <a href> could be written inside one and would be credited by visibleLinkTargets while a reader sees nothing. Either put the comment inside a code span, or give visibleLinkTargets a comment-stripper AND pin it -- read the note there first, three attempts at one were each wrong in a different direction.`,
+    ).toEqual([]);
+  });
+
   it('visibleLinkTargets judges what a READER sees, not what the source contains', () => {
     // Guard-the-guard, and the reason is measured: an A/B of this function
     // before and after the frontmatter / empty-text / table-bounding guards
@@ -1414,6 +1456,20 @@ describe('.claude/rules payload fence', () => {
     // An IMAGE is content. Dropping it silenced the dangling-pointer half for
     // badge links, which fails quiet.
     expect(t('[![alt](badge.svg)](real.md)')).toEqual(['real.md']);
+
+    // A markdown link inside a comment is not an anchor, so the absent
+    // comment-stripper costs nothing -- pinned here because the whole argument
+    // for removing it rests on this.
+    expect(t('<!--\n[x](ghost.md)\n-->\n\nsee [y](real.md)')).toEqual(['real.md']);
+    // CommonMark's abbreviated `<!-->`, the shape that defeated the unbounded
+    // stripper: a link AFTER it must still be seen, not swallowed.
+    expect(t('<!-->\n\nsee [x](real.md)\n\n<!-- c -->')).toEqual(['real.md']);
+    // Media other than <img> is clickable content too.
+    expect(t('[<svg width="1"></svg>](real.md)')).toEqual(['real.md']);
+    // Entity spellings of invisible space, including the hex ZWSP the first
+    // list transposed into `&#x2028;`.
+    expect(t('[&#x200b;](ghost.md)')).toEqual([]);
+    expect(t('[&#8203;](ghost.md)')).toEqual([]);
 
     // `rowsOnly` asks whether the anchor is in a TABLE. A stray unclosed
     // `<table>` must not pair with a later table's close and lend the prose
