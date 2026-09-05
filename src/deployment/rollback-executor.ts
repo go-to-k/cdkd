@@ -629,6 +629,15 @@ export function classifyRollbackOp(
     // is create-ONLY under Retain too. Before #2518 that third path DELETED
     // the old resource whatever the policy said, so this classification
     // re-adopted a physical id that no longer existed.
+    //
+    // The two sides still ask the question of DIFFERENT sources, and that is a
+    // known gap rather than an alignment: every one of those engine paths
+    // decides from the TEMPLATE being applied, while this reads the PREVIOUS
+    // STATE record. A deploy that ADDS `Retain` therefore orphans the old
+    // resource while `previousState.updateReplacePolicy` is still absent, and
+    // this classifier picks the plain `reverse-replacement` arm below — which
+    // re-creates a resource that is still alive. Issue
+    // [#2603](https://github.com/go-to-k/cdkd/issues/2603).
     // `Snapshot` is NOT retained on replacement (the engine plain-deletes) —
     // it re-creates like the default policy.
     const retained = op.previousState!.updateReplacePolicy === 'Retain';

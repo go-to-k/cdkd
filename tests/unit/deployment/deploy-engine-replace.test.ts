@@ -545,19 +545,24 @@ describe('DeployEngine — --replace wire-through', () => {
     });
 
     it('a state-recorded Snapshot does not resurrect the delete under a template Retain', async () => {
-      // The ONE fixture where the snapshot read's `?? currentResource
-      // .updateReplacePolicy` fallback has something to fall back TO. It pins
-      // the SOURCE of the retain decision, not the snapshot call: swap
-      // `retainOldOnReplace`'s template-only read for a state read and this
-      // case deletes (state says `Snapshot`, not `Retain`).
+      // A FIXTURE case, and it says so rather than claiming a fence it does not
+      // provide. Its value is the input combination — the one place a state
+      // record carries `Snapshot` while the template applies `Retain`, i.e.
+      // the only fixture where the snapshot read's `?? currentResource
+      // .updateReplacePolicy` fallback has anything to fall back TO.
       //
-      // What it deliberately does NOT claim — an earlier revision did, and it
-      // was unfalsifiable — is that hoisting `prepareFinalSnapshotForDelete`
-      // above the retain branch would red. It would not: that call reads the
-      // TEMPLATE first, the template says `Retain`, and the helper returns
-      // `undefined` for anything that is not `Snapshot`, so the hoist produces
-      // no observable at all. Only a two-mutation change (state-first read AND
-      // the hoist) reaches one.
+      // Two claims earlier revisions made here were MEASURED false and are
+      // recorded so they are not re-made. (1) Hoisting
+      // `prepareFinalSnapshotForDelete` above the retain branch does not red
+      // it: that call reads the TEMPLATE first, the template says `Retain`,
+      // and the helper returns `undefined` for anything that is not
+      // `Snapshot`, so the hoist produces no observable. (2) Swapping
+      // `retainOldOnReplace`'s template-only read for a state read does not
+      // make this case DELETE — with `retainOldOnReplace` false the stateful
+      // guard refuses first and `callOrder` is `['update']` — and it reds two
+      // sibling cases that state the template-only rule directly. So no
+      // single-edit mutation reds this case ALONE; it is coverage of an input,
+      // not of a branch.
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain', 'Snapshot');
       expect(callOrder).toEqual(['update', 'create']);
@@ -692,6 +697,11 @@ describe('DeployEngine — --replace wire-through', () => {
       // names the old physical id, and the non-retain arm does not claim to
       // have retained anything.
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      // The logger mock is a module-level singleton and nothing clears it
+      // between cases, so an unclear'd read sees every earlier case's lines.
+      // Harmless for a `some(...)` today, but it makes the assertion's subject
+      // the whole FILE rather than this deploy.
+      vi.mocked(getLogger().info).mockClear();
       await invokeProvision(makeEngine({}), 'AWS::DynamoDB::Table', 'Retain');
       const info = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
       expect(info.some((l) => l.includes('CREATE only — UpdateReplacePolicy: Retain'))).toBe(true);
@@ -704,6 +714,9 @@ describe('DeployEngine — --replace wire-through', () => {
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       await invokeProvision(makeEngine({ forceStatefulRecreation: true }), 'AWS::DynamoDB::Table');
       const plain = vi.mocked(getLogger().info).mock.calls.map((c) => String(c[0]));
+      // The arm is bounded before its negative: without this, "no Retaining
+      // line" would also pass for a deploy that never reached the fallback.
+      expect(callOrder).toEqual(['update', 'delete', 'create']);
       expect(plain.some((l) => l.includes('Retaining old'))).toBe(false);
       expect(plain.some((l) => l.includes('replacing (DELETE → CREATE)'))).toBe(true);
     });
@@ -1005,16 +1018,53 @@ describe('DeployEngine — --replace wire-through', () => {
       const engine = makeEngine({});
       await invokeProvision(engine, 'AWS::Glue::SecurityConfiguration');
       expect(callOrder).toEqual(['update', 'delete', 'create']);
-      // The registration is the observable: `registerNoEchoAttributes` records
-      // the declared NAMES against the resource, which is what makes every
-      // later log line / event / error mask those values. Asserted as the
-      // exact SET, so an over-broad registration (the whole bag) reds too.
+      // The registration is the observable, and deliberately so: the record's
+      // `attributes` keep the REAL values here — masking happens later, at
+      // `scrubResourceRecord` — so there is no in-memory behavioural signal to
+      // read instead. `registerNoEchoAttributes` records the declared NAMES
+      // against the resource, which is what makes every later log line, event
+      // and error mask those values. Asserted as the exact SET, which reds in
+      // BOTH directions: a dropped declaration registers nothing, and an
+      // over-broad one registers `true` instead of the set.
       const registered = (
         engine as unknown as {
           noEchoAttributeResources: Map<string, true | Set<string>>;
         }
       ).noEchoAttributeResources.get('MyResource');
       expect(registered).toEqual(new Set(['Secret']));
+    });
+
+    it("carries a WHOLE-BAG NoEcho declaration too, on the Retain arm the carry exists for", async () => {
+      // The other polarity, and the one measured unpinned: deleting only the
+      // `noEchoAttributes` spread while keeping `noEchoAttributeNames` left the
+      // whole file green. That flag is the "mask everything this create
+      // returned" declaration — dropping it lands EVERY replacement attribute
+      // unmasked, which is the failure the carry-forward exists to prevent.
+      //
+      // Run on the RETAIN arm deliberately: the per-name case above exercises
+      // the delete-then-create path, while the source comment justifies the
+      // carry by "`Retain` makes this block the only thing that runs on the
+      // path". One case per arm, so neither justification is unexercised.
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        return {
+          physicalId: 'new-pid',
+          attributes: { Secret: 'super-secret-value' },
+          noEchoAttributes: true,
+        };
+      });
+      const engine = makeEngine({});
+      await invokeProvision(engine, 'AWS::DynamoDB::Table', 'Retain');
+      expect(callOrder).toEqual(['update', 'create']);
+      const registered = (
+        engine as unknown as {
+          noEchoAttributeResources: Map<string, true | Set<string>>;
+        }
+      ).noEchoAttributeResources.get('MyResource');
+      // `true`, not a Set: the whole-bag arm and the per-name arm are distinct
+      // registrations, so asserting the exact value keeps them apart.
+      expect(registered).toBe(true);
     });
 
     it('the retained old resource is dropped from state in favour of the new physical id', async () => {

@@ -1455,6 +1455,31 @@ describe('isUpdateUnsupportedError (issue #2520)', () => {
     expect(isUpdateUnsupportedError(foreign, 'SomeOtherResource')).toBe(true);
   });
 
+  it('reads AWS prose at the TOP LEVEL ONLY — a cause that quotes it does not qualify', () => {
+    // The property the pre-#2520 predicate had by CONSTRUCTION (the read sat
+    // outside the walk) and which the anchored ordering turned into a
+    // conditional one (`depth === 0`). Measured unpinned: reading the prose at
+    // every depth left all 176 cases green, and that widening is exactly the
+    // destructive direction — a nested wrapper whose cause happens to quote
+    // the phrase would newly take the DELETE + CREATE fallback.
+    //
+    // Neither link carries a `logicalId`, so the anchor cannot be what
+    // produces the `false`; only the depth gate can.
+    const causeQuotesIt = Object.assign(new Error('the replacement could not be applied'), {
+      cause: new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
+    });
+    expect(isUpdateUnsupportedError(causeQuotesIt, 'MyTable')).toBe(false);
+    // The control: the SAME prose at the top level does qualify, so the case
+    // above is about the depth and not about the phrase having stopped
+    // matching at all.
+    expect(
+      isUpdateUnsupportedError(
+        new Error('Resource type AWS::DynamoDB::Table does not support UPDATE action'),
+        'MyTable'
+      )
+    ).toBe(true);
+  });
+
   it('does NOT match the Cloud Control handler code NotUpdatable', () => {
     // "This patch is not applicable" — a create-only property or an invalid
     // document — which cdkd already routes through property-driven
