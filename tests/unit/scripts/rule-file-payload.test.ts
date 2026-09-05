@@ -483,88 +483,73 @@ const SPLIT_ADVICE =
 
 /**
  * The `.md` link targets a human can actually SEE and follow in a Markdown
- * file, as basenames.
+ * file, returned RAW (path and all). Deciding which denote a rule file is
+ * `ruleTarget()`'s job.
  *
- * Four shapes were invisible to the first cut of this scan and are handled
- * here (go-to-k/cdkd#2663, found by the round-3 reviewer on
- * go-to-k/cdkd#2657). None of them occurs in the corpus TODAY -- measured
- * before the change, so this hardening cannot have silently narrowed anything
- * -- which is exactly why they are worth closing now: each one is a way for a
- * future edit to make a pointer vanish, or to make a live one unreadable, with
- * the fence still green.
+ * Every exclusion here exists because a pointer can be present in the bytes
+ * and absent from the rendered page, which is the only thing a reader has.
+ * Each item below carries its own provenance rather than a summary count: an
+ * earlier revision of this paragraph said "shapes 1-5 ... 6-8" over a list of
+ * six, and claimed none occurred in the corpus while two items named live
+ * occurrences. A tally in a justification is worth exactly as much as the
+ * grep behind it, and there was none.
  *
- * 1. Fenced code in BOTH spellings. The original knew only ``` and a review
- *    probe had already used that to hide a table row; `~~~` is the same hole
- *    one syntax over. A fence closes only on its own marker, so a ``` inside
- *    a ~~~ block does not end it.
- * 2. Indented code blocks. Four spaces is a code block in Markdown, so a row
- *    demoted that way stops rendering while its text survives. Applied
- *    bluntly, because no line in the corpus is both indented that far and
- *    carrying a link -- verified before writing this. A list continuation
- *    indented four spaces WOULD be a false negative if one ever appeared;
- *    that is a narrowing, so it would show up as a spurious orphan rather
- *    than as a silent pass.
- * 3. HTML comments. `<!-- ... -->` renders as nothing, so a pointer inside one
- *    is invisible to the reader while the raw text still matches a naive
- *    regex. Stripped from the joined text first, so a comment spanning lines
- *    is handled; the ordering means a `<!--` written INSIDE a code fence is
- *    treated as a comment, which is wrong in principle and absent in practice.
- * 5. Inline code spans -- see the comment at the strip itself; that one was
- *    found by this scanner reporting a false positive on the corpus.
- * 4. Anchored and reference-style links. `](file.md#section)` was invisible to
- *    BOTH halves of the caller -- neither credited nor existence-checked --
- *    and it is a live shape in this corpus (`providers.md` links
- *    `docs/provider-rules.md#handledproperties-against-the-cfn-schema`), so
- *    the day someone anchors a link to a SATELLITE it would have been
- *    reported as a false orphan. Reference definitions (`[label]: file.md`)
- *    are counted at the definition, which is where the filename appears.
- *
- * Returns RAW targets, path and all. Deciding which of them denote a rule
- * file is the caller's job via `ruleTarget()` -- the corpus links plenty of
- * `docs/*.md` pages, and the first cut of this basenamed everything and
- * reported fourteen CLAUDE.md docs links as missing rule files.
+ * 1. Fenced code, both markers, and closing on RUN LENGTH. A fence closes only
+ *    on a marker of its own character and at least its own length --
+ *    `docs-page-template.md` opens a ````markdown block containing a ```bash
+ *    one, and treating those as a matched pair reopened the file's second half
+ *    as live text. That was a working bypass, not a theoretical one: a
+ *    satellite's only pointer could sit inside rendered code and pass.
+ * 2. Indented code blocks -- but NOT list continuations. Four spaces is a code
+ *    block only outside a list; inside one it is the continuation of a bullet,
+ *    and this corpus indents them five spaces routinely. The blunt rule
+ *    dropped those lines, which is a narrowing.
+ * 3. HTML comments, stripped from the joined text so a multi-line one is
+ *    handled. A pointer inside one renders as nothing.
+ * 4. Inline code spans, bounded to ONE line. A link in backticks is a quoted
+ *    EXAMPLE -- `docs-page-template.md` teaches the link shape that way, and a
+ *    scanner that cannot tell the two apart fails on exactly the files most
+ *    worth scanning. Bounded because letting a span cross newlines let one
+ *    unbalanced run swallow three real pointers in `hooks.md`.
+ * 5. Anchors, titles and angle brackets on the destination. `](f.md#sec)`,
+ *    `](f.md "Title")` and `](<f.md>)` are ordinary links; missing them made a
+ *    valid pointer read as a FALSE orphan.
+ * 6. Reference-style links, counted at the definition -- but only when the
+ *    label is actually USED. An unreferenced definition renders as nothing, so
+ *    counting it let a deleted pointer be replaced by a dead one.
  */
 function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
   const withoutComments = lines.join('\n').replace(/<!--[\s\S]*?-->/g, '');
   const kept: string[] = [];
   let fence: string | undefined;
+  let inList = false;
   for (const line of withoutComments.split('\n')) {
-    const marker = /^\s{0,3}(```|~~~)/.exec(line)?.[1];
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
     if (marker !== undefined) {
       if (fence === undefined) fence = marker;
-      else if (fence === marker) fence = undefined;
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
       continue;
     }
     if (fence !== undefined) continue;
-    if (/^ {4,}\S/.test(line)) continue;
+    if (/^ {0,3}(?:[-*+]|\d+[.)])\s/.test(line)) inList = true;
+    else if (line.trim() !== '' && !/^\s/.test(line)) inList = false;
+    if (!inList && /^ {4,}\S/.test(line)) continue;
     if (rowsOnly && !line.trimStart().startsWith('|')) continue;
     kept.push(line);
   }
-  // INLINE code spans, last: a link inside backticks is not a link, it is a
-  // quoted EXAMPLE of one. `docs-page-template.md` is a live instance -- it
-  // teaches the link SHAPE with ``[`cdkd gc`](cli-gc.md)``, and without this
-  // the scan reported that as a rule file that does not exist. A doc whose
-  // subject is how to write links will always contain link-shaped text; a
-  // scanner that cannot tell the two apart fails on exactly the files most
-  // worth scanning. Matching backtick RUNS, so a double-backtick span
-  // containing single backticks closes correctly.
-  // Bounded to ONE line on purpose. `[\s\S]` here let an unbalanced backtick
-  // run swallow everything up to the next one, and hooks.md has enough of them
-  // that three real pointers -- hooks-branch-gate, hooks-cwd-detector,
-  // hooks-main-tree-branch -- vanished into a single span and were reported as
-  // orphans. An inline code span cannot cross a line break anyway, so the
-  // narrow class is both correct and the safe direction: over-stripping here
-  // fails CLOSED, as a false orphan, which is how that bug announced itself.
   const text = kept.join('\n').replace(/(`+)(?:(?!\1)[^\n])*?\1/g, '');
   const targets: string[] = [];
   // Link TEXT is unconstrained: a row reading `[utils](layout-utils.md)` is a
-  // perfectly good index row, and an earlier form reported it as missing
-  // because it required the text to repeat the filename.
-  for (const m of text.matchAll(/\[[^\]]*\]\(\s*([^)\s#]+\.md)(?:#[^)\s]*)?\s*\)/g)) {
+  // perfectly good index row, and an earlier form required the text to repeat
+  // the filename and reported every other shape as missing.
+  const DEST = String.raw`<?\s*([^)\s<>#"']+\.md)(?:#[^)\s<>"']*)?\s*>?\s*(?:["'(][^)]*)?`;
+  for (const m of text.matchAll(new RegExp(String.raw`\[[^\]]*\]\(\s*${DEST}\)`, 'g'))) {
     targets.push(m[1]!);
   }
-  for (const m of text.matchAll(/^ {0,3}\[[^\]]+\]:\s*([^\s#]+\.md)(?:#\S*)?\s*$/gm)) {
-    targets.push(m[1]!);
+  const usedLabels = new Set<string>();
+  for (const m of text.matchAll(/\]\[([^\]]+)\]/g)) usedLabels.add(m[1]!.toLowerCase());
+  for (const m of text.matchAll(/^ {0,3}\[([^\]]+)\]:\s*([^\s#]+\.md)(?:#\S*)?\s*$/gm)) {
+    if (usedLabels.has(m[1]!.toLowerCase())) targets.push(m[2]!);
   }
   return targets;
 }
@@ -1361,7 +1346,10 @@ describe('.claude/rules payload fence', () => {
     // is TOP-LEVEL (CLAUDE.md is its index); anything else is a satellite and
     // needs a pointer from somewhere. Derived rather than hand-listed because
     // a hand list is what goes stale -- the failure this whole case exists to
-    // catch. Measured when written: 46 files, 12 top-level, 34 satellites.
+    // catch. Measured through this predicate, not by grep: 46 files, 12 linked
+    // from CLAUDE.md, 34 not -- and 35 satellites, because the union below
+    // adds one of the twelve back. Counting the 34 and calling it the
+    // population is off by exactly the file the union exists for.
     // The prefixed families are UNIONED in so the population can only widen:
     // `hooks-main-tree-branch.md` is BOTH prefixed and CLAUDE.md-linked, and
     // dropping it would have been a silent narrowing dressed up as a
@@ -1381,32 +1369,49 @@ describe('.claude/rules payload fence', () => {
     // points at `asset-bucket-region.md`, `testing.md` at
     // `test-stream-fence.md`, `layout-misc.md` at `state-version-purge.md`.
     // Those are real pointers and a human following them finds the file.
-    // A file naming ITSELF is excluded -- that is what a split leaves behind
-    // when the pointer is written into the satellite instead of into the file
-    // the text left, which is precisely the go-to-k/cdkd#2657 defect.
-    const linked = new Set<string>();
+    //
+    // It is a WALK from the roots, not an inbound-link count. "Something links
+    // it" passes a pair of satellites that link only each other while nothing
+    // reachable links either -- review demonstrated exactly that, and the
+    // self-link exclusion the first cut relied on catches only the 1-cycle of
+    // that same shape. A reader arrives from CLAUDE.md, so that is where the
+    // walk starts; anything it cannot get to is unfindable however many
+    // pointers it has.
+    const linksOf = new Map<string, string[]>();
     const broken: string[] = [];
     const known = new Set(ruleFiles.map((r) => r.name));
     for (const source of [...ruleFiles, { name: 'CLAUDE.md', lines: claudeMd }]) {
+      const out: string[] = [];
       for (const raw of visibleLinkTargets(source.lines)) {
         const target = ruleTarget(raw);
         if (target === undefined) continue;
-        // Existence is asked of EVERY link, including one to a top-level file
-        // and including a self-link. Filtering first is how the previous cut
-        // narrowed the dangling half live rather than latently.
+        // Existence is asked of EVERY visible link, including one to a
+        // top-level file and including a self-link. Filtering first is how an
+        // earlier cut narrowed the dangling half live rather than latently.
         if (!known.has(target)) broken.push(`${source.name} -> ${target}`);
-        if (target !== source.name) linked.add(target);
+        else if (target !== source.name) out.push(target);
       }
+      linksOf.set(source.name, out);
     }
     expect(
       [...new Set(broken)].sort(),
       `These markdown links point at .claude/rules files that do not exist: ${[...new Set(broken)].sort().join(', ')}. A rename moved the target and left the pointer behind.`,
     ).toEqual([]);
 
-    const orphans = ruleFiles.map((r) => r.name).filter((n) => isSatellite(n) && !linked.has(n));
+    const reached = new Set<string>();
+    const queue = ['CLAUDE.md', ...topLevel];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const next of linksOf.get(cur) ?? []) {
+        if (reached.has(next)) continue;
+        reached.add(next);
+        queue.push(next);
+      }
+    }
+    const orphans = ruleFiles.map((r) => r.name).filter((n) => isSatellite(n) && !reached.has(n));
     expect(
       orphans,
-      `${orphans.join(', ')} are satellites that nothing links to. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs reads an index, not the directory. Add a pointer from the file the text belongs with. It must live in the file the text LEFT, not in the satellite: a file naming itself is not an inbound link and cannot clear this.`,
+      `${orphans.join(', ')} are satellites no reader can WALK to from CLAUDE.md. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs navigates from an index, not a directory listing. Add a pointer from the file the text belongs with, and make sure THAT file is itself reachable: a mutual pair of satellites pointing at each other is not reachable, and neither is a file that only names itself.`,
     ).toEqual([]);
   });
 
@@ -1442,8 +1447,13 @@ describe('.claude/rules payload fence', () => {
           .map(ruleTarget)
           .filter((t): t is string => t !== undefined && prefix.test(t)),
       );
+      // No `name !== idx` guard: an index's own name never matches its
+      // family prefix (`hooks.md` is not `hooks-`, `providers.md` is not
+      // `provider-`, `code-layout.md` is not `layout-`), so the condition
+      // could not fire. A guard that cannot fire reads as protection that is
+      // not there -- the defect class this file is currently full of.
       for (const { name } of ruleFiles) {
-        if (prefix.test(name) && name !== idx && !own.has(name)) missing.push(`${name} (${idx})`);
+        if (prefix.test(name) && !own.has(name)) missing.push(`${name} (${idx})`);
       }
     }
     expect(
