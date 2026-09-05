@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
@@ -31,22 +31,18 @@ import { describe, expect, it } from 'vite-plus/test';
 const ROOT = resolve(import.meta.dirname, '../../..');
 const DOCS = join(ROOT, 'docs');
 
-/**
- * The ONE generator-written page that currently emits ragged rows: its
- * generator interpolates descriptions containing `|` without escaping, open as
- * go-to-k/cdkd#2545. Excluded as a SOURCE only.
- *
- * Exactly one entry, deliberately. The first cut listed all three top-level
- * coverage matrices; measured, the other two carry ZERO violations, so their
- * entries removed 172 rows from the fence's reach while excusing nothing. And
- * `docs/_generated/**` is NOT excluded at all — being machine-written is not
- * the boundary, having a known open defect is.
- *
- * The entry cannot go stale silently: a test below asserts this file still HAS
- * violations, so when go-to-k/cdkd#2545 lands the fence fails and tells you to
- * delete the entry.
- */
-const GENERATOR_OWNED = new Set(['scenario-coverage.md']);
+// There is NO exclusion list. There was exactly one entry —
+// `scenario-coverage.md`, whose generator interpolated descriptions containing
+// `|` unescaped — and go-to-k/cdkd#2545 fixed the generator
+// (`scripts/build-scenario-coverage-matrix.ts`'s `escapeCell`), which is what
+// the companion test asserting the exclusion still excused something was there
+// to force. Machine-written pages are NOT excluded as a class: being generated
+// was never the boundary, having a known open defect was, and a generator
+// emitting a ragged row is a defect in the generator.
+//
+// Deliberately a line comment, not a JSDoc block: with no declaration of its
+// own left to document, a `/** */` here binds to `walk` and every editor shows
+// "There is NO exclusion list" as that function's documentation.
 
 const walk = (dir: string): string[] =>
   readdirSync(dir).flatMap((entry) => {
@@ -56,15 +52,28 @@ const walk = (dir: string): string[] =>
   });
 
 /**
- * Cell count of a table row, with escaped pipes neutralised first.
+ * Cell count of a table row, with backslash escapes neutralised first.
  *
- * The `\|` substitution uses a space rather than a sentinel byte: only the
- * COUNT of surviving `|` matters here, so anything pipe-free does the job, and
- * a NUL would make `grep` treat this file as binary and skip it
+ * The pass consumes ANY escape pair (`\\.`), not just `\|`. A row carrying
+ * `\\|` — an escaped BACKSLASH followed by a live delimiter — matched the
+ * narrower `\|` form on its last two characters, so the delimiter was eaten and
+ * a genuinely ragged row scored clean. Consuming the pair left to right takes
+ * the `\\` and leaves the `|` counted, which is what CommonMark does.
+ *
+ * The substitution uses a space rather than a sentinel byte: only the COUNT of
+ * surviving `|` matters here, so anything pipe-free does the job, and a NUL
+ * would make `grep` treat this file as binary and skip it
  * (`source-control-bytes.test.ts` fails on exactly that).
+ *
+ * TWIN: `cellCount` in `tests/unit/scripts/build-scenario-coverage-matrix.test.ts`
+ * measures the generator's output before it is written, with the same rule
+ * re-spelled so that one blinded counter cannot blind both measurements. The
+ * two expressions are held in step (whitespace-normalised) by a case in THAT
+ * file — widening only one left the other scoring a `\\|` row as clean, and a
+ * comment asking for them to be changed together is exactly what failed.
  */
 const cellCount = (line: string): number =>
-  line.trim().replace(/^\||\|$/g, '').replace(/\\\|/g, ' ').split('|').length;
+  line.trim().replace(/^\||\|$/g, '').replace(/\\[\s\S]/g, ' ').split('|').length;
 
 interface Ragged {
   file: string;
@@ -124,20 +133,45 @@ const scan = (markdown: string, file: string): ScanResult => {
 };
 
 describe('published docs tables', () => {
-  const files = walk(DOCS).filter((f) => !GENERATOR_OWNED.has(relative(DOCS, f)));
+  const files = walk(DOCS);
   const scanned = files.map((f) => scan(readFileSync(f, 'utf8'), relative(DOCS, f)));
 
-  it('still SEES its input — floors on what the scan itself examined', () => {
-    // Floored on `scan`'s OWN row count, not a second copy of the row regex: a
-    // duplicate counter stays truthful while the real one goes blind, which is
-    // the shape this floor exists to refuse.
+  it('still SEES its input — fences recursion, then floors what the scan examined', () => {
+    // The named collapse is a `walk` that stopped recursing, losing
+    // docs/design, docs/plans and docs/_generated. It is fenced STRUCTURALLY:
+    // EVERY immediate subdirectory of docs/ must be represented in the result,
+    // derived from the tree rather than listed here, so a new subdirectory
+    // joins the fence on its own.
     //
-    // Measured 2026-09-04: 68 files, 2446 rows. The floors sit just under, not
-    // at 20% of, those numbers — at 30 / 500 a `walk` that stopped recursing
-    // (losing docs/design, docs/plans and docs/_generated: 17 files, 716 rows)
-    // still passed.
-    expect(files.length).toBeGreaterThan(60);
-    expect(scanned.reduce((n, r) => n + r.rowsExamined, 0)).toBeGreaterThan(2000);
+    // Not merely "some nested path exists": measured, a walk recursing into
+    // only the FIRST subdirectory yields 67 files / 2814 rows and clears a
+    // presence check and both floors below. And not a count at all, because a
+    // count cannot fence this durably — the top level keeps growing toward
+    // whatever number is written here and quietly stops discriminating, which
+    // had already happened once (2026-09-05: 78 files / 2901 rows total against
+    // 60 / 2066 for the top level alone, so the previous 2000-row floor no
+    // longer caught the collapse and the file floor caught it by one file).
+    const subdirs = readdirSync(DOCS).filter((e) => statSync(join(DOCS, e)).isDirectory());
+    // `> 1`, not `> 0`: with a single subdirectory "recursed into the first one
+    // only" is indistinguishable from a full walk, so the check below would
+    // pass on the very collapse it exists to refuse.
+    expect(
+      subdirs.length,
+      `docs/ has ${subdirs.length} subdirectory(ies) — this fence needs at least 2 to discriminate`
+    ).toBeGreaterThan(1);
+    const reached = new Set(files.map((f) => relative(DOCS, f).split(sep)[0]));
+    for (const d of subdirs) {
+      expect(reached, `the walk never reached docs/${d}/`).toContain(d);
+    }
+
+    // The counts are NOT a second copy of the check above — that one is
+    // satisfied by one file per subdirectory. What they uniquely still catch is
+    // the INVERSE collapse: a walk that returned only the nested files, 18
+    // files / 835 rows measured 2026-09-05. Floored on `scan`'s OWN row count
+    // rather than a second copy of the row regex, since a duplicate counter
+    // stays truthful while the real one goes blind.
+    expect(files.length).toBeGreaterThan(64);
+    expect(scanned.reduce((n, r) => n + r.rowsExamined, 0)).toBeGreaterThan(2400);
   });
 
   it.each([
@@ -147,6 +181,13 @@ describe('published docs tables', () => {
     ['| a | b |\n| --- | --- |\n| 1 | 2 | 3 |', 1],
     // an escaped pipe is content, not a delimiter
     ['| a | b |\n| --- | --- |\n| 1 | x \\| y |', 0],
+    // ...but an escaped BACKSLASH does not protect the pipe behind it. Under
+    // the narrower `\|`-only neutralisation this scored CLEAN: the substitution
+    // matched the pair's last two characters and ate the live delimiter.
+    ['| a | b |\n| --- | --- |\n| 1 | x \\\\| y |', 1],
+    // ...and the escape pass must not consume an unrelated pipe when the
+    // escaped character is something else — the inverse of the case above.
+    ['| a | b |\n| --- | --- |\n| 1 | x \\n y |', 0],
     // an UNESCAPED pipe inside inline code still splits the row
     ['| a | b |\n| --- | --- |\n| 1 | `x|y` |', 1],
     // A fenced block's pipe lines are not a table. TWO differing rows, because
@@ -175,16 +216,16 @@ describe('published docs tables', () => {
     ).toEqual([]);
   });
 
-  it('still needs every file it excludes', () => {
-    // An exclusion that stopped excusing anything would sit there forever,
-    // quietly shrinking the fence's reach. When go-to-k/cdkd#2545 escapes the
-    // generator's pipes this fails, naming the entry to delete.
-    for (const name of GENERATOR_OWNED) {
-      const found = scan(readFileSync(join(DOCS, name), 'utf8'), name).ragged;
-      expect(
-        found.length,
-        `docs/${name} no longer has ragged rows — remove it from GENERATOR_OWNED`
-      ).toBeGreaterThan(0);
-    }
+  it('reaches the page that used to be excluded, and EXAMINES its rows', () => {
+    // go-to-k/cdkd#2545's page was the fence's only exclusion, so an empty
+    // `ragged` list is the same green whether it was scanned and clean or never
+    // scanned at all. Membership alone does not separate those: the page opens
+    // with a fenced ```json block ABOVE both its tables, so a desynced fence
+    // tracker would skip all ~93 of its rows while the file stayed in `files`
+    // and the aggregate floor below stayed clear. Assert the page's OWN
+    // examined-row count.
+    const i = files.findIndex((f) => relative(DOCS, f) === 'scenario-coverage.md');
+    expect(i, 'scenario-coverage.md is not in the scanned set').toBeGreaterThanOrEqual(0);
+    expect(scanned[i]!.rowsExamined).toBeGreaterThan(80);
   });
 });

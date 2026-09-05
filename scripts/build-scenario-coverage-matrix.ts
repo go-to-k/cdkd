@@ -477,7 +477,47 @@ export function buildReport(integDir: string = INTEG_DIR): ScenarioCoverageRepor
   };
 }
 
+/**
+ * Escape a value so it occupies exactly ONE Markdown table cell (issue #2545).
+ *
+ * In GitHub-flavoured Markdown a `|` inside a table row is a cell delimiter
+ * even when it sits inside an inline code span — backticks do NOT protect it,
+ * because the row is split into cells before inline parsing runs. Six
+ * `KNOWN_SCENARIOS` descriptions contain one (`invoke|start-api|run-task`,
+ * `-c phase=a|b`, `<databaseName>|<tableName>`, …), and interpolating them
+ * unescaped rendered those rows with up to six columns against a three-column
+ * header, putting every fixture link under a heading that did not name it.
+ *
+ * Applied to EVERY interpolated cell rather than only the description fields:
+ * the descriptions are the only ones that carry a pipe today, but a scenario
+ * tag or a fixture name is no more escaped by construction than they were, and
+ * the cost of covering them is nil.
+ *
+ * A BACKSLASH is escaped too, and that is not decoration: escaping only the
+ * pipe turns an input `\|` into `\\|`, which CommonMark reads as an escaped
+ * BACKSLASH followed by a live delimiter — ragged again, and invisible to
+ * `tests/unit/scripts/docs-table-shape.test.ts`, whose neutralisation pass now
+ * consumes any escape pair for the same reason. No taxonomy entry carries a
+ * backslash today, so this is the latent half of the same defect.
+ *
+ * A LINE ENDING ends the row outright, which no amount of escaping fixes, so it
+ * collapses to a space. Descriptions are already newline-free (the
+ * `KNOWN_SCENARIOS taxonomy` suite refuses one), which is exactly why the
+ * collapse belongs HERE — this helper also renders tags and fixture names,
+ * whose shape nothing else fences. A LONE `\r` counts: CommonMark treats it as
+ * a line ending on its own, so `/\r?\n/` would let it through.
+ *
+ * One accepted cost, stated because the cell is usually wrapped in backticks:
+ * GFM un-escapes `\|` in a table cell but a code span renders `\\` as two
+ * visible backslashes, so a backslash-bearing value shows its escape. Row shape
+ * wins over that — a ragged row misfiles every OTHER cell in it — and no value
+ * this generator renders carries a backslash today.
+ */
+const escapeCell = (value: string): string =>
+  value.replace(/[\r\n]+/g, ' ').replace(/([\\|])/g, '\\$1');
+
 export function renderMarkdown(report: ScenarioCoverageReport): string {
+  const descriptionByTag = new Map(report.knownScenarios.map((k) => [k.tag, k.description]));
   const lines: string[] = [];
   lines.push('---');
   lines.push('title: "Scenario coverage matrix"');
@@ -530,8 +570,16 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
     lines.push('| Scenario | Description |');
     lines.push('|---|---|');
     for (const tag of report.orphanScenarios) {
-      const desc = KNOWN_SCENARIOS[tag];
-      lines.push(`| \`${tag}\` | ${desc} |`);
+      // Resolved from the REPORT, not from the `KNOWN_SCENARIOS` module global
+      // this loop used to read. Both carry the same string for every tag
+      // `buildReport` produces (`orphanScenarios` is a subset of
+      // `knownScenarios`), so the rendered page is unchanged — what changes is
+      // that `renderMarkdown` is now a function of its argument alone, which is
+      // what made this a SEPARATE emit site easy to miss when the sibling table
+      // was fixed. `?? ''` for a tag carried in neither list: it used to
+      // interpolate the literal string `undefined`.
+      const desc = descriptionByTag.get(tag) ?? '';
+      lines.push(`| \`${escapeCell(tag)}\` | ${escapeCell(desc)} |`);
     }
     lines.push('');
   } else {
@@ -547,10 +595,21 @@ export function renderMarkdown(report: ScenarioCoverageReport): string {
   lines.push('| Scenario | Description | Integ Fixture(s) |');
   lines.push('|---|---|---|');
   for (const entry of report.perScenarioCoverage) {
+    // Escaped AFTER composition, deliberately. The fixture name reaches the row
+    // TWICE — as the link label and inside the URL — and escaping only the
+    // label leaves a raw `|` in the href, which splits the row exactly the same
+    // way. Row SHAPE is the invariant this function owes its reader, so the
+    // whole cell is escaped and a fixture directory named with a `|` would ship
+    // a broken link rather than a broken table. No such directory exists (these
+    // are real names read off `tests/integration/`), and percent-encoding the
+    // href is the fix if one ever does. The `<br>` join carries no `|`; a join
+    // string that DID would have its own separator escaped here.
     const fixtures = entry.fixtures.length === 0
       ? '_(orphan)_'
       : entry.fixtures.map((f) => `[\`${f}\`](${githubTree(`tests/integration/${f}/`)})`).join('<br>');
-    lines.push(`| \`${entry.scenario}\` | ${entry.description} | ${fixtures} |`);
+    lines.push(
+      `| \`${escapeCell(entry.scenario)}\` | ${escapeCell(entry.description)} | ${escapeCell(fixtures)} |`
+    );
   }
   lines.push('');
 
