@@ -68,6 +68,36 @@ const safeText = (value: unknown): string => displaySafe(value);
 const safeCount = (value: unknown): string => (typeof value === 'number' ? String(value) : '?');
 
 /**
+ * Appended to every `cdkd events prune` line that reports a DELETE, because
+ * "pruned" and "removed" would otherwise read as removal and are not (issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)).
+ *
+ * The pruner reaches S3 through `S3StateBackend.deleteRawObjects`, which sends
+ * `DeleteObjects` with no `VersionId`. On the versioned state bucket
+ * `cdkd bootstrap` creates, that writes a DELETE MARKER and leaves every
+ * earlier version of the key readable through `GetObject` with a `VersionId`.
+ * And the versions exist in QUANTITY here rather than as a theoretical
+ * remainder: the store re-PUTs a run's whole JSONL body on every flush, so a
+ * single run accumulates one noncurrent version per flush before it is ever
+ * pruned. `docs/deployment-events.md` classes `deployments/*.jsonl` as
+ * sensitive, which is what makes the distinction worth a line of output.
+ *
+ * Deliberately NOT appended to the "no runs matched" arm: that arm returns
+ * before any `deleteRawObjects` call, so there is no delete to qualify.
+ *
+ * The converse does NOT hold, and the gap is tracked on issue #2624 rather than
+ * closed here: `pruneRuns({ all: true })` reports `indexDeleted: true`
+ * unconditionally (its `DeleteObjects` is idempotent, so it "succeeds" on an
+ * empty prefix), so the arms this note IS appended to can fire for a stack that
+ * had no history at all. Making that gate truthful is a behaviour change, not a
+ * wording one.
+ */
+const NONCURRENT_VERSIONS_SURVIVE_NOTE =
+  ' Where the state bucket is versioned — which cdkd bootstrap enables — earlier versions of ' +
+  'the deleted keys survive and stay readable with GetObject and a VersionId; prune does not ' +
+  'purge them.';
+
+/**
  * Options accepted by `cdkd events`. `stateBucket` / `statePrefix` /
  * `region` / `profile` / `verbose` come from the shared option blocks
  * (`commonOptions` + `stateOptions` + the deprecated region option).
@@ -270,11 +300,17 @@ interface EventsPruneCommandOptions {
 }
 
 /**
- * `cdkd events prune <stack>` — reclaim S3 space by deleting old per-run
- * `{runId}.jsonl` event streams (issue #885). `cdkd destroy` deliberately
- * keeps event history as post-mortem context, so this is the explicit way
- * to purge it; the deploy/destroy writer also self-bounds to the last
- * {@link DEPLOYMENT_EVENTS_MAX_INDEX_RUNS} runs automatically.
+ * `cdkd events prune <stack>` — clear old per-run `{runId}.jsonl` event
+ * streams out of the bucket's object LISTING (issue #885). `cdkd destroy`
+ * deliberately keeps event history as post-mortem context, so this is the
+ * explicit way to purge it; the deploy/destroy writer also self-bounds to the
+ * last {@link DEPLOYMENT_EVENTS_MAX_INDEX_RUNS} runs automatically.
+ *
+ * It does NOT reclaim the storage, and the wording above said it did until
+ * issue [#2624](https://github.com/go-to-k/cdkd/issues/2624): the delete
+ * carries no `VersionId`, so on a versioned state bucket every earlier
+ * version of a pruned key is still billed and still readable. See
+ * {@link NONCURRENT_VERSIONS_SURVIVE_NOTE}.
  *
  * Retention selection:
  *   - `--all`              purge every run + the index.
@@ -384,7 +420,8 @@ export async function eventsPruneCommand(
       logger.info(
         gray(
           result.indexDeleted
-            ? `Removed the empty deployment-event index for ${safeStack} (${safeRegion}); no run streams to delete.`
+            ? `Removed the empty deployment-event index for ${safeStack} (${safeRegion}); no run streams to delete.` +
+                NONCURRENT_VERSIONS_SURVIVE_NOTE
             : `No runs matched the prune criteria for ${safeStack} (${safeRegion}).`
         )
       );
@@ -395,7 +432,8 @@ export async function eventsPruneCommand(
         `${cyan(safeStack)} ${gray(`(${safeRegion})`)}; ` +
         `${result.remainingRunIds.length} retained` +
         (result.indexDeleted ? gray(' (index removed)') : '') +
-        '.'
+        '.' +
+        gray(NONCURRENT_VERSIONS_SURVIVE_NOTE)
     );
   } finally {
     awsClients.destroy();
@@ -673,7 +711,10 @@ export function createEventsCommand(): Command {
  */
 export function createEventsPruneCommand(): Command {
   const cmd = new Command('prune')
-    .description('Delete old per-run deployment-event streams to reclaim S3 space')
+    .description(
+      'Delete old per-run deployment-event streams. On a versioned state bucket this clears ' +
+        'the object listing; earlier versions of the deleted keys survive and are not purged.'
+    )
     .argument('<stack>', 'Stack name (physical CloudFormation name)')
     .addOption(
       new Option('--keep <N>', 'Retain only the newest N runs').argParser((v) => {
@@ -685,7 +726,7 @@ export function createEventsPruneCommand(): Command {
       })
     )
     .option('--older-than <duration>', 'Delete runs older than this duration (e.g. 24h, 90m)')
-    .option('--all', 'Delete every recorded run and the index (full purge)', false)
+    .option('--all', 'Delete every recorded run and the index', false)
     .action(
       withErrorHandling((stack: string, _options: unknown, command: Command) =>
         eventsPruneCommand(stack, command.optsWithGlobals() as EventsPruneCommandOptions)

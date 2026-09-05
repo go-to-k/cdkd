@@ -105,9 +105,19 @@ export function orderConsumersBeforeProducers(
  *
  * Purges the stack's deployment-event history (the post-mortem `deployments/`
  * store cdkd keeps by default) ONLY after a clean, non-interrupted destroy, so
- * the state bucket returns fully empty. Deliberately skipped on a failed /
- * interrupted destroy — those events ARE the post-mortem the user wants on the
- * retry — and a no-op when `--purge-events` was not passed.
+ * a plain object listing of the state bucket comes back empty. Deliberately
+ * skipped on a failed / interrupted destroy — those events ARE the post-mortem
+ * the user wants on the retry — and a no-op when `--purge-events` was not
+ * passed.
+ *
+ * "Empty" is bounded, and this used to say "the state bucket returns fully
+ * empty" without the bound (issue
+ * [#2624](https://github.com/go-to-k/cdkd/issues/2624)). The purge routes
+ * through `DeploymentEventsReader.pruneRuns` -> `deleteRawObjects`, which sends
+ * `DeleteObjects` with no `VersionId`: on the versioned state bucket that
+ * writes DELETE MARKERS and leaves every earlier version of those keys readable
+ * with a `VersionId`. The log line below states that rather than claiming a
+ * removal that did not happen.
  *
  * MUST be called AFTER the run's `eventRecorder.finalize()` (which writes this
  * run's own events + index): purging first would just be re-created by the
@@ -132,8 +142,19 @@ export async function purgeEventsAfterDestroy(
   }
   try {
     const purge = await reader.pruneRuns(stackName, region, { all: true });
+    // This gate is CONSTANT-TRUE today, and the gap is tracked on issue #2624
+    // rather than closed here: `pruneRuns({ all: true })` reports
+    // `indexDeleted: true` unconditionally (its `DeleteObjects` is idempotent,
+    // so it "succeeds" on an empty prefix), so the second disjunct always
+    // fires and the line below can announce a purge for a stack that had no
+    // history at all. Making it truthful is a behaviour change, not a wording
+    // one. Same note on `NONCURRENT_VERSIONS_SURVIVE_NOTE` in events.ts.
     if (purge.deletedRunIds.length > 0 || purge.indexDeleted) {
-      logger.info(`  Purged deployment-event history for ${stackName} (${region}).`);
+      logger.info(
+        `  Purged deployment-event history for ${stackName} (${region}). Where the state ` +
+          `bucket is versioned — which cdkd bootstrap enables — earlier versions of those ` +
+          `keys survive and stay readable with GetObject and a VersionId.`
+      );
     }
     return purge;
   } catch (purgeError) {
@@ -768,8 +789,10 @@ async function destroyCommand(
       }
 
       // Issue [#885] — --purge-events: after a CLEAN destroy, also delete this
-      // stack's deployment-event history so the state bucket returns fully
-      // empty. Runs AFTER the recorder finalizes (see the helper's contract).
+      // stack's deployment-event history so an object LISTING of the state
+      // bucket comes back empty (the bucket is versioned, so earlier versions
+      // of those keys survive — the helper's own doc comment carries the
+      // bound). Runs AFTER the recorder finalizes (see the helper's contract).
       //
       // PER-STACK answers, because the question the helper asks — "are these
       // events the post-mortem for a retry?" — is per-stack: it is about THIS
@@ -921,10 +944,12 @@ export function createDestroyCommand(): Command {
     .option(
       '--purge-events',
       "After a clean destroy, also delete the stack's deployment-event history " +
-        '(issue #808 store) so the state bucket returns fully empty. By default events ' +
-        'survive destroy as post-mortem context. Skipped when the destroy fails or is ' +
-        'interrupted (those events aid the retry). Equivalent for an already-destroyed ' +
-        "stack: 'cdkd events prune <stack> --all'.",
+        '(issue #808 store) so an object listing of the state bucket comes back empty. Where ' +
+        'the state bucket is versioned — which cdkd bootstrap enables — earlier versions of ' +
+        'those keys survive and stay readable with GetObject and a VersionId. By default ' +
+        'events survive destroy as post-mortem context. ' +
+        'Skipped when the destroy fails or is interrupted (those events aid the retry). ' +
+        "Equivalent for an already-destroyed stack: 'cdkd events prune <stack> --all'.",
       false
     )
     .action(withErrorHandling(destroyCommand));

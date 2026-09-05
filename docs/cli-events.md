@@ -54,9 +54,15 @@ for what that does and does not cover.
 ## `cdkd events prune`
 
 The store self-bounds to the newest 20 runs at write time, and `cdkd destroy`
-deliberately keeps event history as post-mortem context — so a teardown never
-returns the bucket to empty on its own. `cdkd events prune <stack>` is the
-explicit purge.
+deliberately keeps event history as post-mortem context — so an object listing
+of the bucket is never empty after a teardown alone. `cdkd events prune <stack>`
+is the explicit purge.
+
+It empties the LISTING, not the bucket: the state bucket is versioned and the
+delete carries no version id, so earlier versions of the pruned keys survive
+and stay readable with a `VersionId`. Pruning is therefore not a remediation
+for a run that quoted a secret — see
+[Deleting a run stream does not remove its earlier versions](deployment-events.md#deleting-a-run-stream-does-not-remove-its-earlier-versions).
 
 ```bash
 cdkd events prune MyStack                   # keep the newest 20 (default)

@@ -548,9 +548,12 @@ describe('cdkd scrub - Export.Name colliding with an output NAME (issue #1919)',
     ).rejects.toBeInstanceOf(ScrubNeededError);
 
     const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
-    // And it must not claim to have removed anything.
+    // And it must not claim to have removed anything. The needle tracks the
+    // summary's actual wording (issue #2624 replaced "The plaintext is no
+    // longer stored there" with a versioning-bounded sentence) — a needle no
+    // code path can emit makes this assertion pass for free.
     expect(summary).toContain('Nothing could be rewritten');
-    expect(summary).not.toContain('The plaintext is no longer stored');
+    expect(summary).not.toContain('The CURRENT state.json no longer holds the plaintext');
   });
 
   it('a state with NO outputs field is still scrubbed rather than throwing', async () => {

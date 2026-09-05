@@ -419,3 +419,77 @@ describe('cdkd scrub reports a read it DECLINED BY DESIGN (issue #2133 review)',
     expect(summary).toContain('No plaintext secrets found in any target stack state');
   });
 });
+
+/**
+ * Issue [#2624](https://github.com/go-to-k/cdkd/issues/2624): what the summary
+ * may CLAIM is bounded by S3 versioning.
+ *
+ * `scrub`'s only write is `saveState`, a plain `PutObjectCommand`, and the
+ * state bucket is versioned. The PUT therefore makes the pre-scrub body a
+ * NONCURRENT VERSION of the same key -- still readable, plaintext and all, to
+ * anyone who can `GetObject` it with a `VersionId` -- and nothing on this path
+ * purges it (`grep -c purgeNoncurrent src/cli/commands/scrub.ts` -> 0). The
+ * line used to say "The plaintext is no longer stored there", which is the
+ * command's headline claim and was false for the copy that matters.
+ */
+describe('cdkd scrub: the summary states the versioning bound instead of claiming removal', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    declineCrossStackRead.on = false;
+    synthStacks.length = 0;
+    synthStacks.push(makeStackInfo('Scrubbable'));
+    commandStateBackend.getState.mockImplementation((stackName: string) =>
+      Promise.resolve({ state: makeState(stackName, false), etag: 'etag-1' })
+    );
+    commandStateBackend.saveState.mockResolvedValue('etag-2');
+  });
+
+  it('a run that DID rewrite state says the pre-scrub version survives, and never says the plaintext is gone', async () => {
+    await expect(scrubCommand([], commandOptions())).resolves.toBeUndefined();
+    // Bound the arm before reading its line: a run that rewrote nothing would
+    // take the other branch entirely and make every assertion below vacuous.
+    expect(commandStateBackend.saveState).toHaveBeenCalledTimes(1);
+
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(summary).toContain('Done: scrubbed 1 stack(s).');
+    expect(summary).toContain('The CURRENT state.json no longer holds the plaintext');
+    expect(summary).toContain('Where the state bucket is VERSIONED');
+    expect(summary).toContain('survives as a noncurrent version');
+    expect(summary).toContain('scrub does not purge it');
+    // The old claim, in the exact spelling that shipped. This is the half a
+    // wording-only fix can silently lose on a later edit.
+    expect(summary).not.toContain('The plaintext is no longer stored there');
+    // And the remedy the surviving version makes load-bearing is still named.
+    expect(summary).toContain('ROTATE it in Secrets Manager');
+  });
+
+  it('THE OTHER POLARITY: a CLEAN run carries no versioning caveat', async () => {
+    // The caveat qualifies a WRITE; a run that made none has nothing to
+    // qualify, and appending it to every summary line would still satisfy the
+    // case above.
+    //
+    // This lands on the CLEAN early return ("No plaintext secrets found in any
+    // target stack state"), NOT on the `Nothing could be rewritten` sibling of
+    // the arm above — measured by mutation, not assumed: relaxing that arm's
+    // `totalStacksScrubbed > 0` gate leaves this case green because it returns
+    // before reaching it. The `Nothing could be rewritten` arm is pinned by
+    // `scrub-export-name-collision.test.ts`'s CI-GATE case, which DOES red
+    // under that mutation.
+    commandStateBackend.getState.mockImplementation((stackName: string) => {
+      const state = makeState(stackName, false);
+      state.resources['Db']!.properties['MasterUserPassword'] = NAME_EXPR;
+      return Promise.resolve({ state, etag: 'etag-1' });
+    });
+
+    await expect(scrubCommand([], commandOptions())).resolves.toBeUndefined();
+    expect(commandStateBackend.saveState).not.toHaveBeenCalled();
+
+    const summary = commandLogger.info.mock.calls.map((c) => String(c[0])).join('\n');
+    // POSITIVE first: an all-negative case passes for a run that printed
+    // NOTHING, which is a different bug wearing this case's green.
+    expect(summary).toContain('No plaintext secrets found in any target stack state');
+    expect(summary).not.toContain('Done: scrubbed');
+    expect(summary).not.toContain('Where the state bucket is VERSIONED');
+    expect(summary).not.toContain('survives as a noncurrent version');
+  });
+});

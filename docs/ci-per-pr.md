@@ -92,7 +92,7 @@ pass is a teardown that leaves resources billing.
 | --- | --- | --- |
 | [`--remove-protection`](cli-destroy.md#remove-protection-bypass-deletion-protection-on-destroy) | The environment has RDS or DynamoDB deletion protection, EC2 termination protection, or any other protection-enabled resource | Those resources survive the job and linger until the next sweep |
 | [`--skip-final-snapshot`](cli-destroy.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot) | The environment's data is disposable and a resource carries `DeletionPolicy: Snapshot` | A final snapshot accumulates on every PR close |
-| `--purge-events` (`cdkd destroy` only) | You want the state bucket to return fully empty | The stack's deployment-event history is kept as post-mortem context |
+| `--purge-events` (`cdkd destroy` only) | You want an object listing of the state bucket to come back empty (earlier object versions still survive) | The stack's deployment-event history is kept as post-mortem context |
 
 `cdkd state destroy` does not accept `--purge-events` — passing it is an
 unknown-option error. Run `cdkd events prune <stack> --all` after the teardown
