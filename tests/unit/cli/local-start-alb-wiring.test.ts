@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Command } from 'commander';
+import { Command, Option } from 'commander';
 import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emulator.js';
 
 /**
@@ -46,17 +46,27 @@ import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emu
  * next round. What is actually held:
  *
  * - every option the command DECLARES is PASSED, derived from `cmd.options`,
- *   with a coverage case that fails if one is added and not varied;
+ *   with a coverage case that fails if one is added and not varied, and a
+ *   refusal rather than a silent skip for an option with no long form;
  * - each is passed with a VALUE its commander default cannot produce, and an
- *   optional-argument option gets a string rather than the bare boolean form;
- * - the variadic positional is driven at zero, one and many.
+ *   optional-argument option is driven in BOTH its legal shapes — with a
+ *   string and bare;
+ * - the variadic positional is driven at zero, one and many;
+ * - `process.argv` mirrors the driven argv, because `{ from: 'user' }` leaves
+ *   it untouched and a conditional reading it directly is still "the user
+ *   passed X" — the shape this file exists to fence.
  *
- * What still escapes, measured rather than guessed: a conditional keyed on a
- * COMBINATION of flags (the matrix is one option at a time), on a SPECIFIC
- * value out of several an option accepts, or on something that is not argv at
- * all (an env var, `isTTY`, the clock). Closing the first two means a
+ * What still escapes, enumerated by a reviewer who tried and classified every
+ * one as CONTRIVED: a conditional keyed on a COMBINATION of flags (the matrix
+ * is one option at a time), on a SPECIFIC value out of several an option
+ * accepts, on the ARITY of a repeatable option, or on something that is not
+ * argv at all (an env var, `isTTY`, the clock). Closing those means a
  * combinatorial matrix, which buys less than it costs — the plausible refactor
- * is "the user passed X", and that is what is fenced.
+ * is "the user passed X", and that is fenced.
+ *
+ * FOUR earlier revisions of this list each claimed more than they delivered
+ * and each was falsified by the next review round finding one more shape. This
+ * one is written from a round that found no plausible survivor.
  *
  * `parseAsync` rather than `parse`: the action is async, and
  * `cmd-parse-stub-gate` deliberately exempts the async spelling because the
@@ -122,6 +132,13 @@ async function strategyHandedToEngine(argv: string[]): Promise<EmulatorStrategy>
     .mockImplementation(((code?: number) => {
       throw new Error(`the action exited (${code}) instead of reaching the engine`);
     }) as never);
+  // `parseAsync(..., { from: 'user' })` deliberately does NOT touch
+  // `process.argv`, so a conditional reading it directly saw an argv with none
+  // of these flags in it and survived every case — while being literally "the
+  // user passed X", the shape this file claims to fence. Mirroring the driven
+  // argv here closes that without weakening the `from: 'user'` parse.
+  const realArgv = process.argv;
+  process.argv = ['node', 'cdkd', 'local', 'start-alb', ...argv];
   try {
     captured.strategy = undefined;
     captured.extraStateProviders = undefined;
@@ -136,6 +153,7 @@ async function strategyHandedToEngine(argv: string[]): Promise<EmulatorStrategy>
     }
     return strategy;
   } finally {
+    process.argv = realArgv;
     exit.mockRestore();
   }
 }
@@ -264,6 +282,19 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
       }),
   ];
 
+  it('REFUSES a short-only option rather than dropping it', () => {
+    // The refusal exists because a `.filter()` silently discarded such an
+    // option, so the coverage case never mentioned it and a conditional keyed
+    // on it was invisible. Proved to fire against the real command in review;
+    // pinned here so reverting it to a filter reds instead of going quiet.
+    const shortOnly = new Command('probe').addOption(new Option('-Z <v>', 'short only'));
+    expect(() => declaredLongs(shortOnly)).toThrow(/short-only option/);
+    // ...and the happy path still returns what it should, so a refusal that
+    // fired on everything would not pass as success.
+    const longForm = new Command('probe').addOption(new Option('--kept <v>', 'long'));
+    expect(declaredLongs(longForm)).toEqual(['--kept']);
+  });
+
   it('varies every option the command declares', () => {
     // The half that makes DERIVING worth more than enumerating: an option
     // added upstream (this command inherits most of its block from cdk-local)
@@ -324,6 +355,15 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
     // survived the option-derived matrix — every case passed a target. Omitting
     // it is a real invocation: in a TTY the engine multi-selects interactively.
     const strategy = await strategyHandedToEngine(['--from-state']);
+    expect(warningsFor(strategy).join('\n')).toContain('ApiFnE0725F78');
+  });
+
+  it('warns with a BARE optional-argument flag', async () => {
+    // `--from-cfn-stack` takes an OPTIONAL argument, so it has two legal argv
+    // shapes and the derived matrix drives only the one with a value. Review
+    // called the trade honestly rather than strictly additive; this is the
+    // other shape, so neither is uncovered.
+    const strategy = await strategyHandedToEngine(['My/Alb', '--from-state', '--from-cfn-stack']);
     expect(warningsFor(strategy).join('\n')).toContain('ApiFnE0725F78');
   });
 
