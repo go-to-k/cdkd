@@ -183,6 +183,53 @@ describe('pr-inherit-issue-labels workflow', () => {
     expect(theirs.posted).toEqual([]);
   });
 
+  it('matches the `owner/repo#N` form for THIS repo (issue go-to-k/cdkd#2661)', () => {
+    // The repo's own convention asks for the qualified `owner/repo#N` spelling
+    // in published artifacts, so this is the form most PR bodies actually
+    // carry. Measured on 2026-09-05: three of four merged PRs inherited NO
+    // labels because the regex accepted only a bare `#N` or a full URL.
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cdkd#41',
+      ISSUE_41: 'severity:medium|effort:small',
+    });
+    expect(posted).toEqual(['effort:small', 'severity:medium']);
+  });
+
+  it('does NOT harvest an `owner/repo#N` reference to ANOTHER repo', () => {
+    // The failure a naive widening introduces: cdkd PR bodies routinely close
+    // a cdkd issue while CITING an upstream one, so labelling this PR from
+    // `go-to-k/cdk-local#699` would be labelling from a different tracker.
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cdk-local#699',
+      ISSUE_699: 'bug',
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it('treats a regex metachar in the repo name as a literal', () => {
+    // `$REPO` is interpolated into an ERE. Unescaped, the `.` here is a
+    // wildcard and `go-to-k/cdXd#5` passes as this repo -- a near-miss repo
+    // harvesting labels into ours. Nothing covered this before go-to-k/cdkd#2661.
+    const { posted } = run({
+      REPO: 'go-to-k/cd.d',
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cdXd#5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it('does NOT treat a repo whose name PREFIXES this one as this repo', () => {
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes go-to-k/cdkd-extra#77',
+      ISSUE_77: 'bug',
+    });
+    expect(posted).toEqual([]);
+  });
+
   it('posts to THIS PR\'s labels endpoint, not somewhere else', () => {
     const { target } = run({
       PR_TITLE: 'fix: x',
