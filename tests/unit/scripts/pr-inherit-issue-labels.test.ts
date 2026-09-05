@@ -39,11 +39,27 @@ import { dirname, join } from 'node:path';
  *     the earlier overlap case confounded `sort -u` with the `have` filter
  *   - each deny-list entry individually, including the per-channel
  *     `released on @<channel>` form semantic-release actually emitted
+ *   - the QUALIFIED `owner/repo#N` form (issue go-to-k/cdkd#2661), which this
+ *     repo's own convention asks for and which the regex could not read: three
+ *     of the four PRs merged 2026-09-05 inherited no labels at all
+ *   - and, for each branch that interpolates the repo name, BOTH directions
+ *     under a metachar repo name -- the literal form still harvested AND the
+ *     wildcard near-miss rejected. The negative alone cannot tell "escaped
+ *     correctly" from "escaped into oblivion": go-to-k/cdkd#2661's first fix
+ *     emitted a doubled backslash, matched nothing, regressed the URL branch,
+ *     and left every assertion green
  *
  * Mutation-probed 2026-08-26: removing the deny list fails 7 of 17; dropping
  * `sort -u`, re-pointing the POST, accepting the `Closes (#N)` paren form, and
  * narrowing the deny list back to a fixed `released on @experimental` each fail
  * exactly 1.
+ *
+ * Re-probed 2026-09-06 over 24 cases (go-to-k/cdkd#2661): dropping the
+ * qualified alternative, raw-interpolating `$REPO` into the URL branch, and
+ * the doubled-backslash escape each fail exactly the branch they break --
+ * 1, 1 and 2 respectively. Deleting the URL branch outright fails 2; deleting
+ * the qualified branch fails 2, so neither is rescued by the bare-`#`
+ * fallback.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const WORKFLOW = join(repoRoot, '.github', 'workflows', 'pr-inherit-issue-labels.yml');
@@ -232,6 +248,19 @@ describe('pr-inherit-issue-labels workflow', () => {
       ISSUE_5: 'bug',
     });
     expect(posted).toEqual(['bug']);
+  });
+
+  it('treats the hardcoded `github.com` dot as a literal', () => {
+    // The last unpinned escape in the pattern, found by the round-3 probe:
+    // unescaping this dot left all 24 cases green, so nothing said the host
+    // was matched literally rather than as a wildcard. Correct as written --
+    // this case is what keeps it that way.
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes https://githubXcom/go-to-k/cdkd/issues/5',
+      ISSUE_5: 'bug',
+    });
+    expect(posted).toEqual([]);
   });
 
   it('treats a metachar as a literal in the URL branch too', () => {
