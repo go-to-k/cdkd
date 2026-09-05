@@ -415,6 +415,46 @@ describe('runEcsTask — image preparation (G1)', () => {
     expect((opts as { tag: string }).tag.startsWith('cdkd-local-run-task-')).toBe(true);
   });
 
+  it('cdk-asset with an `executable` source → wrapError redacts the build command line (issue #2623)', async () => {
+    // The wrapper interpolates the asset's own `executable` argv into a
+    // user-visible error. A build script that wraps `docker build` carries the
+    // very `--build-arg` pairs `src/assets/docker-build.ts` masks on its own
+    // path, so this site redacts too.
+    const SECRET = 'ghp_2623EcsTaskRunnerWrapError';
+    manifestStubs.loadManifest.mockResolvedValueOnce({
+      dockerImages: {
+        h0: {
+          source: {
+            executable: ['./build.sh', '--build-arg', `GH_TOKEN=${SECRET}`],
+          },
+        },
+      },
+    } as never);
+    captured.responder = happyDockerResponder();
+    const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });
+    const task = makeTask({
+      containers: [c],
+      stack: {
+        stackName: 'S1',
+        displayName: 'S1',
+        artifactId: 'S1',
+        template: { Resources: {} },
+        dependencyNames: [],
+        assetManifestPath: '/tmp/cdk.out/S1.assets.json',
+      },
+    });
+    await runEcsTask(task, baseOptions(), createEcsRunState());
+
+    const [, , opts] = dockerBuildStubs.buildDockerImage.mock.calls[0]!;
+    const wrapped = (opts as { wrapError: (s: string) => Error }).wrapError('docker: BOOM');
+    expect(wrapped.message).not.toContain(SECRET);
+    expect(wrapped.message).toContain('--build-arg GH_TOKEN=***');
+    // Both halves of the diagnostic survive: which container, and what docker
+    // actually said.
+    expect(wrapped.message).toContain(`docker build failed for ECS container '${c.name}'`);
+    expect(wrapped.message).toContain('docker: BOOM');
+  });
+
   it('cdk-asset with no asset manifest path → throws EcsTaskRunnerError', async () => {
     captured.responder = happyDockerResponder();
     const c = makeContainer({ image: { kind: 'cdk-asset', assetHash: 'h0' } });

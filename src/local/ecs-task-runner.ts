@@ -8,6 +8,7 @@ import {
   getDockerCmd,
   partitionSensitiveEnv,
   describeDockerFailure,
+  redactDockerArgvValues,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
@@ -819,7 +820,15 @@ async function prepareOneImage(
         ...(options.platformOverride !== undefined && { platform: options.platformOverride }),
         wrapError: (stderr: string) =>
           new LocalInvokeBuildError(
-            `docker build failed for ECS container '${container.name}' (${asset.source.directory ?? asset.source.executable?.join(' ')}): ${stderr}`
+            // The `executable` branch renders a user-supplied command line, so
+            // it is redacted like every other argv this repo displays
+            // (issue #2623). The `directory` branch is a path, not an argv.
+            `docker build failed for ECS container '${container.name}' (${
+              asset.source.directory ??
+              (asset.source.executable
+                ? redactDockerArgvValues(asset.source.executable).join(' ')
+                : undefined)
+            }): ${stderr}`
           ),
       });
       if (actualTag !== tag) {

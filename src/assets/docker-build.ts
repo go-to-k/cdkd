@@ -1,12 +1,31 @@
 import type { DockerCacheOption, DockerImageAssetSource } from '../types/assets.js';
-import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
+import {
+  describeDockerFailure,
+  getDockerCmd,
+  redactDockerArgvValues,
+  runDockerStreaming,
+  spawnStreaming,
+} from '../utils/docker-cmd.js';
+import { displaySafe } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
  * Shared `docker build` invocation used by both
  * `src/assets/docker-asset-publisher.ts` (publish to ECR) and
- * `src/local/docker-image-builder.ts` (run a container Lambda locally via
- * `cdkd local invoke`).
+ * `src/local/ecs-task-runner.ts` (build a `ContainerImage.fromAsset` image for
+ * `cdkd local run-task`). The `cdkd local invoke` container-Lambda build is
+ * NOT a caller: `src/local/docker-image-builder.ts` became a thin shim over
+ * `cdk-local`'s own builder, so this doc's long-standing claim that it uses
+ * this helper was stale (corrected while sweeping issue
+ * [#2623](https://github.com/go-to-k/cdkd/issues/2623)).
+ *
+ * **Every argv this module renders into a log line or an error text goes
+ * through `redactDockerArgvValues` / `describeDockerFailure`**
+ * ([#2623](https://github.com/go-to-k/cdkd/issues/2623),
+ * [.claude/rules/docker-argv-redaction.md](../../.claude/rules/docker-argv-redaction.md)).
+ * `--build-arg` carries a `DockerImageAsset`'s `buildArgs`, which is a common
+ * — if discouraged — place for a build-time registry token, and `--verbose`
+ * output is routinely pasted into issues and kept in CI archives.
  *
  * Parity with CDK CLI's `@aws-cdk/cdk-assets-lib`:
  *   - Streaming spawn via `runDockerStreaming` (no `execFile` `maxBuffer`
@@ -98,21 +117,28 @@ export async function buildDockerImage(
     // `directory` is unset, the executable runs from `cdkOutDir`.
     const cwd = source.directory ? `${cdkOutDir}/${source.directory}` : cdkOutDir;
 
-    logger.debug(
-      `Building Docker image via executable: ${source.executable.join(' ')} (cwd=${cwd})`
-    );
+    // The user's build script is an ARBITRARY command line, and a script that
+    // wraps `docker build` carries the very `--build-arg` pairs this module
+    // masks on its own path. Redacted for display; `spawnStreaming` still gets
+    // the raw `args`.
+    const shownExecutable = redactDockerArgvValues(source.executable).join(' ');
+    logger.debug(`Building Docker image via executable: ${shownExecutable} (cwd=${cwd})`);
 
     let result;
     try {
       result = await spawnStreaming(cmd, args, { cwd });
     } catch (err) {
-      const e = err as { stderr?: string; message?: string };
-      throw options.wrapError(e.stderr || e.message || String(err));
+      // `args`, NOT `source.executable`: the composer's spawn-refusal repair
+      // resolves Node's `args[N]` index against the array handed to `spawn`,
+      // which excludes the command itself. Passing the executable whole would
+      // resolve every index one element early — the "pass the array you
+      // actually spawned" rule in .claude/rules/docker-argv-redaction.md.
+      throw options.wrapError(describeDockerFailure(err, args));
     }
     const tag = result.stdout.trim();
     if (!tag) {
       throw options.wrapError(
-        `docker build executable produced no output (expected the local image tag on stdout): ${cmd} ${args.join(' ')}`
+        `docker build executable produced no output (expected the local image tag on stdout): ${shownExecutable}`
       );
     }
     return tag;
@@ -120,8 +146,43 @@ export async function buildDockerImage(
 
   // Directory source: standard docker build.
   if (!source.directory) {
+    // FIELD NAMES only. This used to be `JSON.stringify(source)`, which is a
+    // strictly WIDER disclosure than the `--build-arg` log line issue #2623
+    // was filed about: it dumps every `dockerBuildArgs` VALUE plus
+    // `dockerBuildSecrets`, into a thrown error rather than behind
+    // `--verbose`. The diagnostic here is "which fields WERE set", since the
+    // failure is that neither of two required ones is — and a key list answers
+    // exactly that.
+    //
+    // "Present" means "carries a value", not "is a key": `{ directory: '' }`
+    // takes this branch (the guard is `!source.directory`), so listing
+    // `directory` would contradict the sentence it is appended to. Each name
+    // goes through `displaySafe` because it is rendered into a terminal — the
+    // keys are schema names today, but the escaping `JSON.stringify` used to
+    // provide left with it.
+    const carriesAValue = (v: unknown): boolean => {
+      if (v === undefined || v === null || v === '') return false;
+      // An empty ARRAY and an empty OBJECT are the same statement, and the
+      // first cut answered them differently: `dockerBuildArgs: {}` was listed
+      // as present while `executable: []` was not, from one predicate whose
+      // name says "carries a value".
+      if (typeof v !== 'object') return true;
+      return (Array.isArray(v) ? v.length : Object.keys(v).length) > 0;
+    };
+    const present =
+      Object.keys(source)
+        .filter((k) => carriesAValue((source as Record<string, unknown>)[k]))
+        // `asciiOnly` is the documented mode for a KNOWN charset, and these
+        // are manifest schema identifiers. The denylist form leaves the
+        // invisible formatters (U+200B-200D / U+FEFF) and the bidi MARKS
+        // (U+200E / U+200F) in a terminal-rendered thrown error; the
+        // allowlist has no such residual.
+        .map((k) => displaySafe(k, { asciiOnly: true }))
+        .filter((k) => k !== '')
+        .sort()
+        .join(', ') || '<no fields set>';
     throw options.wrapError(
-      `DockerImageAssetSource must set either 'directory' or 'executable' (got: ${JSON.stringify(source)})`
+      `DockerImageAssetSource must set either 'directory' or 'executable' (fields present: ${present})`
     );
   }
   if (!options.tag) {
@@ -138,7 +199,11 @@ export async function buildDockerImage(
   const contextDir = `${cdkOutDir}/${source.directory}`;
   buildArgs.push('.');
 
-  logger.debug(`${getDockerCmd()} ${buildArgs.join(' ')} (cwd=${contextDir})`);
+  // The reported site of issue #2623: this rendered every `--build-arg` VALUE
+  // into `cdkd deploy --verbose` output.
+  logger.debug(
+    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${contextDir})`
+  );
 
   try {
     await runDockerStreaming(buildArgs, {
@@ -149,8 +214,11 @@ export async function buildDockerImage(
       env: { BUILDX_NO_DEFAULT_ATTESTATIONS: '1' },
     });
   } catch (err) {
-    const e = err as { stderr?: string; message?: string };
-    throw options.wrapError(e.stderr || e.message || String(err));
+    // `runDockerStreaming` spawns with exactly `buildArgs`, so the index in a
+    // Node spawn refusal (`The argument 'args[N]' …`) resolves against it —
+    // the shape that would otherwise print a whole `--build-arg` pair, NUL
+    // escaping and all, into a user-visible error.
+    throw options.wrapError(describeDockerFailure(err, buildArgs));
   }
 
   return options.tag;

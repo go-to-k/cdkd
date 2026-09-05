@@ -1,6 +1,7 @@
 import { ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
 import { AssumeRoleCommand, GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
+  describeDockerFailure,
   formatDockerLoginError,
   runDockerForeground,
   runDockerStreaming,
@@ -359,11 +360,13 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   }
 
   logger.info(`Pulling ${canonicalUri}...`);
+  const pullArgs = ['pull', canonicalUri];
   try {
-    await runDockerForeground(['pull', canonicalUri]);
+    await runDockerForeground(pullArgs);
   } catch (err) {
-    const e = err as Error;
-    throw new LocalInvokeBuildError(`docker pull ${canonicalUri} failed: ${e.message}`);
+    throw new LocalInvokeBuildError(
+      `docker pull ${canonicalUri} failed: ${describeDockerFailure(err, pullArgs)}`
+    );
   }
 
   return canonicalUri;
@@ -447,14 +450,12 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
   const endpoint =
     authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.${ecrUrlSuffix(region)}`;
 
+  const loginArgs = ['login', '--username', username, '--password-stdin', endpoint];
   try {
-    await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {
-      input: password,
-    });
+    await runDockerStreaming(loginArgs, { input: password });
   } catch (err) {
-    const e = err as { stderr?: string; message?: string };
     throw new LocalInvokeBuildError(
-      `ECR login failed: ${formatDockerLoginError(e.stderr || e.message || String(err), endpoint)}`
+      `ECR login failed: ${formatDockerLoginError(describeDockerFailure(err, loginArgs), endpoint)}`
     );
   }
 }

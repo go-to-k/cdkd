@@ -211,7 +211,12 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['cli-internals.md', 48],
   ['code-layout.md', 261],
   ['delete-outcome.md', 5], // literal list: EXACT, see below
-  ['docker-argv-redaction.md', 5], // literal list: EXACT, see below
+  // 5 -> 8 (issue go-to-k/cdkd#2623): the argv-redaction rule gained three
+  // modules that spawn docker and were outside it -- `src/assets/docker-build.ts`
+  // and `src/assets/docker-asset-publisher.ts` (the deploy-time ECR publish,
+  // which also builds `cdkd local run-task`'s image) and `src/local/ecr-puller.ts`.
+  // Widening, not narrowing: no path was dropped.
+  ['docker-argv-redaction.md', 8], // literal list: EXACT, see below
   ['docs-page-template.md', 63], // `docs/**`; measured 79 tracked files (80%, per the convention above)
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below

@@ -383,6 +383,85 @@ describe('DockerAssetPublisher', () => {
     });
   });
 
+  describe('composed docker failure texts (issue #2623)', () => {
+    // The login / tag / push catches were rewritten from a hand-composed
+    // `e.stderr?.trim() || e.message || String(err)` to
+    // `describeDockerFailure(err, args)`. Two things are behaviour, not
+    // wording: the push text FEEDS `isDockerAuthFailure`, which decides
+    // whether cdkd logs in and retries at all, and the argv these calls carry
+    // must reach the redactor so a future value-bearing flag cannot leak.
+    it('a push failure still classifies as an auth failure through the composer', async () => {
+      wireEcrMocks();
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          const err = new Error('push failed') as Error & { stderr: string };
+          // Whitespace-padded on purpose: the composer trims, the old
+          // hand-composed push site trimmed, and the old LOGIN site did not.
+          err.stderr = '  denied: requested access to the resource is denied\n';
+          return Promise.reject(err);
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+
+      await expect(
+        publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1')
+      ).rejects.toThrow(AssetError);
+
+      // The retry fired, which is what the classification decides — a
+      // composition that stopped matching would silently skip the login.
+      expect(countAuthTokenCalls()).toBe(1);
+      expect(countLoginExecs()).toBe(1);
+      // And the classifier agrees with the text the composer produces.
+      expect(
+        isDockerAuthFailure('denied: requested access to the resource is denied')
+      ).toBe(true);
+    });
+
+    it('a tag failure surfaces the docker stderr, trimmed', async () => {
+      wireEcrMocks();
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'tag') {
+          const err = new Error('tag exited 1') as Error & { stderr: string };
+          err.stderr = '  Error response from daemon: No such image: cdkd-asset-h1\n';
+          return Promise.reject(err);
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+
+      await expect(
+        publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1')
+      ).rejects.toThrow('Docker tag failed: Error response from daemon: No such image');
+    });
+
+    it('a login failure surfaces the docker stderr and never the password', async () => {
+      wireEcrMocks('https://123456789012.dkr.ecr.us-east-1.amazonaws.com');
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push') {
+          const err = new Error('push failed') as Error & { stderr: string };
+          err.stderr = 'no basic auth credentials';
+          return Promise.reject(err);
+        }
+        if (args[0] === 'login') {
+          const err = new Error('login exited 1') as Error & { stderr: string };
+          err.stderr = 'Error response from daemon: login attempt failed';
+          return Promise.reject(err);
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+
+      const message = await publisher
+        .publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1')
+        .then(
+          () => '',
+          (e: Error) => e.message
+        );
+      expect(message).toContain('ECR login failed');
+      expect(message).toContain('login attempt failed');
+      // The password rides stdin, never argv, so the composer cannot reach it.
+      expect(message).not.toContain('mock-password');
+    });
+  });
+
   describe('lazy ECR login (push-first, login-on-auth-failure)', () => {
     it('skips login entirely when the push succeeds with a valid cred (inv 3)', async () => {
       wireEcrMocks();
