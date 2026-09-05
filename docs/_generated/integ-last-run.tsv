@@ -5,7 +5,7 @@
 # GENERATED SHAPE - do not hand-edit. After recording a run, run:
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
-acm-certificate	2026-08-22T17:36:24Z	PASS	87	verify.sh	#2169 re-run after review round 3 (validation-record dedup replaces the latch; integ probes anchored); 0 certs after 2 failed deploys; rc 0, sweep clean
+acm-certificate	2026-09-05T03:27:04Z	PASS	91	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (exit-2 survivor contract)
 agentcore-tools	2026-08-01T09:36:05Z	PASS	58	verify.sh	0801 regression sweep; 3 phases ok, 0 orphans
 alb	2026-08-20T02:48:06Z	FAIL	430	verify.sh	listener attr routing.http.response.server.enabled not reset to AWS default on removal. NOT caused by the issue-2058/2063 change: isolated by reverting elbv2-provider.ts to main inside this same worktree and re-running, which still FAILED (rc=1). Sequence was FAIL(lane) / PASS(main checkout, same base 45d838b8) / FAIL(lane) / FAIL(lane+main elbv2), so the code is not the discriminator. Cleanup clean: 0 ALBs, 0 VPCs, 0 state. Filed as issue 2085 for root-cause.
 alb-advanced	2026-08-20T04:01:13Z	PASS	215	standard	issues 2058/2063: re-run after the round-3 comment edit re-staled integ-destroy (hash: diff digests the delta, so a comment counts). Exercises createLoadBalancer/updateLoadBalancer; deploy rc=0, destroy 17 deleted 0 errors, 0 ALBs / 0 VPCs / 0 NAT gateways / 0 state after. Second clean run of this fixture on the same branch.
@@ -67,8 +67,8 @@ data-analytics	2026-08-10T11:31:18Z	PASS	87	verify.sh	#1479 SD-subtree merge re-
 data-pipeline	2026-08-10T05:19:05Z	PASS	48	standard	0810 P2 sweep b6; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-08-01T10:07:21Z	PASS	53	verify.sh	0801 regression sweep; SDK+CC chain ok, 0 orphans
 deletion-ordering-complex	2026-08-13T06:50:48Z	PASS	260	verify.sh	PR 1774; destroy-runner ordering, rc 0, 19 del 0 err, LB/TG/SG/subnet/IGW/VPC/EC2 all gone
-deletion-policy-retain	2026-09-05T01:24:06Z	PASS	29	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 retain semantics
-deletion-policy-snapshot	2026-08-08T16:32:34Z	PASS	259	verify.sh	P0 first run post-#1360 EC2 Volume replacement rules; all 3 snapshot paths (engine/replacement/runner) ok, 0 orphans
+deletion-policy-retain	2026-09-05T03:27:04Z	PASS	29	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
+deletion-policy-snapshot	2026-09-05T03:27:04Z	PASS	245	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 deletion-policy-snapshot-heavy	2026-08-03T06:58:15Z	PASS	1500	verify.sh	#1353 Redshift+ElastiCache RepGroup pre-delete snapshots verified; found 4 live defects across 5 runs
 deployment-events	2026-08-13T06:46:26Z	PASS	150	verify.sh	PR 1774; events.ts skip-count/reason rendering surface, rc 0, 2 del 0 err, sidecar removed
 destroy-data-guard	2026-08-02T14:22:57Z	PASS	95	verify.sh	guard fired on guarded pair, opt-ins force-cleaned, 2nd destroy clean, 0 orphans
@@ -149,7 +149,7 @@ intrinsics-torture-2	2026-07-26T18:57:55Z	PASS	48	verify.sh	0727b sweep-b7 stale
 kinesis-esm-filter	2026-08-10T04:23:28Z	PASS	63	verify.sh	0810 sweep b2; post-#1398 lambda-eventsource re-verify, 5 del 0 err, 0 orph
 kinesis-stream-mode-switch	2026-08-26T08:41:59Z	PASS	120	verify.sh	issue 2178 masker-threading sweep (kinesis); 3 phases, 0 err, 0 orphans
 kms-encryption	2026-07-26T18:20:27Z	PASS	25	standard	0727b sweep-b3 staleness re-run (rc=0); account clean
-lambda	2026-09-05T01:24:06Z	PASS	78	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 broad-set breadth
+lambda	2026-09-05T03:27:04Z	PASS	85	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (broad-set regate after comment-only delta)
 lambda-alias-provisioned-concurrency	2026-07-26T19:16:39Z	PASS	262	verify.sh	0727b sweep-b9 staleness re-run (rc=0); account clean
 lambda-arch-switch	2026-07-26T19:25:15Z	PASS	63	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 lambda-config-field-removal	2026-08-11T13:09:08Z	PASS	132	verify.sh	issue #609 Lambda 4-prop backfill + review fixes; 5 del 0 err 0 orphans
@@ -226,17 +226,17 @@ rds-aurora	2026-08-10T08:05:51Z	PASS	2299	verify.sh	0810 P2 sweep b13; cluster r
 rds-dbinstance-backfill	2026-08-10T08:05:51Z	PASS	634	verify.sh	0810 P2 sweep b13; rds-provider re-verify, 0 err 0 orph
 rds-full-stack	2026-08-13T14:32:55Z	PASS	-	verify.sh	issue 1824 arm: SSM value == live DBSubnetGroupArn (subgrp: form, read off the create response); 16 created, all gone-probes OK, 0 err 0 orph
 recreate-mixed-direction	2026-08-08T16:42:21Z	PASS	92	verify.sh	P1 post-#1360 replacement-rules touch; mixed SDK<->CC recreate ok, 3 del/0 err, 0 orphans
-recreate-via-cc-api	2026-09-05T01:24:06Z	PASS	100	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 CC fallback trigger
+recreate-via-cc-api	2026-09-05T03:27:04Z	PASS	97	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (CC fallback trigger)
 recreate-via-sdk-provider	2026-08-08T16:40:35Z	PASS	78	verify.sh	P1 post-#1360 replacement-rules touch; CC->SDK mid-life recreate ok, 2 del/0 err, 0 orphans
 redshift-cluster-getatt	2026-08-10T06:18:10Z	PASS	325	verify.sh	0810 P2 sweep b12; CC GetAtt Endpoint real hostname, 0 orph
-remove-protection	2026-09-05T01:24:06Z	PASS	1338	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
+remove-protection	2026-09-05T03:27:04Z	PASS	1350	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 rename-refactor	2026-08-10T05:38:11Z	PASS	101	verify.sh	0810 P2 sweep b9; rc ok, 0 orph
 replacement-fanout	2026-08-08T16:39:04Z	PASS	83	verify.sh	P1 post-#1360 replacement-rules touch; SNS replacement fanout to 10 dependents, 12 del/0 err, 0 orphans
-replacement-immutable-name	2026-08-01T09:51:12Z	PASS	113	verify.sh	0801 regression sweep; 6 types x 3 phases ok, 0 orphans
+replacement-immutable-name	2026-09-05T03:27:04Z	PASS	112	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 rollback-command	2026-09-02T14:56:12Z	PASS	151	verify.sh	go-to-k/cdkd#2346 site 5: lock key 1 row 0 noncurrent, state.json 6 noncurrent survive; 0 orphans
 rollback-cross-region-secret	2026-08-21T05:20:29Z	PASS	174	verify.sh	#2135 live arm, re-run after a round-2 review found the first note overclaimed: every pre-existing assertion here (notCompared roll-up, referencesUnresolved, drift rc=2, drifted+partial exits 1) is byte-identical to main and passes under the pre-#2135 shape too, so it was a #2108 regression net and no evidence about #2135. Added the one discriminating arm -- SecretEcho must be ABSENT from clean[], the sole user-visible payload delta -- guarded against vacuity by requiring clean[] to have been emitted. MUTATION-PROBED against real AWS: routing notCompared back into clean[] made the arm go RED with 'SecretEcho is STILL in clean[]'. Note the type system rejects that mutation outright (clean[] entries are typed referencesUnresolved: false). destroy 2 stacks 0 errors, 0 orphans
 rollback-deletion-policy-snapshot	2026-08-08T16:34:46Z	PASS	107	verify.sh	P0 first run post-#1361/#1365/#1367/#1369 rollback rework; rolled-back CREATE snapshot-then-deleted, state clean, 0 orphans
-rollback-failure-injection	2026-09-05T01:24:06Z	PASS	418	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 rollback-executor
+rollback-failure-injection	2026-09-05T03:27:04Z	PASS	810	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 rollback-replay-effective-props	2026-08-13T05:57:36Z	PASS	191	verify.sh	1741 prune + 1742 ordering at 882fcef8; measured; 0 orphans
 rollback-sqs-cooldown	2026-08-20T01:42:30Z	PASS	156	verify.sh	#2032 lane: the direct twin of the change (name-cooldown arm). Live evidence the nested inner retry engages: retry cadence 1s/2s/4s/8s (inner default schedule) not the outer 2s/4s/8s/10s; 8 attempts absorbed the cooldown, destroy 1 deleted / 0 errors, 0 orphans
 route53	2026-08-22T19:12:07Z	PASS	267	verify.sh	issue 2176 masking sweep; rc 0, destroy 0 errors, orphans clean
@@ -285,8 +285,8 @@ stepfunctions-s3-definition	2026-07-26T19:45:58Z	PASS	43	verify.sh	0727b sweep-b
 synthetics-canary	2026-07-26T19:25:15Z	PASS	144	verify.sh	0727b sweep-b10 staleness re-run (rc=0); account clean
 tags-propagation	2026-07-26T18:49:34Z	PASS	63	verify.sh	0727b sweep-b6 staleness re-run (rc=0); account clean
 throttle-wide-dag	2026-07-26T19:45:58Z	PASS	186	verify.sh	0727b sweep-b12 staleness re-run (rc=0); account clean
-update-policy-mutations	2026-09-04T13:03:37Z	PASS	88	verify.sh	#2514 lane; Retain-on-replace path, 0 leftover resources
-update-replace	2026-09-05T01:24:06Z	PASS	74	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 replacement path
+update-policy-mutations	2026-09-05T03:27:04Z	PASS	71	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run (property-driven Retain)
+update-replace	2026-09-05T03:27:04Z	PASS	74	verify.sh	rc0, destroy clean, 0 orphans; PR 2601 gate run
 vpc-lambda	2026-08-10T11:50:46Z	PASS	317	standard	0810 P0/P1 sweep b1; 16 del/0 err, hyperplane ENIs cleared, orph clean
 vpc-lambda-cr-race	2026-08-10T06:18:10Z	PASS	302	standard	0810 P2 sweep b12; 0 err 0 orph incl hyperplane ENI
 vpc-lookup	2026-08-10T06:01:30Z	PASS	20	standard	0810 P2 sweep b11; context-provider loop ok, 0 err 0 orph
