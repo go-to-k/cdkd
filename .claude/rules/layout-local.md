@@ -51,8 +51,11 @@ Index of every area: [code-layout.md](code-layout.md).
     (thin `execFile`/`spawn` wrappers around docker pull/run/logs/rm + free-
     port allocator; optional `--name` for orphan-sweep),
     `docker-image-builder.ts` (local-build path for container Lambdas),
-    `ecr-puller.ts` (ECR-pull fallback; same-account / same-region only,
-    cross-acct/region hard-errors), `rie-client.ts` (HTTP POST to RIE +
+    `ecr-puller.ts` (ECR-pull fallback; cross-account AND cross-region are
+    SUPPORTED — the ECR client is built for the image URI's own region and
+    each case logs an info line, not an error; `--ecr-role-arn` is the
+    cross-account credential hop, optional when the repository policy already
+    grants the caller), `rie-client.ts` (HTTP POST to RIE +
     TCP-probe readiness wait).
   - **`cdkd local start-api` modules** (PR 8a): `route-discovery.ts` (REST v1
     + HTTP API + Function URL → `DiscoveredRoute[]`, local intrinsic
@@ -199,8 +202,11 @@ Index of every area: [code-layout.md](code-layout.md).
     injects its S3-backed `--from-state` factory via the
     `extraStateProviders` hook. That factory also folds the region CASE of
     `--region` AND `--stack-region` (#1836) — idempotent for the four
-    commands that fold at handler entry, and the ONLY cdkd-owned stop for
-    the ECS / CloudFront / AgentCore engine commands — and carries the
+    commands that fold at handler entry, and idempotent since
+    go-to-k/cdkd#2522 for the four ECS / CloudFront / AgentCore ENGINE
+    commands too, whose `adoptDeprecatedRegionFlag` `preAction` hook is a
+    cdkd-owned stop UPSTREAM of this factory (it was the only one until then,
+    which is why the fallback below still exists) — and carries the
     UNFOLDED `--stack-region` through as `rawStackRegion`, the only thing
     that makes the loader's exact-spelling match reachable. cdkd carried an
     unreferenced FORK of the CFn provider until go-to-k/cdkd#2607 deleted
@@ -337,8 +343,18 @@ Index of every area: [code-layout.md](code-layout.md).
     front-door types, `src/cli/commands/ecs-service-emulator.ts` re-exports
     `runEcsServiceEmulator` / `addCommonEcsServiceOptions` + engine types
     from `cdk-local/internal`, and `local-start-alb.ts` wires
-    `runEcsServiceEmulator(targets, options, albStrategy(options),
-    cdkdExtraStateProviders)`. ALB-specific flags (`--lb-port` / `--tls` /
+    `runEcsServiceEmulator(targets, options,
+    warnUnresolvedLambdaTargetEnv(albStrategy(options), options),
+    cdkdExtraStateProviders)`. That decorator is cdkd's remedy for
+    go-to-k/cdkd#2602: `--from-state` reaches the ECS service targets
+    (`bootOneTarget` hands the dispatcher the full options bag) but NOT a
+    `TargetType: lambda` target group, whose env cdk-local resolves through a
+    six-key allow-list that drops `fromState` / `stateBucket` / `statePrefix`.
+    Half the command works, so it WARNS (naming each affected function, off
+    the front-door plan the strategy already resolved) rather than refusing
+    the flag the way `start-cloudfront` does — a refusal there is right
+    because NO consumer on that path reads a host state source. Upstream:
+    go-to-k/cdk-local#707. ALB-specific flags (`--lb-port` / `--tls` /
     `--tls-cert` / `--tls-key` / `--no-verify-auth` / `--bearer-token`) come
     via cdk-local's `addAlbSpecificOptions(cmd)` (0.64.0 / cdk-local#203) so
     cdkd auto-inherits new ALB-only flags. **BREAKING 2026-05-31**: cdk-local

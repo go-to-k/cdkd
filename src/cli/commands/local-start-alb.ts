@@ -6,6 +6,9 @@ import {
   albStrategy,
   runEcsServiceEmulator,
   type EcsServiceEmulatorOptions,
+  type EmulatorStrategy,
+  type FrontDoorPlan,
+  type PlannedAction,
 } from './ecs-service-emulator.js';
 import { cdkdExtraStateProviders } from './local-state-source.js';
 import { adoptDeprecatedRegionFlag } from '../region-options.js';
@@ -29,12 +32,123 @@ export interface LocalStartAlbOptions extends EcsServiceEmulatorOptions {
    * intrinsics in the resolved ECS service container images, environment
    * variables, secrets, role ARNs, and volumes. Mutually exclusive with
    * `--from-cfn-stack`.
+   *
+   * Reaches the ECS service targets only — a `TargetType: lambda` target
+   * group's container environment is resolved on a path that drops these
+   * fields upstream. See {@link warnUnresolvedLambdaTargetEnv}
+   * ([#2602](https://github.com/go-to-k/cdkd/issues/2602)).
    */
   fromState: boolean;
   /** S3 bucket for `--from-state`. Falls back to CDKD_STATE_BUCKET / cdk.json. */
   stateBucket?: string;
   /** S3 key prefix for `--from-state` (commander always supplies the default). */
   statePrefix: string;
+}
+
+/**
+ * Every distinct Lambda logical id a resolved front-door plan forwards to,
+ * sorted so the warning text is deterministic.
+ *
+ * Walks BOTH action slots — a listener's `defaultAction` and each of its
+ * rules' `action` — because either one can carry a `TargetType: lambda`
+ * target group and an ALB that reaches a Lambda only through a
+ * `path-pattern` rule is the common shape (`/api/*` to a Lambda, everything
+ * else to the ECS service). Mirrors cdk-local's own `collectAlbLambdaTargets`
+ * walk, one layer later: this reads the QUALIFIED plan the strategy returns,
+ * where a Lambda target already carries its resolved `lambda.logicalId`.
+ */
+function collectLambdaTargetLogicalIds(frontDoor: FrontDoorPlan | undefined): string[] {
+  if (!frontDoor) return [];
+  const ids = new Set<string>();
+  const fromAction = (action: PlannedAction | undefined): void => {
+    if (action?.kind !== 'forward') return;
+    for (const target of action.targets) {
+      if (target.kind === 'lambda') ids.add(target.lambda.logicalId);
+    }
+  };
+  for (const listener of frontDoor.listeners) {
+    fromAction(listener.defaultAction);
+    for (const rule of listener.rules) fromAction(rule.action);
+  }
+  return [...ids].sort();
+}
+
+/**
+ * Wrap an ALB {@link EmulatorStrategy} so that, under `--from-state`, a plan
+ * carrying a `TargetType: lambda` target group emits a WARNING naming the
+ * affected Lambdas — because the flag does not reach their container
+ * environment.
+ *
+ * ## Why a warning and not a refusal
+ *
+ * `cdkd local start-cloudfront` REFUSES cdkd's state flags outright
+ * ([#2528](https://github.com/go-to-k/cdkd/issues/2528)) because NO consumer on
+ * that command's path reads a host-registered state source. `start-alb` is
+ * partial, not total, so the same remedy would delete a working capability:
+ *
+ * - **ECS service targets DO honor `--from-state`.** `bootOneTarget` /
+ *   `rollOneTarget` (`cdk-local@0.147.7`, `dist/local-studio-BBtUAVNy.js`
+ *   `:26474` / `:26422`) hand `createLocalStateProvider` the FULL options bag,
+ *   so cdkd's `fromState` factory is selected and the task containers'
+ *   images / env / secrets / volumes resolve against S3 state.
+ * - **Lambda target groups do NOT.** `resolveAlbLambdaTargetEnv` (`:26614`)
+ *   rebuilds the bag it hands the shared `resolveLambdaContainerEnv` as a
+ *   SIX-KEY allow-list — `fromCfnStack` / `assumeRole` / `region` / `profile` /
+ *   `stackRegion` / `envVars` (`:26619-26626`) — dropping `fromState` /
+ *   `stateBucket` / `statePrefix`. It forwards `extraStateProviders` faithfully,
+ *   but the dispatcher activates an extra provider only when `options[key]` is
+ *   truthy (`:4894`), and the key it looks for is exactly the one the bag no
+ *   longer carries. So cdkd's factory is registered and never selected, and the
+ *   Lambda boots with its intrinsics dropped — one WARN per variable, none of
+ *   which says the flag was the problem.
+ *
+ * The fix is upstream (two arguments in `resolveAlbLambdaTargetEnv`); until it
+ * lands, this makes the partiality LOUD at boot instead of leaving the user to
+ * read "Environment variable X contains a CloudFormation intrinsic and was
+ * dropped" as a state problem. `--from-cfn-stack` survives the allow-list and
+ * therefore reaches both target kinds, which is what the message points at.
+ *
+ * ## Mechanics
+ *
+ * `runEcsServiceEmulator` logs every string in the `warnings` array
+ * `strategy.resolveBoots` returns, so appending to it is the whole wiring — no
+ * second synth, since the front-door plan is already resolved. Returns the
+ * strategy UNCHANGED when `--from-state` is absent, so the non-state path
+ * carries no wrapper at all.
+ *
+ * The warning REPEATS on every `--watch` reload, because `resolveBoots` is
+ * re-run per reload (`:26264`) and its warnings re-logged. That matches how
+ * cdk-local's own ALB resolution warnings behave on the same path; a
+ * warn-once flag would also go silent on the reload that first INTRODUCES a
+ * Lambda target.
+ */
+export function warnUnresolvedLambdaTargetEnv(
+  strategy: EmulatorStrategy,
+  options: Pick<LocalStartAlbOptions, 'fromState'>
+): EmulatorStrategy {
+  if (options.fromState !== true) return strategy;
+  return {
+    ...strategy,
+    resolveBoots: (stacks, chosenTargets) => {
+      const resolved = strategy.resolveBoots(stacks, chosenTargets);
+      const lambdaIds = collectLambdaTargetLogicalIds(resolved.frontDoor);
+      if (lambdaIds.length === 0) return resolved;
+      return {
+        ...resolved,
+        warnings: [
+          ...resolved.warnings,
+          `--from-state does not reach the container environment of this ALB's Lambda ` +
+            `target group(s): ${lambdaIds.join(', ')}. Their Environment.Variables keep any ` +
+            'Ref / Fn::GetAtt / Fn::Sub / Fn::ImportValue intrinsics unresolved, and each is ' +
+            'then dropped with its own warning. The ECS service targets behind this ALB DO ' +
+            'honor --from-state. To resolve BOTH kinds, use --from-cfn-stack <name> instead ' +
+            '(it survives the upstream option allow-list) for a CloudFormation-deployed ' +
+            'stack, or override the affected variables with --env-vars. Tracked as ' +
+            'go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).',
+        ],
+      };
+    },
+  };
 }
 
 /**
@@ -80,7 +194,9 @@ export function createLocalStartAlbCommand(): Command {
         "Read cdkd's S3 state for the target stack and substitute Ref / Fn::GetAtt / Fn::Sub / " +
           'Fn::ImportValue / Fn::GetStackOutput intrinsics in container images, environment ' +
           'variables, secrets, role ARNs, and volumes of the ECS services behind the ALB. ' +
-          'Mutually exclusive with --from-cfn-stack.'
+          "Does NOT reach a Lambda target group's container environment (upstream " +
+          'go-to-k/cdk-local#707; a boot warning names the affected functions) — use ' +
+          '--from-cfn-stack for those. Mutually exclusive with --from-cfn-stack.'
       ).default(false)
     )
     .addOption(
@@ -99,7 +215,7 @@ export function createLocalStartAlbCommand(): Command {
         await runEcsServiceEmulator(
           targets,
           options,
-          albStrategy(options),
+          warnUnresolvedLambdaTargetEnv(albStrategy(options), options),
           cdkdExtraStateProviders
         );
       })

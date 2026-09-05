@@ -82,11 +82,32 @@ cdkd local start-alb MyStack/MyAlb --from-state --watch        # bind deployed s
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--from-state` | off | Resolve intrinsics in the backing services from cdkd's S3 state. Mutually exclusive with `--from-cfn-stack`. |
+| `--from-state` | off | Resolve intrinsics in the backing **ECS services** from cdkd's S3 state. Does **not** reach a Lambda target group's container environment — see the note below. Mutually exclusive with `--from-cfn-stack`. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. Only meaningful with `--from-state`. |
 | `--from-cfn-stack [name]` | off | Resolve intrinsics from a deployed CloudFormation stack, for apps deployed with the CDK CLI. Bare form uses the cdkd stack name. |
 | `--stack-region <region>` | — | Region of the state record to read, and the CloudFormation client region under `--from-cfn-stack`. |
+
+#### Lambda target groups and the state source
+
+`--from-state` is **partial** on this command, and the split is by target kind:
+
+| Target kind | `--from-state` | `--from-cfn-stack` |
+| --- | --- | --- |
+| ECS service (`TargetType: ip` / `instance`) | resolves images, environment, secrets, role ARNs and volumes | resolves the same |
+| Lambda (`TargetType: lambda`) | **not resolved** | resolves the function's `Environment.Variables` |
+
+A Lambda target group's backing function is booted through the local-emulation
+engine's shared Lambda path, which does not consult cdkd's S3 state — so the
+function's `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::ImportValue` environment
+values stay unresolved and are dropped, one warning each. The ECS side of the
+same load balancer is unaffected, which is why the flag is not refused
+outright the way [`start-cloudfront`](local-start-cloudfront.md) refuses it.
+
+Passing `--from-state` on an ALB that has a Lambda target group prints a boot
+warning naming the affected functions. To resolve both target kinds, use
+`--from-cfn-stack <name>` for a CloudFormation-deployed stack, or override the
+affected variables with `--env-vars`.
 
 ### Shared
 
@@ -222,6 +243,9 @@ requested host ports each time.
   retrievable — so local HTTPS always uses a generated or supplied certificate.
 - Lambda target groups are a no-op on a `--watch` reload: the warm container
   keeps the image it booted with.
+- `--from-state` does not reach a Lambda target group's container environment
+  (a boot warning names the affected functions) — see
+  [the state-source note](#lambda-target-groups-and-the-state-source).
 - `--watch` rolls the existing replicas onto the new image but does not scale the
   replica count up or down when `DesiredCount` or the `--max-tasks` clamp changes
   mid-run. A warning names it; restart to pick up the new count.
