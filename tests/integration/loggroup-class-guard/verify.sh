@@ -180,9 +180,13 @@ sweep_log_groups() { # best-effort teardown; never aborts the sweep
     # only thing standing between a future edit and an account-wide delete.
     # `exit 0` and not `return 0`: this is a SUBSHELL, so the exit ends the
     # sweep and the function returns its status, leaving the caller running.
-    # The sibling `loggroup-never-expire-guard` fixture has the same sweep shape
-    # without this guard — tracked as issue #2621, deliberately not changed from
-    # here (it would add a second real-AWS integ to this PR's verification set).
+    # The sibling `loggroup-never-expire-guard` fixture had the same sweep shape
+    # without this guard; issue #2621 gave it the same guard and added the fence
+    # `tests/unit/scripts/integ-sweep-prefix-guard.test.ts`, which refuses a
+    # delete loop fed by a filter that collapses to the empty string when its
+    # scope variable is empty, unless a guard dominates it — a `case` like this
+    # one, a dominating emptiness test, a helper the scope is validated by, or
+    # an explicit `# allow-unguarded-sweep: <reason>`.
     case "${LG_PREFIX}" in
       /cdkd-integ/*/) ;;
       *)

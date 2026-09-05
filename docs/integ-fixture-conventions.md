@@ -1,6 +1,6 @@
 ---
 title: Integration fixture conventions
-description: "The rules a cdkd integration fixture follows — verify.sh signal traps, gone-probes, CLI flags, removal policies, S3 version sweeps, and the unit-test priming conventions."
+description: "The rules a cdkd integration fixture follows — verify.sh signal traps, gone-probes, CLI flags, removal policies, S3 version sweeps, destructive prefix-sweep guards, and the unit-test priming conventions."
 unlisted: true
 ---
 
@@ -986,6 +986,141 @@ record with `aws s3 cp`); and service-generated credentials with no marker in
 the source at all — Cognito's `ClientSecret` was that class and was found by
 grepping the BUCKET, not the source. The per-fixture zero-assertion plus
 periodic bucket inspection remain the backstop.
+
+## A destructive prefix sweep must refuse a widened scope
+
+A teardown that LISTS resources under a variable prefix and DELETES every name
+the listing returns is one empty variable away from an account-wide delete:
+
+```bash
+for name in $(aws logs describe-log-groups \
+    --log-group-name-prefix "${LG_PREFIX}" \
+    --query 'logGroups[].logGroupName' --output text); do
+  aws logs delete-log-group --log-group-name "${name}"
+done
+```
+
+With `LG_PREFIX` empty or unset the filter is the empty string, which every log
+group name matches, so the loop deletes every log group in the ACCOUNT. The
+same collapse happens to a JMESPath filter — `starts_with(RoleName, '${STACK}')`
+is true of every role when `STACK` is empty — and teardown is exactly where it
+goes unnoticed, because `cleanup` runs under `set +eu`: the one thing that would
+have caught the unset variable is switched off two lines above.
+
+**A filter that keeps a literal anchor cannot collapse that far**
+(`--log-group-name-prefix "/aws/lambda/${STACK}"` still names a namespace), so
+the convention is about filters made of nothing but interpolations. Guard those
+with a `case` that refuses anything outside the fixture's own scope, ABOVE the
+first delete. It is the log-group / IAM twin of `_s3v_check_prefix`
+(["Sweep S3 object versions"](#sweep-s3-object-versions-and-assert-the-count-is-zero)),
+and like that one it is a safety guard, not style.
+
+In a subshell-bodied sweep helper, refuse with `exit 0` — the exit ends the
+subshell and the function returns, leaving the caller running:
+
+```bash
+sweep_log_groups() {
+  ( set +eu
+    case "${LG_PREFIX}" in
+      /cdkd-integ/*/) ;;
+      *) echo "    WARN: teardown sweep refused a prefix outside /cdkd-integ/: '${LG_PREFIX:-<empty>}'" >&2
+         exit 0 ;;
+    esac
+    ...
+  )
+}
+```
+
+Inline in `cleanup` there is no subshell, so an `exit` would abandon the rest of
+the teardown. Wrap the sweep in the `case` instead:
+
+```bash
+case "${STACK}" in
+  Cdkd?*)
+    for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, '${STACK}')].RoleName" --output text); do
+      aws iam delete-role --role-name "${role}" || true
+    done
+    ;;
+  *) echo "    WARN: teardown sweep refused a stack scope outside Cdkd*: '${STACK:-<empty>}'" >&2 ;;
+esac
+```
+
+Enforced by `tests/unit/scripts/integ-sweep-prefix-guard.test.ts` (classifier:
+`scripts/check-integ-sweep-prefix-guard.ts`, issue
+[#2621](https://github.com/go-to-k/cdkd/issues/2621)), in two halves that do not
+substitute for each other. The STATIC half walks every `*.sh` under
+`tests/integration/` — recursively, so a shared helper and a nested fixture are
+in scope by construction — and fails on any collapsible filter feeding a delete
+loop whose scope variable has no guard above it. The EXECUTABLE half RUNS each
+guarded sweep against a fake `aws` that records its argv, asserting no listing
+was issued for a widened scope and that the fixture's own scope still sweeps —
+"the source contains a `case`" is a claim about text, "no request left the
+script" is the safety property.
+
+Three things the classifier reads that a first cut did not, each of which was
+hiding a real account-wide sweep: the JMESPath **backtick** literal
+(``starts_with(N, \`${STACK}\`)``) as well as the quoted form; **`contains(`**
+and `ends_with(` alongside `starts_with(` (all three are true of every string
+when the needle is empty, and `contains` is the widest); and **`deregister-`**
+alongside `delete-` as a destructive verb, because an ECS task definition is
+retired rather than deleted. When adding a spelling, calibrate against the
+pre-fix tree and confirm the count of RECOGNIZED sweeps goes UP — a spelling
+that instead makes guarded ones disappear has broken the walk, not widened it.
+
+Two design decisions the fence would be unsound without, both bought by a
+measured defect:
+
+- **An unmodelled consumption fails CLOSED.** Whether a listing's output
+  reaches a delete is a dataflow question; the classifier models the loop
+  shapes the tree uses (word source, capture-then-iterate at any distance,
+  pipe into `while read` / `xargs`) and, for anything else, widens to the
+  ENCLOSING FUNCTION. Answering "not a sweep" there was a silent pass for every
+  shape nobody thought of. A genuine indirection takes
+  `# allow-unguarded-sweep: <reason>`, with the reason mandatory.
+- **The flow crosses functions.** `s3-versions.sh` itself needs this: it lists
+  in `_s3v_rows`, returns the rows on STDOUT, and deletes them in
+  `_s3v_delete_rows`. A captured value emitted to stdout is followed to the
+  callers, and a scope arriving as a positional parameter is resolved back to
+  the argument each caller passes — where its guard lives. When a scope comes
+  from a parameter, EVERY call site must be guarded.
+- **The guard must DOMINATE the sweep.** "A `case` on this variable appears
+  above" is not the property: moving a sweep below the `esac` satisfied it
+  while the sweep ran for every value. Only the two positions above count, and
+  only for arms that cannot match the empty string — so `*)`, `"")` and an arm
+  that is itself an expansion are not guards, and neither is a `case` whose
+  catch-all warns and falls through, nor — for the REFUSING position — one with
+  no catch-all at all (bash falls straight through a `case` no arm matches; a
+  WRAPPING arm needs no catch-all, since the sweep is inside the arm). An
+  `exit` that is not the arm's LAST statement does not count either: a
+  conditional one leaves control reaching the sweep. Dominance is also SCOPED:
+  a guard inside one function does not cover a sweep in another or at file
+  scope, and a nested `case` does not lend its arms to the statement enclosing
+  it.
+
+Four accept paths, then: the `case` in either position; an emptiness test that
+dominates the same way (`[ -n "${V}" ] || return 1`, or an
+`if [ -z "${V}" ]; then … return … fi` the sweep sits *after*); a guard
+delegated to a helper — `_s3v_check_prefix "${prefix}" || return 1`, the shape
+`s3-versions.sh` uses — provided the helper reads its first parameter, branches
+on it, and can `return` non-zero; and `# allow-unguarded-sweep: <reason>` for
+an indirection that genuinely cannot be read.
+
+**Known gaps, and they are COUNTED rather than merely mentioned.** A filter
+that keeps a literal anchor inside an AWS-owned namespace is not a
+`findUnguardedSweeps` failure, so
+`--log-group-name-prefix "/aws/lambda/${STACK}"` does not block a build even
+though an empty `STACK` reaches every Lambda log group in the region. Guarding
+those is [#2682](https://github.com/go-to-k/cdkd/issues/2682)'s job — but a
+checker that reports them CLEAN while this page calls it a known gap is the
+worse failure, so `findNamespaceAnchoredSweeps` enumerates them and the unit
+suite pins the exact tally. A new one fails the build and has to be either
+guarded or consciously added to the count.
+
+Two gaps remain uncounted, and are listed in the classifier's header rather
+than implied: `aws s3 rm "s3://${BUCKET}/${PREFIX}/" --recursive`, whose scope
+is a path segment rather than a flag value and reaches no branch at all; and a
+delegated guard that refuses the *safe* scope, which no static check can tell
+from a correct one. The executable half is what would catch the second.
 
 ## Unit tests: prime exactly what the code path consumes
 

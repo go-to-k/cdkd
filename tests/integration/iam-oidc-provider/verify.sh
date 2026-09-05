@@ -75,25 +75,40 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws iam delete-open-id-connect-provider --open-id-connect-provider-arn "${PROVIDER_ARN}" >/dev/null 2>&1 || true
-  # Sweep stack-prefixed roles (deploy role + custom resource provider role).
-  for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, '${STACK}')].RoleName" --output text 2>/dev/null); do
-    for parn in $(aws iam list-attached-role-policies --role-name "${role}" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
-      aws iam detach-role-policy --role-name "${role}" --policy-arn "${parn}" >/dev/null 2>&1 || true
-    done
-    for pname in $(aws iam list-role-policies --role-name "${role}" --query 'PolicyNames[]' --output text 2>/dev/null); do
-      aws iam delete-role-policy --role-name "${role}" --policy-name "${pname}" >/dev/null 2>&1 || true
-    done
-    aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
-  done
-  # Sweep the custom resource backing Lambda + its log group. The log group
-  # sweep goes by prefix (NOT via list-functions): after a successful destroy
-  # the function is gone but its auto-created log group survives.
-  for fn in $(aws lambda list-functions --region "${REGION}" --query "Functions[?starts_with(FunctionName, '${STACK}')].FunctionName" --output text 2>/dev/null); do
-    aws lambda delete-function --function-name "${fn}" --region "${REGION}" >/dev/null 2>&1 || true
-  done
-  for lg in $(aws logs describe-log-groups --region "${REGION}" --log-group-name-prefix "/aws/lambda/${STACK}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
-    aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 || true
-  done
+  # SCOPE GUARD (#2621). Safety, not style: `starts_with(RoleName, '')` and
+  # `starts_with(FunctionName, '')` are true of EVERY role and EVERY function,
+  # so an empty `STACK` turns the two sweeps below into account-wide deletes —
+  # and the `set +eu` above has disabled the only thing that would have caught
+  # the empty value. `case` and not `exit`: this runs in `cleanup` itself, not
+  # a subshell, so a refusal must skip the sweeps and let the rest of the
+  # teardown run. Fenced by
+  # `tests/unit/scripts/integ-sweep-prefix-guard.test.ts`.
+  case "${STACK}" in
+    Cdkd?*)
+      # Sweep stack-prefixed roles (deploy role + custom resource provider role).
+      for role in $(aws iam list-roles --query "Roles[?starts_with(RoleName, '${STACK}')].RoleName" --output text 2>/dev/null); do
+        for parn in $(aws iam list-attached-role-policies --role-name "${role}" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+          aws iam detach-role-policy --role-name "${role}" --policy-arn "${parn}" >/dev/null 2>&1 || true
+        done
+        for pname in $(aws iam list-role-policies --role-name "${role}" --query 'PolicyNames[]' --output text 2>/dev/null); do
+          aws iam delete-role-policy --role-name "${role}" --policy-name "${pname}" >/dev/null 2>&1 || true
+        done
+        aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
+      done
+      # Sweep the custom resource backing Lambda + its log group. The log group
+      # sweep goes by prefix (NOT via list-functions): after a successful destroy
+      # the function is gone but its auto-created log group survives.
+      for fn in $(aws lambda list-functions --region "${REGION}" --query "Functions[?starts_with(FunctionName, '${STACK}')].FunctionName" --output text 2>/dev/null); do
+        aws lambda delete-function --function-name "${fn}" --region "${REGION}" >/dev/null 2>&1 || true
+      done
+      for lg in $(aws logs describe-log-groups --region "${REGION}" --log-group-name-prefix "/aws/lambda/${STACK}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+        aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 || true
+      done
+      ;;
+    *)
+      echo "    WARN: teardown sweep refused a stack scope outside Cdkd*: '${STACK:-<empty>}'" >&2
+      ;;
+  esac
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true

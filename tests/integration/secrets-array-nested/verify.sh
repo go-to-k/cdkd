@@ -258,6 +258,21 @@ assert_unkeyed_string_array() {
 # subshell so it never re-arms strict mode in a `set +eu` caller.
 deregister_family() { (
   set +eu
+  # SCOPE GUARD (#2621). Safety, not style: an empty `FAMILY` makes
+  # `--family-prefix ""` match EVERY task-definition family, so the loop below
+  # would deregister every ACTIVE revision in the account — and the `set +eu`
+  # above has disabled the only thing that would have caught the empty value.
+  # `deregister` is as destructive as `delete` here: an INACTIVE revision
+  # cannot be run and cannot be restored. `exit 0` and not `return 0`: this is
+  # a SUBSHELL, so the exit ends the sweep and leaves the caller running.
+  # Fenced by `tests/unit/scripts/integ-sweep-prefix-guard.test.ts`.
+  case "${FAMILY}" in
+    cdkd-test-array-secret-?*) ;;
+    *)
+      echo "    WARN: teardown sweep refused a family prefix outside cdkd-test-array-secret-: '${FAMILY:-<empty>}'" >&2
+      exit 0
+      ;;
+  esac
   local arns arn
   arns=$(aws ecs list-task-definitions --family-prefix "${FAMILY}" --status ACTIVE \
     --region "${REGION}" --query 'taskDefinitionArns[]' --output text 2>/dev/null)
