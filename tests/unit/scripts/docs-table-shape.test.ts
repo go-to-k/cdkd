@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 
 /**
@@ -67,8 +67,10 @@ const walk = (dir: string): string[] =>
  *
  * TWIN: `cellCount` in `tests/unit/scripts/build-scenario-coverage-matrix.test.ts`
  * measures the generator's output before it is written, with the same rule
- * re-spelled. Change them together — widening only one left the other scoring
- * a `\\|` row as clean.
+ * re-spelled so that one blinded counter cannot blind both measurements. The
+ * two expressions are held byte-identical by a case in THAT file — widening
+ * only one left the other scoring a `\\|` row as clean, and a comment asking
+ * for them to be changed together is exactly what failed.
  */
 const cellCount = (line: string): number =>
   line.trim().replace(/^\||\|$/g, '').replace(/\\[\s\S]/g, ' ').split('|').length;
@@ -136,20 +138,32 @@ describe('published docs tables', () => {
 
   it('still SEES its input — fences recursion, then floors what the scan examined', () => {
     // The named collapse is a `walk` that stopped recursing, losing
-    // docs/design, docs/plans and docs/_generated. It is fenced STRUCTURALLY,
-    // by requiring a nested path in the result — a count cannot fence it
-    // durably, because the top level keeps growing toward whatever number is
-    // written here and quietly stops discriminating. Measured 2026-09-05: the
-    // corpus is 78 files / 2901 rows while the top level ALONE is 60 / 2066, so
-    // the previous 2000-row floor had already stopped catching the collapse and
-    // the file floor was catching it by one file.
-    expect(files.some((f) => relative(DOCS, f).includes('/'))).toBe(true);
+    // docs/design, docs/plans and docs/_generated. It is fenced STRUCTURALLY:
+    // EVERY immediate subdirectory of docs/ must be represented in the result,
+    // derived from the tree rather than listed here, so a new subdirectory
+    // joins the fence on its own.
+    //
+    // Not merely "some nested path exists": measured, a walk recursing into
+    // only the FIRST subdirectory yields 67 files / 2814 rows and clears a
+    // presence check and both floors below. And not a count at all, because a
+    // count cannot fence this durably — the top level keeps growing toward
+    // whatever number is written here and quietly stops discriminating, which
+    // had already happened once (2026-09-05: 78 files / 2901 rows total against
+    // 60 / 2066 for the top level alone, so the previous 2000-row floor no
+    // longer caught the collapse and the file floor caught it by one file).
+    const subdirs = readdirSync(DOCS).filter((e) => statSync(join(DOCS, e)).isDirectory());
+    expect(subdirs.length, 'docs/ has no subdirectory — this fence is vacuous').toBeGreaterThan(1);
+    const reached = new Set(files.map((f) => relative(DOCS, f).split(sep)[0]));
+    for (const d of subdirs) {
+      expect(reached, `the walk never reached docs/${d}/`).toContain(d);
+    }
 
-    // The counts stay as a COARSE backstop against total collapse — a `walk`
-    // that returned nothing, or a row regex that stopped matching — floored on
-    // `scan`'s OWN row count rather than a second copy of the row regex, since
-    // a duplicate counter stays truthful while the real one goes blind. They
-    // are attributed magnitudes, not the recursion fence above.
+    // The counts are NOT a second copy of the check above — that one is
+    // satisfied by one file per subdirectory. What they uniquely still catch is
+    // the INVERSE collapse: a walk that returned only the nested files, 18
+    // files / 835 rows measured 2026-09-05. Floored on `scan`'s OWN row count
+    // rather than a second copy of the row regex, since a duplicate counter
+    // stays truthful while the real one goes blind.
     expect(files.length).toBeGreaterThan(64);
     expect(scanned.reduce((n, r) => n + r.rowsExamined, 0)).toBeGreaterThan(2400);
   });

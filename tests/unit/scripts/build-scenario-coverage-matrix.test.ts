@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -322,17 +322,22 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
    * Cell count of one table row, backslash escapes neutralised first.
    *
    * TWIN of `cellCount` in `tests/unit/scripts/docs-table-shape.test.ts`, which
-   * carries the reasoning for the `\\[\s\S]` character class. The two are
-   * deliberately re-spelled rather than shared: that fence measures the
-   * CHECKED-IN page, this measures the generator's output before it is written,
-   * and coupling them would make a generator regression invisible until the
-   * matrix was regenerated.
+   * carries the reasoning for the `\\[\s\S]` character class.
    *
-   * **Change them together.** This copy was left on the narrower `\\\|` form
-   * when the sibling was widened, and that is not cosmetic: under the narrow
-   * form a row carrying `\\|` scores 3 cells here and 4 there, so the
-   * cell-count half of the backslash case below passed while the defect it
-   * exists to catch was live.
+   * Duplicated rather than shared, and the reason is INDEPENDENT BLAST RADIUS,
+   * not input coupling: sharing a helper would not hide a generator regression
+   * (this file would still call it on `renderMarkdown`'s output and still fail
+   * on the spot), but it WOULD mean one blinded counter silently blinds both
+   * measurements at once. Two copies means a mistake in either is still
+   * observable from the other.
+   *
+   * That argument only holds while the copies AGREE, and they did not: this one
+   * was left on the narrower `\\\|` form when the sibling was widened, and a row
+   * carrying `\\|` then scored 3 cells here against 4 there, so the cell-count
+   * half of the backslash case below passed while the defect it exists to catch
+   * was live. A comment saying "change them together" is what had already
+   * failed, so the pair is fenced mechanically by
+   * `keeps its cell-count rule byte-identical to the docs-fence twin` below.
    */
   const cellCount = (row: string): number =>
     row.trim().replace(/^\||\|$/g, '').replace(/\\[\s\S]/g, ' ').split('|').length;
@@ -382,6 +387,30 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
     // clean. Mirrors `docs-table-shape.test.ts`'s own case for its twin.
     const escapes = '# H\n\n| a | b |\n|---|---|\n| 1 | x \\| y |\n| 1 | x \\\\| y |\n';
     expect(shapeOf(escapes, '# H')).toEqual({ header: 2, rows: [2, 3] });
+  });
+
+  it('keeps its cell-count rule byte-identical to the docs-fence twin', () => {
+    // The pair drifted once already, in this PR, and the mitigation shipped for
+    // it was a comment — the same mechanism that had just failed. This is the
+    // mechanical one. It compares the EXPRESSION, so a widening applied to one
+    // copy and not the other fails here rather than in whichever assertion the
+    // narrower copy happens to make vacuous.
+    const bodyOf = (file: string): string => {
+      const found = readFileSync(file, 'utf8').match(
+        /\.trim\(\)\s*\.replace\([\s\S]*?\.split\('\|'\)\.length;/g
+      );
+      // Exactly one, or the extraction is guessing: a second `cellCount`-shaped
+      // expression in either file would make this compare an arbitrary pair.
+      expect(found, `no cellCount body in ${file}`).not.toBeNull();
+      expect(found!.length, `${found!.length} cellCount-shaped bodies in ${file}`).toBe(1);
+      // A needle that must survive: an extraction that silently matched
+      // something else would compare two equal-but-irrelevant strings.
+      expect(found![0]).toContain("split('|')");
+      return found![0]!.replace(/\s+/g, ' ');
+    };
+    const here = join(import.meta.dirname, 'build-scenario-coverage-matrix.test.ts');
+    const twin = join(import.meta.dirname, 'docs-table-shape.test.ts');
+    expect(bodyOf(twin)).toBe(bodyOf(here));
   });
 
   it('refuses a section with no table instead of measuring the next one', () => {
