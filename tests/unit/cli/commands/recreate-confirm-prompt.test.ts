@@ -216,9 +216,13 @@ describe('promptRecreateConfirm (#649)', () => {
       });
       const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
       expect(warnLines).toContain('**DATA LOSS** DataBucket (AWS::S3::Bucket)');
-      // And the bucket is the reason the re-derived wording exists at all: it
-      // must NOT be told it is non-empty on a path where nothing was probed.
-      expect(warnLines).not.toContain('S3 bucket is non-empty');
+      // And the bucket is the reason the re-derived wording exists at all: the
+      // prompt must not borrow `renderStatefulReason`, whose sentence — even
+      // hedged since issue #2615 — says the emptiness is UNSETTLED, where this
+      // path knows something narrower and more useful: the force flag SKIPPED
+      // the probe. Named as the CURRENT sentence, not a retired one, or the
+      // assertion passes because the string exists nowhere.
+      expect(warnLines).not.toContain('S3 bucket is not provably empty');
       expect(warnLines).toContain(
         'stateful (emptiness not established — --force-stateful-recreation skips the probe)'
       );
