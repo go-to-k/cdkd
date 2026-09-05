@@ -452,7 +452,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // literal glob list names are the fence, its suite, and the setup file that
   // installs it, and none of them is named by any other row. Without this the
   // satellite sits under no budget at all. Payload is testing.md + the satellite.
-  ['tests/setup.ts', 48_000, 72_000],                            // measured  49,677 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
+  ['tests/setup.ts', 48_000, 72_000],                            // measured  49,793 on 2026-09-05 (was 64,742 before the 2026-09-04 compression)
   // 46_000 -> 48_000 on 2026-09-05: the go-to-k/cdkd#2595 retro added 1,126 B of
   // mutation-probe rules to `testing.md`, and the discriminate case below went
   // red exactly as its comment predicts ("testing.md growing spends it from the
@@ -473,10 +473,15 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // not a bigger number here. Unlike the skill corpus, this file has no
   // MEASURED record, so these three figures are the only thing that goes
   // stale silently; re-measure them in any commit that touches `testing.md`.
+  // RE-MEASURED 2026-09-05 after the work-issues retro escalated its
+  // one-sided-fence rule into `testing.md` (+207 B of rule, 91 B of it paid
+  // back by compressing three neighbouring mutation bullets, 46,257 -> 46,373 B
+  // net): payload 49,677 -> 49,793, gutting bound 47,757 -> 47,873, usable
+  // room 242 -> 126 B. Compression there is the only way to buy that back.
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above
-  // `testing.md` (46,257 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
+  // `testing.md` (46,373 B) plus SUBSTANTIVE_MIN_BYTES, so that gutting
   // `test-stream-fence.md` down to the smallest size the `substantive content`
   // case still allows fails HERE. 51_000, 57_000 and 62_000 were each chosen by
   // hand and each failed to add signal: the first two sat below `testing.md`

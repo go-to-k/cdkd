@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 172_956,
+    corpusBytes: 172_963,
     largest: { file: 'verify.md', bytes: 28_154 },
-    runnerUp: { file: 'implement.md', bytes: 28_079 },
+    runnerUp: { file: 'implement.md', bytes: 28_137 },
   },
 };
 
@@ -337,6 +337,24 @@ const MIN_REFERENCE_FILES = 6;
 // survives here is MEASURED's four fields and the per-file components, both
 // checkable with `wc -c` against origin/main; every count that was merely
 // counted has been dropped.
+// The 2026-09-05 deploy-batch retro (go-to-k/cdkd#2634 / go-to-k/cdkd#2649 /
+// go-to-k/cdkd#2674) landed TWO rules here and ended NET POSITIVE by 7 B:
+// triage.md section 2's worktree probe now ranges over `origin/main...HEAD`
+// (`show --stat HEAD` reads one commit, and read 1 of the 5 files a ten-commit
+// lane held), and implement.md section 5-g's fan-out sentence now names the
+// REPORT SHAPE. Components, stated so they can be checked rather than
+// believed: triage.md 26,084 -> 26,145 (+61, the subsumed base-commit sentence
+// went), implement.md 28,079 -> 28,137 (+58 net, three neighbouring bullets
+// compressed), gotchas.md 8,045 -> 7,933 (-112), = +7. Corpus
+// 172,956 -> 172,963, verify.md (untouched) keeps the lead at 28,154, margin
+// 123 -> 174 B. The payment is the appendix again, and for the reason the
+// go-to-k/cdkd#2438 entry above records: gotchas.md was restating section 2's
+// two live-lane probes in full, so it now points at them.
+// The retro's third lesson landed OUTSIDE this corpus, in
+// `.claude/rules/testing.md` -- a guard's uses are its CALL SITES, not the
+// first one -- which is free to THIS corpus but spent 159 B of the
+// `tests/setup.ts` band in rule-file-payload.test.ts, re-derived there in the
+// same commit.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller
