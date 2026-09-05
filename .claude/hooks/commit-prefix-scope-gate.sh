@@ -176,8 +176,43 @@ if [[ -z "$subject" ]]; then
       /git[^|;&]*commit/ && /<<-?[ \t]*("[^"]+"|\047[^\047]+\047|[A-Za-z_][A-Za-z0-9_]*)/ { seen = 1 }
     ')
   elif [[ -n "$msg_file" ]]; then
+    # An UNRESOLVABLE path refuses instead of falling through. The shell
+    # expands `$VAR`, a `$(...)`, a backtick, a glob or a `~user` before git
+    # runs; this hook sees the text, so it cannot read the message and cannot
+    # see the prefix. The fall-through made that a SILENT PASS -- measured on
+    # this very repo, `git commit -F "$S/msg.txt"` with a `fix(hooks):` subject
+    # and nothing under `src/**` staged went through at rc=0, while the same
+    # commit with a LITERAL path gave rc=2. That is a mislabelled release, which
+    # is the one thing this gate exists to stop, reachable by writing the path
+    # into a variable first -- the ordinary way to hold a long message path.
+    #
+    # `~/` alone is NOT in the set: HOME is expanded correctly below, so
+    # refusing it would be a false refusal (same carve-out as the shared
+    # matcher makes for a leading `~/`).
+    if [[ "$msg_file" == *'$'* || "$msg_file" == *'`'* \
+       || "$msg_file" == *'*'* || "$msg_file" == *'?'* \
+       || ( "$msg_file" == '~'* && "$msg_file" != '~/'* ) ]]; then
+      echo "Blocked by commit-prefix-scope-gate: the commit message is read from" >&2
+      echo "a path this hook cannot resolve:" >&2
+      echo "" >&2
+      echo "  $msg_file" >&2
+      echo "" >&2
+      echo "The shell expands it before git runs; a PreToolUse hook sees only the" >&2
+      echo "text, so the commit PREFIX cannot be checked. Passing anyway would let" >&2
+      echo "a \`fix:\` / \`feat:\` commit with no \`src/**\` change trigger a release" >&2
+      echo "version bump and a user-facing CHANGELOG entry for an internal change." >&2
+      echo "" >&2
+      echo "Use a literal path, or the heredoc form this repo prefers:" >&2
+      echo "" >&2
+      echo "  git commit -F - <<'MSG'" >&2
+      echo "  <subject>" >&2
+      echo "  MSG" >&2
+      exit 2
+    fi
     # Resolve relative path against target_dir.
-    if [[ "$msg_file" != /* ]]; then
+    if [[ "$msg_file" == '~/'* ]]; then
+      msg_file="${HOME:-/nonexistent}/${msg_file#\~/}"
+    elif [[ "$msg_file" != /* ]]; then
       msg_file="$target_dir/$msg_file"
     fi
     if [[ -r "$msg_file" ]]; then

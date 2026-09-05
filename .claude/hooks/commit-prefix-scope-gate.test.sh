@@ -58,6 +58,27 @@ run_case() {
       # "<dir>/-") and silently skip the whole gate.
       cmdstr=$(printf "git -C %q commit -q -F - <<'MSGEOF'\n%s\n\nbody\nMSGEOF" "$tmpdir" "$subject")
       ;;
+    Fvar)
+      # The `-F` path held in a SHELL VARIABLE -- the ordinary way to carry a
+      # long message path, and what the hook actually sees is the text `$MSG`.
+      # It cannot read the file, so it cannot see the prefix; falling through
+      # made that a SILENT PASS and let a `fix:` commit touching only
+      # `.claude/**` reach a release. The message file is written so the case
+      # is about UNRESOLVABILITY, not about a missing file.
+      local msgfile="$tmpdir/msg.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'MSG=%q; git -C %q commit -F "$MSG"' "$msgfile" "$tmpdir")
+      ;;
+    Fglob)
+      local msgfile="$tmpdir/msg.txt"
+      echo "$subject" > "$msgfile"
+      cmdstr=$(printf 'git -C %q commit -F %q/msg*.txt' "$tmpdir" "$tmpdir")
+      ;;
+    Ftilde)
+      # A leading `~/` is deliberately NOT unresolvable: HOME is expanded
+      # correctly, so refusing it would be a false refusal.
+      cmdstr=$(printf 'git -C %q commit -F ~/definitely-absent-%s.txt' "$tmpdir" "$$")
+      ;;
     amend)
       cmdstr=$(printf 'git -C %q commit --amend -m "%s"' "$tmpdir" "$subject")
       ;;
@@ -258,6 +279,25 @@ run_case "quoted mention of git commit does not fire" 0 \
   "feat: document new pattern" "docs/cli-reference.md" quoted
 
 echo
+# --- an UNRESOLVABLE -F path must fail CLOSED -------------------------------
+# Measured on the real repo before this: `git commit -F "$S/msg.txt"` carrying a
+# `fix(hooks):` subject with nothing under `src/**` staged went through at rc=0,
+# while the identical commit with a LITERAL path gave rc=2. A gate that can be
+# switched off by writing the path into a variable first is not a gate. The
+# PREFIX is irrelevant to the refusal -- the hook cannot read the message at
+# all -- so the `chore:` case expects 2 as well, and that is the point rather
+# than an oversight.
+run_case "fix: via -F \$VAR (unreadable) BLOCKED" 2 \
+  "fix(hooks): x" ".claude/hooks/a.sh" Fvar
+run_case "chore: via -F \$VAR (unreadable) BLOCKED too" 2 \
+  "chore(hooks): x" ".claude/hooks/a.sh" Fvar
+run_case "feat: via -F <glob> BLOCKED" 2 \
+  "feat(hooks): x" ".claude/hooks/a.sh" Fglob
+# The carve-out: `~/` IS resolved, so an absent file there stays a pass-through
+# exactly as an absent literal path does -- git will report it itself.
+run_case "-F ~/absent file passes through" 0 \
+  "fix(hooks): x" ".claude/hooks/a.sh" Ftilde
+
 echo "Pass: $pass  Fail: $fail"
 if [[ "$fail" -gt 0 ]]; then
   echo
