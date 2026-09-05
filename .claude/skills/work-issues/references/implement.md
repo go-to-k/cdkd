@@ -229,7 +229,10 @@ assertion targeted an observable the BROKEN code also produces — a confluence
 point. Name the discriminator first and assert THAT (which client, which
 region, what the second invocation saw); "the happy path still happens" is
 almost never it. A test that still passes under the mutation that motivated
-it is worse than no test.
+it is worse than no test. **And a case pinning "the tool does NOTHING here"
+must record what the input DOES** — one asserted a padded token comes back
+unchanged while that input really runs `git commit`, so a live bypass became
+its own alibi (go-to-k/cdkd#2333).
 
 **A probe that reports NO discrimination is a claim about the FENCE — three
 other things produce identical output.** Ask in order before touching the
@@ -237,20 +240,17 @@ fence: (1) **did the edit land?** (`sed`/`perl` fail silently in ways that
 read as "no match"; prove with `grep -c '<anchor>'` and require exactly 1);
 (2) **does the case's execution path REACH the edited line?** (the fix is a
 case that must take that path, not a fence change); (3) **did the command run
-where you think it did?** (a relative-path edit under a reset cwd lands in
-another worktree, and the confirming `git status` runs in the same wrong
-tree — use absolute paths and confirm by a property the wrong tree cannot
-fake). Plus one fixture shape: **an expected value must be an INDEPENDENT
-variable from the one under test.** Only after all four does "the fence is
-weak" remain.
+where you think it did?** (appendix, "Bash cwd silent reset" — absolute paths,
+and a property the wrong tree cannot fake). Plus one fixture shape: **an
+expected value must be an INDEPENDENT variable from the one under test.** Only
+after all four does "the fence is weak" remain.
 
 **A RED probe is void as easily as a green one** — an anchor matching TWICE
 mutates every copy (the red belongs to a broader change), and an edit that
 does not COMPILE fails the suite at LOAD, indistinguishable from
-discrimination. Read the TALLY and failure TEXT, never the rc — which lies in
-both directions (a suite can `skipIf` itself when `dist/` is absent; a run
-whose every test passes can still exit non-zero, §6's rc rule). A load error
-or a short test count VOIDS the probe.
+discrimination. Read the TALLY and failure TEXT, never the rc — it lies in
+both directions (§6's rc rule; a suite can `skipIf` itself when `dist/` is
+absent). A load error or a short test count VOIDS the probe.
 
 **When you REJECT part of a prescribed fix, make the rejection a PROBE by
 APPLYING it.** The usual probe breaks the code to prove a test discriminates;
@@ -267,9 +267,12 @@ fix probed with a SCALAR secret came back green under its own motivating
 mutation; only a JSON-document secret makes the needle stop occurring. Ask
 what property of the INPUT the defect depends on.
 
-**Publishing a probe MATRIX re-measures it on the tree you are about to
-merge** (`references/verify.md` §8-g); carrying one forward across rounds is
-wrong even when every row was true when written.
+**A probe MATRIX that must recur is a SCRIPT, not a re-measured table** —
+§8-g's "delete the number" disposition. Re-measuring on the merge tree was
+already the rule and a table went stale TWICE in one lane anyway, a reviewer
+catching each; a harness instead PRINTS the tallies and exits non-zero when a
+mutant discriminates nothing, so an inert probe is reported, not assumed
+absent (go-to-k/cdkd#2333, `.claude/hooks/lib/command-match-mutants.sh`).
 
 **A VALUE import from a module other suites `vi.mock` reds those suites** —
 the failure names the EXPORT, reading as a missing symbol rather than a

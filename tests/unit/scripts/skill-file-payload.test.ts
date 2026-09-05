@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_641,
-    corpusBytes: 171_765,
-    largest: { file: 'verify.md', bytes: 27_149 },
-    runnerUp: { file: 'implement.md', bytes: 26_908 },
+    corpusBytes: 172_151,
+    largest: { file: 'implement.md', bytes: 27_238 },
+    runnerUp: { file: 'verify.md', bytes: 27_205 },
   },
 };
 
@@ -187,6 +187,17 @@ const MIN_REFERENCE_FILES = 6;
 // lessons landed OUTSIDE this corpus on purpose
 // (.claude/rules/{session-report,testing}.md and
 // .claude/skills/review-pr/SKILL.md), which is why they cost it nothing.
+// The 2026-09-05 go-to-k/cdkd#2333 retro added four rules (implement.md's
+// probe-matrix and pinned-non-action rules, verify.md's cost-fence and
+// merge-worth rules) and paid ~500 B for them by deleting a cross-reference
+// 8-a duplicated out of 8-g, two CLAUDE.md restatements (the post-integ
+// leftover check, the never-run-raw-cdkd rule), a `/run-integ` pointer 8-e
+// and 8-f both carried, and an appendix restatement of the cwd-reset trap.
+// implement.md 26,908 -> 27,238 and verify.md 27,149 -> 27,205, which SWAPS
+// which of the two is the leader; corpus 171,765 -> 172,151, margin
+// 143 -> 54 B. The margin tracks the LEADER alone, so verify.md's own +56 B
+// cost nothing -- it is the runner-up now, and stays free until it overtakes
+// implement.md (33 B of room).
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this
