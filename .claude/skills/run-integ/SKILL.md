@@ -366,10 +366,12 @@ verify, clean up.
   daemon came back ~40 min later untouched (second instance; the first cost
   ~2 h on 2026-09-03/04 with the same signature). Say so in the report rather
   than spending the run on restarts, and do not pipe the waiting probe through
-  `tail` — that buffers away the progress lines that would show it advancing. Ask the maintainer rather than escalating — a
-  factory reset or deleting Docker data destroys local images and volumes,
-  never yours to spend. Clean up your own probes (`kill`ing a `docker pull`
-  wrapper leaves the `com.docker.cli` child running).
+  `tail` — that buffers away the progress lines that would show it advancing.
+
+  Ask the maintainer rather than escalating — a factory reset or deleting
+  Docker data destroys local images and volumes, never yours to spend. Clean
+  up your own probes (`kill`ing a `docker pull` wrapper leaves the
+  `com.docker.cli` child running).
 - **A fixture that discards the CLI's stderr cannot report its own failure.**
   `RESULT=$(${CDKD} ... 2>/dev/null | tail -1)` under `set -euo pipefail`
   prints the arm header and exits 1 with NO error text, so re-run the failing
