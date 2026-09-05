@@ -31,26 +31,7 @@ vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
   git repos, ~6 min). `.github/workflows/hooks.yml` runs it on `macos-latest`
   (the only runner image with bash 3.2) on any `.claude/hooks/**` PR.
 
-# Why every Bash gate stays unconditional
-
-**Every Bash-targeting `PreToolUse` entry in `.claude/settings.json` uses the
-coarse `Bash` matcher AND no per-hook `if:` condition.** The absent `if:` is
-the load-bearing half: each gate parses the command itself, which is what
-lets gates catch the `cd <path> && ...` and `gh -C <path>` spellings.
-
-The `if:` fields silently never fired (go-to-k/cdkd#1455 / #1476 — see "The
-`if:` layer is GONE" below). Their removal also immunises cdkd against the
-go-to-k/cdk-real-drift#1788 bypass class (measured 2026-08-19 via
-go-to-k/cdkd#2016: that repo's matcher was the coarse `Bash` too — the
-asymmetry was per-hook `if:` conditions; cdkd carries 0 `if:` fields across
-35 Bash hooks, and `check-gate` / `verify-pr-gate` answer rc=2 for the bare
-and the `cd <wt> && ...` spellings alike). This matters because
-`/work-issues` writes commands in exactly that form. **Fenced by
-`tests/unit/scripts/settings-bash-matcher-coverage.test.ts`**: fails on any
-per-hook `if:`, any command-narrowed `Bash(...)` matcher, and the removal of
-`check-gate` / `verify-pr-gate` / `non-english-text-gate` from the coarse
-entry, with a parser floor so "found nothing" cannot pass as "everything
-matches".
+Authoring a hook — why every Bash gate stays unconditional, and why an unquoted `cat >&2 <<EOF` EXECUTES the advice it means to print: [hooks-authoring.md](hooks-authoring.md).
 
 # Other PreToolUse safety hooks
 

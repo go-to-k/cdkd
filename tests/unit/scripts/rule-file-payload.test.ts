@@ -219,6 +219,22 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['docker-argv-redaction.md', 8], // literal list: EXACT, see below
   ['docs-page-template.md', 63], // `docs/**`; measured 79 tracked files (80%, per the convention above)
   ['hooks.md', 68],
+  // 93 files: the 92 entries `.claude/hooks/*.sh` reaches at depth 1 -- 46
+  // whose names end `.test.sh` and 46 that do not, which ONE glob covers
+  // because a suite's name also ends in `.sh` -- plus `.claude/settings.json`.
+  // The 46/46 is a coincidence of counts, NOT a pairing: `run-tests.sh` is a
+  // runner rather than a hook, `post-merge-sync-reminder.sh` has no suite, and
+  // `markgate-gate-name-class.test.sh` / `unresolved-target-class.test.sh` are
+  // suites belonging to no single hook. That last path is not decoration -- the
+  // "Why every Bash gate stays unconditional" section moved here is ABOUT
+  // settings.json (the coarse `Bash` matcher, the absent per-hook `if:`), so a
+  // `.claude/hooks/*.sh`-only glob took 1,226 B dark for the one file the text
+  // describes, and no assertion here could see it: a floor is computed against
+  // the satellite's OWN glob, so narrowing the glob narrows the floor with it.
+  // Review caught it; that is the gap, not a fence. Floor at ~80% per the
+  // convention above: this satellite is the AUTHORING half of hooks.md and
+  // must never be narrowed to the handful of hooks a lane happens to edit.
+  ['hooks-authoring.md', 74],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
@@ -360,12 +376,12 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // landmine shape CORPUS_BYTES_MAX's comment names) and its branch-gate bullet
   // one line past the >4000 B ratchet. Moved out verbatim, hooks.md is 115,030 B
   // and the satellite 6,454 B.
-  ['.claude/hooks/branch-gate.sh', 74_000, 140_000], // measured 121,484
+  ['.claude/hooks/branch-gate.sh', 74_000, 140_000], // measured 94,795
   // The shared matcher pulls hooks.md AND the class-fence satellite, which is
   // the only path that loads both. hooks.md outgrew the 120,000 per-file cap on
   // its own, so the two CLASS fences moved to a satellite of their own rather
   // than the cap being raised -- a cap that moves when it fires is not a cap.
-  ['.claude/hooks/lib/command-match.sh', 76_000, 140_000], // measured 132,187
+  ['.claude/hooks/lib/command-match.sh', 76_000, 140_000], // measured 96,138
   // The four `integ-*` gates were the heaviest UNBUDGETED paths once
   // `gate-sibling-repos.md` split out of hooks.md: this row is the only one
   // that names them, so without it the satellite sits under no budget at all
@@ -373,14 +389,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // Deliberately NOT added to the command-match row above: that path already
   // carries hooks.md + hooks-class-fences.md and has ~15 KB of headroom, which
   // adding a third file would spend down to about 1 KB.
-  ['.claude/hooks/integ-local-gate.sh', 76_000, 140_000], // measured 132,814
+  ['.claude/hooks/integ-local-gate.sh', 76_000, 140_000], // measured 97,404
   // The cwd-race detector's entry moved out of hooks.md when the #2363
   // widening pushed that file past the 120,000 B per-file cap (the #2236
   // precedent). This path is the representative one for the satellite
   // (its two globs are the hook and its .test.sh, per the REACH_FLOORS
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
-  ['.claude/hooks/main-tree-git-cwd-detector.sh', 73_000, 140_000], // measured 129,490
+  ['.claude/hooks/main-tree-git-cwd-detector.sh', 73_000, 140_000], // measured 94,080
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the
@@ -388,7 +404,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // globs are the hook and its suite, per the REACH_FLOORS entry above);
   // without this row the satellite would sit under no budget at all. Payload is
   // hooks.md + hooks-main-tree-branch.md.
-  ['.claude/hooks/main-tree-branch-gate.sh', 82_000, 152_000], // measured 135,138
+  ['.claude/hooks/main-tree-branch-gate.sh', 82_000, 152_000], // measured 104,299
   //   The comment here read "measured 124,200" and the payload was already
   //   124,758 when it was written -- 558 B behind on the day it shipped, because
   //   the satellite kept being edited after the figure was taken. Re-measured at
@@ -403,7 +419,7 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // pushed that file to 122,559 B, past the same cap. Representative path for
   // the satellite (its four globs are the two hooks and their suites, per the
   // REACH_FLOORS entry above). Payload is hooks.md + hooks-stop.md.
-  ['.claude/hooks/stop-warn.sh', 77_000, 140_000], // measured 133,753
+  ['.claude/hooks/stop-warn.sh', 77_000, 140_000], // measured 98,482
   // Second review round, 2026-08-25: three heavy paths still carried no budget
   // at all. `masked-retry-logger.ts` is the 2nd-heaviest path in the repo and
   // was covered only by prose, in the `region-check.ts` row's claim to speak
@@ -571,7 +587,24 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 45; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 46; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
+                              //  per-file cap again -- at least the seventh split off this one
+                              //  file, counting the six satellites it already points at, so do not
+                              //  read the ordinals in the older entries below as a running total.
+                              //  The comment above this file's hooks.md row records the decision
+                              //  that the next lane needing more room there splits rather than
+                              //  trims someone else's entry or nudges the cap, and this is that
+                              //  lane. (That comment's "2,531 B" was measured against the retired
+                              //  120,000 cap; under the re-derived 80,000 one main's headroom was
+                              //  109 B. The DECISION is what carried over, not the figure.) Two AUTHORING sections moved out verbatim under a
+                              //  `.claude/hooks/*.sh` glob: "Why every Bash gate stays
+                              //  unconditional" (already there) and the new refusal-message
+                              //  heredoc rule. They belong together -- both answer "how do I
+                              //  write a hook", which every OTHER section of hooks.md does not.
+                              //  hooks.md was 79,891 B on origin/main with the new rule already
+                              //  over the 80,000 cap; it is 78,844 B after the split, the
+                              //  satellite is 3,187 B and the pointer left behind is 179 B.
+                              //  That makes 46. // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -1209,10 +1242,22 @@ describe('.claude/rules payload fence', () => {
     // -- which is why nothing noticed. It stops being findable by a human
     // reading code-layout.md, which is how the next split decides where text
     // belongs.
-    const indexes = ['code-layout.md', 'providers.md'];
+    // Two index SHAPES, because the corpus has two. `code-layout.md` /
+    // `providers.md` index their families with a TABLE, so a row is required
+    // there for the reasons below. The `hooks-*` family's index is `hooks.md`
+    // itself, which has no table -- all five pre-existing satellites are
+    // reached by a PROSE sentence at the point the text was lifted from, which
+    // is the right shape for that family and the only one available. Prose is
+    // the weaker mode (the probes below show why), so it is granted only to
+    // the family that has no alternative, not to the table indexes.
+    const indexes: readonly { file: string; prefix: RegExp; rowsOnly: boolean }[] = [
+      { file: 'code-layout.md', prefix: /^layout-/, rowsOnly: true },
+      { file: 'providers.md', prefix: /^provider-/, rowsOnly: true },
+      { file: 'hooks.md', prefix: /^hooks-/, rowsOnly: false },
+    ];
     const linked = new Set<string>();
     const broken: string[] = [];
-    for (const idx of indexes) {
+    for (const { file: idx, prefix, rowsOnly } of indexes) {
       // TABLE ROWS only, and only OUTSIDE fenced code blocks. A prose pointer
       // elsewhere in the file also makes a satellite findable, but it is not
       // the index -- a review probe deleted `layout-utils.md`'s row and the
@@ -1228,14 +1273,30 @@ describe('.claude/rules payload fence', () => {
           inFence = !inFence;
           continue;
         }
-        if (!inFence && line.trimStart().startsWith('|')) rows.push(line);
+        if (!inFence && (rowsOnly ? line.trimStart().startsWith('|') : true)) rows.push(line);
       }
       // Link TEXT is unconstrained: a row reading `[utils](layout-utils.md)` is
       // a perfectly good index row, and an earlier form reported it as missing
       // because it required the text to repeat the filename.
       for (const m of rows.join('\n').matchAll(/\[[^\]]+\]\(([a-z0-9-]+\.md)\)/g)) {
-        linked.add(m[1]!);
+        // TWO separate questions, and the order matters. Does the target
+        // EXIST is asked of every link an index makes, including the
+        // unprefixed ones -- hooks.md prose names `session-report.md` and
+        // `gate-sibling-repos.md`, and a rename of either must still be
+        // reported. Filtering by family first shadowed exactly that: the
+        // first cut of this fix put the `continue` above this line and
+        // narrowed the dangling-link half live, not latently (round 2 on
+        // go-to-k/cdkd#2657 -- the fix for one half quietly deleting the
+        // other is why every fix round gets reviewed).
         if (!ruleFiles.some((r) => r.name === m[1]!)) broken.push(`${idx} -> ${m[1]!}`);
+        // Does it COUNT as this family's index entry is asked only of the
+        // family this index OWNS. `linked` is shared across indexes while
+        // `prefix` is per-index, so without this a prose sentence in hooks.md
+        // naming a `layout-*` file would satisfy code-layout.md's orphan
+        // check -- silently granting prose mode to a table index, which the
+        // comment above says must never happen.
+        if (!prefix.test(m[1]!)) continue;
+        linked.add(m[1]!);
       }
     }
     expect(broken, `Index rows point at rule files that do not exist: ${broken.join(', ')}.`).toEqual(
@@ -1243,10 +1304,10 @@ describe('.claude/rules payload fence', () => {
     );
     const orphans = ruleFiles
       .map((r) => r.name)
-      .filter((n) => /^(layout|provider)-/.test(n) && !linked.has(n));
+      .filter((n) => indexes.some((i) => i.prefix.test(n)) && !linked.has(n));
     expect(
       orphans,
-      `${orphans.join(', ')} are satellites that no index links to. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs reads the index, not the directory. Add a row to code-layout.md or providers.md.`,
+      `${orphans.join(', ')} are satellites that no index links to. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs reads the index, not the directory. Add a row to code-layout.md or providers.md, or -- for a \`hooks-*\` satellite -- a prose pointer in hooks.md at the point the text was lifted from. The pointer belongs in the file the text LEFT, not in the satellite -- only the index files above are scanned, so a satellite naming itself is not an inbound link and cannot clear this.`,
     ).toEqual([]);
   });
 
