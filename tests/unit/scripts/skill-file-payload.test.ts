@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_641,
-    corpusBytes: 172_151,
-    largest: { file: 'implement.md', bytes: 27_238 },
-    runnerUp: { file: 'verify.md', bytes: 27_205 },
+    corpusBytes: 172_303,
+    largest: { file: 'verify.md', bytes: 27_876 },
+    runnerUp: { file: 'implement.md', bytes: 27_713 },
   },
 };
 
@@ -198,6 +198,20 @@ const MIN_REFERENCE_FILES = 6;
 // 143 -> 54 B. The margin tracks the LEADER alone, so verify.md's own +56 B
 // cost nothing -- it is the runner-up now, and stays free until it overtakes
 // implement.md (33 B of room).
+// The 2026-09-05 go-to-k/cdkd#2607 / go-to-k/cdkd#2620 retro added four rules
+// here (triage.md's budget-disjointness rule, implement.md's orchestrator-side
+// tree rule, verify.md's fence-POPULATION rider, gotchas.md's chat-language
+// rider) costing 1,904 B, and paid 1,752 B of it by deleting five passages
+// that only RESTATED CLAUDE.md or .claude/rules/session-report.md and now
+// point at them instead: gates-and-pr.md's gate-liveness probe, plus
+// gotchas.md's four-field template, not-this-session paragraph, WAITING
+// narrative and cross-repo-framing bullet. Corpus 172,151 -> 172,303 (+152 net
+// for four rules), verify.md 27,205 -> 27,876 takes the lead back from
+// implement.md 27,238 -> 27,713, and the margin goes 54 -> 410 B. The leader
+// swap is why implement.md's +475 B was free: an addition to the RUNNER-UP
+// does not move `corpus - runnerUp` at all, and neither does trimming the
+// leader below it, so every byte of the payment had to come from the other
+// eight files.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this

@@ -84,6 +84,15 @@ Two rules:
 - **Re-read the claim thread at each checkpoint** — before the first edit,
   before the push, and before opening the PR.
 
+**File-disjoint lanes are not BUDGET-disjoint.** A cumulative cap (the
+`.claude/rules` corpus ceiling; any tree-wide SUM) is spent by every lane at
+once and no probe above sees it, so measure the headroom HERE against
+`CORPUS_BYTES_MAX` in `tests/unit/scripts/rule-file-payload.test.ts`, and drop
+a candidate whose fix must GROW it by more than is left — funding one out of
+another lane's bytes is what the fence's own message forbids (measured
+2026-09-05: 247 B, which left go-to-k/cdkd#2599 unfundable in the run that
+made it stale).
+
 **Treat any `origin/*` branch pushed within roughly the last hour as a LIVE
 lane, whatever its PR state**, and read what it owns first:
 `git diff --stat origin/main...origin/<recent-branch>` (a branch pushed four

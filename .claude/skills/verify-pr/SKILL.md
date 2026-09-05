@@ -198,8 +198,12 @@ Run each check and report pass/fail:
      a TEST rewrite counts (PR #2420: a round-2 fix replacing a crude
      assertion with a derived one dropped a wire fact the crude form had been
      pinning by accident — only a third round found it). When a round
-     REPLACES an assertion rather than adding one, ask what the old one was
-     pinning.
+     REPLACES an assertion rather than adding one, KEEP BOTH unless you can
+     NAME, in the commit message, the mutation the old one could not catch.
+     "More precise" is not that name: precision is not a superset of what it
+     replaces, and if you cannot name the mutation the replacement is a
+     deletion (issue #2606: four rounds on one PR, each fix blind on a
+     different axis than the assertion it dropped, every one measured green).
    - Corollary for mutation probes: **enumerate the branches the diff ADDS
      and probe each one** — a new `if`, a new token in a rendered string, a
      new early return and a new gate condition are four probes, not one.

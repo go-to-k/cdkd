@@ -19,14 +19,10 @@
   and say why in the claim (go-to-k/cdkd#1791 passed every §2/§3 gate, was
   claimed, and had to be retracted — nothing but a grep stood between the run
   and the fixture arm its body had already named).
-- **A cross-repo framing spends the deferral budget up front.** When the user
-  says "do this across the repos in one session", `Session-fit: next` is no
-  longer available for anything discovered inside that scope. Three tells make
-  it unarguable: filing the SAME issue body in more than one repo; a
-  mechanical fix whose evidence is live right now; the user already said
-  "finish it here" (measured 2026-08-20: a three-repo run filed the residual
-  gap as three per-repo issues and had to carry them in-session once the user
-  objected). Same session is the bar; same PR only when reviewable together.
+- **A cross-repo framing spends the deferral budget up front.** Inside a "do
+  this across the repos in one session" scope, `Session-fit: next` is off the
+  menu for anything discovered there; `.claude/rules/session-report.md` →
+  Session-fit carries the three tells and the 2026-08-20 measurement.
 - **A mirror issue may already be carried elsewhere** — resolve against the
   file, open PRs and open issues before filing (§10-c) or claiming (§3).
 - **One lane per cross-cutting file.** §2 holds the list; this bullet does not
@@ -113,14 +109,7 @@
   are not follow-ups. (`CLAUDE.md` → Workflow Rules.)
 - **Classify every deferral `now` / `next` the moment you defer it** — write
   the four classification lines into the issue body, one field per line, per
-  `CLAUDE.md` → "The four TODO fields":
-
-  ```text
-  Session-fit: now (do it in this session) | next (not this session) — <reason>
-  Severity: high | medium | low — <what stays broken while it is undone>
-  Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
-  Estimate: <duration, e.g. ~1-3 h -- never a bare letter> — <what eats the time>
-  ```
+  `CLAUDE.md` → "The four TODO fields" (shape and spellings live there).
 
   The report repeats those four and adds `Notes`; the issue body carries
   `Dup-check:` (§5-f) instead. **After a lane merges, `next` is the default**
@@ -134,25 +123,16 @@
   become right for the wrong reason (go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
   Ask the worktree question at FILING time; a separate PR from the same open
   worktree is cheap, and is not what `next` is for.
-
-  Close the run with the **not-this-session line** — decision first, then the
-  literal command (`Not this session — start a fresh session with:
-  /work-issues`), no condition attached ("after lane C merges" collapses
-  waiting and handing-off), and keep `next` items off the State line. A `now`
-  found mid-run is a commitment: Remaining work says what you are about to do,
-  the State line is never STOPPED while it is open, the verdict is NOT
-  CLOSEABLE naming it. A final report can only list `next` items and
-  won't-dos.
 - **This flow parks a LOT, so the State line carries most of its weight.** A
   fan-out run spends most wall-clock parked (lane subagents, `gh pr checks
-  --watch`, `/run-integ`) — every one is **WAITING**, not
-  STOPPED: name the lane and the signal per line. Report **STOPPED** only when
-  every lane is merged and nothing is pending. **ARM the signal BEFORE you
-  write the line** — a named signal is not an armed one; the poll, `Monitor`
-  or backgrounded `until` loop is what actually resumes the run (measured: a
-  run wrote `WAITING — Signal: gh pr checks`, armed nothing, and simply
-  ended).
+  --watch`, `/run-integ`) — every one is **WAITING**, not STOPPED: one line
+  per lane, naming the lane and its signal. STOPPED only when every lane is
+  merged. **ARM the signal BEFORE you write the line** (measured: a run wrote
+  `WAITING — Signal: gh pr checks`, armed nothing, and simply ended).
 - **A lane needing a user decision goes through `AskUserQuestion`, never
   prose** — a prose question ends the turn as STOPPED and loses the other
-  lanes' momentum. Everything else (which integ, how many reviewers, how deep
+  lanes' momentum. That prompt is CHAT, not a published artifact, so it goes
+  in the USER's language — CLAUDE.md's English-only rule already draws that
+  line and was over-applied anyway (the go-to-k/cdkd#2522 decision,
+  2026-09-05). Everything else (which integ, how many reviewers, how deep
   to verify) you decide yourself and report as a decision.

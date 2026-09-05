@@ -344,18 +344,40 @@ verify, clean up.
   the daemon routes registry traffic through a proxy the Desktop APP serves,
   and a quit-and-reopen can leave the
   self-respawning backend up while the app never finishes launching (four
-  consecutive hung pulls; only a manual app restart recovered). Diagnose in
-  order, stopping at the first line that explains the symptom:
+  consecutive hung pulls; only a manual app restart recovered). Three paths
+  fail INDEPENDENTLY — host networking, container networking, and the daemon's
+  own pull path, which egresses differently from container traffic — so name
+  which one is down before touching anything:
 
   ```bash
   curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/  # 401 = HOST networking fine
+  docker run --rm --entrypoint curl <an already-cached image> -s -o /dev/null \
+    -w '%{http_code}\n' --max-time 15 https://registry-1.docker.io/v2/   # 401 = CONTAINER networking fine
+  docker pull hello-world                         # hangs while both 401s return = DAEMON pull path only
   docker info 2>/dev/null | grep -i proxy         # the proxy the daemon depends on
   pgrep -f 'Docker Desktop' >/dev/null && echo app-running || echo APP-NOT-RUNNING
   ```
+
+  **On that third signature, WAIT — it recovers on its own and a restart does
+  not fix it.** Measured 2026-09-05: both curls returned 401 in 0.35 s while
+  every `docker pull` hung indefinitely, including an 8 KB already-cached
+  image, with nothing written to `dockerd.log`; killing both
+  `com.docker.backend` processes and relaunching changed nothing, and the
+  daemon came back ~40 min later untouched (second instance; the first cost
+  ~2 h on 2026-09-03/04 with the same signature). Say so in the report rather
+  than spending the run on restarts, and do not pipe the waiting probe through
+  `tail` — that buffers away the progress lines that would show it advancing.
 
   Ask the maintainer rather than escalating — a factory reset or deleting
   Docker data destroys local images and volumes, never yours to spend. Clean
   up your own probes (`kill`ing a `docker pull` wrapper leaves the
   `com.docker.cli` child running).
+- **A fixture that discards the CLI's stderr cannot report its own failure.**
+  `RESULT=$(${CDKD} ... 2>/dev/null | tail -1)` under `set -euo pipefail`
+  prints the arm header and exits 1 with NO error text, so re-run the failing
+  command with stderr attached BEFORE concluding anything about the change
+  under test (2026-09-05: `local-invoke-agentcore`'s `verify.sh:59` rendered a
+  pre-existing synth break — go-to-k/cdkd#2191 — as "the PR under review is
+  swallowing its own errors", and that fixture gates `integ-local`).
 - **Never bypass this skill** with direct `cdkd deploy` / `cdkd destroy` —
   the orphan-cleanup contract is part of the test, not optional.
