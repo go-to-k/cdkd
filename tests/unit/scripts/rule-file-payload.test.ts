@@ -239,6 +239,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['hooks-main-tree-branch.md', 2], // literal list: EXACT, see below
   ['hooks-branch-gate.md', 2], // literal list: EXACT, see below
   ['hooks-cwd-detector.md', 2], // literal list: EXACT, see below
+  ['hooks-main-tree-edit.md', 4], // literal list: EXACT, see below
   ['hooks-stop.md', 4], // literal list: EXACT, see below
   ['gate-sibling-repos.md', 8], // literal list: EXACT, see below
   ['proxy-support.md', 3], // literal list: EXACT, see below
@@ -397,6 +398,17 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // entry above); without this row the satellite would sit under no
   // budget. Payload is hooks.md + hooks-cwd-detector.md.
   ['.claude/hooks/main-tree-git-cwd-detector.sh', 73_000, 140_000], // measured 94,080
+  // main-tree-edit-gate's entry, and its main-tree-dirty-detector backstop,
+  // moved out of hooks.md on 2026-09-05 when go-to-k/cdkd#2614's entry took
+  // that file to 80,352 B -- past the 80,000 B per-file cap, which had only
+  // 109 B of headroom left after two parallel lanes had spent the rest.
+  // Representative path for the satellite (its four globs are the two hooks
+  // and their suites, per the REACH_FLOORS entry above). Payload is hooks.md +
+  // hooks-main-tree-edit.md. The FLOOR is ~12% under the measurement, this
+  // file's convention -- the first draft said 40_000, 51% under, and a floor
+  // that loose cannot notice the satellite going dark, because hooks.md alone
+  // is 78,437 B and satisfies it unaided.
+  ['.claude/hooks/main-tree-edit-gate.sh', 72_000, 95_000], // measured 81,762
   // main-tree-branch-gate's entry moved out of hooks.md on 2026-09-01, when the
   // argument-parse rewrite's measured before/after table pushed that file to
   // 122,862 B -- past the same 120,000 B per-file cap, and one line past the
@@ -587,7 +599,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 46; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
+const CORPUS_FILE_COUNT = 47; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks.md crossed the
                               //  per-file cap again -- at least the seventh split off this one
                               //  file, counting the six satellites it already points at, so do not
                               //  read the ordinals in the older entries below as a running total.
@@ -604,7 +616,15 @@ const CORPUS_FILE_COUNT = 46; // + hooks-authoring.md (go-to-k/cdkd#2630): hooks
                               //  hooks.md was 79,891 B on origin/main with the new rule already
                               //  over the 80,000 cap; it is 78,844 B after the split, the
                               //  satellite is 3,187 B and the pointer left behind is 179 B.
-                              //  That makes 46. // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+                              //  That makes 46.
+                              // + hooks-main-tree-edit.md (go-to-k/cdkd#2614), landed in
+                              //  parallel and counted here because both lanes split a
+                              //  satellite off hooks.md in the same window and each bumped
+                              //  45 -> 46 on its own: main-tree-edit-gate's entry moved out
+                              //  with its main-tree-dirty-detector backstop when the
+                              //  `cd`-verb note took hooks.md past the cap. That makes 47 --
+                              //  two independent splits, not one recounted twice.
+                              // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
