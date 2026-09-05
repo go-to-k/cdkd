@@ -2,12 +2,12 @@
 
 ## 6. Gates + PR (per lane)
 
-**Before the session's FIRST commit, run CLAUDE.md's gate-liveness probe** —
-`git commit --dry-run -m "gate liveness probe"` as your OWN Bash tool call.
+**Before the session's FIRST commit, run CLAUDE.md's gate-liveness probe.**
 Ordinary git output means the gates are not firing ONLY if something was there
-to trip; with the markers already fresh, use CLAUDE.md's shape probe instead.
-Until the probe is CONCLUSIVE, every gate step below is self-enforced — run
-each by hand and say so in the report.
+to trip; with the markers already fresh — or the tree still CLEAN, which is
+where a retro branch starts — it proves nothing, so use CLAUDE.md's shape
+probe. Until the probe is CONCLUSIVE, every gate step below is self-enforced:
+run each by hand and say so in the report.
 
 From inside the worktree, run the local quality checks and record the markers:
 
@@ -33,9 +33,8 @@ both staged and reformatted shows `MM`); test for a non-empty second column.
 
 **Start every marker and gate command with an explicit `cd <worktree> &&`.**
 "Repo root" means the WORKTREE's root, and a shell cwd does not reliably
-persist between tool calls. The marker store is PER-WORKTREE (markgate writes
-under `$(git rev-parse --git-dir)`, which resolves to `.git/worktrees/<name>`
-in a linked worktree) — a marker recorded in the main checkout is simply
+persist between tool calls. The marker store is PER-WORKTREE (CLAUDE.md →
+multi-session uncommitted-work safety) — a marker recorded in the main checkout is simply
 ABSENT from the lane, surfacing as a `check-gate` refusal reading "you never
 ran /check" seconds after you ran it.
 
@@ -122,7 +121,11 @@ never executed (measured across three lanes: one green before, RED after —
 `dist/` staleness, because the `version` test compares `node dist/cli.js
 --version` against the `package.json` a release bump just moved; a rebase
 crossing a `chore(release)` commit desynchronises them by construction, hence
-rebuild THEN run).
+rebuild THEN run). **Re-run the GENERATORS too** — `/check` step 3's
+`vp run gen:all-matrices`, not just `vp test run`: `docs/_generated/**` derives
+from the whole TREE, so a `tests/integration/**` edit adding no source line
+still moves a count (go-to-k/cdkd#2611: one `--log-group-identifier` line in a
+`verify.sh` took `cli-flag-coverage` 324 → 325).
 
 **A clean merge is not evidence that there was no collision.** Two lanes
 editing the same file merge cleanly whenever their hunks fall in disjoint

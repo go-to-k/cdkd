@@ -104,6 +104,17 @@ record the search so the next lane can see the window was checked:
 Dup-check: searched open issues for <terms> -- none covers this root cause
 ```
 
+**`next` vs `now` is decided by the WORKTREE, not by this PR.** The loud
+question mid-lane is "can this ride THIS PR?" (usually no); the deciding one is
+"is the owning lane's worktree still open?" (quiet, usually yes) — if it is,
+the finding is `now`: a second PR from that same worktree is cheap, and is not
+what `next` is for. `next` becomes the default only once that lane is merged
+and cleaned up. Three times now, and the last is why this rule sits here rather
+than in the appendix — go-to-k/cdkd#2321 / go-to-k/cdkd#2322 came out right by
+accident, and go-to-k/cdkd#2621 was filed `next` as "outside the scope of
+go-to-k/cdkd#2611" 45 minutes before that PR, which was editing the very file
+the issue names, merged.
+
 **File it with its `Severity` / `Effort` values ALSO as labels** — the body
 lines stay exactly as written, and the same two values ride the command:
 

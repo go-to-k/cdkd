@@ -36,6 +36,11 @@ force-push, and CI fires within ~30s. **`--watch` does not cover the wait for
 checks to APPEAR** — with none reported it returns at once, so an `until` loop
 wrapping it hot-spins through a full tool timeout (measured 2026-09-05) and a plain `sleep` chain is refused by the harness. Poll
 `gh pr checks <N> --json state` from `Monitor` or a backgrounded loop.
+**Read the verdict from `--json`, never by splitting the human table on
+whitespace** — a matrix job's name carries a parenthesised suffix, so the naive
+split reads `(20)` / `(22)` as statuses and invents non-green checks;
+`awk -F'\t' '{print $2}' | sort | uniq -c` is the table form
+(both reproduced on go-to-k/cdkd#2644).
 
 **~30s is push-to-queue latency, not time-to-verdict**: with runner backlog,
 checks can APPEAR 10+ minutes after a push and settle minutes later — longer

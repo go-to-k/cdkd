@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 172_746,
-    largest: { file: 'implement.md', bytes: 28_079 },
-    runnerUp: { file: 'verify.md', bytes: 27_876 },
+    corpusBytes: 173_004,
+    largest: { file: 'verify.md', bytes: 28_149 },
+    runnerUp: { file: 'implement.md', bytes: 28_079 },
   },
 };
 
@@ -264,6 +264,21 @@ const MIN_REFERENCE_FILES = 6;
 // but not free: the second spent 678 B of the `tests/setup.ts` payload band
 // in rule-file-payload.test.ts, whose three governing figures are re-derived
 // there in the same commit.
+// The 2026-09-05 go-to-k/cdkd#2438 + go-to-k/cdkd#2447 retro added four rules
+// -- filing.md's worktree test for `next` vs `now`, gates-and-pr.md's
+// re-run-the-generators clause, ship.md's `gh pr checks` parsing rule,
+// verify.md's what-COUNTS-as-a-bypass clause -- and came out 172,746 ->
+// 173,004 (+258) with verify.md 27,876 -> 28,149 taking the lead from
+// implement.md 28,079 (untouched); margin 130 -> 75 B. Components, stated so
+// they can be checked rather than believed: filing.md +727, gates-and-pr.md
+// +276, ship.md +325, verify.md +273, gotchas.md -1,343, = +258. Nearly all of
+// the payment came from ONE file, and by DISPLACEMENT rather than compression:
+// gotchas.md is the appendix, so every rule in it that only restated CLAUDE.md
+// or another stage was either pointed at or moved to the step where it fires
+// (the deferral trap to filing.md, the unique-stack-name rule to 8-i, the
+// what-counts-as-a-bypass half to 8-c). Read that as the appendix's standing
+// hazard: an "existing rules this skill leans on" list is where duplication
+// accumulates without ever looking like growth.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this

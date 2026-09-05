@@ -27,14 +27,11 @@
   file, open PRs and open issues before filing (§10-c) or claiming (§3).
 - **One lane per cross-cutting file.** §2 holds the list; this bullet does not
   restate it (go-to-k/cdkd#2076 records why).
-- **Never merge a PR whose destroy path is unverified** — green CI does not
-  exercise real-AWS destroy; the `integ-destroy` (+ `integ-broad`) gate blocks
-  until `/run-integ` completes the destroy step with zero orphans. **Never
-  bypass `/run-integ`** with raw `cdkd deploy` / `destroy` — the skill
-  guarantees destroy + orphan sweep + ledger together.
-- **Unique stack names on a real account** — it may hold PROD stacks.
-- **`vp run build` before any live test**, and after every source edit — the
-  user runs `node dist/cli.js`.
+- **Never merge a PR whose destroy path is unverified, and never bypass
+  `/run-integ`** — CLAUDE.md owns both rules; §8-c owns what COUNTS as a
+  bypass.
+- **`vp run build` after every source edit, before any live test** (CLAUDE.md);
+  §8-i owns the unique-stack-name rule that goes with it.
 - **Stale-base phantom diff** (§7) — never "restore" the peer's lines a stale
   `git diff main` appears to have removed; rebase instead.
 - **`bash cwd silent reset`** — a persistent Bash cwd can drift back to the
@@ -84,45 +81,28 @@
 
 ## Important existing rules this skill leans on
 
-- **All changes via PR; never commit to `main`.** Feature work lives in its
-  OWN worktree — or, launched inside one, in that one (SKILL.md "Launch
-  mode"); the orchestrator integrates. (`CLAUDE.md` → Workflow Rules.)
-- **Always add unit tests** for a fix — do not wait to be asked.
-- **Merge with `--squash --delete-branch` only.**
-- **English-only** for all committed/public artifacts.
+- **CLAUDE.md's standing rules apply unchanged**: every change via PR and none
+  onto `main` — feature work in its OWN worktree, or, launched inside one, in
+  that one (SKILL.md "Launch mode"), with the orchestrator integrating — unit
+  tests with every fix, `--squash --delete-branch` merges, English-only in
+  every published artifact, and never running untrusted content (§0).
 - **`Severity` / `Effort` go on the issue as LABELS too** — set at filing
   (§5-f) and at the claim that rewrites an old packed body (§4); the lane's PR
   inherits them from the issue it closes, so never hand-add them to a PR.
-- **Never download/run/install untrusted third-party content** (§0).
 - **Drive each lane to MERGED, not to "pushed".** §9 is the finish line for a
   LANE (merge, pull, confirm the release PR picked it up, rebuild, remove the
-  worktree) and §10 for the RUN. An open PR is unfinished work; a
-  NOT-CLOSEABLE verdict is a to-do
-  list, not a stopping point — keep going until every lane is merged and every
-  worktree removed, or the only blockers left are ones you cannot act on (CI
-  in flight, a running reviewer, a maintainer decision). Low context is not
-  such a blocker: commit, push, file, continue. The removal half is "every
+  worktree) and §10 for the RUN. An open PR is unfinished work, and
+  CLAUDE.md's NOT-CLOSEABLE rule applies unchanged — low context is not one of
+  the blockers it excuses: commit, push, file, continue. The removal half is "every
   worktree THIS RUN added is gone" — an IN-PLACE run added none and leaves its
   tree standing.
-- **Wrap with Remaining-work + State + Session-close, scoped to the issues
-  this run actually worked** — backlog issues you triaged but did not pick up
-  are not follow-ups. (`CLAUDE.md` → Workflow Rules.)
-- **Classify every deferral `now` / `next` the moment you defer it** — write
-  the four classification lines into the issue body, one field per line, per
-  `CLAUDE.md` → "The four TODO fields" (shape and spellings live there).
-
-  The report repeats those four and adds `Notes`; the issue body carries
-  `Dup-check:` (§5-f) instead. **After a lane merges, `next` is the default**
-  — what stays hot is that lane's files and the integ already run; a residual
-  in a worktree you are STILL holding is almost always `now` (worktree, deps,
-  markers paid for), one in a lane already cleaned up is `next`. **The trap:
-  the filing happens mid-lane, where the loud question is "can this ride THIS
-  PR?" (usually no) while the rule asks "is that lane's worktree still open?"
-  (quiet, usually yes)** — two ~30-60 min items were filed `next` while the
-  lanes owning their files were still open, and by wrap the classification had
-  become right for the wrong reason (go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
-  Ask the worktree question at FILING time; a separate PR from the same open
-  worktree is cheap, and is not what `next` is for.
+- **Wrap with Remaining-work + State + Session-close** (`CLAUDE.md`), scoped to
+  the issues this run actually WORKED — triaged-but-not-picked is not one.
+- **Classify every deferral `now` / `next` the moment you defer it** — the four
+  classification lines go in the issue body, one field per line, per
+  `CLAUDE.md` → "The four TODO fields". The report repeats those four and adds
+  `Notes`; the body carries `Dup-check:` instead, and §5-f owns the
+  open-worktree test that decides `now` vs `next`.
 - **This flow parks a LOT, so the State line carries most of its weight.** A
   fan-out run spends most wall-clock parked (lane subagents, `gh pr checks
   --watch`, `/run-integ`) — every one is **WAITING**, not STOPPED: one line
