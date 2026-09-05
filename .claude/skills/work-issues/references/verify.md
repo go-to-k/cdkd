@@ -155,8 +155,8 @@ Unit tests passing is necessary but NOT sufficient:
     `vp run check` reads neither `ci.yml` nor any hook, and its lint is
     scoped to `src/**`). Run it BEFORE and AFTER; for the BEFORE tree use a
     scratch copy or a re-applied sed-swap, never `git checkout -- <path>` /
-    `git restore <path>` (`dirty-path-restore-gate` blocks that form —
-    go-to-k/cdkd#1700 lost ~200 lines). Flag-order
+    `git restore <path>` (`dirty-path-restore-gate` blocks that form on a
+    DIRTY path — go-to-k/cdkd#1700 lost ~200 lines). Flag-order
     trap: a `vp run` flag after the task name is forwarded to the task and
     rejected — exit 1 from a command that never ran (go-to-k/cdkd#2017); read
     help through `mise exec`, not the bare binary. **Drive the FAILURE

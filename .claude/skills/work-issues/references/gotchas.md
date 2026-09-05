@@ -63,16 +63,12 @@
   and a squash-merged branch reads as ahead forever; the warning's "remove its
   worktree" half is forbidden here (SKILL.md "Launch mode"). Expected, not a
   defect: confirm the PR is MERGED and say so in the wrap. The tree is only
-  clearable from inside by LEAVING the lane branch, which is what §9's
-  IN-PLACE arm does as the run's last step: `git switch
-  --no-guess <LAUNCH_BRANCH> && git branch -D` the lane branch — the branch
-  the probe recorded, restored as-is, with `--no-guess` so a branch surviving
-  only on `origin` fails here instead of being re-created from the remote.
-  That silences the hook — provided `LAUNCH_BRANCH` carries no commits of its
-  own (§9 has the `git rev-list --count` check) — without removing a tree this
-  run does not own. Detach silences it too but leaves the outer tool
-  displaying a detached workspace; it is the fallback for a run launched
-  detached, not the default (go-to-k/cdkd#2417).
+  clearable from inside by LEAVING the lane branch, which is exactly §9's
+  IN-PLACE arm — its recipe, its `--no-guess`, and its
+  `LAUNCH_BRANCH`-carries-no-commits check all live there, and it silences the
+  hook without removing a tree this run does not own. Detach silences it too
+  but leaves the outer tool displaying a detached workspace; it is the fallback
+  for a run launched detached, not the default (go-to-k/cdkd#2417).
 - **A usage-limit interruption does not have to end the run: leave a one-shot
   checkpoint at the reset time**, scheduled when the limit is ANNOUNCED, not
   when it bites (the 2026-09-02 run resumed itself at the reset instant from

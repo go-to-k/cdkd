@@ -110,8 +110,9 @@ worktree still open?" (usually yes) — and while it is, `next` is weak: another
 PR from that tree costs almost nothing, deps and markers already paid.
 `.claude/rules/session-report.md` owns the criteria and wins on conflict (a
 frozen-scope reason is a SESSION-STATE clause there: legal, expiring, and it
-must name its ending event). This step adds only the TIMING; twice it went
-unasked until wrap (go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
+must name its ending event). This step adds only the TIMING: twice a
+frozen-scope `next` was filed while the owning lane was still open
+(go-to-k/cdkd#2321 / go-to-k/cdkd#2322).
 
 **File it with its `Severity` / `Effort` values ALSO as labels** — the body
 lines stay exactly as written, and the same two values ride the command:
