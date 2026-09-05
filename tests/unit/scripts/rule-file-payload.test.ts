@@ -211,6 +211,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['cli-internals.md', 48],
   ['code-layout.md', 261],
   ['delete-outcome.md', 5], // literal list: EXACT, see below
+  ['docker-argv-redaction.md', 5], // literal list: EXACT, see below
   ['docs-page-template.md', 63], // `docs/**`; measured 79 tracked files (80%, per the convention above)
   ['hooks.md', 68],
   ['hooks-class-fences.md', 5], // literal list: EXACT, see below
@@ -547,7 +548,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 43; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 44; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -630,6 +631,16 @@ const CORPUS_FILE_COUNT = 43; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  convention at all. 5,383 B under a single `docs/**` glob, so it
                               //  loads only for a session editing the site and no existing file
                               //  shrank. That makes 43.
+                              //  + docker-argv-redaction.md (2026-09-05, issue
+                              //  go-to-k/cdkd#2440): the SAME split shape again, and this fence
+                              //  is what demanded it -- the argv-redaction rule landed in
+                              //  layout-utils.md and took the `src/utils/aws-client-defaults.ts`
+                              //  budget to 58,091 B against its 58,000 B cap, 91 B over. Moved
+                              //  out VERBATIM under a five-path `paths:` list (docker-cmd.ts plus
+                              //  the four modules that exec docker), which is strictly narrower
+                              //  than `src/utils/**`: layout-utils.md fell to 30,4xx B and the
+                              //  rule now travels with the code it governs instead of with every
+                              //  utils edit. That makes 44.
 const CORPUS_BYTES_MIN = 817_000;   // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04
                                     // compression: measured 851,451 B -- 34,451 B of slack, the
                                     // same ~34 KB every previous setting used.

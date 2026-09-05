@@ -7,6 +7,7 @@ import {
   dockerSpawnEnvWithSensitive,
   getDockerCmd,
   partitionSensitiveEnv,
+  describeDockerFailure,
   runDockerStreaming,
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
@@ -262,18 +263,22 @@ export async function cleanupEcsRun(
 
   if (!options.keepRunning) {
     for (const c of state.startedContainers) {
+      // Both callees swallow their own errors today, so these handlers are
+      // defensive. They still pass the REAL argv rather than a plausible-looking
+      // one: the composer's contract is "the argv you redact with is the argv
+      // you spawned", and a fabricated array quietly breaks it the day a callee
+      // starts propagating.
+      const stopArgs = dockerStopArgs(c.id, CLEANUP_STOP_GRACE_SECONDS);
       try {
-        await stopContainer(c.id, 10);
+        await stopContainer(c.id, CLEANUP_STOP_GRACE_SECONDS);
       } catch (err) {
-        logger.debug(
-          `docker stop ${c.id} failed: ${err instanceof Error ? err.message : String(err)}`
-        );
+        logger.debug(`docker stop ${c.id} failed: ${describeDockerFailure(err, stopArgs)}`);
       }
       try {
         await removeContainer(c.id);
       } catch (err) {
         logger.debug(
-          `docker rm -f ${c.id} failed: ${err instanceof Error ? err.message : String(err)}`
+          `docker rm -f ${c.id} failed: ${describeDockerFailure(err, ['rm', '-f', c.id])}`
         );
       }
     }
@@ -292,13 +297,12 @@ export async function cleanupEcsRun(
   state.network = undefined;
 
   for (const v of state.dockerVolumeNames) {
+    const rmArgs = ['volume', 'rm', v];
     try {
-      await execFileAsync(getDockerCmd(), ['volume', 'rm', v]);
+      await execFileAsync(getDockerCmd(), rmArgs);
       logger.debug(`Removed docker volume ${v}`);
     } catch (err) {
-      logger.debug(
-        `docker volume rm ${v} failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      logger.debug(`docker volume rm ${v} failed: ${describeDockerFailure(err, rmArgs)}`);
     }
   }
   state.dockerVolumeNames = [];
@@ -487,9 +491,12 @@ export async function runEcsTask(
       });
       id = stdout.trim();
     } catch (err) {
-      const e = err as { stderr?: string; message?: string };
+      // `execFile` folds the whole `docker run` command line into
+      // `err.message` (and into `String(err)`), so an unredacted fallback
+      // echoes every `-e KEY=value` pair -- the container's resolved
+      // `Environment` plus any `--env-vars` override (issue #2440).
       throw new DockerRunnerError(
-        `docker run failed for container '${container.name}': ${e.stderr?.trim() || e.message || String(err)}`
+        `docker run failed for container '${container.name}': ${describeDockerFailure(err, args)}`
       );
     }
     state.startedContainers.push({ name: container.name, id });
@@ -638,14 +645,10 @@ async function waitForContainerHealthy(containerId: string, displayName: string)
   const logger = getLogger().child('ecs-runner');
   const deadline = Date.now() + 5 * 60 * 1000;
   let lastStatus = '';
+  const inspectArgs = ['inspect', '--format', '{{.State.Health.Status}}', containerId];
   while (Date.now() < deadline) {
     try {
-      const { stdout } = await execFileAsync(getDockerCmd(), [
-        'inspect',
-        '--format',
-        '{{.State.Health.Status}}',
-        containerId,
-      ]);
+      const { stdout } = await execFileAsync(getDockerCmd(), inspectArgs);
       const status = stdout.trim();
       if (status !== lastStatus) {
         logger.debug(`Container '${displayName}' health status: ${status}`);
@@ -661,7 +664,7 @@ async function waitForContainerHealthy(containerId: string, displayName: string)
       if (err instanceof EcsTaskRunnerError) throw err;
       // `docker inspect` may transiently fail right after start; log and retry.
       logger.debug(
-        `docker inspect on '${displayName}' failed: ${err instanceof Error ? err.message : String(err)}`
+        `docker inspect on '${displayName}' failed: ${describeDockerFailure(err, inspectArgs)}`
       );
     }
     await sleep(1000);
@@ -672,23 +675,29 @@ async function waitForContainerHealthy(containerId: string, displayName: string)
 }
 
 async function waitForContainerExit(containerId: string): Promise<number> {
+  const waitArgs = ['wait', containerId];
   try {
-    const { stdout } = await execFileAsync(getDockerCmd(), ['wait', containerId], {
+    const { stdout } = await execFileAsync(getDockerCmd(), waitArgs, {
       maxBuffer: 1024 * 1024,
     });
     const code = Number.parseInt(stdout.trim(), 10);
     return Number.isFinite(code) ? code : 1;
   } catch (err) {
-    const e = err as { stderr?: string; message?: string };
-    throw new DockerRunnerError(
-      `docker wait failed: ${e.stderr?.trim() || e.message || String(err)}`
-    );
+    throw new DockerRunnerError(`docker wait failed: ${describeDockerFailure(err, waitArgs)}`);
   }
+}
+
+/** Seconds `cleanupEcsRun` gives a container to stop before `docker rm -f`. */
+const CLEANUP_STOP_GRACE_SECONDS = 10;
+
+/** The exact `docker stop` argv, so callers redact with the argv actually spawned. */
+function dockerStopArgs(containerId: string, graceSeconds: number): string[] {
+  return ['stop', '-t', String(graceSeconds), containerId];
 }
 
 async function stopContainer(containerId: string, graceSeconds: number): Promise<void> {
   try {
-    await execFileAsync(getDockerCmd(), ['stop', '-t', String(graceSeconds), containerId]);
+    await execFileAsync(getDockerCmd(), dockerStopArgs(containerId, graceSeconds));
   } catch {
     // Ignore — the subsequent `docker rm -f` covers stuck containers.
   }
@@ -814,17 +823,17 @@ async function prepareOneImage(
           ),
       });
       if (actualTag !== tag) {
+        const tagArgs = ['tag', actualTag, tag];
         // `executable` source mode returns the script's own tag — re-tag
         // to the deterministic `tag` so the downstream `docker run` finds
         // the image under the expected name. Routed through the shared
         // `runDockerStreaming` helper for consistency with publisher /
         // local-invoke.
         try {
-          await runDockerStreaming(['tag', actualTag, tag]);
+          await runDockerStreaming(tagArgs);
         } catch (err) {
-          const e = err as { stderr?: string; message?: string };
           throw new LocalInvokeBuildError(
-            `docker tag failed re-tagging '${actualTag}' → '${tag}' for ECS container '${container.name}': ${e.stderr?.trim() || e.message || String(err)}`
+            `docker tag failed re-tagging '${actualTag}' → '${tag}' for ECS container '${container.name}': ${describeDockerFailure(err, tagArgs)}`
           );
         }
       }
@@ -871,9 +880,11 @@ async function realizeDockerVolumes(
       state.dockerVolumeNames.push(dockerVolumeName);
       logger.debug(`Created docker volume ${dockerVolumeName} for task volume '${v.name}'`);
     } catch (err) {
-      const e = err as { stderr?: string; message?: string };
+      // `--opt` carries `DockerVolumeConfiguration.DriverOpts`, which for the
+      // `local` driver holds mount options (`o=addr=...,username=...,password=...`).
+      // `execFile` puts the whole command line in `err.message` (issue #2440).
       throw new DockerRunnerError(
-        `docker volume create failed for '${v.name}': ${e.stderr?.trim() || e.message || String(err)}`
+        `docker volume create failed for '${v.name}': ${describeDockerFailure(err, args)}`
       );
     }
     out.set(v.name, { ...v, dockerVolumeName });

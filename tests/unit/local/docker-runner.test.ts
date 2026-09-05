@@ -3,10 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 // Logger spy (issue #2184): the collision `logger.warn` is the only signal a
 // sensitive var was not passed to the container, so it is fenced directly.
 const warnSpy = vi.hoisted(() => vi.fn());
+// Issue #2440: the `--verbose` argv line is a REDACTION channel now, so it is
+// spied on directly — it is the channel that renders on every verbose run,
+// whereas the error path renders only when docker writes no stderr.
+const debugSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => {
   const leaf = {
     info: vi.fn(),
-    debug: vi.fn(),
+    debug: debugSpy,
     warn: warnSpy,
     error: vi.fn(),
     setLevel: vi.fn(),
@@ -27,6 +31,14 @@ vi.mock('../../../src/utils/logger.js', () => {
 // `local-invoke-resolve-plan.test.ts`.
 const mocks = vi.hoisted(() => ({
   execFile: vi.fn(),
+  // Issue #2440: one-shot failure injection. A FUNCTION is invoked with the
+  // real `(cmd, args)` so a fixture can build Node's actual execFile message
+  // (`Command failed: <file> <args.join(' ')>\n<stderr>`) from the argv the
+  // code under test really produced, rather than a hand-typed approximation.
+  nextError: undefined as
+    | undefined
+    | Error
+    | ((cmd: string, args: string[]) => Error & { stderr?: string }),
 }));
 const childProcessMock = mocks;
 vi.mock('node:child_process', async () => {
@@ -42,6 +54,12 @@ vi.mock('node:child_process', async () => {
       const args = allArgs[1] as string[];
       const opts = allArgs.length === 4 ? allArgs[2] : undefined;
       mocks.execFile(cmd, args, opts);
+      const injected = mocks.nextError;
+      if (injected !== undefined) {
+        mocks.nextError = undefined;
+        cb(typeof injected === 'function' ? injected(cmd, args) : injected);
+        return;
+      }
       cb(null, { stdout: 'container-id\n' } as { stdout: string });
     },
   };
@@ -66,12 +84,7 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
   };
 });
 
-import {
-  pickFreePort,
-  pullImage,
-  redactAwsCredentialsInArgs,
-  runDetached,
-} from '../../../src/local/docker-runner.js';
+import { pickFreePort, pullImage, runDetached } from '../../../src/local/docker-runner.js';
 
 describe('pickFreePort', () => {
   it('returns a positive port number', async () => {
@@ -92,75 +105,16 @@ describe('pickFreePort', () => {
   });
 });
 
-describe('redactAwsCredentialsInArgs', () => {
-  it('redacts -e AWS_SECRET_ACCESS_KEY=...', () => {
-    const args = [
-      'run',
-      '-d',
-      '--rm',
-      '-e',
-      'AWS_SECRET_ACCESS_KEY=supersecret',
-      '-e',
-      'OTHER=value',
-      'image:tag',
-    ];
-    expect(redactAwsCredentialsInArgs(args)).toEqual([
-      'run',
-      '-d',
-      '--rm',
-      '-e',
-      'AWS_SECRET_ACCESS_KEY=***',
-      '-e',
-      'OTHER=value',
-      'image:tag',
-    ]);
-  });
-
-  it('redacts AWS_ACCESS_KEY_ID and AWS_SESSION_TOKEN too', () => {
-    const args = [
-      '-e',
-      'AWS_ACCESS_KEY_ID=AKIA-fake',
-      '-e',
-      'AWS_SESSION_TOKEN=abc123',
-      '-e',
-      'AWS_REGION=us-east-1',
-    ];
-    const out = redactAwsCredentialsInArgs(args);
-    expect(out).toEqual([
-      '-e',
-      'AWS_ACCESS_KEY_ID=***',
-      '-e',
-      'AWS_SESSION_TOKEN=***',
-      '-e',
-      'AWS_REGION=us-east-1',
-    ]);
-  });
-
-  it('does not mutate the input array', () => {
-    const args = ['-e', 'AWS_SECRET_ACCESS_KEY=secret'];
-    const out = redactAwsCredentialsInArgs(args);
-    expect(args).toEqual(['-e', 'AWS_SECRET_ACCESS_KEY=secret']);
-    expect(out).not.toBe(args);
-  });
-
-  it('does not redact -e KEY=value when KEY is not a credential key', () => {
-    const args = ['-e', 'AWS_REGION=us-east-1', '-e', 'CUSTOM=foo'];
-    expect(redactAwsCredentialsInArgs(args)).toEqual(args);
-  });
-
-  it('handles empty -e and isolated -e at the end gracefully', () => {
-    expect(redactAwsCredentialsInArgs([])).toEqual([]);
-    // Trailing -e with no value (defensive — shouldn't happen in practice).
-    expect(redactAwsCredentialsInArgs(['-e'])).toEqual(['-e']);
-  });
-});
-
 describe('runDetached', () => {
   beforeEach(() => {
     childProcessMock.execFile.mockReset();
+    debugSpy.mockReset();
+    mocks.nextError = undefined;
   });
   afterEach(() => {
     childProcessMock.execFile.mockReset();
+    debugSpy.mockReset();
+    mocks.nextError = undefined;
   });
 
   function lastArgs(): string[] {
@@ -530,6 +484,123 @@ describe('runDetached', () => {
     const pIdx = args.indexOf('-p');
     expect(pIdx).toBeGreaterThanOrEqual(0);
     expect(args[pIdx + 1]).toBe('127.0.0.1:56789:8080');
+  });
+
+  // ===================================================================
+  // issue #2440 — the FAILURE message must not echo the argv
+  // ===================================================================
+  // `execFile` folds the whole command line into `err.message`. When docker
+  // dies without writing stderr (a spawn-level failure, an OOM-killed client)
+  // the `err.stderr?.trim() ||` guard falls through to it, so the error a user
+  // pastes into an issue carried every `-e KEY=value` pair -- while the debug
+  // line eleven lines earlier already redacted the same argv.
+  //
+  // The message SHAPE below is not invented: it was measured against this
+  // repo's Node (24.15.0) with a whitespace-bearing `-e` value, which
+  // reproduces verbatim in `err.message`.
+  function execFileFailureLikeNode(stderr = '') {
+    return (cmd: string, args: string[]): Error & { stderr?: string } =>
+      Object.assign(new Error(`Command failed: ${cmd} ${args.join(' ')}\n${stderr}`), {
+        stderr,
+        code: 125,
+      });
+  }
+
+  it('redacts -e VALUES out of the docker run failure message (issue #2440)', async () => {
+    mocks.nextError = execFileFailureLikeNode();
+    await expect(
+      runDetached({
+        image: 'my-image:1',
+        mounts: [],
+        env: {
+          DB_URL: 'postgres://svc:p4ssw0rd@db.internal/app',
+          // A JSON value with a SPACE: only the exact-argv substitution can
+          // delimit it, a token scan of a space-joined command line cannot.
+          FEATURE_CFG: '{"flag": "s3cr3t-json"}',
+        },
+        cmd: ['index.handler'],
+        hostPort: 9001,
+      })
+    ).rejects.toThrow(/^docker run failed: /);
+
+    let message = '';
+    try {
+      mocks.nextError = execFileFailureLikeNode();
+      await runDetached({
+        image: 'my-image:1',
+        mounts: [],
+        env: {
+          DB_URL: 'postgres://svc:p4ssw0rd@db.internal/app',
+          FEATURE_CFG: '{"flag": "s3cr3t-json"}',
+        },
+        cmd: ['index.handler'],
+        hostPort: 9001,
+      });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+
+    // The values are gone...
+    expect(message).not.toContain('postgres://svc:p4ssw0rd@db.internal/app');
+    expect(message).not.toContain('p4ssw0rd');
+    expect(message).not.toContain('s3cr3t-json');
+    // ...the KEYS and the rest of the diagnostic are not. Without these an
+    // empty message would pass the absence assertions above.
+    expect(message).toContain('-e DB_URL=***');
+    expect(message).toContain('-e FEATURE_CFG=***');
+    expect(message).toContain('docker run failed: Command failed:');
+    expect(message).toContain('run -d --rm');
+    expect(message).toContain('my-image:1 index.handler');
+  });
+
+  it('the --verbose argv debug line masks the SAME values as the error path (issue #2440)', async () => {
+    // The channel divergence IS the defect: this line renders on every
+    // verbose run, the error path only when docker writes no stderr. A test
+    // that only covered the error path would have left the certain channel
+    // open, which is what the security review caught.
+    await runDetached({
+      image: 'my-image:1',
+      mounts: [],
+      env: {
+        DB_URL: 'postgres://svc:p4ssw0rd@db.internal/app',
+        FEATURE_CFG: '{"flag": "s3cr3t-json"}',
+      },
+      cmd: ['index.handler'],
+      hostPort: 9001,
+    });
+    const argvLine = debugSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes(' run '));
+    expect(argvLine).toBeDefined();
+    expect(argvLine).not.toContain('p4ssw0rd');
+    expect(argvLine).not.toContain('s3cr3t-json');
+    expect(argvLine).toContain('-e DB_URL=***');
+    expect(argvLine).toContain('-e FEATURE_CFG=***');
+    // The line stays useful: which vars, which mounts, which image.
+    expect(argvLine).toContain('run -d --rm');
+    expect(argvLine).toContain('my-image:1 index.handler');
+  });
+
+  it('keeps a docker-authored stderr diagnostic intact while redacting the argv it quotes', async () => {
+    mocks.nextError = execFileFailureLikeNode(
+      'docker: Error response from daemon: no such image: my-image:1.\n'
+    );
+    let message = '';
+    try {
+      await runDetached({
+        image: 'my-image:1',
+        mounts: [],
+        env: { API_TOKEN: 'tok-live-987654' },
+        cmd: ['index.handler'],
+        hostPort: 9001,
+      });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    // stderr wins over `err.message` here, so the argv never appears at all —
+    // and the actionable line survives untouched.
+    expect(message).toBe(
+      'docker run failed: docker: Error response from daemon: no such image: my-image:1.'
+    );
+    expect(message).not.toContain('tok-live-987654');
   });
 
   it('publishes hostPort:containerPort when containerPort is explicit (MCP / A2A path)', async () => {
