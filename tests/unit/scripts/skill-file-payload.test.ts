@@ -121,8 +121,8 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // go-to-k/cdkd#2417 until 2026-09-02, while SKILL.md had been 11,548 B
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
-    orchestratorBytes: 11_641,
-    corpusBytes: 172_303,
+    orchestratorBytes: 11_752,
+    corpusBytes: 172_004,
     largest: { file: 'verify.md', bytes: 27_876 },
     runnerUp: { file: 'implement.md', bytes: 27_713 },
   },
@@ -212,6 +212,27 @@ const MIN_REFERENCE_FILES = 6;
 // does not move `corpus - runnerUp` at all, and neither does trimming the
 // leader below it, so every byte of the payment had to come from the other
 // eight files.
+// The 2026-09-05 batching/area-priority pass added three rules to triage.md --
+// rank `local` LAST, how to recognise it, and batching as the DEFAULT rather
+// than a permission -- and ended NET NEGATIVE here: triage.md 26,048 ->
+// 26,105 while section 0 and section 3-b each shed more than they gained,
+// for -299 B on the corpus and margin 410 -> 709 B over the go-to-k/cdkd#2607
+// round above (measured after rebasing onto it, not before). Re-measured
+// three times across two rebases while this branch was open, and the leader
+// swapped between implement.md and verify.md twice in the process -- the
+// binding bound moves under a branch that touches neither file, so derive it
+// from the tree at the sha you push, never from the tree you cut. Two of the three payments were displacement rather than
+// compression, which is why the round could absorb a review that made the
+// additions LONGER: section 0 became a pointer at CLAUDE.md's
+// untrusted-content rule, which it had restated at length, and section 3-b
+// became a pointer at .claude/rules/session-report.md, which already carried
+// the bar, all four failure modes, the go-to-k/cdk-local#560 measurement and
+// the own-PR criterion -- section 3-b now holds only the two checks it adds at
+// PICK time. Read that as a warning as much as a result: 850 B of this file's
+// corpus was a second copy of a rule file, and the reviewer had to find it.
+// The orchestrator paid 111 B for one stage-table clause, one corrected row
+// and the two "a few issues" phrasings the new default contradicted, leaving
+// 248 B.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this

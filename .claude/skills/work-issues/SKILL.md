@@ -1,14 +1,14 @@
 ---
 name: work-issues
-description: Work through already-filed GitHub issues (typically the bug-hunt's output) end to end — triage safely, pick a few FILE-DISJOINT issues to fix in parallel, claim each on the issue before starting (collision-safe with other agents), verify against real AWS, then carry each through merge → pull → rebuild the linked binary → worktree cleanup. Use when asked to "handle/address filed issues", not to hunt for new bugs (that is /hunt-bugs).
+description: Work through already-filed GitHub issues (typically the bug-hunt's output) end to end — triage safely, pick as many FILE-DISJOINT issues as the run can carry, claim each on the issue before starting (collision-safe with other agents), verify against real AWS, then carry each through merge → pull → rebuild the linked binary → worktree cleanup. Use when asked to "handle/address filed issues", not to hunt for new bugs (that is /hunt-bugs).
 argument-hint: "[optional focus, e.g. 'destroy issues' | '#651 #650' | 'provider FPs']"
 ---
 
 # Work Filed Issues
 
 Take OPEN issues (usually filed by `/hunt-bugs` — deploy/update/destroy bugs, wrong
-replacement decisions, missed detection) and drive a few of them to merged,
-released, installed fixes. The differentiator of this skill over just "fix issue
+replacement decisions, missed detection) and drive as many of them as the run
+can carry to merged, released, installed fixes. The differentiator of this skill over just "fix issue
 #N" is **safe, collision-free PARALLELISM**: when there is a backlog and other
 agents/sessions are running, pick issues that cannot step on each other, announce
 which ones you took, and only then start.
@@ -111,10 +111,10 @@ the user wants to watch); the stage files apply unchanged either way.
 | Stage | File (read at entry) | What it covers |
 |---|---|---|
 | Before 0. Launch mode | `references/launch-mode.md` | The probe (the ONLY copy), reading its four values, why the parent runs it before stage 0, and the table mapping every IN-PLACE consequence to its stage |
-| 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, never download/run third-party content, defer engage/minimize/block to the maintainer |
+| 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, CLAUDE.md's untrusted-content rule (§0 points at it rather than restating it), defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`) |
 | 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their clone-locality blind spot, the contested cross-cutting file list (the ONLY copy — `tests/unit/scripts/cross-cutting-list-sync.test.ts` fences it against the gates) |
-| 3. Pick file-disjoint issues | `references/triage.md` | Lane count from the launch mode, disjointness gate, freshness quarantine (§3-0), ranking rules (§3-a), naming the next session's verification before writing `next` (§3-b), premise checks against `origin/main` |
+| 3. Pick file-disjoint issues | `references/triage.md` | Lane count from the launch mode, batching as the DEFAULT (largest safe set), disjointness gate, freshness quarantine (§3-0), ranking rules (§3-a), naming the next session's verification before writing `next` (§3-b), premise checks against `origin/main` |
 | 4. Claim | `references/claim.md` | Claim comment BEFORE first edit, compare-and-swap re-read, tie-break by earliest timestamp, classification-line upgrade + labels on the same edit |
 | 5. Implement | `references/implement.md` | One tree per lane, owner probes before adopting one, build before first test, sibling-site sweeps (precondition minus remedy, shape not name, count before/after) |
 | 5-f. File what you find | `references/filing.md` | N sites = ONE issue, the dup-check window (mint vs fold into an umbrella), `Severity` / `Effort` as labels, the two `gh issue` gates |
