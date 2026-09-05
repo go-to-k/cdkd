@@ -846,62 +846,118 @@ describe('work-issues section 2 worktree probe', () => {
 
   /**
    * ONE extraction feeds every case below, and it is the UNION of the two
-   * recognisers this fence went through -- because each caught what the other
-   * missed, and three review rounds were spent discovering that one at a time.
+   * recognisers this fence went through -- each caught what the other missed,
+   * and four review rounds were spent finding that out one shape at a time.
    *
-   * Draft 2 selected `bashBlocks`, which sees only a column-0 ```bash fence:
+   * Draft 2 selected `bashBlocks`, which sees only a column-0 ```bash fence, so
    * the withdrawn command survived as ```sh, bare ```, or indented (the skill
-   * carries 3 indented fences of 42). Draft 3 replaced it with a `^\s*git`
-   * line scan, which closed those and REGRESSED the rest -- `cd … && git show`,
-   * a `for` loop body, an `env`-prefixed call and a `\`-continuation are all
-   * commands whose line does not START with git, and retro.md really does hard
-   * wrap a git command across a newline (see the note at the top of this file).
+   * carries three indented ```bash fences today). Draft 3 replaced it with a
+   * line scan anchored on `git`, which closed those and went blind to every
+   * command whose line does not START with git -- `cd … && git show`, a `for`
+   * body, an `env`-prefixed call, a `\`-continuation -- and regressed the floor
+   * with it. Draft 4 took the union but still anchored the outside-fence half
+   * on a line-leading git, so a command in a list item or a blockquote escaped.
    *
-   * So: every line inside a fence AT ANY indent OR tag, plus a bare `git …`
-   * line outside one, with continuations joined. `bashBlocks` is deliberately
-   * left alone -- the section 9 block fences depend on its contract, and
-   * widening a shared recogniser to suit one caller is how those change
-   * meaning silently.
+   * `bashBlocks` is deliberately left alone: the section 9 block fences depend
+   * on its contract, and widening a shared recogniser to suit one caller is how
+   * those change meaning silently.
    */
   const insideFence = (text: string): boolean[] => {
-    let open = false;
+    // Tracks the OPENING run's char and length. A plain toggle desyncs on a
+    // nested or four-backtick fence -- the inner marker flips it CLOSED and
+    // every later line reads inverted -- and ignores ~~~ entirely.
+    let open: string | null = null;
     return text.split('\n').map((line) => {
-      if (/^\s*```/.test(line)) {
-        open = !open;
-        return false;
+      const m = /^\s*(`{3,}|~{3,})/.exec(line);
+      if (m) {
+        const run = m[1]!;
+        if (open === null) {
+          open = run;
+          return false;
+        }
+        if (run[0] === open[0] && run.length >= open.length) {
+          open = null;
+          return false;
+        }
       }
-      return open;
+      return open !== null;
     });
   };
 
+  /** First token is a git call. NARROW, and used only to exclude prose below. */
   const GIT_LINE = /^\s*\$?\s*git\b/;
+  /** Contains a git call anywhere a shell could start one. WIDE, for extraction. */
+  const CONTAINS_GIT = /(?:^|[\s;&|(`])\$?git\b/;
 
-  const commandUnits = (doc: string): string[] => {
+  /**
+   * TWO extractions, same fence map, different outside-fence matcher -- because
+   * the two questions differ. The BAN wants maximal reach, so it takes any line
+   * carrying a git call. UNIQUENESS must NOT: `launch-mode.md` discusses
+   * section 2's probe in prose (`git -C .claude/worktrees/<w> log|show|status`
+   * as the WRONG relative form, and a table row naming the right one), and a
+   * doc TALKING ABOUT the probe is not a second copy of it. Running the wide
+   * matcher for both reported launch-mode.md as a duplicate -- a false positive
+   * caught by this fence's own suite, on the round that widened it.
+   *
+   * Known bound, stated rather than left to be discovered: a DUPLICATE probe
+   * written as a bullet or blockquote outside a fence is invisible to
+   * uniqueness. It is not invisible to the ban, which is where the harm lives
+   * -- a duplicate that still ranges is drift; one that reads a single commit
+   * is the defect, and the ban has the wide reach.
+   */
+  const unitsFrom = (doc: string, outsideFence: RegExp): string[] => {
     const text = read(doc);
     const fenced = insideFence(text);
-    const picked = text.split('\n').filter((line, i) => fenced[i] || GIT_LINE.test(line));
+    const picked: Array<{ i: number; line: string }> = [];
+    text.split('\n').forEach((line, i) => {
+      if (fenced[i] || outsideFence.test(line)) picked.push({ i, line });
+    });
+    // Join `\` continuations, but only across ADJACENT source lines: `picked`
+    // is filtered, so an index-blind join fuses a `\`-terminated line with the
+    // next PICKED line anywhere later and fabricates a command that never
+    // existed -- which can trip the ban or the peer case on nothing.
     const units: string[] = [];
-    for (const line of picked) {
+    let previousIndex = -2;
+    for (const { i, line } of picked) {
       const prev = units[units.length - 1];
-      if (prev !== undefined && /\\\s*$/.test(prev)) {
+      if (prev !== undefined && i === previousIndex + 1 && /\\\s*$/.test(prev)) {
         units[units.length - 1] = `${prev.replace(/\\\s*$/, ' ')}${line.trim()}`;
       } else {
         units.push(line);
       }
+      previousIndex = i;
     }
     return units;
   };
 
+  /** Real command blocks: fenced lines plus a line-leading `git …`. */
+  const blockUnits = (doc: string): string[] => unitsFrom(doc, GIT_LINE);
+  /** Those plus any line carrying a git call at all -- bullets, blockquotes, cells. */
+  const anyGitUnits = (doc: string): string[] => unitsFrom(doc, CONTAINS_GIT);
+
   /**
-   * `git … show … --stat`-family, in either flag order. The `(?<![-\w])` is
-   * load-bearing: a bare `\bshow\b` also matches INSIDE `--show-current`, which
-   * `launch-mode.md` uses beside a `--stat`, and that false positive is exactly
-   * the kind of thing a ban nobody probed would have shipped with.
+   * `git … show … --stat`-family, either flag order. `show\s+` is what excludes
+   * `--show-current` (a `-` follows the word, so `\s+` cannot match) -- measured,
+   * because an earlier revision credited a `(?<![-\w])` lookbehind for that and
+   * the lookbehind turned out inert: its only effect is the hypothetical
+   * `--show ` with a trailing space. It is kept as belt-and-braces, and is
+   * described here as exactly that rather than as the thing doing the work.
    */
-  const SINGLE_COMMIT = /\bgit\b.*(?<![-\w])show\s+.*--(?:stat|numstat|shortstat|name-only|name-status)\b/;
+  const SINGLE_COMMIT =
+    /\bgit\b.*(?<![-\w])show\s+.*--(?:[a-z-]*stat\b|name-only\b|name-status\b)/;
 
   const peerProbes = (doc: string): string[] =>
-    commandUnits(doc).filter((u) => /worktrees\/<w>/.test(u));
+    blockUnits(doc).filter((u) => /worktrees\/<w>/.test(u));
+
+  it('every doc has balanced fences, so the scan cannot read inverted', () => {
+    // Not decoration: an odd fence count leaves `insideFence` open to EOF, and
+    // every remaining prose line then reads as a command. That fails loudly in
+    // one place instead of silently changing what the three cases below mean.
+    const unbalanced = skillDocs().filter(
+      (doc) => (read(doc).match(/^\s*(?:`{3,}|~{3,})/gm) ?? []).length % 2 !== 0,
+    );
+    expect(unbalanced, 'an unterminated fence inverts every later line').toEqual([]);
+  });
 
   it('only section 2 probes a peer worktree', () => {
     expect(
@@ -919,24 +975,24 @@ describe('work-issues section 2 worktree probe', () => {
     ).toBe(true);
 
     const singleCommit = skillDocs().flatMap((doc) =>
-      commandUnits(doc)
+      anyGitUnits(doc)
         .filter((u) => SINGLE_COMMIT.test(u))
         .map((u) => `${doc}: ${u.trim()}`),
     );
     expect(
       singleCommit,
-      'a `git show --stat` reads ONE commit and under-reports a multi-commit lane -- ' +
-        'that form was withdrawn on 2026-09-05 and must not return as a COMMAND',
+      'a `git show --stat` reads ONE commit and under-reports a multi-commit lane; that ' +
+        'form was withdrawn on 2026-09-05. This scans fenced lines too, so an intentional ' +
+        '"do NOT do this" example must live in PROSE, not in a code block',
     ).toEqual([]);
   });
 
   it('still explains WHY the range is load-bearing, in prose', () => {
-    // The FLOOR half, and the half that has broken twice. Draft 1 filtered only
-    // `git`-prefixed lines, so a `#` comment planted in the block satisfied it;
-    // draft 3 filtered `git` and `#` lines, so an `echo` inside a fence and a
-    // 4-space indented code line did. Prose here means: outside every fence,
-    // not a command, not a comment, not an indented code block.
-    const text = read(TRIAGE);
+    // The FLOOR, and the half that has broken twice. Prose here means: outside
+    // every fence, not a command, not a comment, not an indented code block,
+    // and not inside an HTML comment -- a `<!-- … -->` carrier satisfied it
+    // while rendering invisible.
+    const text = read(TRIAGE).replace(/<!--[\s\S]*?-->/g, '');
     const fenced = insideFence(text);
     const prose = text
       .split('\n')

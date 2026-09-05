@@ -375,14 +375,20 @@ const MIN_REFERENCE_FILES = 6;
 // Two further lessons landed OUTSIDE this corpus and cost it nothing:
 // `.claude/rules/testing.md` (a guard's uses are its CALL SITES, not the first
 // one) and a fence in work-issues-launch-mode.test.ts pinning the ranged
-// probe. Read that fence's own history before writing the next one: it took
-// four drafts, and every failure was the class it exists to catch -- an inert
-// FLOOR, then a recogniser that saw only column-0 ```bash fences, then a line
-// scan that closed those and regressed the floor while going blind to any
-// command whose line does not start with `git`. It is the UNION of both
-// recognisers now, probed against every evasion the four rounds produced --
-// command SHAPE as well as fence style, which is what the earlier batteries
-// varied and missed.
+// probe. Read that fence's own history before writing the next one, because it
+// is the sharpest thing this round produced. It took FIVE drafts, and every
+// failure was the class the fence exists to catch: an inert FLOOR; then a
+// recogniser seeing only column-0 ```bash fences; then a line scan that closed
+// those, regressed the floor, and went blind to any command whose line does
+// not start with `git`; then a union still anchored on a line-leading git, so
+// a bullet or blockquote escaped. Each draft passed its own battery because
+// each battery varied only what the PREVIOUS round had found -- fence style,
+// then command shape, then carrier. The current one varies all three, and the
+// widening that closed the last of them immediately reported a FALSE POSITIVE
+// its own suite caught (a doc DISCUSSING the probe is not a second copy), so
+// the ban and the uniqueness check now take deliberately different extractions.
+// If there is one transferable lesson here it is that a fence's battery
+// inherits the imagination of the round that wrote it.
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller
