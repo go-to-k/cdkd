@@ -609,6 +609,26 @@ export function isStatefulRecreateTargetSync(
  * whose recorded bag does not already prove `has-retention`, on any of those
  * paths — empty or not.
  *
+ * `UpdateReplacePolicy: Retain` is the standing EXEMPTION, and it covers all
+ * three (issue [#2604]): the engine never consults this predicate under it —
+ * the property-driven guard tests `updateReplacePolicy !== 'Retain'`
+ * directly, and the fallback's two triggers short-circuit through
+ * `retainOldOnReplace`, which issue [#2518] added. The old resource survives
+ * the replacement, so there is no data loss to confirm, and the refusal's own
+ * remedy would have destroyed exactly what the user asked to keep.
+ * `Snapshot` is NOT exempt on any of them — a snapshot is a copy, not a
+ * surviving resource. So read the paragraph above as scoped to a template
+ * that is not retaining.
+ *
+ * The two engine sites are not the only callers: a THIRD sits outside those
+ * paths and outside that exemption — `recreate-confirm-prompt.ts` re-derives
+ * a `null` verdict for the `--recreate-via-*` pre-flight, where
+ * `--force-stateful-recreation` is what skipped the probe.
+ * `stateful-replace-message-doc-sync` pins the whole guard's reader list by
+ * file, so a caller cannot be added silently — but a NEW PATH routed through
+ * an existing site adds no file and reds nothing there (that is issue
+ * [#2514]'s shape), so this enumeration is maintained by hand.
+ *
  * The log group's arm is the one issue [#2558] added, and the reason it is
  * needed is that the old predicate treated "no retention recorded" as "holds
  * nothing" when it is CloudWatch Logs' never-expire. Every other type matches
@@ -655,10 +675,12 @@ export function renderStatefulReason(reason: StatefulReason): string {
     case 'has-retention':
       return 'log group retains data (RetentionInDays > 0)';
     case 'has-log-events':
-      // Deliberately NOT "log group is non-empty", the assertive phrasing the
-      // bucket's sibling uses: this reason is rendered both when the plan-time
-      // probe FOUND a log stream and when nothing could be probed at all, and
-      // only the hedged wording is true in both cases.
+      // Deliberately NOT "log group is non-empty": this reason is rendered
+      // both when the plan-time probe FOUND a log stream and when nothing
+      // could be probed at all, and only the hedged wording is true in both
+      // cases. It was the FIRST of the two to hedge; the bucket's sibling
+      // above followed for the same reason in issue [#2615], so the two are
+      // now the same shape rather than a contrast.
       return 'log group is not provably empty';
     case null:
       return '(not stateful)';

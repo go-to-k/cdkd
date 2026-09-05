@@ -697,6 +697,14 @@ checker must prove it sees its input", one layer out. Two rules:
   gate's digest scope, so the assertions can go blind while the marker is still
   fresh (fixture-facing half of `feedback_integ_after_final_rebase` /
   `feedback_review_fixes_stale_integ_marker`).
+- **A reword that makes a string LESS SPECIFIC blunts sentinels in fixtures
+  your diff never opens, and re-running finds none of them** — the grep still
+  MATCHES, it has just stopped discriminating, so every phase stays green.
+  `loggroup-never-expire-guard` greps `is not provably empty`, unique to the
+  log-group reason until issue #2615 gave the S3 reason the same hedge; caught
+  by review, by no fence. After widening or hedging any rendered message, grep
+  the fixture tree for the phrases the NEW wording now shares with a sibling
+  and re-anchor each sentinel on the part still unique to its producer.
 
 ### A checker must prove it sees its input
 

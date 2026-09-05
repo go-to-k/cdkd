@@ -244,8 +244,14 @@ its own alibi (go-to-k/cdkd#2333).
 
 **A probe that reports NO discrimination is a claim about the FENCE — three
 other things produce identical output.** Ask in order before touching the
-fence: (1) **did the edit land?** (`sed`/`perl` fail silently in ways that
-read as "no match"; prove with `grep -c '<anchor>'` and require exactly 1);
+fence: (1) **did the edit land WHERE YOU AIMED IT?** — not a post-mortem but
+the probe's RECEIPT (5-g's rule, which applies to a probe you run yourself):
+`grep -c '<anchor>'` BEFORE, `git diff -- <file>` after, and read the hunk.
+A count above 1 decides the tool, in opposite directions: `sed` / `perl -pi`
+mutate EVERY copy, so a RED belongs to a broader change, while `perl -0pi`
+without `/g` mutates only the FIRST — which on go-to-k/cdkd#2627 edited one
+of four identical lines, left the arm under test untouched, and reported a
+false GREEN;
 (2) **does the case's execution path REACH the edited line?** (the fix is a
 case that must take that path, not a fence change); (3) **did the command run
 where you think it did?** (appendix, "Bash cwd silent reset" — absolute paths,
@@ -253,9 +259,9 @@ and a property the wrong tree cannot fake). Plus one fixture shape: **an
 expected value must be an INDEPENDENT variable from the one under test.** Only
 after all four does "the fence is weak" remain.
 
-**A RED probe is void as easily as a green one** — an anchor matching TWICE
-mutates every copy (the red belongs to a broader change), and an edit that
-does not COMPILE fails the suite at LOAD, indistinguishable from
+**A RED probe is void as easily as a green one** — the multi-copy anchor
+above voids a red the same way, and an edit that does not COMPILE fails the
+suite at LOAD, indistinguishable from
 discrimination. Read the TALLY and failure TEXT, never the rc — it lies in
 both directions (§6's rc rule; a suite can `skipIf` itself when `dist/` is
 absent). A load error or a short test count VOIDS the probe.

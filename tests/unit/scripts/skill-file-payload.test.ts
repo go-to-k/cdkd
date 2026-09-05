@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 172_004,
-    largest: { file: 'verify.md', bytes: 27_876 },
-    runnerUp: { file: 'implement.md', bytes: 27_713 },
+    corpusBytes: 172_817,
+    largest: { file: 'implement.md', bytes: 28_083 },
+    runnerUp: { file: 'verify.md', bytes: 27_876 },
   },
 };
 
@@ -233,6 +233,23 @@ const MIN_REFERENCE_FILES = 6;
 // The orchestrator paid 111 B for one stage-table clause, one corrected row
 // and the two "a few issues" phrasings the new default contradicted, leaving
 // 248 B.
+// The 2026-09-05 go-to-k/cdkd#2554 + go-to-k/cdkd#2615 retro added two rules
+// (implement.md's aim-the-mutation receipt, retro.md's promotion-routing and
+// mirror-aims-back clauses) and paid for them inside those two files --
+// implement.md folded its multi-copy-anchor clause into the receipt rather
+// than keeping both, and retro.md shed six narrative passages that carried an
+// incident at paragraph length where section 10-c asks for one line. A third,
+// unpaid +30 B in gates-and-pr.md is a CONSEQUENCE of the same round: the
+// CLAUDE.md liveness probe it points at gained a pairing with
+// `markgate verify`, so its one-line summary of the probe's verdict had gone
+// half-false. Corpus
+// 172,004 -> 172,817, implement.md 27,713 -> 28,083 takes the lead back from
+// verify.md 27,876 (unchanged), margin 709 -> 59 B. Its other two lessons
+// landed OUTSIDE this corpus on purpose -- .claude/skills/check-docs/SKILL.md
+// (route a src change to the .claude/rules satellites whose `paths:` glob
+// matches it) and .claude/rules/testing.md (a reworded string that becomes
+// LESS specific blunts a sentinel in a fixture the diff never opens) -- which
+// is why they cost it nothing.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this
