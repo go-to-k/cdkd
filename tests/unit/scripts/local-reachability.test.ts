@@ -354,8 +354,18 @@ describe('local reachability critic — RED probes against real code', () => {
   it('reports a symbol whose annotation is DELETED, one file at a time', () => {
     // A per-file sweep, because a single probe proves only that ONE annotation
     // is load-bearing. Each is removed on its own and must be reported.
+    //
+    // The floor's job is to reject a VACUOUS sweep (a loop over nothing proves
+    // nothing), not to pin the count — but unlike the magnitude BANDS further
+    // down it cannot be set "below the planned post-#2277 state", because
+    // go-to-k/cdkd#2277 deletes the orphaned fork wholesale and takes the
+    // annotated population to roughly zero. So it tracks the tree exactly and
+    // is lowered deliberately when an annotated module is deleted: 8 -> 7 by
+    // go-to-k/cdkd#2527, which removed `src/local/cfn-local-state-provider.ts`
+    // (an unreferenced fork of a class cdk-local owns). When #2277 lands, this
+    // case needs RESTRUCTURING rather than another decrement.
     const annotated = analyze().modules.filter((m) => m.deadSymbols.length > 0);
-    expect(annotated.length).toBeGreaterThanOrEqual(8);
+    expect(annotated.length).toBeGreaterThanOrEqual(7);
     for (const mod of annotated) {
       const path = join(REPO_ROOT, mod.file);
       const copy = new Map(REAL_SOURCES);

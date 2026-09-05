@@ -1080,9 +1080,9 @@ function isCdkAssetImageUri(uri: string, cdkAssetContainerRepo?: string): boolea
  * Parse the `Image` field of an ECS container definition.
  *
  * Three shapes:
- *   - `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` — same-account
- *     same-region ECR. Cross-account/region is hard-errored (matches
- *     `cdkd local invoke`'s ECR-pull semantics).
+ *   - `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` — an ECR image
+ *     URI. Cross-account and cross-region are BOTH supported; see the #455
+ *     paragraph below for how each is authenticated.
  *   - `Fn::Sub` / `Fn::Join` / `Ref` referencing a `Code.fromAsset`-style
  *     CDK asset image. Surfaces `kind: 'cdk-asset'` with the optional
  *     asset hash so the runner can route through `docker-build.ts`.

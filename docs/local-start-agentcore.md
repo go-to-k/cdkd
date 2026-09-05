@@ -43,6 +43,7 @@ cdkd local start-agentcore MyStack/MyAgent --from-state --watch  # bind cdkd sta
 | `--no-pull` | off | Skip `docker pull` and use the cached image. No-op on the local-build path. |
 | `--no-build` | off | Skip `docker build` on the local-asset path and reuse the previously built tag. No-op on the ECR / registry pull paths. |
 | `--assume-role [arn]` | off | Assume the runtime's execution role — bare form uses its literal `RoleArn` — and forward temporary credentials into the container. Omit the flag to keep your own shell credentials in the container. |
+| `--no-assume-role` | — | Explicitly decline the role assumption. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR, for cross-account or centralized registries. |
 | `--from-state` | off | Resolve intrinsics in the runtime's container image and environment variables from cdkd's S3 state. Mutually exclusive with `--from-cfn-stack`. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Only meaningful with `--from-state`. |
@@ -54,15 +55,16 @@ cdkd local start-agentcore MyStack/MyAgent --from-state --watch  # bind cdkd sta
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a path to a pre-synthesized cloud assembly. |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c`, `--context <key=value>` | — | Context value passed to synthesis. Repeatable. |
-| `--region <region>` | `AWS_REGION` / stack / profile | AWS region for SDK calls. |
+| `--region <region>` | `AWS_REGION` / stack / profile | **Deprecated**, hidden from `--help`, and still honored: it overrides `AWS_REGION` and the profile, and prints a removal warning. Prefer `AWS_REGION` or your profile. |
 | `--profile <profile>` | — | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for AWS API calls. |
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 
-**Spell the region lower-case.** This command does not fold an upper-cased
-`--region` / `AWS_REGION` to its canonical spelling, and AWS rejects the raw
-form at signature time (`SignatureDoesNotMatch`, `AuthorizationHeaderMalformed`).
+**Region case is folded for you.** An upper-cased `--region` / `AWS_REGION` /
+`AWS_DEFAULT_REGION` is canonicalized before any AWS call, so `US-EAST-1` no
+longer reaches signature validation as-is. `--stack-region` is folded the same
+way, with your exact spelling still preferred when it matches a state record.
 See [`--region` / `AWS_REGION`](cli-reference.md#region-aws-region-every-command).
 
 ## Target resolution

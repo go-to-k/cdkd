@@ -189,7 +189,7 @@ interface LocalInvokeOptions {
   /**
    * Issue #606: alternative state source for CDK apps deployed via the
    * upstream CDK CLI (`cdk deploy` → CloudFormation). Reads the named
-   * CFn stack via `DescribeStackResources` to populate physical IDs.
+   * CFn stack via `ListStackResources` to populate physical IDs.
    * Mutually exclusive with `--from-state`. Commander maps:
    *   - flag absent → `undefined`
    *   - `--from-cfn-stack` (bare) → `true` (use the cdkd stack name)
@@ -467,7 +467,8 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
     // platform that depend on the function's `kind`. ZIP Lambdas use a
     // public Lambda base image and bind-mount the local code at
     // /var/task; container Lambdas (PR 5) build a CDK image asset locally
-    // OR pull from ECR (same-acct/region) and have no bind-mount.
+    // OR pull from ECR (any region; cross-account via --ecr-role-arn) and have
+    // no bind-mount.
     // From this point on, `imagePlan` may carry tmpdirs (`inlineTmpDir`
     // / `layersTmpDir`) — the outer `finally` reads them off `imagePlan`
     // for cleanup.
@@ -619,13 +620,15 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
           );
         }
       }
-    } else if (options.assumeRole === undefined && options.fromState && stateForRoleHint) {
-      // Legacy hint path: user did not opt in, but `--from-state` set; surface
-      // the deployed role ARN so they can re-run with `--assume-role`.
-      suggestAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
+    } else {
+      // `--no-assume-role` (false) and an absent flag (undefined) BOTH land
+      // here, and telling them apart is the entire point of registering the
+      // negation — so the decision and the emission live together in
+      // {@link maybeSuggestAssumeRole} rather than as a condition here. An
+      // earlier cut split them, and a review probe restored the pre-fix
+      // condition on this line with all 17 negation tests still green.
+      maybeSuggestAssumeRole(options, stateForRoleHint, lambda.logicalId);
     }
-    // `options.assumeRole === false` (--no-assume-role) is an explicit opt-out
-    // — skip every assume-role path entirely.
 
     // Read the event payload. Default to {} (matches SAM).
     const event = await readEvent(options);
@@ -1080,7 +1083,11 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
 /**
  * Container-Lambda branch (PR 5): try the local-build path first (asset
  * manifest lookup by hash; single-asset fallback when extraction fails),
- * then fall back to ECR pull (same-account / same-region only — D5.2).
+ * then fall back to ECR pull. NOT same-region-only: `pullEcrImage` authenticates
+ * against the image URI's OWN region, so a cross-region image pulls fine.
+ * Cross-ACCOUNT needs either `--ecr-role-arn` or credentials already granted
+ * `ecr:GetAuthorizationToken` + `ecr:BatchGetImage` on the repository (#455,
+ * corrected in issue #2536).
  */
 export async function resolveContainerImagePlan(
   lambda: ResolvedImageLambda,
@@ -1114,7 +1121,7 @@ export async function resolveContainerImagePlan(
       );
     }
     logger.info(
-      `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (same-acct/region only)...`
+      `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (cross-region is supported — the ECR client is built for the image URI's region; pass --ecr-role-arn for a cross-account image)...`
     );
     imageRef = await pullEcrImage(lambda.imageUri, {
       skipPull: options.pull === false,
@@ -1639,6 +1646,44 @@ function suggestAssumeRoleFromState(state: StackState, logicalId: string): void 
 }
 
 /**
+ * Emit the "re-run with `--assume-role`" hint, if it applies.
+ *
+ * This is the ONE place where `--no-assume-role` (`false`) behaves differently
+ * from omitting the flag (`undefined`), and therefore the whole behavioural
+ * payoff of registering the negation
+ * ([#2523](https://github.com/go-to-k/cdkd/issues/2523)): both forward the
+ * caller's ambient credentials, but only the absent flag prints the hint.
+ * Everywhere else the two collapse onto the same credential path.
+ *
+ * The DECISION and the EMISSION are deliberately in the same function, and
+ * that shape was bought by a review probe. An earlier cut exported only the
+ * predicate and left the `logger` call at the call site; the probe replaced
+ * the handler's condition with the pre-fix `stateForRoleHint &&
+ * options.fromState` — reintroducing the defect in full — and all 3217 tests
+ * stayed green, because nothing pinned that the handler still consulted the
+ * predicate. Split like that, the extraction moves the untested part rather
+ * than removing it. Together, the only way to reintroduce the defect is to
+ * edit this function, which the cases in
+ * `tests/unit/cli/local-assume-role-negation.test.ts` read directly.
+ *
+ * `state` is `undefined` when no state source was loaded, which is its own
+ * reason not to hint: there is no deployed role ARN to name.
+ *
+ * Returns whether it hinted, so a caller (and a test) can assert the decision
+ * without having to scrape the log.
+ */
+export function maybeSuggestAssumeRole(
+  options: { assumeRole?: string | boolean | undefined; fromState: boolean },
+  state: StackState | undefined,
+  logicalId: string
+): boolean {
+  if (options.assumeRole !== undefined) return false;
+  if (!options.fromState || !state) return false;
+  suggestAssumeRoleFromState(state, logicalId);
+  return true;
+}
+
+/**
  * Resolve the execution-role ARN for a Lambda from cdkd state. Used by
  * both the `--assume-role` auto-resolve path and the legacy hint path.
  *
@@ -1765,6 +1810,21 @@ export function createLocalCommand(): Command {
           'unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback.'
       )
     )
+    // Commander does NOT synthesize a negation for `--assume-role [arn]`; it has
+    // to be registered explicitly, and declaring it AFTER the positive form
+    // leaves the positive form's default alone (absent stays `undefined`, which
+    // is the SAM-compatible "pass dev creds through, but hint" branch). Without
+    // this registration the `--no-assume-role` advertised in the help above was
+    // rejected by the parser and every `assumeRole === false` arm was dead
+    // (issue #2523).
+    .addOption(
+      new Option(
+        '--no-assume-role',
+        'Explicitly opt out of assuming the deployed execution role: forward your ambient AWS ' +
+          'credentials (or the --profile overlay) even when --from-state is set, and suppress the ' +
+          '"run with --assume-role" hint. Distinct from omitting the flag, which still prints that hint.'
+      )
+    )
     .addOption(
       new Option(
         '--layer-role-arn <arn>',
@@ -1781,7 +1841,8 @@ export function createLocalCommand(): Command {
           'registries (#455). Issues sts:AssumeRole via the default credential chain and uses the ' +
           'temporary credentials for ecr:GetAuthorizationToken + docker pull. Required when the ' +
           'caller does not have direct cross-account access to the target repository. ' +
-          'Same-account / same-region pulls do not need this flag.'
+          'A same-account pull in ANY region does not need this flag: the ECR client is built ' +
+          "for the image URI's own region, so crossing a region costs nothing extra (issue #2536)."
       )
     )
     .addOption(
@@ -1795,10 +1856,10 @@ export function createLocalCommand(): Command {
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',
-        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+        'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
           'in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream ' +
           'CDK CLI (`cdk deploy`). Bare form uses the cdkd stack name; pass an explicit value when CFn stack name differs. ' +
-          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
       )
     )
     .addOption(

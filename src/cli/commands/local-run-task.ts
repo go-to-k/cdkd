@@ -75,9 +75,10 @@ interface LocalRunTaskOptions {
    * Optional role ARN passed to `pullEcrImage` for cross-account /
    * centralized registry pulls (#455). Issues `sts:AssumeRole` via the
    * default credential chain and uses the resulting temp credentials to
-   * authenticate against the target ECR repository. Same-account /
-   * same-region pulls do not need this flag. Mirrors
-   * `cdkd local invoke --ecr-role-arn`.
+   * authenticate against the target ECR repository. A same-account pull in
+   * ANY region does not need this flag — `pullEcrImage` builds its ECR client
+   * for the image URI's own region, so crossing a region costs nothing extra
+   * (issue #2536). Mirrors `cdkd local invoke --ecr-role-arn`.
    */
   ecrRoleArn?: string;
   platform?: string;
@@ -93,7 +94,7 @@ interface LocalRunTaskOptions {
   fromState: boolean;
   /**
    * Issue #606: alternative state source. Reads physical IDs from a
-   * deployed CloudFormation stack via `DescribeStackResources` instead
+   * deployed CloudFormation stack via `ListStackResources` instead
    * of cdkd's S3 state. Mutually exclusive with `--from-state`.
    */
   fromCfnStack?: string | boolean;
@@ -800,7 +801,8 @@ export function createLocalRunTaskCommand(): Command {
           'registries (#455). Issues sts:AssumeRole via the default credential chain and uses the ' +
           'temporary credentials for ecr:GetAuthorizationToken + docker pull. Required when the ' +
           'caller does not have direct cross-account access to the target repository. ' +
-          'Same-account / same-region pulls do not need this flag.'
+          'A same-account pull in ANY region does not need this flag: the ECR client is built ' +
+          "for the image URI's own region, so crossing a region costs nothing extra (issue #2536)."
       )
     )
     .addOption(
@@ -835,11 +837,11 @@ export function createLocalRunTaskCommand(): Command {
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',
-        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+        'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
           'in container env vars / secrets / image URIs with the deployed physical IDs / exports. ' +
           'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
           'Bare form uses the cdkd stack name; pass an explicit value when the CFn stack name differs. ' +
-          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
       )
     )
     .addOption(

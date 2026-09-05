@@ -197,7 +197,7 @@ interface LocalStartApiOptions {
   fromState: boolean;
   /**
    * Issue #606: alternative state source. Reads physical IDs from a
-   * deployed CloudFormation stack via `DescribeStackResources` instead
+   * deployed CloudFormation stack via `ListStackResources` instead
    * of cdkd's S3 state. Mutually exclusive with `--from-state`.
    * Commander maps:
    *   - flag absent → `undefined`
@@ -1536,10 +1536,13 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
  *          `--from-state` / `--from-cfn-stack` is active, via the same
  *          shared helper `cdkd local invoke`'s bare-form uses
  *          (`resolveExecutionRoleArnFromState`).
- *   - flag absent / `--no-assume-role-auto` — returns `undefined`
- *     (per-Lambda map and global default already filtered out by the
- *     null-check at the top; bare-auto-resolve = false short-circuits
- *     before the state lookup).
+ *   - flag absent — returns `undefined` (per-Lambda map and global
+ *     default already filtered out by the null-check at the top;
+ *     bare-auto-resolve = false short-circuits before the state lookup).
+ *     There is no `--no-assume-role-auto`: `--assume-role-auto` is a plain
+ *     boolean defaulting to `false`, so omitting it IS the off state, and an
+ *     earlier revision of this list named a negation commander never
+ *     registered (the issue-#2523 shape, one file over).
  *
  * The shape-level mutual exclusion (bare-auto-resolve + global ARN
  * together) is caught at boot by `normalizeStartApiAssumeRole`; this
@@ -1737,8 +1740,10 @@ async function buildContainerSpec(args: {
   } else {
     // IMAGE branch (closes #453): build locally from cdk.out asset
     // manifest, OR pull from ECR when no matching asset is found.
-    // Same-account/region only on the ECR-pull path — cross-account /
-    // cross-region is deferred to a sibling PR (W2-1).
+    // Cross-REGION works on the ECR-pull path (the ECR client is built for the
+    // image URI's own region); cross-ACCOUNT needs credentials that already hold
+    // the ECR read permissions, since this command declares no --ecr-role-arn
+    // (issue #2536).
     const built = await resolveContainerImageForStartApi(lambda, skipPull);
     imageRef = built.imageRef;
     platform = architectureToPlatform(lambda.architecture);
@@ -1943,9 +1948,13 @@ async function buildContainerSpec(args: {
  * need the no-build flag (deterministic-tag cache reuse is automatic
  * across reloads because the per-Lambda tag is content-addressed).
  *
- * Same-account / same-region only on the ECR-pull path (matches the
- * `cdkd local invoke` PR 5 of #224 boundary). Cross-account /
- * cross-region ECR pull is the W2-1 deferred follow-up.
+ * NOT same-region-only on the ECR-pull path: `pullEcrImage` authenticates
+ * against the image URI's OWN region, so a cross-region image pulls fine. The
+ * real limit here is cross-ACCOUNT — unlike `local invoke` / `run-task` /
+ * `invoke-agentcore` this command declares no `--ecr-role-arn`, so it can only
+ * use credentials already granted `ecr:GetAuthorizationToken` +
+ * `ecr:BatchGetImage` on the repository (issue #2536 corrected the message and
+ * this comment; the earlier "W2-1 deferred" wording predated #455).
  */
 export async function resolveContainerImageForStartApi(
   lambda: ResolvedStartApiImageLambda,
@@ -1967,7 +1976,13 @@ export async function resolveContainerImageForStartApi(
     );
   }
   logger.info(
-    `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (same-acct/region only)...`
+    // Cross-REGION is fine — `pullEcrImage` builds its ECR client for the image
+    // URI's own region. The real constraint on THIS command is that it carries no
+    // `--ecr-role-arn` (unlike `local invoke` / `run-task` / `invoke-agentcore`),
+    // so a cross-account pull works only with credentials that already hold
+    // `ecr:GetAuthorizationToken` + `ecr:BatchGetImage` on the repository
+    // (issue #2536).
+    `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (uses your own credentials — this command has no --ecr-role-arn, so a cross-account image needs cross-account ECR permissions)...`
   );
   const imageRef = await pullEcrImage(lambda.imageUri, { skipPull });
   return { imageRef };
@@ -3268,7 +3283,7 @@ export function createLocalStartApiCommand(): Command {
     .addOption(
       new Option(
         '--stage <name>',
-        "Select an API Gateway Stage by its 'StageName'. Default: the first Stage attached to each API. Drives event.stageVariables for both REST v1 and HTTP API v2. NOTE: For HTTP API v2 routes, requestContext.stage is always '$default' regardless of this flag (AWS-side limitation — HTTP API only exposes one stage to the integration event); only event.stageVariables is affected for v2 routes. For REST v1 routes the selected StageName is also threaded into requestContext.stage."
+        "Select an API Gateway Stage by its 'StageName'. Default: the first Stage attached to each API. Drives BOTH event.stageVariables and requestContext.stage, for REST v1 and HTTP API v2 alike: when a route's API has a matching templated Stage, the selected StageName is threaded into requestContext.stage. An HTTP API v2 route reports '$default' only when its API carries no AWS::ApiGatewayV2::Stage in the template — that is v2's auto-deployed stage, not a limit on what this flag can select (AWS's CreateStage accepts named stages on v2 too). An API with no Stage matching the selected name is warned about at start-up and its routes get stageVariables: null."
       )
     )
     .addOption(
@@ -3299,11 +3314,11 @@ export function createLocalStartApiCommand(): Command {
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',
-        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+        'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
           'in Lambda env vars with the deployed physical IDs / exports. ' +
           'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
           'Bare form uses the cdkd stack name per routed stack; pass an explicit value when a single CFn stack should serve every routed stack. ' +
-          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+          'Mutually exclusive with --from-state. Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
       )
     )
     .addOption(

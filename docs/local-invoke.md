@@ -144,7 +144,8 @@ the URI's own region, and — when `--ecr-role-arn <arn>` is passed — issues
 `ecr:GetAuthorizationToken` and the pull. Without `--ecr-role-arn`, cdkd uses
 your own credentials directly, which works when the target repository's resource
 policy grants you; otherwise AWS returns `AccessDenied` and cdkd hints at the
-flag. Same-account, same-region pulls need no role.
+flag. Same-account pulls need no role, and neither do cross-region ones: the
+ECR client is built for the image URI's own region, not the caller's.
 
 `ImageConfig` is honored on the `docker run`:
 
@@ -330,9 +331,11 @@ IAM-permission bug shows up locally.
 | `--assume-role <arn>` | Assumes the explicit ARN. Takes precedence over anything resolved from state. |
 | `--assume-role` (bare) | Reads the function's `Properties.Role` from cdkd state, resolves `Fn::GetAtt: [<RoleId>, 'Arn']` shapes against the sibling IAM Role's recorded `Arn` attribute, and assumes that. Requires `--from-state`. |
 | flag omitted | Your shell credentials are forwarded unchanged. |
+| `--no-assume-role` | Explicitly declines. Your shell credentials are forwarded and the "re-run with `--assume-role`" hint below is suppressed — which is what makes it different from omitting the flag. |
 
-With `--from-state` set but no `--assume-role`, cdkd logs the deployed role ARN
-once, so you can re-run with the flag.
+With `--from-state` set and no `--assume-role` at all, cdkd logs the deployed
+role ARN once, so you can re-run with the flag. Pass `--no-assume-role` to
+silence that line when you meant to use your own credentials.
 
 An STS failure — insufficient permissions, trust-policy mismatch — degrades to a
 warn plus a fallback to your shell credentials. This is a developer-loop tool,

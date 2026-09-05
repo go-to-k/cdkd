@@ -48,7 +48,7 @@ source) are supported.
 | `--container-host <host>` | `127.0.0.1` | Host IP to bind the agent port to. See [Local Execution](local-emulation.md#common-flags). |
 | `--timeout <ms>` | `120000` | Per-request timeout, applied to `POST /invocations`, `POST /mcp`, and the `/ws` open-to-close window. Raise it for long agent calls. |
 | `--assume-role [arn]` | off | Run the agent under the runtime's execution role instead of your shell credentials. See [Credentials and role assumption](#credentials-and-role-assumption). |
-| `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for cross-account or centralized registries. Same-account, same-region pulls need no role. |
+| `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for cross-account or centralized registries. Same-account pulls need no role, and neither do cross-region ones — the ECR client is built for the image URI's own region. |
 | `--from-state` | off | Substitute `Ref` / `Fn::GetAtt` / `Fn::Sub` / `Fn::ImportValue` in env vars from cdkd's S3 state. Mutually exclusive with `--from-cfn-stack`. See [Environment variables](#environment-variables). |
 | `--from-cfn-stack [cfn-stack-name]` | off | Substitute `Ref` / `Fn::ImportValue` in env vars from a deployed CloudFormation stack, for apps deployed via the upstream CDK CLI. Mutually exclusive with `--from-state`. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json`, then `cdkd-state-{accountId}` | S3 bucket holding cdkd state. Used only with `--from-state`. |
@@ -177,6 +177,7 @@ outbound AWS calls reach real AWS as you.
 | `--assume-role <arn>` | Assumes the explicit ARN and forwards the STS-issued temporary credentials to the container. |
 | `--assume-role` (bare) | Uses the runtime's own `RoleArn` when the template carries it as a literal ARN, or resolves it from the loaded stack state. When neither can supply one, cdkd warns and falls back to your shell credentials. |
 | flag omitted | Your shell credentials are forwarded unchanged. |
+| `--no-assume-role` | Explicitly declines: your shell credentials are forwarded unchanged. Distinct from omitting the flag. |
 
 `--ecr-role-arn <arn>` is separate: it is the cross-account image-pull escape
 hatch, assumed before `ecr:GetAuthorizationToken` and the pull.

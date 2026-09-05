@@ -1,5 +1,7 @@
+import type { Command, Option } from 'commander';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { deprecatedRegionOption, warnIfDeprecatedRegion } from './options.js';
 
 /**
  * ONE region-normalization point for the CLI's command handlers.
@@ -399,4 +401,107 @@ export async function reconcileMarkerRegionWithLegacyDefault(input: {
 export function regionNeedsReconciliation(effective: EffectiveRegion): boolean {
   if (effective.source === 'flag' || effective.source === 'env') return false;
   return effective.region !== LEGACY_DEFAULT_REGION;
+}
+
+/**
+ * Give a `cdkd local start-*` shim the SAME `--region` contract every other
+ * cdkd command has, and fold it before cdk-local's handler runs.
+ *
+ * The four `start-*` shims (`service` / `alb` / `cloudfront` / `agentcore`)
+ * arrive with cdk-local's own visible, undeprecated `--region <region>`, and
+ * three of the four hand their whole options bag straight to cdk-local — so
+ * there is no cdkd-owned line inside the handler to fold at, and issue
+ * [#2522](https://github.com/go-to-k/cdkd/issues/2522) measured what that
+ * costs: `--region US-EAST-1` reached cdk-local's SDK clients, the ECR host it
+ * synthesizes for an image pull, the SigV4 credential scope and the
+ * `AWS_REGION` handed to every container it starts. Same class as
+ * [#1795](https://github.com/go-to-k/cdkd/issues/1795), in the command set that
+ * shipped after #1795 fixed the then-existing four.
+ *
+ * Two halves, and BOTH are needed:
+ *
+ * 1. cdk-local's `--region` declaration is spliced out and cdkd's shared
+ *    {@link deprecatedRegionOption} takes its place — hidden from `--help` and
+ *    warned about at runtime, exactly as on every other cdkd command that
+ *    accepts the flag. The flag keeps WORKING; only its advertisement changes.
+ * 2. A `preAction` hook folds the parsed bag. commander runs the hook after
+ *    parsing and before the action, and `opts()` returns the LIVE option
+ *    object, so the fold is visible to cdk-local and to everything downstream
+ *    of it.
+ *
+ * `--stack-region` is folded here too, and its RAW spelling captured FIRST.
+ * That capture is load-bearing rather than symmetric: `local-state-source.ts`'s
+ * `--from-state` factory falls back to `opts.stackRegion` when
+ * `opts.rawStackRegion` is absent, on the (previously true) reasoning that an
+ * engine command's `--stack-region` had passed no cdkd fold. Folding it here
+ * without capturing first would silently collapse that fallback onto the
+ * folded value and disable the exact-spelling state-record match
+ * ([#1836](https://github.com/go-to-k/cdkd/issues/1836) round 3).
+ *
+ * Returns the same command so it can tail a factory's option-adding chain.
+ */
+export function adoptDeprecatedRegionFlag(cmd: Command): Command {
+  // commander refuses a second option with the same flag and exposes no
+  // `removeOption`, so the inherited declaration is spliced out of the
+  // (TS-readonly, runtime-mutable) array before cdkd's twin is added. A shim
+  // that stops inheriting `--region` upstream still gets cdkd's, which is why
+  // the splice is conditional rather than asserted.
+  //
+  // Splicing the ARRAY is not the whole removal, and the remainder is the part
+  // that fails quietly. `addOption` also installs an `option:<name>` listener
+  // and, for an option carrying `.default()`, seeds `_optionValues` with source
+  // `'default'`. cdk-local's `--region` is bare today, so neither residue
+  // matters — but if it ever gains a default, the seeded value would survive
+  // this splice and make `warnIfDeprecatedRegion` fire on EVERY invocation
+  // while the fold honoured a region the user never named. Clearing both here
+  // costs nothing and removes the dependency on that staying true.
+  const registered = cmd.options as Option[];
+  const inherited = registered.findIndex((option) => option.long === '--region');
+  if (inherited !== -1) {
+    registered.splice(inherited, 1);
+    // commander's `Command` extends `EventEmitter` at runtime
+    // (`node_modules/commander/lib/command.js:13`) but its typings do not say
+    // so, hence the narrow cast rather than a broad `any`.
+    const emitter = cmd as unknown as {
+      removeAllListeners(event: string): unknown;
+    };
+    emitter.removeAllListeners('option:region');
+    // `optionEnv:<name>` is a real commander 12.1.0 event
+    // (`command.js:1854/1858`), verified rather than guessed: `addOption`
+    // registers a listener for it whenever the option declares `.env()`.
+    emitter.removeAllListeners('optionEnv:region');
+    if (cmd.getOptionValueSource('region') === 'default') {
+      // DELETE from both of commander's maps rather than calling
+      // `setOptionValueWithSource(..., undefined, ...)`: that ASSIGNS, leaving
+      // `region` as an OWN property of the option bag — and `opts()` hands that
+      // bag to cdk-local by reference, where `'region' in options` and
+      // `Object.keys(options)` would then both report a flag the user never
+      // passed. Commander keeps the value and its source in two plain objects
+      // (`command.js:39`), so deleting the key from each is the complete
+      // removal the public setter cannot express.
+      const internals = cmd as unknown as {
+        _optionValues: Record<string, unknown>;
+        _optionValueSources: Record<string, unknown>;
+      };
+      delete internals._optionValues['region'];
+      delete internals._optionValueSources['region'];
+    }
+  }
+  cmd.addOption(deprecatedRegionOption);
+
+  cmd.hook('preAction', (_thisCommand, actionCommand) => {
+    const options = actionCommand.opts<{
+      region?: string;
+      stackRegion?: string;
+      rawStackRegion?: string;
+    }>();
+    warnIfDeprecatedRegion(options);
+    if (options.stackRegion !== undefined) {
+      options.rawStackRegion = options.stackRegion;
+      options.stackRegion = canonicalizeRegion(options.stackRegion);
+    }
+    foldRegionOption(options);
+  });
+
+  return cmd;
 }

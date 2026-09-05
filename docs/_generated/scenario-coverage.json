@@ -210,7 +210,7 @@
     },
     {
       "tag": "local-from-cfn-stack-substitution",
-      "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via DescribeStackResources + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`)."
+      "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via ListStackResources + DescribeStacks + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`)."
     },
     {
       "tag": "local-from-state-substitution",
@@ -2472,7 +2472,7 @@
     },
     {
       "scenario": "local-from-cfn-stack-substitution",
-      "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via DescribeStackResources + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`).",
+      "description": "`cdkd local invoke|start-api|run-task|start-service --from-cfn-stack` substitutes intrinsic-valued env/secret/image references against a deployed CloudFormation stack via ListStackResources + DescribeStacks + ListExports — for CDK apps deployed via the upstream CDK CLI (`cdk deploy`).",
       "fixtures": [
         "local-invoke-from-cfn-stack",
         "local-invoke-from-cfn-stack-multi-stack"

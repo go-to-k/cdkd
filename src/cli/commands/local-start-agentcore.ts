@@ -4,6 +4,7 @@ import {
   getEmbedConfig,
 } from 'cdk-local';
 import { cdkdExtraStateProviders } from './local-state-source.js';
+import { adoptDeprecatedRegionFlag } from '../region-options.js';
 
 /**
  * `cdkd local start-agentcore <target>` — long-running serve for a Bedrock
@@ -86,5 +87,24 @@ export function createLocalStartAgentCoreCommand(): Command {
     )
   );
 
-  return cmd;
+  // cdk-local's own `--assume-role [arn]` help advertises `(3) --no-assume-role`
+  // and its resolver is already written for it (`assumeRole !== true` returns no
+  // ARN, and the "run with --assume-role" hint is gated on `=== undefined`), but
+  // commander synthesizes no negation for an optional-value option — so the flag
+  // was rejected by the parser and the `false` arm unreachable. Registering it
+  // here makes the inherited advertisement true (issue #2523). Added AFTER the
+  // inherited positive form, so an absent flag still parses as `undefined`.
+  cmd.addOption(
+    new Option(
+      '--no-assume-role',
+      'Explicitly opt out of assuming the deployed execution role: forward your ambient AWS ' +
+        'credentials (or the --profile overlay) unchanged, and suppress the "re-run with ' +
+        '--assume-role" hint that omitting the flag prints when deployed state is loaded.'
+    )
+  );
+
+  // cdk-local declares a visible `--region <region>` and owns this command's
+  // handler, so cdkd replaces the declaration with its deprecated twin and
+  // folds the parsed value in a `preAction` hook (issue #2522).
+  return adoptDeprecatedRegionFlag(cmd);
 }

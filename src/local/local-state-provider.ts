@@ -11,9 +11,14 @@
  *     `buildCrossStackResolver` helpers in
  *     `src/cli/commands/local-state-loader.ts`.
  *
- *   - {@link CfnLocalStateProvider} (new for `--from-cfn-stack`) — reads
- *     a deployed CloudFormation stack via `DescribeStackResources` +
- *     `DescribeStacks --Outputs` + `ListExports`. Lets the `local *`
+ *   - `CfnLocalStateProvider` (for `--from-cfn-stack`) — reads a deployed
+ *     CloudFormation stack via `ListStackResources` +
+ *     `DescribeStacks --Outputs` + `ListExports`. It lives in the `cdk-local`
+ *     dependency, re-exported through
+ *     `src/cli/commands/local-state-source.ts`; cdkd carried an unreferenced
+ *     fork of it until issue
+ *     [#2527](https://github.com/go-to-k/cdkd/issues/2527) deleted it, so there
+ *     is deliberately no `{@link}` here. Lets the `local *`
  *     commands substitute deployed physical IDs from a CDK app deployed
  *     via the upstream CDK CLI (`cdk deploy` → CloudFormation), so users
  *     migrating between cdkd and CFn (or running cdkd local against an
@@ -46,7 +51,7 @@ export interface LocalStateRecord {
   /**
    * Per-logical-id resource records. Covers `Ref: <logicalId>` lookups
    * via `physicalId`. The CFn provider also leaves `attributes` empty —
-   * `DescribeStackResources` does not return per-attribute values, and
+   * `ListStackResources` does not return per-attribute values, and
    * the v1 policy is warn-and-drop for unresolvable `Fn::GetAtt` (per
    * issue #606's recommendation (a)).
    */
