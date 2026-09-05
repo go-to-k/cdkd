@@ -283,21 +283,17 @@ const MIN_REFERENCE_FILES = 6;
 // this skill leans on" list is where duplication accumulates without ever
 // looking like growth.
 // The retro.md rule is the one worth re-reading before the next fold-back,
-// because of HOW it was arrived at: every review round on this PR found a
-// false PROSE claim in text this PR had added, each round's fix included. The
+// because of HOW it was arrived at, which the commit log carries in full: the
 // chain ran cited-the-wrong-fixture -> blamed a basename collision (also
 // wrong; the body names the sibling by FULL path) -> escalated to a recipe
 // printing the body line -> that recipe paired a basename hit with the wrong
 // sentence, reproducing the original error inside the mechanism built to
 // prevent it. So the recipe went to go-to-k/cdkd#2655 with both measured
-// defects and only the narrow certain part shipped. A reviewer re-derived
-// every byte figure here from the tree each round and found each correct
-// throughout -- which is the lesson: byte fences cannot see whether the PROSE
-// is true, so the counts above are checkable and the narrative is not.
-// The next addition here has to be
-// paid for by compression FIRST -- retro.md section 10-c forbids buying the
-// room by raising this floor, and note that SPLITTING a stage file makes this
-// bound tighter, not looser (a smaller runner-up raises `corpus - runnerUp`).
+// defects and only the narrow certain part shipped.
+// The next addition here has to be paid for by compression FIRST -- retro.md
+// section 10-c forbids buying the room by raising this floor, and note that
+// SPLITTING a stage file makes this bound tighter, not looser (a smaller
+// runner-up raises `corpus - runnerUp`).
 // History worth keeping: the floor was RAISED 206_000 -> 208_000 by the
 // 2026-09-02 retro (go-to-k/cdkd#2459) to fit its additions; retro.md
 // section 10-c now forbids that direction outright -- a retro pays for its
