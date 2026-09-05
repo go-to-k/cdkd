@@ -41,7 +41,9 @@
 #      where nothing refuses the delete and the recreate would be silent.
 #   4. A genuinely nested target (`ChildOnlyParam`, declared only in the child)
 #      is refused at pre-flight, and the refusal explains the nesting rather
-#      than reading as a typo.
+#      than reading as a typo. 4b: naming the nested stack ROW (`Child`) is
+#      refused too, and `--force-stateful-recreation` does not clear it. Both
+#      are `--dry-run`, so neither mutates anything.
 #   5. Empty the bucket, destroy, assert every resource and both state files
 #      are gone.
 #
@@ -102,6 +104,10 @@ PROBE_KEY="child-data.txt"
 # construction: it only ever turns property values from "phase one" to "phase
 # two", so no later deploy can drop a resource by omitting it.
 UPDATE_MODE="updated"
+# Declared before `cleanup` so the trap can remove it on any exit path; set for
+# real in phase 4.
+NESTED_LOG=""
+NESTED_ROW_LOG=""
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -147,6 +153,7 @@ cleanup() {
       --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null 2>&1 || true
     aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
   done
+  rm -f "${NESTED_LOG:-}" "${NESTED_ROW_LOG:-}"
   set -eu
 }
 
@@ -263,24 +270,38 @@ echo "    OK: parent Lambda was destroyed and recreated (LastModified ${LAST_MOD
 # Load-bearing: without a property change on the child's bucket the engine
 # never reaches the `case 'UPDATE'` where the recreate flag is read, and every
 # assertion below would pass on a resource cdkd never looked at.
-# Strict status-consuming capture: S3 answers `NoSuchTagSet` when the bucket
-# carries no tags at all, which is a legitimate outcome here (it means the child
-# was never updated) and must produce THIS message rather than a raw CLI error;
-# anything else hard-fails.
+# ORDER IS LOAD-BEARING. The tag read below treats a canonical not-found as
+# "no tags", and `NoSuchBucket` matches that same signature — so on the exact
+# failure this fixture exists to catch (the child bucket destroyed by the
+# inherited flag) it would report a confident wrong cause. Settle existence
+# first, fail-closed: a missing bucket IS the bug, and says so.
+if ! aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "FAIL: the child bucket ${BUCKET_NAME} is GONE after the flagged deploy — the parent's recreate target was honoured in the CHILD stack (issue #2567)" >&2
+  exit 1
+fi
+
+# Strict status-consuming capture. stderr goes to its own file, so the success
+# path cannot fold a warning line into the tag value. S3 answers `NoSuchTagSet`
+# when the bucket carries no tags at all, which is a legitimate outcome here (it
+# means the child was never updated) and must produce THIS message rather than a
+# raw CLI error; anything else hard-fails.
+TAG_ERR="$(mktemp)"
 CHILD_TAG_OUT="$(aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" \
-  --query "TagSet[?Key=='Phase'].Value" --output text 2>&1)" && TAG_RC=0 || TAG_RC=$?
+  --query "TagSet[?Key=='Phase'].Value" --output text 2>"${TAG_ERR}")" && TAG_RC=0 || TAG_RC=$?
 if [ "${TAG_RC}" -ne 0 ]; then
-  # The ONE canonical not-found signature (issue #1097) — S3's `NoSuchTagSet`
-  # matches its `no ?such` alternative, so no local spelling is needed.
-  if printf '%s' "${CHILD_TAG_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  # The ONE canonical not-found signature (issue #1097). `NoSuchBucket` is ruled
+  # out by the head-bucket check above, so reaching this arm means NoSuchTagSet.
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' "${TAG_ERR}"; then
     CHILD_TAG=""
   else
-    echo "FAIL: could not read the child bucket's tags: ${CHILD_TAG_OUT}" >&2
+    echo "FAIL: could not read the child bucket's tags: $(cat "${TAG_ERR}")" >&2
+    rm -f "${TAG_ERR}"
     exit 1
   fi
 else
   CHILD_TAG="${CHILD_TAG_OUT}"
 fi
+rm -f "${TAG_ERR}"
 if [ "${CHILD_TAG}" != "two" ]; then
   echo "FAIL: child bucket tag Phase='${CHILD_TAG}', expected 'two' — the child's SharedTarget was not updated in this deploy, so the scope assertions below would be vacuous" >&2
   exit 1
@@ -348,6 +369,46 @@ if ! grep -qF 'nested stack(s) (Child)' "${NESTED_LOG}"; then
   exit 1
 fi
 echo "    OK: a child-only target is refused, and the refusal names the nesting"
+
+# --- Phase 4b: the nested stack ROW itself is refused -----------------------
+echo "==> Phase 4b: --recreate-via-cc-api Child (the nested stack row) must be refused"
+# Same --dry-run shape as 4a, so this arm mutates nothing: the refusal is a
+# pre-flight verdict and never reaches a provider. Without it, honouring the
+# target would route the WHOLE child stack through the replacement path.
+NESTED_ROW_LOG="$(mktemp)"
+set +e
+CDKD_TEST_UPDATE="${UPDATE_MODE}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --recreate-via-cc-api Child \
+  --force-stateful-recreation \
+  --dry-run \
+  --yes > "${NESTED_ROW_LOG}" 2>&1
+ROW_RC=$?
+set -e
+if [ ${ROW_RC} -eq 0 ]; then
+  echo "FAIL: naming the nested stack row 'Child' was accepted (expected a pre-flight refusal)" >&2
+  cat "${NESTED_ROW_LOG}" >&2
+  rm -f "${NESTED_ROW_LOG}"
+  exit 1
+fi
+# `--force-stateful-recreation` is passed deliberately: this category has no
+# bypass, so the refusal must survive the consent flag that clears the stateful
+# guard. A refusal that the flag cleared would be a different, weaker check.
+if ! grep -qF 'refuses to operate on 1 nested-stack resource' "${NESTED_ROW_LOG}"; then
+  echo "FAIL: the refusal did not name the nested-stack category" >&2
+  cat "${NESTED_ROW_LOG}" >&2
+  rm -f "${NESTED_ROW_LOG}"
+  exit 1
+fi
+if ! grep -qF 'DELETE the whole child stack' "${NESTED_ROW_LOG}"; then
+  echo "FAIL: the refusal did not state the consequence it prevents" >&2
+  cat "${NESTED_ROW_LOG}" >&2
+  rm -f "${NESTED_ROW_LOG}"
+  exit 1
+fi
+rm -f "${NESTED_ROW_LOG}"
+echo "    OK: the nested stack row is refused, and --force-stateful-recreation does not clear it"
 
 # --- Phase 5: destroy -------------------------------------------------------
 echo "==> Phase 5: empty the child bucket, then destroy"

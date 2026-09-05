@@ -211,6 +211,22 @@ export interface RecreateTargetsValidation {
   nestedStackLogicalIds: string[];
 }
 
+const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
+
+/**
+ * The CFn type of a nested stack's row in its PARENT's template. It decides
+ * both the refusal (`blockedNestedStackTargets`) and the evidence the
+ * unknown-id note renders (`nestedStackLogicalIds`), and those two must
+ * describe the same set of resources or the note names ids the validator would
+ * not refuse — so within this module it is spelled once. It is spelled again
+ * per module elsewhere (`intrinsic-function-resolver.ts`,
+ * `secret-redaction.ts`, `destroy-runner.ts`); the one EXPORTED copy lives in
+ * `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
+ * from the deployment layer would invert the dependency direction, which is
+ * why every sibling here declares its own.
+ */
+const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
+
 /**
  * Plan-time validation of the user's recreate-via-cc-api list.
  *
@@ -224,17 +240,6 @@ export interface RecreateTargetsValidation {
  * Input order is preserved; duplicate logical ids in the user's input
  * are deduplicated.
  */
-const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
-
-/**
- * The CFn type of a nested stack's row in its PARENT's template. Spelled once:
- * it decides both the refusal (`blockedNestedStackTargets`) and the evidence
- * the unknown-id note renders (`nestedStackLogicalIds`), and those two must
- * describe the same set of resources or the note names ids the validator would
- * not refuse.
- */
-const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
-
 export function validateRecreateTargets(input: {
   template: CloudFormationTemplate;
   state: StackState;
@@ -456,9 +461,9 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
           `${validation.nestedStackLogicalIds.join(', ')}) carry their own. ` +
           `A logical id that a nested child happens to share with a top-level ` +
           `resource recreates the TOP-LEVEL one only, and the nested stack ` +
-          `row itself is refused as a target. When several stacks are named ` +
-          `in one deploy, each id is also checked against EVERY named stack, ` +
-          `so an id belonging to a sibling stack is reported here too.`
+          `row itself is refused as a target. An id belonging to a DIFFERENT ` +
+          `stack of this deploy lands here too: every named stack validates ` +
+          `the whole flag list, and one unknown id fails the entire run.`
       );
     }
   }

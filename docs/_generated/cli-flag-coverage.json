@@ -315,6 +315,7 @@
         "lambda-url-authtype-replay",
         "loggroup-class-guard",
         "loggroup-never-expire-guard",
+        "recreate-nested-logical-id-collision",
         "recreate-via-cc-api",
         "replacement-immutable-name",
         "rollback-command",

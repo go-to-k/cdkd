@@ -70,6 +70,29 @@ describe('deploy.ts binds the recreate target set to the stack it deploys (#2567
     ).toBe(deployed);
   });
 
+  it('threads the object into the engine options — the second inert spelling', () => {
+    // The pairing above is one of TWO ways both flags can go silently inert.
+    // The other is the conditional spread that puts the object on
+    // `deployEngineOptions`: drop the key, or negate its guard, and the engine
+    // never receives a target set at all. Nothing else in the suite asserts
+    // that threading, because every engine-side test constructs the option bag
+    // itself.
+    // Slice the option literal rather than regexing the whole file, so a
+    // `recreateTargets` mention anywhere else cannot satisfy this.
+    const literalStart = source.indexOf('const deployEngineOptions: DeployEngineOptions = {');
+    expect(literalStart, 'the deployEngineOptions literal was not found').toBeGreaterThan(-1);
+    const literal = source.slice(literalStart, source.indexOf('\n        };', literalStart));
+    expect(
+      literal,
+      'the deployEngineOptions literal does not carry `recreateTargets` as a member — ' +
+        'the engine receives no target set and both --recreate-via-* flags are inert'
+    ).toMatch(/^\s*recreateTargets,\s*$/m);
+    expect(
+      literal,
+      'the `recreateTargets` member is not guarded by the variable it threads'
+    ).toContain('recreateTargets &&');
+  });
+
   it('binds an expression, not a literal', () => {
     // A hardcoded name would satisfy the equality above while pinning every
     // deploy to one stack; the value has to come from the stack being deployed.
