@@ -25,15 +25,16 @@ not restate it. This stage adds WHO to check, and who decides:
 ## 1. List the backlog + assess volume
 
 ```bash
-gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
+gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq '.[] | select(.pull_request | not)
         | [.number, .author_association, .user.login, .created_at, .title] | @tsv'
 ```
 
-(REST because `gh issue list --json` has no `authorAssociation` field —
-go-to-k/cdkd#1593. `select(.pull_request | not)` is required: the REST
-`/issues` endpoint returns open PRs too. `per_page=100` is the API maximum.
-`created_at` feeds §3-0 and §3-a rule 7.)
+(REST for the `author_association` §0 needs. `select(.pull_request | not)` is
+required: the endpoint returns open PRs too and they fill the page, so
+`--paginate` is LOAD-BEARING (`per_page=100` is only the PER-PAGE maximum) —
+without it the call returned 79 of 180 open issues on 2026-09-06, hiding the
+OLD end rule 7 ranks FIRST. `created_at` feeds §3-0 and §3-a rule 7.)
 
 If everything is maintainer-authored, proceed; otherwise apply §0.
 
@@ -73,17 +74,17 @@ Two rules:
 once and no probe above sees it, so measure the headroom HERE against
 `CORPUS_BYTES_MAX` in `tests/unit/scripts/rule-file-payload.test.ts`, and drop
 a candidate whose fix must GROW it by more than is left — funding one out of
-another lane's bytes is what the fence's own message forbids (measured
-2026-09-05: 247 B, which left go-to-k/cdkd#2599 unfundable in the run that
-made it stale).
+another lane's bytes is what the fence's own message forbids (one run measured
+247 B free and had to drop go-to-k/cdkd#2599; re-measure, never re-quote — that
+figure was obsolete within the day).
 
 **Treat any `origin/*` branch pushed within roughly the last hour as a LIVE
 lane, whatever its PR state**, and read what it owns first:
-`git diff --stat origin/main...origin/<recent-branch>` (a branch pushed four
-minutes earlier — no PR, no local branch, no worktree — owned the exact files
-an issue asked to edit; only the ref-recency probe saw it). Corollary for
-§3-0: an issue FILED BY such a lane as its own deferral is the MOST likely to
-collide — it names the files that lane is still editing.
+`git diff --stat origin/main...origin/<recent-branch>` (one pushed four minutes
+earlier — no PR, no local branch, no worktree — owned the exact files an issue
+asked to edit). Corollary for §3-0: an issue FILED BY such a lane as its own
+deferral is the MOST likely to collide — it names the files that lane still
+edits.
 
 For each active worktree, find what it ACTUALLY edits:
 
@@ -107,20 +108,19 @@ treated as a live peer and a lane wrongly narrowed its scope; the commit had
 merged nine hours earlier as go-to-k/cdk-real-drift#1853). This is the ONE
 probe here that can manufacture a false POSITIVE — argue it DOWN.
 
-The first two worktree probes read COMMITTED state — on an uncommitted lane
-they describe its base commit, not the file it is holding. Where they disagree
-with `status --porcelain`, **the dirty tree is the authority**: what the lane
-is doing, not what it said it would do. A worktree whose tip is still on
-`main` looks like residue exactly when it is most likely a lane writing right
-now — a worktree is NAMED for the issue its lane took, and that issue's thread
-is the only place a lane seconds old has left a mark (§9's owner probes: none
-can establish ABSENCE).
+The first two worktree probes read COMMITTED state, so on an uncommitted lane
+they describe its base commit rather than the file it holds: where they
+disagree with `status --porcelain`, **the dirty tree is the authority**. A
+worktree still on `main`'s tip looks like residue exactly when it is likeliest
+to be a lane writing right now, and its issue thread — a worktree is NAMED for
+the issue its lane took — is the only mark a lane seconds old has left (§9's
+owner probes: none can establish ABSENCE).
 
 **When the issue names a file a live lane already holds, shape the edit to
-rebase cleanly instead of choosing between waiting and colliding**: leave the
-anchor lines the other lane's hunks sit on exactly as they are, confine your
-change to whole lines no other hunk claims. Not a licence to ignore the
-one-lane-per-file rule, and §7's marker check still applies.
+rebase cleanly rather than choosing between waiting and colliding**: leave the
+anchor lines its hunks sit on exactly as they are and confine your change to
+whole lines no other hunk claims. Not a licence to ignore the one-lane-per-file
+rule; §7's marker check still applies.
 
 Read any "working on this" comments on candidate issues. **A file another
 agent is editing is OFF-LIMITS.** In cdkd the naturally-disjoint work is
@@ -128,32 +128,28 @@ per-resource-type (each provider in its own file); the contested files are the
 **cross-cutting deploy/destroy** ones that almost every non-trivial fix
 eventually touches:
 
-- `src/deployment/deploy-engine.ts` — the DAG executor, replacement-vs-in-place
-  decision, event-driven ordering.
+- `src/deployment/deploy-engine.ts` — the DAG executor; replacement-vs-in-place.
 - `src/deployment/intrinsic-function-resolver.ts` — `Ref` / `Fn::GetAtt` /
   `Fn::Sub` / cross-stack resolution.
-- `src/deployment/retry.ts` — the retry loop every mutating AWS call runs through.
-- `src/deployment/retryable-errors.ts` — the terminal-vs-transient classifier the
-  retry loop consults.
-- `src/deployment/rollback-executor.ts` — the reverse walk a failed deploy runs.
+- `src/deployment/retry.ts` — the retry loop every mutating AWS call runs.
+- `src/deployment/retryable-errors.ts` — the terminal-vs-transient classifier.
+- `src/deployment/rollback-executor.ts` — the failed-deploy reverse walk.
 - `src/analyzer/dag-builder.ts` — the dependency graph plus its implicit edges.
 - `src/analyzer/template-parser.ts` — template parsing.
 - `src/provisioning/register-providers.ts` — the provider registry (every new
   provider touches it).
-- `src/cli/commands/deploy.ts` — the deploy command entrypoint.
-- `src/cli/commands/destroy.ts` — the destroy command entrypoint.
-- `src/cli/commands/destroy-runner.ts` — the destroy orchestration behind that
-  entrypoint.
+- `src/cli/commands/deploy.ts` — the deploy entrypoint.
+- `src/cli/commands/destroy.ts` — the destroy entrypoint.
+- `src/cli/commands/destroy-runner.ts` — the destroy orchestration behind it.
 - `src/cli/commands/export.ts` — the CloudFormation export path.
 
 **At most one lane per cross-cutting file.** Everything else is usually
 disjoint. Map each candidate to its target file before choosing.
 
-**This list is deliberately NOT the `integ-broad` merge gate's scope** — edit
-contention vs runtime blast radius. It CONTAINS the gate's scope plus
-`src/cli/commands/export.ts`; containment, not equality, is what
-`tests/unit/scripts/cross-cutting-list-sync.test.ts` fences. Adding a file to
-the gate means adding it here too.
+**Deliberately NOT the `integ-broad` gate's scope** — edit contention vs
+runtime blast radius: it CONTAINS that scope plus `src/cli/commands/export.ts`,
+and `tests/unit/scripts/cross-cutting-list-sync.test.ts` fences containment,
+not equality. Adding a file to the gate means adding it here too.
 
 ## 3. Pick FILE-DISJOINT issues
 
@@ -164,12 +160,11 @@ here (a triage subagent's answer is not the parent's).
 
 `IN-PLACE` means ONE working tree: **run lanes SERIALLY** — a second
 concurrent lane would need a nested worktree, which dies with the outer
-workspace (go-to-k/cdkd#2390). Taking several issues is the DEFAULT (see the
-batching paragraph below) when they share the tree in SEQUENCE: claim them all
-up front (§4) with every lane after the first marked `QUEUED`, finish one at
-a time, and stand down unreached ones with a comment carrying the four
-classification fields (measured shape: go-to-k/cdkd#2417 — three claimed, one
-merged, two left cleanly resumable).
+workspace (go-to-k/cdkd#2390). Several issues is still the DEFAULT (see the
+batching paragraph) when they share the tree in SEQUENCE: claim them all up
+front (§4), mark every lane after the first `QUEUED`, finish one at a time, and
+stand down unreached ones with a four-field comment (go-to-k/cdkd#2417: three
+claimed, one merged, two left cleanly resumable).
 Everything else in this stage — the disjointness gate, §3-0, §3-a, §3-b, the
 premise checks — is mode-independent. **The MAIN-CHECKOUT case is the
 disjointness paragraph below and nothing wider** (an earlier revision told
@@ -187,15 +182,14 @@ is CONTEXT — the launch-mode probe, §2's collision map, the backlog read and
 §10's retro — NOT the per-lane build / `/check` / review / integ, which §9
 even serializes. Context is still the largest single cost and the next session
 re-pays it from zero, so the second issue is far cheaper than the first and
-batching is the DEFAULT, IN-PLACE included (there the batch runs in SEQUENCE
-through the one tree). Scale to the backlog and the free cross-cutting files;
-2–3 clean lanes is a typical OBSERVATION, not a ceiling. What bounds the batch
-is what the run can still do WELL: never force a lane into a contested file to
-raise the count, and never shorten a verification to fit one more issue — the
-argument buys issue COUNT, never rigor (CLAUDE.md → "Cost is not a
-tiebreaker"). Report the candidates you did not take, and stand down the
-claimed ones you did not reach — go-to-k/cdkd#2417 is the measured tail:
-three claimed, one merged, two stood down.
+batching is the DEFAULT, IN-PLACE included (in SEQUENCE through the one tree).
+Scale to the backlog and the free cross-cutting files; 2–3 clean lanes is a
+typical OBSERVATION, not a ceiling. What bounds the batch is what the run can
+still do WELL: never force a lane into a contested file to raise the count, and
+never shorten a verification to fit one more issue — the argument buys issue
+COUNT, never rigor (CLAUDE.md → "Cost is not a tiebreaker"). Report the
+candidates you did not take, and stand down the claimed ones you did not reach
+(the shape cited above).
 
 Reading candidate bodies:
 
@@ -203,10 +197,11 @@ Reading candidate bodies:
   rewrite them** (`Session-fit: <decision> — <reason> / Effort: <duration>` on
   one line). Such a body IS classified: take the decision from `Session-fit`
   and read its `Effort:` value as an **`Estimate`** (in that shape it held a
-  duration). A missing `Severity` is UNKNOWN, never `low` — it falls through
-  ranking rule 3 to rule 4. Do NOT bulk-migrate; upgrade to the four-line
-  shape when you CLAIM it (§4). §5-f's `Dup-check:` line is a filing-time
-  record, never re-decided on a claim.
+  duration). It carries no `Severity` LINE, so its `severity:*` label is a
+  DERIVED one (rule 3) — never `low` by default, and never the filer's
+  measurement. Do NOT bulk-migrate; upgrade to the four-line shape when you
+  CLAIM it (§4). §5-f's `Dup-check:` line is a filing-time record, never
+  re-decided on a claim.
 - **Read the body's own classification lines before shortlisting.** A
   `Session-fit: next` line names the cycle it needs. ("An integ run" is not a
   deferral reason — `.claude/rules/session-report.md` calibrates an existing
@@ -216,17 +211,15 @@ Reading candidate bodies:
   re-litigation the classification exists to prevent.
 - **A MIRROR issue may already be done — read the FILE first.** A body
   mirroring a sibling repo's lesson comes from the duplicate generator §10-c
-  describes; filing happens while the rival's PR is open, triage after it
-  merged, so a backlog search surfaces no rival while the work sits on `main`
-  (go-to-k/cdkd#1986's two halves were already shipped). One grep at triage
-  beats a worktree + install + gate round after claiming.
+  describes; it is filed while the rival's PR is open and triaged after it
+  merged, so a backlog search surfaces no rival while the work already sits on
+  `main` (go-to-k/cdkd#1986). One grep here beats a worktree + install + gate
+  round after claiming.
 - **Resolve EVERY issue's premise against the tree at CLAIM time** — a body
   can be already-done, not-yet-true, or WRONG, and all three look identical
   from the title. One grep per asserted symbol/file/behaviour is the whole
-  cost (2026-08-26: THREE of six claimed issues had a false premise — a table
-  row `origin/main` already carried; a value asserted persisted that the
-  provider never persists; a gate already converged by an earlier PR. Each
-  stayed worth doing as a DIFFERENT change). Write what you found in the claim
+  cost (2026-08-26: THREE of six claimed issues had a false premise — each
+  still worth doing as a DIFFERENT change). Write what you found in the claim
   comment and correct the issue body. The not-yet-true direction is commoner:
   a body written from an unmerged branch describes THAT branch — on an empty
   grep, `gh pr list --state all --search <symbol>` separates "premise wrong"
@@ -234,8 +227,8 @@ Reading candidate bodies:
   on). **Verify the parts you are NOT changing too** — a body's claims about
   surrounding code get no compiler. **Read `origin/main`, never the shell's
   directory** — the shared main worktree is routinely behind, and a stale
-  read's false NEGATIVE reads as a finding (`git show origin/main:<path>`,
-  `git -C <worktree>`; fetch first, then read a ref, not a directory).
+  read's false NEGATIVE reads as a finding (`git show origin/main:<path>`;
+  fetch first, then read a ref, not a directory).
 - **A partly-worked issue's residue may be owned by an issue it SPAWNED —
   read its thread to the end, then check the CLAIM STATE of every issue the
   thread names.** A lane that cannot close an issue files the remainder as a
@@ -243,10 +236,9 @@ Reading candidate bodies:
   (go-to-k/cdkd#2018's closing comment named the freshly-claimed
   go-to-k/cdkd#2026, whose claim declared exactly the files two of the
   parent's remedies needed). §2's probes cannot resolve this: a young child
-  lane has no pushed branch, no PR, and a clean worktree at `main`'s tip —
-  precisely what a finished lane looks like. **Which issue** is answered by
-  the local probes; **is it live** is answered, for a lane that young, only by
-  its claim comment.
+  lane looks exactly like a finished one (no pushed branch, no PR, a clean
+  worktree at `main`'s tip); for a lane that young only its claim comment
+  answers **is it live**.
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
@@ -264,19 +256,19 @@ CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' 
 
 # §1's listing with the gate applied. DOUBLE quotes — `gh api --jq` takes no
 # `--arg`, so the cutoff expands into the filter.
-gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
+gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
   --jq ".[] | select(.pull_request | not) | select(.created_at < \"$CUT\")
         | [.number, .created_at, .title] | @tsv"
 ```
 
 (ISO-8601 UTC compares correctly as a plain string. Flip `<` to `>=` to list
-what you are holding back; report those as HELD FOR THEIR FILER, never as
-backlog you declined.)
+what you hold back; report those as HELD FOR THEIR FILER, never as backlog you
+declined.)
 
 **Recompute `CUT` as you pick each lane, not once at triage** — a run lasts
 hours, and this backlog arrives in `/hunt-bugs`-shaped bursts filed minutes
-apart, so a one-shot cutoff silently excludes a whole cohort that §3-a rule 7
-then rates among the most accurate on the board.
+apart, so a one-shot cutoff silently holds a whole cohort back for filers that
+have long since finished.
 
 Three exemptions, and only these three — each lifts §3-0 ALONE (§2's
 disjointness gate and §4's claim-then-verify still apply):
@@ -288,15 +280,15 @@ disjointness gate and §4's claim-then-verify still apply):
 - **The maintainer named the issue in the invocation** — read the whole
   invoking message, not just the command line.
 - **A security issue** (rule 1 of §3-a) — an extra hour of a shipped
-  vulnerability costs more than a duplicated context. Say in the claim that
-  you took it inside the window and why.
+  vulnerability costs more than a duplicated context; say in the claim that you
+  took it inside the window, and why.
 
 Once the window passes the issue is PRESUMED free — the presumption IS the
-test. Do not try to establish that the filing session has ENDED; you cannot,
-and §2's ban on writing that in a claim rests on the same fact. The trade: an
-ended session's issue waits up to an hour, cheap against two agents deriving
-one fix (go-to-k/cdkd#1973 — claimed by its filing lane at 16
-minutes, on `origin` only at 52; every §2 probe read it free throughout).
+test; you cannot establish that a filing session has ENDED, which is what §2's
+ban on writing it in a claim rests on too. The trade: an ended session's issue
+waits up to an hour, cheap against two agents deriving one fix
+(go-to-k/cdkd#1973 — claimed by its filing lane at 16 minutes, on `origin` only
+at 52; every §2 probe read it free throughout).
 
 ### 3-a. Ranking the eligible issues
 
@@ -308,11 +300,11 @@ moving to the next only to break a tie:
 |---|---|---|
 | 1 | **Security issues come FIRST**, ahead of every other rule below | The one class where cost keeps growing while it sits: the vulnerable behavior is already shipped and running in users' accounts |
 | 2 | **Umbrella issues sort LAST**, whatever else they score (except rule 1) | Cannot be finished in one lane, so a lane leaves ambiguous residue, and their many sites collide with everything |
-| 3 | **Higher `Severity` first** (`high` > `medium` > `low`), when BOTH candidates carry it | The axis rule 1 approximates, MEASURED by the session that held the evidence; a title prefix is only a proxy, and a proxy does not outrank the measurement. "BOTH carry it" does the safety work: a `fix:` with no `Severity` cannot lose to a `chore:` claiming `high`. Both values are also LABELS (`severity:*`, `effort:*`), answerable from the listing; a label-only query UNDER-counts, so the body stays the authority |
-| 4 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect a user can hit today. Fallback for the majority carrying no `Severity` |
-| 5 | **Area: `deploy` first, then `diff` = `destroy`, then the rest, with `local` LAST** | Deploy is what cdkd exists to do, and `diff` / `destroy` guard the same real stack; a `local` defect costs a local iteration rather than a deployment. Where it does NOT reach: most of that engine is in THIS repo (`src/local/**`), ten of those files on CLAUDE.md's security-surface list — rule 1 decides those, so they never arrive here |
+| 3 | **Higher `Severity` first** (`high` > `medium` > `low`), when BOTH candidates carry it | MEASURED by the session that held the evidence — the axis rule 1 approximates; a title prefix is a proxy, and a proxy does not outrank the measurement. "BOTH carry it" is the safety work: an unclassified `fix:` cannot lose to a `chore:` claiming `high`. Both are LABELS too; since the 2026-09-06 sweep every open issue carries them, DERIVED wherever no body line existed — which satisfies this precondition (`.claude/rules/session-report.md` → Labels) |
+| 4 | **`fix:` outranks everything else** (`feat:` / `test:` / `docs:` / `audit:` / `chore:`) | A `fix:` is a defect a user can hit today. The fallback where rule 3 does not decide — a candidate carrying no `Severity` at all, or two labels reading alike |
+| 5 | **Area: `deploy` first, then `diff` = `destroy`, then the rest, with `local` next-to-last and AGENT-TOOLING (`.claude/**`, `CLAUDE.md`) BELOW every other area** | Deploy is what cdkd exists to do, and `diff` / `destroy` guard the same real stack; a `local` defect costs a local iteration rather than a deployment, and a hooks / skills / rules defect costs a future RUN a detour, no user a stack — a class those runs also FILE, so undemoted it crowds out the deploy bug nobody reached |
 | 6 | **Prefer issues landing in ONE isolated file** over cross-cutting ones | A cross-cutting file admits one lane at a time; spend the contested files last |
-| 7 | **Newer first** (higher number / `created_at`) | Accuracy, not novelty: a fresh issue was written against current code; older ones rot — likelier partly done, superseded, or wrong |
+| 7 | **Older first** (lower number / earlier `created_at`) | An old deploy defect in a major AWS service that no run ever reaches is what this ranking exists to prevent, and the listing ARRIVES newest-first, so an absent tiebreaker is a recency bias nobody chose. Rot (partly done, superseded, wrong) does not rank — §3's premise check catches it at claim time, for every candidate anyway |
 
 Detecting the signals, from the listings §1 already fetched:
 
@@ -323,14 +315,14 @@ gh api 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
         | [.number, (.title | capture("^(?<type>[a-z]+)(\\((?<area>[^)]+)\\))?") | .type + "/" + (.area // "-")), .title]
         | @tsv'
 
-# rule 3's input is a LABEL as well as a body line — no per-candidate view:
+# rule 3's input is a LABEL too — no per-candidate view:
 gh issue list --state open --limit 200 --json number,title,labels \
   --jq '.[] | [.number,
                ([.labels[].name | select(startswith("severity:"))] | first // "severity:?"),
                ([.labels[].name | select(startswith("effort:"))]   | first // "effort:?"),
                .title] | @tsv'
 
-# `severity:?` means UNLABELLED, which is NOT `low` — rule 3 does not fire.
+# `severity:?` = UNLABELLED, which is NOT `low`; rule 3 does not fire.
 # For the other fields, or to confirm a surprising label against its body:
 gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort:|Estimate:'
 ```
@@ -348,8 +340,7 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
   be a fifth thing to rot (go-to-k/cdkd#1972 was exactly that). When in doubt,
   treat it as security — the cost is one queue position. Rule 1 above rule 2
   means a security umbrella is not deferred — split it, take the concrete
-  sites, file the remainder; and a security issue never loses its place for
-  being older.
+  sites, file the remainder.
 - **Umbrella**: title/body says `umbrella`, `audit:`, `Backfill`, `N entries
   across M types`, or carries a TABLE of sites. A "residual of #N" naming two
   or three concrete sites is NOT an umbrella; the test is whether one lane can
@@ -358,19 +349,19 @@ gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort
   by the command the user runs, not the directory the code lives in.
   `local` is the `cdkd local *` surface — a `(local)` title scope, or a body
   naming what CLAUDE.md's `integ-local` entry scopes (do NOT copy that list
-  here — see the next bullet). Rule 5 DEMOTES rather than excludes, and only
+  here — see the next bullet); AGENT-TOOLING is a body naming only
+  `.claude/**` or `CLAUDE.md`. Rule 5 DEMOTES rather than excludes, and only
   among candidates already tied on rules 1–4; rule 3's precondition still
-  applies, so a `high`-`Severity` `local` issue outranks a rival only when
-  that rival carries `Severity` too.
+  applies, so a `high`-`Severity` `local` or agent-tooling issue outranks a
+  rival only when that rival carries `Severity` too.
 - **Cross-cutting**: the body names any file §2 lists as contested. Do NOT
-  re-enumerate them here — a former copy drifted into a different list while
-  calling itself "the §2 list" (go-to-k/cdkd#2076). §2 is the only place the
-  list is written.
+  re-enumerate them here — a former copy drifted while calling itself "the §2
+  list" (go-to-k/cdkd#2076); §2 holds the only copy.
 - **Session-fit**: the body's own line. `now` is a COMMITMENT by the filing
   session — inside the freshness window, or referenced by a live lane, the
-  issue is RESERVED. Once the window has passed with no probe, PR or live
-  claim pointing at it, presume the filer gone — `now` becomes an earlier
-  session's unfinished commitment: a candidate to take EARLY.
+  issue is RESERVED; past the window (§3-0), with no probe, PR or live claim
+  pointing at it, it is an earlier session's unfinished commitment and a
+  candidate to take EARLY.
 - **Severity / Effort / Estimate**: the body's own lines. `Severity` is rule
   3. `Effort` / `Estimate` rank nothing — they gate whether this run can
   AFFORD a candidate (a `large` needs its own PR + integ + review — not
