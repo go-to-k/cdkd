@@ -565,7 +565,9 @@ flatten-before-rebase-gate        no rebase template exists to block -- see the 
 gated-command-preamble-gate       verdict is the command SHAPE, target-independent
 gh-body-english-gate              verdict is the published BODY, not the target tree
 integ-coverage-matrix-gate        needs the real repo toolchain (node + the regen script) in the target
+integ-stale-base-detector         NON-BLOCKING: it refuses nothing, so it has no refusal to exercise
 issue-classification-label-gate   verdict is the published BODY, not the target tree
+issue-deferral-criteria-gate      verdict is the published BODY, not the target tree
 main-tree-dirty-detector          PostToolUse, non-blocking by design
 main-tree-edit-gate               fires on a WRITE-shaped command, not a git/gh verb
 main-tree-git-cwd-detector        PostToolUse, non-blocking by design

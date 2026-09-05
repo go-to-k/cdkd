@@ -78,6 +78,18 @@
           },
           {
             "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/issue-deferral-criteria-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking the issue's Session-fit deferral reason is a real criterion..."
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-stale-base-detector.sh",
+            "timeout": 10,
+            "statusMessage": "Checking the branch is not behind origin/main before an integ..."
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/closes-paren-form-gate.sh",
             "timeout": 10,
             "statusMessage": "Checking PR body for Closes (#N) auto-close trap..."

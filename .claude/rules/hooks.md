@@ -12,9 +12,9 @@ paths:
 vp run test:hooks     # or: bash .claude/hooks/run-tests.sh
 ```
 
-- **41 of the 42 hooks ship a `*.test.sh` suite** (`run-tests.sh` is the
+- **44 of the 45 hooks ship a `*.test.sh` suite** (`run-tests.sh` is the
   runner; only `post-merge-sync-reminder` has none — `stop-warn` got one via
-  issue #2396). `.claude/hooks/` holds 44 `*.test.sh` files:
+  issue #2396). `.claude/hooks/` holds 46 `*.test.sh` files:
   `markgate-gate-name-class` and `unresolved-target-class` are CLASS fences
   with no same-named `.sh`. **Recount rather than trusting this sentence** —
   it has been stale twice: `ls .claude/hooks/*.sh | grep -v '\.test\.sh$'`.
@@ -54,7 +54,7 @@ matches".
 
 # Other PreToolUse safety hooks
 
-Nineteen additional one-shot hooks block known foot-guns at the source.
+Twenty additional one-shot hooks block known foot-guns at the source.
 
 - **`.claude/hooks/commit-msg-heredoc-gate.sh`** blocks
   `git commit -m "$(cat <<'EOF' ... EOF)"`-style invocations — outer-shell
@@ -483,7 +483,76 @@ Nineteen additional one-shot hooks block known foot-guns at the source.
   scanned, the `edit` arm read its issue number from any `/issues/N` URL in
   the command, and a spaced `Severity:` in a `--title` outranked the body.
 
-All nineteen produce actionable error messages with the exact replacement
+- **`.claude/hooks/issue-deferral-criteria-gate.sh`** blocks `gh issue create`
+  (and the `gh api repos/<o>/<r>/issues` mint) when the body's
+  `Session-fit: next` line defers the work for a PR-SHAPED reason — `own PR`,
+  `separate PR`, `shar(e|ing) a PR`, `independent review surface`,
+  `unreviewable`, `own review`, case-insensitively. **An ESCALATION, not a new
+  rule**: `Session-fit` decides whether the work is finished in THIS session
+  and none of its criteria is about the pull request — splitting across
+  several PRs is normal and costs no session. Written down three times
+  (`/work-issues` §3-b, §5-f, [session-report.md](session-report.md)) and on
+  2026-09-04 an agent deferred THREE findings on that reasoning anyway
+  (go-to-k/cdkd#2587 / #2588 / #2590), all later re-classified `now` and
+  finished in the same session. Retro §10-b: a rule violated anyway escalates
+  to a MECHANISM.
+  **Not a ritual** — an earlier design asked for a "criteria audit" line,
+  which boilerplate satisfies; this refuses the specific defect and leaves
+  every legitimate `next` (a NEW fixture, external input, an independent
+  subsystem) untouched. **Only `next` is gated**: a `now` line is never
+  refused whatever its reason says, and a body with no `Session-fit` line
+  passes — filing hygiene belongs to the two sibling issue gates. `gh issue
+  edit` / `comment` are NOT gated: re-classification is the outcome this gate
+  steers toward. The reason is read across WRAPPED lines (a 76-column body
+  puts "needs its own PR" on the next line), bounded by a blank line, the next
+  `Key:` field or a heading — mutation-probed, that boundary is what keeps a
+  sibling `Notes:` line out of the reason. A FENCED CODE BLOCK is stripped
+  first (``` and `~~~`), so a body quoting the refused line to argue ABOUT the
+  rule is not blocked by its own quotation — the first `Session-fit:` match
+  wins, and without the strip a quoted line beat the body's real `now`. A
+  bolded key (`**Session-fit:**`) is accepted, and a list item is a
+  continuation boundary like a blank line: a legitimate reason followed by a
+  bullet mentioning a PR used to fold the bullet in and block. Repo opt-in
+  (`.markgate.yml`), shared command-position matcher, fails CLOSED when the
+  library is unloadable.
+  **It reads the body the command is about to WRITE**, porting
+  `gh-body-english-gate`'s #2397 heredoc extraction: precedence is the heredoc
+  body this command writes, then the file on disk (unless a TRUNCATING write
+  superseded it — an APPEND still reads it), then the whole command, then an
+  inline `--body`. Without that the one-call `heredoc -> file -> --body-file`
+  shape was a FAIL-OPEN whenever the target path already existed: the gate
+  judged the PREVIOUS body and passed (measured — stale file present rc=0,
+  same command with the file absent rc=2). Unlike `issue-dup-check-gate`, an
+  UNREADABLE `--body-file` still does not block: this gate objects to content
+  it FINDS, so a refusal would be unclearable.
+  **What it catches, measured 2026-09-05** — of 300 bodies, 255 carry a
+  `Session-fit: next` FIELD LINE (the anchored predicate this gate reads; a
+  bare `grep -l` says 256 and counting prose mentions says 257 — state the
+  predicate or the number is unreproducible) and it fires on **66** (26%),
+  every hit on a literal
+  term (`own review` 30, `own PR` 25, `unreviewable` 14, `share a PR` 3,
+  `separate PR` 3). It does NOT catch reasoning that never names a PR: of its
+  own three motivating deferrals it fires on go-to-k/cdkd#2590 but not #2587
+  ("its own real-AWS run and review round") or #2588 ("its own blast radius
+  across future PRs"). The needle was deliberately NOT widened to chase those
+  (implement.md: three spellings in three rounds means change instrument) —
+  the companion fix covers them, since
+  [session-report.md](session-report.md) no longer OFFERS a PR-shaped `next`
+  criterion to cite. Bypass `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, honored from
+  the env and from a leading assignment in the command text (#2368), for an
+  INLINE quote of PR-shaped reasoning. Smoke test:
+  `issue-deferral-criteria-gate.test.sh` (80 cases, bash 5.x + 3.2 via
+  `HOOK_BASH`). Mutation-probed: `exit 0` 43, `exit 2` 40, `next` polarity
+  exactly the two `now` cases, boundary 4, segment scoping 4, fence strip 2,
+  bolded key 2, list item 2, heredoc arm 3, APPEND arm 1. Pre-fix and post-fix
+  fire on the IDENTICAL 66 of the 255 — those repairs are pure
+  false-positive/negative correction, no drift. The fence STRIP needed a
+  second round: latching on any opener with no look-ahead made an UNCLOSED
+  fence blank the rest of the body (rc=0 where the pre-strip hook said 2) —
+  the heredoc latch class, one construct over. It now opens only when the SAME
+  marker recurs later.
+
+All twenty produce actionable error messages with the exact replacement
 command.
 
 ## Bug-hunt cleanup safety
@@ -631,6 +700,51 @@ strictly. `CDKD_SKIP_CI_GREEN_GATE=1` is the documented bypass for a repo with
 genuinely no CI — never for merging a red PR. Smoke test:
 `ci-green-gate.test.sh` (stubbed `gh` for all-pass / skipping / fail /
 pending / no-checks / infra-error + the cdkd#563 quoted-body cases).
+
+## Integ base freshness (non-blocking)
+
+**`.claude/hooks/integ-stale-base-detector.sh`** — PreToolUse (`Bash`),
+**never blocks**. Warns, before a real-AWS integ fixture is spent, that the
+branch is behind `origin/main`, because a rebase after the run moves the merge
+base and can stale the very marker the run was spent to earn.
+
+An ESCALATION, not a new rule: verify.md §8-b already says "Rebase BEFORE the
+integ", and go-to-k/cdkd#2589 followed it and still paid twice — six review
+rounds ran over ~2 h, `main` advanced, and the rebase moved the merge base past
+go-to-k/cdkd#2565 (`src/provisioning/providers/**`), flipping `integ-destroy` to
+`mismatch` after two integs had run. The re-run was CORRECT; nothing said so
+when the run STARTED. The rule reads as a sequence; the shape is a loop.
+
+**Placement is the design**: beside `markgate set` the run is already spent, so
+this fires on the fixture INVOCATION — the last moment a rebase is free.
+**Non-blocking on purpose**, unlike `integ-destroy-gate.sh`: a deliberate run on
+an old base (a bisect, a repro) is legitimate and a wrong refusal costs more
+than the waste. It guards a SPEND, not a merge.
+
+Two arms with opposite advice: when main's advance touches integ-gate scope it
+names the FILE count and says rebase first, else it says the marker will
+probably survive. It counts FILES and SAYS files — an earlier revision printed
+"N of those COMMITS", so one commit touching five provider files read as "5 of
+those commits" under "1 commit(s) behind". It scopes with `HEAD...origin/main`
+(three dots — the question is what MAIN brought, and a lane running an integ
+normally carries its own in-scope commit), and does NOT `git fetch`, so it
+under-reports on a stale ref — the safe direction for a nudge.
+
+**It arms on BOTH invocation shapes** — `verify.sh` AND the standard
+`node dist/cli.js deploy` flow. Requiring a `verify.sh` left it silent for
+`bench-cdk-sample` / `microservices` / `multi-resource` / `multi-stack-deps`,
+the four broad-set fixtures that have none — exactly the runs that refresh
+`integ-broad`. Read verbs exit in command position anywhere, not only at the
+start; a path inside an arbitrary quoted string is a documented false positive
+costing a stray note, not a block. Repo opt-in; declared unexercisable in
+`unresolved-target-class.test.sh` (it refuses nothing).
+
+Smoke test: `integ-stale-base-detector.test.sh` (12 cases, real git fixtures,
+honouring `HOOK_BASH` so the HOOK runs under 3.2 — it ignored it at first, and
+`HOOK_BASH=/nonexistent` still reported 11/11). Probed: silent stub 6,
+alarming-arm-only 8, both-arms 6; 3-dot-to-2-dot fails exactly the
+lane-carries-its-own-commit case, which the suite could not see until that
+fixture existed (it survived at 11/11 before).
 
 ## Markgate gate hooks (cwd-aware)
 
