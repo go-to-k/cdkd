@@ -136,15 +136,44 @@ describe('deploy.ts binds the recreate target set to the stack it deploys (#2567
         'recreateTargets.viaSdkProvider.size > 0) && { recreateTargets, }),'
     );
 
-    // ...and exactly ONE `recreateTargets` key in the literal. A later
-    // `recreateTargets: undefined,` overrides the spread and leaves both flags
-    // permanently inert, with every assertion above still green.
-    const keyOccurrences = [...literal.matchAll(/^\s*recreateTargets[,:]/gm)].length;
+    // ...and the literal must set the key EXACTLY ONCE, anywhere.
+    //
+    // A line-anchored count was bypassed by one line: `...(true && {
+    // recreateTargets: inertTargets }),` after the pinned spread type-checks,
+    // overrides it, and left 4/4 green with both flags inert. Count every
+    // colon-form and shorthand occurrence in the literal instead of the ones
+    // that happen to start a line: the pinned spread contributes exactly one
+    // shorthand, so anything else is a second assignment.
+    const shorthand = [...literal.matchAll(/\brecreateTargets\s*,/g)].length;
+    const colonForm = [...literal.matchAll(/\brecreateTargets\s*:/g)].length;
     expect(
-      keyOccurrences,
-      'the option literal mentions `recreateTargets` as a key more than once — a later ' +
-        'assignment overrides the spread and disables both --recreate-via-* flags'
-    ).toBe(1);
+      { shorthand, colonForm },
+      'the option literal assigns `recreateTargets` more than once — a later assignment ' +
+        'overrides the pinned spread and disables both --recreate-via-* flags'
+    ).toEqual({ shorthand: 1, colonForm: 0 });
+  });
+
+  it('nothing mutates the option object between the literal and the engine', () => {
+    // The third way to reach the same observable: leave the literal alone and
+    // `delete deployEngineOptions.recreateTargets;` before the engine is
+    // constructed. Measured 4/4 green against a fence that only read the
+    // literal — so the fence has to cover the whole region the object lives in,
+    // not just where it is born.
+    const literalStart = source.indexOf('const deployEngineOptions: DeployEngineOptions = {');
+    const engineStart = source.indexOf('new DeployEngine(', literalStart);
+    expect(engineStart, 'no `new DeployEngine(` after the option literal').toBeGreaterThan(
+      literalStart
+    );
+    const between = source.slice(literalStart, engineStart);
+    expect(
+      between,
+      'the option object is mutated after it is built and before the engine receives it — ' +
+        'a delete or reassignment there disables both --recreate-via-* flags with the ' +
+        'literal itself untouched'
+    ).not.toMatch(/\bdeployEngineOptions\s*(?:\.|\[)/);
+    expect(between, 'the option object is `delete`d from after construction').not.toMatch(
+      /\bdelete\s+deployEngineOptions\b/
+    );
   });
 
   it('binds an expression, not a literal', () => {

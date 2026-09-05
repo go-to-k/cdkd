@@ -107,10 +107,28 @@ function declaredMembers(): string[] {
   );
 }
 
-/** `{`/`(` opened minus closed on a line, ignoring nothing — comments are skipped before this runs. */
+/**
+ * A line with string literals and trailing comments removed.
+ *
+ * Both can carry braces that are not structure: `dryRun?: '{' | boolean;` and a
+ * trailing `// }` each shifted the balance by one, and a CRAFTED PAIR of them
+ * (one `{` before a span, one `}` after) returned the walk to depth 0 while
+ * everything between went unclassified — measured green with a member planted
+ * inside. Stripping them first removes the whole class rather than the two
+ * spellings that were found.
+ */
+function structuralPart(line: string): string {
+  return line
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``')
+    .replace(/\/\/.*$/, '');
+}
+
+/** `{`/`(` opened minus closed on a line, after the non-structural parts are stripped. */
 function braceBalance(line: string): number {
   let delta = 0;
-  for (const ch of line) {
+  for (const ch of structuralPart(line)) {
     if (ch === '{' || ch === '(') delta++;
     else if (ch === '}' || ch === ')') delta--;
   }
@@ -131,30 +149,34 @@ interface Walk {
  * then a member at the WRONG INDENT), which is the signal to stop patching and
  * refuse what is not modelled instead.
  *
- * DEPTH BY BALANCE, not by a close-line pattern. The previous spelling
- * decremented only on `/^ {2}\}[,;]?$/`, so any other close of a nested member
- * — `  }>;` from a `Readonly<{ … }>` wrap, `  }[];`, `  } | undefined;` — never
- * returned the walk to depth 0. Measured: one such wrap made the walk skip 150
- * lines and three top-level members, silently, and a method shorthand planted
- * inside that span passed 5/5 green while the same member on a pristine file
- * red. A fence that goes inert over a span is worse than no fence, because the
- * green is indistinguishable.
+ * DEPTH BY BALANCE, not by a close-line pattern: an earlier spelling
+ * decremented only on `/^ {2}\}[,;]?$/`, so a `Readonly<{ … }>` wrap made the
+ * walk skip 150 lines and three top-level members with no signal at all.
  *
- * Comment lines are skipped BEFORE balancing, since JSDoc here carries `{@link}`
- * and would unbalance the count.
+ * CONTINUATION, not one line per member: a member whose type wraps
+ * (`foo?: Record<\n string,\n boolean\n>;` — a shape this repo already uses)
+ * carries no brace on its first line, so a balance-only walk saw its
+ * continuation lines as unclassified and false-red. A declaration runs until a
+ * line ends the statement at depth 0.
  */
 function walkBody(): Walk {
   const unparsed: string[] = [];
   let depth = 0;
+  let inStatement = false;
   for (const line of interfaceBody().split('\n').slice(1)) {
     if (line.trim() === '') continue;
     if (/^\s*(?:\/\*\*|\*\/|\*|\/\/)/.test(line)) continue;
-    if (depth > 0) {
+    const structural = structuralPart(line).trimEnd();
+    if (depth > 0 || inStatement) {
       depth += braceBalance(line);
+      if (depth === 0 && structural.endsWith(';')) inStatement = false;
       continue;
     }
     if (NON_MEMBER_LINE.test(line) || MEMBER_DECL.test(line)) {
       depth += braceBalance(line);
+      // A declaration that neither closed on this line nor opened a literal is
+      // still running (a wrapped generic or union).
+      if (depth === 0 && !structural.endsWith(';')) inStatement = true;
       continue;
     }
     unparsed.push(line);
@@ -191,8 +213,10 @@ describe('the parent→child option boundary audit stays complete (#2567)', () =
     // balance walk replaced a close-line pattern.
     expect(
       walkBody().endDepth,
-      'the interface walk ended inside a nested literal, so an unknown number of member ' +
-        'declarations were never classified. The scan is inert over that span.'
+      'the interface walk did not end at depth 0, so an unknown number of member ' +
+        'declarations were never classified and the scan is inert over that span. Either a ' +
+        'nested literal never closed, or a brace/paren that is not structure slipped past ' +
+        '`structuralPart` — check that before assuming the interface is malformed.'
     ).toBe(0);
   });
 

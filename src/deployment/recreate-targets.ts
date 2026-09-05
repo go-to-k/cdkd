@@ -462,7 +462,10 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     // is run-global while each stack validates it against its OWN template, so
     // every stack that does not declare the id refuses — and none of it is what
     // a user at this prompt needs. What they need is which stack to name it in.
-    // Say only that; the `not.toMatch` in the unit case fences the class.
+    // Say only that. The unit case pins this note's rendered LINE by equality,
+    // so a rewrite -- or an appended sentence -- reds and has to be argued for;
+    // two weaker instruments were tried first and each let a fresh wrong
+    // description through.
     lines.push(
       `  Note: each stack of this deploy validates this WHOLE flag list ` +
         `against its OWN template, so an id declared by a different stack of ` +

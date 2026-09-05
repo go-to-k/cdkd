@@ -575,22 +575,27 @@ describe('nested-stack scope of the flags (#2567)', () => {
       forceStatefulRecreation: false,
     });
     const error = renderRecreateTargetsErrors(v) ?? '';
-    // The WHOLE sentence, not a list of rejected phrases. A `not.toMatch`
-    // alternation of the three wordings already rejected let a FOURTH through
-    // in new words ("The other stacks of this run keep going; only this one
-    // stops, and the recreate happens there") — the same instrument this PR
-    // condemned one file over, repeated here. Pinning the text means any
-    // rewrite reds and has to be argued for, which is the point: three
-    // successive attempts to describe the run's behaviour here were wrong.
+    // The whole LINE, equal — not merely contained.
+    //
+    // Two instruments failed here before this one. A `not.toMatch` alternation
+    // of the wordings already rejected let a fourth wrong description through
+    // in new words. Replacing it with `toContain` of the correct sentence was
+    // STRICTLY WEAKER: appending that same rejected claim after the pinned
+    // sentence passed 86/86, because containment bounds the sentence and says
+    // nothing about the paragraph. Equality on the rendered line bounds both.
+    const noteLine = error
+      .split('\n')
+      .find((l) => l.startsWith('  Note: each stack of this deploy'));
+    expect(noteLine, 'the multi-stack note is not rendered at all').toBeDefined();
     expect(
-      error,
-      'the multi-stack note was rewritten. Every previous attempt to describe what the RUN ' +
-        'does after this refusal was false (see the comment at the lines.push site): the ' +
-        'flag list is run-global while each stack validates it against its OWN template, so ' +
-        'every stack not declaring the id refuses, and WorkGraph skips any stack depending ' +
-        'on one of those. Say which stack to name the id in and stop.'
-    ).toContain(
-      'Note: each stack of this deploy validates this WHOLE flag list against its OWN ' +
+      noteLine,
+      'the multi-stack note was rewritten or extended. Every previous attempt to describe ' +
+        "what the RUN does after this refusal was false (see the comment at the note's " +
+        'lines.push site): the flag list is run-global while each stack validates it against ' +
+        'its OWN template, so every stack not declaring the id refuses, and WorkGraph skips ' +
+        'any stack depending on one of those. Say which stack to name the id in and stop.'
+    ).toBe(
+      '  Note: each stack of this deploy validates this WHOLE flag list against its OWN ' +
         'template, so an id declared by a different stack of the same run is reported here ' +
         'as unknown. Name it in a deploy of only that stack.'
     );
