@@ -532,13 +532,55 @@ const SPLIT_ADVICE =
  */
 function rendersSurvivingComment(markdown: string): boolean {
   // Comments are not the only raw passthrough. CommonMark HTML block types
-  // 3/4/5 -- `<?...?>`, `<!DOCTYPE ...>`, `<![CDATA[...]]>` -- also reach the
+  // 1/3/4/5 -- `<script>`/`<style>`/`<textarea>`, `<?...?>`, `<!DOCTYPE ...>`,
+  // `<![CDATA[...]]>` -- also reach the
   // output verbatim, and a browser's bogus-comment parse ends them at the
   // first `>` (inside the `<a` tag), so an anchor inside one is invisible to a
   // reader exactly like one inside a comment. Detecting only `<!--` would have
   // left the docblock's claim -- that this predicate is what makes the absent
   // stripper safe -- true of one shape out of four.
-  return /<(?:!--|\?|![A-Za-z]|!\[CDATA\[)/.test(marked.parse(markdown, { async: false }));
+  return /<(?:!--|\?|![A-Za-z]|!\[CDATA\[|(?:script|style|textarea)\b)/i.test(
+    marked.parse(markdown, { async: false }),
+  );
+}
+
+// NAMED entities stay a hand list, and saying otherwise would repeat the
+// mistake above. There is no built-in named-entity decoder, and the full
+// HTML table is ~2,200 entries; what matters here is only which ones
+// render BLANK. The aliases are the trap -- `&ZeroWidthSpace;` is another
+// spelling of the very U+200B the transposition bug was about -- so they
+// are listed beside their short forms rather than left to be rediscovered.
+// Residual, stated plainly: a blank-rendering named entity outside this
+// map is credited over an empty cell. It fails in the crediting direction,
+// it needs an author to write one deliberately, and none appears in the
+// corpus.
+const NAMED_BLANK: Record<string, string> = {
+  nbsp: '\u00a0',
+  nonbreakingspace: '\u00a0',
+  shy: '\u00ad',
+  zwnj: '\u200c',
+  zwj: '\u200d',
+  zerowidthspace: '\u200b',
+  nobreak: '\u2060',
+  af: '\u2061',
+  ensp: '\u2002',
+  emsp: '\u2003',
+  emsp13: '\u2004',
+  emsp14: '\u2005',
+  thinsp: '\u2009',
+  thinspace: '\u2009',
+  verythinspace: '\u200a',
+  mediumspace: '\u205f',
+  numsp: '\u2007',
+  puncsp: '\u2008',
+  hairsp: '\u200a',
+};
+
+/** `String.fromCodePoint` without the throw: out-of-range keeps the raw text. */
+function codePoint(value: number, raw: string): string {
+  return Number.isInteger(value) && value >= 0 && value <= 0x10ffff
+    ? String.fromCodePoint(value)
+    : raw;
 }
 
 function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
@@ -600,31 +642,39 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
     // legal spellings of characters the list already named, so any hand list
     // is wrong by construction. Decoding numerically removes the whole class,
     // and it is why this is a decoder rather than a longer alternation.
-    const NAMED_BLANK: Record<string, string> = {
-      nbsp: '\u00a0',
-      shy: '\u00ad',
-      zwnj: '\u200c',
-      zwj: '\u200d',
-      ensp: '\u2002',
-      emsp: '\u2003',
-      thinsp: '\u2009',
-      numsp: '\u2007',
-      hairsp: '\u200a',
-    };
     const visible = m[2]!
       // Media renders on its own, so an image-only anchor IS clickable and
-      // must count. `picture` and `object` are containers that render nothing
-      // without children -- and a `<picture>` with an `<img>` inside is caught
-      // by the `img` arm anyway, so listing them only invented false content.
-      .replace(/<(?:img|svg|video|canvas)\b[^>]*>/gi, 'x')
+      // must count. `object` is here because an `<object data=...>` DOES
+      // render -- an earlier revision dropped it claiming the opposite, which
+      // was simply false. `picture` stays out: it is a container that renders
+      // only through its children, and a `<picture>` wrapping an `<img>` is
+      // caught by the `img` arm anyway.
+      .replace(/<(?:img|svg|video|canvas|object)\b[^>]*>/gi, 'x')
       .replace(/<[^>]*>/g, '')
-      .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
-      .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
-      .replace(/&([a-z]+);/gi, (whole, n: string) => NAMED_BLANK[n.toLowerCase()] ?? whole)
+      // Guarded, because `String.fromCodePoint` THROWS above U+10FFFF and
+      // marked passes 1-6 hex / 1-7 decimal digits through unescaped: a rule
+      // file containing `[&#x110000;](x.md)` would abort this case with a
+      // RangeError instead of failing with its own message. Out of range is
+      // left as written, which is what a browser shows.
+      .replace(/&#x([0-9a-f]+);/gi, (whole: string, h: string) => codePoint(parseInt(h, 16), whole))
+      .replace(/&#(\d+);/g, (whole: string, d: string) => codePoint(Number(d), whole))
+      .replace(/&([a-z][a-z0-9]*);/gi, (whole, n: string) => NAMED_BLANK[n.toLowerCase()] ?? whole)
       // Everything here is zero-width or a separator: nothing a reader sees.
       // `trim()` alone would not do it -- it removes White_Space only, and a
       // zero-width space is not White_Space.
-      .replace(/[\u00ad\u200b-\u200f\u2028\u2029\u2060\ufeff]/g, '');
+      // Only the ones `trim()` does NOT already remove. U+2028/2029 are
+      // LineTerminators and U+FEFF is WhiteSpace, so listing them here was
+      // inert -- deleting them passed the whole table, which is the "guard
+      // with nothing under it" shape this file keeps rediscovering. What is
+      // load-bearing is U+00AD, the U+200B-200F range (LRM/RLM included) and
+      // U+2060.
+      // U+2060-2064 as a RANGE, not just the word joiner: the invisible
+      // operators (function application, times, separator, plus) render as
+      // nothing too. Found by the round-trip check below, which flagged `&af;`
+      // as an inert map key the moment it was written -- the map named the
+      // entity while this class did not cover what it decodes to, so the
+      // entry did nothing and nothing said so.
+      .replace(/[\u00ad\u200b-\u200f\u2060-\u2064]/g, '');
     if (visible.trim() === '') continue;
     targets.push(
       m[1]!
@@ -1448,6 +1498,9 @@ describe('.claude/rules payload fence', () => {
       '<?x <a href="ghost.md">y</a> ?>',
       '<!X <a href="ghost.md">y</a> >',
       '<![CDATA[<a href="ghost.md">y</a>]]>',
+      '<script><a href="ghost.md">y</a></script>',
+      '<style><a href="ghost.md">y</a></style>',
+      '<textarea><a href="ghost.md">y</a></textarea>',
     ]) {
       expect(rendersSurvivingComment(raw), `${raw} reaches the output raw`).toBe(true);
     }
@@ -1552,10 +1605,21 @@ describe('.claude/rules payload fence', () => {
       '&thinsp;',
       '&numsp;',
       '&hairsp;',
+      '&ZeroWidthSpace;', // the alias of the character the transposition bug was about
+      '&NonBreakingSpace;',
+      '&ThinSpace;',
+      '&VeryThinSpace;',
+      '&puncsp;',
+      '&emsp13;',
       '&#x2060;', // word joiner
       '&#8288;',
+      '&#x2061;', // function application -- outside the class until the
+      '&#x2064;', // round-trip check flagged `&af;` as inert
+      '&af;',
       '&#x2028;', // line separator -- deleted by the first correction, restored
       '&#x2029;',
+      '&#x200e;', // LRM / RLM: in the class and, until review, untested
+      '&#x200f;',
       '\u200b', // the literal characters, not just their entities
       '\u00ad',
       '\ufeff',
@@ -1564,12 +1628,49 @@ describe('.claude/rules payload fence', () => {
     }
     // ...and the visible controls, so the loop above cannot pass by rejecting
     // everything. A NON-breaking space is invisible; an ordinary letter is not.
-    for (const seen of ['x', '&amp;', '&#65;', '&lt;', '0']) {
+    // `&#x41;` is the HEX arm's visible control and it is load-bearing: with
+    // only `&#65;` here, replacing the hex decoder with `() => ''` -- i.e.
+    // silently deleting every hex entity, so a link whose text is `&#x41;`
+    // stops being a pointer -- passed all 23 blanks, all 4 media cases and
+    // every other control. A decoder needs a case in BOTH directions or only
+    // its over-stripping half is fenced.
+    for (const seen of ['x', '&amp;', '&#65;', '&#x41;', '&lt;', '0']) {
       expect(t(`[${seen}](real.md)`), `[${seen}](...) renders something`).toEqual(['real.md']);
     }
+    // EVERY key in the map must actually blank a link, asserted by round-trip
+    // rather than by inspection. Written after `noBreak:` sat in the map doing
+    // nothing: the lookup lowercases the entity name, so a camelCase key can
+    // never match, and a missed blank entity fails SILENTLY -- it just credits
+    // the pointer. A casing check was tried first and was vacuous by
+    // construction (with every key already lowercase, disabling it changed no
+    // verdict). Deriving the cases from the map catches casing, a typo, and a
+    // regex that stops matching some spelling, and it cannot go stale as the
+    // map grows.
+    // The control that proves the check below can FAIL at all. With every key
+    // working, disabling the filter changes no verdict -- it is a
+    // RE-INTRODUCTION guard, not a live discriminator, and this file insists
+    // on knowing the difference. This line pins the mechanism: an entity the
+    // map does not name leaves the link visible, which is exactly what a dead
+    // key looks like to the filter.
+    expect(t('[&NotAnEntity;](real.md)')).toEqual(['real.md']);
+
+    const deadKeys = Object.keys(NAMED_BLANK).filter(
+      (k) => t(`[&${k};](ghost.md)`).length !== 0,
+    );
+    expect(
+      deadKeys,
+      `these NAMED_BLANK keys do not blank a link, so they are inert: ${deadKeys.join(', ')}. The lookup lowercases the entity name, and the scan only matches /&[a-z][a-z0-9]*;/i.`,
+    ).toEqual([]);
+
     // Media that renders on its own is content; a container that renders
     // nothing without children is not.
-    for (const media of ['<img src="i.png">', '<svg></svg>', '<video></video>', '<canvas></canvas>']) {
+    for (const media of [
+      '<img src="i.png">',
+      '<svg></svg>',
+      '<video></video>',
+      '<canvas></canvas>',
+      '<object data="i.svg"></object>',
+    ]) {
       expect(t(`[${media}](real.md)`), `${media} is visible content`).toEqual(['real.md']);
     }
 
