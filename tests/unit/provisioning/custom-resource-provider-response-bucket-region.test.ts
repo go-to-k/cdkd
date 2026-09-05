@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 
 // Regression tests for issues #1195 / #1202: the custom-resource response
 // bucket is cdkd's STATE bucket, which can live in a different region from
@@ -75,6 +76,9 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
   const correctedClient = { send: correctedSend };
 
   beforeEach(() => {
+    // Issue #2447's replication probe is cached per BUCKET for the process
+    // lifetime; cleared so every test's per-client call count is the same.
+    clearReplicationProbeCache();
     mockLambdaSend.mockReset();
     mockSnsSend.mockReset();
     mockS3Send.mockReset();
@@ -106,6 +110,12 @@ describe('CustomResourceProvider response-bucket region correction (issue #1195)
   /**
    * S3 calls one successful create makes against the response bucket:
    * placeholder PutObject, cleanup DeleteObject, ListObjectVersions purge.
+   *
+   * Issue #2447's `GetBucketReplication` probe is NOT among them, and its
+   * absence is a real assertion rather than an omission: the probe runs only
+   * when the purge actually removed a noncurrent version, and this fixture's
+   * listing returns none. A probe appearing here would mean cdkd had started
+   * announcing a replica survival for a body that never existed.
    */
   const S3_OPS_PER_CREATE = 3;
 

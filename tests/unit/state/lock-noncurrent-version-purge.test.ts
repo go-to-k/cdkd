@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 ships the stable
@@ -141,6 +142,10 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
   let behaviour: Behaviour;
 
   beforeEach(() => {
+    // Issue #2447: every purge ends with a replication probe cached per
+    // BUCKET for the process lifetime. Cleared here so this file's command
+    // streams do not depend on which test ran first.
+    clearReplicationProbeCache();
     sent = [];
     behaviour = {};
     warnSpy.mockReset();
@@ -218,6 +223,9 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
         'DeleteObjectCommand',
         'ListObjectVersionsCommand',
         'DeleteObjectsCommand',
+        // Issue #2447: the purge closes by asking whether a replica kept
+        // what it just removed.
+        'GetBucketReplicationCommand',
       ]);
     });
 
@@ -263,8 +271,10 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
 
       // The length pin is not decoration: a `for` over the recorded calls
       // passes VACUOUSLY on the pre-fix code, where the only call is the
-      // delete that already carried the header.
-      expect(sent).toHaveLength(3);
+      // delete that already carried the header. FOUR since issue #2447: the
+      // replication probe is a state-bucket read too, so it carries the header
+      // like everything else.
+      expect(sent).toHaveLength(4);
       for (const call of sent) expect(call.input.ExpectedBucketOwner).toBe(OWNER);
     });
 
@@ -284,6 +294,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
         'DeleteObjectCommand',
         'ListObjectVersionsCommand',
         'DeleteObjectsCommand',
+        'GetBucketReplicationCommand',
       ]);
     });
 
@@ -552,6 +563,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
         'PutObjectCommand',
         'ListObjectVersionsCommand',
         'DeleteObjectsCommand',
+        'GetBucketReplicationCommand',
       ]);
     });
 
@@ -597,6 +609,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
       expect(replacementSent.map((r) => r.name)).toEqual([
         'ListObjectVersionsCommand',
         'DeleteObjectsCommand',
+        'GetBucketReplicationCommand',
       ]);
       // ...and nothing purge-shaped went out on the unresolved client.
       expect(sent.map((r) => r.name)).not.toContain('ListObjectVersionsCommand');
@@ -641,6 +654,7 @@ describe('LockManager purges the lock key noncurrent versions (issue #2346 site 
         'DeleteObjectCommand',
         'ListObjectVersionsCommand',
         'DeleteObjectsCommand',
+        'GetBucketReplicationCommand',
       ]);
       expect(purgeDelete()?.input.Delete?.Objects).toEqual([
         { Key: LOCK_KEY, VersionId: 'renew-1' },

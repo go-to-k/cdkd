@@ -95,6 +95,16 @@ const s3Commands = vi.hoisted(() => {
         super('DeleteObjects', input);
       }
     },
+    // Issue #2447: the purge closes with a `GetBucketReplication` probe.
+    // Omitting it is NOT neutral for the same reason the two above are not --
+    // the missing export throws inside the probe's own try, the probe issues
+    // no call, and every replication assertion in this file would read as
+    // "cdkd does not probe" whether or not it does.
+    GetBucketReplicationCommand: class extends FakeS3Command {
+      constructor(input: Record<string, unknown>) {
+        super('GetBucketReplication', input);
+      }
+    },
   };
 });
 vi.mock('@aws-sdk/client-s3', () => ({
@@ -103,6 +113,7 @@ vi.mock('@aws-sdk/client-s3', () => ({
   DeleteObjectCommand: s3Commands.DeleteObjectCommand,
   ListObjectVersionsCommand: s3Commands.ListObjectVersionsCommand,
   DeleteObjectsCommand: s3Commands.DeleteObjectsCommand,
+  GetBucketReplicationCommand: s3Commands.GetBucketReplicationCommand,
 }));
 
 const resolveBucketRegionMock = vi.hoisted(() => vi.fn(async () => 'us-east-1'));
@@ -133,6 +144,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { expandMacros, retryDelays } from '../../../src/synthesis/macro-expander.js';
 import { MacroExpansionError } from '../../../src/utils/error-handler.js';
+import { clearReplicationProbeCache } from '../../../src/state/s3-replication-purge-gap.js';
 
 interface SendCall {
   name: string;
@@ -185,6 +197,10 @@ const OPTS = {
 };
 
 beforeEach(() => {
+  // Issue #2447: the purge closes with a replication probe cached per bucket
+  // for the process lifetime. Cleared so this file's command streams do not
+  // depend on which test ran first.
+  clearReplicationProbeCache();
   waitUntilChangeSetCreateCompleteMock.mockReset();
   s3SendMock.mockReset();
   s3SendMock.mockResolvedValue({});

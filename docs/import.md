@@ -289,6 +289,13 @@ survive. See
 [State Management](state-management.md#recommended-bucket-policy-with-least-privilege)
 for a bucket policy that grants them.
 
+It also reaches the state bucket ONLY. If that bucket is replicated, the
+template body survives in the destination and no cdkd purge can remove it —
+and the transient template is one of the four prefixes worth excluding from a
+replication rule. cdkd warns about it when it can read the replication
+configuration (one more optional grant), rather than leave it implied; see
+[S3 replication defeats the purge](state-management.md#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
+
 ## After import
 
 Run `cdkd diff` to see how the imported state lines up with the

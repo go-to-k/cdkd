@@ -245,6 +245,7 @@ const REACH_FLOORS: ReadonlyMap<string, number> = new Map([
   ['providers.md', 92],
   ['session-report.md', 1], // literal list: EXACT, see below
   ['state-schema.md', 5],
+  ['state-version-purge.md', 2], // literal list: EXACT, see below
   ['synthesis.md', 13],
   ['test-stream-fence.md', 3], // literal list: EXACT, see below
   ['testing.md', 2532],
@@ -325,8 +326,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // `layout-deployment-secrets.md` and the new `code-layout.md` index row moved
   // several of them, and a `measured` comment that no longer matches the tree
   // reads as evidence while being none.
-  ['src/state/s3-state-backend.ts', 43_000, 57_000],         // measured  55,030
-  ['src/types/state.ts', 43_000, 57_000],                    // measured  55,030
+  ['src/state/s3-state-backend.ts', 43_000, 57_000],         // measured  55,319 (was 55,030 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
+  // The representative path for state-version-purge.md, whose two-file glob
+  // (the purge and its replication-gap detector, issue
+  // go-to-k/cdkd#2447) matches nothing else. Without this row the satellite
+  // sits under no budget at all: the `src/state/s3-state-backend.ts` row above
+  // does NOT match it, which is the whole reason it was split out.
+  ['src/state/s3-noncurrent-version-purge.ts', 53_000, 64_000], // measured 61,168
+  ['src/types/state.ts', 43_000, 57_000],                    // measured  55,319 (was 55,030 before the go-to-k/cdkd#2447 pointer landed in layout-misc.md)
   ['src/synthesis/synthesizer.ts', 30_000, 40_000],          // measured  34,889
   // 62_000 -> 68_000: payload is `testing.md` alone, which reached 61,358 B, so
   // the cap had 642 B of headroom and the next edit to that file would have
@@ -548,7 +555,7 @@ const ruleFiles: RuleFile[] = readdirSync(RULES_DIR, { recursive: true })
 //   - the UPPER bound catches growth that spreads thinly enough to stay under
 //     every per-file cap.
 // Update these deliberately, with the reason, when the corpus genuinely moves.
-const CORPUS_FILE_COUNT = 44; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
+const CORPUS_FILE_COUNT = 45; // 29 + gate-sibling-repos.md (hooks.md crossed the per-file cap, so
                               //  its cross-repo gate-aliasing section moved out verbatim,
                               //  go-to-k/cdkd#2236) + asset-bucket-region.md (issue go-to-k/cdkd#2240
                               //  split out of assets.md). Both landed as 30 independently; merged
@@ -641,7 +648,28 @@ const CORPUS_FILE_COUNT = 44; // 29 + gate-sibling-repos.md (hooks.md crossed th
                               //  than `src/utils/**`: layout-utils.md fell to 30,4xx B and the
                               //  rule now travels with the code it governs instead of with every
                               //  utils edit. That makes 44.
-const CORPUS_BYTES_MIN = 817_000;   // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04
+                              //  + state-version-purge.md (issue go-to-k/cdkd#2447): a NEW file
+                              //  rather than a split in spirit, but a split in effect -- the
+                              //  purge's replication gap and the three decisions behind its
+                              //  detector went into layout-misc.md first and pushed the
+                              //  `src/state/s3-state-backend.ts` payload to 57,197 B against its
+                              //  57,000 B cap, taking `src/types/state.ts`, both `src/assets/`
+                              //  rows and `vite.config.ts` over with it. Moved out under a
+                              //  two-path glob (the purge and its detector) so that only a session
+                              //  touching those two files pays for it -- the #2236 / #2240 / #2363
+                              //  shape again -- leaving a one-line pointer in layout-misc.md.
+                              //  That file GREW, 19,290 -> 19,581 B: neither module had an entry
+                              //  before, so the split is against an intermediate draft rather
+                              //  than against main, and a pointer always costs the index file
+                              //  something. Measured on the tree that ships this line. That
+                              //  makes 45.
+const CORPUS_BYTES_MIN = 856_000;   // RE-DERIVED UPWARD 817_000 -> 856_000 (issue
+                                    // go-to-k/cdkd#2447): re-measured on the MERGED tree with the
+                                    // same ~34 KB of slack every previous setting used. Re-derived
+                                    // rather than left alone because the old figure had drifted to
+                                    // 73 KB of slack and would no longer have noticed a whole
+                                    // satellite being deleted -- the one thing this bound is for.
+                                    // 817_000 was: // RE-DERIVED DOWNWARD 966_000 -> 817_000 by the 2026-09-04
                                     // compression: measured 851,451 B -- 34,451 B of slack, the
                                     // same ~34 KB every previous setting used.
                                     // 917_000 -> 966_000 (2026-09-03): re-measured with the same
@@ -658,7 +686,17 @@ const CORPUS_BYTES_MIN = 817_000;   // RE-DERIVED DOWNWARD 966_000 -> 817_000 by
                                     // whole satellite being deleted. Re-measured rather than
                                     // nudged, since a bound that drifts from its measurement stops
                                     // being one.
-const CORPUS_BYTES_MAX = 890_000; // RE-DERIVED DOWNWARD 1_040_000 -> 890_000 (measured 851,451 + the ~39 KB of headroom the old ceiling held). // growth is the norm here; this catches bulk growth that stays under every per-file cap.
+const CORPUS_BYTES_MAX = 929_000; // RE-DERIVED UPWARD 890_000 -> 929_000 (issue go-to-k/cdkd#2447):
+                                  // measured 895,893 on the REBASED tree + the ~33 KB of
+                                  // headroom every previous setting has held. The corpus crossed
+                                  // the old 890,000 ceiling on a lane that added ONE satellite,
+                                  // already trimmed once; past that the remaining text is the
+                                  // load-bearing decisions themselves, and this file's own
+                                  // instruction is not to summarise or delete it. Note the figure
+                                  // includes `docker-argv-redaction.md`, which landed on main
+                                  // while this branch was open -- FOUR earlier revisions of this
+                                  // comment quoted a draft or a pre-rebase tree and went stale.
+                                  // 890_000 was: // RE-DERIVED DOWNWARD 1_040_000 -> 890_000 (measured 851,451 + the ~39 KB of headroom the old ceiling held). // growth is the norm here; this catches bulk growth that stays under every per-file cap.
                                     // 1_000_000 -> 1_040_000 (2026-09-03, go-to-k/cdkd#2402's
                                     // third review round): measured 1,000,819 B. The previous
                                     // bound was set at 12,808 B of slack and TWO lanes spent it

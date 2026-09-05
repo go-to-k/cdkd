@@ -101,7 +101,10 @@ marker below, and the transient CFn template upload) — see
 — older recommended policies did not grant either. It fails soft by design, because it
 runs on a cleanup path that must never abort the operation it follows: without
 those actions the deploy, destroy or `cdkd gc` run still succeeds, a warning
-names the two grants, and the body stays retrievable by `VersionId`.
+names the two grants, and the body stays retrievable by `VersionId`. A purge
+that SUCCEEDS still leaves the bodies behind if the state bucket is replicated
+— see
+[S3 replication defeats the purge](#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you).
 
 The `rollback-journal.json` sibling is written whenever a
 deploy ends **without a completed rollback** — a `--no-rollback` failure, a
@@ -1833,7 +1836,8 @@ bucket alone.
         "s3:DeleteObject",
         "s3:ListBucket",
         "s3:ListBucketVersions",
-        "s3:DeleteObjectVersion"
+        "s3:DeleteObjectVersion",
+        "s3:GetReplicationConfiguration"
       ],
       "Resource": [
         "arn:aws:s3:::cdkd-state-bucket",
@@ -1844,8 +1848,8 @@ bucket alone.
 }
 ```
 
-The last two are what let cdkd finish deleting an object on a VERSIONED
-bucket, which the state bucket is: `cdkd bootstrap` turns versioning on, so
+`s3:ListBucketVersions` and `s3:DeleteObjectVersion` are what let cdkd finish
+deleting an object on a VERSIONED bucket, which the state bucket is: `cdkd bootstrap` turns versioning on, so
 `DeleteObject` writes a DELETE MARKER and every earlier version of the key
 stays readable through `GetObject` with a `VersionId`.
 
@@ -1856,7 +1860,16 @@ stays readable through `GetObject` with a `VersionId`.
   above it, so the `arn:aws:s3:::cdkd-state-bucket/*` ARN covers it. Lets cdkd
   remove them.
 
-**Five kinds of object need these two actions, not one.** The set has grown
+The third addition is DIAGNOSTIC rather than required, and the only entry in
+this policy that is:
+
+- **`s3:GetReplicationConfiguration`** — bucket-level. Lets cdkd tell you when
+  the purge above was defeated by replication (see
+  [S3 replication defeats the purge](#s3-replication-defeats-the-purge-and-cdkd-cannot-fix-it-for-you)).
+  Remove it and everything still works; you simply stop being told. Nothing
+  fails without it.
+
+**Five kinds of object need those two version actions, not one.** The set has grown
 over time, and the ordinary
 commands are now in it:
 
@@ -1924,9 +1937,109 @@ a process reaping an abandoned lock and its original owner waking up to release
 it can legitimately purge the same key at once. Reporting it would tell a
 blameless user to grant permissions they already hold.
 
-If you are on the older four-action policy, adding these two lines is the whole
-fix; the objects already stranded before the change have to be purged by hand
-(`aws s3api list-object-versions` + `delete-object --version-id`).
+If you are on the older four-action policy, adding the two version actions is
+the whole fix; the objects already stranded before the change have to be purged
+by hand (`aws s3api list-object-versions` + `delete-object --version-id`). The
+third addition, `s3:GetReplicationConfiguration`, is diagnostic — see the bullet
+above.
+
+#### S3 REPLICATION defeats the purge, and cdkd cannot fix it for you
+
+**If the state bucket has Cross-Region (CRR) or Same-Region (SRR) Replication
+enabled, the purge above removes the bodies from the SOURCE bucket only.** The
+copies in the destination bucket survive, indefinitely, and stay readable there
+with `GetObject` and a `VersionId`.
+
+This is not a cdkd defect and no cdkd setting changes it. **S3 never replicates
+a delete that names a version id.** Replication propagates PUTs, and — when
+`DeleteMarkerReplication` is enabled — delete markers; a version-id delete is
+deliberately excluded so that a delete on the source cannot destroy data on the
+destination. cdkd's purge is exactly such a delete. Removing the replica's
+copies would mean cdkd reading your replication configuration and issuing
+deletes into a *different* bucket, which is a far larger and more dangerous
+capability than cleaning up after itself, so cdkd does not do it.
+
+It applies to **every** object in the table above, and to any future one. It is
+worth stating plainly because it reproduces, one bucket over, exactly the
+failure the purge exists to remove: an operation that reports success while the
+value stays retrievable.
+
+**cdkd tells you when it applies — if it can see your replication
+configuration.** A purge that removed a BODY — or that could not establish
+whether there was one — ends with one `GetBucketReplication` on the state
+bucket, cached for the rest of the run. When
+a rule covers the keys just purged, the warning names the destination:
+
+```
+S3 replication is enabled on s3://cdkd-state-bucket and covers the key(s) cdkd
+just purged. S3 NEVER replicates a version-id delete, so the purge removed those
+versions from THIS bucket only — the copies in the destination bucket survive and
+remain readable there via GetObject with a VersionId (the rollback journal, whose
+`failedOperations[].attemptedProperties` records the properties of the failed
+write verbatim). cdkd cannot delete them. Remove them in the destination bucket
+yourself (aws s3api list-object-versions, then delete-object --version-id), or
+narrow the replication rule so it excludes the prefixes cdkd purges under.
+Destination(s): cdkd-state-replica
+```
+
+Four things about that check, all deliberate:
+
+- **It needs `s3:GetReplicationConfiguration`.** The action is in the
+  least-privilege policy above, marked as the one DIAGNOSTIC entry: removing it
+  costs you this check and nothing else. Without it the probe is denied, logs at
+  `debug`, and never warns — most state buckets are not replicated, so warning
+  there would demand a permission from everyone in order to inform almost
+  nobody. The purge itself is unaffected either way.
+- **It runs when a BODY was purged, or when cdkd could not tell.** A key with
+  no noncurrent version — and a key whose only noncurrent entry was a delete
+  MARKER, which carries no body — leaves nothing for the replica to be holding,
+  so neither triggers it; a listing that failed or stopped early does, because
+  what remains under that key is unknown and silence would be the wrong
+  mistake. Both exclusions matter:
+  `cdkd deploy` deletes the rollback journal on every success, marker and all,
+  so without either exclusion an ordinary green deploy would have announced a
+  surviving journal for a stack that has never had one.
+- **It errs toward warning.** A rule that filters on object TAGS cannot be
+  evaluated without reading each object, so cdkd treats it as covering
+  everything; and a rule whose `Status` is `Disabled` is still reported, flagged
+  as disabled, because disabling a rule stops FUTURE replication without
+  removing what it already copied. A warning you look into and dismiss is the
+  cheaper mistake.
+- **It repeats once per (object kind, destination set), not once per object.**
+  A stack with thirty custom resources gets one warning, not thirty; the
+  repeats go to `debug`. The destinations are part of that identity on purpose
+  — if a later purge under the same object kind matches a rule pointing
+  somewhere NEW, you are told about the new replica rather than silenced by the
+  first warning.
+
+Your options, none of which cdkd can take for you:
+
+- **Purge the destination bucket yourself**, with the same
+  `list-object-versions` + `delete-object --version-id` pass.
+- **Narrow the replication rule.** cdkd purges under four top-level prefixes,
+  and a rule that covers any of them is in scope: `cdkd/` (the rollback journal
+  and `lock.json`), `cdkd-bootstrap/` (the marker), `custom-resource-responses/`
+  (the handler's full cfn-response, `Data` included — the most secret-dense of
+  the four), and `cdkd-migrate-tmp/` (the transient CloudFormation template).
+  **`cdkd/` is a DEFAULT, not a constant** — it is `--state-prefix`, so a
+  bucket configured with one writes the journal and `lock.json` somewhere else
+  entirely. The other three are fixed top-level prefixes today
+  (`custom-resource-responses/` has a programmatic override that no CLI flag
+  reaches). Read the prefixes off your own bucket rather than pasting these, or
+  a narrowed rule will miss the objects it was meant to exclude.
+  **Read that with the DR consequence attached**: `cdkd/` is also where
+  `state.json`, its version history and the `deployments/` event streams live,
+  so excluding it stops replicating the state records you presumably enabled
+  replication FOR. Excluding the other three costs nothing you rely on.
+- **Accept that the replica retains the history** and control access to it
+  accordingly — `s3:GetObjectVersion` on the destination is what makes the
+  surviving bodies readable.
+
+**The same reasoning applies to any other copy of the bucket you keep** — most
+directly the `aws s3 sync` backup suggested under
+[State File Backup](#state-file-backup) below, which copies the state objects
+into a bucket cdkd never touches. A purge on the state bucket says nothing
+about what a backup, a replica, or a snapshot still holds.
 
 #### Recommended: Enable Encryption
 

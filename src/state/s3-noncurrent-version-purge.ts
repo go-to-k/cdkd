@@ -1,6 +1,10 @@
 import { ListObjectVersionsCommand, DeleteObjectsCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { displaySafe } from '../utils/display-safe.js';
+import {
+  warnIfPurgeIsReplicated,
+  DEFAULT_PURGED_OBJECT_DESCRIPTION,
+} from './s3-replication-purge-gap.js';
 
 /**
  * Delete the NONCURRENT versions of a KNOWN SET OF KEYS in the cdkd state
@@ -58,6 +62,36 @@ import { displaySafe } from '../utils/display-safe.js';
  * The unit of the warning is therefore the KEY, not the listing prefix. An
  * earlier revision counted prefixes, so a `cdkd gc` run failing to purge 3000
  * keys reported `1 key(s)` and named the prefix.
+ *
+ * ## What this CANNOT reach: S3 REPLICATION (issue [#2447](https://github.com/go-to-k/cdkd/issues/2447))
+ *
+ * A successful purge here removes the bodies from ONE bucket. If the state
+ * bucket has Cross-Region or Same-Region Replication enabled, the destination
+ * bucket keeps its own copies and this function cannot touch them: **S3 never
+ * replicates a delete that names a `VersionId`** (delete MARKERS are
+ * replicable and opt-in; version-id deletes are not, deliberately, so a delete
+ * on the source cannot destroy data on the destination). Nothing this module
+ * could send would change that, short of cdkd discovering the replication
+ * configuration and issuing cross-BUCKET deletes — a much larger and more
+ * dangerous capability than the one this file has.
+ *
+ * So on a replicated bucket the mechanism reproduces its own defect one bucket
+ * over: a clean run, no warning, and the secret still readable by `VersionId`.
+ * That is why {@link ./s3-replication-purge-gap.js | the replication probe}
+ * runs at the end of a purge that removed a BODY (never a bare delete marker,
+ * which carries none) — or that could not settle whether there was one — and
+ * says so. It is a DETECTOR, not a fix — the remedy is the user's, and the point is that
+ * they learn it exists.
+ *
+ * TWO KNOWN RESIDUALS, stated rather than implied. (1) The check is scoped to
+ * keys with a noncurrent BODY to remove, plus keys whose provenance the walk
+ * could not settle, so a key whose CURRENT-version delete
+ * failed (nothing is noncurrent yet) gets no replication note; the body then
+ * survives in the SOURCE too and the caller's own delete failure is what the
+ * user is looking at, so there is no false reassurance to remove. (2) A
+ * replication rule DELETED after it had already copied things reads as "no
+ * configuration" and is silent — the same argument that keeps a `Disabled`
+ * rule reported does not reach it, because nothing is left to read.
  */
 export interface NoncurrentVersionPurgeOptions {
   /**
@@ -75,8 +109,15 @@ export interface NoncurrentVersionPurgeOptions {
    * keys under one prefix; the provider has a single key and does not.
    */
   listPrefix?: string;
-  /** Logger to warn through. Defaults to a module-scoped child. */
-  logger?: { warn: (m: string) => void };
+  /**
+   * Logger to warn through. Defaults to a module-scoped child.
+   *
+   * `debug` is OPTIONAL because the seam exists for callers that supply a bare
+   * `warn` sink to demote this module's output (`lock-manager.ts` does exactly
+   * that on the ordinary release path). A caller that has a real logger gets
+   * its diagnostics; one that does not falls back to a module-scoped child.
+   */
+  logger?: { warn: (m: string) => void; debug?: (m: string) => void };
   /**
    * What the surviving versions CONTAIN, as a noun phrase, dropped into the
    * warning's parenthetical (issue
@@ -99,16 +140,6 @@ export interface NoncurrentVersionPurgeOptions {
    */
   objectDescription?: string;
 }
-
-/**
- * Parenthetical used when a caller names nothing.
- *
- * True of ANY object this function is pointed at, which is the bar for a
- * default here: a caller that forgets to describe its object must still emit a
- * warning that is correct, just less specific. It deliberately does not guess
- * at content.
- */
-const DEFAULT_OBJECT_DESCRIPTION = 'the body of an object cdkd has just reported as removed';
 
 /**
  * `objectDescription` for the custom-resource response sidecar.
@@ -176,6 +207,18 @@ const TRUNCATED_NO_MARKER =
   'listing reported IsTruncated with no NextKeyMarker; the walk stopped early ' +
   'and versions may remain';
 
+/**
+ * One `ListObjectVersions` entry, in the shape both `Versions` and
+ * `DeleteMarkers` share for the fields this module reads.
+ */
+interface VersionEntry {
+  // `| undefined` spelled out because `exactOptionalPropertyTypes` is on and
+  // the SDK models these as explicitly-undefinable optionals.
+  Key?: string | undefined;
+  VersionId?: string | undefined;
+  IsLatest?: boolean | undefined;
+}
+
 /** Record a per-key failure reason without losing an earlier one. */
 function recordFailure(failed: Map<string, string[]>, key: string, reason: string): void {
   const existing = failed.get(key);
@@ -211,16 +254,46 @@ export async function purgeNoncurrentKeyVersions(
   // `failed.size` stayed 1 — reinstating the exact `1 key(s)` under-count the
   // slot scheme was introduced to remove.
   const unknown = { n: 0 };
+  // Keys for which the walk found at least one noncurrent entry WITH A BODY
+  // (`Versions`, never `DeleteMarkers`) and tried to remove it. Only these plus
+  // the ones we could not settle are handed to the replication check; see its
+  // call below for why, and `purgeUnderPrefix` for why a delete marker does not
+  // count.
+  const purged = new Set<string>();
+  // Keys we could NOT settle, restricted the same way: a failure on a row that
+  // was only ever a delete marker says nothing about a surviving body, while a
+  // failure whose provenance is genuinely unknown (the listing never returned)
+  // is included because over-warning is the safe direction there.
+  const unsettledBodies = new Set<string>();
   for (const prefix of prefixes) {
     try {
-      await purgeUnderPrefix(s3Client, bucket, prefix, wanted, requestFields, failed, unknown);
+      await purgeUnderPrefix(
+        s3Client,
+        bucket,
+        prefix,
+        wanted,
+        requestFields,
+        failed,
+        unknown,
+        purged,
+        unsettledBodies
+      );
     } catch (error) {
       // The LISTING failed, so nothing under this prefix could be purged. With
       // a covering `listPrefix` that is every requested key; without one the
       // prefix IS the key. Attributing it to the keys rather than to the
       // prefix is what keeps the warning's unit consistent.
       const affected = options.listPrefix !== undefined ? keys : [prefix];
-      for (const key of affected) recordFailure(failed, key, describe(error));
+      for (const key of affected) {
+        recordFailure(failed, key, describe(error));
+        // Provenance genuinely UNKNOWN here -- the listing never returned, so
+        // we cannot say whether the key had a body. Over-warning is the safe
+        // direction, and the purge-failure warning always accompanies it.
+        // Unconditional: `affected` is either `keys` or a `prefix` drawn from
+        // `keys`, so a `wanted` guard here could never be false and read as
+        // though a non-wanted case existed.
+        unsettledBodies.add(key);
+      }
     }
   }
 
@@ -255,12 +328,43 @@ export async function purgeNoncurrentKeyVersions(
     logger.warn(
       `Could not purge noncurrent versions of ${failed.size} key(s) in s3://${bucket}. ` +
         `Their previous versions survive and remain readable via GetObject with a VersionId ` +
-        `(${options.objectDescription ?? DEFAULT_OBJECT_DESCRIPTION}). ` +
+        `(${options.objectDescription ?? DEFAULT_PURGED_OBJECT_DESCRIPTION}). ` +
         `Grant s3:ListBucketVersions and s3:DeleteObjectVersion on the ` +
         `state bucket, or purge the key(s) by hand. Failures: ${named.join(', ')}` +
         (elided > 0 ? ` (and ${elided} more)` : '')
     );
   }
+
+  // LAST, and it is not a failure report — it is the caveat on the SUCCESS,
+  // which is the case the user is misled by: a run with no failures is exactly
+  // the one that says "the body is gone". Runs after the failure warning so
+  // the two read in that order, and it is handed the caller's own sink and
+  // `objectDescription` so it inherits both the demotion the lock release path
+  // applies and the "which object?" answer.
+  //
+  // SCOPED to the keys that actually had a body, which an earlier revision got
+  // wrong in the direction that matters. It ran on `keys` unconditionally, and
+  // `deleteRollbackJournal` fires on EVERY successful deploy — so a routine
+  // green deploy of a stack that has never failed announced that the rollback
+  // journal's copies "survive and remain readable" in the replica, about an
+  // object that had never existed in either bucket. A warning that is
+  // sometimes about nothing is how the one that matters stops being read.
+  //
+  // `unsettledBodies` joins it because a key we could not settle is one we do
+  // not know about, and over-warning is the safe direction. It is built from
+  // real keys only, so the synthetic `<unknown key #N>` slots in `failed` --
+  // which are not keys and would match a whole-bucket rule on their own --
+  // cannot reach the check by construction rather than by a filter. When
+  // nothing was purged and nothing failed there is no probe at all, so the
+  // common case also stops paying for the API call.
+  const replicationKeys = [...new Set([...purged, ...unsettledBodies])];
+  await warnIfPurgeIsReplicated(s3Client, bucket, replicationKeys, {
+    requestFields,
+    logger,
+    ...(options.objectDescription !== undefined && {
+      objectDescription: options.objectDescription,
+    }),
+  });
 }
 
 /**
@@ -284,7 +388,11 @@ async function purgeUnderPrefix(
   requestFields: { ExpectedBucketOwner?: string },
   failed: Map<string, string[]>,
   /** Shared across ALL prefixes — see the call site for why it is not local. */
-  unknown: { n: number }
+  unknown: { n: number },
+  /** Keys that had at least one noncurrent BODY (never a bare delete marker). */
+  purged: Set<string>,
+  /** Keys with a body-bearing or unknown-provenance failure. */
+  unsettledBodies: Set<string>
 ): Promise<void> {
   let keyMarker: string | undefined;
   let versionIdMarker: string | undefined;
@@ -304,7 +412,19 @@ async function purgeUnderPrefix(
     );
 
     const stale: { Key: string; VersionId: string }[] = [];
-    for (const entry of [...(resp.Versions ?? []), ...(resp.DeleteMarkers ?? [])]) {
+    // Provenance is tracked, not just membership: a noncurrent DELETE MARKER is
+    // removed like any other entry but has NO BODY, so it must not mark the key
+    // as one whose body was purged. Getting that wrong reinstated the exact
+    // defect `purged` was introduced to fix, one deploy later:
+    // `deleteRollbackJournal` writes a marker on every successful deploy even
+    // when no journal exists, so deploy 2 finds deploy 1's marker noncurrent,
+    // "purges" it, and announces a surviving rollback journal for a stack that
+    // has never had one.
+    const entries: { entry: VersionEntry; hasBody: boolean }[] = [
+      ...(resp.Versions ?? []).map((entry) => ({ entry, hasBody: true })),
+      ...(resp.DeleteMarkers ?? []).map((entry) => ({ entry, hasBody: false })),
+    ];
+    for (const { entry, hasBody } of entries) {
       if (entry.Key === undefined || !wanted.has(entry.Key)) continue;
       // `!== false`, not `=== true`: an entry with the field ABSENT must be
       // treated as possibly-current and left alone. Keying on `=== true` fails
@@ -330,14 +450,40 @@ async function purgeUnderPrefix(
           `version ${entry.VersionId ?? '<unknown>'}: listing omitted IsLatest, so the entry was ` +
             `left alone rather than risk deleting a current version`
         );
+        if (hasBody) unsettledBodies.add(entry.Key);
       }
       if (entry.IsLatest !== false) continue;
-      if (!entry.VersionId) continue;
+      // A NONCURRENT entry with no `VersionId` cannot be deleted -- there is
+      // nothing to name in `DeleteObjects` -- and skipping it silently is the
+      // one direction this module exists to forbid: on a `Versions` row that is
+      // a body we were asked to remove and did not, in BOTH buckets, while the
+      // run reports success. Unreachable against real S3, which always
+      // populates the field; recorded rather than assumed away, exactly like
+      // the `IsLatest` arm above.
+      if (!entry.VersionId) {
+        recordFailure(
+          failed,
+          entry.Key,
+          `listing returned a noncurrent entry with no VersionId, so it could not be deleted`
+        );
+        if (hasBody) unsettledBodies.add(entry.Key);
+        continue;
+      }
       stale.push({ Key: entry.Key, VersionId: entry.VersionId });
+      // Provenance is decided HERE, at listing time, and nothing downstream may
+      // revisit it: see the NOTE on the delete loop below.
+      if (hasBody) purged.add(entry.Key);
     }
 
     for (let i = 0; i < stale.length; i += DELETE_BATCH_SIZE) {
       const batch = stale.slice(i, i + DELETE_BATCH_SIZE);
+      // NOTE for the replication check: nothing below needs to feed it. A
+      // body-bearing key entered `purged` at LISTING time, above, so a delete
+      // that then fails cannot un-purge it and cannot remove it from the
+      // check; and a key that was only ever a delete marker never entered.
+      // An earlier revision gated these arms on provenance explicitly, which
+      // measured as dead code -- correct behaviour credited to the wrong
+      // mechanism, which is worse than no comment.
       try {
         const deleted = await s3Client.send(
           new DeleteObjectsCommand({
@@ -425,7 +571,15 @@ async function purgeUnderPrefix(
       // claimed the filter "selects exactly it" in per-key mode; measured
       // against `[KEY_A, KEY_A + '.bak']`, it does not.
       for (const key of wanted) {
-        if (key.startsWith(prefix)) recordFailure(failed, key, TRUNCATED_NO_MARKER);
+        if (key.startsWith(prefix)) {
+          recordFailure(failed, key, TRUNCATED_NO_MARKER);
+          // Same unknown provenance as the listing-throw arm above: the walk
+          // stopped early, so what remains under this key is unknown. It
+          // inherits the SAME `startsWith` over-reach the block comment above
+          // describes -- in per-key mode a sibling `<k>.bak` whose own walk
+          // completed is named here too -- and in the same safe direction.
+          unsettledBodies.add(key);
+        }
       }
     }
     keyMarker = resp.IsTruncated === true ? resp.NextKeyMarker : undefined;
