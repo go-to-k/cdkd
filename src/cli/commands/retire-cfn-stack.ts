@@ -415,9 +415,14 @@ export async function retireCloudFormationStack(
         // Pre-fix this caused UPDATE_ROLLBACK on any source stack with
         // declared Parameters — surfaced by the `migrate-from-bare-cfn` integ,
         // whose template carried a ResourceSuffix parameter. That fixture was
-        // retired with `cdkd migrate` (issue #2572); the behaviour it found is
-        // still covered by the unit tests in
-        // `tests/unit/cli/retire-cfn-stack.test.ts`.
+        // retired with `cdkd migrate` (issue #2572), which left this arm
+        // covered by unit tests only — against a MOCK of CloudFormation, which
+        // cannot falsify a claim about what CloudFormation does with
+        // `UsePreviousValue`. Issue #2587 restored the real-AWS half: the
+        // `migrate-from-cfn` fixture's small stack now declares a
+        // `TopicDisplayName` parameter with NO DEFAULT, so dropping this
+        // forwarding fails its UpdateStack outright rather than silently
+        // substituting a default.
         const previousParameters = (stack.Parameters ?? []).map((p) => ({
           ParameterKey: p.ParameterKey,
           UsePreviousValue: true,
