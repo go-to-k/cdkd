@@ -143,9 +143,19 @@ while check-build-test was red; main stayed red until fix-forward
 it returns at once instead of waiting for them to appear, so wrapping
 it in a retry loop just spins. Poll until checks EXIST, then watch:
 
-  gh pr checks ${pr_number:-<PR>} --json name,state   # [] = not registered yet
+  # Wait for the FIRST row. The discriminator is an EMPTY stdout, not the
+  # exit code: rc=1 means EITHER "no checks reported" OR "a check failed".
+  until [ -n "$(gh pr checks ${pr_number:-<PR>} 2>/dev/null)" ]; do sleep 20; done
   gh pr checks ${pr_number:-<PR>} --watch             # once a row exists
   # merge only after every check reports pass/skipping
+
+  # Measured 2026-09-06 (gh 2.89), all four states:
+  #   no checks reported  rc=1  stdout 0 bytes   message on STDERR
+  #   a check FAILED      rc=1  stdout non-empty
+  #   still running       rc=8  stdout non-empty
+  #   all pass            rc=0  stdout non-empty
+  # So `--json name,state` buys nothing here (it is 0 bytes in the same
+  # case), and polling on rc alone spins forever on a genuinely failing PR.
 
 If this repo genuinely has no CI, bypass explicitly:
   CDKD_SKIP_CI_GREEN_GATE=1 gh pr merge ${pr_number:-<PR>} --squash --delete-branch
