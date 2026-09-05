@@ -481,6 +481,113 @@ const SUBSTANTIVE_MIN_BYTES = 1_500;
 const SPLIT_ADVICE =
   'Move the detail into a NEW .claude/rules/<area>.md satellite whose `paths:` glob is as narrow as the content, and leave a one-line pointer behind. Do not summarise or delete the text.';
 
+/**
+ * The `.md` link targets a human can actually SEE and follow in a Markdown
+ * file, as basenames.
+ *
+ * Four shapes were invisible to the first cut of this scan and are handled
+ * here (go-to-k/cdkd#2663, found by the round-3 reviewer on
+ * go-to-k/cdkd#2657). None of them occurs in the corpus TODAY -- measured
+ * before the change, so this hardening cannot have silently narrowed anything
+ * -- which is exactly why they are worth closing now: each one is a way for a
+ * future edit to make a pointer vanish, or to make a live one unreadable, with
+ * the fence still green.
+ *
+ * 1. Fenced code in BOTH spellings. The original knew only ``` and a review
+ *    probe had already used that to hide a table row; `~~~` is the same hole
+ *    one syntax over. A fence closes only on its own marker, so a ``` inside
+ *    a ~~~ block does not end it.
+ * 2. Indented code blocks. Four spaces is a code block in Markdown, so a row
+ *    demoted that way stops rendering while its text survives. Applied
+ *    bluntly, because no line in the corpus is both indented that far and
+ *    carrying a link -- verified before writing this. A list continuation
+ *    indented four spaces WOULD be a false negative if one ever appeared;
+ *    that is a narrowing, so it would show up as a spurious orphan rather
+ *    than as a silent pass.
+ * 3. HTML comments. `<!-- ... -->` renders as nothing, so a pointer inside one
+ *    is invisible to the reader while the raw text still matches a naive
+ *    regex. Stripped from the joined text first, so a comment spanning lines
+ *    is handled; the ordering means a `<!--` written INSIDE a code fence is
+ *    treated as a comment, which is wrong in principle and absent in practice.
+ * 5. Inline code spans -- see the comment at the strip itself; that one was
+ *    found by this scanner reporting a false positive on the corpus.
+ * 4. Anchored and reference-style links. `](file.md#section)` was invisible to
+ *    BOTH halves of the caller -- neither credited nor existence-checked --
+ *    and it is a live shape in this corpus (`providers.md` links
+ *    `docs/provider-rules.md#handledproperties-against-the-cfn-schema`), so
+ *    the day someone anchors a link to a SATELLITE it would have been
+ *    reported as a false orphan. Reference definitions (`[label]: file.md`)
+ *    are counted at the definition, which is where the filename appears.
+ *
+ * Returns RAW targets, path and all. Deciding which of them denote a rule
+ * file is the caller's job via `ruleTarget()` -- the corpus links plenty of
+ * `docs/*.md` pages, and the first cut of this basenamed everything and
+ * reported fourteen CLAUDE.md docs links as missing rule files.
+ */
+function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
+  const withoutComments = lines.join('\n').replace(/<!--[\s\S]*?-->/g, '');
+  const kept: string[] = [];
+  let fence: string | undefined;
+  for (const line of withoutComments.split('\n')) {
+    const marker = /^\s{0,3}(```|~~~)/.exec(line)?.[1];
+    if (marker !== undefined) {
+      if (fence === undefined) fence = marker;
+      else if (fence === marker) fence = undefined;
+      continue;
+    }
+    if (fence !== undefined) continue;
+    if (/^ {4,}\S/.test(line)) continue;
+    if (rowsOnly && !line.trimStart().startsWith('|')) continue;
+    kept.push(line);
+  }
+  // INLINE code spans, last: a link inside backticks is not a link, it is a
+  // quoted EXAMPLE of one. `docs-page-template.md` is a live instance -- it
+  // teaches the link SHAPE with ``[`cdkd gc`](cli-gc.md)``, and without this
+  // the scan reported that as a rule file that does not exist. A doc whose
+  // subject is how to write links will always contain link-shaped text; a
+  // scanner that cannot tell the two apart fails on exactly the files most
+  // worth scanning. Matching backtick RUNS, so a double-backtick span
+  // containing single backticks closes correctly.
+  // Bounded to ONE line on purpose. `[\s\S]` here let an unbalanced backtick
+  // run swallow everything up to the next one, and hooks.md has enough of them
+  // that three real pointers -- hooks-branch-gate, hooks-cwd-detector,
+  // hooks-main-tree-branch -- vanished into a single span and were reported as
+  // orphans. An inline code span cannot cross a line break anyway, so the
+  // narrow class is both correct and the safe direction: over-stripping here
+  // fails CLOSED, as a false orphan, which is how that bug announced itself.
+  const text = kept.join('\n').replace(/(`+)(?:(?!\1)[^\n])*?\1/g, '');
+  const targets: string[] = [];
+  // Link TEXT is unconstrained: a row reading `[utils](layout-utils.md)` is a
+  // perfectly good index row, and an earlier form reported it as missing
+  // because it required the text to repeat the filename.
+  for (const m of text.matchAll(/\[[^\]]*\]\(\s*([^)\s#]+\.md)(?:#[^)\s]*)?\s*\)/g)) {
+    targets.push(m[1]!);
+  }
+  for (const m of text.matchAll(/^ {0,3}\[[^\]]+\]:\s*([^\s#]+\.md)(?:#\S*)?\s*$/gm)) {
+    targets.push(m[1]!);
+  }
+  return targets;
+}
+
+/**
+ * The `.claude/rules` file a raw link target denotes, or undefined when it
+ * points somewhere else.
+ *
+ * Two spellings reach the same file and both count: a BARE name, which is how
+ * one rule file links a sibling, and any path ending `.claude/rules/<name>`,
+ * which is how CLAUDE.md writes it. Everything else -- `docs/import.md`,
+ * `../../docs/provider-rules.md`, `docs/design/463-cfn-macros.md` -- is a
+ * pointer out of the corpus and is none of this fence's business. Getting this
+ * wrong in the permissive direction is not cosmetic: basenaming every `.md`
+ * link makes `docs/state-management.md` look like a missing rule file, and the
+ * resulting noise is what trains someone to stop reading the failure.
+ */
+function ruleTarget(raw: string): string | undefined {
+  if (!raw.includes('/')) return raw;
+  const m = /(?:^|\/)\.claude\/rules\/([^/]+\.md)$/.exec(raw);
+  return m?.[1];
+}
+
 interface RuleFile {
   name: string;
   text: string;
@@ -1237,77 +1344,111 @@ describe('.claude/rules payload fence', () => {
     expect(CORPUS_BYTES_MIN).toBeLessThan(CORPUS_BYTES_MAX);
   });
 
-  it('every satellite is reachable from an index, and every index row resolves', () => {
-    // The satellites load by their own globs, so an unindexed one still WORKS
-    // -- which is why nothing noticed. It stops being findable by a human
-    // reading code-layout.md, which is how the next split decides where text
-    // belongs.
-    // Two index SHAPES, because the corpus has two. `code-layout.md` /
-    // `providers.md` index their families with a TABLE, so a row is required
-    // there for the reasons below. The `hooks-*` family's index is `hooks.md`
-    // itself, which has no table -- all five pre-existing satellites are
-    // reached by a PROSE sentence at the point the text was lifted from, which
-    // is the right shape for that family and the only one available. Prose is
-    // the weaker mode (the probes below show why), so it is granted only to
-    // the family that has no alternative, not to the table indexes.
+  it('every satellite is reachable, and every markdown link in the corpus resolves', () => {
+    // A satellite loads by its own glob, so an unindexed one still WORKS --
+    // which is why nothing noticed. What it loses is discoverability: the next
+    // person deciding where a paragraph belongs reads an index, not a
+    // directory listing.
+    //
+    // The population used to be two filename PREFIXES while this case's name
+    // claimed every satellite, so the six `hooks-*` files sat outside it and a
+    // misplaced pointer went unreported (go-to-k/cdkd#2657). Prefixes are not
+    // the right discriminator anyway -- eight satellites carry none, and
+    // `docs-page-template.md` was a live orphan hiding behind that gap
+    // (go-to-k/cdkd#2656).
+    //
+    // The discriminator is DERIVED instead: a rule file linked from CLAUDE.md
+    // is TOP-LEVEL (CLAUDE.md is its index); anything else is a satellite and
+    // needs a pointer from somewhere. Derived rather than hand-listed because
+    // a hand list is what goes stale -- the failure this whole case exists to
+    // catch. Measured when written: 46 files, 12 top-level, 34 satellites.
+    // The prefixed families are UNIONED in so the population can only widen:
+    // `hooks-main-tree-branch.md` is BOTH prefixed and CLAUDE.md-linked, and
+    // dropping it would have been a silent narrowing dressed up as a
+    // generalisation.
+    const claudeMd = readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf-8').split('\n');
+    const topLevel = new Set(
+      visibleLinkTargets(claudeMd)
+        .map(ruleTarget)
+        .filter((t): t is string => t !== undefined),
+    );
+    const FAMILY_PREFIXES = [/^layout-/, /^provider-/, /^hooks-/];
+    const isSatellite = (n: string): boolean =>
+      !topLevel.has(n) || FAMILY_PREFIXES.some((p) => p.test(n));
+
+    // Reachability asks a different question from the index-SHAPE case below,
+    // so it reads every rule file rather than the three indexes: `assets.md`
+    // points at `asset-bucket-region.md`, `testing.md` at
+    // `test-stream-fence.md`, `layout-misc.md` at `state-version-purge.md`.
+    // Those are real pointers and a human following them finds the file.
+    // A file naming ITSELF is excluded -- that is what a split leaves behind
+    // when the pointer is written into the satellite instead of into the file
+    // the text left, which is precisely the go-to-k/cdkd#2657 defect.
+    const linked = new Set<string>();
+    const broken: string[] = [];
+    const known = new Set(ruleFiles.map((r) => r.name));
+    for (const source of [...ruleFiles, { name: 'CLAUDE.md', lines: claudeMd }]) {
+      for (const raw of visibleLinkTargets(source.lines)) {
+        const target = ruleTarget(raw);
+        if (target === undefined) continue;
+        // Existence is asked of EVERY link, including one to a top-level file
+        // and including a self-link. Filtering first is how the previous cut
+        // narrowed the dangling half live rather than latently.
+        if (!known.has(target)) broken.push(`${source.name} -> ${target}`);
+        if (target !== source.name) linked.add(target);
+      }
+    }
+    expect(
+      [...new Set(broken)].sort(),
+      `These markdown links point at .claude/rules files that do not exist: ${[...new Set(broken)].sort().join(', ')}. A rename moved the target and left the pointer behind.`,
+    ).toEqual([]);
+
+    const orphans = ruleFiles.map((r) => r.name).filter((n) => isSatellite(n) && !linked.has(n));
+    expect(
+      orphans,
+      `${orphans.join(', ')} are satellites that nothing links to. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs reads an index, not the directory. Add a pointer from the file the text belongs with. It must live in the file the text LEFT, not in the satellite: a file naming itself is not an inbound link and cannot clear this.`,
+    ).toEqual([]);
+  });
+
+  it('a prefixed satellite is reached from its family index, in that index own shape', () => {
+    // Reachability above accepts a pointer from anywhere, which is right for
+    // discoverability and too weak for the three families that HAVE an index:
+    // there, the index is the map, and a sentence buried in a sibling file is
+    // not a substitute for a row in it. This case keeps that stricter contract
+    // -- it is the one two review probes were written against.
+    //
+    // Two index SHAPES, because the corpus has two. `code-layout.md` and
+    // `providers.md` index their families with a TABLE, so a ROW is required:
+    // a probe deleted `layout-utils.md`'s row and the assertion stayed green
+    // on the strength of a sentence further down, and a second probe left the
+    // identical text inside a fenced block. The `hooks-*` family's index is
+    // `hooks.md` itself, which has no table -- every one of its satellites is
+    // reached by a PROSE sentence at the point the text was lifted from, the
+    // right shape for that family and the only one available. Prose is the
+    // weaker mode, so it is granted only to the family with no alternative.
     const indexes: readonly { file: string; prefix: RegExp; rowsOnly: boolean }[] = [
       { file: 'code-layout.md', prefix: /^layout-/, rowsOnly: true },
       { file: 'providers.md', prefix: /^provider-/, rowsOnly: true },
       { file: 'hooks.md', prefix: /^hooks-/, rowsOnly: false },
     ];
-    const linked = new Set<string>();
-    const broken: string[] = [];
+    const missing: string[] = [];
     for (const { file: idx, prefix, rowsOnly } of indexes) {
-      // TABLE ROWS only, and only OUTSIDE fenced code blocks. A prose pointer
-      // elsewhere in the file also makes a satellite findable, but it is not
-      // the index -- a review probe deleted `layout-utils.md`'s row and the
-      // assertion stayed green on the strength of a sentence further down. The
-      // fence-stripping is the same hole one level down: the second review
-      // round deleted the real row and left the identical text inside a
-      // ```markdown block, and it went green again. `providers.md` already
-      // contains fenced blocks, so this is reachable, not theoretical.
-      const rows: string[] = [];
-      let inFence = false;
-      for (const line of ruleFiles.find((r) => r.name === idx)!.lines) {
-        if (line.trimStart().startsWith('```')) {
-          inFence = !inFence;
-          continue;
-        }
-        if (!inFence && (rowsOnly ? line.trimStart().startsWith('|') : true)) rows.push(line);
-      }
-      // Link TEXT is unconstrained: a row reading `[utils](layout-utils.md)` is
-      // a perfectly good index row, and an earlier form reported it as missing
-      // because it required the text to repeat the filename.
-      for (const m of rows.join('\n').matchAll(/\[[^\]]+\]\(([a-z0-9-]+\.md)\)/g)) {
-        // TWO separate questions, and the order matters. Does the target
-        // EXIST is asked of every link an index makes, including the
-        // unprefixed ones -- hooks.md prose names `session-report.md` and
-        // `gate-sibling-repos.md`, and a rename of either must still be
-        // reported. Filtering by family first shadowed exactly that: the
-        // first cut of this fix put the `continue` above this line and
-        // narrowed the dangling-link half live, not latently (round 2 on
-        // go-to-k/cdkd#2657 -- the fix for one half quietly deleting the
-        // other is why every fix round gets reviewed).
-        if (!ruleFiles.some((r) => r.name === m[1]!)) broken.push(`${idx} -> ${m[1]!}`);
-        // Does it COUNT as this family's index entry is asked only of the
-        // family this index OWNS. `linked` is shared across indexes while
-        // `prefix` is per-index, so without this a prose sentence in hooks.md
-        // naming a `layout-*` file would satisfy code-layout.md's orphan
-        // check -- silently granting prose mode to a table index, which the
-        // comment above says must never happen.
-        if (!prefix.test(m[1]!)) continue;
-        linked.add(m[1]!);
+      // Credit a link only to the family this index OWNS: without it a prose
+      // sentence in hooks.md naming a `layout-*` file would satisfy
+      // code-layout.md's requirement, silently granting prose mode to a table
+      // index -- the thing the comment above says must never happen.
+      const own = new Set(
+        visibleLinkTargets(ruleFiles.find((r) => r.name === idx)!.lines, rowsOnly)
+          .map(ruleTarget)
+          .filter((t): t is string => t !== undefined && prefix.test(t)),
+      );
+      for (const { name } of ruleFiles) {
+        if (prefix.test(name) && name !== idx && !own.has(name)) missing.push(`${name} (${idx})`);
       }
     }
-    expect(broken, `Index rows point at rule files that do not exist: ${broken.join(', ')}.`).toEqual(
-      [],
-    );
-    const orphans = ruleFiles
-      .map((r) => r.name)
-      .filter((n) => indexes.some((i) => i.prefix.test(n)) && !linked.has(n));
     expect(
-      orphans,
-      `${orphans.join(', ')} are satellites that no index links to. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs reads the index, not the directory. Add a row to code-layout.md or providers.md, or -- for a \`hooks-*\` satellite -- a prose pointer in hooks.md at the point the text was lifted from. The pointer belongs in the file the text LEFT, not in the satellite -- only the index files above are scanned, so a satellite naming itself is not an inbound link and cannot clear this.`,
+      missing,
+      `${missing.join(', ')} -- each is a prefixed satellite absent from its family index, in the shape that index uses. For code-layout.md and providers.md that means a TABLE ROW outside any fenced or indented code block; for hooks.md a prose pointer at the point the text was lifted from.`,
     ).toEqual([]);
   });
 
