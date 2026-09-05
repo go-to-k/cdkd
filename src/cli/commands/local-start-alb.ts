@@ -164,9 +164,9 @@ export function warnUnresolvedLambdaTargetEnv(
             'then dropped with its own warning. ' +
             ecsNote +
             'The only state source the Lambda path reads is --from-cfn-stack <name>, which ' +
-            'reaches ' +
-            'both target kinds on a CloudFormation-deployed stack; otherwise override the ' +
-            'affected variables with --env-vars. Tracked as go-to-k/cdkd#2602 (upstream ' +
+            'REPLACES --from-state (the two are mutually exclusive) and reaches both target ' +
+            'kinds on a CloudFormation-deployed stack; otherwise override the affected ' +
+            'variables with --env-vars. Tracked as go-to-k/cdkd#2602 (upstream ' +
             'go-to-k/cdk-local#707).',
         ],
       };

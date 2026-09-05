@@ -577,5 +577,4 @@ describe('buildAlbEmulatorStrategy (issue #2602)', () => {
     // would fail on correct code and pass on nothing.
     expect(warningsFor(false)).not.toContain('does not reach the container environment');
   });
-
 });

@@ -34,7 +34,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
  *
  * - **Bare basename** in a code span — `` `docker-runner.ts` ``. 364 of them.
  *   Resolved against a SET OF BASENAMES collected from a repo walk.
- * - **Path form** in a code span — `` `src/analyzer/dag-builder.ts` ``. 246 of
+ * - **Path form** in a code span — `` `src/analyzer/dag-builder.ts` ``. 247 of
  *   them, invisible to the first cut. Resolved as a path from the repo root,
  *   falling back to `src/<cited>`: the corpus writes both spellings and three
  *   citations are `src`-relative (`utils/aws-region-resolver.ts`,
@@ -60,8 +60,10 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
  *   this fence pass or fail on whether a sibling checkout happens to be
  *   present — the hermeticity failure a fence is least able to notice, since
  *   it goes green on the machine you develop on. Such citations are counted
- *   pinned by IDENTITY instead ({@link UNVERIFIABLE_CITATIONS}), so the corpus
- *   cannot quietly drift toward unverifiable references.
+ *   pinned by IDENTITY instead ({@link EXEMPT_CITATIONS}), so the corpus
+ *   cannot quietly drift toward unverifiable references. A `..`-relative code
+ *   span is unverifiable for a different reason — it has no base directory
+ *   that resolves — and is pinned in the same place.
  *
  * ## Deliberately-dead citations
  *
@@ -114,8 +116,8 @@ const DELETED_MODULE_CITATIONS: Record<string, string> = {
 /**
  * Floors, so a regex that silently stopped matching cannot pass vacuously.
  * Every figure is a LITERAL from a measurement this fence does not itself
- * perform (2026-09-06: 610 code-span citations, of which 246 are path form,
- * plus 6 markdown links, across 38 of the 45 rule files) — a floor computed
+ * perform (2026-09-06: 611 code-span citations, of which 247 are path form,
+ * plus 6 markdown links, across 39 of the 45 rule files) — a floor computed
  * from the pool it guards is satisfied by that pool going empty.
  *
  * There is a floor PER SPELLING, not just a grand total: the first cut read
@@ -148,9 +150,19 @@ const MIN_FILES_WITH_CITATIONS = 30;
  *   ILLUSTRATION of a link that must not appear in `docs/`. There is no base
  *   directory that makes it resolvable, and it is not meant to.
  *
- * Keyed `<rule file> :: <cited>`, checked in both directions.
+ * Keyed `<rule file> :: <cited>`, and kept honest in both directions: an entry
+ * that stops being cited fails, and an entry that starts RESOLVING fails —
+ * because an exemption for something checkable hides the NEXT defect at that
+ * path rather than excusing this one.
+ *
+ * The residual, measured rather than assumed: adding an entry for a path that
+ * does NOT resolve silences it completely, and no assertion here can tell a
+ * legitimate exemption from a lazy one. That is what an allow-list IS. What
+ * the fence can do it does — it refuses to let one be added silently, to let
+ * one outlive its citation, or to let one cover a path that has started
+ * resolving. The rest is the reason line, which is why each entry carries one.
  */
-const UNVERIFIABLE_CITATIONS: Record<string, string> = {
+const EXEMPT_CITATIONS: Record<string, string> = {
   'gate-sibling-repos.md :: /Users/goto/pc/github/cdk-local/src/types/state.ts':
     'absolute path into a sibling checkout; present only on a developer machine, never in CI.',
   'docs-page-template.md :: ../src/x.ts':
@@ -193,11 +205,14 @@ function collectCitations(): Citation[] {
       const cited = match[1] as string;
       // `.d.ts` / `.generated.ts` are SUFFIX fragments, not filenames — the
       // text writes them to name a file KIND. The tell is a leading dot with
-      // NO slash; the guard used to be a bare `startsWith('.')`, which also
-      // swallowed `../`-relative citations and hid them from every check
-      // (review round 3). Those now reach the classifier and land in
-      // UNVERIFIABLE_CITATIONS, where they are at least counted by identity.
-      if (cited.startsWith('.') && !cited.startsWith('..')) continue;
+      // NO SLASH, and the guard now says exactly that. Two earlier spellings
+      // each left a hole one spelling over: a bare `startsWith('.')` swallowed
+      // every `../`-relative citation (round 3), and `!startsWith('..')`
+      // still swallowed `./src/gone.ts` — measured round 4, invisible to all
+      // four checks, in the very revision that closed the `/`-prefixed
+      // laundering. The corpus's only dot-led citations are `.d.ts` and
+      // `.generated.ts`, neither of which carries a slash.
+      if (cited.startsWith('.') && !cited.includes('/')) continue;
       citations.push({ ruleFile: name, cited, kind: cited.includes('/') ? 'path' : 'bare' });
     }
     // Markdown links, which the corpus uses for cross-file pointers.
@@ -212,33 +227,22 @@ function collectCitations(): Citation[] {
  * Where a citation points, as an absolute path — or `undefined` for a bare
  * basename, which names no location at all.
  */
-function targetOf(citation: Citation): string | undefined {
-  if (citation.kind === 'bare') return undefined;
-  // A markdown link in a rules file is relative to the rules directory; a
-  // path-form code span is relative to the repo root.
-  return citation.kind === 'link'
-    ? resolve(RULES_DIR, citation.cited)
-    : resolve(REPO_ROOT, citation.cited);
+function candidateTargetsOf(citation: Citation): string[] {
+  if (citation.kind === 'bare') return [];
+  // The corpus writes a path three ways and all three are legitimate, so all
+  // three are tried rather than guessed at from the citation's syntax:
+  // relative to the rules directory (every markdown link, and a `../`-relative
+  // code span), relative to the repo root (the common code-span form), and
+  // relative to `src/` (three citations use the shorter spelling).
+  return [
+    resolve(RULES_DIR, citation.cited),
+    resolve(REPO_ROOT, citation.cited),
+    resolve(REPO_ROOT, 'src', citation.cited),
+  ];
 }
 
-/**
- * A citation this fence cannot check: it points outside the repo (so checking
- * it would depend on the host machine) or it is `..`-relative with no base
- * that resolves. Both are pinned by identity in {@link UNVERIFIABLE_CITATIONS}.
- */
-function isUnverifiable(citation: Citation): boolean {
-  // A `..`-prefixed CODE SPAN has no defined base — it is prose, not a link.
-  // A markdown LINK is relative to the rules directory and resolves normally,
-  // so `..` is ordinary there; four live links start with it. Scoping this to
-  // code spans matters: an earlier revision applied it to both and turned four
-  // perfectly checkable links into unverifiable ones.
-  if (citation.kind !== 'link' && citation.cited.startsWith('..')) return true;
-  const target = targetOf(citation);
-  return target !== undefined && !insideRepo(target);
-}
-
-/** The key {@link UNVERIFIABLE_CITATIONS} pins a citation by. */
-function unverifiableKey(citation: Citation): string {
+/** The key {@link EXEMPT_CITATIONS} pins a citation by. */
+function exemptKey(citation: Citation): string {
   return `${citation.ruleFile} :: ${citation.cited}`;
 }
 
@@ -247,14 +251,8 @@ function resolvesInTree(citation: Citation, repoFileNames: Set<string>): boolean
     case 'bare':
       return repoFileNames.has(citation.cited);
     case 'path':
-      // Repo-root first, then `src/`-relative: the corpus writes both, and
-      // three live citations use the shorter form.
-      return (
-        existsSync(join(REPO_ROOT, citation.cited)) ||
-        existsSync(join(REPO_ROOT, 'src', citation.cited))
-      );
     case 'link':
-      return existsSync(resolve(RULES_DIR, citation.cited));
+      return candidateTargetsOf(citation).some(existsSync);
   }
 }
 
@@ -302,28 +300,46 @@ describe('.claude/rules module citations resolve against the tree', () => {
     expect(repoFileNames.has('rule-file-payload.test.ts')).toBe(true);
   });
 
-  it('pins every unverifiable citation by identity, in both directions', () => {
-    const found = [...new Set(citations.filter(isUnverifiable).map(unverifiableKey))].sort();
-    const pinned = Object.keys(UNVERIFIABLE_CITATIONS).sort();
-    // EQUALITY, not a count. A count could not tell one unverifiable citation
-    // from another, so swapping this entry for a different one passed silently
-    // — and a stale in-repo path re-spelled with a leading `/` laundered
-    // itself out of the dead-citation check by classifying as external.
+  it('keeps every exemption honest in both directions', () => {
+    const cited = new Map(citations.map((c) => [exemptKey(c), c]));
+    const pinned = Object.keys(EXEMPT_CITATIONS).sort();
+
+    // An entry nothing cites any more outlives the text it was written for.
     expect(
-      found,
-      'The set of .claude/rules citations this fence cannot verify has changed. Each one either ' +
-        'points outside the repo (resolves on a developer machine, never in CI) or is ' +
-        '`..`-relative with no resolvable base. Prefer naming the repo and path in prose over a ' +
-        'machine-specific absolute path; if the citation must stay, add it to ' +
-        'UNVERIFIABLE_CITATIONS with the reason.'
-    ).toEqual(pinned);
+      pinned.filter((key) => !cited.has(key)),
+      'These EXEMPT_CITATIONS entries are cited by no rule file any more. Drop them.'
+    ).toEqual([]);
+
+    // ...and an entry that RESOLVES is an exemption for something checkable,
+    // which hides the NEXT defect at that path rather than excusing this one.
+    // This is the direction a count could never express: it could see how
+    // many exemptions there were, never whether any had stopped earning its
+    // place.
+    //
+    // Asked ONLY of citations every candidate base keeps inside the repo. An
+    // out-of-repo path's resolution is exactly the machine-dependent fact this
+    // fence refuses to depend on — and the first cut of this very assertion
+    // consulted it, so it passed in CI and failed on the maintainer's machine,
+    // where the sibling checkout happens to exist. The hermeticity bug the
+    // fence exists to prevent, reproduced inside the fence.
+    expect(
+      pinned.filter((key) => {
+        const citation = cited.get(key);
+        if (citation === undefined) return false;
+        const targets = candidateTargetsOf(citation);
+        if (targets.length > 0 && !targets.some(insideRepo)) return false;
+        return resolvesInTree(citation, repoFileNames);
+      }),
+      'These EXEMPT_CITATIONS entries now RESOLVE, so the exemption does nothing except hide ' +
+        'future breakage at that path. Drop them — the citations are checked on their own.'
+    ).toEqual([]);
   });
 
   it('cites no module that is missing from the tree', () => {
     const dead = citations
       .filter(
         (c) =>
-          !isUnverifiable(c) &&
+          EXEMPT_CITATIONS[exemptKey(c)] === undefined &&
           !resolvesInTree(c, repoFileNames) &&
           DELETED_MODULE_CITATIONS[basenameOf(c.cited)] === undefined
       )

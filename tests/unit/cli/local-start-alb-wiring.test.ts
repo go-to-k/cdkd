@@ -19,9 +19,14 @@ import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emu
  *    by hoisting the bare call one statement up:
  *
  *    ```ts
+ *    // NOTE: historically this read buildAlbEmulatorStrategy(options), here.
  *    const chosen = albStrategy(options);
  *    await runEcsServiceEmulator(targets, options, chosen, cdkdExtraStateProviders);
  *    ```
+ *
+ *    The comment line is part of the mutation, not decoration: it is what
+ *    satisfied the positive `toContain`, since the module's only other
+ *    occurrence of that call text is the call the mutation removes.
  *
  *    35/35 stayed green while the engine received an UNDECORATED strategy —
  *    i.e. the warning never reaches a user, the exact regression the case was
@@ -30,8 +35,16 @@ import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emu
  *
  * So the question is answered BEHAVIOURALLY instead: run the real command
  * through commander, capture the third argument the action passes to
- * `runEcsServiceEmulator`, and drive THAT object. Whatever the action builds —
- * inline, hoisted, renamed, or via the named seam — has to emit the warning.
+ * `runEcsServiceEmulator`, and drive THAT object. However the action builds it
+ * — inline, hoisted, renamed, no-op-wrapped, or via the named seam — the
+ * object that reaches the engine has to emit the warning. Measured against ten
+ * such spellings in review round 4; every one reddens.
+ *
+ * The bound, stated because an over-claim here is the same defect as a fence
+ * that cannot see: this is ARGV-DRIVEN, so it sees only the argv it drives. A
+ * conditional keyed on a flag no case varies escapes it. The cases below vary
+ * the flags a branch would plausibly key on; a conditional keyed on something
+ * else (an env var, `isTTY`) still gets through.
  *
  * `parseAsync` rather than `parse`: the action is async, and
  * `cmd-parse-stub-gate` deliberately exempts the async spelling because the
@@ -86,29 +99,67 @@ const stacks = [
 ];
 
 async function strategyHandedToEngine(argv: string[]): Promise<EmulatorStrategy> {
-  captured.strategy = undefined;
-  const cmd = createLocalStartAlbCommand();
-  await cmd.parseAsync(argv, { from: 'user' });
+  // cdk-local wraps this action in `withErrorHandling`, whose `handleError`
+  // ends in `process.exit(1)`. Unspied, a regression that makes the action
+  // THROW would take the vitest worker down instead of failing the case — the
+  // run would report a crashed worker, not a broken wiring, which is exactly
+  // the diagnosis the receipt below exists to give. Convert the exit into a
+  // throw so it surfaces as a normal failure.
+  const exit = vi
+    .spyOn(process, 'exit')
+    .mockImplementation(((code?: number) => {
+      throw new Error(`the action exited (${code}) instead of reaching the engine`);
+    }) as never);
+  try {
+    captured.strategy = undefined;
+    captured.extraStateProviders = undefined;
+    const cmd = createLocalStartAlbCommand();
+    await cmd.parseAsync(argv, { from: 'user' });
   // A receipt, not politeness: if the action ever stops reaching the engine,
   // every assertion below would otherwise fail as "cannot read resolveBoots of
   // undefined" and read as a broken mock rather than a broken wiring.
-  const { strategy } = captured;
-  if (strategy === undefined) {
-    throw new Error('the action never called runEcsServiceEmulator');
+    const { strategy } = captured;
+    if (strategy === undefined) {
+      throw new Error('the action never called runEcsServiceEmulator');
+    }
+    return strategy;
+  } finally {
+    exit.mockRestore();
   }
-  return strategy;
 }
 
 const warningsFor = (strategy: EmulatorStrategy): string[] =>
   strategy.resolveBoots(stacks as never, ['Alb16C2F182']).warnings;
 
 describe('the strategy `cdkd local start-alb` hands the engine', () => {
-  it('warns about the Lambda target group under --from-state', async () => {
-    const strategy = await strategyHandedToEngine(['My/Alb', '--from-state']);
-    const warned = warningsFor(strategy).join('\n');
-    expect(warned).toContain('does not reach the container environment');
-    expect(warned).toContain('ApiFnE0725F78');
-  });
+  // An argv-driven fence only sees the argv it drives. Review round 4 measured
+  // that a conditional keyed on a flag this file never varied —
+  // `options.watch ? albStrategy(options) : buildAlbEmulatorStrategy(options)`
+  // — survived the whole `tests/unit/cli` suite, so `start-alb --from-state
+  // --watch` would hand the engine an undecorated strategy. These are the
+  // flags a branch would plausibly key on, driven alongside `--from-state`.
+  //
+  // The residual bound is real and worth stating rather than papering over: a
+  // conditional keyed on something else entirely (a random value, an env var,
+  // `isTTY`) still escapes. What this closes is the plausible-refactor class,
+  // not every conceivable one.
+  const FLAG_COMBINATIONS: string[][] = [
+    [],
+    ['--watch'],
+    ['--tls'],
+    ['--lb-port', '80=8080'],
+    ['--no-pull'],
+  ];
+
+  it.each(FLAG_COMBINATIONS)(
+    'warns about the Lambda target group under --from-state %s',
+    async (...extra: string[]) => {
+      const strategy = await strategyHandedToEngine(['My/Alb', '--from-state', ...extra]);
+      const warned = warningsFor(strategy).join('\n');
+      expect(warned).toContain('does not reach the container environment');
+      expect(warned).toContain('ApiFnE0725F78');
+    }
+  );
 
   it('says the ECS half still works, because this ALB has one', async () => {
     // The `ecsNote` PRESENT branch. Round 3 measured that replacing the
@@ -130,7 +181,14 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
     // tokens.
     const strategy = await strategyHandedToEngine(['My/Alb', '--from-state']);
     const warned = warningsFor(strategy).join('\n');
-    expect(warned).toContain('The only state source the Lambda path reads is --from-cfn-stack');
+    // Asserted as ONE span across the source's concatenation seams: review
+    // measured that dropping a trailing space produced `whichreaches` in the
+    // user-facing text while every shorter `toContain` stayed green.
+    expect(warned).toContain(
+      'The only state source the Lambda path reads is --from-cfn-stack <name>, which REPLACES ' +
+        '--from-state (the two are mutually exclusive) and reaches both target kinds on a ' +
+        'CloudFormation-deployed stack; otherwise override the affected variables with --env-vars.'
+    );
     expect(warned).toContain('--env-vars');
     expect(warned).toContain('go-to-k/cdk-local#707');
   });
