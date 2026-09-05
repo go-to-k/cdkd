@@ -122,8 +122,8 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_641,
-    corpusBytes: 171_743,
-    largest: { file: 'verify.md', bytes: 27_036 },
+    corpusBytes: 171_856,
+    largest: { file: 'verify.md', bytes: 27_149 },
     runnerUp: { file: 'implement.md', bytes: 26_908 },
   },
 };
@@ -168,6 +168,13 @@ const MIN_REFERENCE_FILES = 6;
 // by zero for anything added there, until it overtakes verify.md (128 B of
 // room at this writing) and the bound snaps tighter. Read a widening margin as
 // evidence about the file that shrank, never as room the additions created.
+// The 2026-09-05 go-to-k/cdkd#2571 retro then added ONE rule to verify.md 8-h
+// -- a nit is not a work item, measured over four review rounds -- and paid
+// for it entirely inside 8-h by compressing six neighbouring bullets, landing
+// +113 B net on the LARGEST file. Margin 165 -> 52 B. That confirms the
+// paragraph above from the other side: an addition to the largest file moves
+// the binding bound one-for-one, while the same bytes in the runner-up move it
+// not at all.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this

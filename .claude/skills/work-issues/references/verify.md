@@ -327,34 +327,37 @@ code defects and FIVE false statements in prose. Habits that each caught one:
 
 ### 8-h. Reviewer findings are inputs, not verdicts
 
+- **A NIT is not a work item.** Fix what a reviewer DEMONSTRATES is wrong;
+  leave the polish. Over four rounds on go-to-k/cdkd#2592 every blocker was
+  fixed correctly and every NEW defect came from a low-severity suggestion —
+  a "no escape hatch" nit produced a flag that could not reach green; a "walk
+  `err.cause`" nit, a walk claiming one hop while recursing unbounded. The
+  tell: the new code answers a hypothetical, not an observation. When three
+  rounds have each found a defect inside the last one's fix, the APPROACH
+  changes — WITHDRAW the speculative addition rather than bounding it, and
+  brief the next round to report only demonstrable defects.
 - **A reviewer's suggested FIX can be wrong even when its finding is right**
-  — derive regexes, bounds and constants from the code that PRODUCES the
-  value, and probe both directions (go-to-k/cdkd#2052: the suggested filter's
-  `+` would have skipped keys cdkd really writes, trading over-collection for
-  invisible under-collection).
-- **Check a reviewer's PREMISE before acting, and say so when you decline** —
-  record the trace in the PR body; a declined finding with evidence can be
-  re-judged, a silently dropped one looks like an oversight.
-- **An ABSENCE claim ("no such fence exists", "that string is nowhere in the
-  source") is the one a reviewer is least able to establish — verify it by
-  RUNNING the thing said not to exist** (one nearly broke a byte budget 2 B
-  under its cap). **A grep cannot see an INTERPOLATED string**:
-  go-to-k/cdkd#2553's reviewer called a live integ sentinel dead because its
-  `Failed to update Vault` needle is nowhere in `src` — it is built at runtime
-  from `Failed to ${changeType} ${logicalId}`, and the suggested fix aimed it
-  at the wrapped CAUSE. Find the TEMPLATE, not the literal.
+  — derive regexes, bounds and constants from the code that PRODUCES the value
+  and probe both directions (go-to-k/cdkd#2052).
+- **Check a reviewer's PREMISE before acting, and record a decline in the PR
+  body** — with evidence it can be re-judged; silently dropped it reads as an
+  oversight.
+- **An ABSENCE claim ("that string is nowhere in the source") is the one a
+  reviewer is least able to establish — verify it by RUNNING the thing said
+  not to exist.** **A grep cannot see an INTERPOLATED string**:
+  go-to-k/cdkd#2553's reviewer called a live integ sentinel dead over a needle
+  built at runtime from `Failed to ${changeType} ${logicalId}`. Find the
+  TEMPLATE.
 - **Your own BRIEF is a published claim** — grep every mechanism claim before
-  it goes into an instruction; the trigger is DESTINATION, not doubt.
-- **A REVIEWER brief fails worse** — a false premise aims the whole round at
-  the wrong subject and its report still reads as authoritative (a false
-  region-residency mechanism reached three briefs). Correct one in-flight.
-- **When two reviewers CONTRADICT each other, settle it in the code yourself
-  before forwarding either** — say which was right and why. **For a claim
-  about an EXTERNAL system the tie-break is a MEASUREMENT**, since neither
-  they nor you can settle it (a `NoEcho` dispute was settled by a live CFn A/B
-  that overturned the lane's design — go-to-k/cdkd#2274). The tell is
-  grammatical: a disputed sentence naming a SERVICE rather than a file means
-  stop reading code and measure.
+  it ships in an instruction; the trigger is DESTINATION, not doubt.
+- **A REVIEWER brief fails worse** — a false premise aims the round at the
+  wrong subject and the report still reads as authoritative (one false
+  mechanism reached three briefs). Correct one in-flight.
+- **When two reviewers CONTRADICT each other, settle it in the code yourself**
+  — say which was right and why. **For a claim about an EXTERNAL system the
+  tie-break is a MEASUREMENT** (go-to-k/cdkd#2274, a `NoEcho` dispute settled
+  by a live CFn A/B): a disputed sentence naming a SERVICE, not a file, means
+  stop reading and measure.
 
 ### 8-i. Fresh deploys, markers, and who sets what
 
