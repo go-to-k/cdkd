@@ -685,7 +685,8 @@ export function renderStatefulReason(reason: StatefulReason): string {
       // FIVE producers, and only the hedged wording is true of all of them —
       // the probe found a stream, it answered without settling the question,
       // it hit a not-found in an unverified region, it THREW, and the
-      // mid-deploy arm ABOVE where no probe runs at all. The MIDDLE TWO are
+      // mid-deploy arm ABOVE where no probe runs at all. The NOT-FOUND-IN-AN-
+      // UNVERIFIED-REGION and THREW arms are
       // the divergence `recreate-targets.ts` documents: a probe failure fails
       // CLOSED here and OPEN for the bucket. The mid-deploy arm is NOT part of
       // it — the bucket's arm beside it answers `'has-objects'` on the same

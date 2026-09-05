@@ -21,7 +21,7 @@
  * unchanged. That case is deliberately source-only.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 
@@ -245,8 +245,19 @@ const PINNED_FIXTURES: ReadonlyArray<readonly [string, string]> = [
   ['recreate-via-cc-api', 'S3 bucket is not provably empty'],
 ];
 
-const fixtureText = (name: string): string =>
-  readFileSync(join(REPO_ROOT, 'tests/integration', name, 'verify.sh'), 'utf8');
+const fixtureText = (name: string): string => {
+  const path = join(REPO_ROOT, 'tests/integration', name, 'verify.sh');
+  // A RENAMED fixture would otherwise fail with a bare ENOENT, while a
+  // RE-ANCHORED one gets the crafted "update PINNED_FIXTURES" message below.
+  // Same remedy, so say the same thing.
+  if (!existsSync(path)) {
+    throw new Error(
+      `tests/integration/${name}/verify.sh does not exist. If the fixture was renamed or ` +
+        `removed, update PINNED_FIXTURES; if its sentinel moved, update the needle beside it.`
+    );
+  }
+  return readFileSync(path, 'utf8');
+};
 
 describe('a fixture sentinel still DISCRIMINATES one stateful reason (#2615)', () => {
   it('found every reason literal (floor, so every check below is non-vacuous)', () => {
@@ -263,6 +274,17 @@ describe('a fixture sentinel still DISCRIMINATES one stateful reason (#2615)', (
     expect(SHARED_PHRASES).toContain('is not provably empty');
     expect(SHARED_PHRASES).toContain('not provably empty');
     expect(SHARED_PHRASES).toContain('provably empty');
+  });
+
+  it('pinned every fixture the two it.each blocks walk (floor, for the same reason)', () => {
+    // The sibling floor above exists because an empty slice makes its scans
+    // hold trivially. The same hazard is worse here and was open until the
+    // review round measured it: `it.each` is `cases.forEach(...)`, so an
+    // EMPTY array registers zero tests and the two blocks below vanish with
+    // no failure — 13 tests silently become 11 when one entry is deleted.
+    // Per-entry resolution is already checked (a renamed fixture reds on
+    // `readFileSync`); this closes the cardinality half.
+    expect(PINNED_FIXTURES).toHaveLength(2);
   });
 
   it.each(PINNED_FIXTURES)('%s greps the reason it is about, and only that one', (name, needle) => {

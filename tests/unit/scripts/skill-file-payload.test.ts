@@ -249,7 +249,7 @@ const MIN_REFERENCE_FILES = 6;
 // retro.md compressed six passages that carried an incident at paragraph
 // length where section 10-c asks for one line, the largest being 10-b's
 // restatement of 10-c's own byte-cap rationale. Contrast the
-// go-to-k/cdkd#2595 round at line 178 and the batching pass below it, the two
+// go-to-k/cdkd#2595 round and the batching pass below it, the two
 // that ended NET NEGATIVE.
 // implement.md's +366 B was NOT free, and this file predicted why: the
 // crossover the comment above forecast ("128 B of room at this writing") has
