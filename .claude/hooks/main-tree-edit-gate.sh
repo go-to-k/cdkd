@@ -87,71 +87,60 @@ case "$tool" in
   Bash)
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
     [[ -z "$cmd" ]] && exit 0
-    # A `cd <dir> &&` BEFORE the write changes the base dir for relative paths.
-    # Resolved by the shared matcher, which sees a quoted or escaped `cd`
-    # (go-to-k/cdkd#2614) and composes chained relative ones. It prints NOTHING
-    # when no `cd` was resolved, which is why `base_dir` is only overwritten on
-    # a non-empty answer -- an unresolvable `cd "$WT"` must leave the payload
-    # cwd in place rather than becoming an empty base.
+    # A LEADING `cd <dir> &&` changes the base dir for relative paths, and the
+    # verb is UNQUOTED before it is matched (go-to-k/cdkd#2614). That issue was
+    # exactly this: the verb was compared as LITERAL text while the VALUE was
+    # already being unquoted one line down, so `"cd" <main-tree> && echo x >
+    # <tracked>` -- and its `'cd'` / `\cd` spellings -- left the base at the
+    # payload cwd and the gate exited 0, where the literal spelling exited 2.
     #
-    # ONLY THE PREFIX BEFORE THE EARLIEST WRITE IS SCANNED, and only after
-    # subshell / substitution spans are removed. `cmd_last_cd_target` follows
-    # EVERY `cd` in command position -- the library's own doc names a trailing
-    # one hijacking the lookup as the hazard its optional VERB argument exists
-    # for, and this gate has no verb to stop the walk. Handing it the whole
-    # command re-opened this gate's own founding incident, measured against the
-    # pre-go-to-k/cdkd#2614 hook with the payload cwd in the main tree on
-    # `main`:
+    # WHY THE SCAN IS STILL ANCHORED AT THE START, after three rounds of trying
+    # to widen it. Each widening fixed its predecessor and shipped a new hole,
+    # every one measured against `origin/main`:
     #
-    #   echo hi > <tracked> && cd /tmp            rc=2 -> 0
-    #   echo x | tee <tracked> && cd /tmp         rc=2 -> 0
-    #   echo hi > <tracked>; x=$(cd /tmp && pwd)  rc=2 -> 0
+    #   whole command through `cmd_last_cd_target`
+    #     -- follows EVERY `cd`, so one AFTER the write moved the base:
+    #        `echo hi > <tracked> && cd /tmp` went rc=2 -> 0, this gate's own
+    #        founding incident, reachable with ten characters and no quoting.
+    #   truncate at the earliest write, with a `$( )` / backtick / `( )` stripper
+    #     -- the stripper was depth-1 and took the FIRST `)`, so
+    #        `r=$(x=$(pwd); cd /tmp && pwd); echo hi > <tracked>` leaked the cd
+    #        (rc=0 vs main's 2); and truncating at a `>` inside a QUOTED
+    #        argument dropped a real `cd`, which is a SILENT BYPASS whenever the
+    #        payload cwd is a feature worktree
+    #        (`grep -n '=>' a && cd <main> && echo hi > <tracked>`, rc=0).
+    #   an ordered walk over `gate_segments`
+    #     -- closes both of those, and still leaks a `cd` inside a plain
+    #        SUBSHELL, which the segmenter emits in place:
+    #        `( (true) ; cd /tmp ) ; echo hi > <tracked>` rc=0 vs main's 2.
     #
-    # -- cheaper than the quoted-`cd` spelling go-to-k/cdkd#2614 closed, and it
-    # fires by ACCIDENT: `$(cd <abs> && pwd)` is an ordinary path-resolution
-    # idiom. The same walk also produced the opposite error, a false block on
-    # the standing post-merge step from a FEATURE worktree
-    # (`echo hi > f && cd <main> && git pull`, rc=0 -> 2). Bounding the scan
-    # fixes both directions at once: a `cd` after the write never moved the
-    # write, and a `cd` inside `$( )` or `( )` never moved the caller.
-    #
-    # A KNOWN FALSE-REFUSAL CLASS, named rather than left implicit: a `>` or a
-    # `tee` inside a QUOTED argument truncates the prefix and drops a real `cd`
-    # after it, so `echo "a > b" && cd <feature-wt> && echo x > <tracked>` from
-    # a main-tree cwd BLOCKS. The stripper that would tell a quoted `>` from a
-    # real one is not length-preserving, so its offsets cannot be mapped back,
-    # and running the whole scan on the stripped text would delete the quoted
-    # `"cd"` that go-to-k/cdkd#2614 exists to see. This gate fires on
-    # `Edit|Write|Bash`, so the class is written up in
-    # .claude/rules/hooks-main-tree-edit.md rather than only here. It is the
-    # loud direction, and it is the answer the pre-go-to-k/cdkd#2614 regex also
-    # gave, since its `cd` was not leading.
-    # `tee` carries NO trailing space here: `tee\t<file>` and a line-ending
-    # `tee` are writes too, and requiring the space let them through.
-    # Over-truncating is the safe direction -- a shorter prefix resolves FEWER
-    # `cd`s, so the base stays the payload cwd and the gate blocks more.
-    cd_scan="$cmd"
-    for __w in '>' 'tee' 'sed -i'; do
-      case "$cd_scan" in *"$__w"*) cd_scan="${cd_scan%%"$__w"*}" ;; esac
-    done
-    # Each arm computes its OWN closer. An earlier revision picked `__pre` /
-    # `__rest` in the `$(` arm and then chose the closing delimiter by
-    # re-testing the ORIGINAL string for a backtick pair, so a command carrying
-    # both stripped to the wrong closer.
-    while :; do
-      case "$cd_scan" in
-        *'$('*')'*)
-          __pre="${cd_scan%%'$('*}"; __rest="${cd_scan#*'$('}"; __rest="${__rest#*')'}" ;;
-        *'`'*'`'*)
-          __pre="${cd_scan%%'`'*}";  __rest="${cd_scan#*'`'}";  __rest="${__rest#*'`'}" ;;
-        *'('*')'*)
-          __pre="${cd_scan%%'('*}";  __rest="${cd_scan#*'('}";  __rest="${__rest#*')'}" ;;
-        *) break ;;
-      esac
-      cd_scan="$__pre$__rest"
-    done
-    cdt=$(cmd_last_cd_target "$cd_scan" "$base_dir" 2>/dev/null || true)
-    [[ -n "$cdt" ]] && base_dir="$cdt"
+    # Every one of those was a hook-local shell parser written inside the
+    # change whose purpose was DELETING a hook-local shell parser, and each
+    # traded a LOUD failure for a SILENT one. The anchored form has no
+    # fail-open: a `cd` it cannot see simply leaves the base at the payload
+    # cwd, which BLOCKS. Its cost is two false refusals -- a command whose
+    # first segment is a substitution or a subshell, with a real `cd` after it,
+    # is not followed -- and those are pinned as cases in the suite rather than
+    # left to be rediscovered. Widening this is go-to-k/cdkd#2650, which
+    # carries all three measurement tables.
+    if [[ "$cmd" =~ ^[[:space:]]*([^[:space:]]+)[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
+      __verb=$(gate_unquote_span "${BASH_REMATCH[1]}")
+      __verb="${__verb//\\/}"
+      if [[ "$__verb" == "cd" ]]; then
+        cdt="${BASH_REMATCH[2]}"
+        cdt=$(gate_unquote "$cdt")
+        # An UNEXPANDED path is not a path: `cd "$WT" && …` must leave the
+        # payload cwd in place rather than resolving to `<cwd>/$WT`, which no
+        # `git -C` can read.
+        case "$cdt" in
+          *'$'* | *'`'*) : ;;
+          *)
+            [[ "$cdt" != /* ]] && cdt="$base_dir/$cdt"
+            base_dir="$cdt"
+            ;;
+        esac
+      fi
+    fi
     # Extract LITERAL redirection / write targets. We deliberately
     # skip tokens containing `$` (unexpandable variables) and `*?[`
     # (globs) — we cannot resolve those statically.

@@ -36,22 +36,26 @@ toll only on a session actually touching these two hooks.
   the local regex it replaced read the verb `cd` as literal text while
   unquoting its VALUE, so `"cd" <main-tree> && echo x > <tracked>` (and `'cd'`
   / `\cd`) exited 0 where the literal spelling exited 2. Load fails CLOSED.
-  **The scan is bounded to the prefix before the earliest write, with
-  subshell / substitution spans removed** — `cmd_last_cd_target` follows EVERY
-  `cd` in command position, and handing it the whole command re-opened this
-  gate's founding incident: `echo hi > <tracked> && cd /tmp` went rc=2 -> 0,
-  as did the `; cd`, `tee`, `(cd …)` and `$(cd … && pwd)` spellings, the last
-  being an ordinary path-resolution idiom this repo's hooks carry in ~20
-  files. The same walk false-blocked the standing post-merge
-  `echo hi > f && cd <main> && git pull` from a feature worktree (rc=0 -> 2).
-  **KNOWN FALSE REFUSAL, and it is the price of that bound**: a `>` or `tee`
-  inside a QUOTED argument truncates the prefix and drops a real `cd` after it,
-  so `echo "a > b" && cd <feature-wt> && echo x > <tracked>` from a main-tree
-  cwd BLOCKS. Distinguishing a quoted `>` needs a stripper whose offsets do not
-  map back to the original, and running the whole scan on stripped text would
-  delete the quoted `"cd"` go-to-k/cdkd#2614 exists to see. Loud direction, the
-  same answer the pre-#2614 regex gave, and pinned as case 31 rather than left
-  to be rediscovered.
+  **The scan stays ANCHORED at the start of the command**, and three widenings
+  were built and reverted to keep it that way — each fixed its predecessor and
+  shipped a SILENT failure where the anchored form has only loud ones. Passing
+  the whole command to `cmd_last_cd_target` let a `cd` AFTER the write move the
+  base (`echo hi > <tracked> && cd /tmp`, rc=2 → 0 — this gate's founding
+  incident, ten characters, no quoting trick). Truncating at the earliest write
+  with a hand-rolled `$( )` / backtick / `( )` stripper leaked a `cd` through a
+  nested or quoted `)`, and dropped a real `cd` when a `>` sat inside a QUOTED
+  argument — a BYPASS, not a refusal, whenever the payload cwd is a feature
+  worktree. An ordered `gate_segments` walk closed both of those and still
+  leaked a `cd` inside a plain subshell, which the segmenter emits in place.
+  Every one of them was a hook-local shell parser written inside the change
+  whose purpose was deleting a hook-local shell parser.
+  **The anchored form's cost is FALSE REFUSALS**, pinned as cases 29-31: a
+  command whose first segment is a substitution or a subshell has its real `cd`
+  ignored, so a write meant for a feature worktree is refused from a main-tree
+  cwd. Loud, one rephrase away, and the direction this repo prefers. The three
+  measurement tables and the remaining option — teaching `gate_segments` to
+  mark subshell-derived segments, which helps every consumer — are in
+  go-to-k/cdkd#2650.
   Smoke test: `main-tree-edit-gate.test.sh` (31 cases). The three quoted-`cd`
   spellings carry a literal control from the SAME foreign cwd so the trio
   cannot pass vacuously — and the control PASSES against the pre-#2614 hook,

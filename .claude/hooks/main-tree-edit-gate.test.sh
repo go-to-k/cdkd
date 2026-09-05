@@ -171,6 +171,9 @@ run_case 2 "Bash the 2026-06-21 ledger shape, with a trailing cd" \
 run_case 0 "Bash write in feature tree then '&& cd <main> && git pull'" \
   "$(jq -nc --arg cmd "echo hi > docs/_generated/ledger.tsv && cd $MAIN && git pull" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
+# The scan is ANCHORED, so a `cd` that is not the first command is not
+# followed and the base stays the payload cwd -- here the feature worktree, so
+# the write is unprotected and this PASSES. Same answer as origin/main.
 run_case 0 "Bash a SUBSHELL cd <main> before a write in the feature tree" \
   "$(jq -nc --arg cmd "(cd $MAIN && git fetch) && echo hi > docs/x" --arg cwd "$WT" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
@@ -194,22 +197,25 @@ run_case 2 "Bash 'tee<TAB>ledger.tsv' then '&& cd /tmp' in main tree" \
 # revision picked the opening delimiter from one arm and the CLOSING one by
 # re-testing the original string, so it stripped to the wrong closer and lost
 # the real `cd` after it.
-run_case 0 "Bash a backtick span, a \$( ) span, then 'cd <wt>' and a write" \
+# KNOWN FALSE REFUSALS, and the declared price of an anchored scan: a command
+# whose FIRST segment is a substitution or a subshell has its real `cd` ignored,
+# so the base stays the payload cwd -- the main tree here -- and the write is
+# refused although it lands in the feature worktree. Loud, one rephrase away,
+# and the direction this repo prefers: three attempts to widen the scan each
+# traded this for a SILENT miss (go-to-k/cdkd#2650 carries the tables).
+run_case 2 "Bash a backtick span, a \$( ) span, then 'cd <wt>' and a write (false refusal)" \
   "$(jq -nc --arg cmd "x=\`date\`; y=\$(pwd); cd $WT && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
-run_case 0 "Bash the same two spans in the other order" \
+run_case 2 "Bash the same two spans in the other order (false refusal)" \
   "$(jq -nc --arg cmd "y=\$(pwd); x=\`date\`; cd $WT && echo hi > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
-# 31. A KNOWN FALSE REFUSAL, pinned at its real value rather than left to be
-# rediscovered: a `>` inside a QUOTED argument truncates the prefix and drops
-# the real `cd` after it, so this blocks although the write lands in the
-# feature worktree. Telling a quoted `>` from a real one needs a stripper whose
-# offsets do not map back, and running the scan on stripped text would delete
-# the quoted `"cd"` go-to-k/cdkd#2614 exists to see. Loud direction, and the
-# same answer the pre-#2614 regex gave. If a later change makes this PASS
-# without re-opening cases 16-23, that is an improvement -- update the case.
-run_case 2 "Bash a quoted '>' before a real cd (documented false refusal)" \
+# 31. Same class as 29-30: the `cd` is not first, so it is not followed. Kept
+# separate because a quoted `>` is what the TRUNCATION revision tripped over --
+# it dropped the `cd` too, but silently BYPASSED instead of refusing whenever
+# the payload cwd was a feature worktree. Pinning the refusing answer here is
+# what makes that regression visible if the scan is ever widened again.
+run_case 2 "Bash a quoted '>' before a real cd (false refusal)" \
   "$(jq -nc --arg cmd "echo \"a > b\" && cd $WT && echo x > docs/_generated/ledger.tsv" --arg cwd "$MAIN" \
     '{tool_name:"Bash", cwd:$cwd, tool_input:{command:$cmd}}')"
 
