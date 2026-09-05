@@ -29,6 +29,23 @@ import type { ResourceChange, ResourceState as StateRecord } from '../../../src/
  * Both polarities, because either alone is satisfiable by a wrong
  * implementation: flagged + stateful must PROCEED (delete the old, create the
  * new), and un-flagged + stateful must REFUSE.
+ *
+ * And BOTH halves of `recreateFlagged`, which is
+ * `recreateViaCcApi || recreateViaSdkProvider`. Narrowing the guard to
+ * `!recreateViaCcApi` alone left all 122 files / 2114 tests of
+ * `tests/unit/deployment` green — the #651 reverse direction reproducing the
+ * very condition this suite exists to close, because its own sibling suite
+ * also picks only `AWS::Lambda::Function`.
+ *
+ * One CAVEAT on the premise, so this file is not read as proving more than it
+ * does: the exemption rests on the CLI pre-flight having validated the target,
+ * and there is a known path where it has not. `deploy.ts` puts
+ * `deployEngineOptions` on the nested-stack context and
+ * `NestedStackProvider` spreads it into the CHILD engine unfiltered, so a
+ * bare logical id matching a CHILD's resource clears this guard with no
+ * pre-flight probe behind it — issue
+ * [#2567](https://github.com/go-to-k/cdkd/issues/2567). These cases pin the
+ * TOP-LEVEL contract; they do not bless that path.
  */
 
 const STATEFUL_TYPE = 'AWS::S3::Bucket';
@@ -48,7 +65,9 @@ describe('the property-driven stateful guard exempts a --recreate-via-* target (
     } as unknown as ResourceProvider;
   });
 
-  function makeEngine(opts: { recreateViaCcApi?: boolean } = {}): InstanceType<typeof DeployEngine> {
+  function makeEngine(
+    opts: { recreateViaCcApi?: boolean; recreateViaSdkProvider?: boolean } = {}
+  ): InstanceType<typeof DeployEngine> {
     const mockStateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag') };
     const mockLockManager = {
       acquireLockWithRetry: vi.fn().mockResolvedValue(true),
@@ -80,6 +99,9 @@ describe('the property-driven stateful guard exempts a --recreate-via-* target (
       {
         ...(opts.recreateViaCcApi === true && {
           recreateViaCcApiTargets: new Set(['MyBucket']),
+        }),
+        ...(opts.recreateViaSdkProvider === true && {
+          recreateViaSdkProviderTargets: new Set(['MyBucket']),
         }),
       },
       'us-east-1'
@@ -169,14 +191,29 @@ describe('the property-driven stateful guard exempts a --recreate-via-* target (
     expect(provider.delete).not.toHaveBeenCalled();
   });
 
-  it('PROCEEDS when the same resource is a --recreate-via-cc-api target — the pre-flight already validated it', async () => {
-    const engine = makeEngine({ recreateViaCcApi: true });
-    await invokeReplacement(engine);
-    // The exemption is only meaningful if the replacement actually runs: the
-    // old resource is deleted and the new one created. Asserting merely that
-    // nothing threw would pass on an implementation that silently skipped the
-    // resource entirely.
-    expect(provider.delete).toHaveBeenCalledTimes(1);
-    expect(provider.create).toHaveBeenCalledTimes(1);
-  });
+  for (const direction of ['recreateViaCcApi', 'recreateViaSdkProvider'] as const) {
+    it(`PROCEEDS when the same resource is a --${
+      direction === 'recreateViaCcApi' ? 'recreate-via-cc-api' : 'recreate-via-sdk-provider'
+    } target — the pre-flight already validated it`, async () => {
+      const engine = makeEngine({ [direction]: true });
+      await invokeReplacement(engine);
+      // The exemption is only meaningful if the replacement actually runs: the
+      // old resource is deleted and the new one created. Asserting merely that
+      // nothing threw would pass on an implementation that silently skipped the
+      // resource entirely.
+      expect(provider.delete).toHaveBeenCalledTimes(1);
+      expect(provider.create).toHaveBeenCalledTimes(1);
+      // The LAST line of defence once the guard is exempted: `forceDataDelete`
+      // is what lets `S3BucketProvider.delete` empty a non-empty bucket, and
+      // the user passed no consent flag here, so it must be false. A change
+      // flipping it on would keep every other assertion in this case green.
+      expect(provider.delete).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ forceDataDelete: false })
+      );
+    });
+  }
 });

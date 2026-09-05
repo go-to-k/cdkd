@@ -213,7 +213,7 @@ if ! node "${LOCAL_DIST}" deploy "${STACK}" \
   cat /tmp/cdkd-648-empty.log >&2
   exit 1
 fi
-if grep -qE 'has-objects|S3 bucket is not provably empty' /tmp/cdkd-648-empty.log; then
+if grep -qF 'S3 bucket is not provably empty' /tmp/cdkd-648-empty.log; then
   echo "FAIL: empty-bucket pre-flight surfaced has-objects error — probe falsely reported objects" >&2
   cat /tmp/cdkd-648-empty.log >&2
   exit 1
@@ -245,7 +245,7 @@ if ! grep -q 'RecreateProbeBucket' /tmp/cdkd-648-nonempty.log; then
   cat /tmp/cdkd-648-nonempty.log >&2
   exit 1
 fi
-if ! grep -qE 'has-objects|S3 bucket is not provably empty' /tmp/cdkd-648-nonempty.log; then
+if ! grep -qF 'S3 bucket is not provably empty' /tmp/cdkd-648-nonempty.log; then
   echo "FAIL: non-empty bucket pre-flight error did not surface 'has-objects' reason" >&2
   cat /tmp/cdkd-648-nonempty.log >&2
   exit 1

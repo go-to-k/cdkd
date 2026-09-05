@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { RecreateTarget } from '../../../../src/deployment/recreate-targets.js';
+import { renderStatefulReason } from '../../../../src/provisioning/stateful-types.js';
 
 const warnSpy = vi.fn();
 const infoSpy = vi.fn();
@@ -187,11 +188,10 @@ describe('promptRecreateConfirm (#649)', () => {
       const warnLines = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
       expect(warnLines).toContain('**DATA LOSS** NeverExpireLg (AWS::Logs::LogGroup)');
       expect(warnLines).toContain('DATA: all data in NeverExpireLg will be lost');
-      // A RE-DERIVED reason gets its own wording, not `renderStatefulReason`'s.
-      // The probe did not run here, so the plan may report that emptiness was
-      // not established — and must not borrow a sentence that asserts what
-      // WAS found (`renderStatefulReason('has-objects')` is the assertive "S3
-      // bucket is non-empty", and the two types share this line).
+      // A RE-DERIVED reason gets its own wording, not `renderStatefulReason`'s
+      // — and since issue #2615 not because the shared sentence overstates
+      // (it is hedged now) but because this path knows WHY nothing was
+      // measured: the force flag skipped the probe.
       expect(warnLines).toContain(
         'stateful (emptiness not established — --force-stateful-recreation skips the probe)'
       );
@@ -222,7 +222,9 @@ describe('promptRecreateConfirm (#649)', () => {
       // path knows something narrower and more useful: the force flag SKIPPED
       // the probe. Named as the CURRENT sentence, not a retired one, or the
       // assertion passes because the string exists nowhere.
-      expect(warnLines).not.toContain('S3 bucket is not provably empty');
+      // Derived, not a literal: under a reword this stays discriminating
+      // instead of silently passing because the string it names is retired.
+      expect(warnLines).not.toContain(renderStatefulReason('has-objects'));
       expect(warnLines).toContain(
         'stateful (emptiness not established — --force-stateful-recreation skips the probe)'
       );
