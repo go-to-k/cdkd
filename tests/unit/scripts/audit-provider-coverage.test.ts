@@ -17,6 +17,8 @@ import {
   paginateListTypes,
   parseCliArgs,
   parseRegisteredTypes,
+  assertReportIsComplete,
+  isRetryableDescribeTypeError,
   partitionCoverage,
   renderMarkdown,
   renderSummaryToStdout,
@@ -227,6 +229,148 @@ describe('describeTypeWithRetry', () => {
   });
 });
 
+describe('isRetryableDescribeTypeError', () => {
+  it('accepts throttles and transient transport failures, refuses the rest', () => {
+    const named = (name: string, message = 'x') => Object.assign(new Error(message), { name });
+    // Each accepted shape reaches the classifier through ONE arm only. The
+    // first cut used `Object.assign(new Error('read ECONNRESET'), { code:
+    // 'ECONNRESET' })`, where the message ALSO matches — so deleting either
+    // arm stayed green and neither was independently fenced.
+    for (const [label, err] of [
+      ['name: ThrottlingException', named('ThrottlingException')],
+      ['name: Throttling', named('Throttling')],
+      ['name: TimeoutError', named('TimeoutError')],
+      ['name: RequestTimeout', named('RequestTimeout')],
+      ['name: AbortError', named('AbortError')],
+      // MESSAGE arm only — no `code`, and a name of plain `Error`. This is the
+      // measured shape (issue #2571).
+      ['message only: socket hang up', new Error('socket hang up')],
+      // CODE arm only — the message deliberately says nothing the regex knows.
+      // Every errno token gets BOTH shapes. The first split fixed the mutual
+      // masking between the two arms but left each TOKEN in one arm only, so
+      // dropping an individual entry from either list stayed green.
+      ...(
+        ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND'] as const
+      ).flatMap(
+        (code) =>
+          [
+            [`code only: ${code}`, Object.assign(new Error('operation failed'), { code })],
+            [`message only: ${code}`, new Error(`connect ${code} 10.0.0.1:443`)],
+          ] as const
+      ),
+      // ...and one row in the REAL Node shape, where both are set at once.
+      [
+        'both: read ECONNRESET with code',
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      ],
+
+    ] as const) {
+      expect(isRetryableDescribeTypeError(err), label).toBe(true);
+    }
+    for (const [label, err] of [
+      ['permission denial', named('AccessDeniedException', 'User is not authorized')],
+      ['validation', named('ValidationException', 'Type not found')],
+      ['type not found', named('TypeNotFoundException')],
+      // The reason the message arm is NOT `/network|timeout/i`: AWS's own
+      // permanent text carries those words through the TYPE NAME, and 48 of
+      // the audited types are named `*Network*`. Retrying them burns the whole
+      // backoff and lands where it started.
+      [
+        'a permanent not-found naming a Network type',
+        named(
+          'TypeNotFoundException',
+          "Type with name 'AWS::EC2::NetworkInterface' (RESOURCE) cannot be found."
+        ),
+      ],
+      [
+        'a permanent denial naming a NetworkFirewall type',
+        named(
+          'AccessDeniedException',
+          'not authorized to perform: cloudformation:DescribeType on resource: ' +
+            'arn:aws:cloudformation:us-east-1::type/resource/AWS-NetworkFirewall-Firewall'
+        ),
+      ],
+      ['a property called timeout', named('ValidationException', 'Invalid property: timeout')],
+      // The classifier reads the TOP FRAME ONLY. A `cause` walk was drafted and
+      // withdrawn (see the note on `isTransientTransportError`), so a wrapped
+      // errno is NOT retried today — pinned so the next reader sees the bound
+      // rather than assuming a walk that is not there.
+      [
+        'a wrapped errno is NOT reached',
+        Object.assign(new Error('fetch failed'), {
+          cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+        }),
+      ],
+      [
+        'a wrapped permission denial is refused too',
+        Object.assign(new Error('request failed'), {
+          cause: Object.assign(new Error('User is not authorized'), {
+            name: 'AccessDeniedException',
+          }),
+        }),
+      ],
+      ['not an error at all', 'not an error'],
+      ['undefined', undefined],
+    ] as const) {
+      expect(isRetryableDescribeTypeError(err), label).toBe(false);
+    }
+  });
+
+  it('a non-Error value is refused before any property read', () => {
+    // The `instanceof Error` guard: without it the `code` read and the message
+    // regex both run against whatever was thrown.
+    for (const v of [null, undefined, 42, { code: 'ECONNRESET' }, { message: 'socket hang up' }]) {
+      expect(isRetryableDescribeTypeError(v)).toBe(false);
+    }
+  });
+});
+
+describe('assertReportIsComplete', () => {
+  const base = {
+    schemaVersion: 1,
+    generatedAt: 'x',
+    summary: { tier1Count: 0, tier2Count: 0, tier3Count: 0, totalCount: 0 },
+    tier1: [],
+    tier2: [],
+    tier3: [],
+  };
+
+  it('refuses a report that could not classify a type, naming each one', () => {
+    // The mechanism issue #2571 exists for, and it had NO test: `regenerate`
+    // is unexported and only reachable through live AWS calls, so extracting
+    // the assertion is what makes both polarities pinnable offline.
+    expect(() =>
+      assertReportIsComplete({ ...base, undetermined: ['AWS::Foo::Bar', 'AWS::Baz::Qux'] })
+    ).toThrow(/AWS::Foo::Bar[\s\S]*AWS::Baz::Qux/);
+    // The COUNT, pinned exactly: `/2 type|1 type\(s\)/` accepted a wrong count
+    // of 2 for a one-element list.
+    expect(() => assertReportIsComplete({ ...base, undetermined: ['AWS::Foo::Bar'] })).toThrow(
+      /^\[audit\] 1 type\(s\) could not be classified/
+    );
+    expect(() =>
+      assertReportIsComplete({ ...base, undetermined: ['AWS::A::A', 'AWS::B::B', 'AWS::C::C'] })
+    ).toThrow(/^\[audit\] 3 type\(s\) could not be classified/);
+  });
+
+  it('accepts a complete report — both the ABSENT and the EMPTY spelling', () => {
+    // Two arms of the same conjunction: `undefined` (the field is omitted when
+    // empty) and `[]` (a hand-written or future report that emits it anyway).
+    expect(() => assertReportIsComplete(base)).not.toThrow();
+    expect(() => assertReportIsComplete({ ...base, undetermined: [] })).not.toThrow();
+  });
+
+  it('has no escape hatch — a second argument cannot suppress the refusal', () => {
+    // A `--allow-undetermined` flag was drafted and withdrawn: `runCheck`
+    // refuses any committed report listing one and runs on every PR, so a
+    // report written through the hatch would have left `main` permanently red.
+    // Pinned as a case because a future reader will have the same idea.
+    const report = { ...base, undetermined: ['AWS::Foo::Bar'] };
+    expect(() =>
+      (assertReportIsComplete as (r: CoverageReport, allow?: boolean) => void)(report, true)
+    ).toThrow(/could not be classified/);
+  });
+});
+
 describe('partitionCoverage', () => {
   function buildClient(provisioningByType: Record<string, ProvisioningType | string>): CfnClientLike {
     return {
@@ -239,6 +383,77 @@ describe('partitionCoverage', () => {
       },
     } as CfnClientLike;
   }
+
+  it('every tier list is a SET — a type ListTypes returns twice appears once', async () => {
+    // AWS returned `AWS::Logs::LogStream` twice across `ListTypes` pages
+    // (issue #2571), and `partitionCoverage` walked `allTypes` straight into
+    // the tier arrays. The duplicate cost a wasted `DescribeType`, published a
+    // `tier2Count` one too high, and reached every downstream consumer twice —
+    // `scripts/audit-stateful-candidates.ts` had to dedupe at its own boundary
+    // for exactly that reason.
+    //
+    // Duplicates are injected in all THREE tiers, and in both page positions
+    // (adjacent and split across the rest of the list), because the walk is
+    // order-sensitive in neither direction and a single-tier case would leave
+    // the other two arms free.
+    const registered = new Set(['AWS::IAM::Role']);
+    const universe = [
+      'AWS::IAM::Role',
+      'AWS::Foo::Mutable',
+      'AWS::IAM::Role', // adjacent-ish repeat, tier 1
+      'AWS::Foo::Unsupported',
+      'AWS::Foo::Mutable', // repeat split across the list, tier 2
+      'AWS::Foo::Unsupported', // tier 3
+    ];
+    const described: string[] = [];
+    const client = {
+      send: async (cmd: DescribeTypeCommand) => {
+        if (cmd instanceof DescribeTypeCommand) {
+          described.push(cmd.input.TypeName ?? '');
+          return {
+            ProvisioningType: (
+              {
+                'AWS::Foo::Mutable': 'FULLY_MUTABLE',
+                'AWS::Foo::Unsupported': 'NON_PROVISIONABLE',
+              } as Record<string, string>
+            )[cmd.input.TypeName ?? ''],
+          };
+        }
+        throw new Error('unexpected');
+      },
+    } as unknown as CfnClientLike;
+
+    const report = await partitionCoverage(client, registered, universe, {
+      concurrency: 2,
+      sleep: async () => {},
+    });
+
+    for (const [label, list] of [
+      ['tier1', report.tier1],
+      ['tier2', report.tier2],
+      ['tier3', report.tier3],
+    ] as const) {
+      expect([...list].sort(), `${label} lost or gained an entry`).toEqual(
+        [...new Set(list)].sort()
+      );
+    }
+    expect(report.tier1).toEqual(['AWS::IAM::Role']);
+    expect(report.tier2).toEqual(['AWS::Foo::Mutable']);
+    expect(report.tier3).toEqual(['AWS::Foo::Unsupported']);
+    // The counts are the published numbers, so they are asserted as well as
+    // the arrays: the defect surfaced as `tier2Count` reading 1372 over 1371
+    // distinct entries.
+    expect(report.summary).toMatchObject({
+      tier1Count: 1,
+      tier2Count: 1,
+      tier3Count: 1,
+      totalCount: 3,
+    });
+    // ...and the duplicate no longer costs a second DescribeType. Asserted
+    // because the dedupe could otherwise be done at OUTPUT time, which would
+    // fix the counts while still paying for the wasted call.
+    expect(described.sort()).toEqual(['AWS::Foo::Mutable', 'AWS::Foo::Unsupported']);
+  });
 
   it('partitions into three tiers correctly', async () => {
     const registered = new Set(['AWS::IAM::Role', 'AWS::S3::Bucket']);
@@ -271,6 +486,133 @@ describe('partitionCoverage', () => {
     });
     expect(report.schemaVersion).toBe(1);
     expect(report.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('retries a transient TRANSPORT failure instead of calling it Tier 3', async () => {
+    // Measured 2026-09-04 (issue #2571): one `socket hang up` during a
+    // 1737-type walk classified `AWS::OpenSearchService::Domain` as
+    // NON_PROVISIONABLE, which is codegen'd into
+    // `src/provisioning/unsupported-types.generated.ts` and makes cdkd REFUSE
+    // the type at pre-flight. A blip must not become a committed refusal.
+    // The retry keyed on ThrottlingException alone could not see it: a socket
+    // hang-up arrives as a plain `Error` whose NAME is `Error`.
+    let calls = 0;
+    const client = {
+      send: async () => {
+        calls++;
+        if (calls === 1) {
+          throw new Error('socket hang up');
+        }
+        return { ProvisioningType: 'FULLY_MUTABLE' };
+      },
+    } as unknown as CfnClientLike;
+
+    const report = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1],
+      sleep: async () => {},
+    });
+    expect(report.tier2).toEqual(['AWS::Foo::Bar']);
+    expect(report.tier3).toEqual([]);
+    expect(report.undetermined).toBeUndefined();
+    expect(calls).toBe(2);
+  });
+
+  it('records a type it could NOT classify instead of guessing it into a tier', async () => {
+    // The structural half. Tier 3 is not a neutral bucket, so an unresolved
+    // type is excluded from every tier and reported — `regenerate` then
+    // refuses to write the report at all.
+    const client = {
+      send: async () => {
+        throw new Error('socket hang up');
+      },
+    } as unknown as CfnClientLike;
+
+    const report = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1],
+      sleep: async () => {},
+    });
+    expect(report.undetermined).toEqual(['AWS::Foo::Bar']);
+    expect(report.tier2).toEqual([]);
+    expect(report.tier3).toEqual([]);
+    expect(report.summary).toMatchObject({ tier2Count: 0, tier3Count: 0, totalCount: 0 });
+  });
+
+  it('undetermined types are sorted, and progress still advances for them', async () => {
+    // Sorting keeps the artifact diff-stable like every other list here; the
+    // `done` bump keeps `regenerate`'s progress line from stalling when the
+    // last-finishing task is the one that could not be classified.
+    const seen: Array<[number, string, string | undefined]> = [];
+    const client = {
+      send: async () => {
+        throw new Error('socket hang up');
+      },
+    } as unknown as CfnClientLike;
+    const report = await partitionCoverage(
+      client,
+      new Set(),
+      ['AWS::Zulu::Z', 'AWS::Alpha::A'],
+      {
+        concurrency: 1,
+        retryDelaysMs: [1],
+        sleep: async () => {},
+        onProgress: (done, _total, typeName, tier) => seen.push([done, typeName, tier]),
+      }
+    );
+    expect(report.undetermined).toEqual(['AWS::Alpha::A', 'AWS::Zulu::Z']);
+    expect(seen.map((r) => r[0])).toEqual([1, 2]);
+    expect(seen.every((r) => r[2] === undefined)).toBe(true);
+  });
+
+  it('a caller-supplied onError returning undefined is still RECORDED', async () => {
+    // The recording lives at the call site, not inside the default handler: a
+    // custom handler returning `undefined` would otherwise drop the type from
+    // every tier with nothing written down, and `regenerate`'s refusal would
+    // never fire for it.
+    const client = {
+      send: async () => {
+        throw Object.assign(new Error('nope'), { name: 'AccessDeniedException' });
+      },
+    } as unknown as CfnClientLike;
+    const report = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1],
+      sleep: async () => {},
+      onError: () => undefined,
+    });
+    expect(report.undetermined).toEqual(['AWS::Foo::Bar']);
+    // ...while a custom handler that DOES pick a tier keeps working.
+    const forced = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1],
+      sleep: async () => {},
+      onError: () => 'tier3-unsupported' as const,
+    });
+    expect(forced.tier3).toEqual(['AWS::Foo::Bar']);
+    expect(forced.undetermined).toBeUndefined();
+  });
+
+  it('a NON-retryable failure is still undetermined, not Tier 3', async () => {
+    // The polarity that matters for the guess: a missing IAM permission is
+    // permanent, but it is still not evidence that the type is
+    // NON_PROVISIONABLE. Both arms of the classifier land in `undetermined`.
+    const denied = Object.assign(new Error('User is not authorized'), {
+      name: 'AccessDeniedException',
+    });
+    let calls = 0;
+    const client = {
+      send: async () => {
+        calls++;
+        throw denied;
+      },
+    } as unknown as CfnClientLike;
+
+    const report = await partitionCoverage(client, new Set(), ['AWS::Foo::Bar'], {
+      retryDelaysMs: [1, 2, 3],
+      sleep: async () => {},
+    });
+    expect(report.undetermined).toEqual(['AWS::Foo::Bar']);
+    expect(report.tier3).toEqual([]);
+    // ...and it was not retried, since retrying a permission error only
+    // lengthens an audit that is already 10-30 minutes.
+    expect(calls).toBe(1);
   });
 
   it('classifies DescribeType missing ProvisioningType as Tier 3', async () => {
@@ -327,7 +669,7 @@ describe('partitionCoverage', () => {
       'AWS::A::A': 'FULLY_MUTABLE',
       'AWS::B::B': 'NON_PROVISIONABLE',
     });
-    const events: Array<{ done: number; total: number; tier: string }> = [];
+    const events: Array<{ done: number; total: number; tier: string | undefined }> = [];
     await partitionCoverage(client, new Set(), ['AWS::A::A', 'AWS::B::B'], {
       sleep: async () => {},
       onProgress: (done, total, _name, tier) => {
@@ -639,11 +981,19 @@ describe('summarizeCachedReport', () => {
 describe('runCheck', () => {
   function setupFixture(
     tier1: string[],
-    sourceLines: string[]
-  ): { dir: string; jsonPath: string; sourcePath: string; cleanup: () => void } {
+    sourceLines: string[],
+    extra: { undetermined?: string[]; markdown?: string } = {}
+  ): {
+    dir: string;
+    jsonPath: string;
+    sourcePath: string;
+    markdownPath: string;
+    cleanup: () => void;
+  } {
     const dir = mkdtempSync(join(tmpdir(), 'cdkd-audit-test-'));
     const jsonPath = join(dir, 'report.json');
     const sourcePath = join(dir, 'register-providers.ts');
+    const markdownPath = join(dir, 'report.md');
     const report: CoverageReport = {
       schemaVersion: 1,
       generatedAt: '2026-05-16T00:00:00.000Z',
@@ -651,14 +1001,155 @@ describe('runCheck', () => {
       tier1,
       tier2: [],
       tier3: [],
+      ...(extra.undetermined && { undetermined: extra.undetermined }),
     };
     atomicWriteFile(jsonPath, JSON.stringify(report));
     atomicWriteFile(sourcePath, sourceLines.join('\n'));
-    return { dir, jsonPath, sourcePath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    // The markdown defaults to what the generator produces, so a case that is
+    // not ABOUT the markdown is not accidentally testing it.
+    atomicWriteFile(markdownPath, extra.markdown ?? renderMarkdown(report));
+    return {
+      dir,
+      jsonPath,
+      sourcePath,
+      markdownPath,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    };
   }
 
-  it('passes when cached Tier 1 matches register-providers.ts', () => {
+  it('refuses a cached report that lists an unclassified type', () => {
+    // Gap 1 from the round-2 review: this arm was completely unfenced —
+    // replacing its condition with `if (false)` left the suite green — while it
+    // is the only thing that stops an unclassifiable type reaching consumers
+    // that read the tier lists as facts. Tier 1 MATCHES here, so without the
+    // arm the run exits 0.
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::IAM::Role', new R());`],
+      { undetermined: ['AWS::Foo::Bar', 'AWS::Baz::Qux'] }
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, jsonPath, sourcePath, markdownPath);
+      expect(io.exitCode).toBe(1);
+      expect(io.errors.join('\n')).toContain('AWS::Foo::Bar');
+      expect(io.errors.join('\n')).toContain('AWS::Baz::Qux');
+      // TWO, so the count is read from the list rather than being a literal
+      // that happens to match the only cardinality the fixtures supplied.
+      expect(io.errors.join('\n')).toMatch(/lists 2 type\(s\) it could not classify/);
+      // ...and it must NOT also report success.
+      expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('refuses a committed markdown that its own generator would not produce', () => {
+    // The gap that let this PR ship a corrected generator beside an uncorrected
+    // artifact: editing `renderMarkdown` does not touch its output, and nothing
+    // compared the two. Tier 1 matches and nothing is undetermined, so the
+    // markdown mismatch is the only reason to fail.
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::IAM::Role', new R());`],
+      { markdown: '# stale, hand-edited\n' }
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, jsonPath, sourcePath, markdownPath);
+      expect(io.exitCode).toBe(1);
+      expect(io.errors.join('\n')).toMatch(/does not match what renderMarkdown produces/);
+      expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('refuses when the markdown cannot be read at all', () => {
+    // Emptying the catch stayed green: its message and exit code were both
+    // redundant with the fall-through, so a silent regression was invisible.
     const { jsonPath, sourcePath, cleanup } = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::IAM::Role', new R());`]
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, jsonPath, sourcePath, join(tmpdir(), 'cdkd-audit-absent-report.md'));
+      expect(io.exitCode).toBe(1);
+      expect(io.errors.join('\n')).toMatch(/cannot read .*cdkd-audit-absent-report\.md: /);
+      expect(io.logs.join('\n')).not.toMatch(/matches register-providers\.ts/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('names the regeneration remedy ONLY for a tier-1 drift', () => {
+    // A markdown mismatch is fixable offline and an undetermined type needs a
+    // re-run for a different reason; printing the tier-1 remedy under either
+    // sent the operator to spend 10-30 minutes and AWS credentials on neither.
+    // BOTH non-drift shapes, because the claim is about both: a markdown
+    // mismatch AND an unclassified type. Pinning one polarity left re-widening
+    // the gate to the other invisible.
+    const shapes: Array<[string, { undetermined?: string[]; markdown?: string }]> = [
+      ['markdown mismatch', { markdown: '# stale\n' }],
+      ['unclassified type', { undetermined: ['AWS::Foo::Bar', 'AWS::Baz::Qux'] }],
+      // The unreadable-file shape reaches the same fall-through.
+      ['unreadable markdown', {}],
+    ];
+    for (const [label, extra] of shapes) {
+      const f = setupFixture(
+        ['AWS::IAM::Role'],
+        [`registry.register('AWS::IAM::Role', new R());`],
+        extra
+      );
+      const io = makeFakeIO();
+      try {
+        const mdPath =
+          label === 'unreadable markdown'
+            ? join(tmpdir(), 'cdkd-audit-absent-remedy.md')
+            : f.markdownPath;
+        runCheck(io, f.jsonPath, f.sourcePath, mdPath);
+        expect(io.exitCode, label).toBe(1);
+        expect(io.errors.join('\n'), label).not.toMatch(/regenerate the audit to resolve/);
+      } finally {
+        f.cleanup();
+      }
+    }
+    const drift = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::S3::Bucket', new B());`]
+    );
+    const io2 = makeFakeIO();
+    try {
+      runCheck(io2, drift.jsonPath, drift.sourcePath, drift.markdownPath);
+      expect(io2.errors.join('\n')).toMatch(/regenerate the audit to resolve/);
+    } finally {
+      drift.cleanup();
+    }
+  });
+
+  it('reports an unclassified type AND a tier-1 drift in the same run', () => {
+    // The arm falls through rather than early-returning, so one run surfaces
+    // both problems instead of making the operator re-run to see the second.
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
+      ['AWS::IAM::Role'],
+      [`registry.register('AWS::S3::Bucket', new B());`],
+      { undetermined: ['AWS::Foo::Bar'] }
+    );
+    const io = makeFakeIO();
+    try {
+      runCheck(io, jsonPath, sourcePath, markdownPath);
+      expect(io.exitCode).toBe(1);
+      const errors = io.errors.join('\n');
+      expect(errors).toContain('AWS::Foo::Bar');
+      expect(errors).toContain('AWS::S3::Bucket');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('passes when cached Tier 1 matches register-providers.ts', () => {
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
       ['AWS::IAM::Role', 'AWS::S3::Bucket'],
       [
         `registry.register('AWS::IAM::Role', new R());`,
@@ -667,7 +1158,7 @@ describe('runCheck', () => {
     );
     try {
       const io = makeFakeIO();
-      runCheck(io, jsonPath, sourcePath);
+      runCheck(io, jsonPath, sourcePath, markdownPath);
       expect(io.exitCode).toBeUndefined();
       expect(io.logs.join('\n')).toMatch(/matches register-providers\.ts/);
     } finally {
@@ -676,7 +1167,7 @@ describe('runCheck', () => {
   });
 
   it('fails with exit code 1 when source has a provider not in cache', () => {
-    const { jsonPath, sourcePath, cleanup } = setupFixture(
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
       ['AWS::IAM::Role'],
       [
         `registry.register('AWS::IAM::Role', new R());`,
@@ -685,7 +1176,7 @@ describe('runCheck', () => {
     );
     try {
       const io = makeFakeIO();
-      runCheck(io, jsonPath, sourcePath);
+      runCheck(io, jsonPath, sourcePath, markdownPath);
       expect(io.exitCode).toBe(1);
       const errOutput = io.errors.join('\n');
       expect(errOutput).toMatch(/types NOT in the cached Tier 1/);
@@ -697,13 +1188,13 @@ describe('runCheck', () => {
   });
 
   it('fails when cache has a provider gone from source', () => {
-    const { jsonPath, sourcePath, cleanup } = setupFixture(
+    const { jsonPath, sourcePath, markdownPath, cleanup } = setupFixture(
       ['AWS::IAM::Role', 'AWS::Stale::Removed'],
       [`registry.register('AWS::IAM::Role', new R());`]
     );
     try {
       const io = makeFakeIO();
-      runCheck(io, jsonPath, sourcePath);
+      runCheck(io, jsonPath, sourcePath, markdownPath);
       expect(io.exitCode).toBe(1);
       const errOutput = io.errors.join('\n');
       expect(errOutput).toMatch(/types NOT in register-providers\.ts/);

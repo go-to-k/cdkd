@@ -345,14 +345,46 @@ describe('the pure derivation functions', () => {
   });
 
   it('loadTier2 dedupes and refuses an empty list', () => {
-    // The dedupe is not hygiene: `provider-coverage.json` carries
-    // `AWS::Logs::LogStream` twice (issue #2571), so without it that type would
-    // be described twice and counted twice.
+    // Driven by a SYNTHETIC duplicate, not by the committed cache. The cache
+    // used to carry `AWS::Logs::LogStream` twice (issue #2571) and this case
+    // asserted the raw array was longer than the deduped one — which stopped
+    // being true the moment `partitionCoverage` started deduping at the
+    // producer. Pinning a consumer guard to the upstream DEFECT means the
+    // guard's test dies with the defect, while the guard itself is still worth
+    // keeping as defence in depth.
+    const dir = mkdtempSync(join(tmpdir(), 'stateful-tier2-'));
+    const dup = join(dir, 'dup.json');
+    writeFileSync(
+      dup,
+      JSON.stringify({ tier2: ['AWS::A::A', 'AWS::B::B', 'AWS::A::A'] })
+    );
+    expect(loadTier2(dup)).toEqual(['AWS::A::A', 'AWS::B::B']);
+
     const real = loadTier2(COVERAGE_JSON);
     expect(real.length).toBe(new Set(real).size);
-    expect(real).toContain('AWS::Logs::LogStream');
-    const raw = JSON.parse(readFileSync(COVERAGE_JSON, 'utf8')) as { tier2: string[] };
-    expect(raw.tier2.length).toBeGreaterThan(real.length);
+    expect(real.length).toBeGreaterThan(FLOORS.tier2);
+    // ...and the upstream artifact is a set now, which is the state issue
+    // #2571 restored. A regression there is caught at the producer's own
+    // fence, so this only records that the consumer guard is redundant rather
+    // than load-bearing.
+    const raw = JSON.parse(readFileSync(COVERAGE_JSON, 'utf8')) as {
+      tier1: string[];
+      tier2: string[];
+      tier3: string[];
+    };
+    expect(raw.tier2.length).toBe(real.length);
+    // All THREE lists, not just the one this derivation reads: the producer
+    // fence in `audit-provider-coverage.test.ts` covers the code path, and
+    // this covers the artifact actually committed.
+    for (const [label, list] of [
+      ['tier1', raw.tier1],
+      ['tier2', raw.tier2],
+      ['tier3', raw.tier3],
+    ] as const) {
+      expect([...list].sort(), `committed ${label} is not a set`).toEqual(
+        [...new Set(list)].sort()
+      );
+    }
     expect(() => loadTier2(REPORT_JSON)).toThrow(/No tier2 entries/);
   });
 

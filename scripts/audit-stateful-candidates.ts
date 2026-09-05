@@ -861,14 +861,16 @@ export function runSelfProbe(): string[] {
 /** Read the tier-2 list from the provider-coverage cache. */
 export function loadTier2(path: string = COVERAGE_JSON): string[] {
   const parsed = JSON.parse(readFileSync(path, 'utf8')) as { tier2?: readonly string[] };
-  // DEDUPED, and that is not hygiene: `provider-coverage.json`'s `tier2` array
-  // carries `AWS::Logs::LogStream` TWICE (1372 entries, 1371 distinct — its own
-  // `summary.tier2Count` says 1372, so the duplicate is upstream of this
-  // script). Left as-is, the duplicate is described twice, counted twice in
-  // `withCreateOnly`, and — if it were ever a candidate — proposed twice, which
-  // would make the disposition fence ask for the same decision twice. Issue
-  // [#2571] tracks the upstream artifact; deduping here keeps this derivation
-  // correct meanwhile, and costs nothing once it is fixed.
+  // DEDUPED as defence in depth. `provider-coverage.json`'s `tier2` array used
+  // to carry `AWS::Logs::LogStream` TWICE (1372 entries, 1371 distinct, with
+  // its own `summary.tier2Count` reporting the inflated figure) because
+  // `partitionCoverage` walked `ListTypes` output straight into the tier
+  // arrays. Left as-is, the duplicate is described twice, counted twice in
+  // `withCreateOnly`, and — if it were ever a candidate — proposed twice,
+  // asking the disposition fence for the same decision twice. Issue [#2571]
+  // fixed it at the producer, so this guard is now redundant rather than
+  // load-bearing; it stays because a consumer that assumes its input is a set
+  // should say so, and it costs one `Set` construction.
   const tier2 = [...new Set(parsed.tier2 ?? [])];
   if (tier2.length === 0) {
     throw new Error(

@@ -68,6 +68,12 @@ export type CoverageTier = 'tier1-sdk-provider' | 'tier2-cc-api-fallback' | 'tie
 export interface CoverageReport {
   readonly schemaVersion: number;
   readonly generatedAt: string;
+  /**
+   * Types whose `DescribeType` never resolved. Kept OUT of every tier — a
+   * guess here becomes a committed pre-flight refusal — and non-empty is a
+   * regeneration failure, not a result.
+   */
+  readonly undetermined?: readonly string[];
   readonly summary: {
     readonly tier1Count: number;
     readonly tier2Count: number;
@@ -174,6 +180,61 @@ function isThrottlingError(err: unknown): boolean {
 }
 
 /**
+ * Transient TRANSPORT failures, which are retryable for the same reason a
+ * throttle is: the answer would differ on a later attempt.
+ *
+ * Split from {@link isThrottlingError} rather than merged into it because the
+ * two are asked different questions elsewhere, and because the name matters
+ * here: a socket hang-up arrives as a plain `Error` whose NAME is `Error`, so
+ * only the message identifies it. Measured 2026-09-04 (issue #2571): a single
+ * `socket hang up` on `AWS::OpenSearchService::Domain` during a 1737-type walk
+ * was classified `NON_PROVISIONABLE` and would have shipped into
+ * `unsupported-types.generated.ts`, making cdkd REFUSE to deploy an OpenSearch
+ * domain at pre-flight. A transient blip must not become a permanent refusal.
+ */
+function isTransientTransportError(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  const name = err.name;
+  if (name === 'TimeoutError' || name === 'RequestTimeout' || name === 'AbortError') {
+    return true;
+  }
+  const code = (err as { code?: unknown }).code;
+  if (
+    typeof code === 'string' &&
+    ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND'].includes(code)
+  ) {
+    return true;
+  }
+  // The message arm exists for errors that carry NEITHER a useful name nor a
+  // `code` — a socket hang-up is the measured one. It is deliberately narrow:
+  // bare `network` / `timeout` substrings matched AWS's own PERMANENT text
+  // ("Type with name 'AWS::EC2::NetworkInterface' (RESOURCE) cannot be found",
+  // and the `not authorized ... type/resource/AWS-NetworkFirewall-Firewall`
+  // denial), which would burn the whole 63-second backoff on each of the 48
+  // audited types whose name contains `Network` before landing where they
+  // started. The `errno`-shaped tokens stay because they appear verbatim in
+  // Node's message when `code` is absent.
+  // The TOP frame only. A `cause` walk was drafted here and WITHDRAWN: it was
+  // added on a review nit rather than on a measured failure — the observed
+  // fault (issue [#2571]) is a bare `socket hang up` with no `cause` — and the
+  // draft recursed without a depth bound or a `visited` set, so it retried a
+  // permanent error wrapped two deep and threw `RangeError` on a two-element
+  // cycle, from inside `describeTypeWithRetry`'s catch, discarding a
+  // half-hour walk. If a wrapped shape ever shows up in a real audit log, add
+  // it with a depth argument and a case that pins the depth.
+  return /socket hang up|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/.test(
+    err.message
+  );
+}
+
+/** Retryable: the answer could differ on a later attempt. */
+export function isRetryableDescribeTypeError(err: unknown): boolean {
+  return isThrottlingError(err) || isTransientTransportError(err);
+}
+
+/**
  * Sleep for `ms` milliseconds. Replaceable by tests to skip real delays.
  */
 export type Sleep = (ms: number) => Promise<void>;
@@ -185,12 +246,15 @@ export interface DescribeTypeRetryOptions {
 }
 
 /**
- * Wrap `DescribeType` with exponential backoff on `ThrottlingException`.
+ * Wrap `DescribeType` with exponential backoff on the failures a later attempt
+ * could answer differently — throttles AND transient transport errors (see
+ * {@link isRetryableDescribeTypeError}).
  *
  * Returns the raw `ProvisioningType` string (or `undefined` if AWS responded
- * without one — treated as Tier 3 upstream). Non-throttling errors propagate
- * to the caller, which decides whether to fail the whole audit or flag the
- * single type as Tier 3.
+ * without one — treated as Tier 3 upstream). A failure that is not retryable,
+ * or one whose retry budget is exhausted, propagates
+ * to the caller, which records the type as undetermined rather than guessing a
+ * tier for it.
  */
 export async function describeTypeWithRetry(
   client: CfnClientLike,
@@ -207,7 +271,7 @@ export async function describeTypeWithRetry(
       );
       return resp.ProvisioningType;
     } catch (err) {
-      if (isThrottlingError(err) && attempt < delays.length) {
+      if (isRetryableDescribeTypeError(err) && attempt < delays.length) {
         // Guard above ensures delays[attempt] is defined for a non-empty
         // number[]; the `?? 1000` fallback covers the `retryDelaysMs: []`
         // case where attempt < 0 is impossible but TS still narrows
@@ -236,14 +300,19 @@ export interface PartitionOptions {
     done: number,
     total: number,
     typeName: string,
-    tier: CoverageTier
+    /** `undefined` when the type could not be classified at all. */
+    tier: CoverageTier | undefined
   ) => void;
   /**
-   * Optional per-type error handler. Defaults to logging the error to
-   * stderr and classifying the type as Tier 3 (safer than silently
-   * dropping it). Throws bubble up to abort the whole audit.
+   * Optional per-type error handler. The DEFAULT logs to stderr and returns
+   * `undefined`, which records the type under `undetermined` and keeps it out
+   * of every tier — a failed lookup is not evidence that a type is
+   * NON_PROVISIONABLE, and Tier 3 is codegen'd into a pre-flight refusal
+   * (issue [#2571]). Returning a tier from a custom handler still works;
+   * returning `undefined` records the type. Throws bubble up and abort the
+   * whole audit.
    */
-  readonly onError?: (typeName: string, err: unknown) => CoverageTier;
+  readonly onError?: (typeName: string, err: unknown) => CoverageTier | undefined;
 }
 
 /**
@@ -259,17 +328,40 @@ export async function partitionCoverage(
 ): Promise<CoverageReport> {
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   const limit = pLimit(concurrency);
+  // An UNDETERMINED type is recorded, never guessed. The previous default
+  // classified any failure as Tier 3, and Tier 3 is not a neutral bucket: it
+  // is codegen'd into `src/provisioning/unsupported-types.generated.ts` and
+  // makes cdkd REFUSE the type at pre-flight. So a blip during the audit
+  // became a permanent, committed refusal — measured on a single `socket hang
+  // up` for `AWS::OpenSearchService::Domain` (issue #2571). Retrying transport
+  // errors (see `isRetryableDescribeTypeError`) removes most of them; this
+  // makes whatever survives LOUD instead of wrong.
+  const undetermined: string[] = [];
   const onError =
     options.onError ??
-    ((typeName: string, err: unknown): CoverageTier => {
+    ((typeName: string, err: unknown): CoverageTier | undefined => {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[audit] DescribeType failed for ${typeName}: ${msg}; treating as Tier 3`);
-      return 'tier3-unsupported';
+      console.error(`[audit] DescribeType could not be resolved for ${typeName}: ${msg}`);
+      return undefined;
     });
 
+  // DEDUPED at the boundary, because `allTypes` is not a set and every
+  // consumer treats the tier lists as one. `paginateListTypes` yields whatever
+  // `ListTypes` returns, and AWS returned `AWS::Logs::LogStream` twice across
+  // pages (issue [#2571]: 1372 entries, 1371 distinct, with `tier2Count`
+  // reporting the inflated 1372). Left alone the duplicate costs a wasted
+  // `DescribeType`, publishes a tier count one too high, and reaches every
+  // downstream reader twice -- `scripts/audit-stateful-candidates.ts` had to
+  // dedupe at ITS boundary for exactly that reason. Fixing it here is what
+  // lets that consumer-side guard become redundant rather than load-bearing.
   const tier1: string[] = [];
   const nonTier1: string[] = [];
+  const seen = new Set<string>();
   for (const typeName of allTypes) {
+    if (seen.has(typeName)) {
+      continue;
+    }
+    seen.add(typeName);
     if (registeredTypes.has(typeName)) {
       tier1.push(typeName);
     } else {
@@ -291,7 +383,19 @@ export async function partitionCoverage(
           });
           tier = classifyProvisioningType(provisioningType);
         } catch (err) {
-          tier = onError(typeName, err);
+          const handled = onError(typeName, err);
+          if (handled === undefined) {
+            // Undetermined: excluded from every tier rather than guessed into
+            // one, and recorded HERE rather than inside the default handler —
+            // a caller-supplied `onError` returning `undefined` would otherwise
+            // drop the type from every tier with nothing written down, and
+            // `regenerate`'s refusal would never fire for it.
+            undetermined.push(typeName);
+            done++;
+            options.onProgress?.(done, nonTier1.length, typeName, undefined);
+            return;
+          }
+          tier = handled;
         }
         if (tier === 'tier2-cc-api-fallback') {
           tier2.push(typeName);
@@ -320,6 +424,7 @@ export async function partitionCoverage(
     tier1,
     tier2,
     tier3,
+    ...(undetermined.length > 0 && { undetermined: [...undetermined].sort() }),
   };
 }
 
@@ -383,7 +488,10 @@ export function renderMarkdown(report: CoverageReport): string {
   lines.push('## Tier 3 — Not provisionable by cdkd today');
   lines.push('');
   lines.push(
-    '`ProvisioningType` is `NON_PROVISIONABLE` (or DescribeType failed). ' +
+    '`ProvisioningType` is `NON_PROVISIONABLE`. (A type whose `DescribeType` ' +
+      'could not be resolved is NOT here — it is recorded under `undetermined` ' +
+      'and the regeneration refuses to write the report at all, because a guess ' +
+      'in this tier becomes a committed pre-flight refusal.) ' +
       'Cloud Control API cannot create / update / delete these types; cdkd ' +
       'cannot support them at all without a dedicated SDK Provider. Most entries ' +
       'here are inherently read-only or registry-only types (`AWS::*::*Type`, ' +
@@ -395,6 +503,41 @@ export function renderMarkdown(report: CoverageReport): string {
   }
   lines.push('');
   return lines.join('\n');
+}
+
+/**
+ * Refuse to write a report carrying an undetermined type.
+ *
+ * The tier lists are consumed as FACTS — tier 3 is codegen'd into
+ * `src/provisioning/unsupported-types.generated.ts`, where the pre-flight
+ * REFUSES the type — so a partial walk must not become the committed answer.
+ * The retry in {@link describeTypeWithRetry} already absorbs the transient
+ * cases; what reaches here is either a permanent failure (a scoped IAM deny, a
+ * region-restricted registry entry) or a run that should simply be repeated.
+ *
+ * Exported because it is the mechanism issue [#2571] exists for and
+ * `regenerate` is unreachable without live AWS calls: extracting it is what
+ * lets both polarities be pinned offline.
+ *
+ * Deliberately NO escape hatch. A `--allow-undetermined` flag was drafted and
+ * withdrawn: `runCheck` refuses any committed report that lists one and runs
+ * on every PR, so a report written through the hatch would leave `main`
+ * permanently red — the flag could not reach green, and a switch whose only
+ * outcome is a red build is worse than the refusal it bypasses. A type that is
+ * PERMANENTLY unresolvable in an account needs a decision recorded in code, not
+ * a flag on one operator's shell.
+ */
+export function assertReportIsComplete(report: CoverageReport): void {
+  const unresolved = report.undetermined ?? [];
+  if (unresolved.length === 0) {
+    return;
+  }
+  throw new Error(
+    `[audit] ${unresolved.length} type(s) could not be classified, so the report was NOT ` +
+      `written (a guess here becomes a committed pre-flight refusal):\n` +
+      unresolved.map((t) => `  ${t}`).join('\n') +
+      `\nRe-run \`vp run audit:coverage:regenerate\`.`
+  );
 }
 
 /**
@@ -489,6 +632,8 @@ async function regenerate(): Promise<void> {
       },
     });
 
+    assertReportIsComplete(report);
+
     atomicWriteFile(OUTPUT_JSON, JSON.stringify(report, null, 2) + '\n');
     atomicWriteFile(OUTPUT_MARKDOWN, renderMarkdown(report));
     console.error('[audit] wrote:');
@@ -561,7 +706,8 @@ export function checkCachedAgainstSource(
 export function runCheck(
   io: CliIO = consoleIO,
   jsonPath: string = OUTPUT_JSON,
-  sourcePath: string = REGISTER_PROVIDERS_PATH
+  sourcePath: string = REGISTER_PROVIDERS_PATH,
+  markdownPath: string = OUTPUT_MARKDOWN
 ): void {
   let report: CoverageReport;
   try {
@@ -573,10 +719,53 @@ export function runCheck(
     io.setExitCode(1);
     return;
   }
+  // An UNDETERMINED type in the committed report is a CI failure in its own
+  // right. `assertReportIsComplete` should have stopped it being written, so
+  // reaching here means the report was hand-edited or produced by an older
+  // build — and the tier lists are read as FACTS downstream, with tier 3
+  // codegen'd into a pre-flight refusal. Checked BEFORE the tier-1 drift
+  // compare because an unclassifiable type makes every other verdict in the
+  // report provisional; both are reported, so a run does not have to be
+  // repeated to see the second one.
+  const unresolved = report.undetermined ?? [];
+  if (unresolved.length > 0) {
+    io.error(
+      `[audit] the cached report lists ${unresolved.length} type(s) it could not classify:`
+    );
+    for (const t of unresolved) {
+      io.error(`  ${t}`);
+    }
+    io.error('[audit] re-run `vp run audit:coverage:regenerate`');
+    io.setExitCode(1);
+    // fall through: a tier-1 drift found in the same run is reported too
+  }
+  // The committed MARKDOWN must be what `renderMarkdown` produces from the
+  // committed JSON. Nothing checked that before, and the gap bit immediately:
+  // this PR corrected a false sentence in `renderMarkdown` ("or DescribeType
+  // failed") and shipped the artifact still carrying it, because editing the
+  // generator does not touch its output. `renderMarkdown` is pure over the
+  // JSON, so the check is offline and exact.
+  let markdown: string | undefined;
+  try {
+    markdown = readFileSync(markdownPath, 'utf8');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    io.error(`[audit] cannot read ${markdownPath}: ${msg}`);
+    io.setExitCode(1);
+  }
+  if (markdown !== undefined && markdown !== renderMarkdown(report)) {
+    io.error(
+      `[audit] ${markdownPath} does not match what renderMarkdown produces from the ` +
+        'committed JSON — the generator was edited without re-rendering its output, or ' +
+        'the file was hand-edited.'
+    );
+    io.error('[audit] re-run `vp run audit:coverage:regenerate`, or re-render offline');
+    io.setExitCode(1);
+  }
   const source = readFileSync(sourcePath, 'utf8');
   const registered = parseRegisteredTypes(source);
   const result = checkCachedAgainstSource(report.tier1, registered);
-  if (result.ok) {
+  if (result.ok && unresolved.length === 0 && markdown === renderMarkdown(report)) {
     io.log(
       `Cached Tier 1 (${report.tier1.length} types) matches register-providers.ts (${registered.size} types).`
     );
@@ -590,8 +779,14 @@ export function runCheck(
     io.error('[audit] cached Tier 1 contains types NOT in register-providers.ts:');
     for (const t of result.extraInCache) io.error(`  - ${t}`);
   }
-  io.error('[audit] regenerate the audit to resolve:');
-  io.error('         node scripts/audit-provider-coverage.ts --regenerate');
+  // The regeneration remedy is for a tier-1 DRIFT only. A markdown mismatch is
+  // fixable offline and an undetermined type needs a re-run for a different
+  // reason; both arms above say so themselves, and printing this underneath
+  // told the operator to spend 10-30 minutes and AWS credentials on neither.
+  if (!result.ok) {
+    io.error('[audit] regenerate the audit to resolve:');
+    io.error('         node scripts/audit-provider-coverage.ts --regenerate');
+  }
   io.setExitCode(1);
 }
 

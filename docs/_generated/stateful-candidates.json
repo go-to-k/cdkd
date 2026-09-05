@@ -1,21 +1,21 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-04T16:35:50.786Z",
+  "generatedAt": "2026-09-04T22:38:45.494Z",
   "summary": {
-    "tier2Count": 1371,
-    "schemasRead": 1371,
-    "withCreateOnly": 1185,
+    "tier2Count": 1469,
+    "schemasRead": 1469,
+    "withCreateOnly": 1279,
     "schemasWithNoProperties": 0,
-    "candidateCount": 93,
-    "guardedCount": 66,
+    "candidateCount": 99,
+    "guardedCount": 72,
     "unguardedCount": 27,
     "signalCounts": {
-      "snapshot-or-backup": 9,
+      "snapshot-or-backup": 12,
       "retention-window": 9,
-      "storage-capacity": 13,
+      "storage-capacity": 15,
       "deletion-protection": 10,
-      "encryption-at-rest": 12,
-      "data-store-noun": 63
+      "encryption-at-rest": 13,
+      "data-store-noun": 65
     }
   },
   "candidates": [
@@ -203,6 +203,20 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::CloudHSM::Cluster",
+      "createOnlyProperties": [
+        "/properties/HsmType",
+        "/properties/Mode",
+        "/properties/NetworkType",
+        "/properties/SubnetIds"
+      ],
+      "signals": [
+        "data-store-noun",
+        "snapshot-or-backup"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::CodeArtifact::Domain",
       "createOnlyProperties": [
         "/properties/DomainName",
@@ -305,6 +319,17 @@
       ],
       "signals": [
         "data-store-noun",
+        "snapshot-or-backup"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::DynamoDB::Backup",
+      "createOnlyProperties": [
+        "/properties/BackupName",
+        "/properties/TableName"
+      ],
+      "signals": [
         "snapshot-or-backup"
       ],
       "guarded": true
@@ -448,6 +473,29 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::FSx::Volume",
+      "createOnlyProperties": [
+        "/properties/BackupId",
+        "/properties/OntapConfiguration/AggregateConfiguration",
+        "/properties/OntapConfiguration/AggregateConfiguration/Aggregates",
+        "/properties/OntapConfiguration/AggregateConfiguration/ConstituentsPerAggregate",
+        "/properties/OntapConfiguration/OntapVolumeType",
+        "/properties/OntapConfiguration/SnaplockConfiguration/SnaplockType",
+        "/properties/OntapConfiguration/StorageVirtualMachineId",
+        "/properties/OntapConfiguration/VolumeStyle",
+        "/properties/OpenZFSConfiguration/OriginSnapshot",
+        "/properties/OpenZFSConfiguration/OriginSnapshot/CopyStrategy",
+        "/properties/OpenZFSConfiguration/OriginSnapshot/SnapshotARN",
+        "/properties/OpenZFSConfiguration/ParentVolumeId",
+        "/properties/VolumeType"
+      ],
+      "signals": [
+        "data-store-noun",
+        "snapshot-or-backup"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::HealthImaging::Datastore",
       "createOnlyProperties": [
         "/properties/DatastoreName",
@@ -501,6 +549,18 @@
       "signals": [
         "data-store-noun",
         "retention-window"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::IoTSiteWise::Workspace",
+      "createOnlyProperties": [
+        "/properties/EncryptionConfiguration",
+        "/properties/KmsKeyId",
+        "/properties/WorkspaceName"
+      ],
+      "signals": [
+        "encryption-at-rest"
       ],
       "guarded": true
     },
@@ -958,6 +1018,28 @@
       ],
       "signals": [
         "retention-window"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::RDS::ClusterSnapshot",
+      "createOnlyProperties": [
+        "/properties/DBClusterIdentifier",
+        "/properties/DBClusterSnapshotIdentifier"
+      ],
+      "signals": [
+        "storage-capacity"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::RDS::DBSnapshot",
+      "createOnlyProperties": [
+        "/properties/DBInstanceIdentifier",
+        "/properties/DBSnapshotIdentifier"
+      ],
+      "signals": [
+        "storage-capacity"
       ],
       "guarded": true
     },

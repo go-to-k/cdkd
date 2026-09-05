@@ -216,6 +216,13 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::Cognito::UserPool',
   'AWS::SecretsManager::Secret',
   'AWS::SSM::Parameter',
+  // Hardware security module. Deleting a CloudHSM cluster destroys the key
+  // material inside it, and — as with `AWS::KMS::Key` below — the loss is not
+  // confined to the resource cdkd deleted: every ciphertext produced under
+  // those keys becomes undecryptable, including data in other stacks. AWS
+  // gives the type a backup retention policy, which is the same statement
+  // about the contents made from the other side.
+  'AWS::CloudHSM::Cluster',
   // Encryption keys. `KMSProvider.delete` issues `ScheduleKeyDeletion`; once
   // the window elapses the key material is gone and every ciphertext under it
   // is undecryptable. Like the table and vector buckets above, the loss is not
@@ -303,6 +310,16 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Graph stores. A snapshot is the data itself, not a pointer to it.
   'AWS::NeptuneGraph::Graph',
   'AWS::NeptuneGraph::GraphSnapshot',
+  // The rest of that family, on the identical argument: a snapshot or backup
+  // resource IS a copy of the data, so replacing one destroys the copy the
+  // user was keeping. They are guarded for the same reason
+  // `AWS::RedshiftServerless::Snapshot` above is, and they arrived by the
+  // derivation rather than by hand — the 2026-09-04 coverage refresh added
+  // them to tier 2 and the disposition fence refused to pass with them
+  // undispositioned.
+  'AWS::RDS::DBSnapshot',
+  'AWS::RDS::ClusterSnapshot',
+  'AWS::DynamoDB::Backup',
 
   // In-memory / streaming stores that persist their dataset.
   'AWS::MemoryDB::Cluster',
@@ -365,6 +382,11 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::S3Outposts::Bucket',
   'AWS::HealthImaging::Datastore',
   'AWS::HealthLake::FHIRDatastore',
+  // A volume inside an FSx file system holds the files themselves, so the
+  // argument is the already-guarded `AWS::FSx::FileSystem`'s one level down.
+  // Its createOnly set includes `BackupId` and the ONTAP aggregate
+  // configuration, so a restore-source or layout change replaces it.
+  'AWS::FSx::Volume',
   // An email archive retains the messages themselves.
   'AWS::SES::MailManagerArchive',
   // A WorkSpaces instance volume is an EBS volume with a filesystem on it —
@@ -435,6 +457,17 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Investigation groups retain investigations for `RetentionInDays` — the
   // same argument the LogGroup entry rests on.
   'AWS::AIOps::InvestigationGroup',
+  // Guarded on the FAIL-SAFE side of an open question, like
+  // `AWS::S3Tables::Namespace` and `AWS::Rbin::Rule` above, and the entry says
+  // so rather than arguing it. The registry schema describes the type as
+  // providing "logical isolation for tasks and pipelines", which are their own
+  // template resources — that reads like the write-off rule's DECLARED CONTENT
+  // arm. Against it: AWS makes `EncryptionConfiguration` REQUIRED and
+  // `KmsKeyId` createOnly, which is a statement that the workspace itself
+  // holds something at rest, and whether deleting one cascades to the sibling
+  // `AWS::IoTSiteWise::Dataset` resources inside it is UNMEASURED. An
+  // unprovable emptiness must not read as empty.
+  'AWS::IoTSiteWise::Workspace',
   // A Recycle Bin retention rule is guarded on the FAIL-SAFE side of an open
   // question rather than on a proof, and the distinction is the whole reason
   // it is here: the rule's own content (`ResourceTags`, `RetentionPeriod`,
