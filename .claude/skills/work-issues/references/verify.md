@@ -33,7 +33,17 @@ by a probe or a trace, never by re-reading the diff:
   cell is not random — a hazard lives there BECAUSE that cell behaves
   differently, which is why "a representative case per dimension" skips it
   (go-to-k/cdkd#2466: 4 positions × 2 YAML readers, the `<<` merge key in the
-  missing cell, the fix inert through a full 3-axis round).
+  missing cell, the fix inert through a full 3-axis round). **The POPULATION
+  is one of those dimensions** — a fence that derives its subject list from
+  one directory is blind to the same claim restated outside it, so ask where
+  the claim is WRITTEN and not only where it is implemented
+  (`tests/unit/cli/local-state-source.test.ts` walks `src/` alone, so
+  `.claude/rules/layout-local.md` still named the DELETED fork's
+  CloudFormation API — the exact defect go-to-k/cdkd#2527 was closing, caught
+  only because a reviewer was pointed at the rules delta; same shape in
+  `tests/unit/local/docker-argv-redaction-fence.test.ts`, whose
+  `readdirSync('src/local')` cannot reach go-to-k/cdkd#2623's `src/assets/**`
+  sites).
 - **"TWO SPELLINGS of one question" → make both sites use ONE predicate
   verbatim** — a better second spelling looks like a fix and passes its own
   test (go-to-k/cdkd#2134: `producerRegion !== undefined` disagreed with the

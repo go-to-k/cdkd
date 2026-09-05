@@ -2,20 +2,10 @@
 
 ## 6. Gates + PR (per lane)
 
-**Before the session's FIRST commit, prove the gates are ALIVE.** Registration
-is not execution: both siblings spent a day with every gate registered and
-INERT (go-to-k/cdk-real-drift#1801), and an ungated commit looks exactly like
-one that passed. `/hooks` lists what is REGISTERED, so it cannot see this:
-
-```bash
-git commit --dry-run -m "gate liveness probe"   # from the repo root, on main
-```
-
-Run it as YOUR OWN Bash tool call — PreToolUse hooks gate the agent's tool
-calls only. `--dry-run` commits nothing whatever the tree looks like.
-Expected: `Blocked by branch-gate` or `Blocked by check-gate`. Git's ordinary
-output means the gates are NOT firing — every gate step below is then
-self-enforced: run each check by hand and say so in the report.
+**Before the session's FIRST commit, run CLAUDE.md's gate-liveness probe** —
+`git commit --dry-run -m "gate liveness probe"` as your OWN Bash tool call.
+Git's ordinary output means the gates are NOT firing, and every gate step
+below is then self-enforced: run each check by hand and say so in the report.
 
 From inside the worktree, run the local quality checks and record the markers:
 

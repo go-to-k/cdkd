@@ -48,6 +48,14 @@ cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # owner sentinel
 Then read the issue thread for a claim naming this branch — across clones it
 is the only signal the probes above cannot see.
 
+The rule is SYMMETRIC: **the orchestrator does not edit a live lane's tree
+either.** An uncommitted parent edit there is wiped without a trace by the
+lane's next amend + force-push — the lane never sees it and no conflict is
+reported (measured 2026-09-05: a parent-side `.claude/rules` trim vanished
+into go-to-k/cdkd#2620's fix round, and both parties were trimming the same
+cumulative budget). Hand the edit to the lane as an instruction and let the
+lane own the write.
+
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The
 branch this tree arrived on is `LAUNCH_BRANCH`: the OUTER TOOL's, not this
 run's, and §9 puts it back untouched at the end (`references/launch-mode.md`
