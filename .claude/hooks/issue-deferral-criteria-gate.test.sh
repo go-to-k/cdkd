@@ -45,56 +45,53 @@
 #     the continuation boundary now pins the NAMED fields rather than any
 #     `word:`, with the `Notes:` sibling-field case as the control
 #
-# MUTATION-PROBED rather than asserted (re-measured 2026-09-05 after the
-# quoted-value / glued-flag / bold-value / vocabulary / boundary round, 97
-# cases -- EVERY number below re-taken on that run, not only the ones the round
-# moved). A tally says how many cases ran, not what any of them fences, so each
-# fence below was broken in the real hook and the survivors counted:
+# MUTATION-PROBED rather than asserted. EVERY number below was re-taken on the
+# 105-case suite after the review round that added the load-guard fence, the
+# six `key_re` field-name cases and the ANSI-C cases -- not carried forward. A
+# tally says how many cases ran, not what any of them fences, so each fence was
+# broken in the real hook and the survivors counted:
 #
-#   always-`exit 0` stub                     fails 58   (nothing passes vacuously)
-#   always-`exit 2` stub                     fails 44   (nor does anything block
+#   always-`exit 0` stub                     fails 60   (nothing passes vacuously)
+#   always-`exit 2` stub                     fails 50   (nor does anything block
 #                                                        vacuously)
-#   `$GW` value class -> the old             fails 13   -- the whole quoted-value
-#     `(["\x27]?)([^"\x27\s]+)\1`                         family at once: spaced
+#   `$GW` -> the retired class (below)       fails 36   -- the whole quoted-value
+#                                                        family at once: spaced
 #                                                        paths, `-f body='...'`,
-#                                                        and the glued flags
-#   short-flag `[=\s]*` -> `[=\s]+`          fails  3   -- exactly the three
-#                                                        GLUED spellings, so
-#                                                        "gh accepts `-F<p>`" is
-#                                                        fenced apart from the
-#                                                        quoting fix
-#   bolded-VALUE accept reverted             fails  1   -- exactly the
-#                                                        `**next**` case
-#   `key_re` back to any `word:`             fails  1   -- exactly the wrapped
-#                                                        sentence whose second
-#                                                        line carries a colon
-#   `(independent|separate)` -> `independent` fails  1  -- exactly the `separate
-#                                                        review surface` case
-#   `next` polarity test -> `if true`        fails  2   -- exactly the two
-#                                                        `Session-fit: now` cases
-#   continuation boundary -> `if false`      fails  4   -- the sibling field-line
-#                                                        case plus the bold-key,
-#                                                        bullet and numbered-item
-#                                                        cases: the boundary is
-#                                                        load-bearing, not
-#                                                        decoration
-#   segment scoping reverted (scan `$cmd`)   fails  4   -- both neighbouring-
-#                                                        segment cases, plus the
-#                                                        subshell and command-
-#                                                        substitution spellings
-#   fence strip -> never matches             fails  2   -- exactly the two
-#                                                        fenced-exhibit cases
-#   bolded-key accept reverted               fails  2   -- exactly the two bold
-#                                                        spellings
-#   list-item boundary -> never matches      fails  2   -- exactly the bullet and
-#                                                        numbered-item cases
-#   heredoc arm 1 removed (file-first)       fails  3   -- the fail-open case, its
-#                                                        false-block complement,
-#                                                        and the relative spelling
-#   `cmd_replaces_either` -> `true`          fails  1   -- exactly the APPEND case,
-#                                                        so "an append is not a
-#                                                        rewrite" is fenced apart
-#                                                        from "the command writes"
+#                                                        the glued flags and the
+#                                                        ANSI-C spellings
+#   `gate_perl_word_ok` -> always true       fails  1   -- the load-guard case.
+#                                                        ONE, and that is the
+#                                                        point: the guard has one
+#                                                        job and nothing else
+#                                                        depends on it
+#   `key_re` -> any `word:`                  fails  2   -- the wrapped sentence
+#                                                        whose second line carries
+#                                                        a colon, plus its control
+#   `key_re` minus ONE field name            fails  1 each for session-fit,
+#                                                        severity, effort,
+#                                                        estimate and dup-check;
+#                                                        2 for notes (it also has
+#                                                        the older $SIBLING case).
+#                                                        Six probes, not one: the
+#                                                        any-`word:` mutation above
+#                                                        leaves all six passing,
+#                                                        because it fires EARLIER
+#                                                        and stops the reason at
+#                                                        the same place
+#   short-flag `[=\s]*` -> `[=\s]+`        fails  3   -- the GLUED spellings
+#                                                      (`-F<path>`), fenced apart
+#                                                      from the quoting fix
+#
+# THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
+# rather than the intent. A review measured three faithful-looking reverts of
+# the same idea and got three different tallies, because the retired class
+# CAPTURED (`(["\x27]?)([^"\x27\s]+)\1`) while call sites now write `($GW)` --
+# any capture inside the prelude shifts `$1` everywhere. The number below is
+# for exactly this one-line prelude edit, which is backref-free and so
+# reproducible:
+#
+#     my $GW = qr/["\x27]?[^"\x27\s]+["\x27]?/;
+#
 #   raw path spelling dropped                fails  1   -- exactly the relative
 #                                                        case, so offering BOTH
 #                                                        spellings to the matchers
@@ -716,6 +713,72 @@ registration_check
 
 run "empty command passes" "" "$TMPROOT" 0
 run_nonbash "non-Bash tool passes" 0
+
+# --- key_re: every field name it enumerates is load-bearing ------------------
+# `key_re` decides where a wrapped reason STOPS. It used to match any `word:`,
+# so a sentence wrapping onto a line that happens to carry a colon truncated
+# the reason and the PR-shaped tail was never seen. Bounding it to the real
+# field names fixed that -- and left six names none of which was pinned, so a
+# later edit could drop one and stay green. One case per name: the field must
+# END the reason, i.e. the PR-shaped text AFTER it must not be read.
+# A BODY FILE, not an inline `--body`: the segmenter joins newlines inside a
+# quoted span into spaces (a quoted argument is ONE word), so an inline body has
+# no line structure left for `key_re` to bound and every case here would fail
+# for a reason that has nothing to do with `key_re`. Measured while writing
+# them: all six came back blocked with the three lines fused onto one.
+KEYRE_DIR="$TMPROOT/keyre"
+mkdir -p "$KEYRE_DIR"
+for k in Session-fit Severity Effort Estimate Notes Dup-check; do
+  kf="$KEYRE_DIR/$k.md"
+  {
+    printf 'Session-fit: next (not this session) -- a different subsystem\n'
+    printf '%s: something\n' "$k"
+    printf 'it needs its own PR.\n'
+  } > "$kf"
+  run "reason stops at a following '$k:' field line" \
+    "gh issue create --title t --body-file $kf" "$TMPROOT" 0
+done
+# The control: the SAME shape with a non-field word before the colon is NOT a
+# field line, so the reason continues and the PR-shaped tail DOES block. Without
+# it the six cases above would also be satisfied by a `key_re` matching nothing.
+KEYRE_CTL="$KEYRE_DIR/control.md"
+{
+  printf 'Session-fit: next (not this session) -- a different subsystem\n'
+  printf 'entirely: something\n'
+  printf 'it needs its own PR.\n'
+} > "$KEYRE_CTL"
+run "reason continues over a non-field colon line and still blocks" \
+  "gh issue create --title t --body-file $KEYRE_CTL" "$TMPROOT" 2
+
+# --- the GATE_PERL_WORD load guard, fenced ----------------------------------
+# The cheap `[ -z ]` half cannot see a prelude that is PRESENT but does not
+# COMPILE, and every extraction runs perl with stderr discarded -- so the gate
+# would extract nothing and PASS what it exists to refuse. The payload below is
+# one this gate NORMALLY PASSES, so a resulting exit 2 can only come from the
+# guard, not from the gate's ordinary refusal.
+BROKEN_DIR="$TMPBASE/brokenlib"
+mkdir -p "$BROKEN_DIR/lib"
+cp "$HOOK" "$BROKEN_DIR/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/lib/command-match.sh" > "$BROKEN_DIR/lib/command-match.sh"
+if grep -q 'unclosed' "$BROKEN_DIR/lib/command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$BROKEN_DIR/lib/command-match.sh"; then
+  bl_rc=0
+  jq -n --arg c "gh issue create --title t --body 'Session-fit: next (not this session) -- a new fixture must be written'" --arg d "$TMPROOT" \
+    '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
+    | "$BROKEN_DIR/$(basename "$HOOK")" >/dev/null 2>&1 || bl_rc=$?
+  if [ "$bl_rc" = "2" ]; then
+    echo "PASS: a non-compiling GATE_PERL_WORD fails CLOSED (exit 2)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: a non-compiling GATE_PERL_WORD returned $bl_rc, expected 2"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  # A probe that silently does not run is the failure mode this file is about.
+  echo "FAIL: could not stage a broken GATE_PERL_WORD (sed anchor drifted)"
+  FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "Pass: $PASS  Fail: $FAIL"

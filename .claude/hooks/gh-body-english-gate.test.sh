@@ -17,6 +17,50 @@
 #     English-only rule -- measured rc=0 on a Japanese body where the plain
 #     spelling gave 2 -- so each has a case here now, paired with an
 #     English-body control at the same spelling.
+#   - BLOCKS the GLUED `-F<path>` when the command carries only SHORT flags.
+#     The pre-existing glued cases all also carried `--title`, which is itself
+#     in the ARMING grep, so they armed through `--title` and attested nothing
+#     about `-F`; the short-flag spelling gh equally accepts was rc=0.
+#   - BLOCKS a body-file path followed by an unquoted `;` / `|` / `&&`. The
+#     value class used to swallow the separator, so the path `<file>;` did not
+#     exist, nothing was read, and the gate passed.
+#   - BLOCKS an ANSI-C `$'...'` body in all three escape families (`\u`, `\x`,
+#     octal), and one containing an ESCAPED QUOTE. bash expands these before gh
+#     sees them, so they send Japanese; the gate used to read the escape TEXT,
+#     which is pure ASCII.
+#   - BLOCKS a heredoc rewriting a BACKSLASH-ESCAPED path over a stale English
+#     file, with the English-heredoc twin as the polarity control.
+#   - FAILS CLOSED when `GATE_PERL_WORD` is present but does not COMPILE.
+#
+# MUTATION-PROBED rather than asserted, every number taken on the 129-case
+# suite:
+#
+#   always-`exit 0` stub                  fails 86   (nothing passes vacuously)
+#   always-`exit 2` stub                  fails 42   (nor blocks vacuously)
+#   `$GW` -> the retired class (below)    fails 32
+#   `gate_perl_word_ok` -> always true    fails  1   -- the load-guard case
+#   short-flag `[=\s]*` -> `[=\s]+`       fails  4   -- the GLUED spellings
+#   arming grep back to `-F[[:space:]=]`  fails  2   -- exactly the two
+#                                                      short-flag-only glued
+#                                                      cases, which is the fence
+#                                                      that ARMING is separate
+#                                                      from extraction
+#   heredoc write-detection -> raw
+#     substring compare                   fails  1   -- the backslash-escaped
+#                                                      heredoc target
+#   ANSI-C arm dropped from `$GW`         fails  1   -- exactly the escaped-quote
+#                                                      case, which is why that
+#                                                      arm is not redundant with
+#                                                      `gate_ansi_c`
+#   `gate_ansi_c` decoding neutered       fails  3   -- the three escape families
+#
+# THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
+# rather than the intent: the retired class CAPTURED, while call sites now write
+# `($GW)`, so any capture inside the prelude shifts `$1` everywhere and three
+# faithful-looking reverts give three different tallies. The number above is for
+# exactly this backref-free one-line prelude edit:
+#
+#     my $GW = qr/["\x27]?[^"\x27\s]+["\x27]?/;
 #
 # NOTE: run this from BESIDE the hook, not from a /tmp copy -- HOOK is
 # resolved from ${BASH_SOURCE[0]}, so a copied harness points at a
@@ -685,6 +729,106 @@ run "spaced --body-file path, English body, passes" \
 run "glued -F<path> blocks"                "gh issue create --title x -F$JP_BODY" 2
 run "glued -F<path>, English body, passes" "gh issue create --title x -F$SP_EN"   0
 run "glued -fbody='...' blocks"            "gh api repos/o/r/issues -fbody='これはテスト'" 2
+
+# (G) ARMING, not extraction. Every `-F` case above also carries `--title`,
+# which is itself in the arming grep -- so they armed through `--title` and
+# attested nothing about `-F`. Measured on the tip before this: the same
+# command with the SHORT `-t` gave rc=0 while the `--title` spelling gave 2,
+# because the arming grep required a separator after `-F` and the glued
+# spelling has none. gh accepts `-t`, so this is an ordinary command.
+run "glued -F<path>, SHORT -t only, blocks (arming, not extraction)" \
+  "gh issue create -t x -F$JP_BODY" 2
+run "glued -F<path>, SHORT -t only, English body, passes" \
+  "gh issue create -t x -F$EN_BODY" 0
+run "spaced -F <path>, SHORT -t only, blocks" \
+  "gh issue create -t x -F $JP_BODY" 2
+run "glued -F<quoted spaced path>, SHORT -t only, blocks" \
+  "gh issue create -t x -F\"$SP_JP\"" 2
+
+# (H) The value must STOP at an unquoted shell metacharacter. `$GW`'s bare
+# alternative used to include them, so the word swallowed the separator, the
+# path `<file>;` did not exist, nothing was read, and the gate passed.
+run "trailing ; after a body-file path still blocks" \
+  "gh issue create --title x --body-file $JP_BODY; echo done" 2
+run "trailing | after a body-file path still blocks" \
+  "gh issue create --title x --body-file $JP_BODY | cat" 2
+run "trailing && after a body-file path still blocks" \
+  "gh issue create --title x --body-file $JP_BODY && echo done" 2
+
+# (I) ANSI-C quoting. bash expands `$'...'` before gh sees it, so these send
+# Japanese; the gate used to read the escape TEXT, which is pure ASCII, and
+# pass. All three escape families are here because they do not decode the same
+# way -- `\u` yields a CHARACTER while `\x` and octal yield BYTES.
+run "ANSI-C \$'\\u....' body blocks"   "gh issue create --title x --body \$'\\u65e5\\u672c\\u8a9e'" 2
+run "ANSI-C \$'\\xNN' body blocks"     "gh issue create --title x --body \$'\\xe6\\x97\\xa5'" 2
+run "ANSI-C \$'\\NNN' octal blocks"    "gh issue create --title x --body \$'\\346\\227\\245'" 2
+run "ANSI-C \$'...' ASCII body passes" "gh issue create --title x --body \$'hello\\nworld'" 0
+run "ANSI-C \$'...' quoted PATH blocks" \
+  "gh issue create --title x --body-file \$'$SP_JP'" 2
+# An ESCAPED QUOTE inside `$'...'` is what makes the ANSI-C arm of `$GW`
+# load-bearing rather than cosmetic: a backslash escapes there, so the span does
+# NOT end at that apostrophe. Without the arm the word stopped at it, the
+# Japanese tail was never extracted, and the gate passed a body bash sends as
+# `don't 日本語`. The English twin is the control -- it must still pass, or the
+# case would be satisfied by a gate that refuses everything with an apostrophe.
+run "ANSI-C \$'...' with an escaped quote, japanese, blocks" \
+  "gh issue create --title x --body \$'don\'t \\u65e5\\u672c\\u8a9e'" 2
+run "ANSI-C \$'...' with an escaped quote, english, passes" \
+  "gh issue create --title x --body \$'don\'t ship'" 0
+
+# (J) A backslash-escaped path is one shell WORD, and the write-detection has
+# to see it as one too. Without that the heredoc rewrite is invisible, the gate
+# reads the STALE file on disk, and a heredoc full of Japanese is submitted
+# behind an English file. The English arm is the control: it must NOT block, or
+# the case would pass for the wrong reason on a gate that blocks everything.
+BSDIR="$TMP/bs dir"
+mkdir -p "$BSDIR"
+BS_ESC="${BSDIR// /\\ }/body.md"
+printf 'All English on disk.\n' > "$BSDIR/body.md"
+printf 'Session-fit: next (今回はやらない)\n' > "$BSDIR/jp.md"
+run "backslash-escaped heredoc target, japanese heredoc, blocks" \
+  "cat > $BS_ESC <<'XEOF'
+Session-fit: next (今回はやらない)
+XEOF
+gh issue create --title x --body-file $BS_ESC" 2
+printf 'All English on disk.\n' > "$BSDIR/body.md"
+run "backslash-escaped heredoc target, english heredoc, passes" \
+  "cat > $BS_ESC <<'XEOF'
+All English in the heredoc too.
+XEOF
+gh issue create --title x --body-file $BS_ESC" 0
+printf 'All English on disk.\n' > "$BSDIR/body.md"
+run "backslash-escaped path, japanese ON DISK, blocks" \
+  "gh issue create --title x --body-file ${BSDIR// /\\ }/jp.md" 2
+
+# (K) The GATE_PERL_WORD load guard, fenced. The cheap `[ -z ]` half cannot see
+# a prelude that is present but does not COMPILE, and every extraction runs
+# perl with stderr discarded -- so the gate would extract nothing and PASS what
+# it exists to refuse. Stage a library whose prelude is non-empty and broken.
+BROKEN_LIB_DIR="$TMP/brokenlib"
+mkdir -p "$BROKEN_LIB_DIR/lib"
+cp "$(dirname "$HOOK")/gh-body-english-gate.sh" "$BROKEN_LIB_DIR/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/lib/command-match.sh" > "$BROKEN_LIB_DIR/lib/command-match.sh"
+if grep -q 'unclosed' "$BROKEN_LIB_DIR/lib/command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$BROKEN_LIB_DIR/lib/command-match.sh"; then
+  bl_rc=0
+  jq -nc --arg c "gh issue create --title x --body-file $EN_BODY" \
+    '{tool_name:"Bash",tool_input:{command:$c}}' \
+    | "$BROKEN_LIB_DIR/gh-body-english-gate.sh" >/dev/null 2>&1 || bl_rc=$?
+  if [ "$bl_rc" = "2" ]; then
+    echo "PASS: a non-compiling GATE_PERL_WORD fails CLOSED (exit 2)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: a non-compiling GATE_PERL_WORD returned $bl_rc, expected 2"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  # The staging did not take -- treat that as a failure, not a skip. A probe
+  # that silently does not run is the failure mode this whole file is about.
+  echo "FAIL: could not stage a broken GATE_PERL_WORD (sed anchor drifted)"
+  FAIL=$((FAIL + 1))
+fi
 
 # --- summary ----------------------------------------------------------
 echo

@@ -284,9 +284,17 @@ existing_labels() {
   # which sends the lookup to another repo. Leftmost match after `issue edit`,
   # and a value starting with `-` is rejected rather than passed to gh as a
   # stray flag.
-  repo_args=$(printf '%s' "$seg" | perl -0777 -ne '
-    if (/\bissue\s+edit\b.{0,400}?\s(?:-R|--repo)[=\s]+(["\x27]?)([^\s"\x27]+)\1/s) {
-      print $2 unless $2 =~ /^-/;
+  # The SIXTH site of the value class, through the same shared `$GW` as the
+  # other five. It differs from them in consequence, not in kind: this lookup
+  # only decides WHICH repo's existing labels to read, and failing to extract
+  # makes the gate demand labels it might not have needed -- a false BLOCK, not
+  # a bypass. It is converted anyway, because "defined ONCE" was already this
+  # file's claim while a private copy sat here, and because the false block is
+  # real: `-R "owner/repo name"` is unusual but legal.
+  repo_args=$(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    if (/\bissue\s+edit\b.{0,400}?\s(?:-R|--repo)[=\s]+($GW)/s) {
+      my $v = gate_unq($1);
+      print $v unless $v =~ /^-/;
     }' 2>/dev/null)
   if [ -n "$repo_args" ]; then
     gh issue view "$num" -R "$repo_args" --json labels -q '.labels[].name' 2>/dev/null
@@ -301,6 +309,16 @@ has_label() {
 
 offending_seg=""
 missing=""
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which cannot
+# see a prelude that is present but does not COMPILE -- and that failure is
+# SILENT, because every extraction runs perl with stderr discarded, so the gate
+# would extract nothing and PASS what it exists to refuse. Probe it functionally,
+# once, here: after arming (so ordinary Bash calls pay nothing) and at TOP LEVEL.
+# TOP LEVEL is load-bearing -- the extraction helpers are called inside `$( )`,
+# where `exit 2` ends only the substitution subshell: measured, an in-function
+# guard PRINTED its refusal and the hook still returned 0.
+gate_perl_word_or_die issue-classification-label-gate || exit 2
+
 while IFS= read -r seg; do
   is_edit=0
   if gate_matches "$seg" "$GATE_RE_GH_ISSUE_EDIT"; then

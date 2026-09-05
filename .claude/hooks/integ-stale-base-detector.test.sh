@@ -5,30 +5,39 @@
 # no signal at all and every assertion here is about the MESSAGE. That is the
 # opposite of the blocking gates' suites, and it is the whole risk of a warn
 # hook: an always-`exit 0` stub passes any suite that only checks exit codes.
-# RE-MEASURED 2026-09-05 on the 19-case suite, against three stubs, all
+# RE-MEASURED on the 22-case suite after the review round that added the
+# commit-message cases, against three stubs and five fence mutations, all
 # restored afterwards. EVERY number here is from that one run -- the pass and
-# the fail halves alike. The first revision of this header quoted 6/5 and 5/6
-# and both were wrong; the second quoted 6/6, 4/8, 6/6, taken when the suite
-# was 12 cases, and carrying those forward would have left three PASS tallies
-# describing a suite that no longer exists. A stale measured number is this
-# repo's recurring defect, and the header of a suite whose job is to measure is
-# the worst place for one:
-#   `exit 0`, printing nothing        -> passed  9, FAILED 10  (every warn case)
-#   the ALARMING arm only             -> passed  8, FAILED 11  (silence cases AND
-#                                        the soft-arm warn case, which is why
-#                                        the two arms are asserted separately)
-#   BOTH arms at once                 -> passed 10, FAILED  9  (the silence cases)
-# Plus four fence-specific mutations:
-#   3-dot `HEAD...origin/main` -> 2-dot    fails 1 -- exactly the
+# the fail halves alike. Earlier revisions of this header quoted 6/5, then
+# 6/6 4/8 6/6 taken when the suite was 12 cases; carrying those forward left
+# tallies describing a suite that no longer existed. A stale measured number is
+# this repo's recurring defect, and the header of a suite whose job is to
+# measure is the worst place for one -- hence the whole table is re-taken each
+# round rather than the moved rows patched.
+#
+# THE MUTATION IS NAMED, not just its intent: two of these can be spelled more
+# than one way and the tally differs per spelling.
+#
+#   `exit 0`, printing nothing            passed 11, FAILED 11  (every warn case)
+#   `if [ "$in_scope" -gt 0 ]` -> `true`  passed 20, FAILED  2  (the soft-arm
+#     (the ALARMING arm always)                                  cases, which is
+#                                                                why the two arms
+#                                                                are asserted
+#                                                                separately)
+#   `if [ "$in_scope" -gt 0 ]` -> `false` passed 20, FAILED  2  (the alarming-arm
+#     (the SOFT arm always)                                      cases)
+#   3-dot `HEAD...origin/main` -> 2-dot   fails 1 -- exactly the
 #     lane-has-its-own-commit case. Before that fixture existed the whole suite
-#     survived this mutation at 11/11.
-#   read-verb test removed                 fails 4 -- exactly the four silence
-#     cases, so "a read is not a run" is fenced apart from the change below.
-#   read-verb test back to PER-COMMAND     fails 4 -- exactly the four
-#     read-verb-in-an-earlier-segment cases, and NOTHING else. That is the
-#     2026-09-05 defect reproduced: a read verb anywhere disarmed the whole
-#     command, so `git status && bash .../verify.sh` went silent.
-#   `(bash|sh)` unanchored                 fails 1 -- exactly the
+#     survived this mutation.
+#   read-verb test REMOVED                fails 6 -- the four silence cases plus
+#     the two commit-message ones, so "a read is not a run" is fenced apart from
+#     the change below.
+#   read-verb test back to PER-COMMAND    fails 5 -- the four
+#     read-verb-in-an-earlier-segment cases plus the chained commit-message one,
+#     and NOTHING else. That is the 2026-09-05 defect reproduced: a read verb
+#     anywhere disarmed the whole command, so `git status && bash .../verify.sh`
+#     went silent.
+#   `(bash|sh)` unanchored                fails 1 -- exactly the
 #     word-ending-in-sh case.
 # No direction passes vacuously.
 #
@@ -219,6 +228,21 @@ else
   echo "FAIL: non-Bash tool: silent (exit $rc, output '$out')"
   FAIL=$((FAIL + 1))
 fi
+
+# A commit MESSAGE routinely names the fixture the commit is about, and
+# ARM_RE's bare-path alternative matches inside it -- so the hook printed a NOTE
+# about a run that is not happening. `git commit` joins the read verbs for that
+# reason. The `git add` twin below is the pre-existing sibling; the pair also
+# pins that adding the verb did not widen the class to `git` in general.
+silent 'a commit message naming a fixture path does not arm' \
+  'git commit -m "run tests/integration/demo/verify.sh"' "$BEHIND_SCOPE"
+silent 'a chained commit message naming a fixture path does not arm' \
+  'git add -A && git commit -m "ran tests/integration/demo/verify.sh"' "$BEHIND_SCOPE"
+# The polarity control: `git commit` disarms only the SEGMENT it leads, so a
+# real run chained after one still warns.
+warns 'a real run chained AFTER a commit still warns' \
+  'git commit -m "wip" && bash tests/integration/demo/verify.sh' "$BEHIND_SCOPE" \
+  'commit(s) behind origin/main'
 
 echo "----"
 echo "passed: $PASS, failed: $FAIL"

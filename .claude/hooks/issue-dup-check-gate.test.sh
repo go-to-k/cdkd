@@ -22,28 +22,40 @@
 #           the miss surfaced as a FALSE BLOCK on a compliant body. The
 #           positive cases are the ones that go red against the pre-fix hook.
 #
-# MUTATION-PROBED rather than asserted, EVERY number re-taken on the 2026-09-05
-# run (59 cases) rather than only the ones that round moved -- the previous
-# header quoted 11 / 18 from a ~29-case suite and both were long stale:
+# MUTATION-PROBED rather than asserted, EVERY number re-taken on the 60-case
+# suite after the review round that added the load-guard fence -- not carried
+# forward. (An earlier header quoted 11 / 18 from a ~29-case suite; both were
+# long stale, which is why this is re-taken wholesale each round.)
 #
-#   always-`exit 0` stub                  fails 28   (nothing passes vacuously)
+#   always-`exit 0` stub                  fails 29   (nothing passes vacuously)
 #   always-`exit 2` stub                  fails 34   (nor blocks vacuously)
-#   opt-in guard removed                  fails  2   -- exactly the two opt-in
-#                                                      cases (BOTH lines: the
-#                                                      `.markgate.yml` test
-#                                                      alone leaves the
-#                                                      not-a-repo case passing)
-#   marker anchor -> loose                fails  2   -- exactly the two
-#                                                      mid-sentence cases, the
-#                                                      file-borne and the
-#                                                      heredoc one
-#   `gh api` mint arm removed             fails  1
-#   segment scoping reverted (scan $cmd)  fails  4
-#   heredoc whole-command fallback removed fails 1
-#   `$GW` value class -> the old          fails  3   -- the two spaced-path
-#     `(["\x27]?)([^"\x27\s]+)\1`                      cases plus the
-#                                                      unexpanded-`$VAR`
-#                                                      message arm
+#   `$GW` -> the retired class (below)    fails 21
+#   `gate_perl_word_ok` -> always true    fails  0   -- and that ZERO is the
+#                                                      finding, not a gap. This
+#                                                      gate fails CLOSED on an
+#                                                      unreadable body (see the
+#                                                      note above), so a broken
+#                                                      prelude lands on the same
+#                                                      refusal by accident. The
+#                                                      guard is still wired here,
+#                                                      because relying on that
+#                                                      coincidence is what made
+#                                                      this file's original bug
+#                                                      invisible for a year.
+#   short-flag `[=\s]*` -> `[=\s]+`        fails  1   -- the GLUED spellings
+#                                                      (`-F<path>`), fenced apart
+#                                                      from the quoting fix
+#
+# THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
+# rather than the intent. A review measured three faithful-looking reverts of
+# the same idea and got three different tallies, because the retired class
+# CAPTURED (`(["\x27]?)([^"\x27\s]+)\1`) while call sites now write `($GW)` --
+# any capture inside the prelude shifts `$1` everywhere. The number below is
+# for exactly this one-line prelude edit, which is backref-free and so
+# reproducible:
+#
+#     my $GW = qr/["\x27]?[^"\x27\s]+["\x27]?/;
+#
 #   short-flag `[=\s]*` -> `[=\s]+`       fails  1   -- exactly the glued
 #                                                      `-F<path>` case
 
@@ -313,6 +325,36 @@ run "glued -F<path> lacks Dup-check"     "gh issue create --title t -F$WITHOUT" 
 run "empty command passes" "" "$TMPROOT" 0
 
 run_nonbash "non-Bash tool passes" 0
+
+# --- the GATE_PERL_WORD load guard, fenced ----------------------------------
+# The cheap `[ -z ]` half cannot see a prelude that is PRESENT but does not
+# COMPILE, and every extraction runs perl with stderr discarded -- so the gate
+# would extract nothing and PASS what it exists to refuse. The payload below is
+# one this gate NORMALLY PASSES, so a resulting exit 2 can only come from the
+# guard, not from the gate's ordinary refusal.
+BROKEN_DIR="$TMPBASE/brokenlib"
+mkdir -p "$BROKEN_DIR/lib"
+cp "$HOOK" "$BROKEN_DIR/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/lib/command-match.sh" > "$BROKEN_DIR/lib/command-match.sh"
+if grep -q 'unclosed' "$BROKEN_DIR/lib/command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$BROKEN_DIR/lib/command-match.sh"; then
+  bl_rc=0
+  jq -n --arg c "gh issue create --title t --body-file '"'"'$WITH'"'"'" --arg d "$TMPROOT" \
+    '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
+    | "$BROKEN_DIR/$(basename "$HOOK")" >/dev/null 2>&1 || bl_rc=$?
+  if [ "$bl_rc" = "2" ]; then
+    echo "PASS: a non-compiling GATE_PERL_WORD fails CLOSED (exit 2)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: a non-compiling GATE_PERL_WORD returned $bl_rc, expected 2"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  # A probe that silently does not run is the failure mode this file is about.
+  echo "FAIL: could not stage a broken GATE_PERL_WORD (sed anchor drifted)"
+  FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "Pass: $PASS  Fail: $FAIL"

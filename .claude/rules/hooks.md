@@ -104,9 +104,9 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   scope to the gh SEGMENT; this gate scans the whole command, so a bare `-F`
   arm would also read `git commit -F <msg>` and turn a `#4` in a commit
   message into a false refusal). Smoke test:
-  `pr-body-item-number-gate.test.sh` (49 cases; blocking cases fail against
-  the pre-#2397 hook, controls pass there. Probed 2026-09-05: `exit 0` stub
-  26, `exit 2` 23, `$GW` reverted 4, short-flag `[=\s]*` → `+` 1).
+  `pr-body-item-number-gate.test.sh` (50 cases; blocking cases fail against
+  the pre-#2397 hook, controls pass there. `exit 0` stub 27, `exit 2` 23,
+  `$GW` reverted 19; per-fence tallies in the suite header).
 
 - **`.claude/hooks/internal-pr-labels-gate.sh`** blocks `git commit` when
   staged `README.md` / `docs/*.md` add `(PR 8b)` / `(PR 6 of #224)` style
@@ -237,10 +237,8 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   to the gh invocation. **Short flags `-b` / `-t` / `-n` are deliberately
   NOT scanned** (collide with `echo -n` / `grep -n` / `sed -n` / `sort -t`;
   attributing them is shell parsing). Six review rounds are the evidence: a
-  hand-rolled quote/separator scanner shipped a defect per round (a
-  `\`-continued line truncated; a quoted MENTION inverting quote polarity; a
-  heredoc/comment apostrophe leaving quote state open, silently defeating
-  `heredoc -> file -> --body-file`) — deleting the scanner deleted the class.
+  hand-rolled quote/separator scanner shipped a defect per round — deleting
+  the scanner deleted the class.
   The trade runs in the FALSE-POSITIVE direction (documented): a later non-gh
   command with a literal `--body` and non-English text blocks; `-F` is not
   gh-unique (`git commit -F`, `awk -F`) — the file-existence check plus the
@@ -250,14 +248,15 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   against payload `cwd` + leading `cd`; gh global flags before the verb are
   absorbed by the shared `GATE_GH_C` (go-to-k/cdkd#2156 — a local
   enumeration had lost `gh --template "a b" issue create` and
-  `gh -R <target> issue create`). Known limits, all measured: the short
-  flags; run-time-assembled text (`--body "$(cat jp.txt)"`); unquoted values
-  with metacharacters; adjacent quoted chunks; `gh api --input <file>` /
-  `--body-file -`. Two former SHARED-matcher limits — a gh call nested in a
-  substitution/subshell, an unbalanced apostrophe swallowing the rest — are
-  FIXED by the #2129 convergence (issue #2093), as is a verb behind
-  `xargs` / `sudo` / `if` / `while` / a `case` arm; the cases are kept,
-  flipped to blocking, with controls.
+  Known limits, all measured: the short flags; run-time-assembled text
+  (`--body "$(cat jp.txt)"`); `gh api --input <file>` / `--body-file -`. Two
+  former SHARED-matcher limits — a gh call nested in a substitution/subshell,
+  an unbalanced apostrophe swallowing the rest — are FIXED by the #2129
+  convergence (issue #2093), as is a verb behind `xargs` / `sudo` / `if` /
+  `while` / a `case` arm; kept as blocking cases with controls. An unquoted
+  value now STOPS at an unquoted shell metacharacter (where the shell ends
+  the word) and adjacent quoted chunks are spanned — both were limits, both
+  fail-open.
   Two pinned traps, each of which made the hook silently pass everything:
   **`perl -CSD`** (not `grep -P`; without it perl decodes latin-1 and the
   `\x{3000}` ranges never match) and **`perl -0777`** whole-text extraction
@@ -278,22 +277,24 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   by STATUS — an empty body prints nothing, and inferring "no heredoc" from
   that FALSE-BLOCKED an empty rewrite. The same precision keeps `-F` safe
   (`awk -F ,` names a path never written — stays a skip).
-  **Two header-declared "known limits" were live BYPASSES and are fixed**
-  (2026-09-05, shared `GATE_PERL_WORD` — see "One value class for the three
-  body gates" below): a quoted `--body-file` path containing a SPACE, and the
-  glued `-F<path>` / `-fbody=<text>` shorthands. Measured rc=0 on a Japanese
-  body where the plain spelling gave 2. A limit line is not a licence.
+  **Five header-declared "known limits" were live BYPASSES and are fixed**
+  (2026-09-05, shared `GATE_PERL_WORD` — see "One value class for the FIVE
+  body gates" below), each measured rc=0 on a Japanese body where the plain
+  spelling gave 2: a quoted `--body-file` path with a SPACE; the glued
+  `-F<path>` / `-fbody=<text>` shorthands; a glued `-F<path>` on a SHORT-flag-
+  only command, which never even ARMED; a path followed by an unquoted `;`;
+  and ANSI-C `$'…'`. A limit line is not a licence.
   No bypass marker — translate the text. Smoke test:
-  `gh-body-english-gate.test.sh` (111 cases, bash 5.x AND macOS 3.2;
+  `gh-body-english-gate.test.sh` (129 cases, bash 5.x AND macOS 3.2;
   `HOOK_BASH=<path>` runs the HOOK under that bash too). The
   japanese-in-the-PATH pass case is LOAD-BEARING (fails if the extraction is
   replaced by a whole-command scan), paired with a
   japanese-path-plus-english-heredoc-body case and an English body at a
-  SPACED path. 50 cases are review-round regressions, each verified red
-  against the corresponding PRE-FIX hook (10 + 12 + 7 + 9 + 5 across rounds
-  2-5, round-6's heredoc-apostrophe case, plus the 6 spaced/glued cases);
-  each Unicode range covered in ISOLATION; known-limit cases, quoted-body
-  false-positive cases, and a registration check.
+  Review-round regressions are each verified red against the corresponding
+  PRE-FIX hook (16 in the latest round alone); each Unicode range covered in
+  ISOLATION; plus known-limit, quoted-body false-positive and registration
+  Re-probed on the 129-case suite: `exit 0` stub 86, `exit 2` 42, `$GW`
+  reverted 32. Per-fence tallies live in the suite header.
 
 - **`.claude/hooks/gated-command-preamble-gate.sh`** blocks a Bash call that
   runs a SIDE-EFFECTING preamble in an earlier segment than a GATED command
@@ -423,21 +424,18 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   PreToolUse time the body file does not exist yet — so an UNREADABLE body
   file (and only then) falls back to scanning the whole command with the
   ANCHORED marker (heredoc bodies have real line structure). Smoke test:
-  `issue-dup-check-gate.test.sh` (59 cases, bash 5.x + 3.2 — every
+  `issue-dup-check-gate.test.sh` (60 cases, bash 5.x + 3.2 — every
   `--body-file` spelling both directions, the mid-sentence marker,
   unreadable-path and unexpanded-`$VAR` blocks, the `cd` chain, ungated
   verbs, the `gh api` mint, subshell / `-R` / substitution spellings,
   fail-closed library, the heredoc window, registration, cdkd#563
-  quoted-body cases, spaced/glued body-file paths). **Every fence was
-  mutation-probed, all re-taken 2026-09-05 on the 59-case suite** (the old
-  numbers were from a ~29-case run): always-`exit 0` stub fails 28,
-  always-`exit 2` 34; opt-in guard removal exactly 2 (BOTH lines — the
-  `.markgate.yml` test alone leaves the not-a-repo case passing); anchored →
-  loose swap exactly the 2 mid-sentence cases; `gh api` arm removal 1;
-  segment-scoping revert 4; heredoc-fallback removal 1; `$GW` value class
-  reverted 3; short-flag `[=\s]*` → `+` 1. The commit-message fixture carries
-  the marker at LINE START on purpose — mid-sentence it passed for the WRONG
-  reason (the anchor rejected it regardless of scoping) and fenced nothing.
+  quoted-body cases, spaced/glued body-file paths, the prelude guard).
+  **Every fence is mutation-probed and every number re-taken each round**,
+  because the old ones were from a ~29-case run and had gone stale: on the
+  60-case suite, `exit 0` stub 29, `exit 2` 34, `$GW` reverted 21,
+  short-flag 1, prelude guard 0 (this gate already fails CLOSED, so the
+  guard is redundant HERE — wired anyway, since that coincidence is what
+  hid the original bug). Per-fence tallies live in the suite header.
 
 - **`.claude/hooks/issue-classification-label-gate.sh`** blocks
   `gh issue create` / `gh issue edit` when the body states a `Severity:` or
@@ -472,15 +470,9 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   SPACE, and the glued `-F<path>`, extracted nothing, the precedence chain
   ended at the whole SEGMENT — which carries the PATH, not the body — and NO
   label was demanded. Measured rc=0 where the plain spelling gave 2. Smoke
-  test: `issue-classification-label-gate.test.sh` (44 cases, bash 5.x + 3.2).
-  Mutation-probed, every number re-taken 2026-09-05: always-`exit 0` stub
-  fails 16, always-`exit 2` 43; relaxing `[[:space:]]+` to `*` exactly 1;
-  reverting body-file precedence exactly 2 (both `--title` cases); dropping
-  the bare `-F <path>` arm exactly 2; `$GW` reverted 2; short-flag
-  `[=\s]*` → `+` 1. Three fences exist because a reviewer found the pinned
-  behaviour BROKEN first: a bare `-F <path>` body was never scanned, the
-  `edit` arm read its issue number from any `/issues/N` URL, and a spaced
-  `Severity:` in a `--title` outranked the body.
+  test: `issue-classification-label-gate.test.sh` (46 cases, bash 5.x + 3.2).
+  Re-probed on the 46-case suite: `exit 0` stub 18, `exit 2` 43, `$GW`
+  reverted 38. Per-fence tallies live in the suite header.
 
 - **`.claude/hooks/issue-deferral-criteria-gate.sh`** blocks `gh issue create`
   (and the `gh api repos/<o>/<r>/issues` mint) when the body's
@@ -522,62 +514,71 @@ Twenty additional one-shot hooks block known foot-guns at the source.
   passed (measured — stale file present rc=0, file absent rc=2). Unlike
   `issue-dup-check-gate`, an UNREADABLE `--body-file` still does not block:
   this gate objects to content it FINDS, so a refusal would be unclearable.
-  **What it catches, measured 2026-09-05** — of 300 bodies, 259 carry a
-  `Session-fit: next` FIELD LINE (the anchored predicate this gate reads —
-  state the predicate or the number is unreproducible, and the `--limit 300`
-  window moves: the same day's earlier reading was 255) and it fires on **66**
-  (25%), every hit on a literal vocabulary term. It does NOT catch reasoning
-  that never names a PR: of its own three motivating deferrals it fires on
-  go-to-k/cdkd#2590 but not #2587 ("its own real-AWS run and review round") or
-  #2588 ("its own blast radius across future PRs"). The needle was
-  deliberately NOT widened to chase those (implement.md: three spellings in
-  three rounds means change instrument) — the companion fix covers them, since
-  [session-report.md](session-report.md) no longer OFFERS a PR-shaped `next`
-  criterion to cite. Bypass `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, honored from
-  the env and from a leading assignment in the command text (#2368), for an
-  INLINE quote of PR-shaped reasoning. Smoke test:
-  `issue-deferral-criteria-gate.test.sh` (97 cases, bash 5.x + 3.2 via
-  `HOOK_BASH`). Mutation-probed, every number re-taken 2026-09-05: `exit 0`
-  58, `exit 2` 44, `next` polarity exactly the two `now` cases, boundary 4,
-  segment scoping 4, fence strip 2, bolded key 2, bolded VALUE 1, list item 2,
-  heredoc arm 3, APPEND arm 1, `key_re` back to any `word:` 1,
-  `(independent|separate)` → `independent` 1, `$GW` value class reverted 13,
-  short-flag `[=\s]*` → `+` 3. **Three more silent passes closed 2026-09-05**:
+  **What it catches** — state the PREDICATE or the number is unreproducible,
+  and the `--limit 300` window MOVES (255 → 259 in one day, 66 → 65 fires in
+  another). Latest reading: of 300 bodies, 259 carry an anchored
+  `Session-fit: next` FIELD LINE and it fires on **65** (25%), every hit on a
+  literal vocabulary term. It does NOT catch reasoning that never names a PR:
+  of its own three motivating deferrals it fires on go-to-k/cdkd#2590 but not
+  #2587 ("its own real-AWS run and review round") or #2588 ("its own blast
+  radius across future PRs"). The needle was deliberately NOT widened to chase
+  those (implement.md: three spellings in three rounds means change
+  instrument) — [session-report.md](session-report.md) no longer OFFERS a
+  PR-shaped `next` criterion to cite. Bypass
+  `CDKD_SKIP_DEFERRAL_CRITERIA_GATE=1`, from the env or a leading assignment
+  in the command text (#2368), for an INLINE quote of PR-shaped reasoning.
+  Smoke test: `issue-deferral-criteria-gate.test.sh` (105 cases, bash 5.x +
+  Re-probed on the 105-case suite: `exit 0` 60, `exit 2` 50, `$GW` reverted
+  36, short-flag 3, prelude guard 1. Per-fence tallies (the boundary, the
+  six `key_re` field names, segment scoping, the fence strip, the heredoc
+  arms) live in the suite header, which is re-measured wholesale each round.
+  
+  `(independent|separate)` → `independent` 1. **Three silent passes closed**:
   a BOLDED `next` VALUE (the key accepted `[*_]*`, the value did not);
   `separate review surface`, which cdk-local's port already refused while cdkd
   passed it; and a reason WRAPPING onto a line that merely contains a colon
   (`entirely:` ended the continuation) — the boundary now pins the NAMED
-  fields, not any `word:`. All three are LATENT: pre-fix and post-fix fire on
-  the IDENTICAL 66 of the 259, with 0 corpus instances of any of the three
-  shapes. Pure false-positive/negative correction, no drift. The fence STRIP needed a
-  second round: latching on any opener with no look-ahead made an UNCLOSED
-  fence blank the rest of the body (rc=0 where the pre-strip hook said 2) —
-  the heredoc latch class, one construct over. It now opens only when the SAME
-  marker recurs later.
+  fields. All three are LATENT: pre-fix and post-fix fire on the IDENTICAL 65
+  of the 259, 0 corpus instances of any shape. No drift. The fence STRIP
+  needed a second round: latching on any opener with no look-ahead made an
+  UNCLOSED fence blank the rest of the body (rc=0 where the pre-strip hook
+  said 2) — the heredoc latch class one construct over; it now opens only when
+  the SAME marker recurs later.
 
 **One value class for the FIVE body gates (`GATE_PERL_WORD`, 2026-09-05).**
 The english / dup-check / deferral / classification / pr-body-item-number gates
 pull a `--body-file` path and an inline `--body` value out of RAW command text
 with `perl` (a global scan over a slurp, which `[[ =~ ]]` cannot do). All five
-spelled the value class `(["\x27]?)([^"\x27\s]+)\1`, which ENUMERATES where a quote may
-sit, and that lost three families at once — each measured, each fail-OPEN
-wherever polarity allowed: a quoted path containing a SPACE extracted NOTHING
-(english-gate rc=0 on a JAPANESE body where the plain spelling gave 2 — the
-English-only rule bypassable by a directory name with a space); gh's own
-`-f body='<text>'` (quote INSIDE the value) fell through to `\S+` and captured
-`body='a`; and the GLUED `-F<path>` / `-fbody=<text>` spellings gh accepts
-needed a separator. Sites four and five were found only by the note the others
-carry telling the reader to check the siblings. The class now lives ONCE in
-`lib/command-match.sh` as a
-perl PRELUDE defining `$GW` (one shell WORD that may EMBED quoted spans — the
-perl twin of `_GATE_WORD_CHAR`) and `gate_unq`, so the next gate does not write
-a fourth regex. `issue-dup-check-gate` was ACCIDENTALLY safe — no path
-extracted means `seg_has_marker` returns 1 and it BLOCKS — so its miss was a
-FALSE BLOCK on a compliant body; fixed anyway, since that safety comes from an
-unrelated polarity a later edit could reverse. **Every gate on the prelude must
-assert `GATE_PERL_WORD` non-empty in its load guard**: undefined, `$GW`
-interpolates EMPTY, `($GW)` matches everywhere, every value comes back empty —
-a silent fail-open rather than a loud 127.
+spelled it `(["\x27]?)([^"\x27\s]+)\1`, which ENUMERATES where a quote may sit
+instead of taking one shell WORD. That lost SIX families at once, each
+measured, each fail-OPEN wherever polarity allowed: a quoted path containing a
+SPACE; `-f body='<text>'` (quote INSIDE the value); the glued `-F<path>` /
+`-fbody=<text>`; a glued `-F<path>` on a SHORT-flag-only command, which never
+even ARMED; a path followed by an unquoted `;`; and ANSI-C `$'…'`, read as
+literal ASCII while bash sends the decoded bytes. The worst was the first:
+english-gate rc=0 on a JAPANESE body where the plain spelling gave 2, i.e. the
+English-only rule bypassable by a directory name with a space. **The
+per-shape table, the measured rc for each, and the shell-word grammar live in
+`lib/command-match.sh` beside the constant** — sites four and five were found
+only by the sibling note the others carry, the last three only by a review
+round, so the notes and the constant are the thing to keep current.
+
+Also converted: the redirect-target matchers, which compared RAW command text
+against an already-unquoted path, so a heredoc writing `> /a\ b/x.md` was
+invisible and the gate read the STALE file on disk. `issue-dup-check-gate` was
+ACCIDENTALLY safe (no path extracted means it BLOCKS), so its miss was a FALSE
+BLOCK; fixed anyway — that safety is a polarity a later edit could reverse.
+
+**A non-empty test is only HALF the guard.** A prelude that is present and
+does NOT COMPILE is just as silent as a missing one, because every extraction
+runs `perl … 2>/dev/null` — measured, one broken literal disarmed four gates at
+once with zero stderr. So each gate also calls `gate_perl_word_or_die <name> ||
+exit 2`: a functional probe, once, AFTER arming and at **TOP LEVEL** — the
+extraction helpers run inside `$( )`, where `exit 2` ends only the substitution
+subshell, so an in-function guard PRINTED its refusal and the hook still
+returned 0. Fenced by `tests/unit/scripts/gate-perl-word-consumers.test.ts`,
+which also pins the consumer COUNT against the library header — that sentence
+said "three gates" while five files consumed the constant.
 
 All twenty produce actionable error messages with the exact replacement
 command.
@@ -770,7 +771,7 @@ string is a documented false positive costing a stray note, not a block. Repo
 opt-in; an unloadable library exits 0 here rather than 2, since this hook
 refuses nothing; declared unexercisable in `unresolved-target-class.test.sh`.
 
-Smoke test: `integ-stale-base-detector.test.sh` (19 cases, real git fixtures,
+Smoke test: `integ-stale-base-detector.test.sh` (22 cases, real git fixtures,
 honouring `HOOK_BASH` so the HOOK runs under 3.2 — it ignored it at first, and
 `HOOK_BASH=/nonexistent` still reported 11/11). Probed, all re-taken
 2026-09-05 with BOTH halves of each tally: silent stub 9 pass / 10 fail,

@@ -278,10 +278,23 @@ MAX_REPORT=10
 # `>f&&`, so a one-call heredoc written without spaces passed unscanned.
 cmd_writes_path() {
   local path="$1"
-  CMD="$cmd" TARGET="$path" perl -0777 -e '
-    my $cmd = $ENV{CMD};
-    my $t   = quotemeta($ENV{TARGET});
-    exit 0 if $cmd =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+  CMD="$cmd" TARGET="$path" perl -0777 -e "$GATE_PERL_WORD"'
+    # The redirect TARGET is matched as a shell WORD and unquoted before the
+    # comparison, for the same reason the flag values are: `$ENV{TARGET}` has
+    # already been through `gate_unq`, so the retired `(["\x27]?)$t\1` class
+    # could only ever match spellings that need no unquoting -- notably NOT
+    # `> /a\ b/x.md`, which reopened the heredoc-write window for exactly the
+    # backslash-escaped paths the flag side now reads.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
+    my $cmd  = $ENV{CMD};
+    my $want = $ENV{TARGET};
+    exit 0 if line_writes($cmd, $want, 1);
     exit 1;
   ' 2>/dev/null
 }
@@ -289,10 +302,23 @@ cmd_writes_path() {
 # The TRUNCATING half. `>>` and `tee -a` are deliberately absent.
 cmd_replaces_path() {
   local path="$1"
-  CMD="$cmd" TARGET="$path" perl -0777 -e '
-    my $cmd = $ENV{CMD};
-    my $t   = quotemeta($ENV{TARGET});
-    exit 0 if $cmd =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+  CMD="$cmd" TARGET="$path" perl -0777 -e "$GATE_PERL_WORD"'
+    # The redirect TARGET is matched as a shell WORD and unquoted before the
+    # comparison, for the same reason the flag values are: `$ENV{TARGET}` has
+    # already been through `gate_unq`, so the retired `(["\x27]?)$t\1` class
+    # could only ever match spellings that need no unquoting -- notably NOT
+    # `> /a\ b/x.md`, which reopened the heredoc-write window for exactly the
+    # backslash-escaped paths the flag side now reads.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
+    my $cmd  = $ENV{CMD};
+    my $want = $ENV{TARGET};
+    exit 0 if line_writes($cmd, $want, 0);
     exit 1;
   ' 2>/dev/null
 }
@@ -304,15 +330,27 @@ cmd_replaces_path() {
 # and unquoted delimiters, and `<<-`'s tab-stripped terminator. Exits non-zero
 # when the command writes the path through no heredoc at all.
 heredoc_bodies_for() {
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
+    my $want = $ENV{TARGET};
     my @lines = split /\n/, $c, -1;
     my @out;
     my $found = 0;
     for (my $i = 0; $i <= $#lines; $i++) {
       my $l = $lines[$i];
-      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless line_writes($l, $want, 1);
       next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
       my $dash  = ($1 eq "<<-");
       my $delim = $3;
@@ -401,6 +439,16 @@ scan_stream() {
 # other than a heredoc redirect (`printf > f`, `python3 -c ... > f`) cannot be
 # extracted, so it falls back to whatever is on disk -- and to nothing at all
 # when the path does not exist yet.
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which cannot
+# see a prelude that is present but does not COMPILE -- and that failure is
+# SILENT, because every extraction runs perl with stderr discarded, so the gate
+# would extract nothing and PASS what it exists to refuse. Probe it functionally,
+# once, here: after arming (so ordinary Bash calls pay nothing) and at TOP LEVEL.
+# TOP LEVEL is load-bearing -- the extraction helpers are called inside `$( )`,
+# where `exit 2` ends only the substitution subshell: measured, an in-function
+# guard PRINTED its refusal and the hook still returned 0.
+gate_perl_word_or_die pr-body-item-number-gate || exit 2
+
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   body_text=""

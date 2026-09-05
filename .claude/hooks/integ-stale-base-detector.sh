@@ -124,7 +124,13 @@ ARM_RE="$ARM_RE"'|^cdkd[[:space:]]+(deploy|destroy)([[:space:]]|$)'
 # WARNED while the bare form was silent. Anchored at the segment start, which
 # `gate_strip_prefix` has already cleared of `env` / `time` / `sudo` wrappers
 # and leading whitespace.
-READ_RE='^(grep|rg|cat|less|head|tail|ls|wc|echo|sed[[:space:]]+-n|git[[:space:]]+(diff|log|show|add|status))([[:space:]]|$)'
+# `git commit` is in the list for a different reason than the others: a commit
+# MESSAGE routinely names the fixture the commit is about
+# (`git commit -m "run tests/integration/x/verify.sh"`), and ARM_RE's bare-path
+# alternative matches inside it, so the hook printed a NOTE about a run that is
+# not happening. Noise only -- this hook never blocks -- but a warn hook that
+# cries wolf is one people stop reading.
+READ_RE='^(grep|rg|cat|less|head|tail|ls|wc|echo|sed[[:space:]]+-n|git[[:space:]]+(diff|log|show|add|status|commit))([[:space:]]|$)'
 
 # Both tests are written as `if`, never `<cmd> && continue`: a trailing false
 # test as the last statement of a loop body is the shape that aborts the whole

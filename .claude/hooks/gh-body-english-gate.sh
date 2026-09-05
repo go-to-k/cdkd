@@ -65,9 +65,10 @@
 #     the absolute twin, measured). That one is CLOSED -- both spellings
 #     are now offered to the matchers -- and it is named here because
 #     the list claiming to be complete is what let it sit;
-#   - an unquoted inline value is matched, but one containing shell
-#     metacharacters may be truncated at the first;
-#   - adjacent quoted chunks (`--body "a"$'\''b'\''`) yield only the first;
+#   - an unquoted inline value STOPS at an unquoted shell metacharacter
+#     (`; | & ( ) < >` and a backtick), which is what a shell does with it --
+#     the word ends there. A metacharacter meant as DATA has to be quoted, and
+#     then it is inside the value and kept;
 #   - `gh api --input <file>` and `--body-file -` (stdin) are not scanned;
 #   - a quoted path CONTAINING A SPACE (`--body-file "/a/b c/x.md"`) and the
 #     glued `-F<path>` / `-fbody=<text>` shorthands USED to be listed here as
@@ -142,7 +143,16 @@ fi
 # ...and only when a body / title / notes is actually being sent. This
 # keeps `gh api repos/{owner}/{repo}/issues/5 --jq .body` (a READ whose
 # flag merely names the field) out of scope.
-if ! printf '%s' "$cmd" | grep -qE '(--body|--title|--notes|-F[[:space:]=]|-f[[:space:]=]|body=|title=|notes=)'; then
+# `-F` / `-f` accept a GLUED value (`-F/abs/p`, `-F"/a b/x.md"`), so the
+# terminator has to admit a non-separator character too. Spelled as an
+# alternation rather than dropping the terminator entirely: a bare `-F` would
+# also match inside a longer word. Over-arming is cheap and safe here anyway --
+# `cmd_matches_verb` above has already established this is a gh PUBLISHING
+# invocation, so `grep -F pattern file` never reaches this line (verified: rc=0
+# with and without the widening), and an armed command with no extractable body
+# just exits 0. Under-arming is NOT cheap: the glued spelling was a live
+# English-only bypass (rc=0 on a Japanese body where the spaced form gave 2).
+if ! printf '%s' "$cmd" | grep -qE '(--body|--title|--notes|-F([[:space:]=]|[^[:space:]=])|-f([[:space:]=]|[^[:space:]=])|body=|title=|notes=)'; then
   exit 0
 fi
 
@@ -182,21 +192,43 @@ MAX_REPORT=10
 # A heredoc body is written through exactly these redirects (`cat > f <<EOF`), so
 # matching the redirect covers the heredoc shape without parsing heredocs twice.
 cmd_writes() {
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
+    my $want = $ENV{TARGET};
     # `(?:\s|$)` alone missed `>f<<EOF` -- the TIGHT spelling of the very shape
     # this exists for -- and `>f;` / `>f&&`.
-    exit 0 if $c =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 0 if line_writes($c, $want, 1);
     exit 1;
   ' 2>/dev/null
 }
 
 cmd_replaces() {
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # The redirect TARGET is matched as a shell WORD and unquoted before the
+    # comparison, for the same reason the flag values are: `$ENV{TARGET}` has
+    # already been through `gate_unq`, so a `(["\x27]?)$t\1` class could only
+    # ever match the spellings that need no unquoting. It could not see
+    # `> /a\ b/x.md`, which meant the heredoc-write window reopened for exactly
+    # the backslash-escaped paths this PR taught the flag side to read
+    # (measured: a heredoc writing Japanese to a backslash-escaped path over a
+    # stale English file on disk gave rc=0; the quoted spelling gave 2).
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
-    exit 0 if $c =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    my $want = $ENV{TARGET};
+    while ($c =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/g) {
+      exit 0 if gate_unq($1) eq $want;
+    }
     exit 1;
   ' 2>/dev/null
 }
@@ -207,15 +239,30 @@ cmd_replaces() {
 # path through no heredoc at all, which leaves the pre-#2397 behaviour for every
 # shape this cannot see.
 heredoc_bodies_for() {
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # The redirect TARGET is matched as a shell WORD and unquoted before the
+    # comparison, for the same reason the flag values are: `$ENV{TARGET}` has
+    # already been through `gate_unq`, so a `(["\x27]?)$t\1` class could only
+    # ever match the spellings that need no unquoting. It could not see
+    # `> /a\ b/x.md`, which meant the heredoc-write window reopened for exactly
+    # the backslash-escaped paths this PR taught the flag side to read
+    # (measured: a heredoc writing Japanese to a backslash-escaped path over a
+    # stale English file on disk gave rc=0; the quoted spelling gave 2).
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
+    my $want = $ENV{TARGET};
     my @lines = split /\n/, $c, -1;
     my @out;
     my $found = 0;
     for (my $i = 0; $i <= $#lines; $i++) {
       my $l = $lines[$i];
-      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless line_writes($l, $want, 1);
       next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
       my $dash  = ($1 eq "<<-");
       my $delim = $3;
@@ -251,10 +298,22 @@ heredoc_bodies_for() {
   ' 2>/dev/null
 }
 
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which
+# cannot see a prelude that is present but does not compile -- and that
+# failure is SILENT (every extraction discards perl stderr), so the gate
+# would extract nothing and pass. Probe it functionally here, where the
+# gate has already armed, rather than on every Bash call at load time.
+gate_perl_word_or_die gh-body-english-gate || exit 2
 while IFS= read -r f_raw; do
   [ -n "$f_raw" ] || continue
   # BOTH spellings are kept, and that is load-bearing rather than tidy.
-  # `f` is the path to READ; `f_raw` is the path as the command SPELLS it, and
+  # `f` is the path to READ; `f_raw` is the path as the command spells it AFTER
+  # `gate_unq` -- quotes and backslash escapes removed, nothing else changed, so
+  # a relative or `~/` spelling survives while `"/a b/x.md"` and `/a\ b/x.md`
+  # both arrive as `/a b/x.md`. That is what the write-detection compares
+  # against, which is why those matchers take a shell WORD and unquote it rather
+  # than matching the raw text: the raw text and this string differ for every
+  # spelling that needed quoting. It is NOT the untouched command text, and
   # the write-detection below (`cmd_writes` / `cmd_replaces` /
   # `heredoc_bodies_for`) matches its argument against the RAW COMMAND TEXT.
   # Handed the resolved absolute path, those matched nothing whenever the

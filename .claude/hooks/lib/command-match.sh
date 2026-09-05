@@ -1204,12 +1204,16 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # ── A shell WORD, for the gates that extract with PERL ─────────────────────
 #
 # `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
-# `[[ =~ ]]`. Three gates -- issue-deferral-criteria, gh-body-english,
-# issue-dup-check -- pull a `--body-file` path or an inline `--body` value out
-# of RAW command text with `perl -0777` instead, because they need a GLOBAL
-# scan over a multi-line slurp and `[[ =~ ]]` gives neither. All three spelled
-# the value class `(["']?)([^"'\s]+)\1`, and that shape had TWO MEASURED
-# holes, both fail-OPEN (go-to-k/cdkd, 2026-09-05):
+# `[[ =~ ]]`. FIVE gates -- issue-deferral-criteria, gh-body-english,
+# issue-dup-check, issue-classification-label and pr-body-item-number -- pull a
+# `--body-file` path or an inline `--body` value out of RAW command text with
+# `perl -0777` instead, because they need a GLOBAL scan over a multi-line slurp
+# and `[[ =~ ]]` gives neither. Derive the list rather than trusting this
+# sentence -- `grep -l GATE_PERL_WORD .claude/hooks/*-gate.sh` -- because an earlier
+# revision of THIS comment said "three" while five files consumed it, which is
+# the same stale-sibling-note class the constant exists to end.
+# All of them spelled the value class `(["']?)([^"'\s]+)\1`, and that shape had
+# THREE MEASURED holes, all fail-OPEN (go-to-k/cdkd, 2026-09-05):
 #
 #   gh issue create --body-file "<dir with space>/x.md"
 #     The bare class cannot span the space, and with the optional quote group
@@ -1260,13 +1264,63 @@ GATE_QUOTED_VALUE='("[^"]*"|'"'"'[^'"'"']*'"'"')'
 # and a literal apostrophe would end it. The `'"'"'` idiom used elsewhere in
 # this file would work too, and is unreadable at this density.
 GATE_PERL_WORD='
-  my $GW = qr/(?:"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\\.|[^\s"\x27])+/;
+  # ANSI-C quoting is the FIRST alternative on purpose. `$` is an ordinary
+  # character to the bare class below, so without this arm `$\x27...\x27` was
+  # split into a bare `$` plus a plain single-quoted span -- which took the body
+  # LITERALLY, so `--body $\x27日本語\x27` reached the English-only
+  # gate as the ASCII text `$日本語` and passed, while bash sent
+  # Japanese. Its inner `\\.` also differs from the plain single-quote arm:
+  # inside `$\x27...\x27` a backslash ESCAPES, so `\\\x27` does not close it.
+  my $GW = qr/(?:\$\x27(?:[^\x27\\]|\\.)*\x27|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\\.|[^\s"\x27;|&()<>\x60])+/;
+  # ANSI-C escape decoding, used only by the `$\x27...\x27` arm of gate_unq.
+  # Returns CHARACTERS, not bytes, and that is measured rather than stylistic.
+  # The callers run under mixed `-C` settings -- the path extraction has none,
+  # the non-English body scan uses `-CSD` -- and under `-CSD` the input string
+  # is ALREADY decoded, so splicing utf8-ENCODED bytes into it made the two
+  # halves of one value disagree: `--body $\x27\\u65e5\\u672c\\u8a9e\x27` came back as
+  # Latin-1 mojibake that `NON_ENGLISH_RE` did not match, and the gate passed a
+  # Japanese body (rc=0 where the literal spelling gave 2). Characters keep the
+  # value uniform; on the byte-mode callers perl encodes a wide character to
+  # UTF-8 on output anyway (with a warning, and their stderr is discarded), so
+  # the bytes that reach the caller are the same either way.
+  sub gate_ansi_c {
+    my ($v) = @_;
+    my %simple = ("a"=>"\a","b"=>"\b","e"=>"\e","E"=>"\e","f"=>"\f",
+                  "n"=>"\n","r"=>"\r","t"=>"\t","v"=>"\013",
+                  "\\\\"=>"\\\\","\x27"=>"\x27","\""=>"\"","?"=>"?");
+    my $o = "";
+    while (length $v) {
+      if ($v =~ s/^\\x([0-9A-Fa-f]{1,2})//)        { $o .= chr(hex($1)); }
+      elsif ($v =~ s/^\\u([0-9A-Fa-f]{1,4})//)     { my $c = pack("U", hex($1)); utf8::encode($c); $o .= $c; }
+      elsif ($v =~ s/^\\U([0-9A-Fa-f]{1,8})//)     { my $c = pack("U", hex($1)); utf8::encode($c); $o .= $c; }
+      elsif ($v =~ s/^\\([0-7]{1,3})//)            { $o .= chr(oct($1)); }
+      elsif ($v =~ s/^\\c(.)//)                    { $o .= chr(ord(uc $1) ^ 64); }
+      elsif ($v =~ s/^\\(.)//s)                    { $o .= exists $simple{$1} ? $simple{$1} : "\\" . $1; }
+      elsif ($v =~ s/^([^\\]+)//s)                 { $o .= $1; }
+      else                                          { $v =~ s/^(.)//s; $o .= $1; }
+    }
+    # BUILT AS BYTES, HANDED BACK AS CHARACTERS. The two escape families differ
+    # in bash: `\\xHH` and `\\NNN` emit raw BYTES while `\\uXXXX` emits a CHARACTER,
+    # so the only representation both agree on is the byte string bash would
+    # actually pass -- hence `\\u` is encoded above rather than left wide.
+    # Decoding once at the end then makes the result uniform for the `-CSD`
+    # caller. Measured before this: `$\x27\\xe6\\x97\\xa5\x27` (the UTF-8 bytes of a
+    # Japanese character, which is how a shell user writes it) decoded to three
+    # Latin-1 characters, `NON_ENGLISH_RE` did not match, and the gate passed a
+    # Japanese body at rc=0.
+    # A value that is NOT valid UTF-8 is left exactly as built: utf8::decode
+    # returns false and does not modify the string, which is the right answer
+    # for a genuinely binary `\\xNN` payload.
+    utf8::decode($o);
+    return $o;
+  }
   sub gate_unq {
     my ($t) = @_;
     my $o = "";
     while (length $t) {
       if ($t =~ s/^"((?:[^"\\]|\\.)*)"//s) {
         my $s = $1; $s =~ s/\\([\\"\$`])/$1/gs; $o .= $s;
+      } elsif ($t =~ s/^\$\x27((?:[^\x27\\]|\\.)*)\x27//s) { $o .= gate_ansi_c($1);
       } elsif ($t =~ s/^\x27([^\x27]*)\x27//s) { $o .= $1;
       } elsif ($t =~ s/^\\(.)//s)              { $o .= $1;
       } elsif ($t =~ s/^([^"\x27\\]+)//s)      { $o .= $1;
@@ -1275,6 +1329,51 @@ GATE_PERL_WORD='
     return $o;
   }
 '
+
+# `GATE_PERL_WORD` is one shared literal that five blocking gates interpolate,
+# so its failure mode is the one this whole mechanism must not have: every
+# consumer runs `perl ... 2>/dev/null`, so a prelude that is PRESENT but does
+# not COMPILE produces no output, no stderr, and no exit-code change -- the
+# gates simply extract nothing and pass. Measured: a non-empty, non-compiling
+# prelude silently disarmed four gates at once (a Japanese body, a PR-shaped
+# deferral, an unlabelled `Severity: high`, and a bare `#4` all reached rc=0).
+#
+# `[ -n "$GATE_PERL_WORD" ]` cannot see that, so it is not the guard -- it is
+# only the cheap first half. This is the second half: run the prelude on a
+# known input and require the known answer. Call it AFTER a gate has armed, not
+# at library-load: the library is sourced by every hook on every Bash call,
+# while an armed gate is already about to fork perl anyway.
+#
+# Returns 0 when the prelude is usable, 1 otherwise. Callers must fail CLOSED.
+# Memoised fail-closed wrapper: probe once per process, at the first point a
+# gate is actually about to extract, then remember. `$1` is the gate's own name
+# so the refusal says which one refused.
+gate_perl_word_or_die() {
+  if [ "${__GATE_PW_OK:-}" != "1" ]; then
+    if gate_perl_word_ok; then
+      __GATE_PW_OK=1
+    else
+      echo "Blocked by $1: .claude/hooks/lib/command-match.sh defines GATE_PERL_WORD," >&2
+      echo "but running it does not return the expected value -- the prelude is missing," >&2
+      echo "outdated, or does not compile. Every extraction in this gate runs perl with" >&2
+      echo "stderr discarded, so a broken prelude would silently extract NOTHING and the" >&2
+      echo "gate would PASS whatever it was meant to refuse. Refusing instead." >&2
+      echo "Fix the library (or restore it from origin/main) and retry." >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+gate_perl_word_ok() {
+  [ -n "${GATE_PERL_WORD:-}" ] || return 1
+  # Two assertions in one probe: `$GW` spans a quoted value containing a space
+  # (the bug this prelude was written for), and `gate_unq` strips the quotes.
+  [ "$(printf '%s' 'x --body-file "/a b/p.md"' \
+        | perl -0777 -ne "$GATE_PERL_WORD"'
+            while (/--body-file[=\s]+($GW)/g) { print gate_unq($1) }' 2>/dev/null)" \
+    = '/a b/p.md' ]
+}
 
 # The regexes, kept here so every gate spells its verb the same way. Each is
 # anchored at the START of a segment; `git -C <path>` / `git -c k=v` and

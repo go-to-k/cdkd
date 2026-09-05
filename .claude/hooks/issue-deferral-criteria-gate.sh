@@ -447,22 +447,46 @@ EOF
 # the body being submitted and still has to be scanned; only `>` / `tee`
 # supersede it.
 cmd_writes() { # <path as the command spells it>
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
+    my $want = $ENV{TARGET};
     # The trailing class covers the TIGHT spellings -- `>f<<EOF`, `>f;`,
     # `>f&&` -- which a `(?:\s|$)` terminator misses, and `>f<<EOF` is the
     # very shape this exists for.
-    exit 0 if $c =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 0 if line_writes($c, $want, 1);
     exit 1;
   ' 2>/dev/null
 }
 
 cmd_replaces() { # <path as the command spells it>
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
-    exit 0 if $c =~ /(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    my $want = $ENV{TARGET};
+    exit 0 if line_writes($c, $want, 0);
     exit 1;
   ' 2>/dev/null
 }
@@ -475,15 +499,27 @@ cmd_replaces() { # <path as the command spells it>
 # The STATUS, not the output, reports whether a heredoc was found: an empty
 # heredoc body is legal and prints nothing.
 heredoc_bodies_for() { # <path as the command spells it>
-  CMD="$cmd" TARGET="$1" perl -0777 -e '
+  CMD="$cmd" TARGET="$1" perl -0777 -e "$GATE_PERL_WORD"'
+    # See the note on the sibling matcher in this file: the redirect TARGET is
+    # matched as a shell WORD and unquoted before comparison, because
+    # `$ENV{TARGET}` has already been through `gate_unq` and the retired
+    # `(["\x27]?)$t\1` class could only match spellings that need no
+    # unquoting -- notably NOT `> /a\ b/x.md`.
+    sub line_writes {
+      my ($l, $want, $any) = @_;
+      my $re = $any ? qr/(?:>>?|\btee\b(?:\s+-a)?)\s*($GW)(?:[\s;&|)<]|$)/
+                    : qr/(?:(?<!>)>(?!>)|\btee\b(?!\s+-a\b))\s*($GW)(?:[\s;&|)<]|$)/;
+      while ($l =~ /$re/g) { return 1 if gate_unq($1) eq $want; }
+      return 0;
+    }
     my $c = $ENV{CMD};
-    my $t = quotemeta($ENV{TARGET});
+    my $want = $ENV{TARGET};
     my @lines = split /\n/, $c, -1;
     my @out;
     my $found = 0;
     for (my $i = 0; $i <= $#lines; $i++) {
       my $l = $lines[$i];
-      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless line_writes($l, $want, 1);
       next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
       my $dash  = ($1 eq "<<-");
       my $delim = $3;
@@ -676,6 +712,16 @@ $cmd"
 # `git commit -F <msg> && gh issue create --body-file <clean>` would have been
 # refused over text that is not the issue body at all.
 offending_seg=""
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which cannot
+# see a prelude that is present but does not COMPILE -- and that failure is
+# SILENT, because every extraction runs perl with stderr discarded, so the gate
+# would extract nothing and PASS what it exists to refuse. Probe it functionally,
+# once, here: after arming (so ordinary Bash calls pay nothing) and at TOP LEVEL.
+# TOP LEVEL is load-bearing -- the extraction helpers are called inside `$( )`,
+# where `exit 2` ends only the substitution subshell: measured, an in-function
+# guard PRINTED its refusal and the hook still returned 0.
+gate_perl_word_or_die issue-deferral-criteria-gate || exit 2
+
 while IFS= read -r seg; do
   if ! gate_matches "$seg" "$GATE_RE_GH_ISSUE_CREATE"; then
     if [ -z "$GATE_RE_API_MINT" ] || ! gate_matches "$seg" "$GATE_RE_API_MINT"; then

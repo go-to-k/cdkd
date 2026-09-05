@@ -6,13 +6,23 @@
 #
 #   bash .claude/hooks/pr-body-item-number-gate.test.sh
 #
-# MUTATION-PROBED 2026-09-05 (49 cases): an always-`exit 0` stub fails 26 and
-# an always-`exit 2` stub fails 23, so neither direction passes vacuously.
-# Targeted mutants: the shared `$GW` value class reverted to the old
-# `(["\x27]?)([^"\x27\s]+)\1` fails 4 (the three spaced-path cases plus the
-# `--field body=@FILE` case, which the old class parsed differently); the
-# short-flag separator `[=\s]*` back to `[=\s]+` fails exactly 1 (the glued
-# `-Fbody=@<path>` case).
+# MUTATION-PROBED rather than asserted, EVERY number re-taken on the 50-case
+# suite after the review round that added the load-guard fence:
+#
+#   always-`exit 0` stub                  fails 27   (nothing passes vacuously)
+#   always-`exit 2` stub                  fails 23   (nor blocks vacuously)
+#   `$GW` -> the retired class (below)    fails 19
+#   `gate_perl_word_ok` -> always true    fails  1   -- the load-guard case
+#   short-flag `[=\s]*` -> `[=\s]+`       fails  1   -- the glued
+#                                                      `-Fbody=@<path>` case#
+# THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
+# rather than the intent: the retired class CAPTURED, while call sites now write
+# `($GW)`, so any capture inside the prelude shifts `$1` everywhere and three
+# faithful-looking reverts give three different tallies. The number above is for
+# exactly this backref-free one-line prelude edit:
+#
+#     my $GW = qr/["\x27]?[^"\x27\s]+["\x27]?/;
+#
 
 set -u
 
@@ -579,6 +589,32 @@ run_case "glued -Fbody=@<path> blocks" 2 \
 # so the blocks above are not satisfied by "any spaced path blocks".
 run_case "spaced --body-file path, allow-listed body, passes" 0 \
   "$(jq -cn --arg c "gh pr create --title t --body-file \"$PBIN_SPACEDIR/ok.md\"" '{tool_input:{command:$c}}')"
+
+# --- the GATE_PERL_WORD load guard, fenced ---------------------------------
+# The cheap `[ -z ]` half cannot see a prelude that is PRESENT but does not
+# COMPILE, and every extraction runs perl with stderr discarded -- so the gate
+# would extract nothing and PASS what it exists to refuse. The payload is one
+# this gate NORMALLY PASSES, so exit 2 can only come from the guard.
+PBIN_BROKEN="$TMPDIR_FIX/brokenlib"
+mkdir -p "$PBIN_BROKEN/lib"
+cp "$HOOK" "$PBIN_BROKEN/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/lib/command-match.sh" > "$PBIN_BROKEN/lib/command-match.sh"
+if grep -q 'unclosed' "$PBIN_BROKEN/lib/command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$PBIN_BROKEN/lib/command-match.sh"; then
+  printf 'Review fixes:\n\n- the mapper was corrected\n' > "$TMPDIR_FIX/pbin-guard-ok.md"
+  pbin_rc=0
+  jq -cn --arg c "gh pr create --title t --body-file $TMPDIR_FIX/pbin-guard-ok.md" \
+    '{tool_input:{command:$c}}' \
+    | "$PBIN_BROKEN/$(basename "$HOOK")" >/dev/null 2>&1 || pbin_rc=$?
+  if [[ "$pbin_rc" == "2" ]]; then
+    pass=$((pass + 1)); printf 'OK   a non-compiling GATE_PERL_WORD fails CLOSED (exit 2)\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL a non-compiling GATE_PERL_WORD returned %s, expected 2\n' "$pbin_rc"
+  fi
+else
+  fail=$((fail + 1)); printf 'FAIL could not stage a broken GATE_PERL_WORD (sed anchor drifted)\n'
+fi
 
 echo
 echo "Pass: $pass  Fail: $fail"

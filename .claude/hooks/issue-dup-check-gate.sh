@@ -280,6 +280,16 @@ seg_has_marker() {
 found_body_file=0
 unresolvable_path=""
 offending=""
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which cannot
+# see a prelude that is present but does not COMPILE -- and that failure is
+# SILENT, because every extraction runs perl with stderr discarded, so the gate
+# would extract nothing and PASS what it exists to refuse. Probe it functionally,
+# once, here: after arming (so ordinary Bash calls pay nothing) and at TOP LEVEL.
+# TOP LEVEL is load-bearing -- the extraction helpers are called inside `$( )`,
+# where `exit 2` ends only the substitution subshell: measured, an in-function
+# guard PRINTED its refusal and the hook still returned 0.
+gate_perl_word_or_die issue-dup-check-gate || exit 2
+
 while IFS= read -r seg; do
   [[ "$seg" =~ $GATE_RE_GH_ISSUE_CREATE ]] || [[ "$seg" =~ $GATE_RE_GH_API_ISSUE_CREATE ]] || continue
   if ! seg_has_marker "$seg"; then
