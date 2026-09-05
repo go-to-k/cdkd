@@ -609,6 +609,311 @@ gate_unquote_span() {
   printf '%s' "$v"
 }
 
+
+# gate_dequote_structural <segment>   -> sets GATE_STRUCT_SEG
+#
+# <segment> with shell QUOTING removed from its STRUCTURAL tokens ONLY -- the
+# command word, the leading global-flag NAMES, and the SUBCOMMAND position --
+# and every other byte reproduced exactly as it arrived. When nothing is
+# rewritten, which is what almost every segment does, GATE_STRUCT_SEG is the
+# input string itself.
+#
+# WHY (go-to-k/cdkd#2333). The trigger matches the VERB and the leading `-` as
+# LITERAL text, so QUOTING or ESCAPING either one evades every gate while the
+# command still runs the gated verb:
+#
+#   git "commit" -m x   git 'commit' -m x   git c"o"mmit -m x   git \commit -m x
+#   git "-C" /tmp commit   git \-C /tmp commit   gh "pr" merge 1   gh pr "merge" 1
+#
+# WHY IT IS NOT A WHOLE-SEGMENT UNQUOTE, which is the shape that was BUILT,
+# reviewed four rounds and WITHDRAWN (the findings are on go-to-k/cdkd#2333).
+# Two independent reasons, both measured rather than reasoned about:
+#
+#  1. QUOTING IS A LOAD-BEARING BRAKE ON THE OVER-APPROXIMATING TRIGGER.
+#     `GATE_FLAGS` accepts "one flag token, then ANY tokens", so after a `-C`
+#     any LATER token can occupy the verb slot. Today a QUOTED later token
+#     happens not to match, and that accident is the only thing keeping
+#     ordinary read-only work out of the gates. Dequoting every token took 16
+#     measured shapes from rc=0 to rc=2 -- `git -C <dir> log --grep "commit"`,
+#     `git -C <dir> show "commit"`, `git -C <dir> grep -n "commit" -- src` and
+#     thirteen siblings, `check-gate` blocking them on a feature worktree
+#     whenever markers are stale, which is the normal mid-lane state.
+#  2. CONSUMERS PARSE THE SEGMENT TEXT THEMSELVES. Normalising the stream whole
+#     turned `dirty-path-restore-gate`'s `'f\.txt'` (a backslash literal inside
+#     single quotes) into `f\.txt` (a backslash that escapes), so it resolved a
+#     different path and exited 0; and it made `gated-command-preamble-gate`
+#     read the `=>` of `grep -n '=>' x.ts && git commit` as a redirect.
+#
+# So the rewrite is POSITIONAL, and the position is DETERMINATE rather than
+# guessed: this walks the same grammar `gate_leading_c_value` already walks --
+# command word, then global flags (a value-consuming one skips its value
+# WITHOUT reading it), then the FIRST token that is not a flag, which git's own
+# syntax says IS the subcommand. The scan STOPS there. Nothing after the verb
+# is ever touched, so an argument, a path, a `--body` and a `--grep` pattern
+# all reach their consumer byte-identical, and both failure classes above are
+# unreachable by construction rather than by care.
+#
+# THE SCAN IS CAPPED IN TOKENS, NOT BYTES. The withdrawn implementation capped
+# at 512 B to bound an O(n^2) character walk, and padding defeats a byte cap:
+# `git -c user.name=<400 x 'x'> -C <repo> "commit" -m x` was rc=0 while its
+# literal-verb twin was rc=2. A token cap cannot be padded past, because
+# padding lives INSIDE a token. Reaching the cap abandons the rewrite whole
+# rather than emitting a half-rewritten segment.
+#
+# AND IT FAILS TO "UNCHANGED", NEVER TO "PARTLY REWRITTEN". Every abandon path
+# -- unknown command word, unparseable token, unsafe dequote, cap reached --
+# leaves GATE_STRUCT_SEG as the ORIGINAL segment. The worst case is therefore
+# today's behaviour, so no abandon path can introduce a false refusal.
+#
+# LATENCY, RE-MEASURED because the withdrawn round's cap existed to bound it
+# and this replaces that cap. `check-gate` end to end, mean of 3, this machine
+# (bash 5.3.9), before -> after:
+#
+#   ordinary command            100 B    0.028 -> 0.027 s
+#   400 segments of quoted prose 206 KB  3.546 -> 3.742 s
+#   one 48 KB flag VALUE         48 KB   0.316 -> 0.818 s
+#
+# The PreToolUse timeout is 10 s and a KILLED hook cannot emit exit 2, which
+# disarms every gate at once -- so the headroom is the point, not the ratio.
+# Both worst cases are the ones the withdrawn implementation broke (it took the
+# 48 KB argument to 9-12 s and the 400-segment corpus to 10.8 s); they stay
+# under a second and under four respectively because the walk never scans a
+# token it is not classifying: a flag VALUE is copied whole, and the scan stops
+# at the verb.
+#
+# THE RESIDUE, measured and recorded rather than claimed closed. An
+# UNENUMERATED value-consuming global flag makes its VALUE look like the
+# subcommand, so the scan stops one token early and a QUOTED verb after it is
+# NOT dequoted: `git --unknown-opt someval "commit" -m x` still matches
+# nothing, while its literal-verb twin matches through `GATE_FLAGS`. That is
+# strictly narrower than the gap go-to-k/cdkd#2333 filed -- which needed no
+# flag at all -- and it fails in the same direction as today.
+# The git / gh GLOBAL FLAGS that consume the FOLLOWING token as their value.
+# ONE copy, used by `gate_dequote_structural` and by `gate_leading_c_value`,
+# because the two halves of this file have already disagreed about exactly this
+# list once: `gate_leading_c_value` knew `-R` / `--repo` were gh flags while the
+# trigger did not, so `gh -R owner/repo pr merge 1 --squash` matched NOTHING and
+# walked past every merge gate (go-to-k/cdkd#2027 review round 4). A second
+# hand-maintained copy is the same bug waiting.
+#
+# A FUNCTION rather than a pattern variable, and that is not a style choice.
+# `case "$tok" in $VAR)` does NOT alternate: bash parses `|` as the pattern
+# separator at SYNTAX time, before the expansion, so an expanded `-C|-c|...`
+# is matched as ONE literal string and every arm silently stops firing. Caught
+# here by the padded-verb case in command-match.test.sh, which is exactly the
+# shape a hand-check would call obviously fine.
+#
+# IT IS AN ENUMERATION, and this file's whole thesis is that enumerations go
+# stale (go-to-k/cdkd#2156). The cost is bounded and recorded rather than
+# hidden: an UNENUMERATED value-consuming global (`--super-prefix`,
+# `--attr-source`) makes its VALUE look like the subcommand, so
+# `gate_dequote_structural` stops there and a QUOTED verb after it is not
+# dequoted. That is a residue of go-to-k/cdkd#2333, not a regression -- the
+# LITERAL-verb spelling still matches through the over-approximating trigger,
+# which is what `GATE_FLAGS` is for.
+_gate_is_value_flag() {
+  case "$1" in
+    -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|-R|--repo) return 0 ;;
+  esac
+  return 1
+}
+
+GATE_STRUCT_MAXTOK=24
+GATE_STRUCT_SEG=""
+_GATE_DQ=""
+_GATE_DQ_CHANGED=0
+_GATE_STRUCT_TOK=""
+_GATE_STRUCT_REST=""
+
+# One shell token off the front of <text>, quoted spans kept WHOLE. Same two
+# patterns, in the same order, as `gate_leading_c_value`: the embedding class
+# excludes bare quote characters, so an UNBALANCED apostrophe (`/tmp/o'neill`)
+# fails it and falls to the path token rather than losing the whole walk.
+_gate_struct_next() {
+  local r="$1"
+  if [[ "$r" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
+    _GATE_STRUCT_TOK="${BASH_REMATCH[1]}"; _GATE_STRUCT_REST="${BASH_REMATCH[4]}"; return 0
+  fi
+  if [[ "$r" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
+    _GATE_STRUCT_TOK="${BASH_REMATCH[1]}"; _GATE_STRUCT_REST="${BASH_REMATCH[4]}"; return 0
+  fi
+  return 1
+}
+
+# _gate_struct_rewrite <token> -> _GATE_DQ (what to emit) + _GATE_DQ_CHANGED
+#
+# The dequoted token when that is SAFE, the token itself otherwise. It never
+# fails: an unsafe token is emitted verbatim, which is exactly today's
+# behaviour for it.
+#
+# THE SAFETY RULE, both halves bought by a measured regression in the withdrawn
+# round. A result carrying WHITESPACE means the quoted span was how the shell
+# passes ONE argument containing spaces, so its content is DATA and dequoting
+# it reddened three false-refusal cases. A result carrying a QUOTE CHARACTER is
+# the `\"` case: outside a span it dequotes to a bare `"`, which the
+# quote-AWARE `_GATE_WORD` alternatives then read as an OPENING quote, and
+# three gates STOPPED firing (`git -c user.name=O\"Brien commit` and two
+# siblings) -- a bypass introduced by the change closing one. A surviving
+# BACKSLASH is refused for the same reason one direction over.
+_gate_struct_rewrite() {
+  local w="$1" rest="$1" out="" chunk q="" c
+  _GATE_DQ="$w"; _GATE_DQ_CHANGED=0
+  case "$w" in *[\"\'\\]*) ;; *) return 0 ;; esac
+  # The walk advances by SPANS, not characters, for the reason recorded on
+  # GATE_NOT_INERT_GLOB: `${s:i:1}` in a UTF-8 locale walks to offset `i` every
+  # time, so a per-character loop here is quadratic.
+  while [ -n "$rest" ]; do
+    if [ -z "$q" ]; then
+      chunk="${rest%%$GATE_CHUNK_STOP*}"
+      out="$out$chunk"
+      [ "$chunk" = "$rest" ] && break
+      rest="${rest#"$chunk"}"
+      c="${rest%"${rest#?}"}"
+      rest="${rest#?}"
+      case "$c" in
+        '\') out="$out${rest%"${rest#?}"}"; rest="${rest#?}" ;;
+        '"') q='"' ;;
+        "$GATE_SQ") q="$GATE_SQ" ;;
+        *) out="$out$c" ;;
+      esac
+    elif [ "$q" = "$GATE_SQ" ]; then
+      # Inside a SINGLE-quoted span every character is literal, including a
+      # backslash -- only the closer has to be found.
+      chunk="${rest%%$GATE_SQ*}"
+      out="$out$chunk"
+      [ "$chunk" = "$rest" ] && break
+      rest="${rest#"$chunk"}"; rest="${rest#?}"; q=""
+    else
+      chunk="${rest%%$GATE_CHUNK_STOP_DQ*}"
+      out="$out$chunk"
+      [ "$chunk" = "$rest" ] && break
+      rest="${rest#"$chunk"}"
+      c="${rest%"${rest#?}"}"
+      rest="${rest#?}"
+      case "$c" in
+        '\') out="$out${rest%"${rest#?}"}"; rest="${rest#?}" ;;
+        '"') q="" ;;
+      esac
+    fi
+  done
+  # A quote still open means the word cannot be split into shell words at all.
+  [ -z "$q" ] || return 0
+  case "$out" in
+    '') return 0 ;;
+    *[[:space:]]*) return 0 ;;
+    *[\"\'\\]*) return 0 ;;
+  esac
+  [ "$out" = "$w" ] && return 0
+  _GATE_DQ="$out"; _GATE_DQ_CHANGED=1
+  return 0
+}
+
+gate_dequote_structural() {
+  local seg="$1" rest tok d out="" changed=0 n=0 verbn=0
+  GATE_STRUCT_SEG="$seg"
+  # Cheap stop 1: with no quote and no backslash anywhere there is nothing to
+  # dequote. One glob, and it is the shape of nearly every command.
+  case "$seg" in *[\"\'\\]*) ;; *) return 0 ;; esac
+  # Cheap stop 2: a segment whose FIRST WORD is neither a command word this
+  # function knows a grammar for, nor quoted/escaped in a way that could be
+  # hiding one, is left alone before any tokenising happens. This is what keeps
+  # `grep -n '=>' x.ts` byte-exact -- and it is a property of the FIRST WORD,
+  # not of the segment, so a quoted argument later on cannot drag an unrelated
+  # command into the walk.
+  tok="${seg%%[[:space:]]*}"
+  case "$tok" in
+    git|gh|cd|bash|sh|zsh|ksh|cdk|npx|vp|delstack) ;;
+    *[\"\'\\]*) ;;
+    *) return 0 ;;
+  esac
+
+  rest="$seg"
+  _gate_struct_next "$rest" || return 0
+  tok="$_GATE_STRUCT_TOK"; rest="$_GATE_STRUCT_REST"
+  _gate_struct_rewrite "$tok"
+  out="$_GATE_DQ"; d="$_GATE_DQ"
+  [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+
+  # `npx cdk deploy`: the command word this file's patterns key on is the
+  # SECOND token, so read one more and carry on with its grammar.
+  if [ "$d" = npx ]; then
+    _gate_struct_next "$rest" || return 0
+    tok="$_GATE_STRUCT_TOK"; rest="$_GATE_STRUCT_REST"
+    _gate_struct_rewrite "$tok"
+    out="$out $_GATE_DQ"; d="$_GATE_DQ"
+    [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+  fi
+
+  case "$d" in
+    # How many tokens the VERB occupies. `gh pr merge` and `vp run test` are
+    # two; `git commit` and `cdk deploy` are one.
+    git|cdk) verbn=1 ;;
+    gh|vp)   verbn=2 ;;
+    # `bash -c "<list>"` is re-segmented by the caller, and the flag it keys on
+    # can be quoted too. Its BODY is deliberately not a structural token: the
+    # caller strips that span with `gate_unquote_span` and re-segments it, so
+    # each inner segment reaches this function on its own.
+    bash|sh|zsh|ksh)
+      if [ -n "$rest" ] && _gate_struct_next "$rest"; then
+        _gate_struct_rewrite "$_GATE_STRUCT_TOK"
+        out="$out $_GATE_DQ"; rest="$_GATE_STRUCT_REST"
+        [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+      fi
+      verbn=0 ;;
+    # A bare command word with no verb: the PATH after `cd` stays quoted,
+    # because `gate_target_dir` reads it with `gate_unquote` and a rewrite here
+    # would be the whole-segment normalisation this function exists to avoid.
+    cd|delstack) verbn=0 ;;
+    *) return 0 ;;
+  esac
+
+  while [ "$verbn" -gt 0 ] && [ -n "$rest" ]; do
+    n=$((n + 1))
+    # Reaching the cap abandons the rewrite WHOLE. A half-rewritten segment
+    # would be a stream nobody has measured; the original is today's behaviour.
+    [ "$n" -gt "$GATE_STRUCT_MAXTOK" ] && return 0
+    _gate_struct_next "$rest" || break
+    tok="$_GATE_STRUCT_TOK"; rest="$_GATE_STRUCT_REST"
+    _gate_struct_rewrite "$tok"
+    d="$_GATE_DQ"
+    if _gate_is_value_flag "$d"; then
+      out="$out $_GATE_DQ"
+      [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+      # The VALUE is copied VERBATIM and never classified. Reading it is what
+      # would let a `-C <dir>` whose directory is named `commit` decide a verb,
+      # and rewriting it is what broke `split_paths` in the withdrawn round.
+      _gate_struct_next "$rest" || break
+      out="$out $_GATE_STRUCT_TOK"; rest="$_GATE_STRUCT_REST"
+      continue
+    fi
+    case "$d" in
+      -*)
+        out="$out $_GATE_DQ"
+        [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+        ;;
+      *)
+        # THE SUBCOMMAND POSITION. The only non-flag token this function ever
+        # rewrites, and the scan stops at it.
+        out="$out $_GATE_DQ"
+        [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+        verbn=$((verbn - 1))
+        while [ "$verbn" -gt 0 ] && [ -n "$rest" ]; do
+          _gate_struct_next "$rest" || break 2
+          _gate_struct_rewrite "$_GATE_STRUCT_TOK"
+          rest="$_GATE_STRUCT_REST"
+          out="$out $_GATE_DQ"
+          [ "$_GATE_DQ_CHANGED" = 1 ] && changed=1
+          verbn=$((verbn - 1))
+        done
+        break
+        ;;
+    esac
+  done
+
+  [ "$changed" = 1 ] || return 0
+  if [ -n "$rest" ]; then GATE_STRUCT_SEG="$out $rest"; else GATE_STRUCT_SEG="$out"; fi
+  return 0
+}
 gate_segments() {
   local segment
   # `|| [ -n "$segment" ]`: `read` returns non-zero on a final line with no
@@ -628,6 +933,19 @@ gate_segments() {
     segment="${segment//"$GATE_SEP_PIPE"/|}"
     segment="${segment//"$GATE_SEP_SUBST"/$}"
     segment=$(gate_strip_prefix "$segment")
+    # Dequote the STRUCTURAL tokens only -- the command word, the leading
+    # global-flag names and the subcommand position (go-to-k/cdkd#2333). Here
+    # rather than in each reader because EVERY reader that decides a gate
+    # outcome from a segment takes THIS stream, and each unpatched one would be
+    # an independent live bypass; narrow enough to be safe here because nothing
+    # after the verb is touched. Do not restate the reader COUNT -- the
+    # go-to-k/cdkd#2333 findings said eight and
+    # `grep -c '\[\[ "\$segment" =~' ` says nine; the property is what holds,
+    # and a number here is one refactor from being wrong. Before the `bash -c`
+    # test below on purpose: a quoted `"bash" -c` / `bash "-c"` has to reach it
+    # spelled the way that test reads.
+    gate_dequote_structural "$segment"
+    segment="$GATE_STRUCT_SEG"
     # `bash -c "<cmd>"` RUNS its argument, and that argument is a command LIST:
     # matching it as ONE segment missed `bash -c "cd /w && git commit"`
     # (go-to-k/cdkd#2130 test review). Recurse ONLY here — re-segmenting every
@@ -791,9 +1109,17 @@ _GATE_WORD_BLIND='[^[:space:]"]*'
 #
 # The same holds one level up: this pattern still enumerates exactly ONE flag
 # spelling, the literal `-` that must open the first prefix token, so
-# `git \-C /tmp commit -m x` and `gh "-R" o/r pr merge 42` also match nothing.
-# That is the last enumeration in the trigger and it is recorded as a gap in
-# .claude/rules/hooks-class-fences.md rather than claimed closed.
+# `git \-C /tmp commit -m x` and `gh "-R" o/r pr merge 42` also matched nothing.
+#
+# CLOSED, go-to-k/cdkd#2333, and NOT by touching this pattern. All eight shapes
+# above are now MATCHED, because `gate_dequote_structural` rewrites the segment
+# before any reader sees it -- dequoting the command word, the leading
+# global-flag NAMES and the SUBCOMMAND position, and nothing else. Read that
+# function's header for why the obvious fix (dequote the whole segment) was
+# built, reviewed four rounds and WITHDRAWN: quoting is a load-bearing BRAKE on
+# the over-approximating prefix here, so a blanket dequote turns 16 measured
+# read-only commands into refusals. What remains is one narrower residue,
+# recorded there.
 #
 # STRICT SUPERSET, and it is checkable rather than asserted. The old pattern
 # required every prefix token to begin with `-` and allowed each at most one
@@ -1916,17 +2242,26 @@ gate_leading_c_value() {
           val="${BASH_REMATCH[1]}"; rest="${BASH_REMATCH[4]}"
         else break; fi
         ;;
-      -c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|-R|--repo)
+      *)
         # Flags that consume the following token; skip it so a value is never
-        # mistaken for the verb.
-        if [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
-          rest="${BASH_REMATCH[4]}"
-        elif [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
-          rest="${BASH_REMATCH[4]}"
+        # mistaken for the verb. `_gate_is_value_flag` is the ONE copy of that
+        # list, shared with `gate_dequote_structural` -- the two halves of this
+        # file have already disagreed about exactly it once (go-to-k/cdkd#2027
+        # review round 4: `-R` was a gh flag here and not in the trigger, so
+        # `gh -R owner/repo pr merge 1 --squash` walked past every merge gate).
+        if _gate_is_value_flag "$tok"; then
+          if [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; then
+            rest="${BASH_REMATCH[4]}"
+          elif [[ "$rest" =~ ^[[:space:]]*($GATE_PATH_TOKEN)([[:space:]]+(.*))?$ ]]; then
+            rest="${BASH_REMATCH[4]}"
+          fi
+        else
+          case "$tok" in
+            -*) : ;;
+            *) break ;;     # the verb: leading flags are over
+          esac
         fi
         ;;
-      -*) : ;;
-      *) break ;;   # the verb: leading flags are over
     esac
   done
   [ -n "$val" ] && printf '%s' "$val"

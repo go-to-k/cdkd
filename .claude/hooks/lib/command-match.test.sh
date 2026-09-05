@@ -1515,7 +1515,158 @@ argv_case "a spaced dup-in redirection drops its target" " feat <& 3" "feat"
 argv_case "a spaced &> redirection drops its target" " feat &> out" "feat"
 argv_case "a spaced &>> redirection drops its target" " feat &>> out" "feat"
 
-CASE_FLOOR=461
+
+# --- gate_dequote_structural (go-to-k/cdkd#2333) ----------------------------
+# The differential fence observes match / target / segcount, so a change to the
+# segment TEXT is invisible to it until it changes a verdict. These cases assert
+# the TEXT directly, and the second block is the load-bearing half: the rewrite
+# must be POSITIONAL, so every shape whose quoting is an ARGUMENT has to come
+# back BYTE-IDENTICAL. That is the property the withdrawn whole-segment
+# implementation did not have -- it rewrote `'f\.txt'` for
+# `dirty-path-restore-gate`'s `split_paths` and the `=>` of
+# `grep -n '=>' x.ts && git commit` for `gated-command-preamble-gate`.
+dq_case() { # name, input, expected segment text
+  local name="$1" in="$2" want="$3"
+  gate_dequote_structural "$in"
+  if [ "$GATE_STRUCT_SEG" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   gate_dequote_structural: %s\n' "$name"
+  else
+    fail=$((fail + 1)); printf 'FAIL gate_dequote_structural: %s\n' "$name"
+    fail_log="${fail_log}FAIL gate_dequote_structural: $name\n  in  : [$in]\n  want: [$want]\n  got : [$GATE_STRUCT_SEG]\n"
+  fi
+}
+dq_same() { dq_case "$1" "$2" "$2"; }
+# MUTATION MATRIX, measured on this tree. A case that survives every mutation
+# is not evidence, so the ones that do are named rather than left to look like
+# the rest. Totals are Pass/Fail of the whole file (506/0 unmutated):
+#
+#   PASS-THROUGH   `GATE_STRUCT_SEG="$1"` -- i.e. exactly today's behaviour
+#                  479/26. Reds every rewrite case and all five reader-site
+#                  cases; the byte-identical half stays green, correctly.
+#   WHOLE-SEGMENT  dequote every token -- the WITHDRAWN design
+#                  497/8. Reds exactly the byte-identical controls, including
+#                  `grep -n '=>' x.ts` and the three ARGUMENT shapes. This is
+#                  the mutation that matters: it is the implementation that was
+#                  built and reviewed four rounds before being withdrawn.
+#   GUARD-REMOVED  drop `_gate_struct_rewrite`'s unterminated-quote check
+#                  501/4. Reds the two unterminated cases and nothing else.
+#
+# NOT discriminating under any of the three, and kept anyway as robustness
+# controls rather than as evidence: `a bare command word alone` and `a # inside
+# a word is not a quote`. Both are cheap-stop shapes that no plausible mutation
+# of this function changes; they exist so a future rewrite that crashes or
+# corrupts on a degenerate input fails here.
+
+# The eight shapes go-to-k/cdkd#2333 measured, each an executable command that
+# really runs the gated verb.
+dq_case "a DOUBLE-quoted verb"        'git "commit" -m x'          'git commit -m x'
+dq_case "a SINGLE-quoted verb"        "git 'commit' -m x"          'git commit -m x'
+dq_case "a verb split by a quoted span" 'git c"o"mmit -m x'        'git commit -m x'
+dq_case "an ESCAPED verb"             'git \commit -m x'           'git commit -m x'
+dq_case "a quoted leading FLAG"       'git "-C" /tmp/wt commit -m x' 'git -C /tmp/wt commit -m x'
+dq_case "an escaped leading FLAG"     'git \-C /tmp/wt commit -m x'  'git -C /tmp/wt commit -m x'
+dq_case "a quoted FIRST gh verb token"  'gh "pr" merge 1 --squash' 'gh pr merge 1 --squash'
+dq_case "a quoted SECOND gh verb token" 'gh pr "merge" 1 --squash' 'gh pr merge 1 --squash'
+# The RESOLVER's own clause: a quoted `cd` sent `"cd" /main-tree && git commit`
+# straight through branch-gate.
+dq_case "a quoted cd command word"    '"cd" /tmp/wt'               'cd /tmp/wt'
+dq_case "an escaped cd command word"  '\cd /tmp/wt'                'cd /tmp/wt'
+# `bash -c` is re-segmented by gate_segments, which keys on the LITERAL word.
+dq_case "a quoted bash -c leader"     '"bash" -c "git commit"'     'bash -c "git commit"'
+dq_case "a quoted -c flag on bash"    'bash "-c" "git commit"'     'bash -c "git commit"'
+# A flag NAME may be rewritten; its VALUE never is, even in the same segment.
+dq_case "a rewritten flag keeps its quoted VALUE" \
+  "git \"-C\" '/a b' commit -m x" "git -C '/a b' commit -m x"
+
+# --- and the other direction: BYTE-IDENTICAL or the rewrite has overreached --
+# The twelve read-only shapes the withdrawn implementation took from rc=0 to
+# rc=2 all share one property: the quoted token sits AFTER the verb. Two stand
+# for the class here; the rest are corpus ids 218-220 in the differential.
+dq_same "a quoted --grep pattern is an ARGUMENT"  'git -C /tmp/wt log --grep "commit"'
+dq_same "a quoted revision is an ARGUMENT"        'git -C /tmp/wt show "commit"'
+dq_same "a quoted pathspec is an ARGUMENT"        'git -C /tmp/wt grep -n "commit" -- src'
+# An unknown command word stops the walk before it starts -- this is what keeps
+# `gated-command-preamble-gate`'s `=>` a redirect-free argument.
+dq_same "an unknown command word is never walked" "grep -n '=>' x.ts"
+dq_same "a quoted mention in an echo"             'echo "git commit -m x"'
+# A backslash inside SINGLE quotes is a literal backslash, and dequoting it
+# would make it escape: `split_paths` then resolved a different path and the
+# go-to-k/cdkd#1700 data-loss gate exited 0.
+dq_same "a single-quoted backslash path"          "git checkout -- 'f\\.txt'"
+# A result carrying WHITESPACE means the span was how the shell passes ONE
+# argument, so its content is DATA.
+dq_same "a quoted -C value containing a space"    'git -C "/a b" commit -m x'
+dq_same "a quoted -c value containing a space"    'git -c user.name="Jane Doe" commit -m x'
+dq_same "a quoted alias value naming a verb"      'git -c alias.x="run commit later" status'
+# An ESCAPED quote outside a span dequotes to a BARE quote, which the
+# quote-AWARE _GATE_WORD alternatives then read as an OPENING quote -- three
+# gates stopped firing on this shape in the withdrawn round.
+dq_same "an escaped quote inside a flag value"    'git -c user.name=O\"Brien commit'
+# An UNBALANCED apostrophe in a path is the case that forced apostrophes to stay
+# legal in the trigger at all (go-to-k/cdkd#2199).
+dq_same "an unbalanced apostrophe in a -C path"   "git -C /tmp/o'neill/repo commit"
+dq_same "a gh --body carrying a gated verb"       'gh issue comment 42 --body "next: pr merge 5"'
+dq_same "a gh --body in single quotes"            "gh issue comment 42 --body 'next: pr merge 5'"
+dq_same "an already-bare command needs no rewrite" 'git commit -m "msg"'
+
+# THE CAP IS IN TOKENS, NOT BYTES, and both halves are asserted. Padding lives
+# INSIDE a token, so no amount of it moves the verb past a token cap -- the
+# withdrawn implementation's 512-byte cap was defeated by 400 bytes of `-c`
+# value. Reaching the cap abandons the rewrite WHOLE, which is today's
+# behaviour rather than a half-rewritten stream.
+dq_pad=$(printf 'x%.0s' $(seq 1 400))
+dq_case "400 bytes of padding do not hide the verb" \
+  "git -c user.name=$dq_pad -C /tmp/wt \"commit\" -m x" \
+  "git -c user.name=$dq_pad -C /tmp/wt commit -m x"
+dq_over="git"
+for _i in $(seq 1 30); do dq_over="$dq_over -q"; done
+dq_over="$dq_over \"commit\" -m x"
+dq_same "past the token cap the segment is returned UNCHANGED" "$dq_over"
+
+
+
+# Degenerate inputs, and the command-word arms the cases above do not reach.
+# An UNTERMINATED quote is the one that matters: it cannot be split into shell
+# words at all, so the rewrite must abandon rather than guess -- the same answer
+# `gate_tokens` gives, and the opposite of the round-4 defect where one
+# unbalanced apostrophe in a `--body` segmented the whole command to ZERO and
+# disarmed every gate at once.
+dq_same "an unterminated double quote abandons" 'git "unterminated'
+dq_same "an unterminated apostrophe abandons"   "git 'unterminated"
+dq_same "an EMPTY quoted token is not a verb"   'git ""  -m x'
+dq_same "a bare command word alone"             'git'
+dq_same "a # inside a word is not a quote"      'git c#mmit -m x'
+dq_case "a quoted command word alone"           '"git"' 'git'
+# The other command-word arms. `npx` shifts one token before the grammar
+# starts; `cdk` takes one verb token and `vp` two, like `git` and `gh`.
+dq_case "npx shifts to the SECOND command word" 'npx cdk "deploy"'     'npx cdk deploy'
+dq_case "cdk takes a one-token verb"            'cdk "deploy" --all'   'cdk deploy --all'
+dq_case "vp takes a two-token verb"             'vp run "test" foo.ts' 'vp run test foo.ts'
+# The sharpest VALUE case: the flag value carries a SPACE inside double quotes
+# and the verb right after it is quoted. Dequoting the value would hand
+# `gate_target_dir` a path that no longer parses.
+dq_case "a spaced -C value survives a rewritten verb" \
+  'git -C "/a b" "commit" -m x' 'git -C "/a b" commit -m x'
+dq_case "a spaced cd path survives a rewritten cd" \
+  '"cd" "/a b" && git commit' 'cd "/a b" && git commit'
+
+# --- the READER SITES, with a QUOTED structural token (go-to-k/cdkd#2333) ----
+# Closing this at `gate_matches` alone would not close it: every function that
+# decides a gate outcome from a segment reads the same stream, and each
+# unpatched one is an independent live bypass. Measured against `origin/main`'s
+# library, all four of these returned EMPTY -- `pr-review-gate` and
+# `ci-green-gate` would have tiered and CI-gated a DIFFERENT PR than the one
+# merging, and `dirty-path-restore-gate` (the go-to-k/cdkd#1700 data-loss gate)
+# would have had no path to check.
+want_sel "552" "gh pr \"merge\" <N>: a quoted verb still yields the selector" 'gh pr "merge" 552 --squash'
+want_sel "552" "gh \"pr\" merge <N>: a quoted FIRST verb token too" 'gh "pr" merge 552 --squash'
+want_sel "552" "gh -R o/r pr \"merge\" <N>: behind a global flag" 'gh -R o/r pr "merge" 552'
+want_rest_each "-- f.txt" "a quoted checkout verb still yields its path tail" \
+  'git -C /wt "checkout" -- f.txt' "$GATE_RE_GIT_CHECKOUT_RESTORE"
+want_rest_each "f.txt" "a quoted -C flag still yields the restore tail" \
+  'git "-C" /wt restore f.txt' "$GATE_RE_GIT_CHECKOUT_RESTORE"
+
+CASE_FLOOR=506
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least $CASE_FLOOR\n"

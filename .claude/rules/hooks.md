@@ -925,7 +925,9 @@ re-run treating that character as literal (what turns `echo don't; git commit
 aborts the function and drops every remaining segment.
 
 The shared matcher has its own suite at
-`.claude/hooks/lib/command-match.test.sh` (348 cases), so a regression in it
+`.claude/hooks/lib/command-match.test.sh` (its own `CASE_FLOOR` is the
+count; the number was carried here stale through three changes and is no
+longer restated), so a regression in it
 is reported once and precisely. **Every gate that sources the helper fails
 CLOSED when it cannot load** (`exit 2`, with a `declare -F gate_matches`
 check for a truncated file — the liveness check covers all three exported
