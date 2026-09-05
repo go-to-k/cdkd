@@ -1257,12 +1257,13 @@ describe('DeployEngine — --replace wire-through', () => {
     it('the retained old resource is dropped from state in favour of the new physical id', async () => {
       // What "orphaned" MEANS, asserted on the record the deploy writes rather
       // than on a log line: state points at the NEW resource, so the old one
-      // is alive and no longer tracked. `rollback-executor.ts` reads exactly
-      // this pair — a `previousState.updateReplacePolicy` of `Retain` makes it
-      // classify the op as `reverse-replacement-readopt`, which deletes the
-      // new resource and points state back at the old physical id WITHOUT
+      // is alive and no longer tracked. `rollback-executor.ts` then classifies
+      // the op as `reverse-replacement-readopt`, which deletes the new
+      // resource and points state back at the old physical id WITHOUT
       // re-creating it. That rollback re-adopted a DELETED id until this fix,
-      // so the two now agree.
+      // so the two now agree. (Which SOURCE the classifier asks moved in issue
+      // #2603: it reads `CompletedOperation.oldResourceRetained`, stamped by
+      // this very arm, instead of `previousState.updateReplacePolicy`.)
       rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
       const state = await invokeProvision(
         makeEngine({}),

@@ -78,6 +78,7 @@ import {
   redactSecretsForState,
   createSecretMasker,
   dynamicReferenceTokens,
+  maskSecretsInError,
   maskSecretsInText,
   recordNestedStackParameterExpressions,
   carriesSecretMask,
@@ -95,6 +96,7 @@ import {
   isNameCollisionError,
   isNameCooldownError,
   isRecreateRetryableError,
+  markNonRetryable,
 } from './retryable-errors.js';
 import { updatePartialMessage, updatePartialReason } from './update-outcome.js';
 import { deleteSkipReason, deleteSkippedMessage } from './delete-outcome.js';
@@ -258,6 +260,101 @@ export function rollbackFinalSnapshotId(
 }
 
 /**
+ * `UpdateReplacePolicy: Retain` on the resource a replacement CREATED — the
+ * copy a rollback would otherwise destroy (issue
+ * [#2598](https://github.com/go-to-k/cdkd/issues/2598)).
+ *
+ * Reads the CURRENT record, i.e. the one the replacing deploy wrote from the
+ * template it was applying (`extractTemplateAttributes`), so the attribute
+ * consulted is the one that was in force when the new copy was created. Its
+ * `Snapshot` sibling, {@link rollbackFinalSnapshotId}, reads the same field of
+ * the same record — `Retain` and `Snapshot` are alternative values of ONE
+ * attribute, so the two can never both apply.
+ *
+ * **`UpdateReplacePolicy`, NOT `DeletionPolicy`, and that is measured, not
+ * reasoned.** The repo refuses a CloudFormation-parity claim taken on
+ * folklore, and the AWS documentation answers nothing here: every sentence on
+ * both attribute pages, in the API reference and in the release notes
+ * describes the OLD resource, never the new copy's fate during a rollback. A
+ * live four-variant A/B (2026-09-05, us-east-1: a forced `AWS::SSM::Parameter`
+ * replacement plus a deterministically failing sibling, rolled back) settled
+ * it:
+ *
+ * | DeletionPolicy | UpdateReplacePolicy | new copy  | decisive event   |
+ * | -------------- | ------------------- | --------- | ---------------- |
+ * | (none)         | (none)              | DELETED   | `DELETE_COMPLETE` |
+ * | Retain         | (none)              | DELETED   | `DELETE_COMPLETE` |
+ * | (none)         | Retain              | SURVIVED  | `DELETE_SKIPPED`  |
+ * | Retain         | Retain              | SURVIVED  | `DELETE_SKIPPED`  |
+ *
+ * Row 2 alone refutes "`DeletionPolicy` governs it"; row 3 alone refutes
+ * "neither — always deleted". The old copy was restored intact in all four,
+ * and both outcomes land in `UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS`.
+ *
+ * A retained new copy is ORPHANED OUT of the stack, not kept as a managed
+ * resource — the A/B proved it by deleting the whole stack afterwards and
+ * finding the retained parameter still alive. So every caller below leaves NO
+ * state record naming the survivor: the two arms that can complete point state
+ * at the old resource exactly as they already did, and the survivor becomes
+ * untracked. That is the same disposition the deploy engine gives a
+ * `Retain`-orphaned OLD resource, so the two directions agree.
+ *
+ * LIMIT OF THAT EVIDENCE, stated so a later reader does not over-read it: all
+ * four variants carried the SAME policy in both template versions, so the A/B
+ * pinned WHICH ATTRIBUTE wins and did NOT discriminate which template's copy
+ * of it is read. This function reads the current record for the reasons above
+ * (it is the one the new copy was created under, and it matches the
+ * `Snapshot` sibling and both CREATE-rollback arms), not because the A/B
+ * settled that question.
+ */
+export function rollbackRetainsNewResource(
+  record: Pick<ResourceState, 'updateReplacePolicy'> | undefined
+): boolean {
+  return record?.updateReplacePolicy === 'Retain';
+}
+
+/**
+ * The two sentences a `UpdateReplacePolicy: Retain` survivor needs: the `⚠`
+ * terminal warning and the compact `reason` that rides on the durable
+ * `ROLLBACK_RESOURCE_SUCCEEDED` event.
+ *
+ * ONE function because the two must not drift apart. Both replacement-rollback
+ * retain arms produced these by hand, four near-identical copies, and the
+ * failure mode a reviewer named is precise: the warn and the DURABLE record
+ * disagreeing about which id survived. Deriving both from one set of inputs
+ * makes that unrepresentable. The shapes stay deliberately different -- the
+ * warn carries the cost/`cdkd destroy` guidance a human reads once, the reason
+ * stays compact for a `--json` consumer -- so this is one input set, not one
+ * string.
+ *
+ * `stateClause` is the only thing that differs between the two arms (the
+ * readopt arm restores the old id; the create-first arm records a re-created
+ * one), so it is a parameter rather than a branch in here.
+ *
+ * NOT used by the delete-failed survivor a few lines down: that one is an
+ * orphan by OUTCOME rather than by policy, and says so.
+ */
+export function retainedSurvivorMessages(
+  logicalId: string,
+  resourceType: string,
+  survivorPhysicalId: string,
+  stateClause: string
+): { warn: string; reason: string } {
+  return {
+    warn:
+      `  ⚠ ${logicalId} (${resourceType}) has UpdateReplacePolicy: Retain — the ` +
+      `replacement's new physical resource (${survivorPhysicalId}) is RETAINED by this ` +
+      `rollback and is no longer tracked by cdkd: it keeps running and incurring cost, ` +
+      `and \`cdkd destroy\` will not remove it. Delete it yourself once you no longer ` +
+      `need it. ${stateClause}`,
+    reason:
+      `UpdateReplacePolicy: Retain kept the replacement's new ${resourceType} ` +
+      `(${survivorPhysicalId}); it is live, still billing, and no longer tracked by ` +
+      `cdkd. ${stateClause}`,
+  };
+}
+
+/**
  * `DeletionPolicy: Snapshot` on a rolled-back CREATE (issue #1358) — the
  * executor's copy of the deploy engine's `prepareFinalSnapshotForDelete`
  * mechanism matrix, run BEFORE the delete. Shared with the FAILED in-flight
@@ -356,6 +453,47 @@ export interface CompletedOperation {
   physicalId?: string | undefined;
   /** Properties used for creation (for CREATE rollback / delete) */
   properties?: Record<string, unknown> | undefined;
+  /**
+   * Whether the deploy deliberately left the OLD physical resource alive
+   * (`UpdateReplacePolicy: Retain`) instead of deleting it on a replacement
+   * (issue [#2603](https://github.com/go-to-k/cdkd/issues/2603)).
+   *
+   * Stamped on EVERY completed UPDATE, not only a replacement: a plain
+   * in-place update records `false`, which is both true and inert, because the
+   * only reader is {@link classifyRollbackOp}'s replacement arm. Recording it
+   * unconditionally is what keeps ABSENT meaning "written by a binary that
+   * predates this field" and nothing else.
+   *
+   * The verdict the engine ACTED ON, recorded at the moment it acted, rather
+   * than something {@link classifyRollbackOp} re-derives. The engine reads
+   * `UpdateReplacePolicy` from the TEMPLATE being applied ("what is the user
+   * applying now?"); the classifier used to read it from
+   * `previousState.updateReplacePolicy` ("what did the last deploy record?"),
+   * and those two answers differ on precisely the deploy that CHANGES the
+   * attribute — in both directions, and the second is the worse one:
+   *
+   *   - ADDING `Retain`: old resource orphaned, previous state carries no
+   *     policy → the classifier picked `reverse-replacement` and re-CREATED a
+   *     resource that was still alive.
+   *   - DROPPING `Retain`: old resource correctly deleted, previous state
+   *     still carries `Retain` → the classifier picked
+   *     `reverse-replacement-readopt` and pointed state at a physical id that
+   *     no longer exists, with no re-create and nothing downstream to notice.
+   *
+   * ADDITIVE field, no `journalVersion` bump — same precedent as
+   * `RollbackJournalSegment.failedOperations`. `undefined` means a journal
+   * written by a pre-#2603 binary, where the old previous-state read is the
+   * only information available and stays the fallback; every op a current
+   * binary writes carries an explicit `true` / `false`, so the fallback is
+   * unreachable for them.
+   *
+   * Set only for a DELIBERATE retention. A cleanup delete that failed, was
+   * skipped, or was blocked by a failed final snapshot also leaves the old
+   * resource alive, but the deploy cannot vouch for that — those record
+   * `false` and keep the re-create behaviour (issue
+   * [#2631](https://github.com/go-to-k/cdkd/issues/2631)).
+   */
+  oldResourceRetained?: boolean | undefined;
 }
 
 /**
@@ -506,6 +644,24 @@ export interface RollbackPlanItem extends PlannedRoute {
   action: RollbackActionKind;
   /** For a replacement op (previousState.physicalId !== op.physicalId). */
   replacement: boolean;
+  /**
+   * The replacement's NEW physical resource declares `UpdateReplacePolicy:
+   * Retain`, so the replay will NOT delete it (issue
+   * [#2598](https://github.com/go-to-k/cdkd/issues/2598)).
+   *
+   * Threaded onto the plan item for the same reason `effectiveProvisionedBy`
+   * is: the preview is the one thing the user reads before confirming, and
+   * both `reverse-replacement` labels say "delete new" unconditionally. A
+   * label promising a delete the replay is about to skip is the issue #1366
+   * class one layer over — there it was a promised final snapshot, here it is
+   * a promised deletion, and the direction that matters is the same (the
+   * preview must not describe an outcome the run will not produce).
+   *
+   * Always present on a replacement item; `false` everywhere else, including
+   * for CREATE ops whose own retention is `DeletionPolicy` and already shows
+   * as `orphan-retain`.
+   */
+  retainsNewResource: boolean;
 }
 
 /**
@@ -630,32 +786,41 @@ export function classifyRollbackOp(
     // the old resource whatever the policy said, so this classification
     // re-adopted a physical id that no longer existed.
     //
-    // The two sides still ask the question of DIFFERENT sources, and that is a
-    // known gap rather than an alignment: every one of those engine paths
-    // decides from the TEMPLATE being applied, while this reads the PREVIOUS
-    // STATE record. BOTH directions of the disagreement are live, and the
-    // second is the worse one — issue
-    // [#2603](https://github.com/go-to-k/cdkd/issues/2603) covers both:
+    // Issue [#2603](https://github.com/go-to-k/cdkd/issues/2603): the two
+    // sides used to ask the question of DIFFERENT sources — every engine path
+    // decides from the TEMPLATE being applied, while this read the PREVIOUS
+    // STATE record — so they disagreed on exactly the deploy that CHANGES
+    // `UpdateReplacePolicy`, in both directions:
     //
     //   - ADDING `Retain`: the deploy orphans the old resource while
-    //     `previousState.updateReplacePolicy` is still absent, so this picks
-    //     the plain `reverse-replacement` arm below and RE-CREATES a resource
-    //     that is still alive — a duplicate, or an `AlreadyExists` failure for
-    //     a user-named type.
+    //     `previousState.updateReplacePolicy` is still absent, so the stale
+    //     read picked the plain `reverse-replacement` arm and RE-CREATED a
+    //     resource that is still alive — a duplicate, or an `AlreadyExists`
+    //     failure for a user-named type.
     //   - DROPPING `Retain`: the previous deploy persisted `Retain` into
     //     state, the current template omits it, so the engine correctly
-    //     DELETES the old resource — and this then reads the stale `Retain`
-    //     off `previousState`, classifies `reverse-replacement-readopt`, and
-    //     points state at the deleted old physicalId with NO re-create. State
-    //     ends up naming a resource that does not exist, which no later deploy
-    //     detects as absent. Strictly worse than the ADD direction, where at
-    //     least both resources are real.
+    //     DELETES the old resource — and the stale read then classified
+    //     `reverse-replacement-readopt` and pointed state at the deleted old
+    //     physicalId with NO re-create. State ends up naming a resource that
+    //     does not exist, which no later deploy detects as absent. Strictly
+    //     worse than the ADD direction, where at least both resources are
+    //     real.
     //
-    // Deliberately NOT fixed here: realigning the two sides changes what a
-    // rollback deletes, on a path this change does not otherwise touch.
+    // Both are closed by asking the ENGINE what it did rather than
+    // re-deriving it: {@link CompletedOperation.oldResourceRetained} is
+    // stamped at the moment the deploy skipped (or ran) the old resource's
+    // delete. `??`, not `||` — an explicit `false` is the DROP direction's
+    // whole point and must not fall through to the previous-state read.
+    //
+    // The fallback survives for ONE case: a journal written by a pre-#2603
+    // binary, whose ops carry no verdict at all. There the previous-state
+    // read is the only information that exists, so it stays — no worse than
+    // that binary's own behaviour, and unreachable for anything a current
+    // binary wrote.
+    //
     // `Snapshot` is NOT retained on replacement (the engine plain-deletes) —
     // it re-creates like the default policy.
-    const retained = op.previousState!.updateReplacePolicy === 'Retain';
+    const retained = op.oldResourceRetained ?? op.previousState!.updateReplacePolicy === 'Retain';
     return retained ? 'reverse-replacement-readopt' : 'reverse-replacement';
   }
   if (op.previousState && deepEqual(current.properties, op.previousState.properties)) {
@@ -736,12 +901,26 @@ export function planRollback(
     ...[...otherOps].reverse(),
     ...sortRollbackCreates(createOps, stateResources),
   ];
-  return ordered.map((op) => ({
-    op,
-    action: classifyRollbackOp(op, stateResources, orphanLogicalIds),
-    replacement: isReplacementOp(op),
-    effectiveProvisionedBy: effectiveProvisionedBy(stateResources[op.logicalId], op.provisionedBy),
-  }));
+  return ordered.map((op) => {
+    const action = classifyRollbackOp(op, stateResources, orphanLogicalIds);
+    return {
+      op,
+      action,
+      replacement: isReplacementOp(op),
+      effectiveProvisionedBy: effectiveProvisionedBy(
+        stateResources[op.logicalId],
+        op.provisionedBy
+      ),
+      // Scoped to the two arms that would otherwise DELETE the new copy
+      // (issue #2598) — the same record carries `updateReplacePolicy` for
+      // ops this question does not apply to, and an unscoped read would
+      // annotate a `revert` or a `skip-*` row with a retention that decides
+      // nothing there.
+      retainsNewResource:
+        (action === 'reverse-replacement' || action === 'reverse-replacement-readopt') &&
+        rollbackRetainsNewResource(stateResources[op.logicalId]),
+    };
+  });
 }
 
 function partitionOps(operations: CompletedOperation[]): {
@@ -1604,14 +1783,27 @@ async function replaySingle(
           // --orphan on a CREATE: leave the resource in AWS, drop it from
           // state (it is not part of the pre-deploy baseline).
           //
-          // Route resolved BEFORE the record is dropped, same as the
-          // `orphan-retain` arm (issue #1366): the comment below promises the
-          // two orphan triggers emit the SAME event, so they must resolve
-          // `provisionedBy` the same way too.
-          const orphanFlagProvisionedBy = effectiveProvisionedBy(
-            stateResources[op.logicalId],
-            op.provisionedBy
-          );
+          // Bound BEFORE the delete, and the ONLY source for both the route
+          // and the id below. Route resolution already read the record here
+          // (issue #1366, so both orphan triggers resolve `provisionedBy` the
+          // same way); the id used to read `op` instead, which made this arm
+          // internally inconsistent about which side it trusted.
+          //
+          // Load-bearing for the id specifically, because `orphan-flag` is NOT
+          // reachable-only-past-the-checks the way `orphan-retain` is:
+          // `classifyRollbackOp` returns it from a short-circuit ABOVE the
+          // CREATE branch, so it skips both `skip-already-done` (no record)
+          // and `skip-mismatch` (record id != op id) -- and
+          // `orphanLogicalIds` is RAW CLI INPUT, never validated against
+          // state. Publishing `op.physicalId` unconditionally therefore
+          // asserted "live, still billing" about an id that may be DELETED (a
+          // re-run of an already-orphaned op) or STALE (a later attempt moved
+          // the id, and the real survivor would be named nowhere). For a
+          // name-reusable type a deleted id may by then belong to someone
+          // else's resource, which is the worst thing a cleanup pass could be
+          // handed.
+          const record = stateResources[op.logicalId];
+          const orphanFlagProvisionedBy = effectiveProvisionedBy(record, op.provisionedBy);
           createRollbackRoute = orphanFlagProvisionedBy;
           delete stateResources[op.logicalId];
           logger.info(`  Rollback: Orphaning created resource ${op.logicalId} (--orphan)`);
@@ -1626,6 +1818,22 @@ async function replaySingle(
             logicalId: op.logicalId,
             resourceType: op.resourceType,
             ...(orphanFlagProvisionedBy && { provisionedBy: orphanFlagProvisionedBy }),
+            // The survivor's id, same class as the replacement-rollback retain
+            // arms and STRICTLY worse without it: this arm drops the state
+            // record too, so with no id here NOTHING anywhere names the
+            // resource left running in AWS.
+            //
+            // Gated on the RECORD, not on `op.physicalId` -- see the binding
+            // above. No record means nothing was orphaned (the resource is
+            // already gone), and then the honest event is one that claims no
+            // survivor at all.
+            ...(record?.physicalId && {
+              physicalId: record.physicalId,
+              reason:
+                `--orphan left ${op.logicalId} (${op.resourceType}) in AWS as ` +
+                `${record.physicalId} and dropped it from state; it is live, still billing, ` +
+                `and no longer tracked by cdkd.`,
+            }),
           });
         } else {
           // --orphan on an UPDATE: leave the resource at its new properties;
@@ -1642,11 +1850,11 @@ async function replaySingle(
         //
         // Resolved BEFORE the record is dropped: the event reports the
         // resource's effective route (issue #1366), and the record — the
-        // authoritative side — is about to go away.
-        const orphanProvisionedBy = effectiveProvisionedBy(
-          stateResources[op.logicalId],
-          op.provisionedBy
-        );
+        // authoritative side — is about to go away. The id below reads the
+        // SAME binding, so the two halves of this event cannot disagree about
+        // which side they trust.
+        const record = stateResources[op.logicalId];
+        const orphanProvisionedBy = effectiveProvisionedBy(record, op.provisionedBy);
         createRollbackRoute = orphanProvisionedBy;
         delete stateResources[op.logicalId];
         logger.info(
@@ -1661,6 +1869,26 @@ async function replaySingle(
           logicalId: op.logicalId,
           resourceType: op.resourceType,
           ...(orphanProvisionedBy && { provisionedBy: orphanProvisionedBy }),
+          // Same publish as the `--orphan` twin above: the state record is
+          // dropped, so this event is the only place the retained resource's
+          // id survives.
+          //
+          // Reads the RECORD, not `op.physicalId`, for a reason that differs
+          // from the twin's. This arm IS only reachable past
+          // `skip-already-done` / `skip-mismatch`, so its record is present
+          // and matching -- the gate is belt-and-braces here. What the record
+          // read fixes is the opposite hole: `classifyRollbackOp` only
+          // compares the ids when `op.physicalId` is DEFINED, so a journal op
+          // carrying none still reaches this arm, and reading `op` there
+          // dropped the publish entirely and lost the id the record was
+          // holding all along.
+          ...(record?.physicalId && {
+            physicalId: record.physicalId,
+            reason:
+              `DeletionPolicy: Retain left ${op.logicalId} (${op.resourceType}) in AWS as ` +
+              `${record.physicalId} and dropped it from state; it is live, still billing, and ` +
+              `no longer tracked by cdkd.`,
+          }),
         });
         return;
       }
@@ -1759,11 +1987,68 @@ async function replaySingle(
           `  Rollback: Reversing replacement of ${op.logicalId} (${op.resourceType}) — ` +
             `deleting the new resource and re-adopting the retained old one (${prev.physicalId})`
         );
-        const { provider: newDeleteProvider } = ctx.providerRegistry.getProviderFor({
-          resourceType: op.resourceType,
-          provisionedBy: current.provisionedBy ?? op.provisionedBy,
-        });
-        {
+        /**
+         * Set when this arm ORPHANS the replacement's new copy. Read at the
+         * `ROLLBACK_RESOURCE_SUCCEEDED` event below, which is the only channel
+         * that OUTLIVES the terminal (security review of issue #2598): a
+         * rollback runs during an already-failing deploy, often non-TTY with
+         * the log truncated or discarded, so a `logger.warn` is the least
+         * likely thing the user still has. Without this the survivor's id dies
+         * with the terminal -- `cdkd events` shows a clean success and state
+         * names only the OLD resource, while a live, billing, untracked copy
+         * remains. `Retain` is precisely the marker users put on data-bearing
+         * resources, so that is the worst population to lose the id for.
+         *
+         * Same shape as the `rollbackPartial` survivor record ~700 lines down
+         * and as the deploy engine's `RESOURCE_SKIPPED` twin.
+         */
+        let survivorReason: string | undefined;
+        if (rollbackRetainsNewResource(current)) {
+          // ON THIS ARM THIS IS THE ALWAYS-CASE, not an exception, and saying
+          // so is the point (review of issue #2598). `oldResourceRetained` is
+          // set only when the TEMPLATE being applied declared
+          // `UpdateReplacePolicy: Retain`, and the SAME template read
+          // populates the new record through `extractTemplateAttributes` — so
+          // whenever `classifyRollbackOp` reaches `reverse-replacement-readopt`
+          // for a journal any cdkd binary wrote, `current` carries `Retain`
+          // too. Net effect: this rollback path no longer deletes the new copy
+          // at all, which is a real behaviour change and is what CloudFormation
+          // does (the A/B's `DELETE_SKIPPED` rows). The `else` below is kept
+          // for a record that did NOT come from that pairing — a hand-edited
+          // or externally-produced state file — rather than deleted, because
+          // the classifier and this executor are separately reachable and a
+          // dead-by-construction branch is cheaper than a crash when the
+          // construction changes. The `reverse-replacement` twin is genuinely
+          // conditional: a provider that re-creates inside its own `update()`
+          // reaches it with either polarity.
+          //
+          // Issue #2598: the NEW copy declares `UpdateReplacePolicy: Retain`,
+          // which the A/B on {@link rollbackRetainsNewResource} measured as
+          // the attribute governing this very delete. CloudFormation reports
+          // `DELETE_SKIPPED` here and orphans the copy out of the stack; cdkd
+          // does the same, and the state re-point below leaves nothing naming
+          // it. Warned rather than logged at info: the outcome is a live,
+          // untracked, billing resource, the same class as the deploy engine's
+          // `Retain` survivor warning.
+          const survivorMessages = retainedSurvivorMessages(
+            op.logicalId,
+            op.resourceType,
+            current.physicalId,
+            `State is restored to the old resource (${prev.physicalId}).`
+          );
+          logger.warn(survivorMessages.warn);
+          survivorReason = survivorMessages.reason;
+          result.warnings++;
+        } else {
+          // Resolved INSIDE this arm (review of issue #2598): the retain arm
+          // above issues no AWS call at all, and `getProviderFor` THROWS for a
+          // type the rollback command's registry cannot route (an
+          // `--allow-unsupported-types` type, say). Hoisted, a readopt that
+          // deletes nothing could fail on a lookup it never needed.
+          const { provider: newDeleteProvider } = ctx.providerRegistry.getProviderFor({
+            resourceType: op.resourceType,
+            provisionedBy: current.provisionedBy ?? op.provisionedBy,
+          });
           const finalSnapshotIdentifier = rollbackFinalSnapshotId(
             op.resourceType,
             current,
@@ -1781,7 +2066,9 @@ async function replaySingle(
           );
           // Issue #1762: BEFORE the state re-point, so a skip cannot leave
           // state naming the retained OLD resource while the NEW one is still
-          // alive — two live resources with state describing one.
+          // alive — two live resources with state describing one. The `Retain`
+          // arm above reaches that same shape DELIBERATELY, which is why it
+          // announces it rather than failing the op.
           throwIfDeleteSkipped(
             readoptDelete,
             op.logicalId,
@@ -1792,6 +2079,25 @@ async function replaySingle(
         stateResources[op.logicalId] = prev;
         logger.info(`  Rollback: ${op.logicalId} restored to the retained old resource`);
         await afterOp?.(op.logicalId);
+        // The SURVIVOR's routing layer, which is NOT the op's. Follow-up to
+        // the security review of issue #2598: the layer field sitting beside
+        // `physicalId` is what tells a cleanup pass WHICH API manages that id,
+        // so shipping the id with a possibly-wrong layer beside it partly
+        // defeats the fix -- a consumer reading the pair could dispatch the
+        // wrong provider at a live, untracked resource. Before that fix these
+        // events named no resource at all, so the mislabel was inert; the id
+        // is what makes it bite. The deploy engine's `RESOURCE_SKIPPED` twin
+        // snapshots the survivor's layer for exactly this reason.
+        //
+        // NO `?? op.provisionedBy` here, and that absence is deliberate: an
+        // earlier revision had one and it was DEAD. When the record carries no
+        // layer (a pre-v7 record) this override simply does not fire, and the
+        // unconditional `op.provisionedBy` spread below already put the op's
+        // layer on the event -- which is the right answer for that case and
+        // the exact behaviour the fallback was written to produce. Measured:
+        // deleting the `??` changed no emitted value, so nothing could ever
+        // fence it. Pinned by the pre-v7 case, which fences the SPREAD.
+        const survivorProvisionedBy = current.provisionedBy;
         ctx.recordEvent?.({
           eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
           stackName,
@@ -1799,6 +2105,32 @@ async function replaySingle(
           logicalId: op.logicalId,
           resourceType: op.resourceType,
           ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          // The mask on `reason` below is INERT ON THIS ARM, by construction
+          // rather than by accident, and that is worth stating because a
+          // reviewer asked for a test of it. `resolveReplayProps` is what
+          // fills `secrets`, and this arm never calls it -- it performs no
+          // create and resolves no provider properties -- so the bag is
+          // always empty here and `maskSecretsInText` is a guaranteed no-op.
+          // No test can discriminate it, and nothing can leak through it
+          // either. Kept for the day this arm grows a resolve step, and so the
+          // two twin event sites stay literally identical; the create-first
+          // twin's mask IS live and IS fenced.
+          //
+          // BOTH fields, and both gated on there actually BEING a survivor:
+          // with no retention this event describes a completed revert, and a
+          // `physicalId` here would then name the resource this rollback just
+          // DELETED. The id rides as a FIELD, not only inside `reason` -- a
+          // `--json` consumer should not have to parse prose, and it is the
+          // one datum a cleanup pass needs. Masked because the record is
+          // durable, the same reason the survivor record below masks.
+          ...(survivorReason !== undefined && {
+            physicalId: current.physicalId,
+            reason: maskSecretsInText(survivorReason, secrets),
+            // Overrides the op's layer spread above -- a later spread wins.
+            // Gated with the other two, deliberately: on a non-retain revert
+            // this event describes the OP, and the op's layer is correct there.
+            ...(survivorProvisionedBy && { provisionedBy: survivorProvisionedBy }),
+          }),
         });
         return;
       }
@@ -1919,10 +2251,30 @@ async function replaySingle(
           resourceType: op.resourceType,
           provisionedBy: prev.provisionedBy,
         });
-        const { provider: newDeleteProvider } = ctx.providerRegistry.getProviderFor({
-          resourceType: op.resourceType,
-          provisionedBy: current.provisionedBy ?? op.provisionedBy,
-        });
+        // LAZY, for the same reason the readopt arm resolves inside its `else`
+        // (review of issue #2598): `getProviderFor` THROWS for a type this
+        // registry cannot route, and THREE paths below never delete anything --
+        // the `Retain` warn arm, the collision REFUSAL, and the
+        // `adoptedLiveNewResource` arm (whose `else if` skips the delete).
+        // Resolved eagerly, any of them could fail on a lookup it never
+        // needed, before the re-create is even attempted. Called at each
+        // delete site instead; the two sites are mutually exclusive via
+        // `!deletedNewFirst`, so at most one lookup runs per op.
+        //
+        // ONE SEVERITY CHANGE this makes, stated because it is not obvious:
+        // at the `deleteNewAfterRecreate` site the call now sits INSIDE that
+        // block's `try`, so an unroutable type there degrades to the site's
+        // warn-and-count policy (op succeeds, exit 2) where the eager lookup
+        // failed the op outright (exit 1). That matches the site's existing
+        // treatment of a delete it cannot perform -- the old resource is
+        // already re-created and state already points at it -- and the
+        // `deleteNewFirst` site is unaffected, since its throw still
+        // propagates.
+        const resolveNewDeleteProvider = (): ResourceProvider =>
+          ctx.providerRegistry.getProviderFor({
+            resourceType: op.resourceType,
+            provisionedBy: current.provisionedBy ?? op.provisionedBy,
+          }).provider;
 
         // Create-first (the old resource's revival is the point). A
         // user-supplied physical name still held by the NEW resource collides
@@ -1984,6 +2336,68 @@ async function replaySingle(
           const msg = createError instanceof Error ? createError.message : String(createError);
           const nameCollision = isNameCollisionError(msg);
           if (!nameCollision) throw createError;
+          if (rollbackRetainsNewResource(current)) {
+            // Issue #2598: the ONE arm where honouring `Retain` cannot also
+            // complete the op. This delete exists solely to release the NAME
+            // the re-create just collided on, so with the holder pinned in
+            // place the old resource can never be re-created — and deleting it
+            // anyway is exactly the destruction of a resource the user marked
+            // to survive that this issue is about. So REFUSE, loudly, instead
+            // of choosing silently between the two.
+            //
+            // The op fails, which is the correct disposition: `replaySingle`'s
+            // per-op catch counts it, the segment is not popped, and the
+            // journal survives for a re-run once the user has resolved the
+            // name conflict. `markNonRetryable` on the repo's own test for it
+            // — "can this succeed on a retry?" — which here is a flat no: the
+            // verdict is a template attribute plus a physical name, and no
+            // amount of waiting changes either. Defense in depth rather than a
+            // live fix: nothing between this throw and `replaySingle`'s per-op
+            // catch re-classifies it TODAY (the retry loop is the
+            // `createWithRollbackRetry` above, already exhausted). It is worth
+            // carrying because the message QUOTES the collision text
+            // (`Underlying collision: ...`), which is exactly what the
+            // substring classifiers match — so should this ever be raised
+            // inside a retried call, an unmarked refusal would burn the whole
+            // name-release budget on a path that cannot succeed (issue #1838's
+            // shape).
+            throw markNonRetryable(
+              new CdkdError(
+                // Issue #2038, and this file's stated policy two arms down:
+                // `resolveReplayProps` re-resolved the replay bag to
+                // PLAINTEXT, so the create rejection quoted below can echo a
+                // secret. Masked at CONSTRUCTION so the value never exists
+                // inside a thrown `Error` for a later reader of the chain.
+                //
+                // MEASURED UNFENCEABLE, exactly like the two sibling wraps
+                // below: removing either mask leaves the whole unit suite
+                // green, because every downstream reader masks independently
+                // and `extractDeploymentEventError` reads `message` from the
+                // top level only, so the cause's text reaches no observable
+                // surface. Defense-in-depth, not a tested behavior -- do not
+                // record it in a PR body as one.
+                maskSecretsInText(
+                  `Cannot reverse the replacement of ${op.logicalId} (${op.resourceType}): ` +
+                    `the re-create of the old resource (${prev.physicalId}) collided with the ` +
+                    `name still held by the new one (${current.physicalId}), and ` +
+                    `UpdateReplacePolicy: Retain pins that new resource in place, so cdkd will ` +
+                    `not delete it to free the name. Delete the new resource yourself, or ` +
+                    `remove UpdateReplacePolicy: Retain, then re-run \`cdkd rollback\` — the ` +
+                    `journal is kept, so the revert resumes from here. To leave THIS resource ` +
+                    `alone and let the rest of the rollback proceed, re-run with ` +
+                    `\`cdkd rollback --orphan ${op.logicalId}\`: one op failure stops the ` +
+                    `segment loop, so a single pinned resource otherwise halts every OLDER ` +
+                    `segment too. Underlying collision: ${msg}`,
+                  secrets
+                ),
+                'NAMED_REPLACEMENT_COLLISION',
+                // The CHAIN is masked too: downstream masking only reaches a
+                // top-level message, and the cause is what carries the AWS
+                // rejection text a reader re-opens.
+                maskSecretsInError(createError instanceof Error ? createError : undefined, secrets)
+              )
+            );
+          }
           logger.info(
             `  Rollback: re-create collided with the new resource's name — deleting the new ` +
               `resource (${current.physicalId}) first...`
@@ -1994,7 +2408,7 @@ async function replaySingle(
               current,
               op.provisionedBy
             );
-            const deleteNewFirst = await newDeleteProvider.delete(
+            const deleteNewFirst = await resolveNewDeleteProvider().delete(
               op.logicalId,
               current.physicalId,
               op.resourceType,
@@ -2074,7 +2488,17 @@ async function replaySingle(
                   `${recreateError instanceof Error ? recreateError.message : String(recreateError)}. ` +
                   `The resource is now absent — fix forward with 'cdkd deploy'.`,
                 secrets
-              )
+              ),
+              // Issue #2616's sweep reached this third site: without a `cause`
+              // the wrap is the LAST link, so `extractDeploymentEventError`
+              // walks a chain with no `$metadata` and the persisted event
+              // names no AWS code. Masked for the same reason the message is.
+              {
+                cause: maskSecretsInError(
+                  recreateError instanceof Error ? recreateError : undefined,
+                  secrets
+                ),
+              }
             );
           }
         }
@@ -2151,14 +2575,36 @@ async function replaySingle(
         );
         await afterOp?.(op.logicalId);
 
-        if (!deletedNewFirst && !adoptedLiveNewResource) {
+        // Survivor record for this arm's retain branch -- see the twin binding
+        // in `reverse-replacement-readopt` above for why the EVENT, not the
+        // warn, is what the user is left with.
+        let survivorReason: string | undefined;
+        if (!deletedNewFirst && !adoptedLiveNewResource && rollbackRetainsNewResource(current)) {
+          // Issue #2598: the ordinary create-first path — the old resource is
+          // already re-created and state already points at it, so honouring
+          // `UpdateReplacePolicy: Retain` on the new copy costs nothing and
+          // completes the revert. This site's existing policy for a delete it
+          // does not perform is warn-and-count (see the `catch` below and the
+          // `adoptedLiveNewResource` arm above), and a retained copy is the
+          // same user-visible outcome: a live resource cdkd no longer tracks.
+          const survivorMessages = retainedSurvivorMessages(
+            op.logicalId,
+            op.resourceType,
+            current.physicalId,
+            `State records the re-created old resource ` +
+              `(${stateResources[op.logicalId]?.physicalId ?? prev.physicalId}).`
+          );
+          logger.warn(survivorMessages.warn);
+          survivorReason = survivorMessages.reason;
+          result.warnings++;
+        } else if (!deletedNewFirst && !adoptedLiveNewResource) {
           try {
             const finalSnapshotIdentifier = rollbackFinalSnapshotId(
               op.resourceType,
               current,
               op.provisionedBy
             );
-            const deleteNewAfterRecreate = await newDeleteProvider.delete(
+            const deleteNewAfterRecreate = await resolveNewDeleteProvider().delete(
               op.logicalId,
               current.physicalId,
               op.resourceType,
@@ -2195,6 +2641,23 @@ async function replaySingle(
                 secrets
               )
             );
+            // Same class as the `Retain` arm above, and the reason this
+            // binding is not named for `Retain` (security review): state
+            // already points at the re-created OLD resource, the new copy is
+            // alive, and cdkd no longer tracks it -- an orphan by outcome
+            // rather than by policy. Until this was set the event emitted with
+            // the binding still `undefined`, so `cdkd events` showed a clean
+            // SUCCEEDED naming nothing and the id died with the terminal.
+            //
+            // NOT masked here: the event site below runs `maskSecretsInText`
+            // over this binding, exactly as it does for the `Retain` arms.
+            // Masking twice is a no-op but reads as though one of the two were
+            // load-bearing.
+            survivorReason =
+              `The replacement's new ${op.resourceType} (${current.physicalId}) could not be ` +
+              `deleted after the old resource was re-created: ` +
+              `${deleteError instanceof Error ? deleteError.message : String(deleteError)}. ` +
+              `It is live, still billing, and no longer tracked by cdkd — delete it yourself.`;
             result.warnings++;
           }
         }
@@ -2205,6 +2668,10 @@ async function replaySingle(
             : `  Rollback: ${op.logicalId} replacement reversed (old resource re-created as ` +
                 `${createResult.physicalId})`
         );
+        // The SURVIVOR's layer, same reasoning as the readopt twin above --
+        // including why there is no `?? op.provisionedBy`: the unconditional
+        // spread below already covers a record that carries no layer.
+        const survivorProvisionedBy = current.provisionedBy;
         ctx.recordEvent?.({
           eventType: 'ROLLBACK_RESOURCE_SUCCEEDED',
           stackName,
@@ -2212,6 +2679,16 @@ async function replaySingle(
           logicalId: op.logicalId,
           resourceType: op.resourceType,
           ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
+          // Gated on the retain branch for the same reason as the twin above:
+          // on every other path through this arm the new copy was DELETED, and
+          // naming it here would point a cleanup pass at a dead id. The layer
+          // is gated with them -- on those paths the event describes the OP,
+          // whose own layer is the right one to report.
+          ...(survivorReason !== undefined && {
+            physicalId: current.physicalId,
+            reason: maskSecretsInText(survivorReason, secrets),
+            ...(survivorProvisionedBy && { provisionedBy: survivorProvisionedBy }),
+          }),
         });
         return;
       }

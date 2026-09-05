@@ -184,6 +184,128 @@ describe('rollback replay - provider calls carry a working secret masker (issue 
     expect(context?.replayingState).toBe(true);
   });
 
+  it('reverse-replacement REFUSAL under Retain: fires, and puts no plaintext on the persisted event (issue #2598)', async () => {
+    // `resolveReplayProps` has re-resolved this op's bag to PLAINTEXT by the
+    // time the re-create runs, so the AWS rejection the refusal quotes back
+    // can carry the secret. Found by the code reviewer on PR 2634: the first
+    // draft of the refusal masked neither its message nor its cause, while
+    // both siblings in the same `catch` mask at construction.
+    //
+    // WHAT THIS CASE DOES AND DOES NOT PIN, stated because the difference was
+    // MEASURED. It pins that the refusal fires (not a raw rethrow) and that no
+    // plaintext reaches the persisted event. It does NOT pin the
+    // construction-time masking: removing `maskSecretsInText` from the message
+    // OR `maskSecretsInError` from the cause leaves this case GREEN, because
+    // every downstream reader masks independently and
+    // `extractDeploymentEventError` takes `message` from the top level only,
+    // so the cause's text never reaches an observable surface at all. That is
+    // the same "MEASURED UNFENCEABLE" property `rollback-executor.ts` already
+    // records for its two sibling wraps two arms down — kept as
+    // defense-in-depth so the plaintext never exists inside a thrown `Error`
+    // for a future reader of the chain to re-open, not because a test holds
+    // it. Do not cite this case as coverage of the masking.
+    const create = vi.fn().mockRejectedValue(
+      // A collision rejection that ECHOES the resolved secret, which is what
+      // makes this discriminate: a fixture whose rejection carries no secret
+      // passes with the masking removed.
+      new Error(`Idp already exists (client_secret "${SECRET_PLAINTEXT}")`)
+    );
+    const del = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeCtx({ create, delete: del });
+    const errors: string[] = [];
+    ctx.recordEvent = (e) => {
+      if (e.error?.message) errors.push(e.error.message);
+    };
+    const prev = res({
+      physicalId: 'old-idp',
+      properties: { ProviderDetails: { client_secret: SECRET_EXPR } },
+    });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'new-idp',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({
+        physicalId: 'new-idp',
+        properties: { ProviderDetails: { client_secret: SECRET_EXPR } },
+        // Pins the new copy in place, so the collision arm REFUSES instead of
+        // deleting it to free the name.
+        updateReplacePolicy: 'Retain',
+      }),
+    };
+
+    const result = await replayRollback(ops, state, 'S', ctx, { isInterrupted: () => false });
+
+    expect(mockSMSend).toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    const text = errors.join('\n');
+    // The refusal fired rather than a raw rethrow — the discriminator, since
+    // "no delete, one failure" is also what a rethrow produces.
+    expect(text).toContain('Cannot reverse the replacement of Idp');
+    // The event surface carries no plaintext. True with or without the
+    // construction-time masking (see above), so this is a property of the
+    // whole path, not of the wrap.
+    expect(text).not.toContain(SECRET_PLAINTEXT);
+    expect(text).toContain(SECRET_MASK);
+  });
+
+  it('the DURABLE survivor reason carries no plaintext (issue #2598)', async () => {
+    // Finding 4 of the security round. The retain arms now publish a `reason`
+    // onto `ROLLBACK_RESOURCE_SUCCEEDED`, which OUTLIVES the terminal -- it
+    // lands in `deployments/*.jsonl`. Unlike this file's other masking cases,
+    // this one is genuinely fenceable: the event is a real observable surface,
+    // not a swallowed throw, so removing the mask at the event site changes
+    // what a reader sees.
+    //
+    // The delete-new-FAILED arm is the vehicle because its reason interpolates
+    // a PROVIDER-authored message, which is where a resolved secret can be
+    // echoed back; the two `Retain` reasons are cdkd-authored ids and prose.
+    const create = vi.fn().mockResolvedValue({ physicalId: 'old-idp' });
+    const del = vi
+      .fn()
+      .mockRejectedValue(new Error(`AccessDenied on client_secret "${SECRET_PLAINTEXT}"`));
+    const ctx = makeCtx({ create, delete: del });
+    const reasons: string[] = [];
+    ctx.recordEvent = (e) => {
+      if (e.reason) reasons.push(e.reason);
+    };
+    const prev = res({
+      physicalId: 'old-idp',
+      properties: { ProviderDetails: { client_secret: SECRET_EXPR } },
+    });
+    const ops: CompletedOperation[] = [
+      {
+        logicalId: 'Idp',
+        changeType: 'UPDATE',
+        resourceType: IDP_TYPE,
+        physicalId: 'new-idp',
+        previousState: prev,
+      },
+    ];
+    const state: Record<string, ResourceState> = {
+      Idp: res({
+        physicalId: 'new-idp',
+        properties: { ProviderDetails: { client_secret: SECRET_EXPR } },
+      }),
+    };
+
+    await replayRollback(ops, state, 'S', ctx);
+
+    expect(mockSMSend).toHaveBeenCalled();
+    const text = reasons.join('\n');
+    // The arm really was taken (not some other reason-bearing event)...
+    expect(text).toContain('could not be deleted');
+    // ...and the plaintext the provider echoed back does not reach the record.
+    expect(text).not.toContain(SECRET_PLAINTEXT);
+    expect(text).toContain(SECRET_MASK);
+  });
+
   it('revert-failed UPDATE: passes a masker bound to this op re-resolved secrets', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'phys-B' });
     const ctx = makeCtx({ update });

@@ -5381,6 +5381,7 @@
         "rollback-cross-region-secret",
         "rollback-deletion-policy-snapshot",
         "rollback-failure-injection",
+        "rollback-replacement-retain",
         "rollback-replay-effective-props",
         "rollback-sqs-cooldown",
         "scheduler-custom-group",
@@ -5490,6 +5491,9 @@
         "rollback-failure-injection": [
           "l1"
         ],
+        "rollback-replacement-retain": [
+          "l1"
+        ],
         "rollback-replay-effective-props": [
           "l1"
         ],
@@ -5594,6 +5598,7 @@
         "rollback-command",
         "rollback-cross-region-secret",
         "rollback-failure-injection",
+        "rollback-replacement-retain",
         "s3-tables",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
@@ -5764,6 +5769,10 @@
         ],
         "rollback-failure-injection": [
           "l2"
+        ],
+        "rollback-replacement-retain": [
+          "l1",
+          "literal"
         ],
         "s3-tables": [
           "l1"

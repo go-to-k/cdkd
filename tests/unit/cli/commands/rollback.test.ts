@@ -641,6 +641,135 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
     const skipped = info.mock.calls.map((c) => String(c[0]));
     expect(skipped.some((l) => /NO final snapshot \(--skip-final-snapshot\)/.test(l))).toBe(true);
   });
+
+  describe('the replacement labels do not promise a delete the replay will skip (issue #2598)', () => {
+    // The #1366 class, one layer over from the Snapshot case above: both
+    // `reverse-replacement` labels said "delete new" unconditionally, and
+    // `UpdateReplacePolicy: Retain` on the NEW copy means the replay leaves it
+    // alone. Coverage gap found by the test reviewer on PR 2634 — the
+    // mechanism (`RollbackPlanItem.retainsNewResource`) was pinned in the
+    // executor suite, but the TEXT the user confirms was not.
+    function installReplacementStack(opts: {
+      newCopyPolicy?: 'Retain';
+      oldResourceRetained: boolean;
+    }): void {
+      const op = {
+        logicalId: 'R',
+        changeType: 'UPDATE',
+        resourceType: 'AWS::SQS::Queue',
+        physicalId: 'phys-new',
+        provisionedBy: 'sdk',
+        oldResourceRetained: opts.oldResourceRetained,
+        previousState: {
+          physicalId: 'phys-old',
+          resourceType: 'AWS::SQS::Queue',
+          properties: { a: 1 },
+          attributes: {},
+          dependencies: [],
+        },
+      };
+      installSetup({
+        listStacks: vi.fn().mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]),
+        getState: vi.fn().mockResolvedValue({
+          state: {
+            version: 8,
+            stackName: 'S',
+            region: 'us-east-1',
+            resources: {
+              R: {
+                physicalId: 'phys-new',
+                resourceType: 'AWS::SQS::Queue',
+                properties: { a: 2 },
+                attributes: {},
+                dependencies: [],
+                provisionedBy: 'sdk',
+                ...(opts.newCopyPolicy && { updateReplacePolicy: opts.newCopyPolicy }),
+              },
+            },
+            outputs: {},
+            lastModified: 1,
+          },
+          etag: 'e0',
+        }),
+        loadRollbackJournal: vi.fn().mockResolvedValue({
+          journalVersion: 1,
+          stackName: 'S',
+          region: 'us-east-1',
+          segments: [
+            {
+              timestamp: 1,
+              reason: 'no-rollback-failure',
+              initialDeploy: false,
+              operations: [op],
+            },
+          ],
+        }),
+      });
+    }
+
+    /**
+     * Run the command for its PLAN PREVIEW only. The preview is printed before
+     * the replay, and this suite's shared `replayProvider` stub has no
+     * `create`, so a reverse-replacement's re-create fails and the command
+     * ends in `PartialFailureError`. Swallowed deliberately: these cases are
+     * about the TEXT the user confirms, and the replay behaviour has its own
+     * coverage in `rollback-executor-retain-new-resource.test.ts`.
+     */
+    async function plannedLines(): Promise<string[]> {
+      const { getLogger } = await import('../../../../src/utils/logger.js');
+      const info = getLogger().info as unknown as ReturnType<typeof vi.fn>;
+      return info.mock.calls.map((c) => String(c[0]));
+    }
+
+    async function runForPlan(): Promise<string[]> {
+      await rollbackCommand('S', { ...baseOpts }).catch(() => undefined);
+      return plannedLines();
+    }
+
+    it('re-adopt: announces the retained new copy instead of promising a delete', async () => {
+      installReplacementStack({ newCopyPolicy: 'Retain', oldResourceRetained: true });
+      const lines = await runForPlan();
+      expect(lines.some((l) => /new one RETAINED \(UpdateReplacePolicy: Retain\)/.test(l))).toBe(
+        true
+      );
+      // The pre-fix text must be GONE, not merely joined by the new one — a
+      // label carrying both would still mislead.
+      expect(lines.some((l) => /delete new, re-adopt retained old resource/.test(l))).toBe(false);
+    });
+
+    it('re-create: announces the retention AND that a name collision refuses', async () => {
+      installReplacementStack({ newCopyPolicy: 'Retain', oldResourceRetained: false });
+      const lines = await runForPlan();
+      expect(lines.some((l) => /new one RETAINED \(UpdateReplacePolicy: Retain\)/.test(l))).toBe(
+        true
+      );
+      // The replay REFUSES this op when the re-create collides with the name
+      // the pinned copy holds, and the plan cannot know in advance — so the
+      // label has to carry the possibility rather than promise the happy path.
+      expect(lines.some((l) => /REFUSED instead if the re-create collides/.test(l))).toBe(true);
+      expect(lines.some((l) => /re-create old resource, delete new/.test(l))).toBe(false);
+    });
+
+    it('re-create WITHOUT the policy still promises the delete', async () => {
+      // The other polarity. Without it, a label hard-wired to the retain text
+      // would pass the cases above.
+      installReplacementStack({ oldResourceRetained: false });
+      const lines = await runForPlan();
+      expect(lines.some((l) => /re-create old resource, delete new/.test(l))).toBe(true);
+      expect(lines.some((l) => /RETAINED \(UpdateReplacePolicy: Retain\)/.test(l))).toBe(false);
+    });
+
+    it('re-adopt WITHOUT the policy still promises the delete', async () => {
+      // The readopt arm's own negative. The previous revision of this file
+      // asserted "both labels" from ONE case and left this arm unpinned:
+      // hard-wiring the readopt default label to the retain text kept all 34
+      // cases green. Both arms now carry a positive AND a negative.
+      installReplacementStack({ oldResourceRetained: true });
+      const lines = await runForPlan();
+      expect(lines.some((l) => /delete new, re-adopt retained old resource/.test(l))).toBe(true);
+      expect(lines.some((l) => /RETAINED \(UpdateReplacePolicy: Retain\)/.test(l))).toBe(false);
+    });
+  });
 });
 
 describe('createRollbackCommand option surface', () => {

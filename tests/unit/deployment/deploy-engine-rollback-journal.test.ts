@@ -452,4 +452,209 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     // Both A and B completed before the output failure → both are journaled.
     expect(seg.operations.map((o: { logicalId: string }) => o.logicalId).sort()).toEqual(['A', 'B']);
   });
+
+  describe('the replacement retain verdict the deploy ACTED ON (issue #2603)', () => {
+    // `classifyRollbackOp` used to re-derive this from
+    // `previousState.updateReplacePolicy` — a different source than the
+    // TEMPLATE read every engine replacement path decides from. These two
+    // cases pin the WRITE half: what the engine stamps onto the journal, in
+    // the two configurations where the sources disagree. The READ half
+    // (which arm each stamp selects) is
+    // `rollback-executor-retain-verdict-source.test.ts`.
+    //
+    // A type with no data to lose, so the property-driven path's stateful
+    // guard never fires on the non-Retain arm (the Retain arm skips that guard
+    // by construction).
+    const REPLACED_TYPE = 'AWS::Glue::SecurityConfiguration';
+
+    function replacementScenario(updateReplacePolicy?: 'Retain'): {
+      changes: Map<string, ResourceChange>;
+      deps: Record<string, string[]>;
+      currentResources: Record<string, ResourceState>;
+      template: CloudFormationTemplate;
+    } {
+      // R is a property-driven replacement (an immutable property changed);
+      // F is a CREATE that fails AFTER it, which is what makes the deploy
+      // journal R as a completed op in the first place.
+      const rChange = {
+        logicalId: 'R',
+        changeType: 'UPDATE',
+        resourceType: REPLACED_TYPE,
+        currentProperties: { Mode: 'a' },
+        desiredProperties: { Mode: 'b' },
+        propertyChanges: [
+          { path: 'Mode', oldValue: 'a', newValue: 'b', requiresReplacement: true },
+        ],
+      } as unknown as ResourceChange;
+      return {
+        changes: new Map([
+          ['R', rChange],
+          ['F', makeChange('F')],
+        ]),
+        deps: { R: [], F: ['R'] },
+        currentResources: {
+          R: {
+            physicalId: 'phys-R-old',
+            resourceType: REPLACED_TYPE,
+            properties: { Mode: 'a' },
+            attributes: {},
+            dependencies: [],
+            // What the LAST deploy recorded — deliberately the OPPOSITE of the
+            // template below in both cases, so a classifier still reading this
+            // record answers wrongly and the stamp is the only thing that can
+            // be right.
+            ...(updateReplacePolicy === 'Retain'
+              ? {}
+              : { updateReplacePolicy: 'Retain' as const }),
+          },
+        },
+        template: {
+          Resources: {
+            R: {
+              Type: REPLACED_TYPE,
+              Properties: { Mode: 'b' },
+              ...(updateReplacePolicy && { UpdateReplacePolicy: updateReplacePolicy }),
+            },
+            F: { Type: 'AWS::S3::Bucket', Properties: {} },
+          },
+        },
+      };
+    }
+
+    it('ADD direction: template newly declares Retain → the op records the old resource as retained', async () => {
+      const scenario = replacementScenario('Retain');
+      const engine = buildEngine({
+        changes: scenario.changes,
+        deps: scenario.deps,
+        failOn: new Set(['F']),
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: scenario.currentResources,
+      });
+      await expect(engine.deploy(stackName, scenario.template)).rejects.toThrow();
+
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      const r = seg.operations.find((o: { logicalId: string }) => o.logicalId === 'R');
+      expect(r).toBeDefined();
+      expect(r.oldResourceRetained).toBe(true);
+      // The disagreement is real in the fixture, not just asserted: the
+      // previous record carries NO policy, so the pre-#2603 read would have
+      // answered "not retained" for a resource that is still alive.
+      expect(r.previousState.updateReplacePolicy).toBeUndefined();
+    });
+
+    it('DROP direction: template no longer declares Retain → the op records the old resource as deleted', async () => {
+      const scenario = replacementScenario();
+      const engine = buildEngine({
+        changes: scenario.changes,
+        deps: scenario.deps,
+        failOn: new Set(['F']),
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: scenario.currentResources,
+      });
+      await expect(engine.deploy(stackName, scenario.template)).rejects.toThrow();
+
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      const r = seg.operations.find((o: { logicalId: string }) => o.logicalId === 'R');
+      expect(r).toBeDefined();
+      // Present and FALSE, not absent: an absent field is what a pre-#2603
+      // journal looks like, and the classifier falls back to the stale record
+      // for those — which is precisely the direction that leaves state naming
+      // a deleted resource.
+      expect(r.oldResourceRetained).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(r, 'oldResourceRetained')).toBe(true);
+      expect(r.previousState.updateReplacePolicy).toBe('Retain');
+    });
+
+    it('a CREATE op carries NO verdict, so absent keeps meaning "older binary"', async () => {
+      // The `change.changeType === 'UPDATE'` scoping on the stamp. Unfenced
+      // until review: dropping the guard (stamping every op shape) was green.
+      // It matters because the field's whole contract is that ABSENT means "a
+      // binary that predates issue #2603 wrote this" -- stamping a CREATE
+      // would put a meaningless `false` on ops the classifier never reads,
+      // and a later reader could take the field's presence as a signal.
+      const scenario = replacementScenario('Retain');
+      // A CREATE that SUCCEEDS, so the segment actually contains a non-UPDATE
+      // completed op -- `F` fails and therefore never reaches
+      // `completedOperations` at all, which would make the negative half of
+      // this case vacuous.
+      scenario.changes.set('C', makeChange('C'));
+      scenario.deps['C'] = [];
+      scenario.deps['F'] = ['R', 'C'];
+      scenario.template.Resources!['C'] = { Type: 'AWS::S3::Bucket', Properties: {} };
+      const engine = buildEngine({
+        changes: scenario.changes,
+        deps: scenario.deps,
+        failOn: new Set(['F']),
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: scenario.currentResources,
+      });
+      await expect(engine.deploy(stackName, scenario.template)).rejects.toThrow();
+
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      const r = seg.operations.find((o: { logicalId: string }) => o.logicalId === 'R');
+      // Guard first: `hasOwnProperty.call(undefined, ...)` throws a TypeError
+      // rather than failing this assertion cleanly.
+      expect(r).toBeDefined();
+      // The UPDATE carries it...
+      expect(Object.prototype.hasOwnProperty.call(r, 'oldResourceRetained')).toBe(true);
+      // ...and every non-UPDATE op in the same segment does not.
+      const nonUpdates = seg.operations.filter(
+        (o: { changeType: string }) => o.changeType !== 'UPDATE'
+      );
+      expect(nonUpdates.length).toBeGreaterThan(0);
+      for (const o of nonUpdates) {
+        expect(Object.prototype.hasOwnProperty.call(o, 'oldResourceRetained')).toBe(false);
+      }
+    });
+
+    it('the verdict does NOT survive into a second deploy on the same engine', async () => {
+      // The per-run `retainedOldOnReplacement` reset. An engine instance is
+      // reusable, and a stale `true` would tell the NEXT run's rollback to
+      // re-adopt a physical id THIS run deleted — the ADD direction's failure
+      // mode, arriving from a completely different deploy. Nothing pinned the
+      // reset until the test reviewer removed it and the suite stayed green.
+      const retainScenario = replacementScenario('Retain');
+      const engine = buildEngine({
+        changes: retainScenario.changes,
+        deps: retainScenario.deps,
+        failOn: new Set(['F']),
+        noRollback: true,
+        currentEtag: 'e0',
+        currentResources: retainScenario.currentResources,
+      });
+      await expect(engine.deploy(stackName, retainScenario.template)).rejects.toThrow();
+      const first = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(
+        first.operations.find((o: { logicalId: string }) => o.logicalId === 'R')
+          .oldResourceRetained
+      ).toBe(true);
+
+      // Same ENGINE, second deploy, template no longer declaring Retain.
+      const dropScenario = replacementScenario();
+      journal.appendRollbackJournalSegment.mockClear();
+      const backend = (
+        engine as unknown as { stateBackend: { getState: ReturnType<typeof vi.fn> } }
+      ).stateBackend;
+      backend.getState.mockResolvedValue({
+        state: {
+          version: 8,
+          stackName,
+          region: 'us-east-1',
+          resources: dropScenario.currentResources,
+          outputs: {},
+          lastModified: Date.now(),
+        },
+        etag: 'e1',
+      });
+      await expect(engine.deploy(stackName, dropScenario.template)).rejects.toThrow();
+      const second = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      expect(
+        second.operations.find((o: { logicalId: string }) => o.logicalId === 'R')
+          .oldResourceRetained
+      ).toBe(false);
+    });
+  });
 });

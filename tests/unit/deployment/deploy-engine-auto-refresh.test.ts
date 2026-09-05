@@ -407,4 +407,73 @@ describe('DeployEngine - auto-refresh observed-properties on v2 state load', () 
       source: 'create-new-phys',
     });
   });
+
+  it('routes the refresh through the layer the RECORD names, not the type default (issue #2608 sibling)', async () => {
+    // Found by the sibling-site sweep on issue #2608 (whose subject is the
+    // post-UPDATE capture). This site used the legacy `getProvider` entry
+    // point, which passes NO recorded layer — so a record stamped
+    // `provisionedBy: 'cc-api'` (silent-drop auto-route, issue #614) had its
+    // drift BASELINE read back through the SDK provider. The bag then
+    // describes a layer state does not name, and since this bag IS the
+    // baseline, the very next `cdkd drift` reports the shape difference as
+    // drift (the phantom-drift class of issue #1591).
+    const ccProvider = {
+      ...mockProvider,
+      readCurrentState: vi.fn().mockResolvedValue({ readBy: 'cc-api' }),
+    };
+    mockProviderRegistry.getProviderFor.mockImplementation(
+      (input: { provisionedBy?: 'sdk' | 'cc-api' }) =>
+        input.provisionedBy === 'cc-api'
+          ? { provider: ccProvider, provisionedBy: 'cc-api' }
+          : { provider: mockProvider, provisionedBy: 'sdk' }
+    );
+    mockProvider.readCurrentState.mockResolvedValue({ readBy: 'sdk' });
+
+    mockStateBackend.getState.mockResolvedValue({
+      state: {
+        version: 7,
+        region: 'us-east-1',
+        stackName,
+        resources: {
+          // No `observedProperties`, so it is an auto-refresh candidate; the
+          // record names the CC layer.
+          RoutedResource: {
+            physicalId: 'phys-routed',
+            resourceType: 'AWS::SQS::Queue',
+            properties: { QueueName: 'routed' },
+            provisionedBy: 'cc-api',
+          },
+        },
+        outputs: {},
+        lastModified: 0,
+      } as StackState,
+      etag: 'etag-old',
+    });
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'RoutedResource',
+          {
+            logicalId: 'RoutedResource',
+            changeType: 'NO_CHANGE',
+            resourceType: 'AWS::SQS::Queue',
+          } as unknown as ResourceChange,
+        ],
+      ])
+    );
+    mockDiffCalculator.hasChanges.mockReturnValue(false);
+
+    await makeEngine().deploy(stackName, {
+      Resources: { RoutedResource: { Type: 'AWS::SQS::Queue', Properties: {} } },
+    });
+
+    expect(ccProvider.readCurrentState).toHaveBeenCalledTimes(1);
+    // The discriminator: pre-fix BOTH the record and this assertion's subject
+    // were satisfied by the SDK provider running the read.
+    expect(mockProvider.readCurrentState).not.toHaveBeenCalled();
+    const savedState = mockStateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(savedState.resources['RoutedResource']!.observedProperties).toEqual({
+      readBy: 'cc-api',
+    });
+  });
 });

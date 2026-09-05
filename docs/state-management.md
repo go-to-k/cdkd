@@ -114,7 +114,14 @@ deploy completed (one `segment` per failed attempt) so `cdkd rollback` can
 revert them with no synth. Each segment also
 carries the op(s) that **FAILED** mid-deploy (`failedOperations[]` — pre-op
 state + attempted properties; an additive field, no `journalVersion` bump)
-so `cdkd rollback --revert-failed` can optionally revert them too. It is deliberately **not** part of the state
+so `cdkd rollback --revert-failed` can optionally revert them too. Every completed
+UPDATE op additionally records whether the deploy left the OLD physical
+resource alive (`oldResourceRetained` — also additive, also no bump; it is read
+only for a replacement, but recording it unconditionally is what keeps an
+ABSENT value meaning "written by an older binary"), so the
+rollback acts on the verdict the deploy reached rather than re-deriving it from
+the previous state record, which disagrees on the deploy that adds or removes
+`UpdateReplacePolicy: Retain`. It is deliberately **not** part of the state
 schema (its own `journalVersion` field, no `StackState.version` bump) and
 **not** under the `deployments/` prefix (that layer survives destroy by
 design; the journal must not). Lifecycle: created on a failed / interrupted
