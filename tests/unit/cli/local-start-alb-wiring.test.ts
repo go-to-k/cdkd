@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Command } from 'commander';
 import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emulator.js';
 
 /**
@@ -41,12 +42,13 @@ import type { EmulatorStrategy } from '../../../src/cli/commands/ecs-service-emu
  * such spellings in review round 4; every one reddens.
  *
  * The bound, stated because an over-claim here is the same defect as a fence
- * that cannot see: this is ARGV-DRIVEN, so it sees only the argv it drives. A
- * conditional keyed on a flag no case varies escapes it, and round 5 measured
- * exactly that — `--env-vars` slipped past the first parameterisation. The
- * cases below now vary every flag a branch would plausibly key on; a
- * conditional keyed on something OUTSIDE the argv (an env var, `isTTY`, the
- * clock) still gets through, and no argv-driven case can close that.
+ * that cannot see: this is ARGV-DRIVEN. Every option the command DECLARES is
+ * now varied, derived from `cmd.options` rather than hand-listed, and a
+ * coverage case fails if one is added without being varied or excused. What
+ * still escapes is a conditional keyed on something that is not an option at
+ * all — an env var, `isTTY`, the clock, the number of targets. Three earlier
+ * revisions of this comment each claimed more than they delivered, and each
+ * was falsified by the next round finding one more flag.
  *
  * `parseAsync` rather than `parse`: the action is async, and
  * `cmd-parse-stub-gate` deliberately exempts the async spelling because the
@@ -130,6 +132,13 @@ async function strategyHandedToEngine(argv: string[]): Promise<EmulatorStrategy>
   }
 }
 
+/** Every `--long` the command declares, in declaration order. */
+function declaredLongs(command: Command): string[] {
+  return command.options
+    .map((option) => option.long)
+    .filter((long): long is string => typeof long === 'string');
+}
+
 const warningsFor = (strategy: EmulatorStrategy): string[] =>
   strategy.resolveBoots(stacks as never, ['Alb16C2F182']).warnings;
 
@@ -151,34 +160,121 @@ const EXPECTED_WARNING_WITH_ECS_NOTE =
   '--env-vars. Tracked as go-to-k/cdkd#2602 (upstream go-to-k/cdk-local#707).';
 
 describe('the strategy `cdkd local start-alb` hands the engine', () => {
-  // An argv-driven fence only sees the argv it drives. Review round 4 measured
-  // that a conditional keyed on a flag this file never varied —
-  // `options.watch ? albStrategy(options) : buildAlbEmulatorStrategy(options)`
-  // — survived the whole `tests/unit/cli` suite, so `start-alb --from-state
-  // --watch` would hand the engine an undecorated strategy. These are the
-  // flags a branch would plausibly key on, driven alongside `--from-state`.
+  // An argv-driven fence only sees the argv it drives, and a hand-written flag
+  // list is a treadmill: review caught `--watch` slipping past the
+  // unparameterised version, then `--env-vars` slipping past the first
+  // hand-written list, then `--from-cfn-stack` and seven more slipping past
+  // the second. Three rounds of adding one flag at a time is the signal to
+  // change instrument, so the combinations are DERIVED from the command's own
+  // option set instead of enumerated.
   //
-  // The residual bound is real and worth stating rather than papering over: a
-  // conditional keyed on something else entirely (a random value, an env var,
-  // `isTTY`) still escapes. What this closes is the plausible-refactor class,
-  // not every conceivable one.
-  //
-  // `--env-vars` is here because round 5 measured it surviving the first
-  // parameterisation, and it is the MOST plausible key of the lot: "don't nag
-  // if they already overrode the variables" is a refactor someone would write
-  // on purpose, keyed on the very flag this warning's remedy names.
+  // `--from-cfn-stack` is why this matters rather than being tidiness. It is
+  // the same refactor `--env-vars` was — "don't nag if they already passed the
+  // working source" — keyed on the other flag named in the very same sentence
+  // of the warning. A hand-written list will always be one plausible flag
+  // short of the one someone actually writes.
+  const cmd = createLocalStartAlbCommand();
+
+  /**
+   * A usable value per value-taking option. Two of these are parsed at PARSE
+   * time by commander `argParser`s (`--max-tasks`, `--restart-policy`) and one
+   * inside the real `albStrategy` (`--lb-port`), so a junk value would throw
+   * before the wiring is ever exercised and the case would fail for the wrong
+   * reason. The rest are consumed inside the mocked engine and never read.
+   */
+  const SAMPLE_VALUES: Record<string, string> = {
+    '--state-bucket': 'cdkd-state-111122223333',
+    '--state-prefix': 'cdkd',
+    '--image-override': 'Svc=Dockerfile',
+    '--image-build-arg': 'KEY=VAL',
+    '--image-build-secret': 'id=src',
+    '--image-target': 'build',
+    '--lb-port': '80=8080',
+    '--tls-cert': 'cert.pem',
+    '--tls-key': 'key.pem',
+    '--bearer-token': 'jwt',
+    '--cluster': 'cdkd-local',
+    '--env-vars': 'overrides.json',
+    '--container-host': '127.0.0.1',
+    '--ecr-role-arn': 'arn:aws:iam::111122223333:role/EcrPull',
+    '--platform': 'linux/amd64',
+    '--max-tasks': '2',
+    '--restart-policy': 'always',
+    '--stack-region': 'us-west-2',
+    '--shadow-ready-timeout': '1000',
+    '--profile': 'dev',
+    '--role-arn': 'arn:aws:iam::111122223333:role/Deploy',
+    '--app': 'cdk.out',
+    '--output': 'cdk.out',
+    '--context': 'key=value',
+    '--region': 'us-west-2',
+  };
+
+  /**
+   * Options deliberately not varied, each with the reason — and PINNED, not
+   * merely documented. Probed: without the identity assertion below, adding an
+   * entry here for a real flag silences the coverage check for it, so the
+   * escape hatch quietly becomes the hole. One entry is expected; a second is
+   * a decision someone has to make out loud.
+   */
+  const NOT_VARIED: Record<string, string> = {
+    '--from-state': 'the subject of every case; it is always passed.',
+  };
+  const EXPECTED_NOT_VARIED = ['--from-state'];
+
   const FLAG_COMBINATIONS: string[][] = [
     [],
-    ['--watch'],
-    ['--tls'],
-    ['--lb-port', '80=8080'],
-    ['--no-pull'],
-    ['--env-vars', 'overrides.json'],
-    ['--profile', 'dev'],
-    ['--stack-region', 'us-west-2'],
-    ['--bearer-token', 'jwt'],
-    ['--no-verify-auth'],
+    ...declaredLongs(cmd)
+      .filter((long) => NOT_VARIED[long] === undefined)
+      .map((long) => {
+        const value = SAMPLE_VALUES[long];
+        return value === undefined ? [long] : [long, value];
+      }),
   ];
+
+  it('varies every option the command declares', () => {
+    // The half that makes DERIVING worth more than enumerating: an option
+    // added upstream (this command inherits most of its block from cdk-local)
+    // enters the matrix on its own, and one that cannot be varied has to say
+    // why here rather than being quietly absent.
+    const declared = declaredLongs(cmd);
+    const varied = new Set(FLAG_COMBINATIONS.flatMap((argv) => argv.slice(0, 1)));
+    expect(
+      declared.filter((long) => !varied.has(long) && NOT_VARIED[long] === undefined).sort(),
+      'These options are declared by `start-alb` but never varied, so a conditional keyed on ' +
+        'one would hand the engine an undecorated strategy with this file green. Add a value ' +
+        'to SAMPLE_VALUES (or nothing, for a boolean), or record why in NOT_VARIED.'
+    ).toEqual([]);
+    // ...and a stale SAMPLE_VALUES / NOT_VARIED entry for an option that no
+    // longer exists is dead weight that outlives the flag it described.
+    const declaredSet = new Set(declared);
+    expect(
+      [...Object.keys(SAMPLE_VALUES), ...Object.keys(NOT_VARIED)]
+        .filter((long) => !declaredSet.has(long))
+        .sort(),
+      'These SAMPLE_VALUES / NOT_VARIED entries name options `start-alb` no longer declares.'
+    ).toEqual([]);
+    // NOT_VARIED is the one way to opt an option OUT of the check above, so it
+    // is pinned rather than trusted. Measured: without this, excusing a real
+    // flag (`--watch`) passed silently.
+    expect(
+      Object.keys(NOT_VARIED).sort(),
+      'The set of options excused from variation has changed. Excusing one turns off the ' +
+        'coverage check for it, which is exactly how a conditional keyed on that flag would ' +
+        'hand the engine an undecorated strategy with this file green.'
+    ).toEqual(EXPECTED_NOT_VARIED);
+    // Anti-vacuity: an empty or truncated option list would satisfy the
+    // assertions above while varying nothing.
+    expect(declared.length).toBeGreaterThanOrEqual(35);
+  });
+
+  it('warns with no <targets> at all (the interactive-picker path)', async () => {
+    // The positional is argv too, and a `targets.length === 0` conditional
+    // survived the option-derived matrix — every case passed a target. Omitting
+    // it is a real invocation: in a TTY the engine multi-selects interactively.
+    const strategy = await strategyHandedToEngine(['--from-state']);
+    expect(warningsFor(strategy).join('\n')).toContain('ApiFnE0725F78');
+  });
 
   it.each(FLAG_COMBINATIONS)(
     'warns about the Lambda target group under --from-state %s',
@@ -217,8 +313,6 @@ describe('the strategy `cdkd local start-alb` hands the engine', () => {
     // equality fences all of them, and this string IS the remedy, so coupling
     // a reword to a test edit is the right trade.
     expect(warned).toBe(EXPECTED_WARNING_WITH_ECS_NOTE);
-    expect(warned).toContain('--env-vars');
-    expect(warned).toContain('go-to-k/cdk-local#707');
   });
 
   it('stays silent on the same ALB without --from-state', async () => {
