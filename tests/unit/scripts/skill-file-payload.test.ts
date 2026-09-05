@@ -268,11 +268,11 @@ const MIN_REFERENCE_FILES = 6;
 // -- filing.md's ask-the-worktree-question-HERE timing, gates-and-pr.md's
 // re-run-the-generators clause, ship.md's `gh pr checks` parsing rule,
 // verify.md's what-COUNTS-as-a-bypass clause, and retro.md's
-// read-the-SENTENCE-before-believing-a-hit rider -- and came out
-// 172,746 -> 172,952, i.e. +206 for the round
-// with verify.md 27,876 -> 28,154 taking the lead from implement.md 28,079
-// (untouched); margin 130 -> 127 B. Components, stated so they can be checked
-// rather than believed: filing.md +640, gates-and-pr.md +276, retro.md +376,
+// read-the-SENTENCE-before-believing-a-hit rider -- and came out 172,746 ->
+// 172,952, i.e. +206 for the round, with verify.md 27,876 -> 28,154 taking
+// the lead from implement.md 28,079 (untouched); margin 130 -> 127 B.
+// Components, stated so they can be checked rather than believed:
+// filing.md +640, gates-and-pr.md +276, retro.md +376,
 // ship.md +325, verify.md +278, gotchas.md -1,689, = +206. All of the payment
 // came from ONE file, and by DISPLACEMENT rather than compression: gotchas.md
 // is the appendix, so every rule in it that only restated CLAUDE.md or another
@@ -282,25 +282,18 @@ const MIN_REFERENCE_FILES = 6;
 // section 9). Read that as the appendix's standing hazard: an "existing rules
 // this skill leans on" list is where duplication accumulates without ever
 // looking like growth.
-// The retro.md change is the one worth re-reading before the next fold-back,
-// because this round produced it the expensive way: EVERY review round on this
-// PR found a false PROSE claim in that one bullet, including each round written
-// to correct the previous one -- which is why the sentence above carries no
-// round COUNT, a number every further round would falsify. Round one wrote a
-// promotion-check hit into filing.md as a sourced incident; the next round
-// found the cited issue was a different fixture and blamed a BASENAME
-// collision; the next found that wrong too (the body names the sibling by
-// FULL path, so it was a citation) and escalated from prose to a recipe that
-// prints the body line; the next found THAT recipe pairs a basename hit with
-// the wrong sentence -- reproducing round one's error inside the mechanism
-// built to prevent it; and the round recording the withdrawal still said the
-// false rule had SHIPPED, when it never left this PR. So the recipe change was
-// WITHDRAWN to
-// go-to-k/cdkd#2655 carrying both measured defects, and what ships is the
-// narrow certain part: read the sentence before believing a hit. A reviewer
-// re-derived every byte figure in this file from the tree at EVERY round and
-// found each correct; none of that touches whether the PROSE is true, which
-// is the whole lesson.
+// The retro.md rule is the one worth re-reading before the next fold-back,
+// because of HOW it was arrived at: every review round on this PR found a
+// false PROSE claim in text this PR had added, each round's fix included. The
+// chain ran cited-the-wrong-fixture -> blamed a basename collision (also
+// wrong; the body names the sibling by FULL path) -> escalated to a recipe
+// printing the body line -> that recipe paired a basename hit with the wrong
+// sentence, reproducing the original error inside the mechanism built to
+// prevent it. So the recipe went to go-to-k/cdkd#2655 with both measured
+// defects and only the narrow certain part shipped. A reviewer re-derived
+// every byte figure here from the tree each round and found each correct
+// throughout -- which is the lesson: byte fences cannot see whether the PROSE
+// is true, so the counts above are checkable and the narrative is not.
 // The next addition here has to be
 // paid for by compression FIRST -- retro.md section 10-c forbids buying the
 // room by raising this floor, and note that SPLITTING a stage file makes this
