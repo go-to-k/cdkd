@@ -571,37 +571,40 @@ export class NestedStackProvider implements ResourceProvider {
         // resource that merely SHARED a logical id, skipping the child's
         // stateful guard).
         //
-        // These members of `DeployEngineOptions` name a stack, or a resource in
-        // one — the set is fenced by
-        // `tests/unit/provisioning/nested-stack-option-boundary-audit.test.ts`, so
-        // no count is written here for a later edit to falsify. Two self-scope,
-        // so inheriting them is inert: `recreateTargets`
-        // matches only while deploying its own `stackName`, and
-        // `onCurrentStateLoaded` (the prefix-migration gate) returns early on a
-        // stack-name mismatch. The child deploys as `<parent>~<logicalId>`, and
-        // CDK's stack-name rule bars `~`, so neither can match in a descendant.
-        // The other two are stack-named but not decisions ABOUT a stack:
-        // `parentStackInfo` is overwritten a few lines below (it must describe
-        // THIS child), and `eventRecorder` carries the top-level run's stack
-        // name because a nested child's resource events belong to the parent's
-        // run by design.
+        // Which `DeployEngineOptions` members name a stack, or a resource in
+        // one, is a judgment recorded HERE; what
+        // `tests/unit/provisioning/nested-stack-option-boundary-audit.test.ts`
+        // does is refuse to let a member reach this spread without that
+        // judgment having been made — it is a membership fence and cannot
+        // decide scoping for you. No count is written in this paragraph,
+        // because a count is the part that rots.
+        //
+        // `recreateTargets` and `onCurrentStateLoaded` SELF-SCOPE, so
+        // inheriting them is inert: the first matches only while deploying its
+        // own `stackName`, the second (the prefix-migration gate) returns early
+        // on a stack-name mismatch. The child deploys as `<parent>~<logicalId>`
+        // and CDK's stack-name rule bars `~`, so neither can match in a
+        // descendant. `parentStackInfo` and `eventRecorder` are stack-named but
+        // are not decisions ABOUT a stack: the first is overwritten a few lines
+        // below (it must describe THIS child), and the second carries the
+        // top-level run's stack name because a nested child's resource events
+        // belong to the parent's run by design.
         //
         // Two more things cross this boundary deliberately unscoped, and this
-        // comment is not a claim that they are scoped. Neither names a
-        // particular resource — one is a run-level yes/no, the other a rule
-        // about resource TYPES — which is why neither is in the audit above,
-        // whose subject is an option naming a specific stack or one resource in
-        // it. The consent booleans -- `forceStatefulRecreation` (documented in
-        // `docs/cli-deploy-safety.md` as clearing the guard for every target in
-        // the RUN), `replace` (documented there as a STACK-WIDE opt-in that
-        // fires wherever an update hard-rejects), and `skipFinalSnapshot`
-        // (`docs/cli-destroy.md`) -- name no resource. And
-        // `parentCtx.providerRegistry`, one argument above this bag, carries
-        // the `--allow-unsupported-types` / `--allow-unsupported-properties`
-        // allow-lists, keyed by resource TYPE and `Type:Property` -- a per-type
-        // opt-in whose meaning does not change between stacks. What #2567 was
-        // about is per-STACK identifiers deciding a destructive action, and
-        // that is `recreateTargets` alone.
+        // comment is not a claim that they are scoped. Neither picks out a
+        // particular resource, which is why neither appears in the paragraph
+        // above — whose subject is an option naming a specific stack, or one
+        // resource in one. The consent flags name no resource at all:
+        // `forceStatefulRecreation` (documented in `docs/cli-deploy-safety.md`
+        // as clearing the guard for every target in the RUN), `replace`
+        // (documented there as a STACK-WIDE opt-in that fires wherever an
+        // update hard-rejects), and `skipFinalSnapshot` (`docs/cli-destroy.md`).
+        // And `parentCtx.providerRegistry`, one argument above this bag,
+        // carries the `--allow-unsupported-types` /
+        // `--allow-unsupported-properties` allow-lists, keyed by resource TYPE
+        // and `Type:Property` -- a per-type opt-in whose meaning does not
+        // change between stacks. What #2567 was about is a per-STACK identifier
+        // deciding a destructive action, and that is `recreateTargets` alone.
         ...(parentCtx.options ?? {}),
         // Always overwrite (never spread-inherit) parameters: the parent's
         // `--parameters Foo=Bar` CLI option lives in `parentCtx.options.parameters`,

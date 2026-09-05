@@ -452,29 +452,22 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     // app is exactly the audience, and gating this on nesting made it
     // unreachable for them.
     //
-    // Phrased as a CONDITIONAL, and the whole paragraph has to stay inside that
-    // conditional — not just its first sentence. The validator runs per stack
-    // and cannot see how many stacks the run carries, so any assertive sentence
-    // here ("stacks that do not depend on it still deploy") reads as a claim
-    // that other stacks EXIST, to someone running `cdkd deploy MyStack` whose
-    // actual mistake was a typo. That defect was caught twice, one sentence
-    // apart. Read the RENDERED block, not this source, when changing it: the
-    // paragraph below also opens with `Note:`, which is invisible here.
-    //
-    // The consequence sentence is deliberately precise, because the obvious
-    // wording is FALSE. `runStack` throws `RECREATE_TARGETS_INVALID` inside its
-    // own work-graph node, and `WorkGraph.execute` fails that node while
-    // continuing to dispatch every node that does not DEPEND on it — so the
-    // stack owning the id keeps deploying, and its confirmed DELETE + CREATE
-    // still runs. Telling the user of a data-loss flag that "the run is
-    // refused" would assert the opposite of what happened.
+    // THIS PARAGRAPH DELIBERATELY DOES NOT DESCRIBE WHAT THE RUN DOES NEXT.
+    // Three review rounds produced three different wrong descriptions of that
+    // — "one unknown id fails the entire run" (WorkGraph has no fail-fast),
+    // "only the stacks that could not resolve it stop" (a stack depending on a
+    // refuser is skipped too), and "the stack that owns the id, where the
+    // recreate DOES run" (that owner is itself skipped when it depends on a
+    // refusing stack). The orchestration is genuinely intricate — the flag list
+    // is run-global while each stack validates it against its OWN template, so
+    // every stack that does not declare the id refuses — and none of it is what
+    // a user at this prompt needs. What they need is which stack to name it in.
+    // Say only that; the `not.toMatch` in the unit case fences the class.
     lines.push(
-      `  Note: if a named id belongs to a DIFFERENT stack of this deploy, it ` +
-        `is reported here too — each stack validates the WHOLE flag list. In ` +
-        `that case only the stacks that could not resolve it stop: any stack ` +
-        `not depending on one of those still deploys, including the stack that ` +
-        `owns the id, where the recreate DOES run. The run then exits non-zero ` +
-        `once every stack has settled.`
+      `  Note: each stack of this deploy validates this WHOLE flag list ` +
+        `against its OWN template, so an id declared by a different stack of ` +
+        `the same run is reported here as unknown. Name it in a deploy of the ` +
+        `stack that declares it.`
     );
     // Issue [#2567] — the nesting shape, which IS gated on the template
     // actually declaring a nested stack so an ordinary typo keeps the plain

@@ -94,42 +94,37 @@ describe('deploy.ts binds the recreate target set to the stack it deploys (#2567
       'the deployEngineOptions literal does not carry `recreateTargets` as a member — ' +
         'the engine receives no target set and both --recreate-via-* flags are inert'
     ).toMatch(/^\s*recreateTargets,\s*$/m);
-    // The guard's SHAPE, not merely its presence. Three mutations reached this
-    // fence, each leaving both flags inert, and each needs its own assertion:
+    // The guard's WHOLE EXPRESSION, as one assertion.
     //
-    //   1. inverted polarity   `(...size === 0 && ...size === 0)`
-    //   2. a third conjunct    `...(migrationGate && recreateTargets && ...)`
-    //      — inert whenever that other variable is falsy, and a copy/paste away
-    //      from the `...(migrationGate && { onCurrentStateLoaded })` line
-    //      directly above it in the same literal
-    //   3. the member dropped  (covered by the assertion above)
-    //
-    // Mutations 1 and 2 were both measured GREEN against earlier revisions of
-    // this file.
+    // Five independent substring tests stood here and four inert mutations
+    // walked through them, each measured green: an inverted polarity
+    // (`size === 0 && size === 0`), a leading third conjunct
+    // (`migrationGate && recreateTargets && ...`), a trailing one
+    // (`... && options.dryRun && {`), and a negation wrapper
+    // (`!(... || ...) && {`). Every one leaves both --recreate-via-* flags
+    // inert. Independent substring tests cannot bound a conjunction: they
+    // constrain what must APPEAR, never what must not be added beside it.
+    // Four spellings in two rounds is the signal to change instrument, so this
+    // pins the guard text itself and refuses everything not modelled.
+    const guardStart = literal.indexOf('...(recreateTargets');
+    expect(guardStart, 'no `...(recreateTargets` spread in the option literal').toBeGreaterThan(-1);
+    const guardEnd = literal.indexOf('&& {', guardStart);
+    expect(guardEnd, 'the recreateTargets spread has no `&& {` payload').toBeGreaterThan(guardStart);
+    const guard = literal
+      .slice(guardStart + '...('.length, guardEnd)
+      .replace(/\s+/g, ' ')
+      .trim();
     expect(
-      literal,
-      'the `recreateTargets` spread does not OPEN with `recreateTargets &&` — a guard ' +
-        'that leads with another variable makes both --recreate-via-* flags inert ' +
-        'whenever that variable is falsy. If you deliberately hoisted the guard into a ' +
-        'named const, update this fence to point at it rather than deleting the check.'
-    ).toMatch(/^\s*\.\.\.\(recreateTargets &&\s*$/m);
-    expect(
-      literal,
-      'the `recreateTargets` spread guard does not test either set for being NON-empty — ' +
-        'an inverted guard threads the option only when there is nothing to thread'
-    ).toMatch(/recreateTargets\.via(CcApi|SdkProvider)\.size > 0/);
-    expect(
-      literal,
-      'the `recreateTargets` spread guard tests a set for being EMPTY — inverted polarity'
-    ).not.toMatch(/recreateTargets\.via(CcApi|SdkProvider)\.size === 0/);
-    // The JOIN, which is a fourth inert spelling: `&&` between the two size
-    // tests threads the option only when BOTH directions were named, so a
-    // single-direction run — the ordinary case — silently does nothing.
-    expect(
-      literal,
-      'the two size tests are joined by `&&`, so naming targets in only ONE direction ' +
-        'leaves both --recreate-via-* flags inert'
-    ).toMatch(/viaCcApi\.size > 0 \|\| recreateTargets\.viaSdkProvider\.size > 0/);
+      guard,
+      'the `recreateTargets` spread guard is not the expected expression. It must open with ' +
+        '`recreateTargets`, test at least one direction set for being NON-empty, join the two ' +
+        'tests with `||`, and carry NO other operand and no negation — anything else threads ' +
+        'the option in the wrong cases and silently disables both --recreate-via-* flags. If ' +
+        'you rewrote it deliberately (hoisting the guard into a named const, say), update ' +
+        'this expectation to the new text rather than deleting the check.'
+    ).toBe(
+      'recreateTargets && (recreateTargets.viaCcApi.size > 0 || recreateTargets.viaSdkProvider.size > 0)'
+    );
   });
 
   it('binds an expression, not a literal', () => {

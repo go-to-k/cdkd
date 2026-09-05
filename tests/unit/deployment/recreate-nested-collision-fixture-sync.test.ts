@@ -80,21 +80,6 @@ describe('the recreate-nested-logical-id-collision fixture greps strings cdkd st
     expect(VERIFY_SH).toContain("grep -qF 'refuses to operate on 1 nested-stack resource'");
   });
 
-  it('renders BOTH `Note:` paragraphs for a nested template, in order', () => {
-    // The readability claim the multi-stack note's own comment makes. Nothing
-    // else fences it: the two paragraphs are built by separate `lines.push`
-    // calls, so their coexistence and order are invisible in either source.
-    const multiStack = RECREATE_TARGETS.indexOf('Note: if a named id belongs to a DIFFERENT');
-    const nesting = RECREATE_TARGETS.indexOf('Note: resources inside a nested stack');
-    expect(multiStack, 'the multi-stack note is gone').toBeGreaterThan(-1);
-    expect(nesting, 'the nesting note is gone').toBeGreaterThan(-1);
-    expect(
-      multiStack,
-      'the nesting note is now pushed BEFORE the multi-stack one — the rendered block ' +
-        'reads as two `Note:` paragraphs, so their order is a deliberate choice'
-    ).toBeLessThan(nesting);
-  });
-
   it('the nested-row refusal still states `DELETE the whole child stack`', () => {
     // Phase 4b asserts the refusal explains the consequence, not merely that it
     // refused: the message is the only thing standing between a user and a

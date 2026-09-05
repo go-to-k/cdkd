@@ -86,35 +86,66 @@ function interfaceBody(): string {
  */
 const MEMBER_DECL = /^ {2}(?:readonly )?([A-Za-z_$][\w$]*)\??:/;
 
-/** Lines inside the body that are legitimately not member declarations. */
-const NON_MEMBER_LINE = /^ {2}(?:\/\*\*|\*|\*\/|\/\/|\}|\};|\)|$)/;
+/**
+ * Lines inside the body that are legitimately not member declarations.
+ *
+ * Comment lines are matched at ANY indent: a JSDoc block opens at two spaces
+ * (`  /**`) and continues at three (`   * ...`), and the members here are
+ * documented heavily, so a two-space-only rule rejects hundreds of comment
+ * continuation lines. The structural closers stay pinned to two spaces, since
+ * a deeper one belongs to a nested literal the walk is already tracking.
+ */
+const NON_MEMBER_LINE = /^(?:\s*(?:\/\*\*|\*\/|\*|\/\/)| {2}(?:\}[,;]?|\)))/;
 
 /** Top-level member names of the `DeployEngineOptions` interface. */
 function declaredMembers(): string[] {
   // Top-level members only: exactly two leading spaces. A nested object's
   // members are indented further, so `parentStackInfo`'s own fields do not leak
   // in and inflate the list.
-  return [...interfaceBody().matchAll(new RegExp(MEMBER_DECL.source + '', 'gm'))].map(
+  return [...interfaceBody().matchAll(new RegExp(MEMBER_DECL.source, 'gm'))].map(
     (m) => m[1]!
   );
 }
 
 /**
- * Every two-space-indented line the member regex did NOT match and that is not
- * a recognised non-member line.
+ * Every line of the interface body that is not a recognised member declaration
+ * and not a recognised non-member line.
  *
- * This is the FAIL-CLOSED half, and it is the point. Three spellings escaped a
- * patched-per-spelling regex in one review (`readonly`, `snake_case`, method
- * shorthand), which is the signal to stop patching and refuse what is not
- * modelled instead: an unrecognised declaration stops the fence rather than
- * passing through it invisibly.
+ * This is the FAIL-CLOSED half, and it is the point. Spellings escaped a
+ * patched-per-spelling regex twice in one review (`readonly`, `snake_case`,
+ * method shorthand, then a member at the WRONG INDENT), which is the signal to
+ * stop patching and refuse what is not modelled instead: an unrecognised
+ * declaration stops the fence rather than passing through it invisibly.
+ *
+ * DEPTH, not just indent. An earlier spelling scanned only `^ {2}\S` lines, so
+ * a top-level member written at four spaces was invisible to BOTH halves —
+ * measured green. It cannot simply require two spaces either, because
+ * `parentStackInfo`'s own fields legitimately sit deeper. So the walk tracks
+ * nesting: at depth 0 every non-blank, non-comment line MUST be a two-space
+ * member declaration; inside a nested object literal anything is allowed until
+ * it closes. `vp run format:check` would also catch a mis-indented member, but
+ * a fence that leans on the formatter is a fence that fails open the moment the
+ * formatter's scope changes.
  */
 function unparsedLines(): string[] {
-  return interfaceBody()
-    .split('\n')
-    .slice(1)
-    .filter((line) => /^ {2}\S/.test(line) || line === '  ')
-    .filter((line) => !MEMBER_DECL.test(line) && !NON_MEMBER_LINE.test(line));
+  const out: string[] = [];
+  let depth = 0;
+  for (const line of interfaceBody().split('\n').slice(1)) {
+    if (line.trim() === '') continue;
+    if (depth > 0) {
+      // Inside a nested object literal: its close returns us to depth 0.
+      if (/^ {2}\}[,;]?$/.test(line)) depth--;
+      continue;
+    }
+    if (NON_MEMBER_LINE.test(line)) continue;
+    if (MEMBER_DECL.test(line)) {
+      // A member that opens a nested object literal (`parentStackInfo?: {`).
+      if (line.trimEnd().endsWith('{')) depth++;
+      continue;
+    }
+    out.push(line);
+  }
+  return out;
 }
 
 describe('the parent→child option boundary audit stays complete (#2567)', () => {

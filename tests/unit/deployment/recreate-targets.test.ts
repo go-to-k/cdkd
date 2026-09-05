@@ -554,31 +554,64 @@ describe('nested-stack scope of the flags (#2567)', () => {
       forceStatefulRecreation: false,
     });
     const error = renderRecreateTargetsErrors(v);
-    expect(error).toContain('belongs to a DIFFERENT stack of this deploy');
+    expect(error).toContain('validates this WHOLE flag list against its OWN template');
     // And it must NOT drag the nesting note along — that one stays gated.
     expect(error).not.toMatch(/nested stack/);
   });
 
-  it('the multi-stack note does NOT claim the run is cancelled', () => {
-    // `WorkGraph.execute` fails the refusing node and keeps dispatching every
-    // node that does not DEPEND on it, so the stack owning the id still
-    // deploys and its confirmed DELETE + CREATE still runs. An earlier revision
-    // said "one unknown id fails the entire run", which asserts the opposite of
-    // what happens to a user of a data-loss flag. Pin the correction by the
-    // CLAIM, so restoring the false wording reds this.
+  it('the multi-stack note describes NO run orchestration at all', () => {
+    // The class, not one wording. Three rounds produced three different wrong
+    // descriptions of what the run does after this refusal — it is cancelled;
+    // only the refusers stop; the owner still deploys — each false in its own
+    // way, because the flag list is run-global while every stack validates it
+    // against its OWN template, and `WorkGraph` skips a node whose dependency
+    // failed. The message now says which stack to name the id in and stops.
+    // This case fences the CLASS so a fourth attempt cannot land.
     const v = validateRecreateTargets({
       template: { Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } } },
       state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
-      recreateViaCcApi: ['LivesInAnotherStack'],
+      recreateViaCcApi: ['LivesInStackB'],
       allowUnsupportedProperties: new Set(),
       forceStatefulRecreation: false,
     });
     const error = renderRecreateTargetsErrors(v) ?? '';
-    expect(error).toContain('where the recreate DOES run');
-    // Every sentence of the paragraph must stay inside the conditional: an
-    // assertive one tells a single-stack user that other stacks are deploying.
-    expect(error).toContain('In that case only the stacks that could not resolve it stop');
-    expect(error).not.toMatch(/fails the entire run|refuses the whole run|nothing is deployed/);
+    expect(error).toContain('Name it in a deploy of the stack that declares it');
+    expect(
+      error,
+      'the unknown-id refusal describes what the RUN does next. Every attempt at that has ' +
+        'been wrong (see the comment at the lines.push site); say which stack to name the ' +
+        'id in and stop.'
+    ).not.toMatch(
+      /fails the entire run|refuses the whole run|nothing is deployed|still deploys?\b|are skipped|DOES run|exits non-zero/
+    );
+  });
+
+  it('renders BOTH `Note:` paragraphs for a nested template, in order', () => {
+    // The RENDERED block, not source order: an earlier spelling compared
+    // `indexOf` positions in the emitter and stayed green with the nesting note
+    // gated off entirely. Two paragraphs both opening `Note:` is a readability
+    // choice that only exists in the output.
+    const v = validateRecreateTargets({
+      template: {
+        Resources: {
+          MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} },
+          ChildStack: { Type: NESTED_TYPE, Properties: {} },
+        },
+      },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['Typo'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    const error = renderRecreateTargetsErrors(v) ?? '';
+    const multiStack = error.indexOf('Note: each stack of this deploy validates');
+    const nesting = error.indexOf('Note: resources inside a nested stack');
+    expect(multiStack, 'the multi-stack note is not rendered').toBeGreaterThan(-1);
+    expect(nesting, 'the nesting note is not rendered').toBeGreaterThan(-1);
+    expect(
+      multiStack,
+      'the nesting note now renders BEFORE the multi-stack one'
+    ).toBeLessThan(nesting);
   });
 
   it('does NOT refuse when only the TEMPLATE says nested and state says otherwise', () => {
