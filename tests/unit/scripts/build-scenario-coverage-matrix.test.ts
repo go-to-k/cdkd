@@ -319,14 +319,23 @@ describe('renderMarkdown', () => {
  */
 describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
   /**
-   * Cell count of one table row, escaped pipes neutralised first. Same rule as
-   * `tests/unit/scripts/docs-table-shape.test.ts`, deliberately re-spelled
-   * here: that fence measures the CHECKED-IN file, this measures the
-   * generator's output before it is written, and coupling them would make a
-   * generator regression invisible until the matrix was regenerated.
+   * Cell count of one table row, backslash escapes neutralised first.
+   *
+   * TWIN of `cellCount` in `tests/unit/scripts/docs-table-shape.test.ts`, which
+   * carries the reasoning for the `\\[\s\S]` character class. The two are
+   * deliberately re-spelled rather than shared: that fence measures the
+   * CHECKED-IN page, this measures the generator's output before it is written,
+   * and coupling them would make a generator regression invisible until the
+   * matrix was regenerated.
+   *
+   * **Change them together.** This copy was left on the narrower `\\\|` form
+   * when the sibling was widened, and that is not cosmetic: under the narrow
+   * form a row carrying `\\|` scores 3 cells here and 4 there, so the
+   * cell-count half of the backslash case below passed while the defect it
+   * exists to catch was live.
    */
   const cellCount = (row: string): number =>
-    row.trim().replace(/^\||\|$/g, '').replace(/\\\|/g, ' ').split('|').length;
+    row.trim().replace(/^\||\|$/g, '').replace(/\\[\s\S]/g, ' ').split('|').length;
 
   /**
    * Every `|`-delimited line of the section introduced by `heading`.
@@ -366,6 +375,13 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
     // header's value would make every case below pass on the pre-fix generator.
     const ragged = '# H\n\n| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 | 4 |\n';
     expect(shapeOf(ragged, '# H')).toEqual({ header: 3, rows: [4] });
+    // An escaped pipe is content; an escaped BACKSLASH does not protect the
+    // pipe behind it. This second row is what pins the `\\[\s\S]` class in
+    // `cellCount` above — with the narrower `\\\|` form the pair's last two
+    // characters are eaten, the live delimiter with them, and the row scores
+    // clean. Mirrors `docs-table-shape.test.ts`'s own case for its twin.
+    const escapes = '# H\n\n| a | b |\n|---|---|\n| 1 | x \\| y |\n| 1 | x \\\\| y |\n';
+    expect(shapeOf(escapes, '# H')).toEqual({ header: 2, rows: [2, 3] });
   });
 
   it('refuses a section with no table instead of measuring the next one', () => {
@@ -487,10 +503,15 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
       unannotatedFixtures: [],
       invalidTagSites: [],
     });
-    expect(md).toContain(`| \`${tag}\` | ${description} |`);
-    // A pipe-free needle from the global's text: comparing against the global
-    // STRING would pass vacuously, since a leak would arrive pipe-ESCAPED and
-    // so never equal the raw value.
+    // Read the ORPHAN section's own row. A bare `toContain` on the row text is
+    // satisfied by the PER-SCENARIO row, which opens with the same two cells
+    // and carries the report's description whichever source the orphan loop
+    // read — so it would leave the negative assertion below doing all the work.
+    const [, , orphanRow] = tableUnder(md, '## Orphan scenarios');
+    expect(orphanRow).toBe(`| \`${tag}\` | ${description} |`);
+    // And a pipe-free needle from the global's text, since comparing against
+    // the global STRING would pass vacuously: a leak arrives pipe-ESCAPED and
+    // so never equals the raw value.
     expect(md).not.toContain('start-api');
   });
 
@@ -511,8 +532,13 @@ describe('renderMarkdown escapes pipes in table cells (#2545)', () => {
     expect(md).toContain('a literal escape: \\\\\\| and a bare pipe: \\|');
   });
 
-  it('collapses a NEWLINE, which no escaping can keep inside a row', () => {
-    const description = 'first line\nsecond line';
+  // All three CommonMark line endings, because a LONE `\r` is one on its own —
+  // a `/\r?\n/` collapse looks complete and lets exactly that case through.
+  it.each([
+    ['LF', 'first line\nsecond line'],
+    ['CRLF', 'first line\r\nsecond line'],
+    ['lone CR', 'first line\rsecond line'],
+  ])('collapses a %s, which no escaping can keep inside a row', (_kind, description) => {
     const md = renderMarkdown({
       knownScenarios: [{ tag: 'nl', description }],
       fixtures: [],

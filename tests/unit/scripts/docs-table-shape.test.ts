@@ -64,6 +64,11 @@ const walk = (dir: string): string[] =>
  * surviving `|` matters here, so anything pipe-free does the job, and a NUL
  * would make `grep` treat this file as binary and skip it
  * (`source-control-bytes.test.ts` fails on exactly that).
+ *
+ * TWIN: `cellCount` in `tests/unit/scripts/build-scenario-coverage-matrix.test.ts`
+ * measures the generator's output before it is written, with the same rule
+ * re-spelled. Change them together — widening only one left the other scoring
+ * a `\\|` row as clean.
  */
 const cellCount = (line: string): number =>
   line.trim().replace(/^\||\|$/g, '').replace(/\\[\s\S]/g, ' ').split('|').length;
@@ -129,21 +134,22 @@ describe('published docs tables', () => {
   const files = walk(DOCS);
   const scanned = files.map((f) => scan(readFileSync(f, 'utf8'), relative(DOCS, f)));
 
-  it('still SEES its input — floors on what the scan itself examined', () => {
-    // Floored on `scan`'s OWN row count, not a second copy of the row regex: a
-    // duplicate counter stays truthful while the real one goes blind, which is
-    // the shape this floor exists to refuse.
-    //
-    // The floors are calibrated against ONE named collapse — a `walk` that
-    // stopped recursing, losing docs/design, docs/plans and docs/_generated —
-    // and each must be above what that collapse still yields, not merely below
-    // the corpus.
-    //
-    // Measured 2026-09-05: 78 files / 2901 rows total; top level alone is
-    // 60 files / 2066 rows. The ROW floor was 2000 and had stopped fencing that
-    // collapse as the corpus grew (2066 clears it); it is 2400 now. The file
-    // floor was catching it by exactly one file, which is not a margin — both
-    // sit above the collapse and below today's total.
+  it('still SEES its input — fences recursion, then floors what the scan examined', () => {
+    // The named collapse is a `walk` that stopped recursing, losing
+    // docs/design, docs/plans and docs/_generated. It is fenced STRUCTURALLY,
+    // by requiring a nested path in the result — a count cannot fence it
+    // durably, because the top level keeps growing toward whatever number is
+    // written here and quietly stops discriminating. Measured 2026-09-05: the
+    // corpus is 78 files / 2901 rows while the top level ALONE is 60 / 2066, so
+    // the previous 2000-row floor had already stopped catching the collapse and
+    // the file floor was catching it by one file.
+    expect(files.some((f) => relative(DOCS, f).includes('/'))).toBe(true);
+
+    // The counts stay as a COARSE backstop against total collapse — a `walk`
+    // that returned nothing, or a row regex that stopped matching — floored on
+    // `scan`'s OWN row count rather than a second copy of the row regex, since
+    // a duplicate counter stays truthful while the real one goes blind. They
+    // are attributed magnitudes, not the recursion fence above.
     expect(files.length).toBeGreaterThan(64);
     expect(scanned.reduce((n, r) => n + r.rowsExamined, 0)).toBeGreaterThan(2400);
   });

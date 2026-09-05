@@ -500,14 +500,21 @@ export function buildReport(integDir: string = INTEG_DIR): ScenarioCoverageRepor
  * consumes any escape pair for the same reason. No taxonomy entry carries a
  * backslash today, so this is the latent half of the same defect.
  *
- * A NEWLINE ends the row outright, which no amount of escaping fixes, so it
+ * A LINE ENDING ends the row outright, which no amount of escaping fixes, so it
  * collapses to a space. Descriptions are already newline-free (the
  * `KNOWN_SCENARIOS taxonomy` suite refuses one), which is exactly why the
  * collapse belongs HERE — this helper also renders tags and fixture names,
- * whose shape nothing else fences.
+ * whose shape nothing else fences. A LONE `\r` counts: CommonMark treats it as
+ * a line ending on its own, so `/\r?\n/` would let it through.
+ *
+ * One accepted cost, stated because the cell is usually wrapped in backticks:
+ * GFM un-escapes `\|` in a table cell but a code span renders `\\` as two
+ * visible backslashes, so a backslash-bearing value shows its escape. Row shape
+ * wins over that — a ragged row misfiles every OTHER cell in it — and no value
+ * this generator renders carries a backslash today.
  */
 const escapeCell = (value: string): string =>
-  value.replace(/\r?\n/g, ' ').replace(/([\\|])/g, '\\$1');
+  value.replace(/[\r\n]+/g, ' ').replace(/([\\|])/g, '\\$1');
 
 export function renderMarkdown(report: ScenarioCoverageReport): string {
   const descriptionByTag = new Map(report.knownScenarios.map((k) => [k.tag, k.description]));
