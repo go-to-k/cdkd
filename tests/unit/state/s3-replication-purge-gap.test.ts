@@ -808,10 +808,10 @@ describe('S3 replication purge gap (issue #2447)', () => {
     });
 
     it('appends no tail when the destination count is exactly the naming cap', async () => {
-      // The boundary the `(and N more)` suffix hangs off. Only the >cap case
-      // was covered, so `elided > 0` could have been `elided >= 0` and every
-      // other assertion -- all `toContain` -- would have missed the stray
-      // `(and 0 more)`.
+      // The boundary the `(and N more; ...)` suffix hangs off. Only the >cap
+      // case was covered, so `elided > 0` could have been `elided >= 0` and
+      // every other assertion -- all `toContain` -- would have missed the
+      // stray `(and 0 more`.
       const dest = (name: string): Record<string, unknown> =>
         enabledRule({ Destination: { Bucket: `arn:aws:s3:::${name}` } });
       const s3 = stub({
@@ -825,8 +825,8 @@ describe('S3 replication purge gap (issue #2447)', () => {
       // `(and 0 more`, not `more)`: this module's tail reads `... more; aws
       // s3api ...`, so a `more)` needle can never match it and the case was
       // VACUOUS -- measured green under the very mutation it names. The purge
-      // module's twin tail does end `more)`, which is where the wrong spelling
-      // came from.
+      // module's twin tail is the one that closes its parenthesis, which is
+      // where the wrong spelling came from.
       expect(message).not.toContain('(and 0 more');
     });
 
