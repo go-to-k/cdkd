@@ -190,7 +190,7 @@ local-run-task-from-state	2026-08-26T18:06:59Z	PASS	400	verify.sh	gating PR 2296
 local-run-task-multi-container	2026-08-24T16:35:48Z	PASS	11	verify.sh	issue 2183 follow-up; teardown widened to docker ps -a, leftover assertion added (checks cdkd own sync teardown), and the OUT_FILE EXIT trap no longer CLOBBERS the container-cleanup trap; sweep empty incl. stopped
 local-start-agentcore	2026-07-26T20:40:20Z	PASS	13	verify.sh	0727b sweep-L6 staleness re-run (rc=0); docker + account clean
 local-start-alb	2026-07-26T20:18:09Z	PASS	22	verify.sh	0727b sweep-L2 staleness re-run (rc=0); docker + account clean
-local-start-alb-from-state	2026-07-26T20:18:09Z	PASS	98	verify.sh	re-run after removing stale cdkl-svc network (pool overlap); docker + account clean
+local-start-alb-from-state	2026-09-05T17:30:08Z	PASS	213	verify.sh	rc 0, VPC+ALB+2 ECS deployed, destroy 29 deleted 0 errors; ECS arm only, no Lambda target group in any fixture (go-to-k/cdkd#2647)
 local-start-api	2026-09-05T05:27:12Z	PASS	20	verify.sh	rc 0, docker sweep clean
 local-start-api-container	2026-08-13T10:39:38Z	PASS	-	verify.sh	issue 1814 region-case boundary wrapper; rc 0, docker sweep clean
 local-start-api-rest-v1-non-proxy	2026-08-26T07:21:27Z	PASS	14	verify.sh	issue #2203 second local arm, deliberately not narrowed to one run: the only local fixture whose RequestTemplates drive evaluateVtl. docker sweep clean

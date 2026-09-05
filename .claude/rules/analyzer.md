@@ -16,9 +16,13 @@ paths:
 
 ### Supporting a New Intrinsic Function
 
-1. Extend `resolve()` method in `src/analyzer/intrinsic-resolver.ts`
+1. Extend `resolveValue()` in `src/deployment/intrinsic-function-resolver.ts`
+   — the same module named at the top of this section. There is no resolver
+   under `src/analyzer/`; this step used to say there was.
 2. Implement recursive resolution
-3. Write tests (`tests/unit/analyzer/intrinsic-resolver.test.ts`)
+3. Write tests under `tests/unit/deployment/`, which splits the suite per
+   intrinsic (`intrinsic-functions.test.ts` plus one file per behaviour)
+   rather than keeping a single resolver test file
 
 ## Resource-level `Condition:` exclusion (issue #840)
 

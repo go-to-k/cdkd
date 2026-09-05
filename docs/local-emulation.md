@@ -78,7 +78,11 @@ Every `cdkd local` subcommand accepts these.
 
 `--from-state` and its two bucket flags are accepted everywhere but do nothing on
 `local start-cloudfront`, which reads deployed values only through
-`--from-cfn-stack`. Two more flags are not accepted there at all:
+`--from-cfn-stack`. On `local start-alb` they are partial: they resolve the
+backing ECS services but not a Lambda target group's environment, which the
+command warns about at boot — see
+[its page](local-start-alb.md#lambda-target-groups-and-the-state-source). Two
+more flags are not accepted on `local start-cloudfront` at all:
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -122,7 +126,7 @@ URL — has no value to resolve to, because nothing has been deployed.
 
 | Flag | Reads | Use when |
 | --- | --- | --- |
-| `--from-state` | cdkd's S3 state for the stack | The stack was deployed with `cdkd deploy`. `local start-cloudfront` REFUSES it — see [its page](local-start-cloudfront.md#state-sources). |
+| `--from-state` | cdkd's S3 state for the stack | The stack was deployed with `cdkd deploy`. `local start-cloudfront` REFUSES it — see [its page](local-start-cloudfront.md#state-sources) — and `local start-alb` does not apply it to a Lambda target group. |
 | `--from-cfn-stack [name]` | A deployed CloudFormation stack's resources | The stack was deployed with the AWS CDK CLI, or the command is `local start-cloudfront`. |
 
 `--from-cfn-stack` resolves `Ref` and `Fn::ImportValue` from the deployed
