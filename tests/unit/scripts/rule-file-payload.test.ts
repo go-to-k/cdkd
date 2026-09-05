@@ -533,12 +533,22 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
   }
   // The strip is for a RAW `<a>` written inside an HTML comment, which marked
   // passes through verbatim. A markdown link inside a comment never becomes an
-  // anchor, and an inline `<!--` is escaped to `&lt;!--`, so the only text this
-  // can match is a genuine raw HTML comment block. Residual, stated rather than
-  // claimed away: two raw HTML blocks could in principle supply the open and
-  // the close separately, and the span between them would be dropped -- which
-  // would silence the dangling-pointer half rather than credit anything.
-  const html = marked.parse(body.join('\n'), { async: false }).replace(/<!--[\s\S]*?-->/g, '');
+  // anchor, so that is the only thing being removed here.
+  //
+  // The residual, restated after review found the first version of this
+  // comment wrong in two of its three claims: an inline `<!--` is escaped only
+  // when UNPAIRED, and CommonMark's abbreviated `<!-->` emits a raw opener
+  // with no closer, so a later ordinary inline comment can supply the `-->`
+  // and the span between them is dropped. No raw HTML block is needed, which
+  // is what the previous comment asserted. `(?!<!--)` bounds the span to the
+  // nearest opener, so an abbreviated comment can no longer reach past a
+  // subsequent one. The remaining failure direction is a dropped span, which
+  // silences the dangling-pointer half rather than crediting anything -- worth
+  // stating precisely, since a limitation asserted without a probe is the
+  // defect this file keeps rediscovering.
+  const html = marked
+    .parse(body.join('\n'), { async: false })
+    .replace(/<!--(?:(?!<!--)[\s\S])*?-->/g, '');
   // `rowsOnly` is the table-index contract, asked literally: is the anchor
   // inside a TABLE? The old source-side form tested whether a line began with a
   // pipe, which a blockquoted pipe-line satisfied while rendering as a
@@ -549,10 +559,26 @@ function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[
     : html;
   const targets: string[] = [];
   for (const m of scope.matchAll(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)) {
-    // An anchor with no visible TEXT is not a pointer a reader can follow:
-    // `[](layout-utils.md)` renders as a zero-width link with nothing to click.
+    // An anchor with nothing VISIBLE in it is not a pointer a reader can
+    // follow: `[](layout-utils.md)` renders zero-width with nothing to click.
     // So "every <a href>" is nearly, but not exactly, the visibility question.
-    if (m[2]!.replace(/<[^>]*>/g, '').trim() === '') continue;
+    //
+    // An IMAGE counts as content -- a badge link is clickable. The first cut
+    // stripped every tag before testing, which dropped an image-only anchor
+    // and so stopped the dangling-pointer half from reporting a badge that
+    // pointed at a file that does not exist: a narrowing that fails quiet,
+    // which is the one direction this fence must never fail in.
+    //
+    // Emptiness is judged after decoding the spaces that do not look like
+    // spaces. `String.trim()` removes White_Space only, so a zero-width space
+    // or an `&nbsp;` left a cell blank on the page while still crediting the
+    // pointer.
+    const visible = m[2]!
+      .replace(/<img\b[^>]*>/gi, 'x')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;|&#(?:160|8203|x2028|xa0);/gi, ' ')
+      .replace(/[\u200b-\u200d\ufeff\u00a0]/g, '');
+    if (visible.trim() === '') continue;
     targets.push(
       m[1]!
         // `&amp;` LAST: decoding it first would turn `&amp;lt;` into `&lt;` and
@@ -1347,6 +1373,54 @@ describe('.claude/rules payload fence', () => {
     // bounds and so already fails when they cross. Kept only because it names
     // the cause directly instead of reporting a total that satisfies neither.
     expect(CORPUS_BYTES_MIN).toBeLessThan(CORPUS_BYTES_MAX);
+  });
+
+  it('visibleLinkTargets judges what a READER sees, not what the source contains', () => {
+    // Guard-the-guard, and the reason is measured: an A/B of this function
+    // before and after the frontmatter / empty-text / table-bounding guards
+    // landed showed ZERO difference across all 46 rule files plus CLAUDE.md in
+    // both `rowsOnly` modes. Every one of them is latent on today's corpus, so
+    // deleting or inverting any would leave the whole suite green -- exactly
+    // the "a checker must prove it FAILS" gap this file enforces elsewhere.
+    // The cases below are the only thing standing under them.
+    const t = (src: string, rowsOnly = false): string[] =>
+      visibleLinkTargets(src.split('\n'), rowsOnly);
+
+    // FRONTMATTER is metadata; GitHub strips it and no reader sees a link in
+    // `description:`. Without the skip, a pointer moved out of the body and
+    // into the frontmatter keeps a satellite "reachable" over a blank page.
+    expect(t('---\ndescription: see [x](ghost.md)\n---\n\nbody')).toEqual([]);
+    expect(t('---\ndescription: d\n---\n\nsee [x](real.md)')).toEqual(['real.md']);
+    // A body `---` is a thematic break, not a second frontmatter fence.
+    expect(t('---\nd: 1\n---\n\nsee [x](real.md)\n\n---\n\nmore')).toEqual(['real.md']);
+    // No frontmatter at all -- CLAUDE.md's shape.
+    expect(t('# Title\n\nsee [x](real.md)')).toEqual(['real.md']);
+
+    // A link inside a CODE BLOCK is not a pointer. This is the property the
+    // whole renderer switch exists for: four hand-rolled attempts each let one
+    // shape of this through.
+    expect(t('```\n[x](ghost.md)\n```')).toEqual([]);
+    expect(t('````markdown\n```bash\n```\n[x](ghost.md)\n````')).toEqual([]);
+    expect(t('    [x](ghost.md)')).toEqual([]);
+    expect(t('\t[x](ghost.md)')).toEqual([]);
+    expect(t('> ```\n> [x](ghost.md)\n> ```')).toEqual([]);
+    // ...but a quoted PLAIN link is visible, so it counts.
+    expect(t('> see [x](real.md)')).toEqual(['real.md']);
+
+    // EMPTY link text renders zero-width: nothing to click.
+    expect(t('[](ghost.md)')).toEqual([]);
+    expect(t('[​](ghost.md)')).toEqual([]);
+    expect(t('[&nbsp;](ghost.md)')).toEqual([]);
+    // An IMAGE is content. Dropping it silenced the dangling-pointer half for
+    // badge links, which fails quiet.
+    expect(t('[![alt](badge.svg)](real.md)')).toEqual(['real.md']);
+
+    // `rowsOnly` asks whether the anchor is in a TABLE. A stray unclosed
+    // `<table>` must not pair with a later table's close and lend the prose
+    // between them the strength a table index withholds from prose.
+    const strayTable = '<table>\n\nsee [x](stray.md)\n\n| h |\n| - |\n| [y](real.md) |';
+    expect(t(strayTable, true)).toEqual(['real.md']);
+    expect(t(strayTable, false)).toEqual(['stray.md', 'real.md']);
   });
 
   it('every satellite is reachable, and every markdown link in the corpus resolves', () => {
