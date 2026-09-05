@@ -15,10 +15,18 @@ tier, integ run, merge, release — for the same edit N times; swept together
 that cost is paid once, the reviewer sees the whole class, and sites 2..N
 cannot sit open while site 1's fix drifts away. Two boundaries:
 
-- **A sweep that would make the PR unreviewable is a genuine `next`** — file an
-  explicit umbrella naming every site (§3 sorts umbrellas last), and say which
-  sites this lane DID close, so the residue is unambiguous. **"Unreviewable" is
-  never reached by drifting into it**, because each widening is small and real:
+- **A sweep whose residue carries its own verification is a genuine `next`** —
+  file an umbrella naming every site (§3 sorts umbrellas last), and say which
+  sites this lane DID close, so the residue is unambiguous.
+
+  **Say WHY in the criteria's terms, not the PR's.** This read "would make the
+  PR unreviewable" until 2026-09-05 — a spelling
+  `issue-deferral-criteria-gate.sh` refuses, so the file blessed what the gate
+  blocks. Review size is the SIGNAL; under it is verification the residue needs
+  and this lane is not paying. Else the residue is `now`.
+
+  **The unreviewable state is never reached by drifting into it**, because each
+  widening is small and real:
   go-to-k/cdkd#2514 asked for a guard hoist at one site and shipped a 2036 LOC
   PR, successive rounds each finding another data-destroying type the same
   guard failed open on — all verified, none requested, and the maintainer asked
@@ -151,28 +159,24 @@ name cannot promise; minting only needs a name no concurrent lane will reuse,
 which the substituted slug gives.
 
 **The `&&` on the `cat` line is the same load-bearing chaining the FOLD recipe
-uses**, for the same reason one scale down: an unchained `cat` that fails
-(unwritable path, full disk) leaves whatever was already at that literal slug
-path, and the gate then reads THAT file, passes it, and `gh issue create` files
-a body this finding never wrote — the stale-readable-file failure the comment
-above already measured in the other direction. Verified 2026-09-01 by driving
-all four gates with the chained payload: `issue-dup-check-gate`,
-`issue-classification-label-gate`, `gh-body-english-gate` and
-`gated-command-preamble-gate` each return rc=0, and deleting the `Dup-check:`
-line from the same chained payload returns rc=2, so that rc=0 is the gates
-passing a good command rather than failing to parse the `&&`.
+uses**, one scale down: an unchained `cat` that fails (unwritable path, full
+disk) leaves whatever sat at that literal slug path, and the gate reads THAT
+file, passes it, and files a body this finding never wrote — the
+stale-readable-file failure measured above in the other direction. Verified
+2026-09-01 against all four gates with the chained payload (`issue-dup-check`,
+`issue-classification-label`, `gh-body-english`, `gated-command-preamble`):
+each rc=0, and deleting the `Dup-check:` line returns rc=2 — so the rc=0 is
+them passing a good command, not failing to parse the `&&`.
 
-**The `cat` is not filler for the reader to skip.** The two-line form — create
-an empty file, then point `--body-file` at it with nothing in between — files
-an issue with NO body: no `Dup-check:` line, no classification, nothing for §3
-to rank. It is refused too, but for the reason you would expect ("carries no
-`Dup-check:` line"), and only because the path is readable and empty. Write the
-body; do not treat the gate as the thing that will notice. `heredoc -> file ->
---body-file` in ONE call is this repo's mandated publishing shape for
-`gh issue create` (`gated-command-preamble-gate` refuses that shape for
-`git commit` / `gh pr create` / `gh pr merge` and deliberately does not cover
-this verb), and the delimiter is QUOTED so backticks and `$` in the body stay
-literal instead of being run by the shell.
+**The `cat` is not filler.** The two-line form — create an empty file, then
+point `--body-file` at it — files an issue with NO body: no `Dup-check:`, no
+classification, nothing for §3 to rank. It is refused, but for the expected
+reason and only because the path is readable and empty; write the body rather
+than leaving the gate to notice. `heredoc -> file -> --body-file` in ONE call
+is the mandated shape for `gh issue create` (`gated-command-preamble-gate`
+refuses it for `git commit` / `gh pr create` / `gh pr merge` and deliberately
+skips this verb), and the delimiter is QUOTED so backticks and `$` stay
+literal.
 
 Prose is invisible to `gh issue list`; the label makes §3's ranking rule 3 a
 listing-time filter, which is what let it move ABOVE the title-prefix
