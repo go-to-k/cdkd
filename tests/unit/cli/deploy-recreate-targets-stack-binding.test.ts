@@ -81,16 +81,32 @@ describe('deploy.ts binds the recreate target set to the stack it deploys (#2567
     // `recreateTargets` mention anywhere else cannot satisfy this.
     const literalStart = source.indexOf('const deployEngineOptions: DeployEngineOptions = {');
     expect(literalStart, 'the deployEngineOptions literal was not found').toBeGreaterThan(-1);
-    const literal = source.slice(literalStart, source.indexOf('\n        };', literalStart));
+    const literalEnd = source.indexOf('\n        };', literalStart);
+    // Guard the END too. `indexOf` returns -1 when the close sentinel moves,
+    // and `slice(start, -1)` would silently widen to the rest of the file —
+    // defeating the scoping this case exists for, while still passing.
+    expect(literalEnd, 'the deployEngineOptions literal close was not found').toBeGreaterThan(
+      literalStart
+    );
+    const literal = source.slice(literalStart, literalEnd);
     expect(
       literal,
       'the deployEngineOptions literal does not carry `recreateTargets` as a member — ' +
         'the engine receives no target set and both --recreate-via-* flags are inert'
     ).toMatch(/^\s*recreateTargets,\s*$/m);
+    // The guard's POLARITY, not merely its presence. `toContain('recreateTargets &&')`
+    // was satisfied by an inverted guard (`size === 0 && size === 0`), which
+    // makes both flags fully inert — measured green before this assertion
+    // existed. Require a non-empty test on at least one of the two sets.
     expect(
       literal,
-      'the `recreateTargets` member is not guarded by the variable it threads'
-    ).toContain('recreateTargets &&');
+      'the `recreateTargets` spread guard does not test either set for being NON-empty — ' +
+        'an inverted guard threads the option only when there is nothing to thread'
+    ).toMatch(/recreateTargets\.via(CcApi|SdkProvider)\.size > 0/);
+    expect(
+      literal,
+      'the `recreateTargets` spread guard tests a set for being EMPTY — inverted polarity'
+    ).not.toMatch(/recreateTargets\.via(CcApi|SdkProvider)\.size === 0/);
   });
 
   it('binds an expression, not a literal', () => {

@@ -43,7 +43,11 @@
 #      is refused at pre-flight, and the refusal explains the nesting rather
 #      than reading as a typo. 4b: naming the nested stack ROW (`Child`) is
 #      refused too, and `--force-stateful-recreation` does not clear it. Both
-#      are `--dry-run`, so neither mutates anything.
+#      run under `--dry-run`, and for THIS fixture that mutates nothing: its
+#      only file asset is the nested template, which the asset phase excludes.
+#      `--dry-run` is not non-mutating in general — assets still publish unless
+#      the run also skips them — so do not carry that reading to another
+#      fixture.
 #   5. Empty the bucket, destroy, assert every resource and both state files
 #      are gone.
 #
@@ -108,6 +112,7 @@ UPDATE_MODE="updated"
 # real in phase 4.
 NESTED_LOG=""
 NESTED_ROW_LOG=""
+TAG_ERR=""
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -153,7 +158,7 @@ cleanup() {
       --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null 2>&1 || true
     aws iam delete-role --role-name "${role}" >/dev/null 2>&1 || true
   done
-  rm -f "${NESTED_LOG:-}" "${NESTED_ROW_LOG:-}"
+  rm -f "${NESTED_LOG:-}" "${NESTED_ROW_LOG:-}" "${TAG_ERR:-}"
   set -eu
 }
 
@@ -275,8 +280,15 @@ echo "    OK: parent Lambda was destroyed and recreated (LastModified ${LAST_MOD
 # failure this fixture exists to catch (the child bucket destroyed by the
 # inherited flag) it would report a confident wrong cause. Settle existence
 # first, fail-closed: a missing bucket IS the bug, and says so.
-if ! aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "FAIL: the child bucket ${BUCKET_NAME} is GONE after the flagged deploy — the parent's recreate target was honoured in the CHILD stack (issue #2567)" >&2
+if ! HEAD_ERR="$(aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" 2>&1 >/dev/null)"; then
+  # Discriminate before naming a cause. A 403, a redirect or a throttle is not
+  # evidence of deletion, and reporting #2567 for one would be the same
+  # confident-wrong-cause class this check exists to prevent.
+  if printf '%s' "${HEAD_ERR}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    echo "FAIL: the child bucket ${BUCKET_NAME} is GONE after the flagged deploy — the parent's recreate target was honoured in the CHILD stack (issue #2567)" >&2
+  else
+    echo "FAIL: could not establish whether the child bucket ${BUCKET_NAME} still exists: ${HEAD_ERR}" >&2
+  fi
   exit 1
 fi
 

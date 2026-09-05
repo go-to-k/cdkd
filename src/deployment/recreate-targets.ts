@@ -218,12 +218,12 @@ const EMPTY_ALLOW_SET: ReadonlySet<string> = new Set();
  * both the refusal (`blockedNestedStackTargets`) and the evidence the
  * unknown-id note renders (`nestedStackLogicalIds`), and those two must
  * describe the same set of resources or the note names ids the validator would
- * not refuse — so within this module it is spelled once. It is spelled again
- * per module elsewhere (`intrinsic-function-resolver.ts`,
- * `secret-redaction.ts`, `destroy-runner.ts`); the one EXPORTED copy lives in
- * `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
- * from the deployment layer would invert the dependency direction, which is
- * why every sibling here declares its own.
+ * not refuse — so within this module it is spelled once. Other modules spell it
+ * for themselves rather than sharing one export: the only EXPORTED copy lives
+ * in `src/cli/commands/retire-cfn-stack.ts`, and importing a CLI command module
+ * from the deployment layer would invert the dependency direction. (No count of
+ * the other spellings is given here on purpose — an unfenced number in a
+ * comment is a number that goes stale.)
  */
 const NESTED_STACK_RESOURCE_TYPE = 'AWS::CloudFormation::Stack';
 
@@ -447,12 +447,31 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
         `cdkd synth | jq '.Resources | keys'). Recreate operates on the ` +
         `synth template's logical ids, not CDK display paths.`
     );
-    // Issue [#2567] — one unknown-id shape is not a typo and cannot be fixed
-    // by re-reading the template: a resource that lives inside a NESTED stack.
-    // The flags name logical ids of the stack being deployed, and the engine
+    // Issue [#2567] — the multi-stack shape, rendered for EVERY unknown id
+    // rather than only for a template with nested stacks: a plain multi-stack
+    // app is exactly the audience, and gating this on nesting made it
+    // unreachable for them.
+    //
+    // The consequence sentence is deliberately precise, because the obvious
+    // wording is FALSE. `runStack` throws `RECREATE_TARGETS_INVALID` inside its
+    // own work-graph node, and `WorkGraph.execute` fails that node while
+    // continuing to dispatch every node that does not DEPEND on it — so the
+    // stack owning the id keeps deploying, and its confirmed DELETE + CREATE
+    // still runs. Telling the user of a data-loss flag that "the run is
+    // refused" would assert the opposite of what happened.
+    lines.push(
+      `  Note: each stack of this deploy validates the WHOLE flag list, so an ` +
+        `id belonging to a different stack is reported here. Only this stack ` +
+        `refuses; stacks that do not depend on it still deploy, including the ` +
+        `one that owns the id, where the recreate DOES run. The run exits ` +
+        `non-zero once every stack has settled.`
+    );
+    // Issue [#2567] — the nesting shape, which IS gated on the template
+    // actually declaring a nested stack so an ordinary typo keeps the plain
+    // message. Not a typo and not fixable by re-reading the template: the
+    // flags name logical ids of the stack being deployed, and the engine
     // matches them only against that stack, so a child's resource is not
-    // addressable from here. Only shown when the template actually declares a
-    // nested stack, so an ordinary typo keeps the plain message.
+    // addressable from here.
     if (validation.nestedStackLogicalIds.length > 0) {
       lines.push(
         `  Note: resources inside a nested stack are NOT addressable — the ` +
@@ -461,9 +480,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
           `${validation.nestedStackLogicalIds.join(', ')}) carry their own. ` +
           `A logical id that a nested child happens to share with a top-level ` +
           `resource recreates the TOP-LEVEL one only, and the nested stack ` +
-          `row itself is refused as a target. An id belonging to a DIFFERENT ` +
-          `stack of this deploy lands here too: every named stack validates ` +
-          `the whole flag list, and one unknown id fails the entire run.`
+          `row itself is refused as a target.`
       );
     }
   }

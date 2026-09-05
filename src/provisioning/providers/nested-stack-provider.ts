@@ -583,9 +583,10 @@ export class NestedStackProvider implements ResourceProvider {
         // name because a nested child's resource events belong to the parent's
         // run by design.
         //
-        // Two more identifier channels cross this boundary deliberately
-        // unscoped, and this comment is not a claim that they are scoped. The
-        // consent booleans -- `forceStatefulRecreation` (documented in
+        // Two more things cross this boundary deliberately unscoped, and this
+        // comment is not a claim that they are scoped — neither names a
+        // resource, which is why neither is in the audit above. The consent
+        // booleans -- `forceStatefulRecreation` (documented in
         // `docs/cli-deploy-safety.md` as clearing the guard for every target in
         // the RUN), `replace` (documented there as a STACK-WIDE opt-in that
         // fires wherever an update hard-rejects), and `skipFinalSnapshot`

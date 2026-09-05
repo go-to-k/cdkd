@@ -541,20 +541,62 @@ describe('nested-stack scope of the flags (#2567)', () => {
     expect(renderRecreateTargetsErrors(v)).toMatch(/refuses to operate on 1 nested-stack resource/);
   });
 
-  it('the unknown-id note states the multi-stack consequence, not only the nesting one', () => {
-    // A named id can be unknown because it belongs to a SIBLING stack of the
-    // same deploy, not because it is nested — every stack validates the whole
-    // flag list. Without this sentence the note explains the wrong cause.
+  it('the multi-stack note renders for a FLAT template — the audience it addresses', () => {
+    // The reachability, not the wording. This note was gated on
+    // `nestedStackLogicalIds.length > 0` in an earlier revision, which made the
+    // "belongs to a different stack" explanation invisible to exactly the users
+    // who hit it: a plain multi-stack app with no nested stacks anywhere.
     const v = validateRecreateTargets({
-      template: parentTemplate(),
+      template: { Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } } },
       state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
       recreateViaCcApi: ['LivesInAnotherStack'],
       allowUnsupportedProperties: new Set(),
       forceStatefulRecreation: false,
     });
     const error = renderRecreateTargetsErrors(v);
-    expect(error).toContain('belonging to a DIFFERENT stack of this deploy');
-    expect(error).toMatch(/one unknown id fails the entire run/);
+    expect(error).toContain('each stack of this deploy validates the WHOLE flag list');
+    // And it must NOT drag the nesting note along — that one stays gated.
+    expect(error).not.toMatch(/nested stack/);
+  });
+
+  it('the multi-stack note does NOT claim the run is cancelled', () => {
+    // `WorkGraph.execute` fails the refusing node and keeps dispatching every
+    // node that does not DEPEND on it, so the stack owning the id still
+    // deploys and its confirmed DELETE + CREATE still runs. An earlier revision
+    // said "one unknown id fails the entire run", which asserts the opposite of
+    // what happens to a user of a data-loss flag. Pin the correction by the
+    // CLAIM, so restoring the false wording reds this.
+    const v = validateRecreateTargets({
+      template: { Resources: { MyLambda: { Type: 'AWS::Lambda::Function', Properties: {} } } },
+      state: st('S', { MyLambda: res('AWS::Lambda::Function') }),
+      recreateViaCcApi: ['LivesInAnotherStack'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    const error = renderRecreateTargetsErrors(v) ?? '';
+    expect(error).toContain('where the recreate DOES run');
+    expect(error).not.toMatch(/fails the entire run|refuses the whole run|nothing is deployed/);
+  });
+
+  it('does NOT refuse when only the TEMPLATE says nested and state says otherwise', () => {
+    // The mirror of the case above, and the one a widened predicate
+    // (`state === NESTED || template === NESTED`) would fail. Measured: that
+    // widening keeps every other case in this file green. It is wrong because
+    // the refusal's whole justification is that `NestedStackProvider` owns the
+    // row and its delete tears down the child — which is decided by the STATE
+    // record, not by a template edited since. Refusing here would block a
+    // legitimate recreate with a message asserting a cascade that cannot
+    // happen.
+    const v = validateRecreateTargets({
+      template: { Resources: { WasOrdinary: { Type: NESTED_TYPE, Properties: {} } } },
+      state: st('S', { WasOrdinary: res('AWS::SNS::Topic', { physicalId: 'arn:topic' }) }),
+      recreateViaCcApi: ['WasOrdinary'],
+      allowUnsupportedProperties: new Set(),
+      forceStatefulRecreation: false,
+    });
+    expect(v.blockedNestedStackTargets).toEqual([]);
+    expect(v.targets.map((t) => t.logicalId)).toEqual(['WasOrdinary']);
+    expect(renderRecreateTargetsErrors(v)).toBeNull();
   });
 
   it('the nested-stack refusal has NO --force-stateful-recreation bypass', () => {
