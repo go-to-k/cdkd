@@ -93,6 +93,7 @@ import {
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import { maskDeep, type MaskerFn } from '../masked-retry-logger.js';
+import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -1509,14 +1510,56 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const debug = (message: string): void => this.logger.debug(maskSecrets(message));
     debug(`Updating DynamoDB GlobalTable ${logicalId}: ${maskSecrets(physicalId)}`);
 
+    // Resolve the client region ONCE for the whole update — the immutable
+    // guards' deletion-protection read below, the Tags diff step, the
+    // BillingMode flip's capacity derivation, and the Replicas diff loop all
+    // need it. Hoisted above the guards by issue [#2610]: it is a local client
+    // config read, not an AWS call, so it does not weaken the guards' promise
+    // to refuse before touching AWS.
+    const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
+
     // ─── Immutable property guards (defense-in-depth) ───────────────────
+    // Issue [#2610] sites 5-7. The three refusals below advise a replacement,
+    // and the bare `--replace` they used to name was wrong twice over.
+    //
+    // 1. `AWS::DynamoDB::GlobalTable` is in `STATEFUL_TYPES`, so the deploy
+    //    engine's `--replace` fallback refuses a second time with
+    //    STATEFUL_REPLACE_BLOCKED unless `--force-stateful-recreation` is also
+    //    passed.
+    // 2. Neither flag can clear `DeletionProtectionEnabled`: the replacement's
+    //    DELETE runs from the deploy engine, which never sets
+    //    `DeleteContext.removeProtection` — `delete()`'s flip-off is gated on
+    //    exactly that field. See `../replacement-protection-advice.ts`.
+    //
+    // Read the RECORDED bag: all three guards fire before any `UpdateTable` in
+    // this method, so AWS still holds what `previousProperties` records. The
+    // resolution goes through `extractLocalDeletionProtection`, the SAME helper
+    // `create()` uses — the property is per-replica in this type's CFn schema
+    // (`Replicas[?Region==<deploy region>].DeletionProtectionEnabled`) with a
+    // top-level fallback, and a second spelling of that rule is how the two
+    // would come to disagree about which table is protected.
+    //
+    // A THUNK, not a value: all three guards are defence-in-depth (the
+    // replacement layer normally routes these changes away), so an ordinary
+    // `update()` must not pay for a sentence nothing will read.
+    const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
+    const replaceRemedy = (): string =>
+      extractLocalDeletionProtection(previousProperties, currentRegion) === true
+        ? protectedReplacementAdvice({
+            evidence:
+              "cdkd's recorded properties for this table carry " +
+              'DeletionProtectionEnabled: true for the deploy region',
+            replaceFlags,
+            disableCommand: `aws dynamodb update-table --table-name '${physicalId}' --no-deletion-protection-enabled`,
+          })
+        : `replacement required (deploy with ${replaceFlags}, or destroy + redeploy)`;
     if (
       properties['TableName'] !== undefined &&
       previousProperties['TableName'] !== undefined &&
       properties['TableName'] !== previousProperties['TableName']
     ) {
       throw new ProvisioningError(
-        `TableName is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        `TableName is immutable on AWS::DynamoDB::GlobalTable; ${replaceRemedy()}`,
         resourceType,
         logicalId,
         physicalId
@@ -1528,7 +1571,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       !deepEqual(properties['KeySchema'], previousProperties['KeySchema'])
     ) {
       throw new ProvisioningError(
-        `KeySchema is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        `KeySchema is immutable on AWS::DynamoDB::GlobalTable; ${replaceRemedy()}`,
         resourceType,
         logicalId,
         physicalId
@@ -1540,7 +1583,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       !deepEqual(properties['LocalSecondaryIndexes'], previousProperties['LocalSecondaryIndexes'])
     ) {
       throw new ProvisioningError(
-        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; replacement required (deploy with --replace, or destroy + redeploy)`,
+        `LocalSecondaryIndexes is immutable on AWS::DynamoDB::GlobalTable; ${replaceRemedy()}`,
         resourceType,
         logicalId,
         physicalId
@@ -1580,11 +1623,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         physicalId
       );
     }
-
-    // Resolve the client region ONCE for the whole update — the Tags
-    // diff step, the BillingMode flip's capacity derivation, and the
-    // Replicas diff loop all need it.
-    const currentRegion = (await this.dynamoDBClient.config.region()) ?? '';
 
     // issue #1653: the bag actually delivered, when a warn-and-SKIP arm below
     // left a declared configuration un-applied. `undefined` (the normal case)

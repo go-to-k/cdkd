@@ -2509,8 +2509,16 @@ export class CustomResourceProvider implements ResourceProvider {
       expiresIn: 7200,
     });
 
+    // The SIBLING of the `cleanupResponseObject` line below, found by the issue
+    // [#2635] sweep rather than named by the issue: it renders the same two
+    // values (`responseBucket`, and a `responseKey` carrying a
+    // provider-supplied request id) into the same kind of debug line, so
+    // sanitizing one and not the other is the one-of-N widening
+    // `src/utils/display-safe.ts`'s header exists to stop.
     this.logger.debug(
-      `Generated pre-signed URL for response: s3://${this.responseBucket}/${responseKey}`
+      `Generated pre-signed URL for response: s3://${displaySafe(this.responseBucket, {
+        asciiOnly: true,
+      })}/${displaySafe(responseKey)}`
     );
     return presignedUrl;
   }
@@ -2687,10 +2695,24 @@ export class CustomResourceProvider implements ResourceProvider {
         })
       );
     } catch (error) {
+      // Issue [#2346]/[#2635]: every value rendered here goes through
+      // `displaySafe`. `responseKey` carries a request id that reaches cdkd
+      // through the provider rather than being minted as a literal, and
+      // `error.message` is AWS-supplied text — both are the class
+      // `src/utils/display-safe.ts` exists for. `bucket` is cdkd-authored and
+      // takes the `asciiOnly` POSITIVE allowlist (an S3 bucket name has a known
+      // ASCII charset, so that form has no residual at all), matching the
+      // sibling purge paths this line runs immediately before
+      // (`src/state/s3-noncurrent-version-purge.ts`,
+      // `src/state/s3-replication-purge-gap.ts`). Sanitizing two of three and
+      // leaving the third raw is the mixed-rendering residual that round was
+      // closing.
       this.logger.debug(
-        `Failed to delete custom-resource response object s3://${bucket}/${responseKey}; ` +
+        `Failed to delete custom-resource response object s3://${displaySafe(bucket, {
+          asciiOnly: true,
+        })}/${displaySafe(responseKey)}; ` +
           `it remains as a current object. Underlying error: ` +
-          `${error instanceof Error ? error.message : String(error)}`
+          `${displaySafe(error instanceof Error ? error.message : String(error))}`
       );
     }
 

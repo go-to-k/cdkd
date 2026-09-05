@@ -132,7 +132,7 @@ export class S3VectorsProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `'${createOnly}' is immutable (create-only) on VectorBucket '${physicalId}'; a change requires replacement (cdkd deploy --replace)`
+          `'${createOnly}' is immutable (create-only) on VectorBucket '${physicalId}'; a change requires replacement (cdkd deploy --replace --force-stateful-recreation — the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED)`
         );
       }
     }

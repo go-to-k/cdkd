@@ -31,6 +31,8 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { isTruthyCfnBoolean } from '../data-delete-intent.js';
+import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
   toSdkConfigurations,
@@ -502,6 +504,39 @@ export class EMRClusterProvider implements ResourceProvider {
     // sub-field (topology, subnets, key name, ...) requires a replacement.
     const nextInstances = (properties['Instances'] ?? {}) as Record<string, unknown>;
     const prevInstances = (previousProperties['Instances'] ?? {}) as Record<string, unknown>;
+
+    // Issue [#2610] sites 2 and 3. Both refusals below advise a replacement,
+    // and BOTH advices were wrong in two independent ways.
+    //
+    // 1. `AWS::EMR::Cluster` is in `STATEFUL_TYPES`, so the deploy engine's
+    //    `--replace` fallback refuses it a second time with
+    //    STATEFUL_REPLACE_BLOCKED unless `--force-stateful-recreation` is also
+    //    passed. Name the full flag set upfront, as the `AWS::Logs::LogGroup`
+    //    guard does (issue [#2558]).
+    // 2. Neither flag can clear `Instances.TerminationProtected`: the
+    //    replacement's DELETE runs from the deploy engine, which never sets
+    //    `DeleteContext.removeProtection` — `delete()` below gates its
+    //    `SetTerminationProtection` flip-off on exactly that field. See
+    //    `../replacement-protection-advice.ts`.
+    //
+    // The RECORDED bag is the one to read: both refusals fire before any
+    // `SetTerminationProtection` / `ModifyCluster*` call in this method, so at
+    // this point AWS still holds what `previousProperties` records.
+    // A THUNK, not a value: both refusals are defence-in-depth arms that fire
+    // only when the replacement layer was bypassed, so building an ~900-char
+    // sentence on every ordinary `update()` would be pure waste.
+    const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
+    const replaceRemedy = (): string =>
+      isTruthyCfnBoolean(prevInstances['TerminationProtected'])
+        ? protectedReplacementAdvice({
+            evidence:
+              "cdkd's recorded properties for this cluster carry " +
+              'Instances.TerminationProtected: true',
+            replaceFlags,
+            disableCommand: `aws emr modify-cluster-attributes --cluster-id '${physicalId}' --no-termination-protected`,
+          })
+        : `Re-deploy with ${replaceFlags}, or destroy + redeploy the stack.`;
+
     let terminationProtectedChanged = false;
     if (changed('Instances')) {
       const instanceKeys = new Set([...Object.keys(nextInstances), ...Object.keys(prevInstances)]);
@@ -514,7 +549,7 @@ export class EMRClusterProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `AWS EMR Cluster Instances.${key} is immutable on AWS — a running cluster's instance topology / networking cannot be changed in place. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+          `AWS EMR Cluster Instances.${key} is immutable on AWS — a running cluster's instance topology / networking cannot be changed in place. ${replaceRemedy()}`
         );
       }
     }
@@ -529,7 +564,7 @@ export class EMRClusterProvider implements ResourceProvider {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          `AWS EMR Cluster ${key} is immutable on AWS — it is fixed at cluster creation. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+          `AWS EMR Cluster ${key} is immutable on AWS — it is fixed at cluster creation. ${replaceRemedy()}`
         );
       }
     }

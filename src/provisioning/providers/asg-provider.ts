@@ -45,6 +45,7 @@ import type {
   SecretMasker,
 } from '../../types/resource.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
+import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 
 /**
@@ -380,10 +381,39 @@ export class ASGProvider implements ResourceProvider {
     // sub-resource fields the caller may reasonably expect to round-trip.
     const stringEq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
     if (!stringEq(properties['AutoScalingGroupName'], previousProperties['AutoScalingGroupName'])) {
+      // Issue [#2610] site 8. `--replace` alone cannot succeed on a group whose
+      // recorded `DeletionProtection` is anything but `'none'`: the
+      // replacement's DELETE runs from the deploy engine, which never sets
+      // `DeleteContext.removeProtection` — `delete()` below gates BOTH its
+      // flip-off and its `ForceDelete: true` on exactly that field. See
+      // `../replacement-protection-advice.ts`.
+      //
+      // Read the RECORDED bag: this guard fires before any
+      // `UpdateAutoScalingGroup` in this method, so AWS still holds what
+      // `previousProperties` records. The value is a three-level string enum
+      // (`none` / `prevent-force-deletion` / `prevent-all-deletion`, confirmed
+      // against the SDK model), so the test is "declared and not `none`" — an
+      // ABSENT value is the AWS-side default, which `readCurrentState` writes
+      // back as the explicit `'none'` placeholder.
+      const recordedProtection = previousProperties['DeletionProtection'];
+      const deletionProtected =
+        typeof recordedProtection === 'string' &&
+        recordedProtection !== '' &&
+        recordedProtection !== 'none';
+      const remedy = deletionProtected
+        ? protectedReplacementAdvice({
+            evidence:
+              "cdkd's recorded properties for this group carry " +
+              `DeletionProtection: ${recordedProtection}`,
+            replaceFlags: 'cdkd deploy --replace',
+            disableCommand: `aws autoscaling update-auto-scaling-group --auto-scaling-group-name '${physicalId}' --deletion-protection none`,
+          })
+        : 'Use cdkd deploy --replace to replace the group.';
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'AutoScalingGroupName is immutable on AWS — UpdateAutoScalingGroup does not accept a new name; the name is fixed at creation. Use cdkd deploy --replace to replace the group.'
+        'AutoScalingGroupName is immutable on AWS — UpdateAutoScalingGroup does not accept a new name; the name is fixed at creation. ' +
+          remedy
       );
     }
     try {

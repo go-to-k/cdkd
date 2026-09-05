@@ -55,6 +55,7 @@ import {
 } from '../../utils/error-handler.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { isTruthyCfnBoolean } from '../data-delete-intent.js';
+import { protectedReplacementAdvice } from '../replacement-protection-advice.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
@@ -767,10 +768,35 @@ export class ELBv2Provider implements ResourceProvider {
     if (
       JSON.stringify(stripHandled(properties)) !== JSON.stringify(stripHandled(previousProperties))
     ) {
+      // Issue [#2610] site 1. `--replace` alone cannot succeed on a load
+      // balancer whose `deletion_protection.enabled` attribute is on: the
+      // replacement's DELETE runs from the deploy engine, which never sets
+      // `DeleteContext.removeProtection` — see
+      // `../replacement-protection-advice.ts` for the mechanism and for why the
+      // RECORDED bag is the one to read. `deletion_protection.enabled` lives
+      // INSIDE `LoadBalancerAttributes`, which `handledKeys` above strips from
+      // the comparison, so this refusal is reached with the attribute
+      // unexamined and the attribute diff is applied only further down — i.e.
+      // at this point AWS still holds what `previousProperties` records.
+      const deletionProtected = this.normalizeAttributes(
+        previousProperties['LoadBalancerAttributes']
+      ).some((a) => a.Key === 'deletion_protection.enabled' && isTruthyCfnBoolean(a.Value));
+      const remedy = deletionProtected
+        ? protectedReplacementAdvice({
+            evidence:
+              "cdkd's recorded properties for this load balancer carry " +
+              'LoadBalancerAttributes deletion_protection.enabled=true',
+            replaceFlags: 'cdkd deploy --replace',
+            disableCommand:
+              `aws elbv2 modify-load-balancer-attributes --load-balancer-arn '${physicalId}' ` +
+              '--attributes Key=deletion_protection.enabled,Value=false',
+          })
+        : 'For Name / Type / Scheme re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.';
       throw new ResourceUpdateNotSupportedError(
         'AWS::ElasticLoadBalancingV2::LoadBalancer',
         logicalId,
-        'ELBv2 LoadBalancer Name / Type / Scheme are immutable on AWS — none of the ELBv2 Modify* / Set* APIs accept these fields; they are fixed at creation. cdkd handles LoadBalancerAttributes / Subnets / SubnetMappings / SecurityGroups / IpAddressType / Tags in-place; for Name / Type / Scheme re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
+        'ELBv2 LoadBalancer Name / Type / Scheme are immutable on AWS — none of the ELBv2 Modify* / Set* APIs accept these fields; they are fixed at creation. cdkd handles LoadBalancerAttributes / Subnets / SubnetMappings / SecurityGroups / IpAddressType / Tags in-place. ' +
+          remedy
       );
     }
 
