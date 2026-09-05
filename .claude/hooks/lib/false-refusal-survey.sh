@@ -21,26 +21,54 @@
 # counting them would report the gate working as a regression.
 #
 # THE NUMBER, so the rules file can point here instead of carrying it.
-# Measured 2026-08-27 on the go-to-k/cdkd#2156 branch, `bash
-# .claude/hooks/lib/false-refusal-survey.sh` with its defaults:
+# THE NUMBERS ARE NOT WRITTEN HERE ANY MORE. RUN IT: `bash
+# .claude/hooks/lib/false-refusal-survey.sh` prints the corpus size, the cell
+# count and all three verdicts, against whatever `origin/main` is today.
 #
-#   corpus            : 400 texts (300 commit messages, 100 PR bodies)
-#   probed            : 36000 (text, shape, verb) cells per side
-#   NEWLY CONSIDERED  : 0 cells
-#   LOST, self verb   : 0 cells
-#   LOST, other verb  : 13 cells  (removed false refusals -- see the split below)
+# They used to be pasted into this block, and the cell count was wrong TWICE by
+# being carried across a change in what was measured -- 11,600 for the
+# two-shape run, 28,400 for the five-shape run that still skipped self verbs,
+# 36,000 once those were emitted -- with both copies caught in review rather
+# than here. go-to-k/cdkd#2605 added three more shapes, which would have made
+# it wrong a third time. A measurement that has to appear more than once
+# belongs in the thing that produces it, not in prose beside it.
 #
-# THE CELL COUNT IS PART OF THE FIGURE, because this number has now been wrong
-# twice by being carried across a change in what was measured. 11,600 was the
-# two-shape run; 28,400 the five-shape run that still SKIPPED self verbs; 36,000
-# is this one, which emits them. A `0` copied from any of those onto another is
-# not a measurement, and both earlier copies were caught in review rather than
-# here. Re-run and re-paste all of it, never just the zero.
+# WHAT TO READ WHEN YOU RUN IT, since the verdicts are not interchangeable:
+#   NEWLY CONSIDERED  must be 0 -- a command the widened trigger now reaches.
+#   LOST, self verb   must be 0 -- a gate that stopped seeing its OWN command.
+#   LOST, other verb  is a REMOVED false refusal, and MOVES WITH THE TRIGGER
+#                     rather than scoring it: it was 27 before review round 5
+#                     restored the quote-blind fallback for later words and 13
+#                     after, because a wider trigger keeps more prose matching.
+#                     Lower is not worse.
 #
-# The non-self count also MOVES WITH THE TRIGGER and is not a quality score: it
-# was 27 before review round 5 restored the quote-blind fallback for later
-# words, and 13 after, because a wider trigger keeps more prose matching. Lower
-# is not worse; the number that must be 0 is the self-verb one above it.
+# THE ZERO IS ONLY AS GOOD AS THE SHAPES, and this file learned that twice.
+# The second time is go-to-k/cdkd#2605: every shape here was a WRITE verb
+# carrying the corpus text as an ARGUMENT, so the quoted span always landed
+# after a verb the gates are supposed to fire on. The class that withdrew
+# go-to-k/cdkd#2333's first implementation is the opposite -- a gated verb NAME
+# inside an argument of a DIFFERENT, non-gated git subcommand,
+# `git -C <dir> log --grep "commit"` and fifteen siblings -- and no shape could
+# produce it, so the survey reported NEWLY CONSIDERED 0 for a change that broke
+# sixteen ordinary read-only commands. Four review rounds passed before a human
+# found the class by hand.
+#
+# The `read_grep` / `read_show` / `read_pathspec` family closes that. The one
+# figure kept here is the one a run of THIS script cannot reproduce, because it
+# needs a library that no longer exists -- the WITHDRAWN whole-segment
+# implementation. Over a ten-text corpus of the sixteen shapes' own needles,
+# non-self matches by shape:
+#
+#   read_grep 19, read_show 19, read_pathspec 19  -- the new family
+#   pr_flagged 1, everything else 0               -- the five that existed
+#
+# So the old five were structurally near-blind to the class, and that is what a
+# zero from them was worth. What the family reports against the library as
+# SHIPPED is not written down, for the reason the block above gives: run it.
+# The cells it finds there are the accepted-false-refusal class this file
+# already documents -- prose like `fix the commit message` inside a quoted
+# argument reaching the trigger -- and they are identical on the
+# pre-go-to-k/cdkd#2333 library, so the family did not introduce them.
 #
 # READ THE ZERO CORRECTLY, AND NOT THE WAY THIS COMMENT FIRST DID. The first
 # version explained it as "quoted spans are neutralised before the prefix is
@@ -135,7 +163,7 @@ while IFS= read -r b64; do
   [ -n "$b64" ] || continue
   id=$((id + 1))
   t=$(printf '%s' "$b64" | base64 -d 2>/dev/null || printf '%s' "$b64" | base64 -D 2>/dev/null) || continue
-  for shape in commit pr commit_sq pr_sq pr_flagged; do
+  for shape in commit pr commit_sq pr_sq pr_flagged read_grep read_show read_pathspec; do
     case "$shape" in
       commit) cmd="git commit -m \"$t\""; self="$SELF_COMMIT" ;;
       pr)     cmd="gh pr create --title x --body \"$t\""; self="$SELF_PR" ;;
@@ -152,6 +180,31 @@ while IFS= read -r b64; do
       # prefix actually changed: with no flag the prefix must be empty and the
       # old and new patterns agree by construction.
       pr_flagged) cmd="gh -R go-to-k/cdkd --template 'a b' pr create --title x --body '$t'"; self="$SELF_PR" ;;
+      # READ VERBS, and their absence is what made this survey's zero unable to
+      # see the class that WITHDREW an implementation (go-to-k/cdkd#2605). Every
+      # shape above is a WRITE verb carrying the corpus text as an argument, so
+      # the quoted span always lands after a verb the gates are supposed to
+      # fire on. The 16 commands that took go-to-k/cdkd#2333's first attempt
+      # from rc=0 to rc=2 are the opposite shape: a gated verb NAME sitting
+      # inside an argument of a DIFFERENT, non-gated git subcommand --
+      # `git -C <dir> log --grep "commit"` and siblings. No shape above can
+      # produce that, so the survey reported NEWLY CONSIDERED 0 for a change
+      # that broke sixteen ordinary read-only commands, and four review rounds
+      # went by before the class was found by hand.
+      #
+      # `self` is EMPTY for all three, and that is not an oversight. A read
+      # command runs no gated verb, so EVERY constant that fires on one is a
+      # false refusal by definition -- which makes this family strictly easier
+      # to score than the write shapes, where the self verbs must be excluded
+      # from NEWLY because they are the gate working.
+      #
+      # The `-C <dir>` is load-bearing for the same reason it is on
+      # `pr_flagged`: with no flag before the verb the prefix must be empty and
+      # the old and new patterns agree by construction, so a flagless read
+      # shape would measure nothing about the prefix.
+      read_grep)     cmd="git -C /tmp/wt log --grep \"$t\""; self="" ;;
+      read_show)     cmd="git -C /tmp/wt show '$t'"; self="" ;;
+      read_pathspec) cmd="git -C /tmp/wt grep -n \"$t\" -- src"; self="" ;;
     esac
     for c in $ALL; do
       # SELF verbs are emitted too, with a flag, instead of being SKIPPED.
@@ -205,7 +258,7 @@ lostfp=$(paste "$TMP/old.tsv" "$TMP/new.tsv" | awk -F'\t' '$5=="0" && $4=="1" &&
 affected=$(awk -F'\t' '{print $1"\t"$2}' "$TMP/newly.tsv" | sort -u | awk 'END{print NR}')
 
 echo "corpus            : $texts texts ($commit_n commit messages, $pr_n PR bodies)"
-echo "shapes            : commit / pr (double-quoted), commit_sq / pr_sq (single-quoted), pr_flagged"
+echo "shapes            : commit / pr (double-quoted), commit_sq / pr_sq (single-quoted), pr_flagged, read_grep / read_show / read_pathspec (READ verbs, no self verb)"
 echo "probed            : $cells (text, shape, verb) cells per side"
 echo "NEWLY CONSIDERED  : $newly cells, across $affected (text, shape) commands"
 echo "LOST, self verb   : $lost cells   <- must be 0; the gate stopped seeing its own command"
