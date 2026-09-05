@@ -466,8 +466,8 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  Note: each stack of this deploy validates this WHOLE flag list ` +
         `against its OWN template, so an id declared by a different stack of ` +
-        `the same run is reported here as unknown. Name it in a deploy of the ` +
-        `stack that declares it.`
+        `the same run is reported here as unknown. Name it in a deploy of ` +
+        `only that stack.`
     );
     // Issue [#2567] — the nesting shape, which IS gated on the template
     // actually declaring a nested stack so an ordinary typo keeps the plain

@@ -575,14 +575,24 @@ describe('nested-stack scope of the flags (#2567)', () => {
       forceStatefulRecreation: false,
     });
     const error = renderRecreateTargetsErrors(v) ?? '';
-    expect(error).toContain('Name it in a deploy of the stack that declares it');
+    // The WHOLE sentence, not a list of rejected phrases. A `not.toMatch`
+    // alternation of the three wordings already rejected let a FOURTH through
+    // in new words ("The other stacks of this run keep going; only this one
+    // stops, and the recreate happens there") — the same instrument this PR
+    // condemned one file over, repeated here. Pinning the text means any
+    // rewrite reds and has to be argued for, which is the point: three
+    // successive attempts to describe the run's behaviour here were wrong.
     expect(
       error,
-      'the unknown-id refusal describes what the RUN does next. Every attempt at that has ' +
-        'been wrong (see the comment at the lines.push site); say which stack to name the ' +
-        'id in and stop.'
-    ).not.toMatch(
-      /fails the entire run|refuses the whole run|nothing is deployed|still deploys?\b|are skipped|DOES run|exits non-zero/
+      'the multi-stack note was rewritten. Every previous attempt to describe what the RUN ' +
+        'does after this refusal was false (see the comment at the lines.push site): the ' +
+        'flag list is run-global while each stack validates it against its OWN template, so ' +
+        'every stack not declaring the id refuses, and WorkGraph skips any stack depending ' +
+        'on one of those. Say which stack to name the id in and stop.'
+    ).toContain(
+      'Note: each stack of this deploy validates this WHOLE flag list against its OWN ' +
+        'template, so an id declared by a different stack of the same run is reported here ' +
+        'as unknown. Name it in a deploy of only that stack.'
     );
   });
 

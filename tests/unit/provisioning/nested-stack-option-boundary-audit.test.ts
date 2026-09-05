@@ -107,45 +107,59 @@ function declaredMembers(): string[] {
   );
 }
 
+/** `{`/`(` opened minus closed on a line, ignoring nothing — comments are skipped before this runs. */
+function braceBalance(line: string): number {
+  let delta = 0;
+  for (const ch of line) {
+    if (ch === '{' || ch === '(') delta++;
+    else if (ch === '}' || ch === ')') delta--;
+  }
+  return delta;
+}
+
+/** The walk's result: unrecognised lines, plus whether it ended balanced. */
+interface Walk {
+  unparsed: string[];
+  endDepth: number;
+}
+
 /**
- * Every line of the interface body that is not a recognised member declaration
- * and not a recognised non-member line.
+ * Walk the interface body, classifying every line.
  *
  * This is the FAIL-CLOSED half, and it is the point. Spellings escaped a
- * patched-per-spelling regex twice in one review (`readonly`, `snake_case`,
- * method shorthand, then a member at the WRONG INDENT), which is the signal to
- * stop patching and refuse what is not modelled instead: an unrecognised
- * declaration stops the fence rather than passing through it invisibly.
+ * patched-per-spelling regex twice (`readonly`, `snake_case`, method shorthand;
+ * then a member at the WRONG INDENT), which is the signal to stop patching and
+ * refuse what is not modelled instead.
  *
- * DEPTH, not just indent. An earlier spelling scanned only `^ {2}\S` lines, so
- * a top-level member written at four spaces was invisible to BOTH halves —
- * measured green. It cannot simply require two spaces either, because
- * `parentStackInfo`'s own fields legitimately sit deeper. So the walk tracks
- * nesting: at depth 0 every non-blank, non-comment line MUST be a two-space
- * member declaration; inside a nested object literal anything is allowed until
- * it closes. `vp run format:check` would also catch a mis-indented member, but
- * a fence that leans on the formatter is a fence that fails open the moment the
- * formatter's scope changes.
+ * DEPTH BY BALANCE, not by a close-line pattern. The previous spelling
+ * decremented only on `/^ {2}\}[,;]?$/`, so any other close of a nested member
+ * — `  }>;` from a `Readonly<{ … }>` wrap, `  }[];`, `  } | undefined;` — never
+ * returned the walk to depth 0. Measured: one such wrap made the walk skip 150
+ * lines and three top-level members, silently, and a method shorthand planted
+ * inside that span passed 5/5 green while the same member on a pristine file
+ * red. A fence that goes inert over a span is worse than no fence, because the
+ * green is indistinguishable.
+ *
+ * Comment lines are skipped BEFORE balancing, since JSDoc here carries `{@link}`
+ * and would unbalance the count.
  */
-function unparsedLines(): string[] {
-  const out: string[] = [];
+function walkBody(): Walk {
+  const unparsed: string[] = [];
   let depth = 0;
   for (const line of interfaceBody().split('\n').slice(1)) {
     if (line.trim() === '') continue;
+    if (/^\s*(?:\/\*\*|\*\/|\*|\/\/)/.test(line)) continue;
     if (depth > 0) {
-      // Inside a nested object literal: its close returns us to depth 0.
-      if (/^ {2}\}[,;]?$/.test(line)) depth--;
+      depth += braceBalance(line);
       continue;
     }
-    if (NON_MEMBER_LINE.test(line)) continue;
-    if (MEMBER_DECL.test(line)) {
-      // A member that opens a nested object literal (`parentStackInfo?: {`).
-      if (line.trimEnd().endsWith('{')) depth++;
+    if (NON_MEMBER_LINE.test(line) || MEMBER_DECL.test(line)) {
+      depth += braceBalance(line);
       continue;
     }
-    out.push(line);
+    unparsed.push(line);
   }
-  return out;
+  return { unparsed, endDepth: depth };
 }
 
 describe('the parent→child option boundary audit stays complete (#2567)', () => {
@@ -162,11 +176,24 @@ describe('the parent→child option boundary audit stays complete (#2567)', () =
     // audit disagree. `vanished` cannot see it either: it only catches an
     // AUDITED name going away.
     expect(
-      unparsedLines(),
+      walkBody().unparsed,
       'a DeployEngineOptions line was not recognised as a member declaration. Model it in ' +
         'MEMBER_DECL (and audit the member against the parent→child boundary), or add its ' +
         'shape to NON_MEMBER_LINE if it declares nothing.'
     ).toEqual([]);
+  });
+
+  it('the walk ends BALANCED — it did not skip a span', () => {
+    // The failure mode a fail-closed scan hides best: the walk enters a nested
+    // literal, never sees a close it recognises, and treats everything after it
+    // as nested — reporting no unparsed lines because it stopped looking.
+    // Measured at 150 skipped lines and three invisible members before the
+    // balance walk replaced a close-line pattern.
+    expect(
+      walkBody().endDepth,
+      'the interface walk ended inside a nested literal, so an unknown number of member ' +
+        'declarations were never classified. The scan is inert over that span.'
+    ).toBe(0);
   });
 
   it('every DeployEngineOptions member has been walked against the boundary', () => {

@@ -106,25 +106,45 @@ describe('deploy.ts binds the recreate target set to the stack it deploys (#2567
     // constrain what must APPEAR, never what must not be added beside it.
     // Four spellings in two rounds is the signal to change instrument, so this
     // pins the guard text itself and refuses everything not modelled.
-    const guardStart = literal.indexOf('...(recreateTargets');
-    expect(guardStart, 'no `...(recreateTargets` spread in the option literal').toBeGreaterThan(-1);
-    const guardEnd = literal.indexOf('&& {', guardStart);
-    expect(guardEnd, 'the recreateTargets spread has no `&& {` payload').toBeGreaterThan(guardStart);
-    const guard = literal
-      .slice(guardStart + '...('.length, guardEnd)
+    // Slice the WHOLE spread — guard AND payload — and pin it.
+    //
+    // Ending the slice at the first `&& {` was still a substring search: an
+    // inserted `&& {}.constructor && options.dryRun` closes the slice early, so
+    // the guard text matched exactly while the real guard carried an extra
+    // operand. Taking the spread through its `}),` close removes that seam.
+    const spreadStart = literal.indexOf('...(recreateTargets');
+    expect(spreadStart, 'no `...(recreateTargets` spread in the option literal').toBeGreaterThan(
+      -1
+    );
+    const spreadEnd = literal.indexOf('}),', spreadStart);
+    expect(spreadEnd, 'the recreateTargets spread has no `}),` close').toBeGreaterThan(spreadStart);
+    const spread = literal
+      .slice(spreadStart, spreadEnd + '}),'.length)
       .replace(/\s+/g, ' ')
       .trim();
     expect(
-      guard,
-      'the `recreateTargets` spread guard is not the expected expression. It must open with ' +
+      spread,
+      'the `recreateTargets` spread is not the expected expression. It must open with ' +
         '`recreateTargets`, test at least one direction set for being NON-empty, join the two ' +
-        'tests with `||`, and carry NO other operand and no negation — anything else threads ' +
-        'the option in the wrong cases and silently disables both --recreate-via-* flags. If ' +
-        'you rewrote it deliberately (hoisting the guard into a named const, say), update ' +
-        'this expectation to the new text rather than deleting the check.'
+        'tests with `||`, carry NO other operand and no negation, and thread exactly the ' +
+        'option object — anything else threads it in the wrong cases and silently disables ' +
+        'both --recreate-via-* flags. If you rewrote it deliberately (hoisting the guard into ' +
+        'a named const, say), update this expectation to the new text rather than deleting ' +
+        'the check.'
     ).toBe(
-      'recreateTargets && (recreateTargets.viaCcApi.size > 0 || recreateTargets.viaSdkProvider.size > 0)'
+      '...(recreateTargets && (recreateTargets.viaCcApi.size > 0 || ' +
+        'recreateTargets.viaSdkProvider.size > 0) && { recreateTargets, }),'
     );
+
+    // ...and exactly ONE `recreateTargets` key in the literal. A later
+    // `recreateTargets: undefined,` overrides the spread and leaves both flags
+    // permanently inert, with every assertion above still green.
+    const keyOccurrences = [...literal.matchAll(/^\s*recreateTargets[,:]/gm)].length;
+    expect(
+      keyOccurrences,
+      'the option literal mentions `recreateTargets` as a key more than once — a later ' +
+        'assignment overrides the spread and disables both --recreate-via-* flags'
+    ).toBe(1);
   });
 
   it('binds an expression, not a literal', () => {
