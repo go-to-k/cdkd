@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { marked } from 'marked';
 
 /**
  * `.claude/rules/*.md` files are LAZILY loaded by a native Claude Code feature:
@@ -492,6 +493,261 @@ const SUBSTANTIVE_MIN_BYTES = 1_500;
 
 const SPLIT_ADVICE =
   'Move the detail into a NEW .claude/rules/<area>.md satellite whose `paths:` glob is as narrow as the content, and leave a one-line pointer behind. Do not summarise or delete the text.';
+
+/**
+ * The `.md` link targets a reader can actually SEE and follow, taken from the
+ * RENDERED page rather than inferred from the source.
+ *
+ * This RENDERS the Markdown and reads the anchors out, because the hand-rolled
+ * scanner it replaces could not be made correct. Four review rounds found four
+ * silent passes in it, three of them inside the previous round's fix: a
+ * 3-backtick marker closing a 4-backtick fence; a list-context exemption that
+ * disabled the indent rule where the fence regex was already blind; a comment
+ * ending inside a code block, forging a close out of code content; and a
+ * blockquote strip doing the same thing one commit after that bug was fixed.
+ *
+ * The pattern was structural, not bad luck. CommonMark block structure is a
+ * CONTAINER STACK -- quote depth by fence state by indent width -- and a flat
+ * per-line state machine models one dimension at a time, so each fix added a
+ * dimension and created a fresh cross-term for the next round to find. A
+ * parser has the stack already.
+ *
+ * `marked` does not produce an anchor for a link inside a code block, so
+ * every residual the old implementation had to document -- tabs, blockquotes,
+ * nested fences, comments, reference and collapsed and shortcut link forms,
+ * titles, angle brackets, link text containing brackets -- is gone with it.
+ *
+ * What is NOT true is the tempting summary, that "extract every `<a href>`" IS
+ * the visibility question. Review found three places where it is not, each now
+ * handled in the code below and named here so the claim stays honest: YAML
+ * frontmatter is metadata a reader never sees; an anchor with empty link text
+ * renders as nothing to click; and a stray unclosed `<table>` would pair with
+ * a later table's close and lend prose the strength a table index withholds.
+ * The first revision of this paragraph said the residuals were "simply gone",
+ * which was the overclaim this file elsewhere warns about -- and it was
+ * written in the same commit that deleted a false "everything fails closed"
+ * claim for the same reason.
+ *
+ * It is a devDependency used by this one test and never bundled: `vp pack`
+ * does not see it. It was already in the tree transitively through mermaid at
+ * this exact version, so declaring it added nothing to install (`pnpm add`
+ * reported `downloaded 0, added 0`) and no new supply-chain surface.
+ */
+/**
+ * Does this Markdown render with a raw HTML comment still in it?
+ *
+ * `marked` passes a raw comment through verbatim, so a raw `<a href>` inside
+ * one would reach `visibleLinkTargets` while a reader sees nothing. That
+ * function deliberately does NOT strip comments -- three attempts at stripping
+ * were each wrong in a different direction -- so this predicate is what makes
+ * the absence safe, and the corpus case below asserts it holds everywhere.
+ */
+function rendersSurvivingComment(markdown: string): boolean {
+  // Comments are not the only raw passthrough. CommonMark HTML block types
+  // 1/3/4/5 -- `<script>`/`<style>`/`<textarea>`, `<?...?>`, `<!DOCTYPE ...>`,
+  // `<![CDATA[...]]>` -- also reach the
+  // output verbatim, and a browser's bogus-comment parse ends them at the
+  // first `>` (inside the `<a` tag), so an anchor inside one is invisible to a
+  // reader exactly like one inside a comment. Detecting only `<!--` would have
+  // left the docblock's claim -- that this predicate is what makes the absent
+  // stripper safe -- true of one shape out of four.
+  return /<(?:!--|\?|![A-Za-z]|!\[CDATA\[|(?:script|style|textarea)\b)/i.test(
+    marked.parse(markdown, { async: false }),
+  );
+}
+
+// NAMED entities stay a hand list, and saying otherwise would repeat the
+// mistake above. There is no built-in named-entity decoder, and the full
+// HTML table is ~2,200 entries; what matters here is only which ones
+// render BLANK. The aliases are the trap -- `&ZeroWidthSpace;` is another
+// spelling of the very U+200B the transposition bug was about -- so they
+// are listed beside their short forms rather than left to be rediscovered.
+// Residual, stated plainly: a blank-rendering named entity outside this
+// map is credited over an empty cell. It fails in the crediting direction,
+// it needs an author to write one deliberately, and none appears in the
+// corpus.
+const NAMED_BLANK: Record<string, string> = {
+  nbsp: '\u00a0',
+  nonbreakingspace: '\u00a0',
+  shy: '\u00ad',
+  zwnj: '\u200c',
+  zwj: '\u200d',
+  zerowidthspace: '\u200b',
+  nobreak: '\u2060',
+  af: '\u2061',
+  applyfunction: '\u2061',
+  it: '\u2062',
+  invisibletimes: '\u2062',
+  ic: '\u2063',
+  invisiblecomma: '\u2063',
+  negativethinspace: '\u200b',
+  negativeverythinspace: '\u200b',
+  negativemediumspace: '\u200b',
+  negativethickspace: '\u200b',
+  thickspace: '\u205f',
+  ensp: '\u2002',
+  emsp: '\u2003',
+  emsp13: '\u2004',
+  emsp14: '\u2005',
+  thinsp: '\u2009',
+  thinspace: '\u2009',
+  verythinspace: '\u200a',
+  mediumspace: '\u205f',
+  numsp: '\u2007',
+  puncsp: '\u2008',
+  hairsp: '\u200a',
+};
+
+/** `String.fromCodePoint` without the throw: out-of-range keeps the raw text. */
+function codePoint(value: number, raw: string): string {
+  return Number.isInteger(value) && value >= 0 && value <= 0x10ffff
+    ? String.fromCodePoint(value)
+    : raw;
+}
+
+function visibleLinkTargets(lines: readonly string[], rowsOnly = false): string[] {
+  // YAML frontmatter is METADATA, not page content -- GitHub strips it and no
+  // reader sees a link inside `description:`. Feeding it to the renderer let a
+  // pointer moved out of the body and into the frontmatter keep a satellite
+  // "reachable" while the page showed nothing.
+  const body = [...lines];
+  if (body[0]?.trim() === '---') {
+    const close = body.findIndex((l, i) => i > 0 && l.trim() === '---');
+    if (close !== -1) body.splice(0, close + 1);
+  }
+  // NO comment-stripping. Three successive attempts at one were each wrong in
+  // a different direction -- the unbounded form let CommonMark's abbreviated
+  // `<!-->` reach past a later comment and drop the span between them, and
+  // bounding it with `(?!<!--)` then made a genuine comment containing an
+  // anchor followed by an inner `<!--` credit that anchor, which is the
+  // forbidden direction. Each attempt shipped a comment asserting the residual
+  // was safe, and each of those was false.
+  //
+  // What the strip existed for was a RAW `<a href>` written inside an HTML
+  // comment, which marked passes through verbatim. That is now a checked
+  // PRECONDITION rather than a heuristic: the case below asserts no rule file
+  // renders a surviving `<!--` at all, so nothing can hide inside one. A
+  // markdown link inside a comment never becomes an anchor in the first place.
+  // Measured before removing it: the strip changed the anchor set in ZERO of
+  // the 47 files. It was inert, three times wrong about why, and is gone.
+  const html = marked.parse(body.join('\n'), { async: false });
+  // `rowsOnly` is the table-index contract, asked literally: is the anchor
+  // inside a TABLE? The old source-side form tested whether a line began with a
+  // pipe, which a blockquoted pipe-line satisfied while rendering as a
+  // paragraph. `(?!<table)` stops a stray unclosed `<table>` from pairing with
+  // a LATER table's close and swallowing the prose between them.
+  const scope = rowsOnly
+    ? [...html.matchAll(/<table(?:(?!<table)[\s\S])*?<\/table>/g)].map((m) => m[0]).join('\n')
+    : html;
+  const targets: string[] = [];
+  for (const m of scope.matchAll(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)) {
+    // An anchor with nothing VISIBLE in it is not a pointer a reader can
+    // follow: `[](layout-utils.md)` renders zero-width with nothing to click.
+    // So "every <a href>" is nearly, but not exactly, the visibility question.
+    //
+    // An IMAGE counts as content -- a badge link is clickable. The first cut
+    // stripped every tag before testing, which dropped an image-only anchor
+    // and so stopped the dangling-pointer half from reporting a badge that
+    // pointed at a file that does not exist: a narrowing that fails quiet,
+    // which is the one direction this fence must never fail in.
+    //
+    // Emptiness is judged after decoding the spaces that do not look like
+    // spaces. `String.trim()` removes White_Space only, so a zero-width space
+    // or an `&nbsp;` left a cell blank on the page while still crediting the
+    // pointer.
+    // DECODE, then ask whether anything is left that a reader could see.
+    //
+    // The first cut was an alternation of entity spellings, and review found
+    // it had `&#x2028;` where `&#x200b;` belonged -- a transposition, so the
+    // hex zero-width space was credited over a blank cell. Patching the list
+    // would not have helped: `&#x00a0;`, `&#0160;` and `&#08203;` are all
+    // legal spellings of characters the list already named, so any hand list
+    // is wrong by construction. Decoding numerically removes the whole class,
+    // and it is why this is a decoder rather than a longer alternation.
+    const visible = m[2]!
+      // Media renders on its own, so an image-only anchor IS clickable and
+      // must count. `object` is here because an `<object data=...>` DOES
+      // render -- an earlier revision dropped it claiming the opposite, which
+      // was simply false. `picture` stays out: it is a container that renders
+      // only through its children, and a `<picture>` wrapping an `<img>` is
+      // caught by the `img` arm anyway.
+      .replace(/<(?:img|svg|video|canvas|object)\b[^>]*>/gi, 'x')
+      .replace(/<[^>]*>/g, '')
+      // Guarded, because `String.fromCodePoint` THROWS above U+10FFFF and
+      // marked passes 1-6 hex / 1-7 decimal digits through unescaped: a rule
+      // file containing `[&#x110000;](x.md)` would abort this case with a
+      // RangeError instead of failing with its own message. Out of range is
+      // left as written, which is what a browser shows.
+      // ONE pass over all three spellings. Three sequential passes let the
+      // output of one be re-read by the next: `&#x26;#8203;` decoded to `&`,
+      // which the decimal pass then read as `&#8203;` and blanked, dropping a
+      // pointer a browser renders as the literal text `&#8203;`. Same class as
+      // the `&amp;`-LAST ordering on the href decoder, and one pass is a fix
+      // that cannot recur rather than an ordering that must be argued again.
+      .replace(
+        /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));/gi,
+        (whole: string, hex?: string, dec?: string, name?: string) => {
+          if (hex !== undefined) return codePoint(parseInt(hex, 16), whole);
+          if (dec !== undefined) return codePoint(Number(dec), whole);
+          return NAMED_BLANK[name!.toLowerCase()] ?? whole;
+        },
+      )
+      // Everything here is zero-width or a separator: nothing a reader sees.
+      // `trim()` alone would not do it -- it removes White_Space only, and a
+      // zero-width space is not White_Space.
+      // Only the ones `trim()` does NOT already remove. U+2028/2029 are
+      // LineTerminators and U+FEFF is WhiteSpace, so listing them here was
+      // inert -- deleting them passed the whole table, which is the "guard
+      // with nothing under it" shape this file keeps rediscovering. What is
+      // load-bearing is U+00AD, the U+200B-200F range (LRM/RLM included) and
+      // U+2060.
+      // U+2060-2064 as a RANGE, not just the word joiner: the invisible
+      // operators (function application, times, separator, plus) render as
+      // nothing too. Found by the round-trip check below, which flagged `&af;`
+      // as an inert map key the moment it was written -- the map named the
+      // entity while this class did not cover what it decodes to, so the
+      // entry did nothing and nothing said so.
+      .replace(/[\u00ad\u200b-\u200f\u2060-\u2064]/g, '');
+    if (visible.trim() === '') continue;
+    targets.push(
+      m[1]!
+        // `&amp;` LAST: decoding it first would turn `&amp;lt;` into `&lt;` and
+        // then into `<`, inventing a character the author never wrote.
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#(?:39|x27);/gi, "'")
+        .replace(/&amp;/g, '&')
+        .split('#')[0]!,
+    );
+  }
+  return targets;
+}
+
+/**
+ * The `.claude/rules` file a raw link target denotes, or undefined when it
+ * points somewhere else.
+ *
+ * Two spellings reach the same file and both count: a BARE name, which is how
+ * one rule file links a sibling, and any path ending `.claude/rules/<name>`,
+ * which is how CLAUDE.md writes it. Everything else -- `docs/import.md`,
+ * `../../docs/provider-rules.md`, `docs/design/463-cfn-macros.md` -- is a
+ * pointer out of the corpus and is none of this fence's business. Getting this
+ * wrong in the permissive direction is not cosmetic: basenaming every `.md`
+ * link makes `docs/state-management.md` look like a missing rule file, and the
+ * resulting noise is what trains someone to stop reading the failure.
+ */
+function ruleTarget(raw: string): string | undefined {
+  // The renderer hands back EVERY href, including ones the old regex filtered
+  // by construction: `https://` pointers, and GFM autolinks -- `marked` turns
+  // the bare text `cdk-local@0.10.0` in layout-local.md into a `mailto:`. The
+  // `.md` test therefore belongs here, at the one place that decides what a
+  // target denotes, rather than back in the extraction.
+  if (!raw.endsWith('.md')) return undefined;
+  if (!raw.includes('/')) return raw;
+  const m = /(?:^|\/)\.claude\/rules\/([^/]+\.md)$/.exec(raw);
+  return m?.[1];
+}
 
 interface RuleFile {
   name: string;
@@ -1257,77 +1513,378 @@ describe('.claude/rules payload fence', () => {
     expect(CORPUS_BYTES_MIN).toBeLessThan(CORPUS_BYTES_MAX);
   });
 
-  it('every satellite is reachable from an index, and every index row resolves', () => {
-    // The satellites load by their own globs, so an unindexed one still WORKS
-    // -- which is why nothing noticed. It stops being findable by a human
-    // reading code-layout.md, which is how the next split decides where text
-    // belongs.
-    // Two index SHAPES, because the corpus has two. `code-layout.md` /
-    // `providers.md` index their families with a TABLE, so a row is required
-    // there for the reasons below. The `hooks-*` family's index is `hooks.md`
-    // itself, which has no table -- all five pre-existing satellites are
-    // reached by a PROSE sentence at the point the text was lifted from, which
-    // is the right shape for that family and the only one available. Prose is
-    // the weaker mode (the probes below show why), so it is granted only to
-    // the family that has no alternative, not to the table indexes.
+  it('no rule file renders a surviving HTML comment, so nothing can hide in one', () => {
+    // This is the PRECONDITION that lets `visibleLinkTargets` carry no
+    // comment-stripping. `marked` passes a raw HTML comment through verbatim,
+    // so a raw `<a href>` written inside one would reach the extractor
+    // invisible to a reader. Three attempts at stripping comments were each
+    // wrong in a different direction (go-to-k/cdkd#2672 rounds 5-7), so the
+    // question is answered by ASSERTING the thing that makes stripping
+    // unnecessary rather than by a fourth regex.
+    //
+    // A markdown link inside a comment never becomes an anchor, so this only
+    // has to hold for comments that SURVIVE rendering -- and none does today,
+    // because every `<!--` in the corpus is inside a code span.
+    // BOTH POLARITIES, because the corpus case alone is vacuous: nothing trips
+    // it today, so replacing the predicate with `() => false` left the whole
+    // suite green when probed. These two are what make the corpus assertion
+    // mean something.
+    // All FOUR raw-passthrough block types, because the predicate's job is to
+    // make the absent comment-stripper safe and a comment is only one of the
+    // ways raw HTML reaches the output. Probing showed that reverting the
+    // widening to `<!--` alone left the whole suite green: nothing in the
+    // corpus carries the other three, so these are the only thing under them.
+    for (const raw of [
+      '<!-- <a href="ghost.md">x</a> -->',
+      '<?x <a href="ghost.md">y</a> ?>',
+      '<!X <a href="ghost.md">y</a> >',
+      '<![CDATA[<a href="ghost.md">y</a>]]>',
+      '<script><a href="ghost.md">y</a></script>',
+      '<style><a href="ghost.md">y</a></style>',
+      '<textarea><a href="ghost.md">y</a></textarea>',
+    ]) {
+      expect(rendersSurvivingComment(raw), `${raw} reaches the output raw`).toBe(true);
+    }
+    // ...and the negative, so the loop cannot pass by answering `true` always.
+    // Every comment in this corpus is of this shape -- inside a code span.
+    expect(rendersSurvivingComment('text with a `<!-- coded -->` span')).toBe(false);
+    expect(rendersSurvivingComment('# plain\n\nsee [x](a.md)')).toBe(false);
+
+    // CLAUDE.md is IN the population. It is not a rule file, but it is a link
+    // SOURCE -- `topLevel` is derived from it and it seeds the reachability
+    // walk -- so a raw comment there could hide an anchor that both promotes a
+    // satellite to top-level and marks it reachable. The first cut of this
+    // case checked 46 of the 47 files and omitted exactly the one the fence's
+    // roots come from: a precondition applied to everything except the root is
+    // not a precondition.
+    const sources = [
+      ...ruleFiles.map((r) => ({ name: r.name, text: r.text })),
+      { name: 'CLAUDE.md', text: readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf-8') },
+    ];
+    // The POPULATION is asserted, not assumed. With a clean corpus, dropping
+    // CLAUDE.md changes no verdict, so probing found that removal left the
+    // suite green -- the population bug this case was just fixed for would
+    // have been reintroducible in silence.
+    expect(sources.map((r) => r.name)).toContain('CLAUDE.md');
+    expect(sources.length).toBe(ruleFiles.length + 1);
+
+    const surviving = sources.filter((r) => rendersSurvivingComment(r.text)).map((r) => r.name);
+    expect(
+      surviving,
+      `${surviving.join(', ')} render a raw HTML comment. That is allowed in itself, but it means a raw <a href> could be written inside one and would be credited by visibleLinkTargets while a reader sees nothing. Either put the comment inside a code span, or give visibleLinkTargets a comment-stripper AND pin it -- read the note there first, three attempts at one were each wrong in a different direction.`,
+    ).toEqual([]);
+  });
+
+  it('visibleLinkTargets judges what a READER sees, not what the source contains', () => {
+    // Guard-the-guard, and the reason is measured: an A/B of this function
+    // before and after the frontmatter / empty-text / table-bounding guards
+    // landed showed ZERO difference across all 46 rule files plus CLAUDE.md in
+    // both `rowsOnly` modes. Every one of them is latent on today's corpus, so
+    // deleting or inverting any would leave the whole suite green -- exactly
+    // the "a checker must prove it FAILS" gap this file enforces elsewhere.
+    // The cases below are the only thing standing under them.
+    const t = (src: string, rowsOnly = false): string[] =>
+      visibleLinkTargets(src.split('\n'), rowsOnly);
+
+    // FRONTMATTER is metadata; GitHub strips it and no reader sees a link in
+    // `description:`. Without the skip, a pointer moved out of the body and
+    // into the frontmatter keeps a satellite "reachable" over a blank page.
+    expect(t('---\ndescription: see [x](ghost.md)\n---\n\nbody')).toEqual([]);
+    expect(t('---\ndescription: d\n---\n\nsee [x](real.md)')).toEqual(['real.md']);
+    // A body `---` is a thematic break, not a second frontmatter fence.
+    expect(t('---\nd: 1\n---\n\nsee [x](real.md)\n\n---\n\nmore')).toEqual(['real.md']);
+    // No frontmatter at all -- CLAUDE.md's shape.
+    expect(t('# Title\n\nsee [x](real.md)')).toEqual(['real.md']);
+
+    // A link inside a CODE BLOCK is not a pointer. This is the property the
+    // whole renderer switch exists for: four hand-rolled attempts each let one
+    // shape of this through.
+    expect(t('```\n[x](ghost.md)\n```')).toEqual([]);
+    expect(t('````markdown\n```bash\n```\n[x](ghost.md)\n````')).toEqual([]);
+    expect(t('    [x](ghost.md)')).toEqual([]);
+    expect(t('\t[x](ghost.md)')).toEqual([]);
+    expect(t('> ```\n> [x](ghost.md)\n> ```')).toEqual([]);
+    // ...but a quoted PLAIN link is visible, so it counts.
+    expect(t('> see [x](real.md)')).toEqual(['real.md']);
+
+    // EMPTY link text renders zero-width: nothing to click.
+    expect(t('[](ghost.md)')).toEqual([]);
+    expect(t('[​](ghost.md)')).toEqual([]);
+    expect(t('[&nbsp;](ghost.md)')).toEqual([]);
+    // An IMAGE is content. Dropping it silenced the dangling-pointer half for
+    // badge links, which fails quiet.
+    expect(t('[![alt](badge.svg)](real.md)')).toEqual(['real.md']);
+
+    // A markdown link inside a comment is not an anchor, so the absent
+    // comment-stripper costs nothing -- pinned here because the whole argument
+    // for removing it rests on this.
+    expect(t('<!--\n[x](ghost.md)\n-->\n\nsee [y](real.md)')).toEqual(['real.md']);
+    // CommonMark's abbreviated `<!-->`, the shape that defeated the unbounded
+    // stripper: a link AFTER it must still be seen, not swallowed.
+    expect(t('<!-->\n\nsee [x](real.md)\n\n<!-- c -->')).toEqual(['real.md']);
+    // Media other than <img> is clickable content too.
+    expect(t('[<svg width="1"></svg>](real.md)')).toEqual(['real.md']);
+    // Every invisible spelling is asserted, not a sample. Review measured that
+    // 24 of the 26 alternatives in the hand-list this replaces were unpinned:
+    // deleting them left the suite green, which is the "latent guard with
+    // nothing under it" standard this same file asserts elsewhere. A table is
+    // the only way that stays true as the set changes.
+    for (const blank of [
+      '', // no text at all
+      '&#x200b;',
+      '&#8203;',
+      '&#x0200b;', // leading zeros are legal and defeated the old list
+      '&#08203;',
+      '&#x00a0;',
+      '&#0160;',
+      '&nbsp;',
+      '&shy;',
+      '&zwnj;',
+      '&zwj;',
+      '&ensp;',
+      '&emsp;',
+      '&thinsp;',
+      '&numsp;',
+      '&hairsp;',
+      '&ZeroWidthSpace;', // the alias of the character the transposition bug was about
+      '&NonBreakingSpace;',
+      '&ThinSpace;',
+      '&VeryThinSpace;',
+      '&puncsp;',
+      '&emsp13;',
+      '&#x2060;', // word joiner
+      '&#8288;',
+      '&#x2061;', // function application -- outside the class until the
+      '&#x2064;', // round-trip check flagged `&af;` as inert
+      '&af;',
+      '&#x2028;', // line separator -- deleted by the first correction, restored
+      '&#x2029;',
+      '&#x200e;', // LRM / RLM: in the class and, until review, untested
+      '&#x200f;',
+      '\u200b', // the literal characters, not just their entities
+      '\u00ad',
+      '\ufeff',
+    ]) {
+      expect(t(`[${blank}](ghost.md)`), `[${blank}](...) renders blank`).toEqual([]);
+    }
+    // ...and the visible controls, so the loop above cannot pass by rejecting
+    // everything. A NON-breaking space is invisible; an ordinary letter is not.
+    // `&#x41;` is the HEX arm's visible control and it is load-bearing: with
+    // only `&#65;` here, replacing the hex decoder with `() => ''` -- i.e.
+    // silently deleting every hex entity, so a link whose text is `&#x41;`
+    // stops being a pointer -- passed all 23 blanks, all 4 media cases and
+    // every other control. A decoder needs a case in BOTH directions or only
+    // its over-stripping half is fenced.
+    // `&#x110000;` / `&#1114112;` pin the codePoint GUARD, which review found
+    // shipping unpinned: reverting it to a bare `String.fromCodePoint` threw a
+    // RangeError on this input while leaving all 60 other assertions green.
+    // Out of range stays literal text, which is what a browser shows.
+    //
+    // `&#x26;#8203;` pins the SINGLE-PASS decode: three sequential passes read
+    // it as `&` then `&#8203;` and blanked it, dropping a pointer whose text a
+    // browser renders literally.
+    for (const seen of [
+      'x',
+      '&amp;',
+      '&#65;',
+      '&#x41;',
+      '&#x110000;',
+      '&#1114112;',
+      '&#x26;#8203;',
+      '&lt;',
+      '0',
+    ]) {
+      expect(t(`[${seen}](real.md)`), `[${seen}](...) renders something`).toEqual(['real.md']);
+    }
+    // EVERY key in the map must actually blank a link, asserted by round-trip
+    // rather than by inspection. Written after `noBreak:` sat in the map doing
+    // nothing: the lookup lowercases the entity name, so a camelCase key can
+    // never match, and a missed blank entity fails SILENTLY -- it just credits
+    // the pointer. A casing check was tried first and was vacuous by
+    // construction (with every key already lowercase, disabling it changed no
+    // verdict). Deriving the cases from the map catches casing, a typo, and a
+    // regex that stops matching some spelling, and it cannot go stale as the
+    // map grows.
+    // The control that proves the check below can FAIL at all. With every key
+    // working, disabling the filter changes no verdict -- it is a
+    // RE-INTRODUCTION guard, not a live discriminator, and this file insists
+    // on knowing the difference. This line pins the mechanism: an entity the
+    // map does not name leaves the link visible, which is exactly what a dead
+    // key looks like to the filter.
+    expect(t('[&NotAnEntity;](real.md)')).toEqual(['real.md']);
+
+    const deadKeys = Object.keys(NAMED_BLANK).filter(
+      (k) => t(`[&${k};](ghost.md)`).length !== 0,
+    );
+    expect(
+      deadKeys,
+      `these NAMED_BLANK keys do not blank a link, so they are inert: ${deadKeys.join(', ')}. The lookup lowercases the entity name, and the scan only matches /&[a-z][a-z0-9]*;/i.`,
+    ).toEqual([]);
+
+    // The generic tag strip, also found unpinned: without it an anchor whose
+    // only content is an empty inline element is credited as a pointer.
+    for (const empty of ['<b></b>', '<span></span>', '<kbd></kbd>']) {
+      expect(t(`[${empty}](ghost.md)`), `${empty} renders nothing`).toEqual([]);
+    }
+
+    // Media that renders on its own is content; a container that renders
+    // nothing without children is not.
+    for (const media of [
+      '<img src="i.png">',
+      '<svg></svg>',
+      '<video></video>',
+      '<canvas></canvas>',
+      '<object data="i.svg"></object>',
+    ]) {
+      expect(t(`[${media}](real.md)`), `${media} is visible content`).toEqual(['real.md']);
+    }
+
+    // `rowsOnly` asks whether the anchor is in a TABLE. A stray unclosed
+    // `<table>` must not pair with a later table's close and lend the prose
+    // between them the strength a table index withholds from prose.
+    const strayTable = '<table>\n\nsee [x](stray.md)\n\n| h |\n| - |\n| [y](real.md) |';
+    expect(t(strayTable, true)).toEqual(['real.md']);
+    expect(t(strayTable, false)).toEqual(['stray.md', 'real.md']);
+  });
+
+  it('every satellite is reachable, and every markdown link in the corpus resolves', () => {
+    // A satellite loads by its own glob, so an unindexed one still WORKS --
+    // which is why nothing noticed. What it loses is discoverability: the next
+    // person deciding where a paragraph belongs reads an index, not a
+    // directory listing.
+    //
+    // The population used to be two filename PREFIXES while this case's name
+    // claimed every satellite, so the six `hooks-*` files sat outside it and a
+    // misplaced pointer went unreported (go-to-k/cdkd#2657). Prefixes are not
+    // the right discriminator anyway -- eight satellites carry none, and
+    // `docs-page-template.md` was a live orphan hiding behind that gap
+    // (go-to-k/cdkd#2656).
+    //
+    // The discriminator is DERIVED instead: a rule file linked from CLAUDE.md
+    // is TOP-LEVEL (CLAUDE.md is its index); anything else is a satellite and
+    // needs a pointer from somewhere. Derived rather than hand-listed because
+    // a hand list is what goes stale -- the failure this whole case exists to
+    // catch. Measured through this predicate, not by grep: 46 files, 12 linked
+    // from CLAUDE.md, 34 not -- and 35 satellites, because the union below
+    // adds one of the twelve back. Counting the 34 and calling it the
+    // population is off by exactly the file the union exists for.
+    // The prefixed families are UNIONED in so the population can only widen:
+    // `hooks-main-tree-branch.md` is BOTH prefixed and CLAUDE.md-linked, and
+    // dropping it would have been a silent narrowing dressed up as a
+    // generalisation.
+    const claudeMd = readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf-8').split('\n');
+    const topLevel = new Set(
+      visibleLinkTargets(claudeMd)
+        .map(ruleTarget)
+        .filter((t): t is string => t !== undefined),
+    );
+    const FAMILY_PREFIXES = [/^layout-/, /^provider-/, /^hooks-/];
+    const isSatellite = (n: string): boolean =>
+      !topLevel.has(n) || FAMILY_PREFIXES.some((p) => p.test(n));
+
+    // Reachability asks a different question from the index-SHAPE case below,
+    // so it reads every rule file rather than the three indexes: `assets.md`
+    // points at `asset-bucket-region.md`, `testing.md` at
+    // `test-stream-fence.md`, `layout-misc.md` at `state-version-purge.md`.
+    // Those are real pointers and a human following them finds the file.
+    //
+    // It is a WALK from the roots, not an inbound-link count. "Something links
+    // it" passes a pair of satellites that link only each other while nothing
+    // reachable links either -- review demonstrated exactly that, and the
+    // self-link exclusion the first cut relied on catches only the 1-cycle of
+    // that same shape. A reader arrives from CLAUDE.md, so that is where the
+    // walk starts; anything it cannot get to is unfindable however many
+    // pointers it has.
+    const linksOf = new Map<string, string[]>();
+    const broken: string[] = [];
+    const known = new Set(ruleFiles.map((r) => r.name));
+    for (const source of [...ruleFiles, { name: 'CLAUDE.md', lines: claudeMd }]) {
+      const out: string[] = [];
+      for (const raw of visibleLinkTargets(source.lines)) {
+        const target = ruleTarget(raw);
+        if (target === undefined) continue;
+        // Existence is asked of EVERY visible link, including one to a
+        // top-level file and including a self-link. Filtering first is how an
+        // earlier cut narrowed the dangling half live rather than latently.
+        if (!known.has(target)) broken.push(`${source.name} -> ${target}`);
+        else if (target !== source.name) out.push(target);
+      }
+      linksOf.set(source.name, out);
+    }
+    expect(
+      [...new Set(broken)].sort(),
+      `These markdown links point at .claude/rules files that do not exist: ${[...new Set(broken)].sort().join(', ')}. A rename moved the target and left the pointer behind.`,
+    ).toEqual([]);
+
+    const reached = new Set<string>();
+    const queue = ['CLAUDE.md', ...topLevel];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const next of linksOf.get(cur) ?? []) {
+        if (reached.has(next)) continue;
+        reached.add(next);
+        queue.push(next);
+      }
+    }
+    const orphans = ruleFiles.map((r) => r.name).filter((n) => isSatellite(n) && !reached.has(n));
+    expect(
+      orphans,
+      `${orphans.join(', ')} are satellites no reader can WALK to from CLAUDE.md. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs navigates from an index, not a directory listing. Add a pointer from the file the text belongs with, and make sure THAT file is itself reachable: a mutual pair of satellites pointing at each other is not reachable, and neither is a file that only names itself.`,
+    ).toEqual([]);
+  });
+
+  it('a prefixed satellite is reached from its family index, in that index own shape', () => {
+    // Reachability above accepts a pointer from anywhere, which is right for
+    // discoverability and too weak for the three families that HAVE an index:
+    // there, the index is the map, and a sentence buried in a sibling file is
+    // not a substitute for a row in it. This case keeps that stricter contract
+    // -- it is the one two review probes were written against.
+    //
+    // Two index SHAPES, because the corpus has two. `code-layout.md` and
+    // `providers.md` index their families with a TABLE, so a ROW is required:
+    // a probe deleted `layout-utils.md`'s row and the assertion stayed green
+    // on the strength of a sentence further down, and a second probe left the
+    // identical text inside a fenced block. The `hooks-*` family's index is
+    // `hooks.md` itself, which has no table -- every one of its satellites is
+    // reached by a PROSE sentence at the point the text was lifted from, the
+    // right shape for that family and the only one available. Prose is the
+    // weaker mode, so it is granted only to the family with no alternative.
     const indexes: readonly { file: string; prefix: RegExp; rowsOnly: boolean }[] = [
       { file: 'code-layout.md', prefix: /^layout-/, rowsOnly: true },
       { file: 'providers.md', prefix: /^provider-/, rowsOnly: true },
       { file: 'hooks.md', prefix: /^hooks-/, rowsOnly: false },
     ];
-    const linked = new Set<string>();
-    const broken: string[] = [];
+    const missing: string[] = [];
+    for (const { file: idx, prefix } of indexes) {
+      expect(
+        prefix.test(idx),
+        `${idx} now matches its own family prefix ${String(prefix)}, so it would be required to point at itself. Give this loop back its self-exclusion.`,
+      ).toBe(false);
+    }
     for (const { file: idx, prefix, rowsOnly } of indexes) {
-      // TABLE ROWS only, and only OUTSIDE fenced code blocks. A prose pointer
-      // elsewhere in the file also makes a satellite findable, but it is not
-      // the index -- a review probe deleted `layout-utils.md`'s row and the
-      // assertion stayed green on the strength of a sentence further down. The
-      // fence-stripping is the same hole one level down: the second review
-      // round deleted the real row and left the identical text inside a
-      // ```markdown block, and it went green again. `providers.md` already
-      // contains fenced blocks, so this is reachable, not theoretical.
-      const rows: string[] = [];
-      let inFence = false;
-      for (const line of ruleFiles.find((r) => r.name === idx)!.lines) {
-        if (line.trimStart().startsWith('```')) {
-          inFence = !inFence;
-          continue;
-        }
-        if (!inFence && (rowsOnly ? line.trimStart().startsWith('|') : true)) rows.push(line);
-      }
-      // Link TEXT is unconstrained: a row reading `[utils](layout-utils.md)` is
-      // a perfectly good index row, and an earlier form reported it as missing
-      // because it required the text to repeat the filename.
-      for (const m of rows.join('\n').matchAll(/\[[^\]]+\]\(([a-z0-9-]+\.md)\)/g)) {
-        // TWO separate questions, and the order matters. Does the target
-        // EXIST is asked of every link an index makes, including the
-        // unprefixed ones -- hooks.md prose names `session-report.md` and
-        // `gate-sibling-repos.md`, and a rename of either must still be
-        // reported. Filtering by family first shadowed exactly that: the
-        // first cut of this fix put the `continue` above this line and
-        // narrowed the dangling-link half live, not latently (round 2 on
-        // go-to-k/cdkd#2657 -- the fix for one half quietly deleting the
-        // other is why every fix round gets reviewed).
-        if (!ruleFiles.some((r) => r.name === m[1]!)) broken.push(`${idx} -> ${m[1]!}`);
-        // Does it COUNT as this family's index entry is asked only of the
-        // family this index OWNS. `linked` is shared across indexes while
-        // `prefix` is per-index, so without this a prose sentence in hooks.md
-        // naming a `layout-*` file would satisfy code-layout.md's orphan
-        // check -- silently granting prose mode to a table index, which the
-        // comment above says must never happen.
-        if (!prefix.test(m[1]!)) continue;
-        linked.add(m[1]!);
+      // Credit a link only to the family this index OWNS: without it a prose
+      // sentence in hooks.md naming a `layout-*` file would satisfy
+      // code-layout.md's requirement, silently granting prose mode to a table
+      // index -- the thing the comment above says must never happen.
+      const own = new Set(
+        visibleLinkTargets(ruleFiles.find((r) => r.name === idx)!.lines, rowsOnly)
+          .map(ruleTarget)
+          .filter((t): t is string => t !== undefined && prefix.test(t)),
+      );
+      // No `name !== idx` guard: an index's own name does not match its own
+      // family prefix, so the condition could not fire, and a guard that
+      // cannot fire reads as protection that is not there. That is a property
+      // of the three current names rather than of the structure, so it is
+      // asserted here instead of claimed in a comment -- rename an index to
+      // `hooks-index.md` and this fires rather than silently making the file
+      // demand a pointer to itself.
+      for (const { name } of ruleFiles) {
+        if (prefix.test(name) && !own.has(name)) missing.push(`${name} (${idx})`);
       }
     }
-    expect(broken, `Index rows point at rule files that do not exist: ${broken.join(', ')}.`).toEqual(
-      [],
-    );
-    const orphans = ruleFiles
-      .map((r) => r.name)
-      .filter((n) => indexes.some((i) => i.prefix.test(n)) && !linked.has(n));
     expect(
-      orphans,
-      `${orphans.join(', ')} are satellites that no index links to. They still load by their own \`paths:\`, so no budget notices -- but the next person deciding where a paragraph belongs reads the index, not the directory. Add a row to code-layout.md or providers.md, or -- for a \`hooks-*\` satellite -- a prose pointer in hooks.md at the point the text was lifted from. The pointer belongs in the file the text LEFT, not in the satellite -- only the index files above are scanned, so a satellite naming itself is not an inbound link and cannot clear this.`,
+      missing,
+      `${missing.join(', ')} -- each is a prefixed satellite absent from its family index, in the shape that index uses. For code-layout.md and providers.md that means a TABLE ROW outside any fenced or indented code block; for hooks.md a prose pointer at the point the text was lifted from.`,
     ).toEqual([]);
   });
 

@@ -22,5 +22,6 @@ Per-area detail lives in the satellite files below. Each one is loaded only when
 | `src/analyzer/**` | [layout-analyzer.md](layout-analyzer.md) | DAG builder, template parser, Outputs diff |
 | `src/synthesis/**`, `src/state/**`, `src/assets/**`, `src/types/**` | [layout-misc.md](layout-misc.md) | synthesis, S3 state backend, asset publishing, type definitions |
 | `scripts/**`, `docs/_generated/**` | [layout-scripts.md](layout-scripts.md) | coverage generators, their generated docs, CI critics |
+| `docs/**` | [docs-page-template.md](docs-page-template.md) | page shape and voice for the public cdkd.dev site |
 
 Provider contract, Custom Resources, and "Adding a New SDK Provider": [providers.md](providers.md).
