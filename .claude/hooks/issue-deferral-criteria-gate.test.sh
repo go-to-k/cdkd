@@ -22,24 +22,55 @@
 #     `--body-file`, so an unscoped extraction reads the COMMIT MESSAGE. Here
 #     the polarity is inverted -- an unscoped read manufactures a FALSE BLOCK
 #     from a neighbouring segment -- so both orderings are pinned.
+#   - BLOCK on the one-call `heredoc -> file -> --body-file` shape when the
+#     path ALREADY EXISTS. That was the gate's own FAIL-OPEN: a stale-but-clean
+#     file made it judge the PREVIOUS body and pass (rc=0 where the
+#     file-absent twin answered 2), which is the dangerous direction -- a run
+#     that looks like a working gate.
+#   - PASS for a body ARGUING about this rule that quotes the refused line
+#     inside a fenced code block, while the same quote UNFENCED still blocks
+#   - BLOCK on a `**Session-fit:**` / `**Session-fit**:` bolded key
+#   - PASS for a legitimate reason followed by a list item
 #
-# MUTATION-PROBED rather than asserted (measured 2026-09-05, 64 cases). A tally
-# says how many cases ran, not what any of them fences, so each fence below was
-# broken in the real hook and the survivors counted:
+# MUTATION-PROBED rather than asserted (re-measured 2026-09-05 after the
+# fail-open / fence / bold / list-item round, 78 cases). A tally says how many
+# cases ran, not what any of them fences, so each fence below was broken in the
+# real hook and the survivors counted:
 #
-#   always-`exit 0` stub                     fails 35   (nothing passes vacuously)
-#   always-`exit 2` stub                     fails 33   (nor does anything block
+#   always-`exit 0` stub                     fails 43   (nothing passes vacuously)
+#   always-`exit 2` stub                     fails 40   (nor does anything block
 #                                                        vacuously)
 #   `next` polarity test -> `if true`        fails  2   -- exactly the two
 #                                                        `Session-fit: now` cases
-#   continuation boundary -> `if false`      fails  1   -- exactly the sibling
-#                                                        field-line case, so the
-#                                                        boundary is load-bearing
-#                                                        and not decoration
+#   continuation boundary -> `if false`      fails  4   -- the sibling field-line
+#                                                        case plus the bold-key,
+#                                                        bullet and numbered-item
+#                                                        cases: the boundary is
+#                                                        load-bearing, not
+#                                                        decoration
 #   segment scoping reverted (scan `$cmd`)   fails  4   -- both neighbouring-
 #                                                        segment cases, plus the
 #                                                        subshell and command-
 #                                                        substitution spellings
+#   fence strip -> never matches             fails  2   -- exactly the two
+#                                                        fenced-exhibit cases
+#   bolded-key accept reverted               fails  2   -- exactly the two bold
+#                                                        spellings
+#   list-item boundary -> never matches      fails  2   -- exactly the bullet and
+#                                                        numbered-item cases
+#   heredoc arm 1 removed (file-first)       fails  3   -- the fail-open case, its
+#                                                        false-block complement,
+#                                                        and the relative spelling
+#   `cmd_replaces_either` -> `true`          fails  1   -- exactly the APPEND case,
+#                                                        so "an append is not a
+#                                                        rewrite" is fenced apart
+#                                                        from "the command writes"
+#   raw path spelling dropped                fails  1   -- exactly the relative
+#                                                        case, so offering BOTH
+#                                                        spellings to the matchers
+#                                                        is fenced
+#   space after `Session-fit:` in the        fails  1   -- exactly the rendering
+#     refusal removed                                     case
 
 set -u
 
@@ -202,6 +233,94 @@ mkbody "$NOWPR"   'Session-fit: now -- it lands in files this session has open; 
 } > "$SIBLING"
 mkbody "$CAPS"    'SESSION-FIT: NEXT (NOT THIS SESSION) -- IT NEEDS ITS OWN PR'
 
+# --- review-round fixtures --------------------------------------------------
+# A body ARGUING ABOUT this rule quotes the refused line to do it, inside a
+# ```text fence, and classifies ITSELF `now`. Before the fence strip the first
+# `Session-fit:` match won and `break`d, so the exhibit was read as the body's
+# own decision and the filing was refused -- with a remedy (the bypass) that a
+# body of this shape should never have to reach for.
+FENCED="$TMPROOT/fenced.md"
+{
+  printf 'The deferral gate should not need a bypass to be discussed.\n\n'
+  printf 'The line it refuses looks like:\n\n'
+  printf '```text\n'
+  printf 'Session-fit: next (not this session) -- this needs its own PR\n'
+  printf '```\n\n'
+  printf 'Session-fit: now -- the evidence exists only in this session\n'
+  printf 'Severity: medium -- the rule is unenforced until this lands\n'
+} > "$FENCED"
+# The control that keeps the strip honest: the SAME quotation in running prose,
+# unfenced, is indistinguishable from an assertion and still blocks (the inline
+# quote is what the bypass is for).
+UNFENCED="$TMPROOT/unfenced.md"
+{
+  printf 'The deferral gate should not need a bypass to be discussed.\n\n'
+  printf 'The line it refuses looks like:\n\n'
+  printf 'Session-fit: next (not this session) -- this needs its own PR\n\n'
+  printf 'Session-fit: now -- the evidence exists only in this session\n'
+} > "$UNFENCED"
+# A ~~~ fence is a fence too.
+FENCED_TILDE="$TMPROOT/fenced-tilde.md"
+{
+  printf 'Quoting the refused line:\n\n'
+  printf '~~~\n'
+  printf 'Session-fit: next (not this session) -- this needs its own PR\n'
+  printf '~~~\n\n'
+  printf 'Session-fit: now -- it lands in files this session has open\n'
+} > "$FENCED_TILDE"
+
+# A BOLDED key. Measured across 300 real issue bodies it appears zero times, so
+# this fences a latent gap rather than an observed miss -- `rest` used to become
+# `** next (not this session) ...`, which the `^[[:space:]]*next` polarity test
+# rejects, and the gate passed a PR-shaped deferral in silence. Both markdown
+# spellings, because they put the asterisks on opposite sides of the colon.
+BOLDFIT="$TMPROOT/bold-fit.md"
+{
+  printf 'The mapper drops a nested key on update.\n\n'
+  printf '**Session-fit:** next (not this session) -- this needs its own PR\n'
+  printf '**Severity:** medium -- the property is silently not applied\n'
+} > "$BOLDFIT"
+BOLDFIT2="$TMPROOT/bold-fit-2.md"
+{
+  printf 'The mapper drops a nested key on update.\n\n'
+  printf '**Session-fit**: next (not this session) -- it deserves its own review\n'
+} > "$BOLDFIT2"
+# The control: a bolded key with a LEGITIMATE reason must still pass. Without
+# the matching `[*_]*` in the continuation boundary, `**Severity:**` stops
+# looking like a field line and the sibling text folds into the reason.
+BOLDOK="$TMPROOT/bold-ok.md"
+{
+  printf 'The mapper drops a nested key on update.\n\n'
+  printf '**Session-fit:** next (not this session) -- a NEW integ fixture must be written\n'
+  printf '**Severity:** low -- internal tidiness\n'
+  printf '**Notes:** it will land as its own PR once the fixture exists\n'
+} > "$BOLDOK"
+
+# A legitimate reason followed by a BULLET. The continuation already stopped at
+# a blank line, the next `Key:` field and a heading; a list item starts a new
+# markdown block for the same reason, and folding it in refused a deferral
+# whose stated reason is a documented criterion.
+BULLET="$TMPROOT/bullet.md"
+{
+  printf 'The deploy path cannot be exercised without a raised quota.\n\n'
+  printf 'Session-fit: next (not this session) -- blocked on an AWS quota increase\n'
+  printf -- '- the sibling cleanup would need its own PR, so it is filed separately\n'
+  printf 'Severity: low -- nothing regresses meanwhile\n'
+} > "$BULLET"
+# The control: the boundary must not become a blanket amnesty. PR-shaped text
+# on the `Session-fit` line itself still blocks, bullet or no bullet.
+BULLETBAD="$TMPROOT/bullet-bad.md"
+{
+  printf 'Session-fit: next (not this session) -- this needs its own PR\n'
+  printf -- '- an unrelated follow-up bullet\n'
+} > "$BULLETBAD"
+# Numbered list items are list items too.
+NUMLIST="$TMPROOT/numlist.md"
+{
+  printf 'Session-fit: next (not this session) -- blocked on an AWS quota increase\n'
+  printf '1. the sibling cleanup would need its own PR\n'
+} > "$NUMLIST"
+
 # A commit message that QUOTES a PR-shaped deferral -- the realistic shape,
 # since the commit introducing this gate has to describe what it refuses.
 COMMITMSG="$TMPBASE/commit-msg.txt"
@@ -323,6 +442,70 @@ gh issue create --body-file $TMPROOT/hd2.md"
 run "heredoc body is PR-shaped"  "$HD_BAD" "$TMPROOT" 2
 run "heredoc body is legitimate" "$HD_OK"  "$TMPROOT" 0
 
+# --- the heredoc window when the path ALREADY EXISTS (the fail-open) --------
+# The shape above with a file already on disk was the gate's own fail-open, and
+# it is the DANGEROUS direction: the run looks like a working gate while it
+# judges a body nobody is submitting. Measured against the pre-fix hook:
+#
+#   stale clean file + heredoc carrying "needs its own PR"   rc=0  (INERT)
+#   the same command with the file ABSENT                    rc=2
+#   gh-body-english-gate.sh on the identical shape           rc=2
+#
+# The last row is why the fix is a port of that gate's go-to-k/cdkd#2397
+# extraction rather than a new design. Four cases, because the arms disagree:
+# a truncating rewrite must be judged on the HEREDOC (both directions), and an
+# APPEND must still see what is on disk.
+STALE_OK="$TMPROOT/stale-ok.md"
+mkbody "$STALE_OK" 'Session-fit: next (not this session) -- a NEW integ fixture must be written'
+STALE_BAD="$TMPROOT/stale-bad.md"
+mkbody "$STALE_BAD" 'Session-fit: next (not this session) -- this needs its own PR'
+run "existing CLEAN file, heredoc rewrites it PR-shaped" \
+  "cat > $STALE_OK <<'EOF'
+Session-fit: next (not this session) -- this needs its own PR
+EOF
+gh issue create --body-file $STALE_OK" "$TMPROOT" 2
+# The complement, and it is not symmetry for its own sake: reading the stale
+# file when the command replaces it also manufactures a FALSE BLOCK quoting a
+# line that will not exist -- a refusal the author cannot clear.
+run "existing PR-shaped file, heredoc rewrites it CLEAN" \
+  "cat > $STALE_BAD <<'EOF'
+Session-fit: next (not this session) -- a NEW integ fixture must be written
+EOF
+gh issue create --body-file $STALE_BAD" "$TMPROOT" 0
+# An APPEND does not supersede: the file is the FIRST HALF of the submitted
+# body, so its PR-shaped line is still being published. Collapsing `writes` and
+# `replaces` into one predicate is the regression this pins.
+run "APPEND leaves the existing PR-shaped half scanned" \
+  "cat >> $STALE_BAD <<'EOF'
+Estimate: ~30 min -- the unit fixture already exists
+EOF
+gh issue create --body-file $STALE_BAD" "$TMPROOT" 2
+# The RELATIVE spelling. The write-detection matches against raw command TEXT,
+# so handing it only the resolved absolute path leaves this shape unscanned --
+# the gap the sibling gate had to close as a separate round.
+STALE_REL_OK="$TMPROOT/stale-rel.md"
+mkbody "$STALE_REL_OK" 'Session-fit: next (not this session) -- a NEW integ fixture must be written'
+run "relative spelling, existing file, heredoc PR-shaped" \
+  "cd $TMPROOT && cat > stale-rel.md <<'EOF'
+Session-fit: next (not this session) -- this needs its own PR
+EOF
+gh issue create --body-file stale-rel.md" "/" 2
+
+# --- a body ARGUING about the rule: fenced code blocks are not scanned ------
+run "fenced backtick-text exhibit, own fit is now" "gh issue create --body-file $FENCED"       "$TMPROOT" 0
+run "fenced ~~~ exhibit, own fit is now"     "gh issue create --body-file $FENCED_TILDE" "$TMPROOT" 0
+run "the same quote UNFENCED still blocks"   "gh issue create --body-file $UNFENCED"     "$TMPROOT" 2
+
+# --- a BOLDED key is still a key -------------------------------------------
+run "bold **Session-fit:** PR-shaped"  "gh issue create --body-file $BOLDFIT"  "$TMPROOT" 2
+run "bold **Session-fit**: PR-shaped"  "gh issue create --body-file $BOLDFIT2" "$TMPROOT" 2
+run "bold key, legitimate reason"      "gh issue create --body-file $BOLDOK"   "$TMPROOT" 0
+
+# --- a LIST ITEM ends the reason, like a blank line or a heading ------------
+run "legitimate reason then a bullet"       "gh issue create --body-file $BULLET"    "$TMPROOT" 0
+run "legitimate reason then a numbered item" "gh issue create --body-file $NUMLIST"  "$TMPROOT" 0
+run "PR-shaped ON the fit line, then a bullet" "gh issue create --body-file $BULLETBAD" "$TMPROOT" 2
+
 # --- mandated quoted-body false-positive cases (cdkd#563) -------------------
 # A command that merely NAMES the trigger must not fire the gate.
 run "quoted mention in commit message" "git commit -m 'docs: explain gh issue create --body-file flow'" "$TMPROOT" 0
@@ -344,6 +527,12 @@ run "quoted mention of the bypass does not bypass" \
 # --- the refusal names the offending line ----------------------------------
 run_msg "refusal quotes the offending reason" "gh issue create --body-file $OWNPR" "$TMPROOT" 2 \
   "this needs its own PR"
+# The quoted line is RENDERED as a body would spell it -- `Session-fit:` then a
+# space. It read `Session-fit:next (not this session) ...`, which is not a
+# spelling any body uses, so the reader had to work out that the gate had
+# stitched the label back on rather than quoted a line verbatim.
+run_msg "refusal renders the key with its space" "gh issue create --body-file $OWNPR" "$TMPROOT" 2 \
+  "Session-fit: next (not this session) -- this needs its own PR"
 run_msg "refusal names the rule file" "gh issue create --body-file $OWNPR" "$TMPROOT" 2 \
   ".claude/rules/session-report.md"
 run_msg "refusal lists the legitimate next criteria" "gh issue create --body-file $OWNPR" "$TMPROOT" 2 \

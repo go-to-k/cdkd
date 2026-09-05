@@ -43,9 +43,15 @@
 #
 # NOISE CONTROL
 #
-#   Only fires for a command that actually runs an integ fixture. `git` /
-#   `grep` / editor commands exit immediately, and so does a `verify.sh`
-#   mentioned inside a heredoc or an `echo`.
+#   Only fires for a command that actually runs an integ fixture. Read verbs
+#   (`grep` / `cat` / `ls` / `git diff|log|show|add|status` / `echo`) exit
+#   immediately, in command position anywhere in the command rather than only
+#   at its start -- the first revision anchored at `^` only and claimed here
+#   that an `echo`ed or heredoc'd path exited, which was FALSE for
+#   `git diff .../verify.sh`, `cd x && cat .../verify.sh` and a heredoc body.
+#   A path inside an arbitrary quoted string is still a KNOWN false positive:
+#   this hook does not parse quoting, and since it only prints to stderr the
+#   cost is a stray note, not a block.
 
 set -u
 
@@ -57,14 +63,26 @@ tool=$(printf '%s' "$input" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 [ -n "$cmd" ] || exit 0
 
-# The invocation shapes /run-integ actually uses. Deliberately narrow: a
-# `verify.sh` named in prose, in an `echo`, or as a `grep` target must not
-# trigger this. Requiring the fixture-running verbs (`bash`/`sh`, or a
-# `tests/integration/` path) is what keeps it quiet.
-printf '%s' "$cmd" | grep -qE '(bash|sh)[[:space:]]+[^|;&]*verify\.sh|tests/integration/[^[:space:]]*/verify\.sh' || exit 0
-# `grep -n verify.sh`, `cat .../verify.sh`, `ls`: reading a fixture is not
-# running one.
+# The invocation shapes /run-integ actually uses. There are TWO, and covering
+# only the first left the hook silent for four of the nine broad-set fixtures:
+#
+#   verify.sh flow -- `bash tests/integration/<name>/verify.sh`
+#   STANDARD flow  -- `node ../../../dist/cli.js deploy ...`, for a fixture with
+#                     no verify.sh at all: bench-cdk-sample, microservices,
+#                     multi-resource, multi-stack-deps (re-derive with
+#                     `ls tests/integration/<n>/verify.sh`, do not trust this list)
+#
+# Those four are exactly the runs that refresh `integ-broad`, the marker this
+# hook exists to protect, so arming only on `verify.sh` missed the cases with
+# the most to lose.
+printf '%s' "$cmd" | grep -qE '(bash|sh)[[:space:]]+[^|;&]*verify\.sh|tests/integration/[^[:space:]]*/verify\.sh|(node|cdkd)[[:space:]]+[^|;&]*(dist/)?cli\.js[[:space:]]+(deploy|destroy)|^[[:space:]]*cdkd[[:space:]]+(deploy|destroy)[[:space:]]' || exit 0
+# Reading a fixture is not running one. Anchored at the start of the COMMAND,
+# and (since the review) also matched anywhere for the read verbs that take a
+# path argument -- `git diff .../verify.sh`, `git log -- .../verify.sh` and a
+# `cd x && cat .../verify.sh` all reached the warning before, which is how a
+# warn hook trains people to ignore it.
 printf '%s' "$cmd" | grep -qE '^[[:space:]]*(grep|rg|cat|less|head|tail|ls|wc|sed -n)[[:space:]]' && exit 0
+printf '%s' "$cmd" | grep -qE '(^|[|;&]|&&)[[:space:]]*(grep|rg|cat|less|head|tail|ls|wc|echo|git[[:space:]]+(diff|log|show|add|status))[[:space:]]' && exit 0
 
 cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 [ -n "$cwd" ] || cwd=$PWD
@@ -92,9 +110,14 @@ case "$behind" in ''|*[!0-9]*) exit 0 ;; esac
 branch=$(git -C "$cwd" branch --show-current 2>/dev/null || true)
 [ -n "$branch" ] || branch='(detached HEAD)'
 
-# In-scope commits are what make this expensive rather than merely untidy: a
+# In-scope FILES are what make this expensive rather than merely untidy: a
 # doc-only advance on main will not stale an integ marker. Naming them turns a
 # generic nudge into a judgement the reader can make.
+#
+# This counts FILES, not commits, and the message says so -- an earlier
+# revision computed `--name-only | grep -c` and then printed "N of those
+# COMMITS", so one commit touching five provider files reported "5 of those
+# commits" against a "1 commit(s) behind" line one line above.
 scope_re='^src/provisioning/providers/|^src/provisioning/(cloud-control-provider|region-check)\.ts$|^src/cli/commands/(destroy|destroy-runner|deploy)\.ts$|^src/deployment/(deploy-engine|retry|retryable-errors|rollback-executor|intrinsic-function-resolver)\.ts$|^src/analyzer/(dag-builder|template-parser|implicit-delete-deps|lambda-vpc-deps)\.ts$|^src/provisioning/register-providers\.ts$'
 in_scope=$(git -C "$cwd" diff --name-only HEAD...origin/main 2>/dev/null | grep -cE "$scope_re" || true)
 case "$in_scope" in ''|*[!0-9]*) in_scope=0 ;; esac
@@ -102,7 +125,7 @@ case "$in_scope" in ''|*[!0-9]*) in_scope=0 ;; esac
 {
   echo "NOTE integ-stale-base-detector: '$branch' is $behind commit(s) behind origin/main."
   if [ "$in_scope" -gt 0 ]; then
-    echo "  $in_scope of those commits touch integ-gate scope (providers / destroy / deploy-engine / analyzer)."
+    echo "  $in_scope in-scope file(s) arrive with them (providers / destroy / deploy-engine / analyzer)."
     echo "  A rebase after this run WILL move the merge base and can stale the"
     echo "  integ-destroy / integ-broad marker this run is about to earn, costing"
     echo "  a second real-AWS run. Rebase FIRST, then run this once."

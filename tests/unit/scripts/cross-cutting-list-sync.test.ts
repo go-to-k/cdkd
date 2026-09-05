@@ -862,3 +862,59 @@ describe('broad-integ test-name list stays in sync across its seven copies', () 
     ).toEqual([]);
   });
 });
+
+/**
+ * The stale-base DETECTOR's scope list is a SUPERSET, not a seventh copy.
+ *
+ * `.claude/hooks/integ-stale-base-detector.sh` warns before a real-AWS integ
+ * that a rebase could stale the marker the run is about to earn — and it names
+ * BOTH markers, `integ-destroy` and `integ-broad`. So its `scope_re` is the
+ * UNION of the two gates' scopes, and asserting equality against the
+ * cross-cutting list alone would be wrong in the direction that matters: it
+ * would force the detector to stop warning about `src/provisioning/providers/**`,
+ * which is `integ-destroy`'s scope and the commonest reason a rebase stales a
+ * marker (measured on go-to-k/cdkd#2589, where go-to-k/cdkd#2565 arriving from
+ * main did exactly that).
+ *
+ * A superset assertion is the honest fence: every cross-cutting path must be
+ * covered, extra ones are the design. The detector refuses nothing, so a list
+ * that drifts costs a slightly-wrong nudge rather than a gate failure — which
+ * is why this is one assertion and not the five the blocking gates get.
+ */
+describe('integ-stale-base-detector scope superset', () => {
+  const DETECTOR = join(repoRoot, '.claude', 'hooks', 'integ-stale-base-detector.sh');
+
+  it("covers every path the broad gate's regex names", () => {
+    const m = /^scope_re='([^']+)'$/m.exec(read(DETECTOR));
+    expect(
+      m,
+      "integ-stale-base-detector.sh: no scope_re='...' assignment found. The anchor was " +
+        'reworded — fix this extractor rather than deleting the assertion, or it compares ' +
+        'nothing and passes.',
+    ).not.toBeNull();
+    // MATCH each path against the regex rather than expanding the regex into
+    // paths. `expandPathRegex` deliberately REFUSES anything that is not an
+    // anchored `^<prefix>(<a|b>)\.ts$` shape, and the detector's list contains a
+    // directory prefix (`^src/provisioning/providers/`) by design — it covers
+    // integ-destroy's scope too. Matching is also the more faithful question:
+    // what the hook does with `scope_re` is grep paths with it.
+    const detectorRe = new RegExp(m![1]);
+    const crossCutting = pathsFromHookRegex();
+    // Floor: if the upstream extractor ever returns [], every path trivially
+    // matches and this assertion would pass having compared nothing.
+    expect(
+      crossCutting.length,
+      'the broad gate yielded no cross-cutting paths, so this superset check ' +
+        'would pass vacuously',
+    ).toBeGreaterThanOrEqual(9);
+
+    const missing = crossCutting.filter((p) => !detectorRe.test(p));
+    expect(
+      missing,
+      'these cross-cutting paths are in integ-broad-gate.sh but NOT in the detector, so a ' +
+        'rebase pulling one in would print the reassuring "probably survive" arm while the ' +
+        'integ-broad marker actually goes stale — the detector telling you the opposite of ' +
+        'the truth is worse than it staying silent.',
+    ).toEqual([]);
+  });
+});

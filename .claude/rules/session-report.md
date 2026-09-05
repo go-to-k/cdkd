@@ -104,9 +104,16 @@ named command in the issue body beside `Session-fit`.
 **Calibration: RUNNING an existing integ is never a deferral reason.**
 Measured over the 268-row ledger (2026-08-20): median run 85 s, mean 4.6 min,
 p90 8.8 min. A fix riding a fixture the session already runs costs zero.
-What is genuinely expensive: WRITING a new fixture, an integ that FAILS
-(unbounded, and paid next session too), and above all REVIEW of a larger
-diff, which grows superlinearly. Defer on those.
+What is genuinely expensive: WRITING a new fixture, and an integ that FAILS
+(unbounded, and paid next session too). Defer on those.
+
+Review of a larger diff also grows superlinearly, and that cost is real —
+but it is a reason to SPLIT the PR, not to end the session, and it belongs
+under `Effort`. An earlier revision listed it here as a third thing to
+"defer on", which is the PR-shaped criterion removed above arriving through
+the back door twenty-five lines later; a body wording it as `unreviewable`
+is now refused by `.claude/hooks/issue-deferral-criteria-gate.sh`, so the
+two halves of this file would have contradicted each other AND the gate.
 
 **Classify by PURPOSE, never by MEANS.** Misfires to avoid: "the release PR
 is tagpr's, so out of scope" (the purpose was a usable release); "toolchain

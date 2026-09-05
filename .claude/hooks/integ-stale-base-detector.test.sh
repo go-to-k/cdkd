@@ -5,12 +5,19 @@
 # no signal at all and every assertion here is about the MESSAGE. That is the
 # opposite of the blocking gates' suites, and it is the whole risk of a warn
 # hook: an always-`exit 0` stub passes any suite that only checks exit codes.
-# Measured 2026-09-04 against two stubs, both restored afterwards:
-#   `exit 0`, printing nothing            -> passed 6, FAILED 5 (the warn cases)
-#   always printing the alarming arm      -> passed 5, FAILED 6 (the 6 silence
-#                                            cases; the warn cases pass, which
-#                                            is why silence is asserted at all)
-# Neither direction passes vacuously.
+# RE-MEASURED 2026-09-04 after the review, against three stubs, all restored
+# afterwards (the first revision of this header quoted 6/5 and 5/6 and BOTH were
+# wrong -- a stale measured number is this repo's recurring defect, and putting
+# one in the header of a suite whose job is to measure is the worst place for it):
+#   `exit 0`, printing nothing        -> passed 6, FAILED 6  (every warn case)
+#   the ALARMING arm only             -> passed 4, FAILED 8  (silence cases AND
+#                                        the soft-arm warn case, which is why
+#                                        the two arms are asserted separately)
+#   BOTH arms at once                 -> passed 6, FAILED 6  (the silence cases)
+# Plus the mutation the fixtures exist for: 3-dot `HEAD...origin/main` -> 2-dot
+# fails exactly the lane-has-its-own-commit case. Before that fixture existed
+# the whole suite survived that mutation at 11/11.
+# No direction passes vacuously.
 #
 # Asserted, in both directions:
 #   - WARNS  when the branch is behind origin/main and a fixture is being run
@@ -23,6 +30,15 @@
 set -u
 
 HOOK="$(cd "$(dirname "$0")" && pwd)/integ-stale-base-detector.sh"
+# `run-tests.sh` exports HOOK_BASH so the SUBJECT follows the shell under test,
+# not just this harness. Invoking "$HOOK" directly ignores it, and the hook then
+# only ever runs under the shebang's bash -- the #1477 class, where a bash-4-only
+# construct is a runtime error invisible to a bash-5-only run. Proof it was
+# inert: with HOOK_BASH=/nonexistent/bash this suite reported 11/11 while the
+# deferral suite collapsed to 1/63.
+run_hook() {
+  if [ -n "${HOOK_BASH:-}" ]; then "$HOOK_BASH" "$HOOK"; else "$HOOK"; fi
+}
 PASS=0
 FAIL=0
 
@@ -37,6 +53,15 @@ trap 'rm -rf "$TMPBASE"' EXIT
 #   $BEHIND_DOCS   -- behind by 1, docs-only advance
 #   $UPTODATE      -- HEAD == origin/main
 #   $NOOPTIN       -- behind, but no .markgate.yml, so the hook must stay quiet
+# $LANE_OWN_SCOPE is the PRODUCTION shape and the only fixture that can see
+# which diff form the hook uses: the lane carries its OWN in-scope commit while
+# main advanced docs-only. With every lane sitting exactly at the merge base,
+# `HEAD...origin/main` and `HEAD..origin/main` are IDENTICAL, so a 2-dot mutation
+# survived the whole suite (measured: 11/11). A lane with its own in-scope commit
+# is the normal state when an integ is being run, and there the two diverge --
+# 3-dot correctly reports main's docs-only advance as harmless, 2-dot blames the
+# lane's own provider file and tells you to rebase for nothing.
+LANE_OWN_SCOPE="$TMPBASE/lane-own-scope"
 BEHIND_SCOPE="$TMPBASE/behind-scope"
 BEHIND_DOCS="$TMPBASE/behind-docs"
 UPTODATE="$TMPBASE/uptodate"
@@ -73,6 +98,14 @@ build_repo "$BEHIND_DOCS"  docs/whatever.md                        yes yes
 build_repo "$UPTODATE"     unused                                  yes no
 build_repo "$NOOPTIN"      src/provisioning/providers/x-provider.ts no  yes
 
+# Built by hand: build_repo leaves the lane AT the base, and this fixture needs
+# the lane AHEAD of it on its own branch.
+build_repo "$LANE_OWN_SCOPE" docs/only.md yes yes
+mkdir -p "$LANE_OWN_SCOPE/src/provisioning/providers"
+printf 'lane\n' > "$LANE_OWN_SCOPE/src/provisioning/providers/lane-provider.ts"
+git -C "$LANE_OWN_SCOPE" add -A >/dev/null
+git -C "$LANE_OWN_SCOPE" commit -qm "lane's own in-scope commit"
+
 RUN_CMD='bash tests/integration/demo/verify.sh'
 
 # warns <name> <command> <cwd> <substring stderr must carry>
@@ -81,7 +114,7 @@ warns() {
   local payload out rc
   payload=$(jq -n --arg c "$command" --arg d "$cwd" \
     '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}')
-  out=$(printf '%s' "$payload" | "$HOOK" 2>&1) && rc=0 || rc=$?
+  out=$(printf '%s' "$payload" | run_hook 2>&1) && rc=0 || rc=$?
   # Exit 0 is asserted too: a warn hook that ever blocks would stop an integ
   # the operator deliberately started, which is the failure mode the
   # non-blocking design exists to avoid.
@@ -101,7 +134,7 @@ silent() {
   local payload out rc
   payload=$(jq -n --arg c "$command" --arg d "$cwd" \
     '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}')
-  out=$(printf '%s' "$payload" | "$HOOK" 2>&1) && rc=0 || rc=$?
+  out=$(printf '%s' "$payload" | run_hook 2>&1) && rc=0 || rc=$?
   if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
     echo "PASS: $name"
     PASS=$((PASS + 1))
@@ -113,12 +146,18 @@ silent() {
 }
 
 warns 'behind + in-scope advance: warns'            "$RUN_CMD" "$BEHIND_SCOPE" '1 commit(s) behind origin/main'
-warns 'behind + in-scope advance: names the scope'  "$RUN_CMD" "$BEHIND_SCOPE" 'touch integ-gate scope'
+warns 'behind + in-scope advance: names the scope'  "$RUN_CMD" "$BEHIND_SCOPE" 'in-scope file(s) arrive'
 warns 'behind + in-scope advance: says rebase first' "$RUN_CMD" "$BEHIND_SCOPE" 'Rebase FIRST'
 # The two arms must give OPPOSITE advice. A hook that printed the alarming arm
 # unconditionally would be ignored within a week.
 warns 'behind + docs-only advance: softer arm'      "$RUN_CMD" "$BEHIND_DOCS"  'probably survive'
 warns 'behind + docs-only advance: still reports'   "$RUN_CMD" "$BEHIND_DOCS"  'behind origin/main'
+
+# 3-dot vs 2-dot. Main's advance is docs-only, so the honest answer is the
+# SOFT arm; a 2-dot diff would sweep in the lane's own provider file and print
+# the alarming one.
+warns 'lane has its own in-scope commit: judges MAIN'\''s advance, not the lane'\''s' \
+  "$RUN_CMD" "$LANE_OWN_SCOPE" 'probably survive'
 
 silent 'up to date: silent'                         "$RUN_CMD" "$UPTODATE"
 silent 'not opted in (no .markgate.yml): silent'    "$RUN_CMD" "$NOOPTIN"
@@ -130,7 +169,7 @@ silent 'unrelated command: silent'                  'git status --porcelain' "$B
 
 # Non-Bash tool: the hook must not read tool_input.command from a Write.
 payload=$(jq -n '{tool_name:"Write", tool_input:{file_path:"/x/verify.sh"}, cwd:"/tmp"}')
-out=$(printf '%s' "$payload" | "$HOOK" 2>&1) && rc=0 || rc=$?
+out=$(printf '%s' "$payload" | run_hook 2>&1) && rc=0 || rc=$?
 if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
   echo "PASS: non-Bash tool: silent"
   PASS=$((PASS + 1))
