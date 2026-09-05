@@ -60,10 +60,11 @@ rm -f /tmp/run-touched.$$
 - **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
   citation from a target. Do the item, or re-classify it in the issue with the
   reason the criterion no longer applies. When the run's own PRs ARE the
-  follow-ups' subject expect EVERY one to hit and read the issue's REASON
-  instead (go-to-k/cdkd#2514 10 of 10, go-to-k/cdkd#2558's two lanes, and all
-  but three of the open deferrals across go-to-k/cdkd#2554's five-lane run) —
-  a run-wide hit rate is a property of the run's SHAPE, not of the deferrals.
+  follow-ups' subject — one lane, or several sharing a subsystem — expect
+  EVERY one to hit, and read the issue's REASON instead (go-to-k/cdkd#2514 10
+  of 10; go-to-k/cdkd#2558's two lanes; all but three across
+  go-to-k/cdkd#2554's five) — a run-wide hit rate is a property of the run's
+  SHAPE, not of the deferrals.
 - **Re-read the REASON, not just the files — and when a hit CONTRADICTS it,
   the BODY is the stale side.** A reason anchored to the filing session's own
   state goes false while the decision it justified still stands.
@@ -72,9 +73,8 @@ rm -f /tmp/run-touched.$$
   merely expiring, and the incident. Correct the issue when this catches one —
   and when LANES REMAIN, route a hit whose file a later lane will open into
   that lane's brief instead of noting it (go-to-k/cdkd#2604: a mid-run retro
-  recorded the cleared blocker as "not that run's lane", the next lane opened
-  the same file for an unrelated fix, and a third retro paid for what was
-  twice free).
+  logged the cleared blocker as "not that run's lane"; the next lane opened
+  that file anyway, and a third retro paid for what was twice free).
 
 Then split the filed count by what the §5-f window did with each finding:
 
@@ -125,10 +125,8 @@ still paid — obeyed text, retry anyway.
   restate.
 - **This skill's stage files** when the lesson is about running THIS flow. The
   edit target is the `references/<stage>.md` where the lesson fires — never
-  the SKILL.md orchestrator, unless the stage list itself changed (SKILL.md's
-  byte size is capped by `tests/unit/scripts/skill-file-payload.test.ts`, the
-  mechanical stop on the growth loop that produced the 231 KB single-file
-  predecessor).
+  the SKILL.md orchestrator, unless the stage list itself changed; its own
+  byte cap is 10-c's, and for the same reason.
 - **Another skill**, but only one this run actually exercised. ALL skills sit
   in the `check` gate's scope (`.claude/skills/**` since go-to-k/cdkd#2364),
   so editing any one invalidates the `check` marker.
@@ -160,8 +158,8 @@ unread one.
   every bound DOWNWARD). A lesson compression cannot pay for splits the stage
   instead; the floor moves DOWN only.
 - Do not restate a rule living in `CLAUDE.md` or another step — point at it.
-  `CLAUDE.md` is injected into every context; a stage-file paragraph
-  re-explaining a gate it already documents is paid for twice in every lane.
+  `CLAUDE.md` is injected into every context, so a stage-file paragraph
+  re-explaining a gate it documents is paid for twice in every lane.
 - A FLOW lesson (vs a cdkd one) gets mirrored into the same-named
   `work-issues` skill in `../cdk-local` and `../cdk-real-drift` — wording
   adapted per repo, one `chore:` PR per repo under that repo's own flow.
@@ -176,9 +174,9 @@ unread one.
     defects in code cdkd had already merged past a three-axis panel, and
     cdkd's found one the port had inherited — the mirror is a second review
     pass that happens to also be the deliverable — and it reviews the SOURCE
-    too, since re-deriving each claim against the target's gates re-opens the
-    original's: two defects in cdkd's own hooks came back from the far side on
-    2026-09-05, go-to-k/cdkd#2630 / go-to-k/cdkd#2638).
+    too: re-deriving each claim against the target's gates re-opens the
+    original's, returning two defects in cdkd's own hooks on 2026-09-05,
+    go-to-k/cdkd#2630 / go-to-k/cdkd#2638).
   - **Filing a mirror issue covers the WHOLE remainder, in one turn** — file
     into every repo still missing it at once, each issue naming the others.
   - **A lane WORKING a mirror issue does not mirror onward** — the
@@ -216,12 +214,12 @@ unread one.
   steps differ, so a sentence true here is false there; and a brief written from
   memory names lessons the run never produced (2026-09-05: one was in no commit
   of the source PR). "Not applicable here" is a legitimate per-lesson outcome
-  when MEASURED — cdk-real-drift ruled two of its three out that way, having
-  no `/review-pr` skill and no sentinel-bound live gate.
+  when MEASURED — two of the lessons briefed to cdk-real-drift were ruled out
+  that way: it has no `/review-pr` skill and no sentinel-bound live gate.
   Dispatch a read-only reviewer per target repo to check each gate name, hook
   behavior, skill name, path and cross-reference against that repo's own files
-  (caught four false claims on the first mirror). This rule lives HERE, not in
-  memory — memory is per-project-path and would not load in the targets.
+  (caught four false claims on the first mirror). Here rather than in memory,
+  which is per-project-path and would not load in the targets.
   **Read the BODY of every incident the copy cites** — a resolving number
   makes a wrong mechanism claim look sourced; name the mechanism the issue
   actually describes or drop it. **Fully qualify every issue/PR reference**
@@ -290,8 +288,8 @@ git fetch origin && git switch -c "$B" origin/main
   NOT do it per-lane, because THIS section branches in the same tree and would
   undo it. Restoring what the outer tool created is the quiet end state — it
   silences the unmerged-lane Stop hook without the surprise of a detached HEAD
-  in that tool's UI. Deferring any of this is not an option: the evidence dies
-  with the session and an open PR is NOT CLOSEABLE.
+  in that tool's UI. All of it is `Session-fit: now`: the evidence dies with
+  the session, and an open PR is NOT CLOSEABLE.
 
 Then report the outcome in one line of the wrap: what changed, in which step,
 and the run evidence behind it — or "no skill change" plus what held.

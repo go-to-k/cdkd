@@ -625,9 +625,10 @@ export function isStatefulRecreateTargetSync(
  * a `null` verdict for the `--recreate-via-*` pre-flight, where
  * `--force-stateful-recreation` is what skipped the probe.
  * `stateful-replace-message-doc-sync` pins the whole guard's reader list by
- * file, so a caller cannot be added silently — but a NEW PATH routed through
- * an existing site adds no file and reds nothing there (that is issue
- * [#2514]'s shape), so this enumeration is maintained by hand.
+ * file, but its own header names what that cannot see: an ALIASED import, a
+ * `.mts` / `.cts` reader, and — the one that bit — a NEW PATH routed through
+ * an existing call site, which adds no file and reds nothing (issue [#2514]'s
+ * shape). So this enumeration is maintained by hand.
  *
  * The log group's arm is the one issue [#2558] added, and the reason it is
  * needed is that the old predicate treated "no retention recorded" as "holds
@@ -675,12 +676,13 @@ export function renderStatefulReason(reason: StatefulReason): string {
     case 'has-retention':
       return 'log group retains data (RetentionInDays > 0)';
     case 'has-log-events':
-      // Deliberately NOT "log group is non-empty": this reason is rendered
-      // both when the plan-time probe FOUND a log stream and when nothing
-      // could be probed at all, and only the hedged wording is true in both
-      // cases. It was the FIRST of the two to hedge; the bucket's sibling
-      // above followed for the same reason in issue [#2615], so the two are
-      // now the same shape rather than a contrast.
+      // Deliberately NOT "log group is non-empty": this reason renders on all
+      // three of the cases enumerated for its bucket sibling above — the
+      // probe FOUND a stream, the probe answered without settling it, and no
+      // probe could run — and only the hedged wording is true of all three.
+      // It was the FIRST of the two to hedge; the bucket followed for the
+      // same reason in issue [#2615], so the two are now the same shape
+      // rather than a contrast.
       return 'log group is not provably empty';
     case null:
       return '(not stateful)';

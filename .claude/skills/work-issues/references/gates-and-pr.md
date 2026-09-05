@@ -4,9 +4,10 @@
 
 **Before the session's FIRST commit, run CLAUDE.md's gate-liveness probe** —
 `git commit --dry-run -m "gate liveness probe"` as your OWN Bash tool call.
-Ordinary git output beside a STALE `markgate verify check` means the gates are
-not firing; every gate step below is then self-enforced — run each by hand and
-say so in the report.
+Ordinary git output means the gates are not firing ONLY if something was there
+to trip; with the markers already fresh, use CLAUDE.md's shape probe instead.
+Until the probe is CONCLUSIVE, every gate step below is self-enforced — run
+each by hand and say so in the report.
 
 From inside the worktree, run the local quality checks and record the markers:
 

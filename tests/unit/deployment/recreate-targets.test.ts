@@ -1514,8 +1514,9 @@ describe('probeStatefulRecreateTargetsAsync — AWS::Logs::LogGroup arm (#2558)'
     const error = renderRecreateTargetsErrors(validation);
     expect(error).toContain('MyLogGroup');
     expect(error).toContain('log group is not provably empty');
-    // NOT the bucket's assertive phrasing: this reason also renders where
-    // nothing was probed at all.
+    // Pins the HEDGE, not a contrast with the bucket: since issue #2615 both
+    // conditional reasons are hedged, so `log group is non-empty` is a wording
+    // no arm emits. This reason also renders where nothing was probed at all.
     expect(error).not.toContain('log group is non-empty');
   });
 

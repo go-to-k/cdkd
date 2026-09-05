@@ -137,3 +137,68 @@ describe('the backup fixture greps strings cdkd still emits (#2553)', () => {
     expect(VERIFY_SH).toContain("'BackupVaultName'");
   });
 });
+
+/**
+ * The second half of the same problem, and the half nothing watched: a reword
+ * that makes a needle LESS SPECIFIC.
+ *
+ * Issue #2615 hedged `renderStatefulReason('has-objects')` to "S3 bucket is not
+ * provably empty", which handed the bucket the phrase its log-group sibling had
+ * carried alone. `tests/integration/loggroup-never-expire-guard/verify.sh`
+ * grepped the bare `not provably empty`, so its sentinel went on MATCHING and
+ * stopped DISCRIMINATING — a failure no re-run of the fixture can surface,
+ * because every phase stays green. Review caught it; the fix round re-anchored
+ * both fixtures on the full sentence.
+ *
+ * So these cases pin the DISCRIMINATION, not just the presence: each fixture's
+ * needle must be contained in EXACTLY ONE of `renderStatefulReason`'s returned
+ * strings. Hedging a third reason into a shared phrase reds here, naming the
+ * fixture whose sentinel it just blunted.
+ */
+const REASON_LITERALS: readonly string[] = (() => {
+  const start = STATEFUL_TYPES_SRC.indexOf('export function renderStatefulReason');
+  // Bounded by the function's own opening rather than by a character window:
+  // the file's other `return '...'` literals (the sync predicates') would
+  // otherwise join the population and make the uniqueness count meaningless.
+  const end = STATEFUL_TYPES_SRC.indexOf('\n}', start);
+  return [...STATEFUL_TYPES_SRC.slice(start, end).matchAll(/return '([^']*)';/g)].map((m) => m[1]!);
+})();
+
+describe('a fixture sentinel still DISCRIMINATES one stateful reason (#2615)', () => {
+  it('found every reason literal (floor, so the counts below cannot pass vacuously)', () => {
+    // Five arms: always / has-objects / has-retention / has-log-events / null.
+    // A slice that captured nothing would make every `toBe(1)` below hold at 0.
+    expect(REASON_LITERALS).toHaveLength(5);
+  });
+
+  it.each([
+    ['loggroup-never-expire-guard', 'log group is not provably empty'],
+    ['recreate-via-cc-api', 'S3 bucket is not provably empty'],
+  ])('%s greps a needle unique to one reason', (fixture, needle) => {
+    const verifySh = readFileSync(
+      join(REPO_ROOT, 'tests/integration', fixture, 'verify.sh'),
+      'utf8'
+    );
+    expect(
+      verifySh,
+      `tests/integration/${fixture}/verify.sh no longer greps "${needle}" — either ` +
+        'the fixture was re-anchored (update this pair) or its sentinel is now blind'
+    ).toContain(needle);
+    const matches = REASON_LITERALS.filter((lit) => lit.includes(needle));
+    expect(
+      matches.length,
+      `"${needle}" is contained in ${matches.length} of renderStatefulReason's returned ` +
+        `strings (${matches.join(' | ')}). At 0 the fixture greps a sentence cdkd no longer ` +
+        `emits; at 2+ its sentinel matches either reason and has stopped discriminating, ` +
+        'which is exactly what #2615 did to the log-group arm by hedging the bucket one. ' +
+        `Re-anchor tests/integration/${fixture}/verify.sh on the part still unique to its reason.`
+    ).toBe(1);
+  });
+
+  it('the bare hedge is SHARED, so the discrimination above is not free', () => {
+    // Guard-the-guard: if no two reasons shared a phrase, the `toBe(1)` cases
+    // would hold for any needle and attest to nothing. They are meaningful
+    // precisely because `not provably empty` matches two arms today.
+    expect(REASON_LITERALS.filter((lit) => lit.includes('not provably empty'))).toHaveLength(2);
+  });
+});
