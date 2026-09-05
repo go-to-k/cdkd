@@ -94,7 +94,8 @@ if ! . "$__hook_dir/lib/command-match.sh" 2>/dev/null \
   || ! declare -F gate_matches >/dev/null \
   || ! declare -F cmd_last_cd_target >/dev/null \
   || [ -z "${GATE_RE_GH_ISSUE_CREATE:-}" ] \
-  || [ -z "${GATE_RE_GH_API_ISSUE_CREATE:-}" ]; then
+  || [ -z "${GATE_RE_GH_API_ISSUE_CREATE:-}" ] \
+  || [ -z "${GATE_PERL_WORD:-}" ]; then
   echo "Blocked: .claude/hooks/lib/command-match.sh is missing, unloadable, or" >&2
   echo "predates GATE_RE_GH_ISSUE_CREATE, so issue-dup-check-gate cannot" >&2
   echo "evaluate the command. Restore the file; do not work around the gate." >&2
@@ -242,10 +243,36 @@ seg_has_marker() {
   # deliberate opposite -- that gate only warns, so a missed scan costs a warning
   # while a missed scan here costs the gate. Stated rather than left to be
   # discovered: if you fix a path-extraction bug in either, check the other.
-  done < <(printf '%s' "$seg" | perl -0777 -ne '
-      while (/--body-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
-      while (/(?:--field|--raw-field|-F)[=\s]+(["\x27]?)body=\@([^"\x27\s]+)\1/g) { print "$2\n"; }
-      while (/(?:^|\s)-F[=\s]+(["\x27]?)([^"\x27\s=]+)\1(?=\s|$)/g) { print "$2\n"; }
+  #
+  # The value class is `$GW` from the SHARED `GATE_PERL_WORD` prelude, not the
+  # local `(["\x27]?)([^"\x27\s]+)\1` this used to carry. That shape cannot span
+  # a QUOTED PATH CONTAINING A SPACE, so it extracted NOTHING for
+  # `--body-file "<dir with space>/x.md"` -- and the same miss in the two
+  # siblings is a measured FAIL-OPEN. **This gate was accidentally safe and is
+  # fixed anyway.** Its safety came entirely from an UNRELATED design choice
+  # one function up: with no path extracted the loop body never runs and the
+  # function returns 1, which this gate reads as "no marker" and BLOCKS. So the
+  # miss surfaced as a FALSE BLOCK on a compliant body rather than as a pass
+  # (measured 2026-09-05: rc=2 on a body carrying `Dup-check:` at a spaced
+  # path, where the unquoted spelling gave 0). Nothing in the extraction knows
+  # about that polarity; an edit that made an unreadable path fall back instead
+  # of refusing -- exactly what the two siblings do -- would turn the identical
+  # bug into the identical fail-open with no warning. Fix the shape, not just
+  # the symptom.
+  done < <(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+      while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+      while (/(?:--field|--raw-field|-F)[=\s]*($GW)/g) {
+        my $v = gate_unq($1);
+        next unless $v =~ s/^body=\@//;
+        print "$v\n";
+      }
+      # A bare `-F <path>` carries no `key=`. `[=\s]*` accepts the glued
+      # `-F/abs/p` spelling gh takes as readily as the spaced one.
+      while (/(?:^|\s)-F[=\s]*($GW)(?=\s|$)/g) {
+        my $v = gate_unq($1);
+        next if $v =~ /=/;
+        print "$v\n";
+      }
     ' 2>/dev/null)
   return 1
 }
@@ -253,6 +280,16 @@ seg_has_marker() {
 found_body_file=0
 unresolvable_path=""
 offending=""
+# The load guard above tests only that GATE_PERL_WORD is NON-EMPTY, which cannot
+# see a prelude that is present but does not COMPILE -- and that failure is
+# SILENT, because every extraction runs perl with stderr discarded, so the gate
+# would extract nothing and PASS what it exists to refuse. Probe it functionally,
+# once, here: after arming (so ordinary Bash calls pay nothing) and at TOP LEVEL.
+# TOP LEVEL is load-bearing -- the extraction helpers are called inside `$( )`,
+# where `exit 2` ends only the substitution subshell: measured, an in-function
+# guard PRINTED its refusal and the hook still returned 0.
+gate_perl_word_or_die issue-dup-check-gate || exit 2
+
 while IFS= read -r seg; do
   [[ "$seg" =~ $GATE_RE_GH_ISSUE_CREATE ]] || [[ "$seg" =~ $GATE_RE_GH_API_ISSUE_CREATE ]] || continue
   if ! seg_has_marker "$seg"; then

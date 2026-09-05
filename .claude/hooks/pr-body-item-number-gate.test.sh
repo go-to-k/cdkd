@@ -5,6 +5,24 @@
 # code is the contract under test. Run from the repo root:
 #
 #   bash .claude/hooks/pr-body-item-number-gate.test.sh
+#
+# MUTATION-PROBED rather than asserted, EVERY number re-taken on the 50-case
+# suite after the review round that added the load-guard fence:
+#
+#   always-`exit 0` stub                  fails 27   (nothing passes vacuously)
+#   always-`exit 2` stub                  fails 23   (nor blocks vacuously)
+#   `$GW` -> the retired class (below)    fails 19
+#   `gate_perl_word_ok` -> always true    fails  1   -- the load-guard case
+#   short-flag `[=\s]*` -> `[=\s]+`       fails  1   -- the glued
+#                                                      `-Fbody=@<path>` case#
+# THE `$GW` REVERT NUMBER DEPENDS ON THE SPELLING, so the spelling is stated
+# rather than the intent: the retired class CAPTURED, while call sites now write
+# `($GW)`, so any capture inside the prelude shifts `$1` everywhere and three
+# faithful-looking reverts give three different tallies. The number above is for
+# exactly this backref-free one-line prelude edit:
+#
+#     my $GW = qr/["\x27]?[^"\x27\s]+["\x27]?/;
+#
 
 set -u
 
@@ -545,6 +563,58 @@ gh issue create --title t --body-file $SPACED"
 run_case "a SPACE-indented terminator does NOT end a <<- body" 2 \
   "$(jq -cn --arg c "$SPACED_BAD" '{tool_input:{command:$c}}')"
 
+
+# --- the quoted-value holes (2026-09-05) --------------------------------
+# The FIFTH site of one root cause (gh-body-english / issue-dup-check /
+# issue-deferral-criteria / issue-classification-label are the others). The old
+# value class `(["\x27]?)([^"\x27\s]+)\1` cannot span a QUOTED PATH
+# CONTAINING A SPACE and requires a separator before a short flag's value, so
+# nothing was extracted and NO BODY WAS SCANNED — the fail-open direction for
+# this gate. Every blocking case below is rc=0 against the pre-fix hook while
+# its plain-spelling twin gives 2.
+PBIN_SPACEDIR="$TMPDIR_FIX/dir with space"
+mkdir -p "$PBIN_SPACEDIR"
+printf 'Review fixes:\n\n- item #4 was addressed\n' > "$PBIN_SPACEDIR/bad.md"
+printf 'Review fixes:\n\nAll clean, closes #12\n' > "$PBIN_SPACEDIR/ok.md"
+run_case "spaced --body-file path, double-quoted, blocks" 2 \
+  "$(jq -cn --arg c "gh pr create --title t --body-file \"$PBIN_SPACEDIR/bad.md\"" '{tool_input:{command:$c}}')"
+run_case "spaced --body-file path, single-quoted, blocks" 2 \
+  "$(jq -cn --arg c "gh pr create --title t --body-file '$PBIN_SPACEDIR/bad.md'" '{tool_input:{command:$c}}')"
+run_case "spaced -F body=@<path> blocks" 2 \
+  "$(jq -cn --arg c "gh api -X PATCH repos/o/r/pulls/1 -F \"body=@$PBIN_SPACEDIR/bad.md\"" '{tool_input:{command:$c}}')"
+printf 'Review fixes:\n\n- item #4 was addressed\n' > "$TMPDIR_FIX/pbin-bad.md"
+run_case "glued -Fbody=@<path> blocks" 2 \
+  "$(jq -cn --arg c "gh api -X PATCH repos/o/r/pulls/1 -Fbody=@$TMPDIR_FIX/pbin-bad.md" '{tool_input:{command:$c}}')"
+# The polarity control: the same spelling with an allow-listed body must pass,
+# so the blocks above are not satisfied by "any spaced path blocks".
+run_case "spaced --body-file path, allow-listed body, passes" 0 \
+  "$(jq -cn --arg c "gh pr create --title t --body-file \"$PBIN_SPACEDIR/ok.md\"" '{tool_input:{command:$c}}')"
+
+# --- the GATE_PERL_WORD load guard, fenced ---------------------------------
+# The cheap `[ -z ]` half cannot see a prelude that is PRESENT but does not
+# COMPILE, and every extraction runs perl with stderr discarded -- so the gate
+# would extract nothing and PASS what it exists to refuse. The payload is one
+# this gate NORMALLY PASSES, so exit 2 can only come from the guard.
+PBIN_BROKEN="$TMPDIR_FIX/brokenlib"
+mkdir -p "$PBIN_BROKEN/lib"
+cp "$HOOK" "$PBIN_BROKEN/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/lib/command-match.sh" > "$PBIN_BROKEN/lib/command-match.sh"
+if grep -q 'unclosed' "$PBIN_BROKEN/lib/command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$PBIN_BROKEN/lib/command-match.sh"; then
+  printf 'Review fixes:\n\n- the mapper was corrected\n' > "$TMPDIR_FIX/pbin-guard-ok.md"
+  pbin_rc=0
+  jq -cn --arg c "gh pr create --title t --body-file $TMPDIR_FIX/pbin-guard-ok.md" \
+    '{tool_input:{command:$c}}' \
+    | "$PBIN_BROKEN/$(basename "$HOOK")" >/dev/null 2>&1 || pbin_rc=$?
+  if [[ "$pbin_rc" == "2" ]]; then
+    pass=$((pass + 1)); printf 'OK   a non-compiling GATE_PERL_WORD fails CLOSED (exit 2)\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL a non-compiling GATE_PERL_WORD returned %s, expected 2\n' "$pbin_rc"
+  fi
+else
+  fail=$((fail + 1)); printf 'FAIL could not stage a broken GATE_PERL_WORD (sed anchor drifted)\n'
+fi
 
 echo
 echo "Pass: $pass  Fail: $fail"

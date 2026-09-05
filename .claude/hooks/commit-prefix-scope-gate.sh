@@ -72,11 +72,19 @@ fi
 # this guard exists to close (go-to-k/cdkd#2027 review round 4).
 if ! declare -F gate_matches >/dev/null 2>&1 \
   || ! declare -F gate_target_dir_strict >/dev/null 2>&1 \
+  || ! declare -F gate_perl_word_or_die >/dev/null 2>&1 \
+  || ! declare -F gate_segments >/dev/null 2>&1 \
   || ! declare -F gate_refuse_unresolved_target >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/lib/command-match.sh loaded but its API is incomplete (truncated file?)." >&2
   exit 2
 fi
 gate_matches "$cmd" "$GATE_RE_GIT_COMMIT" || exit 0
+
+# The message extraction below runs the shared prelude, and a prelude that is
+# present but does not COMPILE is silent (`perl ... 2>/dev/null`): `msg_file`
+# would come back empty and the gate would pass whatever prefix it was given.
+# Probed AFTER the verb check, so an ordinary Bash call pays nothing.
+gate_perl_word_or_die commit-prefix-scope-gate || exit 2
 
 # Where the git command actually runs: the last `git -C <path>` wins, else the
 # last `cd <path>` in ANY segment before the verb (the previous form saw only a
@@ -133,18 +141,49 @@ fi
 # silently pass (the git commit itself will fail with a clear error,
 # no need to duplicate it here).
 if [[ -z "$subject" ]]; then
-  msg_file=""
-  if [[ "$cmd" =~ [[:space:]]-F[[:space:]]+([^[:space:]\"\'\;\&\|]+) ]]; then
-    msg_file="${BASH_REMATCH[1]}"
-  elif [[ "$cmd" =~ [[:space:]]-F[[:space:]]+\"([^\"]+)\" ]]; then
-    msg_file="${BASH_REMATCH[1]}"
-  elif [[ "$cmd" =~ [[:space:]]-F[[:space:]]+\'([^\']+)\' ]]; then
-    msg_file="${BASH_REMATCH[1]}"
-  elif [[ "$cmd" =~ [[:space:]]--file[[:space:]]*=[[:space:]]*([^[:space:]\"\'\;\&\|]+) ]]; then
-    msg_file="${BASH_REMATCH[1]}"
-  elif [[ "$cmd" =~ [[:space:]]--file[[:space:]]+([^[:space:]\"\'\;\&\|]+) ]]; then
-    msg_file="${BASH_REMATCH[1]}"
-  fi
+  # ONE arm over the shared `$GW` shell WORD, not five arms enumerating quote
+  # POSITIONS -- the same replacement this change makes in the body gates, for
+  # the same reason. The five-arm shape had two measured holes, both of which
+  # left `msg_file` EMPTY and so fell through to the pass-through meant for a
+  # bare `git commit`:
+  #
+  #   git commit --file "$VAR/msg.txt"   rc=0   the `--file` spellings had no
+  #   git commit --file '$VAR/msg.txt'   rc=0   quoted alternatives at all, so
+  #                                             the unresolvable-path refusal
+  #                                             below was never even consulted
+  #
+  # It also could not span a quoted path containing a SPACE, nor the GLUED
+  # `-F<path>` git accepts as readily as `-F <path>`. `$GW` handles all of them
+  # by taking one word; `gate_unq` removes the quoting.
+  # SCOPED TO THE `git ... commit` SEGMENT, not the whole command. `-F` is a
+  # flag on plenty of other commands -- `grep -F`, `awk -F`, `sort -F`, and gh's
+  # own `-F` -- so a whole-command scan takes the FIRST `-F` in the line, which
+  # is not necessarily the commit's. Measured, with only `.claude/**` staged and
+  # a `fix(hooks):` message:
+  #
+  #   git commit -F <path>                          -> <path>       rc=2
+  #   grep -Fq zzz f; git commit -F <path>          -> `q`          rc=0
+  #   awk -F , x && git commit -F <path>            -> `,`          rc=0
+  #   gh issue create -F b.md && git commit -F <p>  -> `b.md`       rc=0
+  #
+  # The first row is the regression this scoping closes: the five-arm extractor
+  # this replaced required `-F<space>`, so a GLUED `-Fq` was skipped and it
+  # found the real path. Widening to the glued spelling without scoping traded
+  # one hole for a worse one. The `-F -` branch below already scopes with its
+  # own `/git[^|;&]*commit/`, so the file was internally inconsistent too.
+  commit_seg=""
+  while IFS= read -r __seg; do
+    if gate_matches "$__seg" "$GATE_RE_GIT_COMMIT"; then commit_seg="$__seg"; break; fi
+  done < <(gate_segments "$cmd")
+  # No segment matched: fall back to the whole command rather than to NOTHING.
+  # An unreadable command is the fail-OPEN direction, and `gate_matches` has
+  # already established that this IS a git commit -- see the verb check above.
+  [ -n "$commit_seg" ] || commit_seg="$cmd"
+  msg_file=$(printf '%s' "$commit_seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    while (/(?:^|\s)(?:-F[=\s]*|--file[=\s]+)($GW)/g) {
+      print gate_unq($1), "\n";
+      last;
+    }' 2>/dev/null)
   if [[ "$msg_file" == "-" ]]; then
     # `git commit -F -` reads the message from STDIN, which in practice is a
     # heredoc whose body is part of this very command string — so the subject
@@ -176,8 +215,52 @@ if [[ -z "$subject" ]]; then
       /git[^|;&]*commit/ && /<<-?[ \t]*("[^"]+"|\047[^\047]+\047|[A-Za-z_][A-Za-z0-9_]*)/ { seen = 1 }
     ')
   elif [[ -n "$msg_file" ]]; then
+    # An UNRESOLVABLE path refuses instead of falling through. The shell
+    # expands `$VAR`, a `$(...)`, a backtick, a glob or a `~user` before git
+    # runs; this hook sees the text, so it cannot read the message and cannot
+    # see the prefix. The fall-through made that a SILENT PASS -- measured on
+    # this very repo, `git commit -F "$S/msg.txt"` with a `fix(hooks):` subject
+    # and nothing under `src/**` staged went through at rc=0, while the same
+    # commit with a LITERAL path gave rc=2. That is a mislabelled release, which
+    # is the one thing this gate exists to stop, reachable by writing the path
+    # into a variable first -- the ordinary way to hold a long message path.
+    #
+    # `~/` alone is NOT in the set: HOME is expanded correctly below, so
+    # refusing it would be a false refusal (same carve-out as the shared
+    # matcher makes for a leading `~/`).
+    # `[` is the THIRD POSIX glob metacharacter and was missing from the first
+    # cut. Measured: `-F <dir>/m[0-9].txt` expanded to `m1.txt`, git read the
+    # `fix(hooks):` subject with only `.claude/**` staged, and the hook -- seeing
+    # the literal bracketed text -- found no readable file and passed at rc=0.
+    # `{` is brace expansion, the last of the four expansions the shell performs
+    # on an unquoted word here. `$(...)`, backticks and `~+` / `~-` are already
+    # covered by the `$` / backtick / `~`-not-`~/` arms; `!` history expansion is
+    # interactive-only. Measured: `-F <dir>/msg{1,2}.txt` expanded and committed.
+    if [[ "$msg_file" == *'$'* || "$msg_file" == *'`'* \
+       || "$msg_file" == *'*'* || "$msg_file" == *'?'* || "$msg_file" == *'['* \
+       || "$msg_file" == *'{'* \
+       || ( "$msg_file" == '~'* && "$msg_file" != '~/'* ) ]]; then
+      echo "Blocked by commit-prefix-scope-gate: the commit message is read from" >&2
+      echo "a path this hook cannot resolve:" >&2
+      echo "" >&2
+      echo "  $msg_file" >&2
+      echo "" >&2
+      echo "The shell expands it before git runs; a PreToolUse hook sees only the" >&2
+      echo "text, so the commit PREFIX cannot be checked. Passing anyway would let" >&2
+      echo "a \`fix:\` / \`feat:\` commit with no \`src/**\` change trigger a release" >&2
+      echo "version bump and a user-facing CHANGELOG entry for an internal change." >&2
+      echo "" >&2
+      echo "Use a literal path, or the heredoc form this repo prefers:" >&2
+      echo "" >&2
+      echo "  git commit -F - <<'MSG'" >&2
+      echo "  <subject>" >&2
+      echo "  MSG" >&2
+      exit 2
+    fi
     # Resolve relative path against target_dir.
-    if [[ "$msg_file" != /* ]]; then
+    if [[ "$msg_file" == '~/'* ]]; then
+      msg_file="${HOME:-/nonexistent}/${msg_file#\~/}"
+    elif [[ "$msg_file" != /* ]]; then
       msg_file="$target_dir/$msg_file"
     fi
     if [[ -r "$msg_file" ]]; then
