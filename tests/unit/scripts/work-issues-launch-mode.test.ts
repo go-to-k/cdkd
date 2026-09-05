@@ -819,3 +819,70 @@ describe('work-issues launch-mode probe', () => {
     });
   });
 });
+
+/**
+ * §2's per-worktree probe must range over the BRANCH, not one commit.
+ *
+ * WHY HERE. This file already owns "a withdrawn command cannot come back", and
+ * that is exactly the failure mode: `show --stat HEAD` reads ONE commit, so a
+ * lane several commits deep is under-reported and the collision scan calls a
+ * held file free. Measured 2026-09-05 on a worktree ten commits ahead of
+ * `origin/main` — `show --stat HEAD` reported 1 of the 5 files it held, hiding
+ * `CLAUDE.md`, and a triage sub-agent reported "no collision" on that basis.
+ * Nothing mechanical watched the probe, so a future edit could silently restore
+ * the single-commit form and every suite would stay green (the same argument
+ * this file's header makes for the launch-mode section).
+ *
+ * The fence is deliberately scoped to COMMAND LINES. The rationale prose beside
+ * the block has to keep naming `show --stat HEAD` to say what was wrong with it,
+ * and a blanket ban would forbid the explanation — so the two halves are pinned
+ * in OPPOSITE directions: absent from the commands, PRESENT in the prose. A cap
+ * with no floor rewards the inverse regression (deleting the rationale would
+ * otherwise read as a pass), which is the rule this same run added to
+ * `.claude/rules/testing.md`.
+ */
+describe('work-issues section 2 worktree probe', () => {
+  const TRIAGE = join('references', 'triage.md');
+  /** The probe block addresses a PEER worktree by path — that is what selects it. */
+  const isProbeBlock = (block: string): boolean =>
+    commandLines(block).some((c) => /worktrees\/<w>/.test(c));
+
+  it('exactly one block probes a peer worktree -- no decoy copy', () => {
+    const hits = bashBlocks(read(TRIAGE)).filter(isProbeBlock);
+    expect(
+      hits.length,
+      'section 2 should hold exactly one per-worktree probe block; a second copy drifts',
+    ).toBe(1);
+  });
+
+  it('ranges over origin/main...HEAD, and never reads a single commit', () => {
+    const block = bashBlocks(read(TRIAGE)).find(isProbeBlock);
+    expect(block, 'the per-worktree probe block is gone').toBeDefined();
+    const cmds = commandLines(block!);
+
+    expect(
+      cmds.some((c) => c.includes('diff --name-only origin/main...HEAD')),
+      `the probe must range over the branch; commands were:\n${cmds.join('\n')}`,
+    ).toBe(true);
+
+    const singleCommit = cmds.filter((c) => /show\s+--stat/.test(c));
+    expect(
+      singleCommit,
+      'a `show --stat` probe reads ONE commit and under-reports a multi-commit lane -- ' +
+        'that form was withdrawn on 2026-09-05 and must not return as a COMMAND',
+    ).toEqual([]);
+  });
+
+  it('still explains WHY the range is load-bearing, in prose', () => {
+    // The floor half. Without it, deleting the rationale satisfies the case
+    // above and the next author cannot tell the range from an arbitrary choice.
+    const prose = read(TRIAGE)
+      .split('\n')
+      .filter((l) => !/^\s*git\s/.test(l))
+      .join('\n');
+    expect(
+      prose,
+      'the paragraph naming what `show --stat HEAD` got wrong is the reason the range exists',
+    ).toContain('show --stat HEAD');
+  });
+});

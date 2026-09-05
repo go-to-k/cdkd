@@ -122,9 +122,9 @@ const MEASURED: Record<string, { orchestratorBytes: number; corpusBytes: number;
     // since c416ecb5. Nothing was wrong with the reasoning -- only nothing
     // checked it, which is the same failure the corpus figures had.
     orchestratorBytes: 11_752,
-    corpusBytes: 172_963,
-    largest: { file: 'verify.md', bytes: 28_154 },
-    runnerUp: { file: 'implement.md', bytes: 28_137 },
+    corpusBytes: 173_051,
+    largest: { file: 'implement.md', bytes: 28_240 },
+    runnerUp: { file: 'verify.md', bytes: 28_154 },
   },
 };
 
@@ -338,23 +338,31 @@ const MIN_REFERENCE_FILES = 6;
 // checkable with `wc -c` against origin/main; every count that was merely
 // counted has been dropped.
 // The 2026-09-05 deploy-batch retro (go-to-k/cdkd#2634 / go-to-k/cdkd#2649 /
-// go-to-k/cdkd#2674) landed TWO rules here and ended NET POSITIVE by 7 B:
-// triage.md section 2's worktree probe now ranges over `origin/main...HEAD`
-// (`show --stat HEAD` reads one commit, and read 1 of the 5 files a ten-commit
-// lane held), and implement.md section 5-g's fan-out sentence now names the
-// REPORT SHAPE. Components, stated so they can be checked rather than
-// believed: triage.md 26,084 -> 26,145 (+61, the subsumed base-commit sentence
-// went), implement.md 28,079 -> 28,137 (+58 net, three neighbouring bullets
-// compressed), gotchas.md 8,045 -> 7,933 (-112), = +7. Corpus
-// 172,956 -> 172,963, verify.md (untouched) keeps the lead at 28,154, margin
-// 123 -> 174 B. The payment is the appendix again, and for the reason the
-// go-to-k/cdkd#2438 entry above records: gotchas.md was restating section 2's
-// two live-lane probes in full, so it now points at them.
+// go-to-k/cdkd#2674) landed TWO rules here for +95 B: triage.md section 2's
+// worktree probe now ranges over `origin/main...HEAD` (`show --stat HEAD`
+// reads one commit, and read 1 of the 5 files a ten-commit lane held), and
+// implement.md section 5-g's fan-out sentence now names the REPORT SHAPE.
+// Components, stated so they can be checked rather than believed: triage.md
+// 26,084 -> 26,218 (+134), implement.md 28,079 -> 28,240 (+161), gotchas.md
+// 8,045 -> 7,845 (-200), = +95. Corpus 172,956 -> 173,051; margin 123 -> 103 B.
+// The payment is the appendix again, and for the reason the go-to-k/cdkd#2438
+// entry above records: gotchas.md was restating section 2's two live-lane
+// probes AND CLAUDE.md's arm-the-signal-first rule, and now points at both.
+// NOTE THE LEADER FLIP: implement.md 28,240 overtakes verify.md 28,154, so
+// `largest` and `runnerUp` SWAP in MEASURED above and the binding bound is now
+// `corpus - verify.md`. Both figures are POST-REVIEW. The round's first draft
+// was +7 B, and two reviewers reading the same diff independently found that
+// its compression had re-bound go-to-k/cdkd#2270 to the wrong one of that
+// bullet's two incidents; restoring the dropped clause with its citation is
+// most of the extra 88 B, and it is why a compression payment is never free --
+// the bytes it saves can be a citation's antecedent.
 // The retro's third lesson landed OUTSIDE this corpus, in
 // `.claude/rules/testing.md` -- a guard's uses are its CALL SITES, not the
-// first one -- which is free to THIS corpus but spent 159 B of the
+// first one -- which is free to THIS corpus but spent 116 B of the
 // `tests/setup.ts` band in rule-file-payload.test.ts, re-derived there in the
-// same commit.
+// same commit (the band moved 242 -> 126 B; an earlier draft said 159, which
+// reconciled with nothing -- the go-to-k/cdkd#2554 entry's `+38` incident,
+// repeated in the file whose whole subject is a figure going stale).
 // The next addition here has to be paid for by compression FIRST -- retro.md
 // section 10-c forbids buying the room by raising this floor, and note that
 // SPLITTING a stage file makes this bound tighter, not looser (a smaller

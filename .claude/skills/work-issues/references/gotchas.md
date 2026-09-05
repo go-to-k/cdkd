@@ -100,8 +100,7 @@
   fan-out run spends most wall-clock parked (lane subagents, `gh pr checks
   --watch`, `/run-integ`) — every one is **WAITING**, not STOPPED: one line
   per lane, naming the lane and its signal. STOPPED only when every lane is
-  merged. **ARM the signal BEFORE you write the line** (measured: a run wrote
-  `WAITING — Signal: gh pr checks`, armed nothing, and simply ended).
+  merged. CLAUDE.md owns the arm-it-BEFORE-you-write-it rule.
 - **A lane needing a user decision goes through `AskUserQuestion`, never
   prose** — a prose question ends the turn as STOPPED and loses the other
   lanes' momentum. That prompt is CHAT, not a published artifact, so it goes

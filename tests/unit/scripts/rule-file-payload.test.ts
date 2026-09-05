@@ -363,7 +363,14 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // failed this row for a reason unrelated to itself -- the same argument that
   // moved CORPUS_BYTES_MAX. Measured 61,358 B (the 55,681 B beside the old cap
   // was 5,677 B stale).
-  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 68_000], // measured 61,358
+  ['tests/unit/scripts/rule-file-payload.test.ts', 38_000, 68_000], // measured 46,373 on 2026-09-06
+  // The 61,358 above is the figure the CAP was derived from and is kept as
+  // history; it is not the live payload. `testing.md` globs `tests/**`, so it
+  // is this row's whole payload too, and the 2026-09-04 compression took it to
+  // 45,579 without anyone re-measuring HERE -- the row read 14,985 B stale
+  // until 2026-09-06. Found by a review of the commit that added the
+  // re-measure instruction below, which had called the `tests/setup.ts` block's
+  // three figures the only ones going stale silently. They are four.
   // hooks.md WAS this path's only matcher, and while that held the cap was
   // dominated by MAX_RULE_FILE_BYTES no matter where it sat: at 135_000 (as
   // shipped) it was 15,000 B past the per-file cap and could not fire at all;
@@ -471,13 +478,20 @@ const PAYLOAD_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // usable room is 242 B and an addition of 243 B reds the discriminate case
   // below. The fix is compression there,
   // not a bigger number here. Unlike the skill corpus, this file has no
-  // MEASURED record, so these three figures are the only thing that goes
-  // stale silently; re-measure them in any commit that touches `testing.md`.
+  // MEASURED record, so these figures are the only thing that goes stale
+  // silently; re-measure them in any commit that touches `testing.md` -- these
+  // three AND the `measured` figure on the rule-file-payload.test.ts row above,
+  // whose payload is `testing.md` alone for the same `tests/**` glob.
   // RE-MEASURED 2026-09-05 after the work-issues retro escalated its
-  // one-sided-fence rule into `testing.md` (+207 B of rule, 91 B of it paid
+  // one-sided-fence rule into `testing.md` (+256 B of rule, 140 B of it paid
   // back by compressing three neighbouring mutation bullets, 46,257 -> 46,373 B
   // net): payload 49,677 -> 49,793, gutting bound 47,757 -> 47,873, usable
   // room 242 -> 126 B. Compression there is the only way to buy that back.
+  // The two components are segmented at the BULLET boundary (the rule's own
+  // bullet 113 -> 369 B; the three compressed ones 1,595 -> 1,455 B) and sum
+  // to the net -- an earlier draft said 207/91, which summed to the right 116
+  // by luck and matched no definition of either part. Both review axes caught
+  // it independently, on the file that exists to stop exactly this.
   // This floor is set by a PROPERTY rather than by the table's usual ~12%-under
   // convention, and `the tests/setup.ts floor still discriminates` below
   // RECOMPUTES that property instead of trusting this number. It must sit above

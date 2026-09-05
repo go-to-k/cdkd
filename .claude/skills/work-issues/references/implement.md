@@ -389,8 +389,9 @@ worktree path, allowed files, "do NOT touch other lanes' files; STOP and
 report if the fix needs a forbidden one", and **the REPORT SHAPE — the
 report IS the deliverable**: a lane's tool output never reaches you, so a
 one-line "done" loses the run (2 of 3 lanes, 2026-09-05). Resume a thin one
-with "REPORT ONLY, do not touch the tree"; a plain resume re-edits. A subagent's Bash **bypasses the
-PreToolUse gate hooks** (it can `gh pr create` past `verify-pr-gate`) —
+with "REPORT ONLY, do not touch the tree"; a plain resume re-edits.
+
+A subagent's Bash **bypasses the PreToolUse gate hooks** (it can `gh pr create` past `verify-pr-gate`) —
 enforce quality yourself; the orchestrator still gates the MERGE.
 
 - **Forbid lane agents the FULL SUITE; run it yourself, serially.** Five
@@ -413,10 +414,11 @@ enforce quality yourself; the orchestrator still gates the MERGE.
 - **Never force-push over a commit you did not author** — re-`git fetch` and
   inspect the branch first; STOP if it carries work you did not write.
 - **A new fixture literal must not collide with an existing assertion needle,
-  nor a new fixture RESOURCE with an existing resource's VALUE**
-  (go-to-k/cdkd#2270: a hard-coded URL user equal to the swept needle produced
-  a false LEAK report, worse than a missing assertion). When an arm makes two
-  things equal, ask what ELSE holds that value; scope the sharing. **And check
+  nor a new fixture RESOURCE with an existing resource's VALUE** (a hard-coded
+  URL user equal to the swept needle produced a false LEAK report, worse than a
+  missing assertion; an arm reusing a plaintext an existing assertion owned
+  failed on an assertion the lane never wrote, go-to-k/cdkd#2270). When an arm
+  makes two things equal, ask what ELSE holds that value; scope the sharing. **And check
   the arm's shape actually exercises the fix before spending a run** (two
   separate resources was vacuous — only one holding both leaves let the
   mechanism under test decide).

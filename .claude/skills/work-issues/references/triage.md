@@ -94,9 +94,9 @@ For each active worktree, find what it ACTUALLY edits:
 # nothing when run IN-PLACE, and the scan reports an empty board — the exact
 # failure this stage exists to prevent. Substitute the recorded path; never
 # `$MAIN_CHECKOUT`, which is empty in this shell.
-git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" log --oneline -1     # the issue it owns
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" log --oneline -1                     # the issue it owns -- or main's tip, on a lane yet to commit
 git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" diff --name-only origin/main...HEAD  # EVERY file it holds
-git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" status --porcelain   # editing RIGHT NOW
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" status --porcelain                  # editing RIGHT NOW
 ```
 
 **A branch `origin/main..<branch>` reports as ahead is NOT necessarily
